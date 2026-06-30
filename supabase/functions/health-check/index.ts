@@ -184,10 +184,13 @@ type CfSummary = {
   ok?: boolean;
   app?: { good: number; notFound: number; serverError: number; total: number };
   account?: { totalRequests: number; totalFailed: number };
+  detail?: string;
 };
 
 async function collectCloudflare(): Promise<CfSummary> {
   if (!CF_TOKEN || !CF_ACCOUNT_ID) return { configured: false };
+  // Be tolerant of a pasted "Bearer <token>" or full curl example: use only the token value.
+  const token = (CF_TOKEN.match(/Bearer\s+([A-Za-z0-9_-]+)/)?.[1] ?? CF_TOKEN).trim();
   try {
     const until = new Date();
     const since = new Date(until.getTime() - 24 * 3600 * 1000);
@@ -197,15 +200,15 @@ async function collectCloudflare(): Promise<CfSummary> {
       ' count dimensions { clientRequestHTTPHost edgeResponseStatus } } } } }';
     const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${CF_TOKEN}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         query,
         variables: { acct: CF_ACCOUNT_ID, since: since.toISOString(), until: until.toISOString() },
       }),
     });
-    if (!res.ok) return { configured: true, ok: false };
+    if (!res.ok) return { configured: true, ok: false, detail: `HTTP ${res.status}` };
     const body = await res.json();
-    if (body.errors) return { configured: true, ok: false };
+    if (body.errors) return { configured: true, ok: false, detail: `GQL ${JSON.stringify(body.errors).slice(0, 200)}` };
     const rows = body?.data?.viewer?.accounts?.[0]?.httpRequestsAdaptiveGroups ?? [];
     const app = { good: 0, notFound: 0, serverError: 0, total: 0 };
     let totalRequests = 0;
@@ -224,8 +227,8 @@ async function collectCloudflare(): Promise<CfSummary> {
       }
     }
     return { configured: true, ok: true, app, account: { totalRequests, totalFailed } };
-  } catch (_) {
-    return { configured: true, ok: false };
+  } catch (e) {
+    return { configured: true, ok: false, detail: `EXC ${String((e as any)?.message ?? e).slice(0, 120)}` };
   }
 }
 
@@ -236,7 +239,7 @@ function evaluateCloudflare(cf: CfSummary): Finding[] {
   const out: Finding[] = [];
   if (!cf.configured) return out; // feature off → stay silent
   if (cf.ok === false) {
-    out.push({ area: 'Website', severity: 'warn', message: "Couldn't read Cloudflare traffic stats — the analytics token may be missing or expired." });
+    out.push({ area: 'Website', severity: 'warn', message: `Couldn't read Cloudflare traffic stats — the analytics token may be missing or expired.${cf.detail ? ' [' + cf.detail + ']' : ''}` });
     return out;
   }
   const app = cf.app!;
