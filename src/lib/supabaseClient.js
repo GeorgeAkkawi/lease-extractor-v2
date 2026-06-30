@@ -19,6 +19,19 @@ export const supabase = DEMO_MODE ? mockSupabase : createClient(url, anonKey);
 // Helper for calling an Edge Function with the current user's JWT attached.
 export async function invokeFunction(name, body) {
   const { data, error } = await supabase.functions.invoke(name, { body });
-  if (error) throw error;
+  if (error) {
+    // supabase-js throws a FunctionsHttpError whose .message is the generic
+    // "Edge Function returned a non-2xx status code". The real, user-friendly
+    // reason is in the function's JSON body ({ error }) on error.context — read
+    // it so messages like "This scan is too large…" actually reach the UI.
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      /* keep the default message */
+    }
+    throw new Error(message);
+  }
   return data;
 }
