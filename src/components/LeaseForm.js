@@ -79,7 +79,9 @@ function Field({ label, field, extracted, children }) {
   const meta = extracted?.[field];
   return (
     <div className="form-field" style={{ maxWidth: '100%', marginBottom: 0 }}>
-      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* Reserve a constant label-row height so the AI badge (taller than the label
+          text) never bumps this field's input box below its un-badged neighbours. */}
+      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 20 }}>
         {label}
         {meta && <ConfidenceBadge meta={meta} />}
       </span>

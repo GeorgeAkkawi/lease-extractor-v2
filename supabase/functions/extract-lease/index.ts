@@ -126,18 +126,30 @@ const SYSTEM_FIELDS =
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'base_rent_amount', 'base_rent_period'],
+  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'rent_schedule'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
     tenant_email_2: field(['string']),
-    base_rent_amount: { type: ['number', 'null'] },   // the starting rent AS WRITTEN — no math
-    base_rent_period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
+    // The base-rent schedule, ONE entry per period of the term, read raw (no math).
+    rent_schedule: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['effective_date', 'amount', 'period'],
+        properties: {
+          effective_date: { type: ['string', 'null'] },   // ISO date the period STARTS
+          amount: { type: ['number', 'null'] },            // the rent for that period AS WRITTEN
+          period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
+        },
+      },
+    },
   },
 };
 
 const SUPPLEMENT_SYSTEM =
-  'From the attached commercial lease, extract the tenant\'s contact and starting rent. ' +
+  'From the attached commercial lease, extract the tenant\'s contact and the base-rent schedule. ' +
   'tenant_contact_name = the human who represents the TENANT (the signer, owner, or named ' +
   'point of contact, e.g. "Dana Lee") — NOT the business name, NOT the landlord. Capture up ' +
   'to TWO tenant-side email addresses: the tenant\'s main / billing email as tenant_email ' +
@@ -145,36 +157,41 @@ const SUPPLEMENT_SYSTEM =
   'ONLY extract emails belonging to the TENANT side — NEVER the landlord\'s / lessor\'s / ' +
   'property manager\'s own email. For each string field give a confidence (0–1), the exact ' +
   'source_quote, and the page; when not found set value null, confidence 0, source_quote "", page 1.\n\n' +
-  'RENT — READ IT, DON\'T DO MATH. base_rent_amount = the tenant\'s STARTING base rent for the ' +
-  'FIRST period of the term (before any step-ups), the raw number EXACTLY as written — do NOT ' +
-  'multiply, annualize, or convert it. base_rent_period = how that number is expressed: ' +
-  '"per_month" (a monthly rent), "per_year" (an annual rent), "per_sqft_year" (a rate per ' +
-  'square foot per YEAR, e.g. "$20.00/SF" or "$20 PSF"), "per_sqft_month" (a rate per square ' +
-  'foot per MONTH), or "unknown" if you cannot tell. We do all the multiplication ourselves. ' +
-  'If no rent is stated, base_rent_amount = null and base_rent_period = "unknown".';
+  'RENT SCHEDULE — READ THE NUMBERS, DON\'T DO MATH. rent_schedule lists the tenant\'s base ' +
+  'rent over time: ONE entry per period / row of the rent table, earliest first, INCLUDING ' +
+  'periods whose rent is unchanged from the prior one. For each period: effective_date = the ' +
+  'ISO date that period STARTS (YYYY-MM-DD); amount = the base rent for that period EXACTLY as ' +
+  'written (the raw number — do NOT multiply, annualize, or convert it); period = how that ' +
+  'amount is expressed — "per_month" (a monthly rent), "per_year" (an annual rent), ' +
+  '"per_sqft_year" (a $/SF/year rate, e.g. "$34.43 PSF"), "per_sqft_month", or "unknown". ' +
+  'If a row shows BOTH a $/SF rate AND a plain dollar amount for the same period, use the ' +
+  'plain dollar amount and its period (e.g. amount 2395.42 with "per_month", NOT 34.43). ' +
+  'We do ALL the arithmetic ourselves — never multiply. If the lease states no rent schedule, ' +
+  'return an empty array.';
 
 // Best-effort supplement. Runs as its OWN call so it can never bloat the main lease
 // schema or fail the whole extraction — returns null on ANY error.
 async function extractSupplement(content: Block[]): Promise<Record<string, any> | null> {
   try {
-    return await callClaude({ model: MODEL, system: SUPPLEMENT_SYSTEM, maxTokens: 1024, schema: SUPPLEMENT_SCHEMA, content });
+    return await callClaude({ model: MODEL, system: SUPPLEMENT_SYSTEM, maxTokens: 1536, schema: SUPPLEMENT_SCHEMA, content });
   } catch (e) {
     console.error('[extract-lease] supplement extraction failed (non-fatal):', e instanceof Error ? e.message : String(e));
     return null;
   }
 }
 
-// Deterministic annual base rent from the raw figure + its basis (code does the math the
-// model used to do). Returns null for an unusable amount or an 'unknown'/PSF-without-SF
-// basis, so the caller keeps the model's own figure.
+// Deterministic annual rent from a raw figure + its basis (the code does the math the
+// model used to do, to the CENT). Returns null for an unusable amount or an 'unknown' /
+// PSF-without-SF basis, so the caller keeps the model's own figure.
 function annualRentFrom(amount: unknown, period: unknown, sqft: number): number | null {
   const a = typeof amount === 'number' ? amount : Number(amount);
   if (!a || !isFinite(a) || a <= 0) return null;
+  const cents = (x: number) => Math.round(x * 100) / 100; // keep cents — never round to whole dollars
   switch (period) {
-    case 'per_month': return Math.round(a * 12);
-    case 'per_year': return Math.round(a);
-    case 'per_sqft_year': return sqft > 0 ? Math.round(a * sqft) : null;
-    case 'per_sqft_month': return sqft > 0 ? Math.round(a * sqft * 12) : null;
+    case 'per_month': return cents(a * 12);
+    case 'per_year': return cents(a);
+    case 'per_sqft_year': return sqft > 0 ? cents(a * sqft) : null;
+    case 'per_sqft_month': return sqft > 0 ? cents(a * sqft * 12) : null;
     default: return null;
   }
 }
@@ -277,11 +294,28 @@ Deno.serve(async (req) => {
       for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2']) {
         if (supp[k]) (parsed as any)[k] = supp[k];
       }
-      // Recompute the headline base rent deterministically (no more model arithmetic).
+      // Rebuild the rent schedule from raw figures so EVERY amount (base + each step) is
+      // computed in code, not by the model. The earliest period becomes base_rent; the
+      // later periods become the escalations (overriding the model's drifted ×12 amounts).
       const sqft = Number((parsed as any)?.square_footage?.value) || 0;
-      const annual = annualRentFrom(supp.base_rent_amount, supp.base_rent_period, sqft);
-      if (annual != null && (parsed as any)?.base_rent) {
-        (parsed as any).base_rent.value = annual;
+      const rows = (Array.isArray(supp.rent_schedule) ? supp.rent_schedule : [])
+        .map((r: any) => ({
+          date: typeof r?.effective_date === 'string' ? r.effective_date : null,
+          annual: annualRentFrom(r?.amount, r?.period, sqft),
+        }))
+        .filter((r: any) => r.annual != null)
+        .sort((a: any, b: any) => (a.date || '9999-99-99').localeCompare(b.date || '9999-99-99'));
+      if (rows.length && (parsed as any)?.base_rent) {
+        (parsed as any).base_rent.value = rows[0].annual;
+        const steps = rows.slice(1).filter((r: any) => r.date);
+        if (steps.length) {
+          (parsed as any).escalations = steps.map((r: any) => ({
+            effective_date: r.date,
+            escalation_type: 'manual',
+            escalation_value: null,
+            new_base_rent: r.annual,
+          }));
+        }
       }
     }
 
