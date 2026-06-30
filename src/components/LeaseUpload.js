@@ -60,6 +60,9 @@ export default function LeaseUpload({ onExtracted }) {
           <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>
             PDF, Word (.docx), scan, photo, or handwritten. AI fills the fields with confidence scores and source clauses — you review before saving.
           </div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            For the most complete extraction, Word docs and PDFs work best — scans and photos work too, just with a little less detail.
+          </div>
           {/* Native file input (the browser's own picker) inside a drop zone so a
               file can be chosen by click OR dragged straight in. */}
           <div
@@ -79,11 +82,6 @@ export default function LeaseUpload({ onExtracted }) {
             <div className="dropzone-hint muted">
               {busy ? 'Reading document…' : '…or drag & drop a PDF, Word doc, scan, or photo here'}
             </div>
-          </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-            Tip: if the file dialog doesn’t open, open the app in a normal browser tab at <code>localhost:3000</code>
-            (an in-editor preview or an automated/remote-controlled browser window can block file dialogs).
-            You can also <strong>drag a file in</strong> above, or use <strong>Paste text</strong>.
           </div>
         </>
       ) : (
