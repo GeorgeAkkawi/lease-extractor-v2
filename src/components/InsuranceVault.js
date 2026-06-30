@@ -8,13 +8,6 @@ import {
 import DocAssistant from './DocAssistant';
 import { money, fmtDate } from '../lib/format';
 
-const SUGGESTED = [
-  'What is the coverage limit?',
-  'Is the landlord listed as additional insured?',
-  'When does the policy expire?',
-  'What is the deductible?',
-];
-
 // Insurance vault for one scope: landlord (per property) or tenant (per lease).
 // Add a policy (paste or upload) → key-facts auto-fill + a copy is saved once →
 // glanceable card + ask-anything Q&A. Extra documents (renewals, premium notices)
@@ -99,7 +92,7 @@ export default function InsuranceVault({ party, propertyId, leaseId }) {
               <button type="button" className="ghost danger-btn" onClick={() => setRemoving(true)}>Remove policy</button>
             </div>
           )}
-          <DocAssistant label="policy" docText={policy.policy_text} suggested={SUGGESTED} ask={(q) => askDoc(policy.policy_text, q, 'insurance')} />
+          <DocAssistant label="policy" docText={policy.policy_text} ask={(q) => askDoc(policy.policy_text, q, 'insurance')} />
           <DocumentsSection policyId={policy.id} />
         </>
       )}
@@ -206,6 +199,7 @@ function DocumentsSection({ policyId }) {
   const key = ['insurance-docs', policyId];
   const { data: docs = [] } = useQuery({ queryKey: key, queryFn: () => listInsuranceDocuments(policyId), enabled: !!policyId });
 
+  const [adding, setAdding] = useState(false);
   const [label, setLabel] = useState('');
   const [note, setNote] = useState('');
   const [file, setFile] = useState(null);
@@ -213,7 +207,7 @@ function DocumentsSection({ policyId }) {
 
   const add = useMutation({
     mutationFn: () => addInsuranceDocument({ policyId, label: label.trim(), file, note: note.trim() }),
-    onSuccess: () => { setLabel(''); setNote(''); setFile(null); qc.invalidateQueries({ queryKey: key }); },
+    onSuccess: () => { setLabel(''); setNote(''); setFile(null); setAdding(false); qc.invalidateQueries({ queryKey: key }); },
     onError: (e) => setErr(e.message || String(e)),
   });
   const del = useMutation({
@@ -248,15 +242,20 @@ function DocumentsSection({ policyId }) {
           ))}
         </div>
       )}
-      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input className="text-input" style={{ flex: '1 1 200px' }} placeholder="Label (e.g. 2026 Renewal, Premium notice)" value={label} onChange={(e) => setLabel(e.target.value)} />
-        <input className="text-input" style={{ flex: '1 1 160px' }} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-        <label className="ghost" style={{ cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
-          {file ? `📎 ${file.name.slice(0, 20)}` : '📎 Attach file'}
-          <input type="file" accept=".pdf,.docx,image/*" style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        </label>
-        <button type="button" onClick={() => add.mutate()} disabled={!label.trim() || add.isPending}>{add.isPending ? 'Adding…' : 'Add document'}</button>
-      </div>
+      {adding ? (
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input className="text-input" style={{ flex: '1 1 200px' }} placeholder="Label (e.g. 2026 Renewal, Premium notice)" value={label} onChange={(e) => setLabel(e.target.value)} />
+          <input className="text-input" style={{ flex: '1 1 160px' }} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+          <label className="ghost" style={{ cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
+            {file ? `📎 ${file.name.slice(0, 20)}` : '📎 Attach file'}
+            <input type="file" accept=".pdf,.docx,image/*" style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          </label>
+          <button type="button" onClick={() => add.mutate()} disabled={!label.trim() || add.isPending}>{add.isPending ? 'Adding…' : 'Add document'}</button>
+          <button type="button" className="ghost" onClick={() => { setAdding(false); setLabel(''); setNote(''); setFile(null); setErr(''); }}>Cancel</button>
+        </div>
+      ) : (
+        <button type="button" className="ghost" onClick={() => setAdding(true)}>+ Add document</button>
+      )}
       {err && <p className="badge danger" style={{ marginTop: 8 }}>{err}</p>}
     </div>
   );
