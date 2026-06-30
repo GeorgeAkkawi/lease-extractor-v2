@@ -113,6 +113,43 @@ export async function getCorpRollup(corpId, year) {
   return { revenue, expenses, noi };
 }
 
+// Batched counts for ALL corporations in two bulk queries (replaces the per-card
+// N+1 getCorpCounts). Returns a map { [corpId]: { properties, tenants } }.
+export async function listCorpCounts() {
+  const [props, leaseRows] = await Promise.all([
+    rows(supabase.from('properties').select('id,corporation_id')),
+    rows(supabase.from('leases').select('id,property_id')),
+  ]);
+  const propToCorp = Object.fromEntries((props || []).map((p) => [p.id, p.corporation_id]));
+  const counts = {};
+  const bump = (corpId) => (counts[corpId] ||= { properties: 0, tenants: 0 });
+  for (const p of props || []) bump(p.corporation_id).properties += 1;
+  for (const l of leaseRows || []) {
+    const corpId = propToCorp[l.property_id];
+    if (corpId != null) bump(corpId).tenants += 1;
+  }
+  return counts;
+}
+
+// Batched financial roll-up for ALL corporations for a year (two bulk queries).
+// Returns a map { [corpId]: { revenue, expenses, noi } }.
+export async function listCorpRollups(year) {
+  const props = await rows(supabase.from('properties').select('id,corporation_id'));
+  const ids = (props || []).map((p) => p.id);
+  const totalsByProp = ids.length ? await listPropertyTotalsByYear(ids, year) : {};
+  const rollups = {};
+  for (const p of props || []) {
+    const r = (rollups[p.corporation_id] ||= { revenue: 0, expenses: 0, noi: 0 });
+    const t = totalsByProp[p.id];
+    if (t) {
+      r.revenue += Number(t.total_revenue) || 0;
+      r.expenses += Number(t.taxes_total) + Number(t.cam_total) + Number(t.roof_total);
+      r.noi += Number(t.noi) || 0;
+    }
+  }
+  return rollups;
+}
+
 // ---- Properties -------------------------------------------------------------
 export const listProperties = (corporationId) =>
   rows(supabase.from('properties').select('*').eq('corporation_id', corporationId).order('name'));
@@ -135,6 +172,20 @@ export const updateProperty = (id, patch) =>
 // ---- Leases (a "tenant" = one lease) ---------------------------------------
 export const listLeases = (propertyId) =>
   rows(supabase.from('leases').select('*').eq('property_id', propertyId).order('tenant_name'));
+
+// Bulk: every lease for a set of properties in ONE query, grouped by property_id.
+// Lets a property list load all its cards' leases at once (no per-card waterfall).
+// Returns a map { [propertyId]: lease[] } with an entry for every id passed in.
+export async function listLeasesByProperties(propertyIds) {
+  const ids = [...new Set((propertyIds || []).filter(Boolean))];
+  const byProp = Object.fromEntries(ids.map((id) => [id, []]));
+  if (ids.length === 0) return byProp;
+  const all = await rows(
+    supabase.from('leases').select('*').in('property_id', ids).order('tenant_name')
+  );
+  for (const l of all || []) (byProp[l.property_id] ||= []).push(l);
+  return byProp;
+}
 
 export const getLease = (id) =>
   one(supabase.from('leases').select('*').eq('id', id).single());
@@ -418,6 +469,20 @@ export const listEscalations = (leaseId) =>
   rows(
     supabase.from('rent_escalations').select('*').eq('lease_id', leaseId).order('effective_date')
   );
+
+// Bulk: every escalation for a set of leases in ONE query, grouped by lease_id.
+// Lets a lease list load all rows' "next escalation" at once (no per-row waterfall).
+// Returns a map { [leaseId]: escalation[] } with an entry for every id passed in.
+export async function listEscalationsByLeases(leaseIds) {
+  const ids = [...new Set((leaseIds || []).filter(Boolean))];
+  const byLease = Object.fromEntries(ids.map((id) => [id, []]));
+  if (ids.length === 0) return byLease;
+  const all = await rows(
+    supabase.from('rent_escalations').select('*').in('lease_id', ids).order('effective_date')
+  );
+  for (const e of all || []) (byLease[e.lease_id] ||= []).push(e);
+  return byLease;
+}
 
 export const createEscalation = async (esc) =>
   one(
@@ -726,6 +791,20 @@ export const getPropertyTotals = (propertyId, year) =>
       .eq('year', year)
       .maybeSingle()
   );
+
+// Bulk: financial totals for a set of properties for a year in ONE query.
+// Lets a financials property list load every card's totals at once (no waterfall).
+// Returns a map { [propertyId]: totalsRow } (only properties that have a row).
+export async function listPropertyTotalsByYear(propertyIds, year) {
+  const ids = [...new Set((propertyIds || []).filter(Boolean))];
+  if (ids.length === 0) return {};
+  const all = await rows(
+    supabase.from('v_property_totals').select('*').in('property_id', ids).eq('year', year)
+  );
+  const byProp = {};
+  for (const t of all || []) byProp[t.property_id] = t;
+  return byProp;
+}
 
 export const getTenantShares = (propertyId, year) =>
   rows(

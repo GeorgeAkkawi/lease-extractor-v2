@@ -3,7 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, listProperties, createProperty, listLeases } from '../lib/api';
 import { usePageChrome } from '../context/ChromeContext';
+import { usePrefetchers, leasesByPropertiesQuery } from '../lib/prefetch';
 import { money } from '../lib/format';
+import { CardGridSkeleton } from '../components/Skeleton';
 import { ShieldIcon } from '../components/icons';
 import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
 
@@ -11,15 +13,22 @@ import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
 export default function PropertiesPage() {
   const { corpId } = useParams();
   const qc = useQueryClient();
+  const pf = usePrefetchers();
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [buildingSf, setBuildingSf] = useState('');
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const [insuranceProp, setInsuranceProp] = useState(null);
-  const { data: properties = [], isLoading } = useQuery({
+  const { data: properties = [], isPending } = useQuery({
     queryKey: ['properties', corpId],
     queryFn: () => listProperties(corpId),
+  });
+  // One request loads every card's leases and seeds each ['leases', propId] cache,
+  // so the cards render fully populated in one pass (no per-card waterfall).
+  const { isPending: leasesPending } = useQuery({
+    ...leasesByPropertiesQuery(qc, corpId, properties),
+    enabled: properties.length > 0,
   });
   usePageChrome([{ label: 'Leases', to: '/leases' }, { label: corp?.name || '…' }]);
 
@@ -30,8 +39,11 @@ export default function PropertiesPage() {
       setAddress('');
       setBuildingSf('');
       qc.invalidateQueries({ queryKey: ['properties', corpId] });
+      qc.invalidateQueries({ queryKey: ['corpCounts'] });
     },
   });
+
+  const showSkeleton = isPending || (properties.length > 0 && leasesPending);
 
   return (
     <div>
@@ -50,14 +62,14 @@ export default function PropertiesPage() {
         </div>
       </div>
 
-      {isLoading ? (
-        <p className="muted">Loading…</p>
+      {showSkeleton ? (
+        <CardGridSkeleton className="prop-grid" count={3} height={150} />
       ) : properties.length === 0 ? (
         <p className="muted">No properties yet.</p>
       ) : (
         <div className="prop-grid">
           {properties.map((p) => (
-            <PropCard key={p.id} corpId={corpId} property={p} onInsurance={setInsuranceProp} />
+            <PropCard key={p.id} corpId={corpId} property={p} onInsurance={setInsuranceProp} pf={pf} />
           ))}
         </div>
       )}
@@ -67,8 +79,9 @@ export default function PropertiesPage() {
   );
 }
 
-function PropCard({ corpId, property, onInsurance }) {
+function PropCard({ corpId, property, onInsurance, pf }) {
   const navigate = useNavigate();
+  // Reads the cache seeded by the page's batched fetch — no own network round-trip.
   const { data: leases = [] } = useQuery({
     queryKey: ['leases', property.id],
     queryFn: () => listLeases(property.id),
@@ -79,9 +92,10 @@ function PropCard({ corpId, property, onInsurance }) {
   const occupancy = buildingSf > 0 ? totalSf / buildingSf : 1;
   const go = () => navigate(`/leases/${corpId}/${property.id}`);
   const keyGo = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+  const warm = () => pf.propertyLeases(property.id);
 
   return (
-    <div className="prop-card" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo}>
+    <div className="prop-card" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} onMouseEnter={warm} onFocus={warm}>
       <div className="prop-card-head">
         <strong>{property.name}</strong>
         <button

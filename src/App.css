@@ -426,3 +426,9 @@ textarea.text-input{resize:vertical;min-height:90px}
 /* login */
 .login-wrap{max-width:380px;margin:12vh auto;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:30px;box-shadow:var(--shadow)}
 .login-wrap h1{font-size:34px;margin-bottom:6px}
+
+/* ---- loading skeletons (shimmer placeholders) ---- */
+.skeleton{position:relative;overflow:hidden;background:var(--panel-2);border:1px solid var(--hair)}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);animation:shimmer 1.3s ease-in-out infinite}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+@media (prefers-reduced-motion:reduce){.skeleton::after{animation:none}}

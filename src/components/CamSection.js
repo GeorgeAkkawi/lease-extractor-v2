@@ -21,6 +21,7 @@ export default function CamSection({ propId, year, expense }) {
     qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
     qc.invalidateQueries({ queryKey: ['propertyTotals', propId, year] });
     qc.invalidateQueries({ queryKey: ['tenantShares', propId, year] });
+    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // CAM feeds the corp roll-up
   };
 
   const add = useMutation({

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   getCorporation,
   getProperty,
@@ -25,8 +25,8 @@ export default function PropertyFinancialsPage() {
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
-  const { data: totals } = useQuery({ queryKey: ['propertyTotals', propId, year], queryFn: () => getPropertyTotals(propId, year) });
-  const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year) });
+  const { data: totals } = useQuery({ queryKey: ['propertyTotals', propId, year], queryFn: () => getPropertyTotals(propId, year), placeholderData: keepPreviousData });
+  const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year), placeholderData: keepPreviousData });
   usePageChrome([
     { label: 'Financials', to: '/financials' },
     { label: corp?.name || '…', to: `/financials/${corpId}` },
@@ -177,6 +177,7 @@ function ExpenseForm({ propId, year, expense, qc }) {
       qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
       qc.invalidateQueries({ queryKey: ['propertyTotals', propId, year] });
       qc.invalidateQueries({ queryKey: ['tenantShares', propId, year] });
+      qc.invalidateQueries({ queryKey: ['corpRollups'] }); // expenses feed the corp roll-up
     },
   });
 

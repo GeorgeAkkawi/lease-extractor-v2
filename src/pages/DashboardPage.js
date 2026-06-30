@@ -6,6 +6,7 @@ import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from 
 import { usePageChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
 import NotificationEmailModal from '../components/NotificationEmailModal';
+import { PageSkeleton } from '../components/Skeleton';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 
 // Portfolio overview — the landlord's one-glance home: rent roll, occupancy,
@@ -30,6 +31,10 @@ export default function DashboardPage() {
   });
   const { data: notifications = [] } = useQuery({ queryKey: ['notifications'], queryFn: listNotifications, refetchInterval: 60_000 });
 
+  // Hold the page until the portfolio data is in, so the metrics/tables appear
+  // fully formed rather than counting up from zero on first load.
+  const indexLoading = !index;
+
   async function clearNotification(id) { await dismissNotification(id); qc.invalidateQueries({ queryKey: ['notifications'] }); }
   // Dismiss / snooze persist server-side (alert_states) so they sync across devices.
   async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
@@ -53,6 +58,8 @@ export default function DashboardPage() {
 
   const b = ar?.buckets || {};
   const lateTotal = (b.d30 || 0) + (b.d60 || 0) + (b.d90 || 0);
+
+  if (indexLoading) return <PageSkeleton />;
 
   return (
     <div>

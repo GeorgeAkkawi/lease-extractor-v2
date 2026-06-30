@@ -1,20 +1,30 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, getProperty, listLeases, listEscalations } from '../lib/api';
 import { usePageChrome } from '../context/ChromeContext';
+import { usePrefetchers, escalationsByLeasesQuery } from '../lib/prefetch';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import PropertyTabs from '../components/PropertyTabs';
+import { RowListSkeleton } from '../components/Skeleton';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 import { money, psf, sf, fmtDate } from '../lib/format';
 
 export default function LeasesPage() {
   const { corpId, propId } = useParams();
   const navigate = useNavigate();
+  const qc = useQueryClient();
+  const pf = usePrefetchers();
   const [showBldg, setShowBldg] = useState(false);
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: leases = [], isLoading } = useQuery({ queryKey: ['leases', propId], queryFn: () => listLeases(propId) });
+  // One request loads every row's escalations and seeds each ['escalations', leaseId]
+  // cache, so rows show "next escalation" in one pass (no per-row waterfall).
+  const { isPending: escPending } = useQuery({
+    ...escalationsByLeasesQuery(qc, propId, leases),
+    enabled: leases.length > 0,
+  });
   usePageChrome([
     { label: 'Leases', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
@@ -29,6 +39,8 @@ export default function LeasesPage() {
   const subtitle = prop
     ? `${prop.address ? prop.address + ' · ' : ''}${sf(leasedSf)} leased${buildingSf ? ` of ${Number(buildingSf).toLocaleString()} SF` : ''}${vacant > 0 ? ` · ${Number(vacant).toLocaleString()} SF vacant` : buildingSf ? ' · fully leased' : ''}`
     : '…';
+
+  const showSkeleton = isLoading || (leases.length > 0 && escPending);
 
   return (
     <div>
@@ -56,14 +68,14 @@ export default function LeasesPage() {
         </div>
       )}
 
-      {isLoading ? (
-        <p className="muted">Loading…</p>
+      {showSkeleton ? (
+        <RowListSkeleton className="lease-list" count={3} />
       ) : leases.length === 0 && vacant === 0 ? (
         <p className="muted">No leases yet. Add one to get started.</p>
       ) : (
         <div className="lease-list">
           {leases.map((l) => (
-            <LeaseRow key={l.id} lease={l} onOpen={() => navigate(`/leases/${corpId}/${propId}/${l.id}`)} />
+            <LeaseRow key={l.id} lease={l} pf={pf} onOpen={() => navigate(`/leases/${corpId}/${propId}/${l.id}`)} />
           ))}
           {vacant > 0 && (
             <button className="lease-row empty-slot" onClick={newLease}>
@@ -89,16 +101,18 @@ export default function LeasesPage() {
   );
 }
 
-function LeaseRow({ lease, onOpen }) {
+function LeaseRow({ lease, onOpen, pf }) {
+  // Reads the cache seeded by the page's batched fetch — no own network round-trip.
   const { data: escalations = [] } = useQuery({
     queryKey: ['escalations', lease.id],
     queryFn: () => listEscalations(lease.id),
   });
   const next = nextEscalation(escalations);
   const brPsf = lease.square_footage > 0 ? lease.base_rent / lease.square_footage : null;
+  const warm = () => pf.leaseDetail(lease.id);
 
   return (
-    <button className="lease-row" onClick={onOpen}>
+    <button className="lease-row" onClick={onOpen} onMouseEnter={warm} onFocus={warm}>
       <span className="lease-name">
         <strong>{lease.tenant_name}</strong>
         <span className="muted">{sf(lease.square_footage)}</span>

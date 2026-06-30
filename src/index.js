@@ -8,7 +8,16 @@ import { AuthProvider } from './context/AuthContext';
 import { ChromeProvider } from './context/ChromeContext';
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: false } },
+  defaultOptions: {
+    queries: {
+      // Keep fetched pages warm for the whole session so navigating back is
+      // instant (no "loading" flash). Mutations still call invalidateQueries,
+      // so edits refresh immediately — we only stop needless re-fetches.
+      staleTime: 5 * 60_000,
+      gcTime: Infinity,
+      refetchOnWindowFocus: false,
+    },
+  },
 });
 
 const root = ReactDOM.createRoot(document.getElementById('root'));

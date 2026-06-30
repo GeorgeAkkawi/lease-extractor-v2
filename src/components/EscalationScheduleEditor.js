@@ -22,6 +22,7 @@ export default function EscalationScheduleEditor({ lease }) {
     qc.invalidateQueries({ queryKey: ['propertyTotals'] });
     qc.invalidateQueries({ queryKey: ['tenantShares'] });
     qc.invalidateQueries({ queryKey: ['alerts'] });
+    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // escalations change current rent → corp revenue
   };
 
   const remove = useMutation({

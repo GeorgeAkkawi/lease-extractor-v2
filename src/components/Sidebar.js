@@ -1,11 +1,17 @@
 import { NavLink } from 'react-router-dom';
 import { supabase, DEMO_MODE } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import { useChrome } from '../context/ChromeContext';
+import { usePrefetchers } from '../lib/prefetch';
 import { DocIcon, ChartIcon, ClockIcon, GridIcon, ShieldIcon } from './icons';
 
 export default function Sidebar() {
   const { user } = useAuth();
+  const { year } = useChrome();
+  const pf = usePrefetchers();
   const navClass = ({ isActive }) => 'side-item' + (isActive ? ' active' : '');
+  // Warm a destination's data on hover/focus so the page is already cached on click.
+  const warm = (fn) => ({ onMouseEnter: fn, onFocus: fn });
 
   function resetDemo() {
     if (window.confirm('Reset all demo data?')) {
@@ -21,10 +27,10 @@ export default function Sidebar() {
       </div>
 
       <nav className="side-nav">
-        <NavLink end className={navClass} to="/"><GridIcon /> Overview</NavLink>
-        <NavLink className={navClass} to="/leases"><DocIcon /> Leases</NavLink>
-        <NavLink className={navClass} to="/financials"><ChartIcon /> Financials</NavLink>
-        <NavLink className={navClass} to="/history"><ClockIcon /> History</NavLink>
+        <NavLink end className={navClass} to="/" {...warm(pf.dashboard)}><GridIcon /> Overview</NavLink>
+        <NavLink className={navClass} to="/leases" {...warm(pf.corporations)}><DocIcon /> Leases</NavLink>
+        <NavLink className={navClass} to="/financials" {...warm(() => pf.corporationsFinancials(year))}><ChartIcon /> Financials</NavLink>
+        <NavLink className={navClass} to="/history" {...warm(() => pf.corporationsFinancials(year))}><ClockIcon /> History</NavLink>
       </nav>
 
       <div className="side-foot">

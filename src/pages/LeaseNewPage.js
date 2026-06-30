@@ -27,6 +27,8 @@ export default function LeaseNewPage() {
     qc.invalidateQueries({ queryKey: ['leases', propId] });
     qc.invalidateQueries({ queryKey: ['propertyTotals'] });
     qc.invalidateQueries({ queryKey: ['tenantShares'] });
+    qc.invalidateQueries({ queryKey: ['corpCounts'] });   // tenant count grew
+    qc.invalidateQueries({ queryKey: ['corpRollups'] });  // new rent → corp revenue
     navigate(`/leases/${corpId}/${propId}/${row.id}`);
   };
 

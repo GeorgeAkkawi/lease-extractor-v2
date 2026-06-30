@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listCorporations, createCorporation, getCorpCounts, getCorpRollup } from '../lib/api';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { listCorporations, createCorporation, listCorpCounts, listCorpRollups } from '../lib/api';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
+import { usePrefetchers } from '../lib/prefetch';
 import { money } from '../lib/format';
+import { CardGridSkeleton } from '../components/Skeleton';
 import CorporationProfileModal from '../components/CorporationProfileModal';
 import { BuildingIcon } from '../components/icons';
 
@@ -18,19 +20,34 @@ const SUBS = {
 export default function CorporationsPage({ mode }) {
   usePageChrome([{ label: TITLES[mode] }], mode !== 'leases');
   const qc = useQueryClient();
+  const { year } = useChrome();
+  const pf = usePrefetchers();
+  const fin = mode !== 'leases';
   const [name, setName] = useState('');
   const [editCorp, setEditCorp] = useState(null);
-  const { data: corps = [], isLoading } = useQuery({
-    queryKey: ['corporations'],
-    queryFn: listCorporations,
+
+  const { data: corps = [], isPending } = useQuery({ queryKey: ['corporations'], queryFn: listCorporations });
+  // Batched in one request (replaces the per-card N+1) so every card's counts /
+  // financials are ready before the grid renders — no number pop-in.
+  const { data: counts = {}, isPending: countsPending } = useQuery({ queryKey: ['corpCounts'], queryFn: listCorpCounts });
+  const { data: rollups = {}, isPending: rollupsPending } = useQuery({
+    queryKey: ['corpRollups', year],
+    queryFn: () => listCorpRollups(year),
+    enabled: fin,
+    placeholderData: keepPreviousData, // keep last year's numbers visible while a new year loads
   });
+
   const add = useMutation({
     mutationFn: () => createCorporation(name.trim()),
     onSuccess: () => {
       setName('');
       qc.invalidateQueries({ queryKey: ['corporations'] });
+      qc.invalidateQueries({ queryKey: ['corpCounts'] });
     },
   });
+
+  // Render the grid only once cards can appear fully populated in one pass.
+  const showSkeleton = isPending || (corps.length > 0 && (countsPending || (fin && rollupsPending)));
 
   return (
     <div>
@@ -55,14 +72,14 @@ export default function CorporationsPage({ mode }) {
         </div>
       </div>
 
-      {isLoading ? (
-        <p className="muted">Loading…</p>
+      {showSkeleton ? (
+        <CardGridSkeleton className="corp-grid" count={3} height={fin ? 150 : 92} />
       ) : corps.length === 0 ? (
         <p className="muted">No corporations yet.</p>
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} />
+            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} counts={counts[c.id]} rollup={rollups[c.id]} pf={pf} year={year} />
           ))}
         </div>
       )}
@@ -72,20 +89,16 @@ export default function CorporationsPage({ mode }) {
   );
 }
 
-function CorpCard({ corp, mode, onEdit }) {
+function CorpCard({ corp, mode, onEdit, counts, rollup, pf, year }) {
   const navigate = useNavigate();
-  const { year } = useChrome();
   const fin = mode !== 'leases';
-  const { data: counts } = useQuery({ queryKey: ['corpCounts', corp.id], queryFn: () => getCorpCounts(corp.id) });
-  const { data: rollup } = useQuery({
-    queryKey: ['corpRollup', corp.id, year],
-    queryFn: () => getCorpRollup(corp.id, year),
-    enabled: fin,
-  });
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
   const sub = counts ? `${counts.properties} ${counts.properties === 1 ? 'property' : 'properties'} · ${counts.tenants} ${counts.tenants === 1 ? 'tenant' : 'tenants'}` : '…';
   const go = () => navigate(`/${mode}/${corp.id}`);
   const keyGo = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+  // Warm the next page on hover/focus so the click lands on already-cached data.
+  const warm = fin ? () => pf.corpFinancials(corp.id, year) : () => pf.corpLeases(corp.id);
+  const hover = { onMouseEnter: warm, onFocus: warm };
   const editBtn = (
     <button
       className="corp-edit"
@@ -98,7 +111,7 @@ function CorpCard({ corp, mode, onEdit }) {
 
   if (fin) {
     return (
-      <div className="corp-card fin" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo}>
+      <div className="corp-card fin" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} {...hover}>
         <span className="corp-head">
           <span className="corp-badge">{initials}</span>
           <span className="corp-info"><strong>{corp.name}</strong><span className="muted">{sub}</span></span>
@@ -114,7 +127,7 @@ function CorpCard({ corp, mode, onEdit }) {
   }
 
   return (
-    <div className="corp-card" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo}>
+    <div className="corp-card" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} {...hover}>
       <span className="corp-badge">{initials}</span>
       <span className="corp-info"><strong>{corp.name}</strong><span className="muted">{sub}</span></span>
       {editBtn}

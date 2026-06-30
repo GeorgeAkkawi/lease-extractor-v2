@@ -15,6 +15,7 @@ import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
 import EmailComposeModal from '../components/EmailComposeModal';
 import { buildInsuranceRequestEmail } from '../lib/emailTemplates';
 import { currentTermLabel } from '../lib/leaseTerm';
+import { PageSkeleton } from '../components/Skeleton';
 import { sf, pct, psf, money, fmtDate } from '../lib/format';
 
 export default function LeaseDetailPage() {
@@ -52,6 +53,7 @@ export default function LeaseDetailPage() {
     qc.invalidateQueries({ queryKey: ['leases', propId] });
     qc.invalidateQueries({ queryKey: ['propertyTotals'] });
     qc.invalidateQueries({ queryKey: ['tenantShares'] });
+    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // rent changes affect the corp revenue roll-up
   };
 
   // Save one field; clear its AI review flag (set conf to 1) when present.
@@ -95,7 +97,7 @@ export default function LeaseDetailPage() {
     }
   }, [insReq, corp, lease]);
 
-  if (isLoading || !lease) return <p className="muted">Loading…</p>;
+  if (isLoading || !lease) return <PageSkeleton />;
 
   const conf = (f) => lease.ai_confidence?.[f];
   const commit = (field) => (raw) => {
@@ -331,6 +333,7 @@ export default function LeaseDetailPage() {
             qc.invalidateQueries({ queryKey: ['expiredLeases'] });
             qc.invalidateQueries({ queryKey: ['alerts'] });
             qc.invalidateQueries({ queryKey: ['snapshots'] });
+            qc.invalidateQueries({ queryKey: ['corpCounts'] }); // tenant count dropped
             navigate(`/leases/${corpId}/${propId}`);
           }}
         />
