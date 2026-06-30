@@ -71,6 +71,16 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-06-30** — Lease rent accuracy + review-form alignment. Deployed: `extract-lease` edge
+  function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `fe17b9e1`.
+  - Rent was off by cents and step-ups were wrong because the model did the arithmetic. The
+    isolated supplement call now reads the whole **rent_schedule** (one row per period: raw amount
+    + basis + effective date) and `annualRentFrom()` computes every annual figure in code, to the
+    **cent** — base rent = earliest period, later periods become the (manual) escalations. Main
+    lease `SCHEMA` still untouched; supplement stays non-fatal. (`supabase/functions/extract-lease/index.ts`)
+  - `src/components/LeaseForm.js` — field labels reserve a constant height so the AI confidence
+    badge no longer pushes a field's input box below its un-badged neighbours.
+
 - **2026-06-30** — Two tenant emails + contact/email extraction. Deployed: DB migration `0033`,
   `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `692cbb61`.
   - A lease can now hold **two** emails (primary + secondary). Anywhere a tenant email is sent —
