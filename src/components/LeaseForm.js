@@ -62,7 +62,7 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
         <Field label="Lease termination" field="lease_termination_date" extracted={extracted}>
           <input className="text-input" type="date" value={form.lease_termination_date || ''} onChange={set('lease_termination_date')} />
         </Field>
-        <Field label="Tax/CAM share override (%) — blank = pro-rata by SF" field="share_override_pct" extracted={extracted}>
+        <Field label="Tax/CAM share override (%)" field="share_override_pct" extracted={extracted} hint="Blank = pro-rata by SF">
           <input className="text-input num" type="number" step="any" placeholder="auto (pro-rata)" value={form.share_override_pct} onChange={set('share_override_pct')} />
         </Field>
       </div>
@@ -75,17 +75,20 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
   );
 }
 
-function Field({ label, field, extracted, children }) {
+function Field({ label, field, extracted, hint, children }) {
   const meta = extracted?.[field];
   return (
     <div className="form-field" style={{ maxWidth: '100%', marginBottom: 0 }}>
       {/* Reserve a constant label-row height so the AI badge (taller than the label
-          text) never bumps this field's input box below its un-badged neighbours. */}
+          text) never bumps this field's input box below its un-badged neighbours.
+          Keep labels short (one line) for the same reason — long explanations go in
+          `hint` below the input, not in the label. */}
       <span style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 20 }}>
         {label}
         {meta && <ConfidenceBadge meta={meta} />}
       </span>
       {children}
+      {hint && <span className="field-note">{hint}</span>}
       {meta?.source_quote && (
         <span className="muted" style={{ fontSize: 11, textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
           📄 “{meta.source_quote}”{meta.page != null ? ` (p.${meta.page})` : ''}

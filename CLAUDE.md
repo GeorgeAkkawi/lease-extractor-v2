@@ -80,6 +80,10 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
     lease `SCHEMA` still untouched; supplement stays non-fatal. (`supabase/functions/extract-lease/index.ts`)
   - `src/components/LeaseForm.js` — field labels reserve a constant height so the AI confidence
     badge no longer pushes a field's input box below its un-badged neighbours.
+  - Follow-up (frontend Cloudflare version `fdd9685b`): shortened the long "Tax/CAM share override
+    (%) — blank = pro-rata by SF" label (it wrapped and misaligned its box) to just "Tax/CAM share
+    override (%)" and moved "Blank = pro-rata by SF" into a `hint` note under the input; `Field` now
+    takes an optional `hint` prop.
 
 - **2026-06-30** — Two tenant emails + contact/email extraction. Deployed: DB migration `0033`,
   `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `692cbb61`.
