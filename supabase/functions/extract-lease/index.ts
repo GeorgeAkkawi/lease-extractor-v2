@@ -113,44 +113,69 @@ const SYSTEM_FIELDS =
   'Set notice_by_date ONLY if the document states an explicit written-notice deadline — ' +
   'otherwise null; never invent one.';
 
-// Contact person + tenant emails live in their OWN tiny schema, extracted by a
-// SEPARATE, non-fatal call (below). Kept off the main SCHEMA on purpose: that schema
-// already sits at Anthropic's structured-output complexity ceiling, and folding three
-// more fields in there tipped the compiled grammar over an internal limit and 500'd
-// every extraction. Three nullable string fields here is well within limits, and a
-// failure of this call leaves the main lease extraction untouched.
-const CONTACT_SCHEMA = {
+// A SEPARATE, non-fatal "supplement" call with its OWN tiny schema, kept off the main
+// SCHEMA on purpose (that schema sits at Anthropic's structured-output complexity
+// ceiling — folding fields in there 500'd every extraction). It carries two things:
+//   1) the tenant contact + up to two emails, and
+//   2) the STARTING base rent exactly as written + how it's expressed, so WE convert it
+//      to an annual figure in code. The main prompt asks the model to multiply
+//      ($/mo×12, $/sf×sf) — models read reliably but multiply unreliably, so the annual
+//      rent drifted "a bit". Here the model only reads + classifies; annualRentFrom()
+//      does the arithmetic. Falls back to the model's own figure when the basis is
+//      'unknown'. A failure of this call leaves the main lease extraction untouched.
+const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2'],
+  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'base_rent_amount', 'base_rent_period'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
     tenant_email_2: field(['string']),
+    base_rent_amount: { type: ['number', 'null'] },   // the starting rent AS WRITTEN — no math
+    base_rent_period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
   },
 };
 
-const CONTACT_SYSTEM =
-  'From the attached commercial lease, extract ONLY the tenant\'s contact person and ' +
-  'email addresses. tenant_contact_name = the human who represents the TENANT (the ' +
-  'signer, owner, or named point of contact, e.g. "Dana Lee") — NOT the business name, ' +
-  'NOT the landlord. Capture up to TWO tenant-side email addresses: the tenant\'s main / ' +
-  'billing email as tenant_email (the primary), and a second tenant-side email (e.g. the ' +
-  'contact person\'s) as tenant_email_2. ONLY extract emails belonging to the TENANT side ' +
-  '(the business or its contact person) — NEVER the landlord\'s / lessor\'s / property ' +
-  'manager\'s own email. For each field give a confidence (0–1), the exact source_quote, ' +
-  'and the page. When a value is not found set value to null, confidence 0, source_quote ' +
-  'to "", and page to 1.';
+const SUPPLEMENT_SYSTEM =
+  'From the attached commercial lease, extract the tenant\'s contact and starting rent. ' +
+  'tenant_contact_name = the human who represents the TENANT (the signer, owner, or named ' +
+  'point of contact, e.g. "Dana Lee") — NOT the business name, NOT the landlord. Capture up ' +
+  'to TWO tenant-side email addresses: the tenant\'s main / billing email as tenant_email ' +
+  '(primary), and a second tenant-side email (e.g. the contact person\'s) as tenant_email_2. ' +
+  'ONLY extract emails belonging to the TENANT side — NEVER the landlord\'s / lessor\'s / ' +
+  'property manager\'s own email. For each string field give a confidence (0–1), the exact ' +
+  'source_quote, and the page; when not found set value null, confidence 0, source_quote "", page 1.\n\n' +
+  'RENT — READ IT, DON\'T DO MATH. base_rent_amount = the tenant\'s STARTING base rent for the ' +
+  'FIRST period of the term (before any step-ups), the raw number EXACTLY as written — do NOT ' +
+  'multiply, annualize, or convert it. base_rent_period = how that number is expressed: ' +
+  '"per_month" (a monthly rent), "per_year" (an annual rent), "per_sqft_year" (a rate per ' +
+  'square foot per YEAR, e.g. "$20.00/SF" or "$20 PSF"), "per_sqft_month" (a rate per square ' +
+  'foot per MONTH), or "unknown" if you cannot tell. We do all the multiplication ourselves. ' +
+  'If no rent is stated, base_rent_amount = null and base_rent_period = "unknown".';
 
-// Best-effort tenant contact + emails. Runs as its OWN call so it can never bloat the
-// main lease schema or fail the whole extraction — returns null on ANY error and the
-// caller simply leaves the contact fields blank.
-async function extractContacts(content: Block[]): Promise<Record<string, unknown> | null> {
+// Best-effort supplement. Runs as its OWN call so it can never bloat the main lease
+// schema or fail the whole extraction — returns null on ANY error.
+async function extractSupplement(content: Block[]): Promise<Record<string, any> | null> {
   try {
-    return await callClaude({ model: MODEL, system: CONTACT_SYSTEM, maxTokens: 1024, schema: CONTACT_SCHEMA, content });
+    return await callClaude({ model: MODEL, system: SUPPLEMENT_SYSTEM, maxTokens: 1024, schema: SUPPLEMENT_SCHEMA, content });
   } catch (e) {
-    console.error('[extract-lease] contact extraction failed (non-fatal):', e instanceof Error ? e.message : String(e));
+    console.error('[extract-lease] supplement extraction failed (non-fatal):', e instanceof Error ? e.message : String(e));
     return null;
+  }
+}
+
+// Deterministic annual base rent from the raw figure + its basis (code does the math the
+// model used to do). Returns null for an unusable amount or an 'unknown'/PSF-without-SF
+// basis, so the caller keeps the model's own figure.
+function annualRentFrom(amount: unknown, period: unknown, sqft: number): number | null {
+  const a = typeof amount === 'number' ? amount : Number(amount);
+  if (!a || !isFinite(a) || a <= 0) return null;
+  switch (period) {
+    case 'per_month': return Math.round(a * 12);
+    case 'per_year': return Math.round(a);
+    case 'per_sqft_year': return sqft > 0 ? Math.round(a * sqft) : null;
+    case 'per_sqft_month': return sqft > 0 ? Math.round(a * sqft * 12) : null;
+    default: return null;
   }
 }
 
@@ -244,10 +269,21 @@ Deno.serve(async (req) => {
 
     const parsed = await callClaude({ model: MODEL, system, maxTokens, schema, content });
 
-    // Tenant contact + emails via a separate, non-fatal call (its own tiny schema).
-    // If it fails, the lease still returns with these fields simply absent/blank.
-    const contacts = await extractContacts(content);
-    if (contacts) Object.assign(parsed, contacts);
+    // Supplement (contact + emails + raw rent basis) via a separate, non-fatal call.
+    // If it fails, the lease still returns; contacts stay blank and base_rent keeps the
+    // model's own figure.
+    const supp = await extractSupplement(content);
+    if (supp) {
+      for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2']) {
+        if (supp[k]) (parsed as any)[k] = supp[k];
+      }
+      // Recompute the headline base rent deterministically (no more model arithmetic).
+      const sqft = Number((parsed as any)?.square_footage?.value) || 0;
+      const annual = annualRentFrom(supp.base_rent_amount, supp.base_rent_period, sqft);
+      if (annual != null && (parsed as any)?.base_rent) {
+        (parsed as any).base_rent.value = annual;
+      }
+    }
 
     // Scans have no free text layer — transcribe the document in a separate,
     // best-effort call (non-fatal) so later Q&A still has the full text.
