@@ -102,12 +102,13 @@ export function buildAlerts({ leases, escalations, renewals, properties, insuran
     const leaseId = isLandlord ? null : p.lease_id;
     const corpId = propMap[propertyId]?.corporation_id;
     const who = isLandlord ? (propMap[propertyId]?.name || 'building') : (leaseById[p.lease_id]?.tenant_name || 'tenant');
+    const expired = b.key === 'overdue';
     out.push({
       lease_id: leaseId, property_id: propertyId, corporation_id: corpId,
       focus: 'insurance', tone: b.tone, bucketLabel: b.label,
       date: p.expiry_date, days: daysUntil(p.expiry_date, now),
-      title: isLandlord ? `Landlord insurance expiring — ${who}` : `Tenant insurance expiring — ${who}`,
-      detail: `${p.insurer ? p.insurer + ' · ' : ''}expires ${fmtDate(p.expiry_date)}`,
+      title: `${isLandlord ? 'Landlord' : 'Tenant'} insurance ${expired ? 'expired' : 'expiring'} — ${who}`,
+      detail: `${p.insurer ? p.insurer + ' · ' : ''}${expired ? 'expired' : 'expires'} ${fmtDate(p.expiry_date)}`,
     });
   });
 

@@ -222,6 +222,7 @@ const storage = {
     return {
       async upload() { return ok({ path: 'demo/upload' }); },
       async download() { return ok(new Blob([])); },
+      async createSignedUrl() { return ok({ signedUrl: '#demo-document' }); },
     };
   },
 };
@@ -334,7 +335,7 @@ function findLeaseProp(leaseId) {
 function demoAskDoc(body) {
   const doc = (body?.text || '').trim();
   const q = (body?.question || '').toLowerCase();
-  const tail = '\n\n(Demo mode gives canned answers. Connected to your API key, the AI reads the full document and answers precisely — and cheaply, since the text is cached.)';
+  const tail = '\n\n(Demo mode gives canned answers. Connected to your API key, the AI reads the full document and answers precisely.)';
   if (!doc) return { answer: 'No document text is on file yet. Add the document above, then I can answer questions about it.' };
   const line = (re) => doc.split('\n').find((ln) => re.test(ln));
   if (/(additional insured|additionally insured|named insured)/.test(q)) return { answer: (line(/additional insured/i) || 'The document does not appear to mention an additional-insured endorsement.') + tail };
@@ -421,7 +422,7 @@ function demoAskLease(body) {
   const doc = ((lease && lease.lease_text) || body?.lease_text || '').trim();
   const q = (body?.question || '').toLowerCase();
   const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US');
-  const tail = '\n\n(Demo mode gives canned answers. Connected to your API key, the AI reads the full lease text and answers precisely — and cheaply, since the text is cached.)';
+  const tail = '\n\n(Demo mode gives canned answers. Connected to your API key, the AI reads the full lease text and answers precisely.)';
 
   if (!doc && !(lease && lease.lease_terms)) {
     return { answer: "There's no lease document on file for this tenant yet. Upload or paste the lease text on this page, then I can answer questions about it." };

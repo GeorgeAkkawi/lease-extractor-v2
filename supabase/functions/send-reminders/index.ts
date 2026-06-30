@@ -125,7 +125,43 @@ Deno.serve(async (req) => {
       processed++;
     }
 
-    return json({ processed });
+    // --- Insurance expiry reminders (email the owner) ----------------------
+    // The dashboard already surfaces these in-app (buildAlerts); here we add the
+    // email. Recipients are always the landlord/owner, so there's no tenant-domain
+    // concern. Dedupe per policy with expiry_notice_bucket so each threshold
+    // (1m → 2w → 1w → expired) emails at most once; saveInsurance resets it when
+    // the expiry date changes.
+    let insuranceProcessed = 0;
+    const { data: policies, error: insErr } = await supabase
+      .from('insurance_policies')
+      .select('id, owner_id, party, insurer, expiry_date, expiry_notice_bucket, properties(name), leases(tenant_name)')
+      .not('expiry_date', 'is', null)
+      .is('archived_at', null);
+    if (insErr) {
+      await logEvent('api_error', 'insurance query failed', ip);
+    } else {
+      const now = new Date();
+      for (const p of (policies ?? []) as any[]) {
+        const eb = expiryBucket(p.expiry_date, now);
+        if (!eb || eb === p.expiry_notice_bucket) continue; // outside a window, or already sent for it
+        if (!RESEND_API_KEY) { await logEvent('reminder_skipped', `insurance ${p.id} not emailed — RESEND_API_KEY unset`, ip); continue; }
+        const email = await resolveEmail(p.owner_id, emailCache);
+        if (!email) { await logEvent('reminder_skipped', `insurance ${p.id} not emailed — no owner address`, ip); continue; }
+
+        const who = p.party === 'landlord' ? (p.properties?.name || 'a building') : (p.leases?.tenant_name || 'a tenant');
+        const kind = p.party === 'landlord' ? 'Building insurance' : 'Tenant insurance';
+        const expired = eb === 'expired';
+        const subject = `${kind} ${expired ? 'expired' : 'expiring soon'} — ${who}`;
+        const text = `${kind} for ${who} ${expired ? 'expired on' : 'expires on'} ${p.expiry_date}.${p.insurer ? ` Insurer: ${p.insurer}.` : ''}`;
+
+        const delivered = await sendEmail(email, subject, text);
+        if (!delivered) { await logEvent('reminder_failed', `Resend send failed for insurance ${p.id}`, ip); continue; }
+        await supabase.from('insurance_policies').update({ expiry_notice_bucket: eb }).eq('id', p.id);
+        insuranceProcessed++;
+      }
+    }
+
+    return json({ processed, insurance: insuranceProcessed });
   } catch (e) {
     console.error('[send-reminders] unhandled error:', e);
     await logEvent('api_error', String((e as any)?.message ?? e), ip);
@@ -157,6 +193,17 @@ async function sendEmail(to: string, subject: string, text: string): Promise<boo
   } catch (_) {
     return false;
   }
+}
+
+// Bucket a policy by days-to-expiry, matching the dashboard alert thresholds.
+// Returns null when expiry is more than a month out (no email yet).
+function expiryBucket(expiry: string, now: Date): string | null {
+  const days = Math.round((new Date(expiry + 'T12:00:00').getTime() - now.getTime()) / 86400000);
+  if (days < 0) return 'expired';
+  if (days <= 7) return '1w';
+  if (days <= 14) return '2w';
+  if (days <= 31) return '1m';
+  return null;
 }
 
 function json(obj: unknown, status = 200) {

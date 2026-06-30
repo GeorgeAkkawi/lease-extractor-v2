@@ -11,7 +11,6 @@ import InvoicesPanel from '../components/InvoicesPanel';
 import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
 import InsuranceVault from '../components/InsuranceVault';
-import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
 import EmailComposeModal from '../components/EmailComposeModal';
 import { buildInsuranceRequestEmail } from '../lib/emailTemplates';
 import { currentTermLabel } from '../lib/leaseTerm';
@@ -34,7 +33,6 @@ export default function LeaseDetailPage() {
   const insReqOpened = useRef(false);
   const [flash, setFlash] = useState(null);
   const [showRemove, setShowRemove] = useState(false);
-  const [showLandlordIns, setShowLandlordIns] = useState(false);
   const [showInsReq, setShowInsReq] = useState(false);
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
@@ -291,7 +289,6 @@ export default function LeaseDetailPage() {
           <strong>Insurance</strong>
           <div className="row" style={{ gap: 10 }}>
             <button type="button" className="ghost" onClick={() => setShowInsReq(true)}>Request from tenant</button>
-            {prop && <button type="button" className="ghost" onClick={() => setShowLandlordIns(true)}>View landlord building policy</button>}
           </div>
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
@@ -300,8 +297,6 @@ export default function LeaseDetailPage() {
         </p>
         <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} />
       </div>
-
-      {showLandlordIns && prop && <PropertyInsuranceModal property={prop} onClose={() => setShowLandlordIns(false)} />}
 
       {showInsReq && (() => {
         const email = buildInsuranceRequestEmail({

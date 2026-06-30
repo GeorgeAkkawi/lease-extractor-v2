@@ -12,7 +12,7 @@ export default function PropertyInsuranceModal({ property, onClose }) {
         <div className="modal-body">
           <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
             The building's insurance policy for this property. Add it once, then ask anything about
-            coverage, additional insured, or expiry — it shows inside every lease at this property too.
+            coverage, additional insured, or expiry.
           </p>
           <InsuranceVault party="landlord" propertyId={property.id} />
         </div>

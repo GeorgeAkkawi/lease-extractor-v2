@@ -435,20 +435,63 @@ export async function extractContract({ text, storagePath, name }) {
 }
 
 // ---- Insurance policies (landlord per-property, tenant per-lease) -----------
+// Only the ACTIVE policy (archived_at is null) is the current one shown on the
+// card and used for expiry alerts. Removed policies are either archived (kept for
+// the "expired items in history" list) or hard-deleted.
 export const getPropertyInsurance = (propertyId) =>
-  one(supabase.from('insurance_policies').select('*').eq('property_id', propertyId).eq('party', 'landlord').maybeSingle());
+  one(supabase.from('insurance_policies').select('*').eq('property_id', propertyId).eq('party', 'landlord').is('archived_at', null).maybeSingle());
 
 export const getTenantInsurance = (leaseId) =>
-  one(supabase.from('insurance_policies').select('*').eq('lease_id', leaseId).eq('party', 'tenant').maybeSingle());
+  one(supabase.from('insurance_policies').select('*').eq('lease_id', leaseId).eq('party', 'tenant').is('archived_at', null).maybeSingle());
 
-// Insert-or-update the single policy row for this scope (one landlord policy per
-// property, one tenant policy per lease).
+// Insert-or-update the active policy row for this scope. Changing the expiry date
+// clears expiry_notice_bucket so the reminder emails re-arm for the new date.
 export async function saveInsurance({ party, propertyId, leaseId, ...fields }) {
   const uid = await ownerId();
   const existing = party === 'landlord' ? await getPropertyInsurance(propertyId) : await getTenantInsurance(leaseId);
   const payload = { party, property_id: propertyId ?? null, lease_id: leaseId ?? null, ...fields };
+  if (existing && 'expiry_date' in fields && fields.expiry_date !== existing.expiry_date) {
+    payload.expiry_notice_bucket = null;
+  }
   if (existing) return one(supabase.from('insurance_policies').update(payload).eq('id', existing.id).select().single());
   return one(supabase.from('insurance_policies').insert({ ...payload, owner_id: uid }).select().single());
+}
+
+// History: archived (removed-but-kept) policies for one scope, newest first.
+export const listArchivedInsurance = ({ party, propertyId, leaseId }) => {
+  let q = supabase.from('insurance_policies').select('*').eq('party', party).not('archived_at', 'is', null);
+  q = party === 'landlord' ? q.eq('property_id', propertyId) : q.eq('lease_id', leaseId);
+  return rows(q.order('archived_at', { ascending: false }));
+};
+
+// Remove policy → "Save to history": keep the row + its documents, just archive it.
+export const archiveInsurance = (id) =>
+  one(supabase.from('insurance_policies').update({ archived_at: new Date().toISOString() }).eq('id', id).select().single());
+
+// Remove policy → "Delete permanently": drop the row (its documents cascade).
+export const deleteInsurance = (id) =>
+  rows(supabase.from('insurance_policies').delete().eq('id', id));
+
+// ---- Extra documents attached to a policy (renewals, premium notices, any PDF)
+export const listInsuranceDocuments = (policyId) =>
+  rows(supabase.from('insurance_documents').select('*').eq('policy_id', policyId).order('created_at'));
+
+export async function addInsuranceDocument({ policyId, label, file, note }) {
+  const storage_path = file ? await uploadDoc(file) : null;
+  return one(supabase.from('insurance_documents')
+    .insert({ owner_id: await ownerId(), policy_id: policyId, label, storage_path, note: note || null })
+    .select().single());
+}
+
+export const removeInsuranceDocument = (id) =>
+  rows(supabase.from('insurance_documents').delete().eq('id', id));
+
+// Short-lived signed URL to open a stored document (the lease-documents bucket is private).
+export async function signDocUrl(storagePath) {
+  if (!storagePath) return null;
+  const { data, error } = await supabase.storage.from('lease-documents').createSignedUrl(storagePath, 120);
+  if (error) throw error;
+  return data?.signedUrl ?? null;
 }
 
 // ---- Service contracts (per property; standing maintenance agreements) ------
@@ -873,7 +916,7 @@ export async function fetchAlertData() {
     supabase.from('rent_escalations').select('lease_id,effective_date,status'),
     supabase.from('renewal_options').select('lease_id,notice_by_date,status'),
     supabase.from('properties').select('id,name,corporation_id'),
-    supabase.from('insurance_policies').select('party,property_id,lease_id,insurer,expiry_date'),
+    supabase.from('insurance_policies').select('party,property_id,lease_id,insurer,expiry_date').is('archived_at', null),
   ]);
   return {
     leases: leasesR.data || [],
