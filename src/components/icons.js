@@ -30,3 +30,11 @@ export const SparkIcon = () => (
 export const ShieldIcon = () => (
   <svg {...base}><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" /><path d="M9 12l2 2 4-4" /></svg>
 );
+// Chevron — collapse/expand the sidebar (rotated 180° when collapsed).
+export const ChevronLeftIcon = () => (
+  <svg {...base}><path d="M15 6l-6 6 6 6" /></svg>
+);
+// Sign out — box with an arrow leaving to the right.
+export const SignOutIcon = () => (
+  <svg {...base}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></svg>
+);
