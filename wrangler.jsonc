@@ -2,8 +2,11 @@
   // Static-site config for Cloudflare's "Workers" deploy flow (npx wrangler deploy).
   // The build command (npm run build) produces ./build; this uploads it as static
   // assets and serves index.html for any unmatched route so the React SPA's
-  // client-side routes work.
-  "name": "my-dashboard",
+  // client-side routes work. SPA fallback is handled by not_found_handling below
+  // (NOT a _redirects file — Cloudflare's Workers assets reject a catch-all
+  // /* -> /index.html rule as an infinite loop).
+  // Name must match the Cloudflare project ("amlak") or CI overrides it + warns.
+  "name": "amlak",
   "compatibility_date": "2025-06-01",
   "assets": {
     "directory": "./build",
