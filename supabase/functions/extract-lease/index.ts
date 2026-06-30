@@ -113,6 +113,47 @@ const SYSTEM_FIELDS =
   'Set notice_by_date ONLY if the document states an explicit written-notice deadline — ' +
   'otherwise null; never invent one.';
 
+// Contact person + tenant emails live in their OWN tiny schema, extracted by a
+// SEPARATE, non-fatal call (below). Kept off the main SCHEMA on purpose: that schema
+// already sits at Anthropic's structured-output complexity ceiling, and folding three
+// more fields in there tipped the compiled grammar over an internal limit and 500'd
+// every extraction. Three nullable string fields here is well within limits, and a
+// failure of this call leaves the main lease extraction untouched.
+const CONTACT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2'],
+  properties: {
+    tenant_contact_name: field(['string']),
+    tenant_email: field(['string']),
+    tenant_email_2: field(['string']),
+  },
+};
+
+const CONTACT_SYSTEM =
+  'From the attached commercial lease, extract ONLY the tenant\'s contact person and ' +
+  'email addresses. tenant_contact_name = the human who represents the TENANT (the ' +
+  'signer, owner, or named point of contact, e.g. "Dana Lee") — NOT the business name, ' +
+  'NOT the landlord. Capture up to TWO tenant-side email addresses: the tenant\'s main / ' +
+  'billing email as tenant_email (the primary), and a second tenant-side email (e.g. the ' +
+  'contact person\'s) as tenant_email_2. ONLY extract emails belonging to the TENANT side ' +
+  '(the business or its contact person) — NEVER the landlord\'s / lessor\'s / property ' +
+  'manager\'s own email. For each field give a confidence (0–1), the exact source_quote, ' +
+  'and the page. When a value is not found set value to null, confidence 0, source_quote ' +
+  'to "", and page to 1.';
+
+// Best-effort tenant contact + emails. Runs as its OWN call so it can never bloat the
+// main lease schema or fail the whole extraction — returns null on ANY error and the
+// caller simply leaves the contact fields blank.
+async function extractContacts(content: Block[]): Promise<Record<string, unknown> | null> {
+  try {
+    return await callClaude({ model: MODEL, system: CONTACT_SYSTEM, maxTokens: 1024, schema: CONTACT_SCHEMA, content });
+  } catch (e) {
+    console.error('[extract-lease] contact extraction failed (non-fatal):', e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflight();
   try {
@@ -202,6 +243,11 @@ Deno.serve(async (req) => {
     }
 
     const parsed = await callClaude({ model: MODEL, system, maxTokens, schema, content });
+
+    // Tenant contact + emails via a separate, non-fatal call (its own tiny schema).
+    // If it fails, the lease still returns with these fields simply absent/blank.
+    const contacts = await extractContacts(content);
+    if (contacts) Object.assign(parsed, contacts);
 
     // Scans have no free text layer — transcribe the document in a separate,
     // best-effort call (non-fatal) so later Q&A still has the full text.
