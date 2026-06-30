@@ -1,0 +1,12 @@
+{
+  // Static-site config for Cloudflare's "Workers" deploy flow (npx wrangler deploy).
+  // The build command (npm run build) produces ./build; this uploads it as static
+  // assets and serves index.html for any unmatched route so the React SPA's
+  // client-side routes work.
+  "name": "my-dashboard",
+  "compatibility_date": "2025-06-01",
+  "assets": {
+    "directory": "./build",
+    "not_found_handling": "single-page-application"
+  }
+}
