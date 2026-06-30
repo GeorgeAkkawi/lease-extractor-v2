@@ -61,7 +61,7 @@ export default function LeaseUpload({ onExtracted }) {
             PDF, Word (.docx), scan, photo, or handwritten. AI fills the fields with confidence scores and source clauses — you review before saving.
           </div>
           <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
-            For the most complete extraction, Word docs and PDFs work best — scans and photos work too, just with a little less detail.
+            Tip: Word docs and PDFs give the fastest, most accurate read — scans and photos work great too.
           </div>
           {/* Native file input (the browser's own picker) inside a drop zone so a
               file can be chosen by click OR dragged straight in. */}
