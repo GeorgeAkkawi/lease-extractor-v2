@@ -52,41 +52,45 @@ export function buildInvoice(facts) {
   const biz = facts.business || {};
   const invNo = `INV-${facts.year}-${(facts.tenant || 'TEN').replace(/\W+/g, '').slice(0, 4).toUpperCase()}`;
   const bizContact = [biz.contact_email, biz.contact_phone].filter(Boolean).join(' · ');
+  const W = divider.length; // full invoice width, matches the table
 
   const L = [];
+
+  // Letterhead: sending corporation, then a full-width rule.
   if (biz.company_name) L.push(biz.company_name);
   if (biz.address) L.push(biz.address);
   if (bizContact) L.push(bizContact);
-  if (L.length) L.push('');
+  if (L.length) L.push(divider);
 
-  L.push(`INVOICE  ·  ${invNo}`);
-  L.push(`Invoice date: ${fmtDate(facts.today)}    Due: ${fmtDate(facts.due)} (Net 30)`);
+  // Invoice number right-aligned beside the heading, then dates on aligned lines.
+  L.push('INVOICE'.padEnd(Math.max(8, W - invNo.length)) + invNo);
+  L.push('Invoice date:'.padEnd(15) + fmtDate(facts.today));
+  L.push('Payment due:'.padEnd(15) + fmtDate(facts.due) + '  (Net 30)');
   L.push('');
-  L.push('BILL TO:');
-  if (facts.tenant_contact_name) L.push(facts.tenant_contact_name);
-  L.push(facts.tenant || 'Tenant');
-  if (facts.property) L.push(`Premises: ${facts.property}${facts.property_address ? `, ${facts.property_address}` : ''}`);
+
+  L.push('BILL TO');
+  L.push([facts.tenant_contact_name, facts.tenant].filter(Boolean).join(' — ') || 'Tenant');
   if (facts.tenant_email) L.push(facts.tenant_email);
-  L.push('');
+  if (facts.property) {
+    const premises = `${facts.property}${facts.property_address ? `, ${facts.property_address}` : ''}`;
+    L.push(`Premises: ${premises}${sf ? ` (${sf.toLocaleString('en-US')} SF)` : ''}`);
+  }
+  L.push(divider);
 
-  L.push(`AMOUNT DUE:  ${usd(total.m)} per month   ·   ${usd(total.a)} per year`);
-  L.push('');
-
-  L.push(`ITEMIZED CHARGES — ${facts.year}`);
-  L.push(''.padEnd(LW) + cell('Monthly') + cell('Annual') + cell('$/SF/mo') + cell('$/SF/yr'));
+  // Itemized charges — kept at full detail (monthly / annual / $ per SF).
+  L.push('CHARGE'.padEnd(LW) + cell('MONTHLY') + cell('ANNUAL') + cell('$/SF/MO') + cell('$/SF/YR'));
   L.push(divider);
   items.forEach((it) => L.push(line(it.label, it.v)));
   L.push(divider);
-  L.push(line('TOTAL', total));
+  L.push(line('AMOUNT DUE', total));
+  L.push(divider);
   L.push('');
 
-  L.push('Notes');
-  L.push(`• Property tax lags by a year — the ${facts.tax_year} assessed tax is billed on this ${facts.year} invoice (taxes are billed in arrears).`);
-  L.push(`• CAM is an estimate based on ${facts.tax_year} actuals and is reconciled at year-end.`);
-  L.push('');
-
-  L.push(`Payment terms: Net 30. Please remit one combined payment of ${usd(total.m)} per month`);
-  L.push(`to ${biz.company_name || 'our office'}${biz.contact_email ? `, or contact ${biz.contact_email}` : ''} with any questions. Thank you.`);
+  // Remittance.
+  const remitTo = biz.company_name || 'our office';
+  const stop = /[.!?]$/.test(remitTo) ? '' : '.'; // avoid "Inc.." when the name already ends in a period
+  const ask = biz.contact_email ? ` Questions? ${biz.contact_email}.` : '';
+  L.push(`Please remit ${usd(total.m)}/month to ${remitTo}${stop}${ask} Thank you.`);
 
   return L.join('\n');
 }

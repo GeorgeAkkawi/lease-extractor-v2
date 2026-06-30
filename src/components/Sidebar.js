@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { supabase, DEMO_MODE } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { useChrome } from '../context/ChromeContext';
@@ -9,6 +10,14 @@ export default function Sidebar() {
   const { user } = useAuth();
   const { year } = useChrome();
   const pf = usePrefetchers();
+  const queryClient = useQueryClient();
+
+  // Drop the cached data immediately so no rows linger on screen while signing
+  // out; the auth-change handler also clears, this just makes it instant.
+  async function signOut() {
+    queryClient.clear();
+    await supabase.auth.signOut();
+  }
   const navClass = ({ isActive }) => 'side-item' + (isActive ? ' active' : '');
   // Warm a destination's data on hover/focus so the page is already cached on click.
   const warm = (fn) => ({ onMouseEnter: fn, onFocus: fn });
@@ -42,7 +51,7 @@ export default function Sidebar() {
           {DEMO_MODE && (
             <button className="reset-btn" onClick={resetDemo}>↺ Reset demo data</button>
           )}
-          <button className="reset-btn" onClick={() => supabase.auth.signOut()}>
+          <button className="reset-btn" onClick={signOut}>
             Sign out{user?.email ? ` · ${user.email}` : ''}
           </button>
         </div>
