@@ -10,6 +10,11 @@
 // security_events. It NEVER reads a tenant/user email and NEVER writes to the
 // customer-facing notifications table — the only outbound contact is to
 // ADMIN_ALERT_EMAIL.
+//
+// OPTIONAL Cloudflare edge-traffic monitoring: if CF_ANALYTICS_TOKEN (+ CF_ACCOUNT_ID,
+// optional CF_APP_HOSTNAME) are set, the check also reads the last 24h of edge traffic
+// and alerts on real server errors on the live site or on attack/volume spikes. With no
+// token set it is a no-op — nothing changes. Token scope: Account → Account Analytics → Read.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
 const supabase = createClient(
@@ -29,6 +34,17 @@ const DB_LIMIT_MB = envNum('DB_LIMIT_MB', 500);          // Free ≈ 500 MB · P
 const STORAGE_LIMIT_MB = envNum('STORAGE_LIMIT_MB', 1024); // Free ≈ 1 GB
 const NEW_USERS_WARN = envNum('NEW_USERS_WARN', 50);
 const AI_CALLS_WARN = envNum('AI_CALLS_WARN', 1000);
+
+// --- Cloudflare edge-traffic monitoring (OPTIONAL; stays off unless a token is set) ---
+// Runs in the cloud, so it can't use a local `wrangler` login — it needs its own
+// Cloudflare API token (Account → Account Analytics → Read), stored as a secret.
+const CF_TOKEN = Deno.env.get('CF_ANALYTICS_TOKEN');
+const CF_ACCOUNT_ID = Deno.env.get('CF_ACCOUNT_ID');
+const CF_APP_HOSTNAME = Deno.env.get('CF_APP_HOSTNAME') ?? 'amlak.akkawigeo-5.workers.dev';
+const CF_APP_5XX_WARN = envNum('CF_APP_5XX_WARN', 1);       // any real server error on the live site
+const CF_APP_5XX_CRIT = envNum('CF_APP_5XX_CRIT', 20);      // many → app likely failing
+const CF_FAILED_SPIKE_WARN = envNum('CF_FAILED_SPIKE_WARN', 300);    // 4xx+5xx across all hosts in 24h → scan storm
+const CF_TRAFFIC_SPIKE_WARN = envNum('CF_TRAFFIC_SPIKE_WARN', 5000); // total requests in 24h → volume/DDoS
 
 const MB = 1024 * 1024;
 type Sev = 'ok' | 'warn' | 'critical';
@@ -77,7 +93,11 @@ Deno.serve(async (req) => {
       return json({ error: 'Internal error.' }, 500);
     }
 
-    const findings = evaluate(metrics);
+    // Cloudflare edge traffic is fetched separately (external API). It never throws
+    // and returns { configured:false } when no token is set, so the rest is unaffected.
+    const cf = await collectCloudflare();
+
+    const findings = [...evaluate(metrics), ...evaluateCloudflare(cf)];
     const severity = findings.reduce<Sev>((s, f) => (RANK[f.severity] > RANK[s] ? f.severity : s), 'ok');
     const summary = severity === 'ok'
       ? 'All clear — no issues detected in the last 24 hours.'
@@ -96,7 +116,7 @@ Deno.serve(async (req) => {
       if (!RESEND_API_KEY || !ADMIN_EMAIL) {
         await logEvent('health_email_skipped', `email not sent (severity ${severity}) — ${!ADMIN_EMAIL ? 'ADMIN_ALERT_EMAIL' : 'RESEND_API_KEY'} unset`, ip);
       } else {
-        emailed = await sendEmail(ADMIN_EMAIL, `Amlak backend health: ${severity.toUpperCase()}`, renderEmail(severity, findings, metrics));
+        emailed = await sendEmail(ADMIN_EMAIL, `Amlak backend health: ${severity.toUpperCase()}`, renderEmail(severity, findings, metrics, cf));
         if (!emailed) await logEvent('api_error', 'Resend send failed for health alert', ip);
       }
     }
@@ -156,7 +176,86 @@ function evaluate(m: any): Finding[] {
   return out;
 }
 
-function renderEmail(severity: Sev, findings: Finding[], m: any): string {
+// --- Cloudflare edge traffic over the last 24h. Mirrors collect_health_metrics'
+// graceful style: never throws. Returns { configured:false } when off, or
+// { ok:false } when the API call fails. ---
+type CfSummary = {
+  configured: boolean;
+  ok?: boolean;
+  app?: { good: number; notFound: number; serverError: number; total: number };
+  account?: { totalRequests: number; totalFailed: number };
+};
+
+async function collectCloudflare(): Promise<CfSummary> {
+  if (!CF_TOKEN || !CF_ACCOUNT_ID) return { configured: false };
+  try {
+    const until = new Date();
+    const since = new Date(until.getTime() - 24 * 3600 * 1000);
+    const query =
+      'query($acct:String!,$since:Time!,$until:Time!){ viewer { accounts(filter:{accountTag:$acct}){' +
+      ' httpRequestsAdaptiveGroups(limit:200, filter:{datetime_geq:$since, datetime_leq:$until}){' +
+      ' count dimensions { clientRequestHTTPHost edgeResponseStatus } } } } }';
+    const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${CF_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query,
+        variables: { acct: CF_ACCOUNT_ID, since: since.toISOString(), until: until.toISOString() },
+      }),
+    });
+    if (!res.ok) return { configured: true, ok: false };
+    const body = await res.json();
+    if (body.errors) return { configured: true, ok: false };
+    const rows = body?.data?.viewer?.accounts?.[0]?.httpRequestsAdaptiveGroups ?? [];
+    const app = { good: 0, notFound: 0, serverError: 0, total: 0 };
+    let totalRequests = 0;
+    let totalFailed = 0;
+    for (const r of rows) {
+      const n = Number(r.count ?? 0);
+      const host = r.dimensions?.clientRequestHTTPHost ?? '';
+      const status = Number(r.dimensions?.edgeResponseStatus ?? 0);
+      totalRequests += n;
+      if (status >= 400) totalFailed += n;
+      if (host === CF_APP_HOSTNAME) {
+        app.total += n;
+        if (status >= 500) app.serverError += n;
+        else if (status >= 400) app.notFound += n;
+        else app.good += n;
+      }
+    }
+    return { configured: true, ok: true, app, account: { totalRequests, totalFailed } };
+  } catch (_) {
+    return { configured: true, ok: false };
+  }
+}
+
+// Turn the Cloudflare summary into findings. Alerts on real breakages (5xx on the
+// live site) and on attack spikes (a flood of failed or total requests). Routine
+// bot 404s on fake hostnames produce no finding on their own.
+function evaluateCloudflare(cf: CfSummary): Finding[] {
+  const out: Finding[] = [];
+  if (!cf.configured) return out; // feature off → stay silent
+  if (cf.ok === false) {
+    out.push({ area: 'Website', severity: 'warn', message: "Couldn't read Cloudflare traffic stats — the analytics token may be missing or expired." });
+    return out;
+  }
+  const app = cf.app!;
+  const acct = cf.account!;
+  if (app.serverError >= CF_APP_5XX_CRIT) {
+    out.push({ area: 'Website', severity: 'critical', message: `Your live site returned ${app.serverError} server errors to real visitors in 24h — the app may be failing. Check the latest deploy / Worker logs.` });
+  } else if (app.serverError >= CF_APP_5XX_WARN) {
+    out.push({ area: 'Website', severity: 'warn', message: `Your live site returned ${app.serverError} server error(s) in the last 24h — worth a look.` });
+  }
+  if (acct.totalFailed >= CF_FAILED_SPIKE_WARN) {
+    out.push({ area: 'Website', severity: 'warn', message: `Unusual spike: ${acct.totalFailed} failed/blocked requests in 24h (mostly bots probing addresses that aren't your site). Likely a scan storm — no action needed unless it persists.` });
+  }
+  if (acct.totalRequests >= CF_TRAFFIC_SPIKE_WARN) {
+    out.push({ area: 'Website', severity: 'warn', message: `Unusually high traffic: ${acct.totalRequests} requests in 24h for a private beta — confirm it's real and not an attack.` });
+  }
+  return out;
+}
+
+function renderEmail(severity: Sev, findings: Finding[], m: any, cf: CfSummary): string {
   const cap = m.capacity ?? {};
   const g = m.growth ?? {};
   const lines: string[] = [];
@@ -170,6 +269,9 @@ function renderEmail(severity: Sev, findings: Finding[], m: any): string {
   if (cap.storage_bytes != null) lines.push(`  • File storage: ${(cap.storage_bytes / MB).toFixed(1)} MB of ${STORAGE_LIMIT_MB} MB`);
   if (g.total_users != null) lines.push(`  • Total users: ${g.total_users} (+${g.new_users_24h ?? 0} in last 24h)`);
   lines.push(`  • AI requests (24h): ${g.ai_calls_24h ?? 0}`);
+  if (cf.configured && cf.ok && cf.app && cf.account) {
+    lines.push(`  • Website (24h): ${cf.app.good} requests served OK to your site, ${cf.app.serverError} server errors; ${cf.account.totalFailed} bot/failed probes turned away.`);
+  }
   lines.push('');
   lines.push('Full history: Supabase dashboard → Table Editor → health_reports.');
   lines.push('This is an automated operator alert. You are the only recipient.');
