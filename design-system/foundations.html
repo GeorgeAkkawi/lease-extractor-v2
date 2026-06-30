@@ -1,0 +1,36 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Foundations</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--border:#e3e6ea;--text:#1d2530;--muted:#6b7686;
+--accent:#2f6df6;--accent-soft:#eaf1ff;--good:#1f9d57;--warn:#c47d12;--danger:#c0392b;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:24px}
+h2{margin:0 0 12px;font-size:14px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.swatches{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:28px}
+.sw{width:120px}
+.chip{height:64px;border-radius:10px;border:1px solid var(--border)}
+.sw .name{font-size:13px;font-weight:600;margin-top:6px}
+.sw .hex{font-size:12px;color:var(--muted)}
+.type p{margin:0 0 10px}
+</style></head>
+<body>
+  <h2>Color</h2>
+  <div class="swatches">
+    <div class="sw"><div class="chip" style="background:#2f6df6"></div><div class="name">Accent</div><div class="hex">#2f6df6</div></div>
+    <div class="sw"><div class="chip" style="background:#eaf1ff"></div><div class="name">Accent soft</div><div class="hex">#eaf1ff</div></div>
+    <div class="sw"><div class="chip" style="background:#1d2530"></div><div class="name">Text</div><div class="hex">#1d2530</div></div>
+    <div class="sw"><div class="chip" style="background:#6b7686"></div><div class="name">Muted</div><div class="hex">#6b7686</div></div>
+    <div class="sw"><div class="chip" style="background:#1f9d57"></div><div class="name">Good</div><div class="hex">#1f9d57</div></div>
+    <div class="sw"><div class="chip" style="background:#c47d12"></div><div class="name">Warn</div><div class="hex">#c47d12</div></div>
+    <div class="sw"><div class="chip" style="background:#c0392b"></div><div class="name">Danger</div><div class="hex">#c0392b</div></div>
+    <div class="sw"><div class="chip" style="background:#f6f7f9"></div><div class="name">Background</div><div class="hex">#f6f7f9</div></div>
+  </div>
+  <h2>Type scale</h2>
+  <div class="type">
+    <p style="font-size:30px;font-weight:700">Page title — 30px / 700</p>
+    <p style="font-size:18px;font-weight:600">Section heading — 18px / 600</p>
+    <p style="font-size:14px">Body text — 14px / 400</p>
+    <p style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Metric label — 12px / uppercase</p>
+  </div>
+</body></html>

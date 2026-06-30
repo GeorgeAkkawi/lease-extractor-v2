@@ -1,0 +1,35 @@
+<!-- @dsCard group="Components" -->
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Buttons & badges</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--border:#e3e6ea;--text:#1d2530;--muted:#6b7686;
+--accent:#2f6df6;--accent-soft:#eaf1ff;--good:#1f9d57;--warn:#c47d12;--danger:#c0392b;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:24px}
+h2{margin:0 0 12px;font-size:14px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:24px}
+button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer;font-size:14px;font-family:inherit}
+button.secondary{background:var(--panel);color:var(--text);border:1px solid var(--border)}
+button.ghost{background:transparent;color:var(--accent)}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.badge.good{background:#e7f6ee;color:var(--good)}
+.badge.warn{background:#fdf2e0;color:var(--warn)}
+.badge.danger{background:#fbeae8;color:var(--danger)}
+.badge.info{background:var(--accent-soft);color:var(--accent)}
+</style></head>
+<body>
+  <h2>Buttons</h2>
+  <div class="row">
+    <button>Primary</button>
+    <button class="secondary">Secondary</button>
+    <button class="ghost">Ghost</button>
+    <button disabled style="opacity:.55">Disabled</button>
+  </div>
+  <h2>Badges</h2>
+  <div class="row">
+    <span class="badge good">manual</span>
+    <span class="badge info">AI</span>
+    <span class="badge warn">review AI</span>
+    <span class="badge danger">overdue</span>
+  </div>
+</body></html>
