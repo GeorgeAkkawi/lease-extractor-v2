@@ -5,6 +5,7 @@ import { listSenderEmails, createInvoice } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import { buildInvoice } from '../lib/invoiceTemplate';
 import { money } from '../lib/format';
+import RecipientField from './RecipientField';
 
 // Builds a tenant invoice: the draft-invoice Edge Function returns the figures
 // (computed server-side from the views), and the shared template renders one
@@ -108,10 +109,7 @@ export default function InvoiceButton({ share }) {
                       )}
                       <small className="field-note">Be signed into this Google account for Gmail to open there.</small>
                     </label>
-                    <label className="form-field" style={{ flex: 1, marginBottom: 12 }}>
-                      <span>To</span>
-                      <input className="text-input" type="email" value={to} onChange={(e) => setTo(e.target.value)} placeholder="tenant@email.com" />
-                    </label>
+                    <RecipientField primary={share.tenant_email} secondary={share.tenant_email_2} value={to} onChange={setTo} style={{ flex: 1, marginBottom: 12 }} />
                   </div>
                   <textarea className="invoice-text" wrap="off" value={text} onChange={(e) => setText(e.target.value)} />
                 </>

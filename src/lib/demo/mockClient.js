@@ -73,7 +73,7 @@ function tenantShares(propertyId, year) {
     const share = l.share_override_pct != null ? l.share_override_pct : proRata;
     return {
       lease_id: l.id, property_id: propertyId, tenant_name: l.tenant_name,
-      tenant_email: l.tenant_email ?? null, tenant_contact_name: l.tenant_contact_name ?? null, year,
+      tenant_email: l.tenant_email ?? null, tenant_email_2: l.tenant_email_2 ?? null, tenant_contact_name: l.tenant_contact_name ?? null, year,
       square_footage: l.square_footage, roof_responsible: !!l.roof_responsible,
       base_rent: effectiveRent(l, escFor(l.id), year),
       share_pct: share, tax_amount: share * exp.taxes_total, cam_amount: share * exp.cam_total,

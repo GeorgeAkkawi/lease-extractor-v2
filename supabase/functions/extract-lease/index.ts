@@ -32,6 +32,25 @@ const field = (valueTypes: string[]) => ({
   },
 });
 
+// Like field(), but `value` is a NON-NULLABLE string ("" when not found). A
+// non-nullable type adds ZERO union-typed parameters, and the schema is already at
+// Anthropic's hard 16-union limit for structured outputs (a 17th would 400 every
+// extraction). Used for the contact/email string fields so we can add three of them
+// without spending any union budget. Same {value, confidence, source_quote, page}
+// shape as field(), so the review UI (badge + source quote) and form prefill are
+// unchanged — just read "" instead of null for not-found.
+const strField = () => ({
+  type: 'object',
+  additionalProperties: false,
+  required: ['value', 'confidence', 'source_quote', 'page'],
+  properties: {
+    value: { type: 'string' },
+    confidence: { type: 'number' },
+    source_quote: { type: 'string' },
+    page: { type: 'integer' },
+  },
+});
+
 // Fields only. In the common path full_text comes for free from the PDF text layer
 // (or the pasted text), so we don't ask the model to transcribe.
 const SCHEMA = {
@@ -39,6 +58,9 @@ const SCHEMA = {
   additionalProperties: false,
   required: [
     'tenant_name',
+    'tenant_contact_name',
+    'tenant_email',
+    'tenant_email_2',
     'square_footage',
     'base_rent',
     'lease_start',
@@ -49,6 +71,9 @@ const SCHEMA = {
   ],
   properties: {
     tenant_name: field(['string']),
+    tenant_contact_name: strField(),
+    tenant_email: strField(),
+    tenant_email_2: strField(),
     square_footage: field(['number']),
     base_rent: field(['number']),
     lease_start: field(['string']),
@@ -94,6 +119,17 @@ const SYSTEM_FIELDS =
   'source_quote you read it from, and the page number. When a field\'s value is null ' +
   '(not found), set confidence to 0, source_quote to an empty string, and page to 1. ' +
   'Dates as ISO YYYY-MM-DD.\n\n' +
+  'TENANT, CONTACT & EMAILS. tenant_name is the BUSINESS / company that leases the ' +
+  'space (the legal tenant entity), NOT a person. tenant_contact_name is the human ' +
+  'who represents that tenant — the signer, owner, or named point of contact ' +
+  '(e.g. "Dana Lee"). Capture up to TWO tenant-side email addresses: put the tenant\'s ' +
+  'main / billing email in tenant_email (the primary, default recipient) and a second ' +
+  'tenant-side email (e.g. the contact person\'s) in tenant_email_2. ONLY extract emails ' +
+  'belonging to the TENANT side (the business or its contact person) — NEVER the ' +
+  'landlord\'s / lessor\'s / property manager\'s own email. tenant_contact_name, ' +
+  'tenant_email and tenant_email_2 are STRINGS: when a value is not found use an empty ' +
+  'string "" (NOT null), with confidence 0. If only one tenant email appears, set ' +
+  'tenant_email_2 to "". \n\n' +
   'RENT MUST BE ANNUAL. base_rent and every escalation new_base_rent are ANNUAL ' +
   'dollar amounts. Converting is REQUIRED and is not "guessing": if a rent is stated ' +
   'per MONTH, multiply by 12; if stated as a per-square-foot RATE (e.g. "$20/sf" or ' +

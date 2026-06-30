@@ -197,6 +197,7 @@ export default function LeaseDetailPage() {
           <EditField label="Tenant name" value={lease.tenant_name} onCommit={commit('tenant_name')} />
           <EditField label="Tenant contact" value={lease.tenant_contact_name || ''} onCommit={commit('tenant_contact_name')} hint="person to address" />
           <EditField label="Tenant email" value={lease.tenant_email || ''} onCommit={commit('tenant_email')} hint="where emails are sent" />
+          <EditField label="Second email" value={lease.tenant_email_2 || ''} onCommit={commit('tenant_email_2')} hint="optional — offered when sending" />
           <EditField label="Square footage" type="number" value={lease.square_footage} onCommit={commit('square_footage')} conf={conf('square_footage')} hint="SF" />
           <EditField label="Base rent (annual)" type="number" prefix="$" value={lease.base_rent} onCommit={commit('base_rent')} conf={conf('base_rent')} hint={brPsf ? `${brPsf} base rent` : undefined} />
           <EditField label="Lease start" type="date" value={lease.lease_start || ''} onCommit={commit('lease_start')} conf={conf('lease_start')} />
@@ -311,6 +312,7 @@ export default function LeaseDetailPage() {
             title="Request insurance from tenant"
             from={corp?.contact_email || ''}
             to={lease.tenant_email || ''}
+            secondaryTo={lease.tenant_email_2 || ''}
             subject={email.subject}
             body={email.body}
             onClose={() => setShowInsReq(false)}
