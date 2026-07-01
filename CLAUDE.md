@@ -71,6 +71,15 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-01** — Renewal "New rent" column formatting. Frontend Cloudflare version `69672db8`.
+  - `src/components/RenewalOptionsEditor.js` — the +%/yr estimate was one cramped string in a
+    right-aligned tabular-number cell; split into a main amount (`≈ $X`) with `+%/yr` on a `.cell-sub`
+    line. Flat rents unchanged.
+  - Note: another session had uncommitted WIP in the tree (renewal emails, dashboard widgets, Display
+    Settings, migrations 0037/0038). Committed only `RenewalOptionsEditor.js`, and deployed from an
+    isolated `git worktree` checkout of HEAD (symlinked node_modules, copied `.env.local`) so the build
+    shipped **only** committed code — the other session's work was never bundled or touched.
+
 - **2026-07-01** — Addendums follow-ups: assistant sees the whole lease, undo declines, renewal polish.
   Deployed: DB migration `0036`, `ask-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
   Cloudflare version `43616e53`.
