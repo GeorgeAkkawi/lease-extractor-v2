@@ -10,17 +10,18 @@ function statusBadge(status) {
   return { cls: 'warn', label: 'Pending' };
 }
 
-// The rent shown for an option: an explicit new_rent, else the computed first
-// renewal-year rent from the annual % (prior rent × (1+pct%)), else a dash.
+// The rent shown for an option, as { main, sub }: an explicit new_rent, else the
+// computed first renewal-year rent from the annual % (prior rent × (1+pct%)) with the
+// "+X%/yr" on a small sub-line so the numeric column stays clean, else a dash.
 function renewalRent(r, lease) {
-  if (r.new_rent != null) return money0(r.new_rent);
+  if (r.new_rent != null) return { main: money0(r.new_rent), sub: null };
   const pct = Number(r.annual_escalation_pct) || 0;
   if (pct > 0) {
     const base = Number(lease?.base_rent) || 0;
     const firstYr = base > 0 ? Math.round(base * (1 + pct / 100)) : null;
-    return firstYr ? `≈ ${money0(firstYr)} · +${pct}%/yr` : `+${pct}%/yr`;
+    return firstYr ? { main: `≈ ${money0(firstYr)}`, sub: `+${pct}%/yr` } : { main: `+${pct}%/yr`, sub: null };
   }
-  return '—';
+  return { main: '—', sub: null };
 }
 
 export default function RenewalOptionsEditor({ leaseId, lease }) {
@@ -67,12 +68,15 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
           <table style={{ minWidth: 0 }}>
             <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term (mo)</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => { const badge = statusBadge(r.status); return (
+              {renewals.map((r) => { const badge = statusBadge(r.status); const rent = renewalRent(r, lease); return (
                 <tr key={r.id}>
                   <td>{r.option_label || '—'}</td>
                   <td>{fmtDate(r.notice_by_date)}</td>
                   <td className="num">{r.term_months ?? '—'}</td>
-                  <td className="num">{renewalRent(r, lease)}</td>
+                  <td className="num">
+                    <div>{rent.main}</div>
+                    {rent.sub && <div className="cell-sub">{rent.sub}</div>}
+                  </td>
                   <td><span className={`badge ${badge.cls}`}>{badge.label}</span></td>
                   <td style={{ whiteSpace: 'normal' }}>
                     {r.status === 'pending' ? (
@@ -130,7 +134,7 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
       </form>
       <ul className="muted" style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, lineHeight: 1.6 }}>
         <li><strong>Renew</strong> applies the option — extends the term, sets the new rent, and drafts a tenant email.</li>
-        <li><strong>Not renewing</strong> closes the option (you can undo it).</li>
+        <li><strong>Not renewing</strong> closes the option and drafts a lease-end notice you can send the tenant (you can undo it).</li>
         <li><strong>New rent</strong> = a flat option rent; <strong>+%/yr</strong> = an annual increase (e.g. "5% annual") — a +%/yr option adds one dated rent step per year when exercised.</li>
         <li><strong>Notice-by</strong> is set only if the lease states a deadline — that's when we ask you to decide (otherwise ~3 months before the term ends).</li>
       </ul>
