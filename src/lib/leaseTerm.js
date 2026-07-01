@@ -1,9 +1,9 @@
-// Pure date-arithmetic resolver: given a lease's original term + its ordered rent
-// escalations + renewal options, work out which period TODAY falls in and the
-// rent in effect. No AI, no DB writes. Mirrors the chaining in apply_due_renewals
-// and the rent lookup in effectiveRent(). Drives the intake back-fill
-// (backfillLeaseToToday in api.js) and the "Current term" display.
-import { addMonths } from './renewals';
+// Pure date-arithmetic resolver: given a lease's committed term + its ordered rent
+// escalations, work out which period TODAY falls in and the rent in effect. No AI,
+// no DB writes. Renewal OPTIONS are deliberately NOT chained into the term — a
+// pending option is a right, not a commitment, and only extends the lease once the
+// landlord confirms it (confirmRenewal in api.js) writes the new dates directly.
+// Drives the intake back-fill (backfillLeaseToToday in api.js) and the display.
 
 // Parse an ISO date (or Date) at local noon so day-only strings don't shift back
 // in timezones behind UTC — same convention as src/lib/format.js fmtDate.
@@ -27,7 +27,8 @@ export function cmpRenewal(a, b) {
 }
 
 /**
- * Resolve the period + rent in effect today.
+ * Resolve the period + rent in effect today. (Renewal options are intentionally not
+ * consulted — see the file header. Callers may still pass `renewals`; it's ignored.)
  * @returns {{
  *   periodLabel: string, periodStart: string|null, periodEnd: string|null,
  *   currentRent: number, status: 'active'|'expired',
@@ -35,34 +36,23 @@ export function cmpRenewal(a, b) {
  *   currentRenewalId: string|null,
  * }}
  */
-export function resolveCurrentTerm({ lease, escalations = [], renewals = [], today } = {}) {
+export function resolveCurrentTerm({ lease, escalations = [], today } = {}) {
   const now = noon(today) || new Date();
   const nowT = now.getTime();
   const baseRent = num(lease?.base_rent);
   const origStart = lease?.lease_start || null;
   const origEnd = lease?.lease_termination_date || null;
 
-  // Only NOT-yet-applied options chain forward. Applied options have already been
-  // folded into the lease's live dates/rent, so excluding them keeps the resolver
-  // idempotent: re-running after a back-fill won't double-count past renewals.
-  const opts = (renewals || []).filter((r) => r.status !== 'applied').sort(cmpRenewal);
-
-  // 1) Chained windows: the original term, then each option after the prior end.
+  // The committed term is the lease's OWN window — nothing else. A renewal option
+  // is the tenant's *right* to extend, not a commitment, so it is NEVER chained into
+  // the term here: an un-exercised option must never push lease_termination_date
+  // forward. A renewal only lengthens the term once the landlord explicitly confirms
+  // it (confirmRenewal in api.js), which writes the new dates onto the lease directly
+  // and lays in the rent steps — so by the time we resolve, the lease's own dates
+  // already reflect every *confirmed* renewal. Pending/declined options are ignored.
   const windows = [{ kind: 'original', label: 'Original term', start: origStart, end: origEnd, renewalId: null, rent: baseRent }];
-  let prevEnd = origEnd;
-  opts.forEach((r, i) => {
-    const start = prevEnd;
-    const end = start ? addMonths(start, r.term_months || 12) : null;
-    windows.push({
-      kind: 'renewal',
-      label: r.option_label || `Renewal option ${i + 1}`,
-      start, end, renewalId: r.id,
-      rent: r.new_rent != null ? Number(r.new_rent) : null, // null = carry prior rent
-    });
-    prevEnd = end;
-  });
 
-  // 2) Which window contains today? (start <= today < end; open start/end allowed.)
+  // 1) Which window contains today? (start <= today < end; open start/end allowed.)
   const contains = (w) => {
     const s = time(w.start), e = time(w.end);
     if (s != null && nowT < s) return false;
@@ -78,11 +68,11 @@ export function resolveCurrentTerm({ lease, escalations = [], renewals = [], tod
   }
   const current = windows[idx];
 
-  // 3) Current rent = the rent of the latest rent-change event on/before today.
-  //    Events: original base rent at the start, each chained option's new_rent at
-  //    its window start, and every escalation at its effective date.
+  // 2) Current rent = the rent of the latest rent-change event on/before today.
+  //    Events: original base rent at the start, and every escalation at its
+  //    effective date. (Confirmed renewals materialize as escalations, so they're
+  //    already covered here.)
   const events = [{ t: origStart ? time(origStart) : -Infinity, rent: baseRent }];
-  windows.forEach((w) => { if (w.kind === 'renewal' && w.rent != null && w.start != null) events.push({ t: time(w.start), rent: w.rent }); });
   const escDated = (escalations || []).filter((e) => e.effective_date);
   escDated.forEach((e) => events.push({ t: time(e.effective_date), rent: num(e.new_base_rent) }));
 
@@ -96,12 +86,10 @@ export function resolveCurrentTerm({ lease, escalations = [], renewals = [], tod
     currentRent = events.reduce((acc, ev) => ((ev.t ?? -Infinity) >= (acc.t ?? -Infinity) ? ev : acc), events[0]).rent;
   }
 
-  // 4) What to mark applied at back-fill: escalations already in effect, and every
-  //    option we've ENTERED (window start on/before today — includes the current one).
+  // 3) What to mark applied at back-fill: escalations already in effect. Renewal
+  //    options are never auto-consumed — they only change status via an explicit
+  //    landlord confirm/decline, so we never touch them here.
   const consumedEscalationIds = escDated.filter((e) => time(e.effective_date) <= nowT).map((e) => e.id);
-  const consumedRenewalIds = windows
-    .filter((w) => w.kind === 'renewal' && w.start != null && time(w.start) <= nowT)
-    .map((w) => w.renewalId);
 
   return {
     periodLabel: status === 'expired' ? 'Expired' : current.label,
@@ -110,8 +98,8 @@ export function resolveCurrentTerm({ lease, escalations = [], renewals = [], tod
     currentRent,
     status,
     consumedEscalationIds,
-    consumedRenewalIds,
-    currentRenewalId: current.kind === 'renewal' ? current.renewalId : null,
+    consumedRenewalIds: [],
+    currentRenewalId: null,
   };
 }
 

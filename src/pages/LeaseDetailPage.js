@@ -234,10 +234,11 @@ export default function LeaseDetailPage() {
           <span className="muted">Notice-by = deadline to act on a renewal</span>
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          A renewal option lets the tenant extend the lease. The <strong>notice-by date</strong> is the deadline for written
-          notice to exercise (or decline) it. <strong>When the lease term ends, a still-pending option is applied
-          automatically</strong> — the term is extended, the new rent takes effect, the prior term is archived to History,
-          and you get a notification with a ready-to-send tenant email.
+          A renewal option is the tenant's <strong>right</strong> to extend — it never changes your term on its own. The
+          <strong> notice-by date</strong> is the deadline for written notice to exercise it. As the decision nears you're
+          asked <strong>"Is the tenant renewing?"</strong> — hit <strong>Renew</strong> (here or on the alert) only if they
+          are, and the term extends, the new rent takes effect, the prior term is archived to History, and you get a
+          ready-to-send tenant email. Otherwise mark <strong>Not renewing</strong>.
         </p>
         <RenewalOptionsEditor leaseId={leaseId} lease={lease} />
 

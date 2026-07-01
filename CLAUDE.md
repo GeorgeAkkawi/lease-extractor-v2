@@ -71,6 +71,33 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-01** — Addendums Phase 1: renewal options no longer auto-extend the term. Deployed:
+  DB migration `0034`, frontend Cloudflare version `86be8d83`. (Phase 2 = assignment/tenant
+  detection + multi-effect review; Phase 3 = per-building history — both still to come. Plan file:
+  `~/.claude/plans/couple-things-for-the-happy-kay.md`.)
+  - **Root bug:** the app stored a committed *extension* and an optional *renewal* in the same
+    `renewal_options` bucket, and `resolveCurrentTerm` chained every **pending** option into the
+    term — so an un-exercised option pushed `lease_termination_date` into the future (George's lease
+    read 2031 instead of 2026) and options auto-stamped "Applied" with a phantom duplicate row.
+  - `src/lib/leaseTerm.js` — `resolveCurrentTerm` no longer chains renewal options at all; the
+    lease's own dates are the committed term. `src/lib/api.js` — `applyAddendum` now moves the term
+    **directly** for an extension (+ lays its opening rent in as a dated step) and never creates an
+    extension-as-renewal row; renewals insert `pending` and are term-neutral.
+  - **No more silent auto-apply.** `applyDueRenewals` → `promptDueRenewalDecisions` (and the SQL
+    cron `apply_due_renewals` in migration `0034`) now drop a one-time `renewal_decision`
+    notification ("Is [tenant] renewing?") when a decision is due (notice-by date, else ~6mo before
+    term end). New `confirmRenewal`/`declineRenewal` (+ `…ForLease` bell helpers) apply or close it;
+    Yes/No buttons in the Dashboard bell (`DashboardPage.js`) and Renew/Not-renewing on the lease
+    (`RenewalOptionsEditor.js`, status now pending/applied/declined). `Layout.js` calls the prompt;
+    `LeaseDetailPage.js` copy updated. Migration `0034` also allows `status='declined'`.
+  - Verified token-free: `src/lib/__tests__/addendumRenewalReplay.test.js` replays George's real
+    Vibhakar docs through the fixed pipeline — term holds at 2026 with the option Pending; confirming
+    rolls it to 2031. UI smoke-test passed (pending≠extend; Renew extends; bell prompt renders).
+  - **Live data corrected** (lease `2258272a`): removed the phantom 180-mo renewal row, restored the
+    trapped Oct-2021 $43,128 escalation step, set the real Section 4 option back to `pending`, and
+    pulled the committed term back to `2026-09-30`. NOTE for George: there's a second, already-correct
+    lease for this space (`Kamal Vibhakar`, term 2026) — possible duplicate, left untouched.
+
 - **2026-06-30** — Lease rent accuracy + review-form alignment. Deployed: `extract-lease` edge
   function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `fe17b9e1`.
   - Rent was off by cents and step-ups were wrong because the model did the arithmetic. The

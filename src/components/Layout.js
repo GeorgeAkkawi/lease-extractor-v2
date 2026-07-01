@@ -3,19 +3,20 @@ import { useQueryClient } from '@tanstack/react-query';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import { DEMO_MODE } from '../lib/supabaseClient';
-import { applyDueRenewals, applyDueEscalations } from '../lib/api';
+import { promptDueRenewalDecisions, applyDueEscalations } from '../lib/api';
 
 export default function Layout({ children }) {
   const qc = useQueryClient();
   const ran = useRef(false);
 
-  // On load, automatically apply anything whose date has arrived: rent
-  // escalations on their effective date (updates the lease's base rent) and lease
-  // renewals on their term-end date. Both notify the owner; neither happens early.
+  // On load: rent escalations whose effective date has arrived apply automatically
+  // (they update the lease's base rent). Renewal options never apply on their own —
+  // instead, when a decision is due we drop a "Is the tenant renewing?" prompt for
+  // the owner to confirm. Neither happens early; nothing extends the term silently.
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
-    Promise.allSettled([applyDueEscalations(), applyDueRenewals()])
+    Promise.allSettled([applyDueEscalations(), promptDueRenewalDecisions()])
       .then((results) => {
         qc.invalidateQueries({ queryKey: ['notifications'] });
         const changed = results.some((r) => r.status === 'fulfilled' && r.value && r.value.length);

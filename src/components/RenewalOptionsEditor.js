@@ -1,7 +1,14 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRenewals, createRenewal, deleteRenewal } from '../lib/api';
+import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal } from '../lib/api';
 import { money, fmtDate } from '../lib/format';
+
+// Badge tone + label for an option's lifecycle status.
+function statusBadge(status) {
+  if (status === 'applied') return { cls: 'good', label: 'Applied' };
+  if (status === 'declined') return { cls: 'danger', label: 'Declined' };
+  return { cls: 'warn', label: 'Pending' };
+}
 
 // The rent shown for an option: an explicit new_rent, else the computed first
 // renewal-year rent from the annual % (prior rent × (1+pct%)), else a dash.
@@ -26,7 +33,15 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
     qc.invalidateQueries({ queryKey: ['renewals', leaseId] });
     qc.invalidateQueries({ queryKey: ['alerts'] });
   };
+  // Confirming/declining a renewal changes the lease term + rent, so refresh those too.
+  const refreshAll = () => {
+    ['renewals', 'alerts', 'lease', 'leases', 'escalations', 'expiredLeases', 'notifications', 'searchIndex']
+      .forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+  };
   const remove = useMutation({ mutationFn: (id) => deleteRenewal(id), onSuccess: refresh });
+  const confirm = useMutation({ mutationFn: (id) => confirmRenewal(id), onSuccess: refreshAll });
+  const decline = useMutation({ mutationFn: (id) => declineRenewal(id), onSuccess: refreshAll });
+  const acting = confirm.isPending || decline.isPending;
 
   const add = useMutation({
     mutationFn: () =>
@@ -49,16 +64,33 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
       ) : (
         <div className="table-wrap" style={{ marginBottom: 16 }}>
           <table style={{ minWidth: 0 }}>
-            <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term (mo)</th><th className="num">New rent</th><th>Status</th><th>Notes</th><th></th></tr></thead>
+            <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term (mo)</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => (
+              {renewals.map((r) => { const badge = statusBadge(r.status); return (
                 <tr key={r.id}>
                   <td>{r.option_label || '—'}</td>
                   <td>{fmtDate(r.notice_by_date)}</td>
                   <td className="num">{r.term_months ?? '—'}</td>
                   <td className="num">{renewalRent(r, lease)}</td>
-                  <td><span className={`badge ${r.status === 'applied' ? 'good' : 'warn'}`}>{r.status === 'applied' ? 'Applied' : 'Pending'}</span></td>
-                  <td>{r.notes || '—'}</td>
+                  <td><span className={`badge ${badge.cls}`}>{badge.label}</span></td>
+                  <td>
+                    {r.status === 'pending' ? (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button type="button" className="secondary" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
+                          title="Tenant is exercising this option — apply it (extends the term + new rent)"
+                          onClick={() => { if (window.confirm('Confirm the tenant is renewing? This extends the term and applies the new rent.')) confirm.mutate(r.id); }}>
+                          Renew
+                        </button>
+                        <button type="button" className="ghost" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
+                          title="Tenant is not exercising this option"
+                          onClick={() => { if (window.confirm('Mark this option as not being exercised?')) decline.mutate(r.id); }}>
+                          Not renewing
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="muted" style={{ fontSize: 12 }}>{r.notes || '—'}</span>
+                    )}
+                  </td>
                   <td className="num">
                     <button
                       type="button"
@@ -71,7 +103,7 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
                     </button>
                   </td>
                 </tr>
-              ))}
+              ); })}
             </tbody>
           </table>
         </div>

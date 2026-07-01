@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState } from '../lib/api';
+import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
 import { usePageChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const qc = useQueryClient();
   const [snoozeFor, setSnoozeFor] = useState(null);
   const [emailNotif, setEmailNotif] = useState(null);
+  const [busyNotif, setBusyNotif] = useState(null);
   usePageChrome([{ label: 'Overview' }]);
 
   const { data: index } = useQuery({ queryKey: ['searchIndex'], queryFn: fetchSearchIndex });
@@ -36,6 +37,15 @@ export default function DashboardPage() {
   const indexLoading = !index;
 
   async function clearNotification(id) { await dismissNotification(id); qc.invalidateQueries({ queryKey: ['notifications'] }); }
+  // Answer a "Is the tenant renewing?" prompt. Yes rolls the lease into the new term
+  // (and swaps in a ready-to-send tenant email); No closes the option. Either way the
+  // prompt clears. Refresh everything the renewal touches.
+  function refreshAfterRenewal() {
+    ['notifications', 'alerts', 'leases', 'lease', 'escalations', 'renewals', 'expiredLeases', 'searchIndex', 'propertyTotals', 'tenantShares']
+      .forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+  }
+  async function confirmRenewal(n) { setBusyNotif(n.id); try { await confirmRenewalForLease(n.lease_id); } finally { setBusyNotif(null); refreshAfterRenewal(); } }
+  async function declineRenewal(n) { setBusyNotif(n.id); try { await declineRenewalForLease(n.lease_id); } finally { setBusyNotif(null); refreshAfterRenewal(); } }
   // Dismiss / snooze persist server-side (alert_states) so they sync across devices.
   async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
   async function snooze(a, ms) { await upsertAlertState({ alert_key: alertKey(a), snoozed_until: new Date(Date.now() + ms).toISOString() }); setSnoozeFor(null); qc.invalidateQueries({ queryKey: ['alerts'] }); }
@@ -134,6 +144,18 @@ export default function DashboardPage() {
                     {n.email_body && (
                       <span className="bell-link" role="button" tabIndex={0} style={{ cursor: 'pointer' }}
                         onClick={(e) => { e.stopPropagation(); setEmailNotif(n); }}>✉ View / send tenant email</span>
+                    )}
+                    {n.kind === 'renewal_decision' && (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                        <button className="secondary" disabled={busyNotif === n.id}
+                          onClick={(e) => { e.stopPropagation(); confirmRenewal(n); }}>
+                          {busyNotif === n.id ? 'Working…' : 'Yes — apply renewal'}
+                        </button>
+                        <button className="ghost" disabled={busyNotif === n.id}
+                          onClick={(e) => { e.stopPropagation(); declineRenewal(n); }}>
+                          No — not renewing
+                        </button>
+                      </div>
                     )}
                   </div>
                   <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => clearNotification(n.id)}>✕</button>

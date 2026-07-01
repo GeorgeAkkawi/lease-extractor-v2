@@ -3,7 +3,7 @@
 // edit invalidates and refreshes Page 2.
 import { supabase, invokeFunction } from './supabaseClient';
 import { money, fmtDate } from './format';
-import { addMonths, monthsBetween } from './renewals';
+import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm } from './leaseTerm';
@@ -715,16 +715,30 @@ export async function extractAddendum({ text, storagePath }) {
 
 // Apply an addendum's changes to the lease, then re-resolve the current period.
 // `changes` carries normalized values: { extensionEnd, newRent, escalations[], renewals[] }.
-// Escalation/renewal rows are stamped with addendum_id for provenance. An
-// "extension" is modeled as a renewal option chained from the current term end so
-// the same renewal engine handles it. Returns the resolver result.
-export async function applyAddendum(addendum, changes = {}) {
+// Escalation/renewal rows are stamped with addendum_id for provenance.
+//   • A committed EXTENSION moves the lease's own termination date DIRECTLY and lays
+//     its new base rent in as a dated step. It is certain — never a renewal option.
+//     (Modeling an extension as a chained renewal was the old bug that let it double-
+//     count and let un-exercised options masquerade as committed term.)
+//   • A renewal OPTION is recorded status='pending' and NEVER touches the term. It
+//     only extends the lease later, via confirmRenewal, once the landlord confirms it.
+// Returns the resolver result. `today` is injectable for deterministic replays/tests.
+export async function applyAddendum(addendum, changes = {}, today = new Date()) {
   const uid = await ownerId();
   const leaseId = addendum.lease_id;
   const lease = await getLease(leaseId);
 
-  // Escalations contributed by the rider.
-  const escRows = buildEscalations(lease?.base_rent, changes.escalations);
+  // A committed extension's new base rent takes effect where the new term begins —
+  // i.e. at the prior term end — so model it as the first dated step, ahead of any
+  // later step-ups the rider spells out.
+  const fromEnd = lease?.lease_termination_date || addendum.amendment_date || null;
+  const escInputs = [...(changes.escalations || [])];
+  if (changes.extensionEnd && changes.newRent != null && fromEnd) {
+    escInputs.unshift({ effective_date: fromEnd, escalation_type: 'manual', escalation_value: null, new_base_rent: Number(changes.newRent) });
+  }
+
+  // Escalations contributed by the rider (incl. the extension's opening rent above).
+  const escRows = buildEscalations(lease?.base_rent, escInputs);
   if (escRows.length) {
     await rows(
       supabase.from('rent_escalations').insert(
@@ -733,21 +747,15 @@ export async function applyAddendum(addendum, changes = {}) {
     );
   }
 
-  // Renewal options contributed by the rider.
-  const renRows = buildRenewals(changes.renewals);
-
-  // An extension → a renewal option from the current term end to the new end.
+  // Extend the committed term directly — the lease's own end date is the single
+  // source of truth for how long the tenant is committed.
   if (changes.extensionEnd) {
-    const fromEnd = lease?.lease_termination_date || addendum.amendment_date || null;
-    renRows.push({
-      option_label: addendum.label || 'Extension',
-      notice_by_date: null,
-      term_months: fromEnd ? monthsBetween(fromEnd, changes.extensionEnd) : null,
-      new_rent: changes.newRent != null ? Number(changes.newRent) : null,
-      notes: addendum.summary || null,
-    });
+    await updateLease(leaseId, { lease_termination_date: changes.extensionEnd, is_active: true });
   }
 
+  // Renewal options contributed by the rider — pending rights, term-neutral until
+  // the landlord confirms them (confirmRenewal).
+  const renRows = buildRenewals(changes.renewals);
   if (renRows.length) {
     await rows(
       supabase.from('renewal_options').insert(
@@ -756,7 +764,7 @@ export async function applyAddendum(addendum, changes = {}) {
     );
   }
 
-  return backfillLeaseToToday(leaseId);
+  return backfillLeaseToToday(leaseId, today);
 }
 
 // ---- Expense records (Page 2, per year) ------------------------------------
@@ -954,127 +962,204 @@ export const markNotificationRead = (id) =>
 export const dismissNotification = (id) =>
   rows(supabase.from('notifications').delete().eq('id', id));
 
-// ---- Automatic lease renewals ----------------------------------------------
-// When a lease's term has ended and a still-pending renewal option exists, roll
-// the lease into its new term automatically: archive the prior term, extend the
-// dates, apply the new rent, mark the option applied, and drop a notification
-// (with a ready-to-send tenant email) telling the user it happened.
-// All math is code; only this runs on app load in demo. At go-live the same
-// logic runs as a scheduled job (see migration 0007).
-export async function applyDueRenewals(today = new Date()) {
-  const uid = await ownerId();
+// ---- Lease renewals (landlord-confirmed, never automatic) -------------------
+// A renewal option is the tenant's *right* to extend — it is NEVER applied on its
+// own. The flow is: promptDueRenewalDecisions() drops a one-time "Is the tenant
+// renewing?" notification when a decision is due; the landlord answers Yes/No;
+// confirmRenewal() (Yes) rolls the lease into the new term, or declineRenewal() (No)
+// closes the option. This replaced the old auto-apply, which silently extended terms.
+
+// When is a renewal decision "due"? The window opens at the option's notice-by date
+// if the lease states one, else ~6 months before the committed term end, and stays
+// open once the term has lapsed.
+function isRenewalDecisionDue(lease, ren, today = new Date()) {
+  const termEnd = lease?.lease_termination_date;
+  if (!termEnd) return false;
   const todayIso = today.toISOString().slice(0, 10);
+  const trigger = ren?.notice_by_date || addMonths(termEnd, -6);
+  return trigger ? todayIso >= trigger : false;
+}
+
+// Roll a lease into a confirmed renewal option: archive the prior term, extend the
+// dates, apply the new first-year rent, materialize any +%/yr step-ups, and mark the
+// option applied. Pure code — no email/notification. Returns the figures + business
+// so the caller can build the tenant email. Shared by confirmRenewal.
+async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map()) {
+  const newStart = lease.lease_termination_date;              // new term begins as the old one ends
+  const newEnd = addMonths(lease.lease_termination_date, ren.term_months || 12);
+  const oldRent = Number(lease.base_rent) || 0;
+  // First renewal-year rent: explicit new_rent wins; else apply the annual % to the
+  // prior rent; else carry the prior rent.
+  const pct = Number(ren.annual_escalation_pct) || 0;
+  const newRent = ren.new_rent != null ? Number(ren.new_rent) : (pct > 0 ? round2(oldRent * (1 + pct / 100)) : oldRent);
+  const prop = await getProperty(lease.property_id);
+  if (prop?.corporation_id && !corpCache.has(prop.corporation_id)) {
+    corpCache.set(prop.corporation_id, await getCorporation(prop.corporation_id));
+  }
+  const business = businessFromCorp(prop?.corporation_id ? corpCache.get(prop.corporation_id) : null);
+
+  // 1) archive the prior term into the History "expired & renewed" log
+  await rows(
+    supabase.from('expired_leases').insert({
+      owner_id: uid,
+      property_id: lease.property_id,
+      tenant_name: lease.tenant_name,
+      sf: lease.square_footage,
+      base_rent: oldRent,
+      lease_start: lease.lease_start,
+      lease_end: lease.lease_termination_date,
+      status: 'Renewed',
+      note: `Renewed (${ren.option_label || 'renewal option'}) — new term through ${fmtDate(newEnd)}`,
+      lease_text: lease.lease_text ?? null,
+    })
+  );
+
+  // 2) roll the live lease into the new term + rent
+  await updateLease(lease.id, { lease_start: newStart, lease_termination_date: newEnd, base_rent: newRent, is_active: true });
+
+  // 3) mark the option applied so it never re-runs
+  await updateRenewal(ren.id, { status: 'applied', applied_at: new Date().toISOString() });
+
+  // 3b) materialize the option's annual step-ups (years 2..N) as scheduled
+  // escalations so a "+pct%/yr" option becomes real, dated rent steps that
+  // auto-apply on their anniversaries (year 1 is the new base rent above).
+  if (pct > 0) {
+    const years = Math.round((ren.term_months || 12) / 12);
+    const escRows = [];
+    for (let y = 1; y < years; y++) {
+      escRows.push({
+        lease_id: lease.id,
+        owner_id: uid,
+        effective_date: addMonths(newStart, y * 12),
+        escalation_type: 'percent',
+        escalation_value: pct,
+        new_base_rent: round2(newRent * Math.pow(1 + pct / 100, y)),
+        status: 'scheduled',
+      });
+    }
+    if (escRows.length) await rows(supabase.from('rent_escalations').insert(escRows));
+  }
+
+  return { newStart, newEnd, oldRent, newRent, business, prop };
+}
+
+// The landlord confirmed the tenant IS exercising a renewal option → apply it now,
+// clear the open decision prompt, and drop a "renewed" notification carrying a
+// ready-to-send tenant email. Returns that notification (or null if not applicable).
+export async function confirmRenewal(renewalId, today = new Date()) {
+  const uid = await ownerId();
+  const ren = await one(supabase.from('renewal_options').select('*').eq('id', renewalId).maybeSingle());
+  if (!ren || ren.status !== 'pending') return null;
+  const lease = await getLease(ren.lease_id);
+  if (!lease) return null;
+
+  const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid);
+
+  // clear the "Is the tenant renewing?" prompt for this lease
+  await rows(supabase.from('notifications').delete().eq('lease_id', lease.id).eq('kind', 'renewal_decision'));
+
+  const email = buildRenewalEmail({
+    business,
+    tenant_name: lease.tenant_name,
+    contact_name: lease.tenant_contact_name,
+    tenant_email: lease.tenant_email,
+    propertyName: prop?.name,
+    newStart, newEnd, oldRent, newRent,
+  });
+  const notif = await one(
+    supabase
+      .from('notifications')
+      .insert({
+        owner_id: uid,
+        lease_id: lease.id,
+        property_id: lease.property_id,
+        corporation_id: prop?.corporation_id,
+        kind: 'renewal_applied',
+        title: `Lease renewed — ${lease.tenant_name}`,
+        body: `Term extended to ${fmtDate(newEnd)} · base rent now ${money(newRent)}`,
+        email_to: lease.tenant_email || null,
+        email_to_2: lease.tenant_email_2 || null,
+        email_from: business?.contact_email || null,
+        email_subject: email.subject,
+        email_body: email.body,
+        read: false,
+      })
+      .select()
+      .single()
+  );
+  await backfillLeaseToToday(lease.id, today);
+  return notif;
+}
+
+// The landlord confirmed the tenant is NOT renewing → mark the option declined and
+// clear the prompt. The lease runs out its committed term and goes outdated normally.
+export async function declineRenewal(renewalId) {
+  const ren = await one(supabase.from('renewal_options').select('lease_id').eq('id', renewalId).maybeSingle());
+  await updateRenewal(renewalId, { status: 'declined', applied_at: new Date().toISOString() });
+  if (ren?.lease_id) await rows(supabase.from('notifications').delete().eq('lease_id', ren.lease_id).eq('kind', 'renewal_decision'));
+}
+
+// Bell-action helpers: a decision prompt only carries a lease_id, and there is at
+// most one open decision per lease (its first pending option), so resolve that here.
+export async function confirmRenewalForLease(leaseId, today = new Date()) {
+  const pending = await rows(
+    supabase.from('renewal_options').select('*').eq('lease_id', leaseId).eq('status', 'pending').order('notice_by_date')
+  );
+  if (!pending.length) { await rows(supabase.from('notifications').delete().eq('lease_id', leaseId).eq('kind', 'renewal_decision')); return null; }
+  return confirmRenewal(pending[0].id, today);
+}
+export async function declineRenewalForLease(leaseId) {
+  const pending = await rows(
+    supabase.from('renewal_options').select('*').eq('lease_id', leaseId).eq('status', 'pending').order('notice_by_date')
+  );
+  if (pending.length) await declineRenewal(pending[0].id);
+  else await rows(supabase.from('notifications').delete().eq('lease_id', leaseId).eq('kind', 'renewal_decision'));
+}
+
+// Scan active leases and, for each with a pending option whose decision is due and
+// no prompt already open, drop a one-time 'renewal_decision' notification. Runs on
+// app load (demo) and — at go-live — as the scheduled job (see migration 0034). It
+// NEVER modifies the lease; only confirmRenewal does that.
+export async function promptDueRenewalDecisions(today = new Date()) {
+  const uid = await ownerId();
   const leases = await rows(supabase.from('leases').select('*'));
-  const corpCache = new Map();
   const created = [];
 
   for (const l of leases) {
     if (l.is_active === false) continue; // outdated leases stay parked until an extension is added
+    const pending = await rows(
+      supabase.from('renewal_options').select('*').eq('lease_id', l.id).eq('status', 'pending').order('notice_by_date')
+    );
+    const ren = pending[0];
+    if (!ren || !isRenewalDecisionDue(l, ren, today)) continue;
 
-    // Catch up through EVERY due option in one pass (a lease unopened for several
-    // option periods rolls all the way to today), instead of one per app-load.
-    let lease = l;
-    let guard = 0;
-    while (lease.lease_termination_date && lease.lease_termination_date <= todayIso && guard < 60) {
-      guard += 1;
-      const pending = await rows(
-        supabase.from('renewal_options').select('*').eq('lease_id', lease.id).eq('status', 'pending').order('notice_by_date')
-      );
-      const ren = pending[0];
-      if (!ren) break;
+    // one open decision per lease at a time — don't re-prompt if we already asked
+    const existing = await rows(
+      supabase.from('notifications').select('id').eq('lease_id', l.id).eq('kind', 'renewal_decision')
+    );
+    if (existing.length) continue;
 
-      const newStart = lease.lease_termination_date;             // new term begins as the old one ends
-      const newEnd = addMonths(lease.lease_termination_date, ren.term_months || 12);
-      const oldRent = Number(lease.base_rent) || 0;
-      // First renewal-year rent: explicit new_rent wins; else apply the annual % to the
-      // prior rent; else carry the prior rent.
-      const pct = Number(ren.annual_escalation_pct) || 0;
-      const newRent = ren.new_rent != null ? Number(ren.new_rent) : (pct > 0 ? round2(oldRent * (1 + pct / 100)) : oldRent);
-      const prop = await getProperty(lease.property_id);
-      if (prop?.corporation_id && !corpCache.has(prop.corporation_id)) {
-        corpCache.set(prop.corporation_id, await getCorporation(prop.corporation_id));
-      }
-      const business = businessFromCorp(prop?.corporation_id ? corpCache.get(prop.corporation_id) : null);
-
-      // 1) archive the prior term into the History "expired & renewed" log
-      await rows(
-        supabase.from('expired_leases').insert({
+    const prop = await getProperty(l.property_id);
+    const years = Math.round((ren.term_months || 12) / 12);
+    const pct = Number(ren.annual_escalation_pct) || 0;
+    const rentLabel = ren.new_rent != null ? money(ren.new_rent) : (pct > 0 ? `+${pct}%/yr` : 'the current rent');
+    const notif = await one(
+      supabase
+        .from('notifications')
+        .insert({
           owner_id: uid,
-          property_id: lease.property_id,
-          tenant_name: lease.tenant_name,
-          sf: lease.square_footage,
-          base_rent: oldRent,
-          lease_start: lease.lease_start,
-          lease_end: lease.lease_termination_date,
-          status: 'Renewed',
-          note: `Auto-renewed (${ren.option_label || 'renewal option'}) — new term through ${fmtDate(newEnd)}`,
-          lease_text: lease.lease_text ?? null,
+          lease_id: l.id,
+          property_id: l.property_id,
+          corporation_id: prop?.corporation_id || null,
+          kind: 'renewal_decision',
+          title: `Is ${l.tenant_name} renewing?`,
+          body: `${ren.option_label || 'A renewal option'} — ${years}-yr extension at ${rentLabel}. Confirm only if the tenant is exercising it; it won't change the term until you do.`,
+          read: false,
         })
-      );
-
-      // 2) roll the live lease into the new term + rent
-      await updateLease(lease.id, { lease_start: newStart, lease_termination_date: newEnd, base_rent: newRent });
-
-      // 3) mark the option applied so it never re-runs
-      await updateRenewal(ren.id, { status: 'applied', applied_at: new Date().toISOString() });
-
-      // 3b) materialize the option's annual step-ups (years 2..N) as scheduled
-      // escalations so a "+pct%/yr" option becomes real, dated rent steps that
-      // auto-apply on their anniversaries (year 1 is the new base rent above).
-      if (pct > 0) {
-        const years = Math.round((ren.term_months || 12) / 12);
-        const escRows = [];
-        for (let y = 1; y < years; y++) {
-          escRows.push({
-            lease_id: lease.id,
-            owner_id: uid,
-            effective_date: addMonths(newStart, y * 12),
-            escalation_type: 'percent',
-            escalation_value: pct,
-            new_base_rent: round2(newRent * Math.pow(1 + pct / 100, y)),
-            status: 'scheduled',
-          });
-        }
-        if (escRows.length) await rows(supabase.from('rent_escalations').insert(escRows));
-      }
-
-      // 4) notify ONLY for a recently-ended term — skip ancient catch-up rolls so
-      //    a back-dated lease doesn't flood the inbox with historical renewals.
-      if (isRecentDate(newStart, today)) {
-        const email = buildRenewalEmail({
-          business,
-          tenant_name: lease.tenant_name,
-          contact_name: lease.tenant_contact_name,
-          tenant_email: lease.tenant_email,
-          propertyName: prop?.name,
-          newStart, newEnd, oldRent, newRent,
-        });
-        const notif = await one(
-          supabase
-            .from('notifications')
-            .insert({
-              owner_id: uid,
-              lease_id: lease.id,
-              property_id: lease.property_id,
-              corporation_id: prop?.corporation_id,
-              kind: 'renewal_applied',
-              title: `Lease renewed — ${lease.tenant_name}`,
-              body: `Term extended to ${fmtDate(newEnd)} · base rent now ${money(newRent)}`,
-              email_to: lease.tenant_email || null,
-              email_to_2: lease.tenant_email_2 || null,
-              email_from: business?.contact_email || null,
-              email_subject: email.subject,
-              email_body: email.body,
-              read: false,
-            })
-            .select()
-            .single()
-        );
-        created.push(notif);
-      }
-
-      lease = await getLease(lease.id); // refresh for the next catch-up iteration
-    }
+        .select()
+        .single()
+    );
+    created.push(notif);
   }
   return created;
 }
