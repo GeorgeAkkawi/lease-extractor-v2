@@ -91,6 +91,24 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
   - Built + deployed from an isolated `git worktree` at `origin/main` (no session's uncommitted WIP), and
     committed only my two files + the test.
 
+- **2026-07-01** — Database catch-up (migrations `0034`–`0038`) + monthly rent tracker. DB: Supabase
+  `awgrjmbcghdjgnqeiqkt` — all 5 pending migrations applied via `supabase db push`. My deploy was
+  Cloudflare `fb694246`; the live frontend has since rolled forward to `f7920f34` (entry above), a
+  superset that includes this tracker.
+  - **Feature (this task):** a friendly *monthly* layer over the annual invoices/payments. Each tenant's
+    lease page gets a "Monthly rent — FY {year}" strip of 12 boxes (year total ÷ 12); one click records a
+    payment tagged with the new `payments.period_month` against that year's invoice (auto-created), so the
+    balance/AR/dashboards update automatically. `PropertyFinancialsPage` gets a rent roll with a per-month
+    **"mark all tenants paid"** bulk action. Follows the shared fiscal-year selector — each year resets on
+    its own. Files: `MonthlyRentTracker.js`, `PropertyRentRoll.js`, `api.js` helpers, `App.css`, migration
+    `0037_payment_month.sql` (nullable `period_month`, additive). Committed as `5c4dabf`.
+  - **The DB was 5 migrations behind the code** (`0034`–`0038`): several other sessions' feature screens
+    (renewal-decision timing, assignment/history, dashboard Display settings) were already live but missing
+    their database pieces. George OK'd bringing the DB fully up to date — `supabase db push` applied all 5
+    (all additive/non-destructive; idempotent guards skipped objects that already existed). This repaired
+    those features and enabled the rent tracker.
+  - Committed only this task's files (staged just my `api.js` hunk).
+
 - **2026-07-01** — Fix $/SF rent steps computed wrong on lease import. Deployed: `extract-lease` edge
   function (Supabase `awgrjmbcghdjgnqeiqkt`). **Frontend NOT pushed to Cloudflare** — see note below.
   - **Root cause (Gzim Mila lease):** the design has the model read RAW rent figures + a basis and the
