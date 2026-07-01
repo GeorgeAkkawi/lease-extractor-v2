@@ -12,6 +12,7 @@ import { callClaude, transcribeDocument, MAX_VISION_BYTES, Block } from '../_sha
 import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
+import { rebuildRentSchedule } from '../_shared/rentSchedule.js';
 
 const MODEL = 'claude-haiku-4-5';
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -126,11 +127,14 @@ const SYSTEM_FIELDS =
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'rent_schedule'],
+  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'rent_schedule'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
     tenant_email_2: field(['string']),
+    // Leased area — a fallback source of sqft so we can annualize $/SF rows even if the
+    // main call missed it (a $/SF row with no sqft anywhere would otherwise be dropped).
+    square_footage: field(['number']),
     // The base-rent schedule, ONE entry per period of the term, read raw (no math).
     rent_schedule: {
       type: 'array',
@@ -164,8 +168,18 @@ const SUPPLEMENT_SYSTEM =
   'written (the raw number — do NOT multiply, annualize, or convert it); period = how that ' +
   'amount is expressed — "per_month" (a monthly rent), "per_year" (an annual rent), ' +
   '"per_sqft_year" (a $/SF/year rate, e.g. "$34.43 PSF"), "per_sqft_month", or "unknown". ' +
-  'If a row shows BOTH a $/SF rate AND a plain dollar amount for the same period, use the ' +
-  'plain dollar amount and its period (e.g. amount 2395.42 with "per_month", NOT 34.43). ' +
+  'CLASSIFY EACH ROW ON ITS OWN. If a period\'s rent is written ONLY as a $/SF rate ' +
+  '(e.g. "Year 4 $16.17 per square foot") and NO plain dollar amount is printed for that ' +
+  'exact period, you MUST return the raw rate with period "per_sqft_year" (or ' +
+  '"per_sqft_month") — return amount 16.17, NOT a dollar figure. NEVER multiply the rate by ' +
+  'the square footage yourself; we do that. Mixed schedules are common and normal: e.g. Year 1 ' +
+  'prints a monthly dollar ($1,382/mo → amount 1382, "per_month") while Years 2-5 print only a ' +
+  '$/SF rate ($16.17/sf → amount 16.17, "per_sqft_year"). Do NOT "normalize" the later years ' +
+  'into dollars to match Year 1 — read each period as it is actually written. ' +
+  'ONLY when a row shows BOTH a $/SF rate AND a plain dollar amount for the SAME period, use ' +
+  'the plain dollar amount and its period (e.g. amount 2395.42 with "per_month", NOT 34.43). ' +
+  'Also return square_footage = the leased area in square feet exactly as written (the raw ' +
+  'number), so we can turn any $/SF rate into an annual figure. ' +
   'We do ALL the arithmetic ourselves — never multiply. If the lease states no rent schedule, ' +
   'return an empty array.';
 
@@ -177,22 +191,6 @@ async function extractSupplement(content: Block[]): Promise<Record<string, any> 
   } catch (e) {
     console.error('[extract-lease] supplement extraction failed (non-fatal):', e instanceof Error ? e.message : String(e));
     return null;
-  }
-}
-
-// Deterministic annual rent from a raw figure + its basis (the code does the math the
-// model used to do, to the CENT). Returns null for an unusable amount or an 'unknown' /
-// PSF-without-SF basis, so the caller keeps the model's own figure.
-function annualRentFrom(amount: unknown, period: unknown, sqft: number): number | null {
-  const a = typeof amount === 'number' ? amount : Number(amount);
-  if (!a || !isFinite(a) || a <= 0) return null;
-  const cents = (x: number) => Math.round(x * 100) / 100; // keep cents — never round to whole dollars
-  switch (period) {
-    case 'per_month': return cents(a * 12);
-    case 'per_year': return cents(a);
-    case 'per_sqft_year': return sqft > 0 ? cents(a * sqft) : null;
-    case 'per_sqft_month': return sqft > 0 ? cents(a * sqft * 12) : null;
-    default: return null;
   }
 }
 
@@ -295,27 +293,19 @@ Deno.serve(async (req) => {
         if (supp[k]) (parsed as any)[k] = supp[k];
       }
       // Rebuild the rent schedule from raw figures so EVERY amount (base + each step) is
-      // computed in code, not by the model. The earliest period becomes base_rent; the
-      // later periods become the escalations (overriding the model's drifted ×12 amounts).
-      const sqft = Number((parsed as any)?.square_footage?.value) || 0;
-      const rows = (Array.isArray(supp.rent_schedule) ? supp.rent_schedule : [])
-        .map((r: any) => ({
-          date: typeof r?.effective_date === 'string' ? r.effective_date : null,
-          annual: annualRentFrom(r?.amount, r?.period, sqft),
-        }))
-        .filter((r: any) => r.annual != null)
-        .sort((a: any, b: any) => (a.date || '9999-99-99').localeCompare(b.date || '9999-99-99'));
-      if (rows.length && (parsed as any)?.base_rent) {
-        (parsed as any).base_rent.value = rows[0].annual;
-        const steps = rows.slice(1).filter((r: any) => r.date);
-        if (steps.length) {
-          (parsed as any).escalations = steps.map((r: any) => ({
-            effective_date: r.date,
-            escalation_type: 'manual',
-            escalation_value: null,
-            new_base_rent: r.annual,
-          }));
-        }
+      // computed in code, not by the model (overriding the model's drifted ×12 / ×SF
+      // amounts). sqft can come from either call — a $/SF row needs one to annualize.
+      const sqft = (Number((parsed as any)?.square_footage?.value) || 0) ||
+                   (Number((supp as any)?.square_footage?.value) || 0);
+      const rebuilt = rebuildRentSchedule({
+        rentSchedule: supp.rent_schedule,
+        sqft,
+        modelEscalations: (parsed as any).escalations,
+      });
+      if (rebuilt.flag) (parsed as any).rent_schedule_flag = rebuilt.flag;
+      if (rebuilt.baseRent != null && (parsed as any)?.base_rent) {
+        (parsed as any).base_rent.value = rebuilt.baseRent;
+        if (rebuilt.escalations) (parsed as any).escalations = rebuilt.escalations;
       }
     }
 

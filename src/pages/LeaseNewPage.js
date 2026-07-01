@@ -118,6 +118,7 @@ function SchedulePreview({ ex }) {
   const rens = buildRenewals(ex.renewal_options).map((r, i) => ({ ...r, id: `r${i}`, status: 'pending' }));
   const res = resolveCurrentTerm({ lease: { base_rent: base, lease_start: start, lease_termination_date: end }, escalations: escs, renewals: rens });
   const advanced = Math.round(res.currentRent) !== Math.round(base);
+  const flag = ex.rent_schedule_flag;
 
   return (
     <div className="callout" style={{ marginTop: 14 }}>
@@ -125,6 +126,11 @@ function SchedulePreview({ ex }) {
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
         The form above shows the lease's <strong>starting</strong> rent. On save it rolls forward to today through the step-ups below.
       </div>
+      {flag && (
+        <p className="badge warn" style={{ marginBottom: 8 }}>
+          ⚠ Some steps were read from a $/SF rate — double-check these amounts against the lease before saving.
+        </p>
+      )}
       <ul style={{ margin: '0 0 8px', paddingLeft: 18 }}>
         <li>Start{start ? ` (${fmtDate(start)})` : ''}: <strong>{money(base)}/yr</strong></li>
         {escs.map((e, i) => (

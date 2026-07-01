@@ -71,6 +71,33 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-01** — Fix $/SF rent steps computed wrong on lease import. Deployed: `extract-lease` edge
+  function (Supabase `awgrjmbcghdjgnqeiqkt`). **Frontend NOT pushed to Cloudflare** — see note below.
+  - **Root cause (Gzim Mila lease):** the design has the model read RAW rent figures + a basis and the
+    code do the math (`annualRentFrom`). Years 4-5 are written ONLY as a $/SF rate ($16.17, $16.97/sf);
+    the model returned dollar amounts it multiplied itself ($17,478.72, $18,499.92 — inconsistent, they
+    imply 1,081 and 1,090 sf, not the lease's 1,077), so the code's safety net had nothing to correct.
+    Correct steps are $17,415.09 / $18,276.69.
+  - **Fix:** hardened `SUPPLEMENT_SYSTEM` so a $/SF-only period is returned as the raw rate
+    (`per_sqft_year`), never pre-multiplied — each row classified independently (mixed dollar/$SF
+    schedules are normal). Added `square_footage` to `SUPPLEMENT_SCHEMA` as a fallback sqft so a $/SF row
+    is never dropped for want of a size. Extracted the rent math to a shared, dependency-free
+    `supabase/functions/_shared/rentSchedule.js` (`annualRentFrom` + new `rebuildRentSchedule`) so the
+    edge function and a Jest test share ONE source; `extract-lease/index.ts` now calls it. The rebuild
+    cross-checks the code's exact figure against the model's OWN `new_base_rent` and sets
+    `parsed.rent_schedule_flag` on a wide gap (or an unresolvable $/SF row).
+  - **Review screen** (`src/pages/LeaseNewPage.js` `SchedulePreview`): shows a "double-check these
+    amounts" warning badge when `rent_schedule_flag` is set.
+  - Verified token-free: new `src/lib/__tests__/rentScheduleSqft.test.js` replays the Gzim $/SF table —
+    base $16,584, steps land exactly on $17,415.09 / $18,276.69, and the flag fires on the bad model
+    math / missing-sqft cases. Full suite 16/16 green; `CI=true` frontend build compiles.
+  - **NOTE for George — frontend held back:** the working tree carries another session's in-progress
+    edits (`src/lib/api.js`, `emailTemplates.js`, `pages/DashboardPage.js`, `renewalEmails.test.js`), so a
+    Cloudflare build would push their unfinished work live. The actual rent-math fix is 100% in the edge
+    function and is already LIVE; the only frontend piece is the inert warning badge. Deploy the frontend
+    (`CI=true npx react-scripts build` → `npx wrangler deploy`) once that session's work is ready, or tell
+    me to push it. Committed only this task's files.
+
 - **2026-07-01** — Hide/show dashboard widgets: new **Display** settings page. Deployed: DB migration
   `0038` (`user_preferences` table, applied via `supabase db query`), frontend Cloudflare version
   `8a06310e`.
