@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease } from '../lib/api';
+import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
 import { usePageChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
@@ -18,6 +18,7 @@ export default function DashboardPage() {
   const [snoozeFor, setSnoozeFor] = useState(null);
   const [emailNotif, setEmailNotif] = useState(null);
   const [busyNotif, setBusyNotif] = useState(null);
+  const [undoDecline, setUndoDecline] = useState(null); // { id, tenant } after "Not renewing"
   usePageChrome([{ label: 'Overview' }]);
 
   const { data: index } = useQuery({ queryKey: ['searchIndex'], queryFn: fetchSearchIndex });
@@ -45,7 +46,14 @@ export default function DashboardPage() {
       .forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   }
   async function confirmRenewal(n) { setBusyNotif(n.id); try { await confirmRenewalForLease(n.lease_id); } finally { setBusyNotif(null); refreshAfterRenewal(); } }
-  async function declineRenewal(n) { setBusyNotif(n.id); try { await declineRenewalForLease(n.lease_id); } finally { setBusyNotif(null); refreshAfterRenewal(); } }
+  async function declineRenewal(n) {
+    setBusyNotif(n.id);
+    try {
+      const declinedId = await declineRenewalForLease(n.lease_id);
+      if (declinedId) setUndoDecline({ id: declinedId, tenant: (n.title || '').replace(/^Is /, '').replace(/ renewing\?$/, '') || 'this tenant' });
+    } finally { setBusyNotif(null); refreshAfterRenewal(); }
+  }
+  async function undoDeclineNow() { const u = undoDecline; setUndoDecline(null); if (u) { await restoreRenewal(u.id); refreshAfterRenewal(); } }
   // Dismiss / snooze persist server-side (alert_states) so they sync across devices.
   async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
   async function snooze(a, ms) { await upsertAlertState({ alert_key: alertKey(a), snoozed_until: new Date(Date.now() + ms).toISOString() }); setSnoozeFor(null); qc.invalidateQueries({ queryKey: ['alerts'] }); }
@@ -132,6 +140,17 @@ export default function DashboardPage() {
             <p className="empty-line muted">All clear — nothing needs attention. 🎉</p>
           ) : (
             <div className="alert-list">
+              {/* Just declined a renewal? Offer an immediate, friendly undo. */}
+              {undoDecline && (
+                <div className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'center', borderLeftColor: 'var(--accent)' }}>
+                  <div style={{ flex: 1 }}>
+                    <div className="alert-title"><strong>Marked {undoDecline.tenant} as not renewing.</strong></div>
+                    <div className="muted" style={{ fontSize: 12.5 }}>Changed your mind? You can put it back to pending.</div>
+                  </div>
+                  <button className="secondary" onClick={undoDeclineNow}>↩ Undo</button>
+                  <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => setUndoDecline(null)}>✕</button>
+                </div>
+              )}
               {/* Updates that already happened (rent applied, lease renewed) — dismiss only. */}
               {notifications.map((n) => (
                 <div key={n.id} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start' }}>

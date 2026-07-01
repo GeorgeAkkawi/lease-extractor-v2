@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal } from '../lib/api';
-import { money, fmtDate } from '../lib/format';
+import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal } from '../lib/api';
+import { money0, fmtDate } from '../lib/format';
 
 // Badge tone + label for an option's lifecycle status.
 function statusBadge(status) {
@@ -13,12 +13,12 @@ function statusBadge(status) {
 // The rent shown for an option: an explicit new_rent, else the computed first
 // renewal-year rent from the annual % (prior rent × (1+pct%)), else a dash.
 function renewalRent(r, lease) {
-  if (r.new_rent != null) return money(r.new_rent);
+  if (r.new_rent != null) return money0(r.new_rent);
   const pct = Number(r.annual_escalation_pct) || 0;
   if (pct > 0) {
     const base = Number(lease?.base_rent) || 0;
     const firstYr = base > 0 ? Math.round(base * (1 + pct / 100)) : null;
-    return firstYr ? `≈ ${money(firstYr)} · +${pct}%/yr` : `+${pct}%/yr`;
+    return firstYr ? `≈ ${money0(firstYr)} · +${pct}%/yr` : `+${pct}%/yr`;
   }
   return '—';
 }
@@ -41,7 +41,8 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
   const remove = useMutation({ mutationFn: (id) => deleteRenewal(id), onSuccess: refresh });
   const confirm = useMutation({ mutationFn: (id) => confirmRenewal(id), onSuccess: refreshAll });
   const decline = useMutation({ mutationFn: (id) => declineRenewal(id), onSuccess: refreshAll });
-  const acting = confirm.isPending || decline.isPending;
+  const restore = useMutation({ mutationFn: (id) => restoreRenewal(id), onSuccess: refreshAll });
+  const acting = confirm.isPending || decline.isPending || restore.isPending;
 
   const add = useMutation({
     mutationFn: () =>
@@ -73,7 +74,7 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
                   <td className="num">{r.term_months ?? '—'}</td>
                   <td className="num">{renewalRent(r, lease)}</td>
                   <td><span className={`badge ${badge.cls}`}>{badge.label}</span></td>
-                  <td>
+                  <td style={{ whiteSpace: 'normal' }}>
                     {r.status === 'pending' ? (
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button type="button" className="secondary" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
@@ -85,6 +86,15 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
                           title="Tenant is not exercising this option"
                           onClick={() => { if (window.confirm('Mark this option as not being exercised?')) decline.mutate(r.id); }}>
                           Not renewing
+                        </button>
+                      </div>
+                    ) : r.status === 'declined' ? (
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span className="muted" style={{ fontSize: 12 }}>Marked not renewing</span>
+                        <button type="button" className="ghost" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
+                          title="Undo — put this option back to Pending"
+                          onClick={() => restore.mutate(r.id)}>
+                          ↩ Undo
                         </button>
                       </div>
                     ) : (
@@ -118,10 +128,12 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
         <label className="form-field" style={{ marginBottom: 0, maxWidth: 170 }}><span>Notes</span><input className="text-input" value={form.notes} onChange={set('notes')} /></label>
         <button type="submit" disabled={add.isPending}>+ Add option</button>
       </form>
-      <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-        Use <strong>New rent</strong> for a flat option rent, or <strong>+%/yr</strong> for an annual increase (e.g. "5% annual increase").
-        When the option is exercised, a +%/yr option auto-creates one rent step per year of the term. Notice-by is only set if the lease states a deadline.
-      </p>
+      <ul className="muted" style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, lineHeight: 1.6 }}>
+        <li><strong>Renew</strong> applies the option — extends the term, sets the new rent, and drafts a tenant email.</li>
+        <li><strong>Not renewing</strong> closes the option (you can undo it).</li>
+        <li><strong>New rent</strong> = a flat option rent; <strong>+%/yr</strong> = an annual increase (e.g. "5% annual") — a +%/yr option adds one dated rent step per year when exercised.</li>
+        <li><strong>Notice-by</strong> is set only if the lease states a deadline — that's when we ask you to decide (otherwise ~3 months before the term ends).</li>
+      </ul>
     </div>
   );
 }

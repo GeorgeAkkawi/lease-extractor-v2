@@ -1018,7 +1018,10 @@ function isRenewalDecisionDue(lease, ren, today = new Date()) {
   const termEnd = lease?.lease_termination_date;
   if (!termEnd) return false;
   const todayIso = today.toISOString().slice(0, 10);
-  const trigger = ren?.notice_by_date || addMonths(termEnd, -6);
+  // The prompt opens a bit before the deadline: at the option's notice-by date if the
+  // lease states one, else ~3 months before the committed term end (and stays open once
+  // the term has lapsed). Informational "renewal notice due" reminders warn even earlier.
+  const trigger = ren?.notice_by_date || addMonths(termEnd, -3);
   return trigger ? todayIso >= trigger : false;
 }
 
@@ -1155,6 +1158,24 @@ export async function declineRenewal(renewalId) {
   }
 }
 
+// Undo a decline — put a "not renewing" option back to pending so the decision can be
+// made again (e.g. it was clicked by mistake). Reverses declineRenewal, and re-raises the
+// "Is the tenant renewing?" prompt if the decision is still due (declining had deleted it).
+export async function restoreRenewal(renewalId) {
+  const ren = await one(supabase.from('renewal_options').select('lease_id').eq('id', renewalId).maybeSingle());
+  await updateRenewal(renewalId, { status: 'pending', applied_at: null });
+  if (ren?.lease_id) {
+    const lease = await getLease(ren.lease_id);
+    await logHistoryEvent({
+      property_id: lease?.property_id || null, lease_id: ren.lease_id, type: 'renewal_reopened',
+      description: 'Renewal decision reopened (undo) — option is pending again',
+      event_date: null, meta: { renewal_id: renewalId },
+    });
+  }
+  // Recreate the decision prompt if it's due (dedupes if one already exists).
+  await promptDueRenewalDecisions();
+}
+
 // Bell-action helpers: a decision prompt only carries a lease_id, and there is at
 // most one open decision per lease (its first pending option), so resolve that here.
 export async function confirmRenewalForLease(leaseId, today = new Date()) {
@@ -1168,8 +1189,9 @@ export async function declineRenewalForLease(leaseId) {
   const pending = await rows(
     supabase.from('renewal_options').select('*').eq('lease_id', leaseId).eq('status', 'pending').order('notice_by_date')
   );
-  if (pending.length) await declineRenewal(pending[0].id);
-  else await rows(supabase.from('notifications').delete().eq('lease_id', leaseId).eq('kind', 'renewal_decision'));
+  if (pending.length) { await declineRenewal(pending[0].id); return pending[0].id; }
+  await rows(supabase.from('notifications').delete().eq('lease_id', leaseId).eq('kind', 'renewal_decision'));
+  return null;
 }
 
 // Scan active leases and, for each with a pending option whose decision is due and

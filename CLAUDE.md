@@ -71,6 +71,27 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-01** — Addendums follow-ups: assistant sees the whole lease, undo declines, renewal polish.
+  Deployed: DB migration `0036`, `ask-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `43616e53`.
+  - **Assistant now reads original + riders + current phase.** New `src/lib/leaseContext.js`
+    `buildLeaseAskContext({lease, renewals, addendums})` assembles a CURRENT PHASE summary (authoritative
+    today) + the ORIGINAL LEASE text + every AMENDMENT (chronological). `LeaseAssistant.js` gains an
+    `askContext` prop the AI reasons over, while the editable/save box still binds to `lease_text` only.
+    `LeaseDetailPage.js` fetches addendums and passes it (+ a hint line). `ask-lease/index.ts` system
+    prompt updated to treat current-phase/later-amendments as authoritative and pending options as
+    not-yet-exercised. Unit-tested via `src/lib/__tests__/leaseContext.test.js`.
+  - **Undo a declined renewal** — `restoreRenewal(id)` (api.js) puts an option back to pending, logs a
+    `renewal_reopened` event, and re-raises the decision prompt if still due. UI: **↩ Undo** on a Declined
+    row (`RenewalOptionsEditor.js`) and a transient **"Marked … not renewing · Undo"** banner on the
+    dashboard right after clicking No (`DashboardPage.js`; `declineRenewalForLease` now returns the id).
+  - **Renewal polish**: `renewalRent()` uses a new whole-dollar `money0()` (`format.js`) for both the flat
+    and +%/yr cases (was cents-vs-no-cents); the dense helper became a 4-item bulleted list; the "build
+    your lease in layers" note added to the Addendums section.
+  - **Prompt timing**: the "Is the tenant renewing?" prompt now opens ~3 months before term end (was 6),
+    or at the notice-by date — `isRenewalDecisionDue` (api.js) + SQL cron in migration `0036`. The verified
+    ready-to-send renewal email (subject + letter body + recipient) confirmed populating in demo.
+
 - **2026-07-01** — Addendums Phase 2+3: AI-led multi-effect review, tenant assignments, per-building
   history. Deployed: DB migration `0035`, `extract-addendum` edge function (Supabase
   `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `d8c133f4`.

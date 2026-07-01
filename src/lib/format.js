@@ -3,6 +3,13 @@ export const money = (n) =>
     ? '—'
     : Number(n).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
 
+// Whole-dollar money (no cents) — for estimates/summaries where cents are noise,
+// e.g. the renewal-option "New rent" column. Uses money()'s cents everywhere else.
+export const money0 = (n) =>
+  n == null || n === '' || isNaN(n)
+    ? '—'
+    : Number(n).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
 export const psf = (n) =>
   n == null || isNaN(n) ? '—' : `$${Number(n).toFixed(2)}/SF`;
 

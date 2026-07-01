@@ -1,7 +1,8 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, listRenewals } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums } from '../lib/api';
+import { buildLeaseAskContext } from '../lib/leaseContext';
 import { usePageChrome } from '../context/ChromeContext';
 import EditField from '../components/EditField';
 import EscalationScheduleEditor from '../components/EscalationScheduleEditor';
@@ -39,6 +40,7 @@ export default function LeaseDetailPage() {
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: lease, isLoading } = useQuery({ queryKey: ['lease', leaseId], queryFn: () => getLease(leaseId) });
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
+  const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
   usePageChrome([
     { label: 'Leases', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
@@ -264,8 +266,10 @@ export default function LeaseDetailPage() {
           <span className="muted">Amendments that extend the term or change the rent/options</span>
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          Record a rider or amendment — upload it for AI extraction or enter it by hand. Applying it updates the lease's
-          term, rent, escalations, or renewal options and recomputes the current period above.
+          <strong style={{ color: 'var(--ink)' }}>Build your lease in layers.</strong> Start with the original lease — even one
+          from years back — then add each addendum or rider on top. The app reads every layer, works out the rent and term
+          you're in <strong>today</strong>, and files superseded terms in this building's History. Add what you have in any
+          order; the AI keeps the timeline straight.
         </p>
         <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} />
       </div>
@@ -283,7 +287,16 @@ export default function LeaseDetailPage() {
           <strong>Lease document &amp; assistant</strong>
           <span className="muted">Open the lease and ask questions</span>
         </div>
-        <LeaseAssistant leaseId={lease.id} leaseText={lease.lease_text} canSave />
+        <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
+          Ask about the original terms or where the lease stands <strong>now</strong> — the assistant reads the original
+          lease, every rider you've added, and your current phase (term, rent, and any pending renewal).
+        </p>
+        <LeaseAssistant
+          leaseId={lease.id}
+          leaseText={lease.lease_text}
+          askContext={buildLeaseAskContext({ lease, renewals, addendums })}
+          canSave
+        />
       </div>
 
       <div className={`panel${flash === 'insurance' ? ' panel-flash' : ''}`} ref={insRef}>
