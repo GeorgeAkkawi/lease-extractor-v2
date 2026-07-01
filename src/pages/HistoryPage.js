@@ -4,11 +4,27 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
 } from 'recharts';
-import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear } from '../lib/api';
+import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents } from '../lib/api';
 import { invokeFunction } from '../lib/supabaseClient';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { money, psf, sf, fmtDate } from '../lib/format';
 import LeaseAssistant from '../components/LeaseAssistant';
+
+// Friendly labels + badge tones for the history_events timeline.
+const EVENT_LABEL = {
+  tenant_assigned: 'Tenant assigned',
+  term_extended: 'Term extended',
+  renewal_confirmed: 'Renewal confirmed',
+  renewal_declined: 'Renewal declined',
+  rent_stepped: 'Rent step',
+  lease_created: 'Lease created',
+};
+const EVENT_BADGE = {
+  tenant_assigned: 'info',
+  term_extended: 'good',
+  renewal_confirmed: 'good',
+  renewal_declined: 'danger',
+};
 
 const num = (v) => (v == null ? 0 : Number(v));
 const expenses = (s) => num(s.taxes_total) + num(s.cam_total) + num(s.roof_total);
@@ -25,6 +41,7 @@ export default function HistoryPage() {
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: snaps = [] } = useQuery({ queryKey: ['snapshots', propId], queryFn: () => listSnapshots(propId) });
   const { data: expired = [] } = useQuery({ queryKey: ['expiredLeases', propId], queryFn: () => listExpiredLeases(propId) });
+  const { data: events = [] } = useQuery({ queryKey: ['historyEvents', propId], queryFn: () => listHistoryEvents(propId) });
   usePageChrome([
     { label: 'History', to: '/history' },
     { label: corp?.name || '…', to: `/history/${corpId}` },
@@ -175,6 +192,34 @@ export default function HistoryPage() {
           </div>
         </>
       )}
+
+      {/* Lease & tenant history — this building's own timeline of what happened */}
+      <div className="exp-block" style={{ marginBottom: 24 }}>
+        <div className="exp-head">
+          <div>
+            <strong>Lease &amp; tenant history</strong>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Every change this building's leases have been through — tenant assignments, term extensions, and renewal decisions — newest first.</div>
+          </div>
+        </div>
+        {events.length === 0 ? (
+          <p className="muted" style={{ marginTop: 14 }}>No recorded changes yet for this property.</p>
+        ) : (
+          <div className="table-wrap" style={{ marginTop: 14 }}>
+            <table style={{ minWidth: 0 }}>
+              <thead><tr><th>When</th><th>Event</th><th>Detail</th></tr></thead>
+              <tbody>
+                {events.map((ev) => (
+                  <tr key={ev.id}>
+                    <td>{fmtDate(ev.event_date || ev.created_at)}</td>
+                    <td><span className={`badge ${EVENT_BADGE[ev.type] || 'info'}`}>{EVENT_LABEL[ev.type] || ev.type}</span></td>
+                    <td>{ev.description}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Expired & renewed leases */}
       <div className="exp-block">

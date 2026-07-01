@@ -71,6 +71,33 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-01** — Addendums Phase 2+3: AI-led multi-effect review, tenant assignments, per-building
+  history. Deployed: DB migration `0035`, `extract-addendum` edge function (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `d8c133f4`.
+  - **Assignment detection** (`supabase/functions/extract-addendum/index.ts`): the main schema is at
+    Anthropic's 16-union ceiling, so a change-of-tenant ("Assignment and Assumption of Lease") is read
+    by an **isolated, non-fatal second Haiku call** (`ASSIGNMENT_SCHEMA` — new tenant name/contact/
+    email(s) + effective date; `is_assignment` is a plain boolean, not union-typed). Adds one cheap
+    call per addendum upload only; if it fails the term/rent/renewal fields still return.
+  - **AI-led multi-effect review** (`src/components/AddendumEditor.js`): replaced the single "This
+    addendum…" picker with toggleable effect cards — Extends term / Changes rent (dated step rows) /
+    Adds renewal option (now **pre-filled**, framed as *Pending — won't change your term until you
+    confirm*) / **Assigns to a new tenant**. The AI pre-ticks + fills everything it found; each card
+    is the override. A single addendum can now apply several effects at once.
+  - **Apply** (`src/lib/api.js` `applyAddendum`): an assignment swaps `tenant_name`/`contact`/emails on
+    the lease and logs the prior tenant. Also logs `term_extended`, and `confirmRenewal`/
+    `declineRenewal` log `renewal_confirmed`/`renewal_declined`.
+  - **Per-building history** (migration `0035` `history_events` table + `kind='assignment'`;
+    `src/pages/HistoryPage.js` new "Lease & tenant history" timeline). New `logHistoryEvent` /
+    `listHistoryEvents` in api.js.
+  - Verified token-free: `addendumRenewalReplay.test.js` now also replays the D&D Dental assignment —
+    tenant swaps to D&D Dental, term stays 2026, prior tenant preserved in history. UI smoke-test
+    passed (effect cards toggle, assignment changes the tenant, timeline shows the event, added option
+    is Pending & term-neutral, zero console errors).
+  - **Live data corrected** (lease `2258272a`): tenant → **D & D Dental, LLC / Dr. Ahmed Hegazy** with a
+    `tenant_assigned` history event (eff Aug 1 2021); the assignment addendum reclassified `kind=
+    'assignment'`. Left `tenant_email`/`2` untouched (no D&D email in the doc — George can add it).
+
 - **2026-07-01** — Addendums Phase 1: renewal options no longer auto-extend the term. Deployed:
   DB migration `0034`, frontend Cloudflare version `86be8d83`. (Phase 2 = assignment/tenant
   detection + multi-effect review; Phase 3 = per-building history — both still to come. Plan file:

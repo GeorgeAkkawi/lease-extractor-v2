@@ -696,6 +696,22 @@ export async function backfillLeaseToToday(leaseId, today = new Date()) {
   return res;
 }
 
+// ---- History events (per-building timeline of what happened to a lease) ------
+export const listHistoryEvents = (propertyId) =>
+  rows(supabase.from('history_events').select('*').eq('property_id', propertyId).order('created_at', { ascending: false }));
+
+// Record a lifecycle event (tenant assigned, term extended, renewal confirmed, …).
+// Non-fatal: a logging failure must never break the action that triggered it.
+export async function logHistoryEvent({ property_id, lease_id, type, description, event_date = null, meta = null }) {
+  try {
+    return await one(
+      supabase.from('history_events').insert({ owner_id: await ownerId(), property_id, lease_id, type, description, event_date, meta }).select().single()
+    );
+  } catch {
+    return null;
+  }
+}
+
 // ---- Addendums / riders (tracked amendments that update a lease) -------------
 export const listAddendums = (leaseId) =>
   rows(supabase.from('lease_addendums').select('*').eq('lease_id', leaseId).order('amendment_date'));
@@ -751,6 +767,32 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
   // source of truth for how long the tenant is committed.
   if (changes.extensionEnd) {
     await updateLease(leaseId, { lease_termination_date: changes.extensionEnd, is_active: true });
+    await logHistoryEvent({
+      property_id: lease?.property_id || null, lease_id: leaseId, type: 'term_extended',
+      description: `Term extended to ${fmtDate(changes.extensionEnd)}${addendum.label ? ` (${addendum.label})` : ''}`,
+      event_date: addendum.amendment_date || null, meta: { addendum_id: addendum.id, new_end: changes.extensionEnd },
+    });
+  }
+
+  // Assignment / change of tenant — swap the tenant identity on the lease as of the
+  // effective date, and keep the prior tenant in the building's history log.
+  if (changes.assignment && changes.assignment.newTenantName) {
+    const a = changes.assignment;
+    const priorTenant = lease?.tenant_name || null;
+    await updateLease(leaseId, {
+      tenant_name: a.newTenantName,
+      tenant_contact_name: a.newTenantContact || null,
+      tenant_email: a.newTenantEmail || null,
+      tenant_email_2: a.newTenantEmail2 || null,
+    });
+    await logHistoryEvent({
+      property_id: lease?.property_id || null,
+      lease_id: leaseId,
+      type: 'tenant_assigned',
+      description: `Tenant changed: ${priorTenant || '—'} → ${a.newTenantName}`,
+      event_date: a.effectiveDate || addendum.amendment_date || null,
+      meta: { prior_tenant: priorTenant, new_tenant: a.newTenantName, contact: a.newTenantContact || null, addendum_id: addendum.id },
+    });
   }
 
   // Renewal options contributed by the rider — pending rights, term-neutral until
@@ -1055,6 +1097,12 @@ export async function confirmRenewal(renewalId, today = new Date()) {
 
   const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid);
 
+  await logHistoryEvent({
+    property_id: lease.property_id, lease_id: lease.id, type: 'renewal_confirmed',
+    description: `Renewal confirmed${ren.option_label ? ` (${ren.option_label})` : ''} — term extended to ${fmtDate(newEnd)} at ${money(newRent)}`,
+    event_date: null, meta: { renewal_id: ren.id },
+  });
+
   // clear the "Is the tenant renewing?" prompt for this lease
   await rows(supabase.from('notifications').delete().eq('lease_id', lease.id).eq('kind', 'renewal_decision'));
 
@@ -1094,9 +1142,17 @@ export async function confirmRenewal(renewalId, today = new Date()) {
 // The landlord confirmed the tenant is NOT renewing → mark the option declined and
 // clear the prompt. The lease runs out its committed term and goes outdated normally.
 export async function declineRenewal(renewalId) {
-  const ren = await one(supabase.from('renewal_options').select('lease_id').eq('id', renewalId).maybeSingle());
+  const ren = await one(supabase.from('renewal_options').select('lease_id, option_label').eq('id', renewalId).maybeSingle());
   await updateRenewal(renewalId, { status: 'declined', applied_at: new Date().toISOString() });
-  if (ren?.lease_id) await rows(supabase.from('notifications').delete().eq('lease_id', ren.lease_id).eq('kind', 'renewal_decision'));
+  if (ren?.lease_id) {
+    const lease = await getLease(ren.lease_id);
+    await logHistoryEvent({
+      property_id: lease?.property_id || null, lease_id: ren.lease_id, type: 'renewal_declined',
+      description: `Renewal not exercised${ren.option_label ? ` (${ren.option_label})` : ''} — tenant is not renewing`,
+      event_date: null, meta: { renewal_id: renewalId },
+    });
+    await rows(supabase.from('notifications').delete().eq('lease_id', ren.lease_id).eq('kind', 'renewal_decision'));
+  }
 }
 
 // Bell-action helpers: a decision prompt only carries a lease_id, and there is at

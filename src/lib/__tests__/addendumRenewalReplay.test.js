@@ -13,7 +13,7 @@
 import { DEMO_MODE } from '../supabaseClient';
 import {
   createCorporation, createProperty, createLease, createAddendum, applyAddendum,
-  getLease, listRenewals, listEscalations, confirmRenewal,
+  getLease, listRenewals, listEscalations, confirmRenewal, listHistoryEvents,
 } from '../api';
 
 // Pin "today" so assertions don't depend on the wall clock (George's context date).
@@ -117,4 +117,38 @@ test('confirming the option is what rolls the term forward to 2031', async () =>
   const escs = await listEscalations(lease.id);
   const renewalSteps = escs.filter((e) => e.escalation_type === 'percent' && Number(e.escalation_value) === 5);
   expect(renewalSteps.length).toBe(4);
+});
+
+test('an assignment addendum swaps the tenant and logs the prior tenant to history', async () => {
+  const lease = await freshLease();
+  await applyDoc(lease.id, ...FIRST_EXTENSION);
+  await applyDoc(lease.id, ...SECOND_EXTENSION);
+
+  // Doc 3 — Assignment and Assumption of Lease (eff Aug 1 2021): the practice is sold
+  // and the lease is assigned to D & D Dental, LLC (Dr. Ahmed Hegazy).
+  await applyDoc(
+    lease.id,
+    { label: 'Assignment and Assumption of Lease', amendment_date: '2021-06-22', kind: 'other', summary: 'Assigns the lease to D & D Dental, LLC' },
+    {
+      assignment: {
+        newTenantName: 'D & D Dental, LLC',
+        newTenantContact: 'Dr. Ahmed Hegazy',
+        newTenantEmail: null, newTenantEmail2: null,
+        effectiveDate: '2021-08-01',
+      },
+    },
+  );
+
+  const after = await getLease(lease.id);
+  expect(after.tenant_name).toBe('D & D Dental, LLC');
+  expect(after.tenant_contact_name).toBe('Dr. Ahmed Hegazy');
+  // committed term is untouched by the assignment (still 2026)
+  expect(after.lease_termination_date).toBe('2026-09-30');
+
+  // the prior tenant is preserved in the building's history
+  const events = await listHistoryEvents(after.property_id);
+  const assigned = events.find((e) => e.type === 'tenant_assigned');
+  expect(assigned).toBeTruthy();
+  expect(assigned.meta.prior_tenant).toBe('Vibhakar & Vibhakar, PC');
+  expect(assigned.meta.new_tenant).toBe('D & D Dental, LLC');
 });
