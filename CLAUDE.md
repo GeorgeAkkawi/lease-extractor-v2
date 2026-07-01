@@ -94,6 +94,31 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
     (symlinked node_modules), so their work was never bundled or touched. Committed only my hunks to the
     two shared files (via clean patches) plus my own files — their WIP left untouched in the tree.
 
+- **2026-07-01** — Tenant renewal emails (approaching / renewed / not-renewed). Frontend-only,
+  Cloudflare version `28324d8e`. No migrations, no edge functions. All three letters are generated in
+  code (no AI cost) and sent by the landlord via the existing bell modal (Gmail/mail app) — nothing
+  auto-sends.
+  - `src/lib/emailTemplates.js` — two new letter builders on the shared `letter()` scaffold:
+    `buildRenewalApproachingEmail` (a "your renewal is coming up" heads-up, with the option's term/rent
+    and the notice-by date if stated) and `buildNonRenewalEmail` (a neutral lease-end / non-renewal
+    notice). The "renewed" letter (`buildRenewalEmail`) already existed and is unchanged.
+  - `src/lib/api.js` — `promptDueRenewalDecisions` now attaches the *approaching* email to the
+    `renewal_decision` prompt (populates `email_*`), and **enriches a bare prompt** the SQL cron
+    (`apply_due_renewals`) drops with no email — patches once, never duplicates. `declineRenewal` now
+    drops a `renewal_declined` notification carrying the non-renewal letter (mirrors how `confirmRenewal`
+    carries the renewed letter). `restoreRenewal` (undo) deletes that stale `renewal_declined` notice.
+  - `src/pages/DashboardPage.js` — the email modal's "Mark sent" no longer dismisses a `renewal_decision`
+    prompt (the Yes/No decision stays open after sending the heads-up); terminal notices still dismiss.
+  - No DB change: `notifications.kind` is free text (`0007`), so `renewal_declined` needs no migration.
+  - Verified token-free: new `src/lib/__tests__/renewalEmails.test.js` (4 tests) replays a due lease —
+    approaching email on the prompt, bare-prompt enrichment (no dup), renewed email on confirm,
+    non-renewal email on decline, and undo cleanup. All green.
+  - Note: another session had heavy uncommitted WIP in the shared tree (dashboard widgets / Display
+    Settings / monthly rent tracker, migrations `0037`/`0038`) intermixed in `api.js` + `DashboardPage.js`.
+    Deployed from an isolated `git worktree` at `origin/main` with only my renewal-email changes
+    re-applied (symlinked node_modules) — the other session's work was never bundled, touched, or shipped,
+    and their migrations were not run.
+
 - **2026-07-01** — Renewal "New rent" column formatting. Frontend Cloudflare version `69672db8`.
   - `src/components/RenewalOptionsEditor.js` — the +%/yr estimate was one cramped string in a
     right-aligned tabular-number cell; split into a main amount (`≈ $X`) with `+%/yr` on a `.cell-sub`

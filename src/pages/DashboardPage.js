@@ -250,7 +250,13 @@ export default function DashboardPage() {
         <NotificationEmailModal
           notif={emailNotif}
           onClose={() => setEmailNotif(null)}
-          onSent={async () => { await clearNotification(emailNotif.id); setEmailNotif(null); }}
+          onSent={async () => {
+            // The "renewal approaching" email rides on the still-open decision prompt —
+            // sending it must NOT dismiss the Yes/No prompt. Terminal notices (renewed /
+            // not renewing) dismiss on send as before.
+            if (emailNotif.kind !== 'renewal_decision') await clearNotification(emailNotif.id);
+            setEmailNotif(null);
+          }}
         />
       )}
     </div>

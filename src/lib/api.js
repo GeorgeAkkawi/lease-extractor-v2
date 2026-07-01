@@ -4,7 +4,7 @@
 import { supabase, invokeFunction } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm } from './leaseTerm';
 
@@ -1325,9 +1325,11 @@ export async function confirmRenewal(renewalId, today = new Date()) {
   return notif;
 }
 
-// The landlord confirmed the tenant is NOT renewing → mark the option declined and
-// clear the prompt. The lease runs out its committed term and goes outdated normally.
+// The landlord confirmed the tenant is NOT renewing → mark the option declined, clear the
+// prompt, and drop a "not renewing" notification carrying a ready-to-send lease-end notice.
+// The lease runs out its committed term and goes outdated normally.
 export async function declineRenewal(renewalId) {
+  const uid = await ownerId();
   const ren = await one(supabase.from('renewal_options').select('lease_id, option_label').eq('id', renewalId).maybeSingle());
   await updateRenewal(renewalId, { status: 'declined', applied_at: new Date().toISOString() });
   if (ren?.lease_id) {
@@ -1338,6 +1340,36 @@ export async function declineRenewal(renewalId) {
       event_date: null, meta: { renewal_id: renewalId },
     });
     await rows(supabase.from('notifications').delete().eq('lease_id', ren.lease_id).eq('kind', 'renewal_decision'));
+
+    if (lease) {
+      const prop = await getProperty(lease.property_id);
+      const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
+      const email = buildNonRenewalEmail({
+        business,
+        tenant_name: lease.tenant_name,
+        contact_name: lease.tenant_contact_name,
+        tenant_email: lease.tenant_email,
+        propertyName: prop?.name,
+        leaseEnd: lease.lease_termination_date,
+      });
+      await rows(
+        supabase.from('notifications').insert({
+          owner_id: uid,
+          lease_id: lease.id,
+          property_id: lease.property_id,
+          corporation_id: prop?.corporation_id || null,
+          kind: 'renewal_declined',
+          title: `Lease not renewing — ${lease.tenant_name}`,
+          body: `Term ends ${fmtDate(lease.lease_termination_date)} and will not be renewed. Send the tenant a lease-end notice.`,
+          email_to: lease.tenant_email || null,
+          email_to_2: lease.tenant_email_2 || null,
+          email_from: business?.contact_email || null,
+          email_subject: email.subject,
+          email_body: email.body,
+          read: false,
+        })
+      );
+    }
   }
 }
 
@@ -1354,6 +1386,8 @@ export async function restoreRenewal(renewalId) {
       description: 'Renewal decision reopened (undo) — option is pending again',
       event_date: null, meta: { renewal_id: renewalId },
     });
+    // Drop the stale "not renewing" notice so its lease-end email can't be sent by mistake.
+    await rows(supabase.from('notifications').delete().eq('lease_id', ren.lease_id).eq('kind', 'renewal_declined'));
   }
   // Recreate the decision prompt if it's due (dedupes if one already exists).
   await promptDueRenewalDecisions();
@@ -1394,13 +1428,44 @@ export async function promptDueRenewalDecisions(today = new Date()) {
     const ren = pending[0];
     if (!ren || !isRenewalDecisionDue(l, ren, today)) continue;
 
-    // one open decision per lease at a time — don't re-prompt if we already asked
+    // one open decision per lease at a time. Don't re-prompt if we already asked AND the
+    // prompt already carries the tenant "renewal approaching" email; but DO enrich a bare
+    // prompt (e.g. one the SQL cron dropped, which has no email) with that email.
     const existing = await rows(
-      supabase.from('notifications').select('id').eq('lease_id', l.id).eq('kind', 'renewal_decision')
+      supabase.from('notifications').select('id, email_body').eq('lease_id', l.id).eq('kind', 'renewal_decision')
     );
-    if (existing.length) continue;
+    const bare = existing.find((n) => !n.email_body);
+    if (existing.length && !bare) continue;
 
+    // Build the "approaching" tenant email — needed to create a new prompt or enrich a bare one.
     const prop = await getProperty(l.property_id);
+    const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
+    const approachEmail = buildRenewalApproachingEmail({
+      business,
+      tenant_name: l.tenant_name,
+      contact_name: l.tenant_contact_name,
+      tenant_email: l.tenant_email,
+      propertyName: prop?.name,
+      termEnd: l.lease_termination_date,
+      optionLabel: ren.option_label,
+      termMonths: ren.term_months,
+      newRent: ren.new_rent,
+      escalationPct: Number(ren.annual_escalation_pct) || 0,
+      noticeByDate: ren.notice_by_date,
+    });
+    const emailFields = {
+      email_to: l.tenant_email || null,
+      email_to_2: l.tenant_email_2 || null,
+      email_from: business?.contact_email || null,
+      email_subject: approachEmail.subject,
+      email_body: approachEmail.body,
+    };
+
+    if (bare) {
+      await rows(supabase.from('notifications').update(emailFields).eq('id', bare.id));
+      continue;
+    }
+
     const years = Math.round((ren.term_months || 12) / 12);
     const pct = Number(ren.annual_escalation_pct) || 0;
     const rentLabel = ren.new_rent != null ? money(ren.new_rent) : (pct > 0 ? `+${pct}%/yr` : 'the current rent');
@@ -1415,6 +1480,7 @@ export async function promptDueRenewalDecisions(today = new Date()) {
           kind: 'renewal_decision',
           title: `Is ${l.tenant_name} renewing?`,
           body: `${ren.option_label || 'A renewal option'} — ${years}-yr extension at ${rentLabel}. Confirm only if the tenant is exercising it; it won't change the term until you do.`,
+          ...emailFields,
           read: false,
         })
         .select()
