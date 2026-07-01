@@ -56,6 +56,50 @@ export function buildRenewalEmail({ business, tenant_name, contact_name, tenant_
   return { subject, body, to: tenant_email || '' };
 }
 
+// Heads-up sent BEFORE the renewal decision: the current term is approaching its end
+// and a renewal option is available. Invites the tenant to say whether they intend to
+// renew (by the notice-by date, if the lease states one). Does not commit anything.
+export function buildRenewalApproachingEmail({ business, tenant_name, contact_name, tenant_email, propertyName, termEnd, optionLabel, termMonths, newRent, escalationPct, noticeByDate }) {
+  const years = termMonths ? Math.round(termMonths / 12) : null;
+  const termPhrase = years ? (years === 1 ? 'a one-year renewal term' : `a ${years}-year renewal term`) : 'a renewal term';
+  const rentPhrase =
+    newRent != null ? `at an annual base rent of ${money(newRent)}${monthlyOf(newRent) ? ` (${monthlyOf(newRent)} per month)` : ''}`
+    : escalationPct ? `with the rent adjusting by ${escalationPct}% per year`
+    : 'on the terms set out in your lease';
+  const subject = `Upcoming Lease Renewal — ${propertyName || 'your premises'} (term ends ${longDate(termEnd)})`;
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: Upcoming renewal of your lease at ${propertyName || 'the premises'}`,
+    paragraphs: [
+      `Dear ${contact_name || tenant_name || 'Tenant'},`,
+      `The current term of your lease at ${propertyName || 'the premises'} is approaching its end on ${longDate(termEnd)}. We're reaching out ahead of time so you have plenty of notice to plan.`,
+      `Your lease includes ${optionLabel ? `${optionLabel} — ` : ''}${termPhrase} ${rentPhrase}. If you'd like to continue your tenancy, we'd be glad to move forward with the renewal.`,
+      `Please let us know whether you intend to exercise this renewal${noticeByDate ? ` by ${longDate(noticeByDate)}` : ' at your earliest convenience'}, so we can prepare the paperwork. If you have any questions or would like to discuss the terms, just reply to this email or contact our office.`,
+    ],
+  });
+  return { subject, body, to: tenant_email || '' };
+}
+
+// Sent when a lease is NOT being renewed: a formal notice that the current term will
+// conclude on its end date and will not be renewed. Neutral wording — reads the same
+// whether the tenant or the landlord chose not to renew.
+export function buildNonRenewalEmail({ business, tenant_name, contact_name, tenant_email, propertyName, leaseEnd }) {
+  const subject = `Notice of Lease Expiration — ${propertyName || 'your premises'} (lease ends ${longDate(leaseEnd)})`;
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: Expiration of your lease at ${propertyName || 'the premises'}`,
+    paragraphs: [
+      `Dear ${contact_name || tenant_name || 'Tenant'},`,
+      `This letter serves as formal notice that the current term of your lease at ${propertyName || 'the premises'} will conclude on ${longDate(leaseEnd)} and will not be renewed. Please plan accordingly for the end of the term.`,
+      `As the lease approaches its expiration, we ask that you arrange to vacate and return the premises in the condition required under the lease, including any move-out and restoration obligations. We will be in touch to coordinate a final walk-through, the return of keys, and reconciliation of the security deposit.`,
+      `We sincerely thank you for your tenancy. If you have any questions about the wind-down or the steps ahead, please contact our office and we will be glad to assist.`,
+    ],
+  });
+  return { subject, body, to: tenant_email || '' };
+}
+
 // Asks the tenant for a current certificate of insurance naming the landlord as
 // additional insured (as required by the lease), to keep on file.
 export function buildInsuranceRequestEmail({ business, tenant_name, contact_name, tenant_email, propertyName }) {
