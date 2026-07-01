@@ -15,7 +15,7 @@ import { DEMO_MODE, supabase } from '../supabaseClient';
 import {
   createCorporation, updateCorporation, createProperty, createLease, createRenewal,
   promptDueRenewalDecisions, confirmRenewal, declineRenewal, restoreRenewal,
-  listNotifications, listRenewals,
+  draftRenewalApproachingEmail, listNotifications, listRenewals,
 } from '../api';
 
 // Pin "today" so due-ness doesn't depend on the wall clock. Term ends 2026-09-30, so a
@@ -57,6 +57,19 @@ beforeAll(() => {
   // Guard: if real Supabase keys ever leak into the test env, fail loudly rather than
   // silently hammering the live backend.
   expect(DEMO_MODE).toBe(true);
+});
+
+test('draftRenewalApproachingEmail builds a ready-to-send heads-up for any pending option', async () => {
+  const { lease } = await seedDueLease();
+  const [option] = await listRenewals(lease.id);
+
+  const draft = await draftRenewalApproachingEmail(option.id);
+  expect(draft).toBeTruthy();
+  expect(draft.email_subject).toMatch(/Upcoming Lease Renewal/);
+  expect(draft.email_body).toMatch(/approaching its end/);
+  expect(draft.email_to).toBe('jane@acme.com');
+  expect(draft.email_to_2).toBe('ap@acme.com');
+  expect(draft.email_from).toBe('owner@test.com');
 });
 
 test('the decision prompt carries the "renewal approaching" tenant email', async () => {

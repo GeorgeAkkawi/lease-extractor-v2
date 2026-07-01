@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal } from '../lib/api';
+import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, draftRenewalApproachingEmail } from '../lib/api';
 import { money0, fmtDate } from '../lib/format';
+import NotificationEmailModal from './NotificationEmailModal';
 
 // Badge tone + label for an option's lifecycle status.
 function statusBadge(status) {
@@ -45,6 +46,16 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
   const restore = useMutation({ mutationFn: (id) => restoreRenewal(id), onSuccess: refreshAll });
   const acting = confirm.isPending || decline.isPending || restore.isPending;
 
+  // "Renewal approaching" heads-up email — a ready-to-send draft the landlord can send any
+  // time (no waiting for the bell's due-date prompt). Opens the shared send modal.
+  const [emailNotif, setEmailNotif] = useState(null);
+  const [emailBusy, setEmailBusy] = useState(null);
+  async function emailApproaching(id) {
+    setEmailBusy(id);
+    try { const n = await draftRenewalApproachingEmail(id); if (n) setEmailNotif(n); }
+    finally { setEmailBusy(null); }
+  }
+
   const add = useMutation({
     mutationFn: () =>
       createRenewal({
@@ -80,7 +91,7 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
                   <td><span className={`badge ${badge.cls}`}>{badge.label}</span></td>
                   <td style={{ whiteSpace: 'normal' }}>
                     {r.status === 'pending' ? (
-                      <div style={{ display: 'flex', gap: 6 }}>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <button type="button" className="secondary" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
                           title="Tenant is exercising this option — apply it (extends the term + new rent)"
                           onClick={() => { if (window.confirm('Confirm the tenant is renewing? This extends the term and applies the new rent.')) confirm.mutate(r.id); }}>
@@ -90,6 +101,11 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
                           title="Tenant is not exercising this option"
                           onClick={() => { if (window.confirm('Mark this option as not being exercised?')) decline.mutate(r.id); }}>
                           Not renewing
+                        </button>
+                        <button type="button" className="ghost" style={{ padding: '3px 8px', fontSize: 12 }} disabled={emailBusy === r.id}
+                          title="Email the tenant that their renewal is coming up (a ready-to-send heads-up)"
+                          onClick={() => emailApproaching(r.id)}>
+                          {emailBusy === r.id ? '…' : '✉ Email tenant'}
                         </button>
                       </div>
                     ) : r.status === 'declined' ? (
@@ -135,9 +151,18 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
       <ul className="muted" style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, lineHeight: 1.6 }}>
         <li><strong>Renew</strong> applies the option — extends the term, sets the new rent, and drafts a tenant email.</li>
         <li><strong>Not renewing</strong> closes the option and drafts a lease-end notice you can send the tenant (you can undo it).</li>
+        <li><strong>✉ Email tenant</strong> sends a "your renewal is coming up" heads-up — a ready-to-send draft you can send any time, before you decide.</li>
         <li><strong>New rent</strong> = a flat option rent; <strong>+%/yr</strong> = an annual increase (e.g. "5% annual") — a +%/yr option adds one dated rent step per year when exercised.</li>
         <li><strong>Notice-by</strong> is set only if the lease states a deadline — that's when we ask you to decide (otherwise ~3 months before the term ends).</li>
       </ul>
+
+      {emailNotif && (
+        <NotificationEmailModal
+          notif={emailNotif}
+          onClose={() => setEmailNotif(null)}
+          onSent={() => setEmailNotif(null)}
+        />
+      )}
     </div>
   );
 }

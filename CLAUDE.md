@@ -71,6 +71,26 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-01** — Renewal emails, follow-up: a lease-page **"✉ Email tenant"** button. Frontend
+  Cloudflare version `f7920f34`. No migrations, no edge functions.
+  - **Why:** the "renewal approaching" heads-up only appeared in the dashboard bell, and only inside the
+    ~3-month due window — George couldn't find a way to send it proactively. Now every **pending**
+    renewal option on the lease page has a "✉ Email tenant" button that opens the same send modal with a
+    ready-to-send "your renewal is coming up" draft, sendable **any time**.
+  - `src/lib/api.js` — new `draftRenewalApproachingEmail(renewalId)` builds the letter (reuses
+    `buildRenewalApproachingEmail` + property/corp business) and returns the modal's email fields; no
+    notification is created. `src/components/RenewalOptionsEditor.js` — the button + `NotificationEmailModal`
+    (onSent just closes; nothing to dismiss) + a help-text line. New test case in `renewalEmails.test.js`
+    (5/5 green).
+  - **Deploy note (regression I caught + fixed):** while I was building, the widgets deploy (`8a06310e`)
+    had advanced the live frontend past my earlier renewal base. My first button build from the stale
+    `cc6f9e0` base (`35746a7c`) briefly dropped the widgets/monthly-tracker from live; I immediately
+    redeployed from the **latest committed `main`** (`f7920f34` = all committed work + my button), which is
+    a strict superset — nothing lost. This deploy also brings live the already-committed, held-back
+    rent-steps warning badge (`LeaseNewPage.js`), which is now safe since all sessions' work is committed.
+  - Built + deployed from an isolated `git worktree` at `origin/main` (no session's uncommitted WIP), and
+    committed only my two files + the test.
+
 - **2026-07-01** — Fix $/SF rent steps computed wrong on lease import. Deployed: `extract-lease` edge
   function (Supabase `awgrjmbcghdjgnqeiqkt`). **Frontend NOT pushed to Cloudflare** — see note below.
   - **Root cause (Gzim Mila lease):** the design has the model read RAW rent figures + a basis and the

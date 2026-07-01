@@ -1411,6 +1411,40 @@ export async function declineRenewalForLease(leaseId) {
   return null;
 }
 
+// Build the "renewal approaching" tenant email for a pending option as a ready-to-send
+// draft (no notification created). Lets the lease page offer an "Email tenant" button so
+// the landlord can send the heads-up ANY time — not only when the bell decision is due.
+// Returns the email fields the send modal expects, or null if the option/lease is gone.
+export async function draftRenewalApproachingEmail(renewalId) {
+  const ren = await one(supabase.from('renewal_options').select('*').eq('id', renewalId).maybeSingle());
+  if (!ren) return null;
+  const lease = await getLease(ren.lease_id);
+  if (!lease) return null;
+  const prop = await getProperty(lease.property_id);
+  const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
+  const email = buildRenewalApproachingEmail({
+    business,
+    tenant_name: lease.tenant_name,
+    contact_name: lease.tenant_contact_name,
+    tenant_email: lease.tenant_email,
+    propertyName: prop?.name,
+    termEnd: lease.lease_termination_date,
+    optionLabel: ren.option_label,
+    termMonths: ren.term_months,
+    newRent: ren.new_rent,
+    escalationPct: Number(ren.annual_escalation_pct) || 0,
+    noticeByDate: ren.notice_by_date,
+  });
+  return {
+    kind: 'renewal_approaching',
+    email_to: lease.tenant_email || '',
+    email_to_2: lease.tenant_email_2 || '',
+    email_from: business?.contact_email || '',
+    email_subject: email.subject,
+    email_body: email.body,
+  };
+}
+
 // Scan active leases and, for each with a pending option whose decision is due and
 // no prompt already open, drop a one-time 'renewal_decision' notification. Runs on
 // app load (demo) and — at go-live — as the scheduled job (see migration 0034). It
