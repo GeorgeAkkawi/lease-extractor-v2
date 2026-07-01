@@ -9,6 +9,7 @@ import EscalationScheduleEditor from '../components/EscalationScheduleEditor';
 import RenewalOptionsEditor from '../components/RenewalOptionsEditor';
 import AddendumEditor from '../components/AddendumEditor';
 import InvoicesPanel from '../components/InvoicesPanel';
+import MonthlyRentTracker from '../components/MonthlyRentTracker';
 import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
 import InsuranceVault from '../components/InsuranceVault';
@@ -46,7 +47,7 @@ export default function LeaseDetailPage() {
     { label: corp?.name || '…', to: `/leases/${corpId}` },
     { label: prop?.name || '…', to: `/leases/${corpId}/${propId}` },
     { label: lease?.tenant_name || '…' },
-  ]);
+  ], true); // show the shared fiscal-year selector — the monthly rent tracker follows it
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['lease', leaseId] });
@@ -272,6 +273,19 @@ export default function LeaseDetailPage() {
           order; the AI keeps the timeline straight.
         </p>
         <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} />
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <strong>Monthly rent</strong>
+          <span className="muted">Check off each month as it's paid — resets each fiscal year</span>
+        </div>
+        <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
+          Each box is one month's share (the year's rent ÷ 12). Click a month when it's paid; click again to undo.
+          It follows the <strong>fiscal-year selector</strong> up top — switch years to view or record a different year,
+          and each year keeps its own record. Every check-off feeds the same Receivables/AR below.
+        </p>
+        <MonthlyRentTracker lease={lease} />
       </div>
 
       <div className="panel">

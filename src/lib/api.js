@@ -930,6 +930,157 @@ export const recordPayment = async (pay) =>
 
 export const deletePayment = (id) => rows(supabase.from('payments').delete().eq('id', id));
 
+// ---- Monthly rent tracker ---------------------------------------------------
+// The per-lease 12-box grid and the property rent roll are a friendly MONTHLY
+// layer over the SAME annual invoices/payments. "Month paid" = one payment row
+// tagged with period_month (1-12) against that year's invoice. The year's invoice
+// is created on demand the first time a month is marked (no manual invoice step),
+// using the exact figures the manual invoice flow uses (draft-invoice). Because
+// each fiscal year has its own invoice, switching years shows a fresh grid and
+// prior years stay intact — that's the per-year "reset".
+const paymentIsoToday = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+
+// The live (non-void) invoice for a lease + year, or null.
+export async function getYearInvoice(leaseId, year) {
+  const list = await listInvoices(leaseId);
+  return list.find((i) => Number(i.year) === Number(year) && i.status !== 'void') || null;
+}
+
+// Ensure a 'sent' invoice exists for (lease, year), creating it from the same
+// draft-invoice figures the manual flow uses so it is identical. Returns the invoice.
+export async function ensureInvoice(leaseId, propertyId, year) {
+  const existing = await getYearInvoice(leaseId, year);
+  if (existing) return existing;
+  const { facts } = await invokeFunction('draft-invoice', { lease_id: leaseId, year });
+  const base = Number(facts?.base_rent_annual || 0);
+  const cam = Number(facts?.cam_annual || 0);
+  const tax = Number(facts?.tax_annual || 0);
+  const roof = Number(facts?.roof_annual || 0);
+  return createInvoice({
+    lease_id: leaseId,
+    property_id: propertyId,
+    year: Number(year),
+    issue_date: facts?.today || null,
+    due_date: facts?.due || null,
+    status: 'sent',
+    base_rent_annual: base,
+    cam_annual: cam,
+    tax_annual: tax,
+    roof_annual: roof,
+    total_amount: base + cam + tax + roof,
+  });
+}
+
+// Everything the monthly grid needs for one lease + year in one call: the year's
+// invoice (or null), the expected annual/monthly amount, and which months are paid
+// (period_month -> { amount, ids, paid_date, method }).
+export async function getMonthlyRent(leaseId, year) {
+  const invoice = await getYearInvoice(leaseId, year);
+  let annual;
+  if (invoice) {
+    annual = Number(invoice.total_amount || 0);
+  } else {
+    const { facts } = await invokeFunction('draft-invoice', { lease_id: leaseId, year });
+    annual = ['base_rent_annual', 'cam_annual', 'tax_annual', 'roof_annual']
+      .reduce((s, k) => s + Number(facts?.[k] || 0), 0);
+  }
+  const payments = invoice ? await listPayments(invoice.id) : [];
+  const byMonth = {};
+  for (const p of payments) {
+    const m = Number(p.period_month);
+    if (!m) continue; // skip untagged (annual/partial) payments
+    const b = (byMonth[m] ||= { amount: 0, ids: [], paid_date: p.paid_date, method: p.method });
+    b.amount += Number(p.amount) || 0;
+    b.ids.push(p.id);
+  }
+  return { invoice, annual, monthly: annual / 12, byMonth };
+}
+
+// Mark month (1-12) paid: ensure the year's invoice exists, then record a payment
+// tagged with that month. amount defaults to the monthly share (invoice total / 12).
+export async function markMonthPaid(leaseId, propertyId, year, month, opts = {}) {
+  const invoice = await ensureInvoice(leaseId, propertyId, year);
+  const amount = opts.amount != null && opts.amount !== '' ? Number(opts.amount) : Number(invoice.total_amount || 0) / 12;
+  await recordPayment({
+    invoice_id: invoice.id,
+    lease_id: leaseId,
+    amount,
+    paid_date: opts.paid_date || paymentIsoToday(),
+    method: opts.method || 'check',
+    note: opts.note || null,
+    period_month: Number(month),
+  });
+  return invoice;
+}
+
+// Undo a month: delete every payment tagged with that month on the year's invoice.
+export async function unmarkMonthPaid(leaseId, year, month) {
+  const invoice = await getYearInvoice(leaseId, year);
+  if (!invoice) return;
+  const payments = await listPayments(invoice.id);
+  for (const p of payments.filter((x) => Number(x.period_month) === Number(month))) {
+    await deletePayment(p.id);
+  }
+}
+
+// Bulk: mark `month` paid for every tenant in a property that hasn't paid it yet
+// (for `year`). Idempotent — tenants already marked for that month are skipped.
+// Returns { paid, skipped, total }.
+export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}) {
+  const shares = await getTenantShares(propertyId, year); // one row per active tenant/lease for the year
+  let paid = 0;
+  let skipped = 0;
+  for (const s of shares) {
+    const invoice = await getYearInvoice(s.lease_id, year);
+    if (invoice) {
+      const payments = await listPayments(invoice.id);
+      if (payments.some((p) => Number(p.period_month) === Number(month))) { skipped++; continue; }
+    }
+    await markMonthPaid(s.lease_id, propertyId, year, month, opts);
+    paid++;
+  }
+  return { paid, skipped, total: shares.length };
+}
+
+// Property rent roll: one row per tenant for `year` with their monthly amount and
+// which months are paid — powers the property-level grid + "mark all paid". Uses
+// the year's invoice total/12 when an invoice exists, else an estimate from the
+// tenant-share figures (exact once the first month is marked and the invoice is born).
+export async function getPropertyMonthlyRoll(propertyId, year) {
+  const [shares, invoices] = await Promise.all([
+    getTenantShares(propertyId, year),
+    listInvoicesForProperty(propertyId),
+  ]);
+  const invByLease = {};
+  for (const inv of invoices) {
+    if (Number(inv.year) === Number(year) && inv.status !== 'void') invByLease[inv.lease_id] = inv;
+  }
+  const paymentsByInvoice = {};
+  await Promise.all(
+    Object.values(invByLease).map(async (inv) => { paymentsByInvoice[inv.id] = await listPayments(inv.id); })
+  );
+  return shares.map((s) => {
+    const inv = invByLease[s.lease_id] || null;
+    const annual = inv
+      ? Number(inv.total_amount || 0)
+      : Number(s.base_rent || 0) + Number(s.cam_amount || 0) + Number(s.tax_amount || 0)
+        + (s.roof_responsible ? Number(s.roof_amt || 0) : 0);
+    const byMonth = {};
+    if (inv) {
+      for (const p of paymentsByInvoice[inv.id] || []) {
+        const m = Number(p.period_month);
+        if (!m) continue;
+        (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
+      }
+    }
+    return { lease_id: s.lease_id, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth };
+  });
+}
+
 // Outstanding AR for a property (and a current/30/60/90+ aging by due date).
 export async function getPropertyAR(propertyId, today = new Date()) {
   return summarizeAR(await listInvoicesForProperty(propertyId), today);

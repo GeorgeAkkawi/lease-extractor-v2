@@ -13,6 +13,7 @@ import { useChrome, usePageChrome } from '../context/ChromeContext';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
+import PropertyRentRoll from '../components/PropertyRentRoll';
 import { money, psf, sf } from '../lib/format';
 
 // whole-dollar money (no cents) for the compact roof billed/absorbed line
@@ -112,6 +113,8 @@ export default function PropertyFinancialsPage() {
       </div>
 
       <ARSummary propId={propId} />
+
+      <PropertyRentRoll propertyId={propId} year={year} />
 
       <h3 className="section-title">Per-tenant breakdown</h3>
       <TenantShareTable propertyId={propId} year={year} />
