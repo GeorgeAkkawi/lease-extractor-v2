@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal } from '../lib/api';
+import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
 import { usePageChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
@@ -21,8 +21,14 @@ export default function DashboardPage() {
   const [undoDecline, setUndoDecline] = useState(null); // { id, tenant } after "Not renewing"
   usePageChrome([{ label: 'Overview' }]);
 
+  // Which Overview widgets the landlord has chosen to hide (Display settings).
+  // Defaults to showing everything; `show(key)` gates each block below.
+  const { data: hidden = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
+  const show = (k) => !hidden.includes(k);
+
   const { data: index } = useQuery({ queryKey: ['searchIndex'], queryFn: fetchSearchIndex });
-  const { data: ar } = useQuery({ queryKey: ['portfolioAR'], queryFn: () => getPortfolioAR() });
+  // Skip the receivables fetch entirely when that card is hidden.
+  const { data: ar } = useQuery({ queryKey: ['portfolioAR'], queryFn: () => getPortfolioAR(), enabled: show('ar') });
   const { data: alerts = [] } = useQuery({
     queryKey: ['alerts'],
     queryFn: async () => {
@@ -77,6 +83,14 @@ export default function DashboardPage() {
   const b = ar?.buckets || {};
   const lateTotal = (b.d30 || 0) + (b.d60 || 0) + (b.d90 || 0);
 
+  // Which blocks to render, per the landlord's Display settings. The two panels
+  // share a 2-column grid — if only one shows, it goes full-width.
+  const showCards = ['rent_roll', 'ar', 'occupancy', 'expiring'].some(show);
+  const showExpirations = show('expirations');
+  const showAlerts = show('alerts');
+  const twoPanels = showExpirations && showAlerts;
+  const nothingShown = !showCards && !showExpirations && !showAlerts;
+
   if (indexLoading) return <PageSkeleton />;
 
   return (
@@ -94,16 +108,28 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {showCards && (
       <div className="metric-group">
         <div className="metrics">
-          <Card label="Annual rent roll" main={money(rentRoll)} foot={leasedSf ? `${psf(rentRoll / leasedSf)} blended` : null} onClick={() => navigate('/financials')} />
-          <Card label="Outstanding (AR)" main={money(ar?.outstanding || 0)} foot={ar ? `${ar.count} unpaid · ${money(lateTotal)} late` : null} tone={lateTotal > 0 ? 'danger' : undefined} />
-          <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={buildingSf ? `${sf(vacantSf)} vacant` : 'add building sizes'} />
-          <Card label="Expiring ≤ 90 days" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />
+          {show('rent_roll') && <Card label="Annual rent roll" main={money(rentRoll)} foot={leasedSf ? `${psf(rentRoll / leasedSf)} blended` : null} onClick={() => navigate('/financials')} />}
+          {show('ar') && <Card label="Outstanding (AR)" main={money(ar?.outstanding || 0)} foot={ar ? `${ar.count} unpaid · ${money(lateTotal)} late` : null} tone={lateTotal > 0 ? 'danger' : undefined} />}
+          {show('occupancy') && <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={buildingSf ? `${sf(vacantSf)} vacant` : 'add building sizes'} />}
+          {show('expiring') && <Card label="Expiring ≤ 90 days" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />}
         </div>
       </div>
+      )}
 
-      <div className="dash-cols" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
+      {nothingShown && (
+        <div className="panel">
+          <p className="empty-line muted" style={{ margin: 0 }}>
+            You’ve hidden every Overview widget. Turn them back on any time in <Link to="/display">Display settings</Link>.
+          </p>
+        </div>
+      )}
+
+      {(showExpirations || showAlerts) && (
+      <div className="dash-cols" style={{ display: 'grid', gridTemplateColumns: twoPanels ? '1fr 1fr' : '1fr', gap: 16, alignItems: 'start' }}>
+        {showExpirations && (
         <div className="panel">
           <div className="panel-head">
             <strong>Lease expirations · next 90 days</strong>
@@ -130,7 +156,9 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+        )}
 
+        {showAlerts && (
         <div className="panel">
           <div className="panel-head">
             <strong>Alerts &amp; notifications</strong>
@@ -214,7 +242,9 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+        )}
       </div>
+      )}
 
       {emailNotif && (
         <NotificationEmailModal

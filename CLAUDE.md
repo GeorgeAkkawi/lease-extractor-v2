@@ -71,6 +71,29 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-01** — Hide/show dashboard widgets: new **Display** settings page. Deployed: DB migration
+  `0038` (`user_preferences` table, applied via `supabase db query`), frontend Cloudflare version
+  `8a06310e`.
+  - **What it does for George:** on the Overview page he can now hide any of the six widgets he doesn't
+    want — the four top cards (Annual rent roll, **Outstanding/receivables**, Occupancy, Expiring ≤ 90
+    days) and the two panels (Lease expirations table, Alerts & notifications). Choices live in a new
+    **Display** page in the sidebar footer (slider icon, next to Security) and are saved to his account,
+    so they follow him across devices.
+  - **New:** `src/pages/DisplaySettings.js` (the toggle page), `src/lib/dashboardWidgets.js` (shared
+    widget keys/labels), `supabase/migrations/0038_dashboard_prefs.sql` (per-user `user_preferences`
+    table, client-writable under RLS — same shape as `alert_states`).
+  - **Edited:** `src/lib/api.js` (`getHiddenWidgets`/`setHiddenWidgets`), `src/pages/DashboardPage.js`
+    (each widget gated by `show(key)`; the receivables query is skipped via `enabled` when its card is
+    hidden; panels collapse to full-width when only one shows), `src/App.js` (route `/display`),
+    `src/components/Sidebar.js` (nav item), `src/components/icons.js` (`SlidersIcon`). Prefs shared via
+    React Query key `['dashboardPrefs']`. UI-verified end-to-end (hide receivables → card gone; hide a
+    panel → other goes full-width; re-check → all back; zero console errors).
+  - **Shared-file note:** `src/lib/api.js` and `src/pages/DashboardPage.js` also carried two other
+    sessions' uncommitted WIP (monthly-rent tracking block in api.js; an `onSent` renewal tweak in
+    DashboardPage). Deployed from an isolated `git worktree` at HEAD holding **only** my changes
+    (symlinked node_modules), so their work was never bundled or touched. Committed only my hunks to the
+    two shared files (via clean patches) plus my own files — their WIP left untouched in the tree.
+
 - **2026-07-01** — Renewal "New rent" column formatting. Frontend Cloudflare version `69672db8`.
   - `src/components/RenewalOptionsEditor.js` — the +%/yr estimate was one cramped string in a
     right-aligned tabular-number cell; split into a main amount (`≈ $X`) with `+%/yr` on a `.cell-sub`

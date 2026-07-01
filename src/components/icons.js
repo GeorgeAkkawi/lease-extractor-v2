@@ -30,6 +30,10 @@ export const SparkIcon = () => (
 export const ShieldIcon = () => (
   <svg {...base}><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" /><path d="M9 12l2 2 4-4" /></svg>
 );
+// Sliders — display / show-hide preferences.
+export const SlidersIcon = () => (
+  <svg {...base}><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h8M16 18h4" /><circle cx="16" cy="6" r="2" /><circle cx="8" cy="12" r="2" /><circle cx="14" cy="18" r="2" /></svg>
+);
 // Chevron — collapse/expand the sidebar (rotated 180° when collapsed).
 export const ChevronLeftIcon = () => (
   <svg {...base}><path d="M15 6l-6 6 6 6" /></svg>

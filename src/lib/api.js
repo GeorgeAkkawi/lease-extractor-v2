@@ -1144,6 +1144,38 @@ export const upsertAlertState = async (patch) =>
       .single()
   );
 
+// ---- Dashboard display preferences (which Overview widgets are hidden) ------
+// One row per user, client-writable under RLS (migration 0038). Reading defaults
+// to "nothing hidden" on any error or for a fresh account, so the dashboard shows
+// everything until the landlord chooses otherwise.
+export async function getHiddenWidgets() {
+  try {
+    const uid = await ownerId();
+    if (!uid) return [];
+    const { data } = await supabase
+      .from('user_preferences')
+      .select('hidden_widgets')
+      .eq('user_id', uid)
+      .maybeSingle();
+    return data?.hidden_widgets || [];
+  } catch {
+    return [];
+  }
+}
+
+// Replace the full set of hidden widget keys for the current user.
+export const setHiddenWidgets = async (hidden_widgets) =>
+  one(
+    supabase
+      .from('user_preferences')
+      .upsert(
+        { user_id: await ownerId(), hidden_widgets, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
+      .select()
+      .single()
+  );
+
 // ---- Notifications ----------------------------------------------------------
 export const listNotifications = () =>
   rows(supabase.from('notifications').select('*').order('created_at', { ascending: false }));

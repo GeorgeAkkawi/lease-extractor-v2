@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import Login from './pages/Login';
 import TwoFactorChallenge from './pages/TwoFactorChallenge';
 import SecuritySettings from './pages/SecuritySettings';
+import DisplaySettings from './pages/DisplaySettings';
 import DashboardPage from './pages/DashboardPage';
 import CorporationsPage from './pages/CorporationsPage';
 import PropertiesPage from './pages/PropertiesPage';
@@ -48,6 +49,7 @@ export default function App() {
         <Route path="/history/:corpId/:propId" element={<HistoryPage />} />
 
         <Route path="/security" element={<SecuritySettings />} />
+        <Route path="/display" element={<DisplaySettings />} />
 
         <Route path="*" element={<Navigate to="/leases" replace />} />
       </Routes>
