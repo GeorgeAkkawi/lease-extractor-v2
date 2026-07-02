@@ -26,13 +26,25 @@ export function annualRentFrom(amount, period, sqft) {
 // over a pre-computed amount it got wrong (the raw rate wasn't read cleanly), which we
 // surface as a flag for a human to eyeball before saving.
 //
-// Inputs:  { rentSchedule: [{ effective_date, amount, period }], sqft, modelEscalations }
+// Inputs:  { rentSchedule: [{ effective_date, months_from_start, amount, period }], sqft,
+//            modelEscalations }
 // Returns: { baseRent, baseDate, escalations, flag } — any of which may be null (no
 //          change). baseDate is the earliest period's effective date (the addendum
 //          import uses it to date the opening rent step; the lease import ignores it).
+//
+// Two modes, chosen by the rows themselves:
+//   • DATED — at least one row prints a real calendar date. The earliest dated period is
+//     base_rent, later dated periods become escalations. Undated rows are dropped (they
+//     can't be scheduled). This is the addendum path and any lease that prints real dates.
+//   • RELATIVE — NO row prints a date but rows carry months_from_start (a lease-year table
+//     with no commencement date, e.g. Wingstop "Year 1 … Year 6"). We can't know the real
+//     dates, so escalations come back with effective_date:null + months_from_start, and the
+//     app anchors them to the start date the user confirms (buildEscalations' anchorDate).
 export function rebuildRentSchedule({ rentSchedule, sqft, modelEscalations } = {}) {
+  const asOffset = (v) => (v == null || v === '' || !isFinite(Number(v)) ? null : Math.trunc(Number(v)));
   const rawRows = (Array.isArray(rentSchedule) ? rentSchedule : []).map((r) => ({
     date: typeof r?.effective_date === 'string' ? r.effective_date : null,
+    months: asOffset(r?.months_from_start),
     period: r?.period,
     amount: r?.amount,
     annual: annualRentFrom(r?.amount, r?.period, sqft),
@@ -44,8 +56,32 @@ export function rebuildRentSchedule({ rentSchedule, sqft, modelEscalations } = {
     .filter((r) => r.annual == null && (r.period === 'per_sqft_year' || r.period === 'per_sqft_month'))
     .map((r) => ({ effective_date: r.date, amount: r.amount, period: r.period }));
 
-  const rows = rawRows
-    .filter((r) => r.annual != null)
+  const usable = rawRows.filter((r) => r.annual != null);
+
+  // RELATIVE mode: no printed dates, but lease-year offsets are present. Sort by offset,
+  // earliest is base_rent, the rest are undated steps carrying months_from_start.
+  const anyDate = usable.some((r) => r.date);
+  const relativeMode = !anyDate && usable.some((r) => r.months != null);
+  if (relativeMode) {
+    const off = (r) => (r.months == null ? 0 : r.months);
+    const rel = usable.slice().sort((a, b) => off(a) - off(b));
+    const baseRent = rel[0].annual;
+    const steps = rel.slice(1);
+    const escalations = steps.length
+      ? steps.map((r) => ({
+          effective_date: null,
+          months_from_start: off(r),
+          escalation_type: 'manual',
+          escalation_value: null,
+          new_base_rent: r.annual,
+        }))
+      : null;
+    const flag = unresolved.length ? { reason: 'missing_sqft_for_psf', diverged: [], unresolved } : null;
+    return { baseRent, baseDate: null, escalations, flag };
+  }
+
+  const rows = usable
+    .slice()
     .sort((a, b) => (a.date || '9999-99-99').localeCompare(b.date || '9999-99-99'));
 
   const modelByDate = new Map();

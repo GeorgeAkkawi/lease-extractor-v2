@@ -115,6 +115,14 @@ const SYSTEM_FIELDS =
   'escalation_value = null, new_base_rent = that period\'s ANNUAL rent. Include every ' +
   'step; never collapse the schedule to a single number. A rent increase that only ' +
   'applies during a future RENEWAL/OPTION term belongs in renewal_options, not here.\n\n' +
+  'DATES MUST BE STATED, NEVER INVENTED. lease_start, lease_termination_date, and every ' +
+  'escalation effective_date must be a calendar date the document actually PRINTS or directly ' +
+  'implies. The execution / "entered into as of" / signing date is NOT the commencement date — ' +
+  'do not use it as the lease start. Commencement is often defined by a formula ("120 days ' +
+  'after delivery of possession", "when the tenant opens for business"); when the real start or ' +
+  'end date is not printed, return null (confidence 0) rather than guessing. When a rent ' +
+  'schedule is labeled only by LEASE YEAR ("Year 1", "Year 2") with no printed date, set each ' +
+  'escalation effective_date to null — never anchor those years to the signing date.\n\n' +
   'RENEWAL OPTIONS: term_months = the option length in months. If the option says the ' +
   'rent increases by a percent each year (e.g. "5% annual increase in base rent"), set ' +
   'annual_escalation_pct to that number (5) and leave new_rent null unless a specific ' +
@@ -138,7 +146,7 @@ const SYSTEM_FIELDS =
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'rent_schedule', 'abatements'],
+  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'term_months', 'rent_schedule', 'abatements'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
@@ -146,15 +154,23 @@ const SUPPLEMENT_SCHEMA = {
     // Leased area — a fallback source of sqft so we can annualize $/SF rows even if the
     // main call missed it (a $/SF row with no sqft anywhere would otherwise be dropped).
     square_footage: field(['number']),
+    // The initial term length in months as stated (e.g. "five years and eight months" → 68),
+    // so the app can suggest a termination date from the start date the user enters. Null when
+    // the term is not stated as a fixed length.
+    term_months: field(['number']),
     // The base-rent schedule, ONE entry per period of the term, read raw (no math).
     rent_schedule: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['effective_date', 'amount', 'period'],
+        required: ['effective_date', 'months_from_start', 'amount', 'period'],
         properties: {
-          effective_date: { type: ['string', 'null'] },   // ISO date the period STARTS
+          effective_date: { type: ['string', 'null'] },   // ISO date the period STARTS (only if the doc prints a real date)
+          // When the schedule is labeled by lease year/month with NO printed calendar date, this
+          // is the period's offset from the term start in months (Year 1 → 0, Year 2 → 12, …) and
+          // effective_date is null — the app anchors it to the start date the user enters.
+          months_from_start: { type: ['integer', 'null'] },
           amount: { type: ['number', 'null'] },            // the rent for that period AS WRITTEN
           period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
         },
@@ -212,7 +228,23 @@ const SUPPLEMENT_SYSTEM =
   'ONLY when a row shows BOTH a $/SF rate AND a plain dollar amount for the SAME period, use ' +
   'the plain dollar amount and its period (e.g. amount 2395.42 with "per_month", NOT 34.43). ' +
   'Also return square_footage = the leased area in square feet exactly as written (the raw ' +
-  'number), so we can turn any $/SF rate into an annual figure. ' +
+  'number), so we can turn any $/SF rate into an annual figure.\n\n' +
+  'DATES — REAL DATE OR RELATIVE OFFSET, NEVER INVENTED. For each rent_schedule row set ' +
+  'EITHER effective_date OR months_from_start, not a guess. If the lease PRINTS a real ' +
+  'calendar date for when that period starts, put it in effective_date (YYYY-MM-DD) and leave ' +
+  'months_from_start null. But when the schedule is labeled by LEASE YEAR or MONTH with NO ' +
+  'printed calendar date — "Year 1", "Year 2: $30,525", "Months 1-12", "the second lease year" ' +
+  '— you CANNOT know the real date (the commencement date is often a formula, e.g. "120 days ' +
+  'after delivery" or "when the tenant opens"). In that case set effective_date null and set ' +
+  'months_from_start to the offset from the start of the term in months: Year 1 → 0, Year 2 → ' +
+  '12, Year 3 → 24, and so on (Month 13 → 12). NEVER anchor a lease year to the execution / ' +
+  '"entered into as of" date — that signing date is NOT the commencement date. The app fills ' +
+  'the real dates from the start date the user confirms. A free-rent period at the start does ' +
+  'NOT shift these offsets — report each lease year\'s stated rent at its normal offset.\n\n' +
+  'TERM LENGTH. term_months = the initial (primary) term length in months if the lease states ' +
+  'it as a fixed span — "five (5) years and eight (8) months" → 68, "ten years" → 120, ' +
+  '"60 months" → 60. Read the number from the words; do not compute it from dates. If the term ' +
+  'is not stated as a fixed length, return null.\n\n' +
   'We do ALL the arithmetic ourselves — never multiply. If the lease states no rent schedule, ' +
   'return an empty array.\n\n' +
   'RENT ABATEMENT / FREE RENT. If the lease grants the tenant a period of FREE or REDUCED ' +
@@ -331,7 +363,7 @@ Deno.serve(async (req) => {
     // model's own figure.
     const supp = await extractSupplement(content);
     if (supp) {
-      for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2']) {
+      for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'term_months']) {
         if (supp[k]) (parsed as any)[k] = supp[k];
       }
       // Free/reduced-rent windows read from the lease (raw: start + months + how much);

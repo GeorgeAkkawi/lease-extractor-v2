@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals, buildAbatements } from '../lib/api';
+import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals, buildAbatements, isoDateOrNull } from '../lib/api';
 import { resolveCurrentTerm } from '../lib/leaseTerm';
 import { abatementKindLabel } from '../lib/abatement';
 import { money, fmtDate } from '../lib/format';
@@ -43,7 +43,8 @@ export default function LeaseNewPage() {
         propertyId: propId,
         leaseFileId: extractedDoc.lease_file_id,
         lease,
-        escalations: buildEscalations(lease.base_rent, extractedDoc.extraction.escalations),
+        // Anchor any lease-year (undated) rent steps to the start date the user confirmed.
+        escalations: buildEscalations(lease.base_rent, extractedDoc.extraction.escalations, lease.lease_start),
         renewals: buildRenewals(extractedDoc.extraction.renewal_options),
         abatements: buildAbatements(extractedDoc.extraction.abatements),
         aiConfidence: buildAiConfidence(extractedDoc.extraction),
@@ -116,7 +117,15 @@ function SchedulePreview({ ex }) {
   const base = Number(val(ex.base_rent)) || 0;
   const start = val(ex.lease_start) || null;
   const end = val(ex.lease_termination_date) || null;
-  const escs = buildEscalations(base, ex.escalations).map((e) => ({ ...e, status: 'scheduled' }));
+  const escs = buildEscalations(base, ex.escalations, start).map((e) => ({ ...e, status: 'scheduled' }));
+  // Lease-year steps with no printed date (they get real dates from the Lease start above,
+  // at save). Only surfaced here when we couldn't date them yet (no extracted start).
+  const rawEsc = Array.isArray(ex.escalations) ? ex.escalations : [];
+  const relativeSteps = rawEsc
+    .filter((e) => !isoDateOrNull(e.effective_date) && e.months_from_start != null && isFinite(Number(e.months_from_start)))
+    .map((e) => ({ months: Number(e.months_from_start), rent: Number(e.new_base_rent) }))
+    .sort((a, b) => a.months - b.months);
+  const showRelative = escs.length === 0 && relativeSteps.length > 0;
   const rens = buildRenewals(ex.renewal_options).map((r, i) => ({ ...r, id: `r${i}`, status: 'pending' }));
   const abs = buildAbatements(ex.abatements);
   const res = resolveCurrentTerm({ lease: { base_rent: base, lease_start: start, lease_termination_date: end }, escalations: escs, renewals: rens });
@@ -139,8 +148,16 @@ function SchedulePreview({ ex }) {
         {escs.map((e, i) => (
           <li key={i}>{fmtDate(e.effective_date)}: <strong>{money(e.new_base_rent)}/yr</strong></li>
         ))}
+        {showRelative && relativeSteps.map((s, i) => (
+          <li key={`rel${i}`}>After {s.months} months: <strong>{money(s.rent)}/yr</strong></li>
+        ))}
       </ul>
-      {escs.length === 0 && (
+      {showRelative && (
+        <p className="note-msg" style={{ marginBottom: 8, fontSize: 12.5 }}>
+          These step-ups are dated by lease year — they’ll get their real dates from the <strong>Lease start</strong> you enter above when you save.
+        </p>
+      )}
+      {escs.length === 0 && !showRelative && (
         <p className="note-msg warn" style={{ marginBottom: 8 }}>
           No dated rent step-ups were detected. If the document has a rent schedule, add the steps under “Rent escalations” after saving, or re-upload a clearer copy.
         </p>

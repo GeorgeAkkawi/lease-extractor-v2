@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { addMonths } from '../lib/renewals';
 
 const EMPTY = {
   tenant_name: '',
@@ -18,6 +19,28 @@ const EMPTY = {
 export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 'Save', busy }) {
   const [form, setForm] = useState({ ...EMPTY, ...stringify(initial) });
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  // The lease may state its term as a fixed length ("five years and eight months" → 68
+  // months) even when it prints no end date (commencement is often a formula). When the
+  // user confirms the Lease start, suggest a termination date from that stated term — the
+  // term runs through the day before the start + term_months anniversary. Editable, and
+  // never overwrites a date the user (or the extraction) already provided.
+  const termMonths = Number(extracted?.term_months?.value) || 0;
+  const onStartChange = (e) => {
+    const startVal = e.target.value;
+    setForm((f) => {
+      const next = { ...f, lease_start: startVal };
+      if (startVal && termMonths > 0 && !f.lease_termination_date) {
+        const after = addMonths(startVal, termMonths); // first day AFTER the term
+        if (after) {
+          const d = new Date(after + 'T12:00:00');
+          d.setDate(d.getDate() - 1);
+          next.lease_termination_date = d.toISOString().slice(0, 10);
+        }
+      }
+      return next;
+    });
+  };
 
   function submit(e) {
     e.preventDefault();
@@ -57,9 +80,9 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
           <input className="text-input num" type="number" step="any" value={form.base_rent} onChange={set('base_rent')} />
         </Field>
         <Field label="Lease start" field="lease_start" extracted={extracted}>
-          <input className="text-input" type="date" value={form.lease_start || ''} onChange={set('lease_start')} />
+          <input className="text-input" type="date" value={form.lease_start || ''} onChange={onStartChange} />
         </Field>
-        <Field label="Lease termination" field="lease_termination_date" extracted={extracted}>
+        <Field label="Lease termination" field="lease_termination_date" extracted={extracted} hint={termMonths ? `suggested from the stated term — ${termMonths} months; editable` : undefined}>
           <input className="text-input" type="date" value={form.lease_termination_date || ''} onChange={set('lease_termination_date')} />
         </Field>
         <Field label="Tax/CAM share override (%)" field="share_override_pct" extracted={extracted} hint="Blank = pro-rata by SF">

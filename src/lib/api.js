@@ -326,11 +326,23 @@ export function isoDateOrNull(v) {
 // Shape AI-extracted escalation rows into rent_escalations inserts, computing the
 // new_base_rent for each step from the prior rent (shared by lease intake +
 // addendum import). Rows without a real ISO effective_date are dropped (they can't be
-// scheduled). Sorted by date so the % / $ steps compound correctly.
-export function buildEscalations(baseRent, escalations) {
+// scheduled) — UNLESS the row carries a months_from_start offset and an anchorDate is
+// given, in which case the real date is anchorDate + that many months. That's how a
+// lease-year rent table with no printed dates (e.g. Wingstop "Year 1 … Year 6") gets its
+// steps dated off the lease start the user confirms. Sorted by date so % / $ steps
+// compound correctly. anchorDate is optional; the addendum path passes none, so its dated
+// rows behave exactly as before.
+export function buildEscalations(baseRent, escalations, anchorDate) {
   if (!escalations?.length) return [];
+  const anchor = isoDateOrNull(anchorDate);
   const sorted = escalations
-    .map((e) => ({ ...e, effective_date: isoDateOrNull(e.effective_date) }))
+    .map((e) => {
+      let date = isoDateOrNull(e.effective_date);
+      if (!date && anchor && e.months_from_start != null && isFinite(Number(e.months_from_start))) {
+        date = addMonths(anchor, Number(e.months_from_start));
+      }
+      return { ...e, effective_date: date };
+    })
     .filter((e) => e.effective_date)
     .sort((a, b) => (a.effective_date < b.effective_date ? -1 : a.effective_date > b.effective_date ? 1 : 0));
   let prior = Number(baseRent) || 0;

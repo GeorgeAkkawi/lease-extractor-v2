@@ -71,6 +71,37 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — Lease extractor: read undated "Year 1 / Year 2…" rent tables as RELATIVE, and
+  suggest a term-based end date. Deployed: `extract-lease` edge function (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `dedc9a4b`. No migrations.
+  - **The bug (Wingstop.pdf):** the lease prints no start/end dates (commencement is a formula —
+    "120 days after delivery" / "when the tenant opens") and its rent table is labeled by lease
+    year ("Year 1 … Year 6"), not by date. The schema only accepted an absolute `effective_date`,
+    so the model was **forced to invent dates** — it anchored the years to the May-2012 *signing*
+    date and got them off by a year. The blank start/end were actually correct (verified in
+    `lease_files.extraction_raw`); the invented escalation dates were the real problem. The lease
+    was never saved, so no live data to repair.
+  - **Fix — model reads relative, code does the date math** (same split as the rent-amount fix):
+    `SUPPLEMENT_SCHEMA.rent_schedule` gains `months_from_start` (Year 1→0, Year 2→12, …) and the
+    supplement returns `term_months` (e.g. "five years and eight months" → 68). Prompts updated so
+    a lease-year table returns `effective_date: null` + an offset and NEVER anchors to the signing
+    date; `SYSTEM_FIELDS` also hardened so the execution date isn't used as the lease start.
+    `_shared/rentSchedule.js` `rebuildRentSchedule` grew a RELATIVE mode (no dated rows + offsets →
+    base = smallest offset, later rows become undated steps carrying `months_from_start`); dated
+    mode unchanged, so the addendum path is untouched.
+  - **Frontend:** `buildEscalations(base, escs, anchorDate)` gains an optional anchor — a relative
+    step gets its real date from `addMonths(start, months_from_start)` (reused `renewals.addMonths`)
+    at save; with no anchor the step is dropped, never crashing the save. `LeaseNewPage` passes the
+    confirmed `lease_start`; `SchedulePreview` lists undated steps as "After N months: $X" with a
+    note instead of the false "no steps detected" warning. `LeaseForm` prefills Lease termination =
+    start + `term_months` − 1 day (editable) once the user sets the start.
+  - Layered cleanly on top of the same session's rent-abatement commit (`3f35c10`) — its
+    `abatements` schema/prompt/preview additions preserved. Verified token-free: new
+    `relativeRentSchedule.test.js` replays the real Wingstop table (base $30,525; steps land on
+    2013-09-01…2017-09-01 off a Sep-1 start, no off-by-one; no-anchor → `[]`; end-of-month clamp;
+    dated-mode regression). Full suite 49/49 green; `CI=true` build compiles. Committed only this
+    task's files. Live check: re-upload Wingstop.pdf (~2 small Haiku reads).
+
 - **2026-07-02** — Rent abatement (free / reduced rent periods) — brand-new feature, end to end.
   Deployed: DB migration `0041` + edge functions `extract-lease`, `extract-addendum`, `draft-invoice`
   (Supabase `awgrjmbcghdjgnqeiqkt`); frontend Cloudflare version `bb85704e`.
