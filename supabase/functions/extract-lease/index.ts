@@ -95,6 +95,14 @@ const SYSTEM_FIELDS =
   'source_quote you read it from, and the page number. When a field\'s value is null ' +
   '(not found), set confidence to 0, source_quote to an empty string, and page to 1. ' +
   'Dates as ISO YYYY-MM-DD.\n\n' +
+  'TENANT NAME = THE BUSINESS, NOT A PERSON. tenant_name is the tenant/lessee ENTITY ' +
+  'named in the lease — the company or organization (e.g. "Vibhakar & Vibhakar, PC", ' +
+  '"D & D Dental, LLC", "Acme Corp"). Keep the full legal name including any suffix ' +
+  '(LLC, Inc., PC, LP, DDS). Do NOT put a human being\'s personal name here; the ' +
+  'individual who signs or runs the business is captured separately as the contact. ' +
+  'ONLY if the tenant is genuinely an individual person leasing in their own name with ' +
+  'no company at all should tenant_name be a person\'s name. Never use the ' +
+  'landlord/lessor as the tenant.\n\n' +
   'RENT MUST BE ANNUAL. base_rent and every escalation new_base_rent are ANNUAL ' +
   'dollar amounts. Converting is REQUIRED and is not "guessing": if a rent is stated ' +
   'per MONTH, multiply by 12; if stated as a per-square-foot RATE (e.g. "$20/sf" or ' +
@@ -154,8 +162,13 @@ const SUPPLEMENT_SCHEMA = {
 
 const SUPPLEMENT_SYSTEM =
   'From the attached commercial lease, extract the tenant\'s contact and the base-rent schedule. ' +
-  'tenant_contact_name = the human who represents the TENANT (the signer, owner, or named ' +
-  'point of contact, e.g. "Dana Lee") — NOT the business name, NOT the landlord. Capture up ' +
+  'tenant_contact_name = the PERSON (human being) who runs or represents the tenant business — ' +
+  'the individual who signs for the tenant, the owner/principal/member/officer, or the named ' +
+  'point of contact or guarantor (e.g. "Dr. Ahmed Hegazy", "Dana Lee"). This is a person\'s ' +
+  'personal name, NEVER the company/entity name and NEVER the landlord/lessor side. If the ' +
+  'lease names two people who run the business, return the primary signer (or join two names ' +
+  'with " & "). If the tenant is a company but NO individual person is named anywhere, return ' +
+  'null — do not fall back to the company name. Capture up ' +
   'to TWO tenant-side email addresses: the tenant\'s main / billing email as tenant_email ' +
   '(primary), and a second tenant-side email (e.g. the contact person\'s) as tenant_email_2. ' +
   'ONLY extract emails belonging to the TENANT side — NEVER the landlord\'s / lessor\'s / ' +

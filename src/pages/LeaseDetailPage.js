@@ -215,8 +215,8 @@ export default function LeaseDetailPage() {
         )}
 
         <div className="field-grid">
-          <EditField label="Tenant name" value={lease.tenant_name} onCommit={commit('tenant_name')} />
-          <EditField label="Tenant contact" value={lease.tenant_contact_name || ''} onCommit={commit('tenant_contact_name')} hint="person to address" />
+          <EditField label="Tenant name" value={lease.tenant_name} onCommit={commit('tenant_name')} hint="the business / company" />
+          <EditField label="Tenant contact" value={lease.tenant_contact_name || ''} onCommit={commit('tenant_contact_name')} hint="person(s) who run it" />
           <EditField label="Tenant email" value={lease.tenant_email || ''} onCommit={commit('tenant_email')} hint="where emails are sent" />
           <EditField label="Second email" value={lease.tenant_email_2 || ''} onCommit={commit('tenant_email_2')} hint="optional — offered when sending" />
           <EditField label="Square footage" type="number" value={lease.square_footage} onCommit={commit('square_footage')} conf={conf('square_footage')} hint="SF" />

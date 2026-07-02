@@ -71,6 +71,26 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — History tenant attribution + lease extractor business-vs-people. Deployed:
+  `extract-lease` edge function + DB migration `0040` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `2871c109`.
+  - **"Lease & tenant history" now shows WHICH tenant each event is about** (George couldn't tell them
+    apart). Kept the feature, made it clear: migration `0040` adds a `tenant_name` column to
+    `history_events`; `logHistoryEvent` records the tenant at write time and all five call sites pass it
+    (extension/renewal events → the current tenant; an assignment → the new tenant). Old rows fall back to
+    the lease's current tenant at read time (`listHistoryEvents`). `HistoryPage` timeline gains a
+    **Tenant** column. Denormalized so attribution stays correct even after a later reassignment.
+  - **Lease extractor differentiates business vs people.** `tenant_name` = the business/company entity
+    (e.g. "D & D Dental, LLC" — full legal name incl. LLC/Inc./PC), `tenant_contact_name` = the person(s)
+    who run it (signer/owner/guarantor, e.g. "Dr. Ahmed Hegazy"). Hardened `SYSTEM_FIELDS` (tenant_name is
+    the entity, never a person) and `SUPPLEMENT_SYSTEM` (contact is a human, never the company, null if no
+    person is named) in `extract-lease/index.ts` — prompt-only, no new AI calls / no added cost. Review
+    form (`LeaseForm.js`) + lease page (`LeaseDetailPage.js`) now label the two fields with plain hints
+    ("the business / company" vs "person(s) who run it") and business/person example placeholders.
+  - Verified token-free: `addendumRenewalReplay.test.js` now also asserts each history event carries the
+    right `tenant_name` (assignment → new tenant, extension → tenant at the time). Full suite 23/23 green;
+    `CI=true` build compiles. Committed only this task's files.
+
 - **2026-07-02** — Lease-page overhaul: addendum rent math, escalation→base-rent, current-phase
   header, lapsed-option hiding, hide toggles, declutter. Deployed: `extract-addendum` edge function +
   DB migration `0039` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `380885ee`.

@@ -198,7 +198,7 @@ export default function HistoryPage() {
         <div className="exp-head">
           <div>
             <strong>Lease &amp; tenant history</strong>
-            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Every change this building's leases have been through — tenant assignments, term extensions, and renewal decisions — newest first.</div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>What each tenant's lease has been through — assignments, term extensions, and renewal decisions — newest first. The <strong>Tenant</strong> column shows who each change applies to.</div>
           </div>
         </div>
         {events.length === 0 ? (
@@ -206,11 +206,12 @@ export default function HistoryPage() {
         ) : (
           <div className="table-wrap" style={{ marginTop: 14 }}>
             <table style={{ minWidth: 0 }}>
-              <thead><tr><th>When</th><th>Event</th><th>Detail</th></tr></thead>
+              <thead><tr><th>When</th><th>Tenant</th><th>Event</th><th>Detail</th></tr></thead>
               <tbody>
                 {events.map((ev) => (
                   <tr key={ev.id}>
                     <td>{fmtDate(ev.event_date || ev.created_at)}</td>
+                    <td>{ev.tenant_name || '—'}</td>
                     <td><span className={`badge ${EVENT_BADGE[ev.type] || 'info'}`}>{EVENT_LABEL[ev.type] || ev.type}</span></td>
                     <td>{ev.description}</td>
                   </tr>

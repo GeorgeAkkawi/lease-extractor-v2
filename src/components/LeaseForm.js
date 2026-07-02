@@ -38,11 +38,11 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
   return (
     <form onSubmit={submit}>
       <div className="field-grid">
-        <Field label="Tenant name" field="tenant_name" extracted={extracted}>
-          <input className="text-input" value={form.tenant_name} onChange={set('tenant_name')} required />
+        <Field label="Tenant name" field="tenant_name" extracted={extracted} hint="the business / company on the lease">
+          <input className="text-input" value={form.tenant_name} onChange={set('tenant_name')} placeholder="e.g. D & D Dental, LLC" required />
         </Field>
-        <Field label="Tenant contact name" field="tenant_contact_name" extracted={extracted}>
-          <input className="text-input" value={form.tenant_contact_name} onChange={set('tenant_contact_name')} placeholder="e.g. Dana Lee" />
+        <Field label="Tenant contact name" field="tenant_contact_name" extracted={extracted} hint="person(s) who run it — the signer or owner">
+          <input className="text-input" value={form.tenant_contact_name} onChange={set('tenant_contact_name')} placeholder="e.g. Dr. Ahmed Hegazy" />
         </Field>
         <Field label="Tenant email (for sending)" field="tenant_email" extracted={extracted}>
           <input className="text-input" type="email" value={form.tenant_email} onChange={set('tenant_email')} placeholder="billing@tenant.com" />

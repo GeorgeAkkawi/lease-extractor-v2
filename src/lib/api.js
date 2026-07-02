@@ -703,15 +703,26 @@ export async function backfillLeaseToToday(leaseId, today = new Date()) {
 }
 
 // ---- History events (per-building timeline of what happened to a lease) ------
-export const listHistoryEvents = (propertyId) =>
-  rows(supabase.from('history_events').select('*').eq('property_id', propertyId).order('created_at', { ascending: false }));
+// Each event is attributed to a tenant (stored at write time). For any older row that
+// predates that column, fall back to the lease's current tenant so the timeline can
+// always show WHICH tenant an event was about.
+export async function listHistoryEvents(propertyId) {
+  const events = await rows(
+    supabase.from('history_events').select('*').eq('property_id', propertyId).order('created_at', { ascending: false })
+  );
+  if (!events.some((e) => !e.tenant_name && e.lease_id)) return events;
+  const leaseRows = await listLeases(propertyId);
+  const byId = Object.fromEntries(leaseRows.map((l) => [l.id, l.tenant_name]));
+  return events.map((e) => (e.tenant_name ? e : { ...e, tenant_name: byId[e.lease_id] || null }));
+}
 
 // Record a lifecycle event (tenant assigned, term extended, renewal confirmed, …).
-// Non-fatal: a logging failure must never break the action that triggered it.
-export async function logHistoryEvent({ property_id, lease_id, type, description, event_date = null, meta = null }) {
+// `tenant_name` pins the event to the tenant it happened to. Non-fatal: a logging
+// failure must never break the action that triggered it.
+export async function logHistoryEvent({ property_id, lease_id, type, description, tenant_name = null, event_date = null, meta = null }) {
   try {
     return await one(
-      supabase.from('history_events').insert({ owner_id: await ownerId(), property_id, lease_id, type, description, event_date, meta }).select().single()
+      supabase.from('history_events').insert({ owner_id: await ownerId(), property_id, lease_id, type, description, tenant_name, event_date, meta }).select().single()
     );
   } catch {
     return null;
@@ -774,7 +785,7 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
   if (changes.extensionEnd) {
     await updateLease(leaseId, { lease_termination_date: changes.extensionEnd, is_active: true });
     await logHistoryEvent({
-      property_id: lease?.property_id || null, lease_id: leaseId, type: 'term_extended',
+      property_id: lease?.property_id || null, lease_id: leaseId, type: 'term_extended', tenant_name: lease?.tenant_name || null,
       description: `Term extended to ${fmtDate(changes.extensionEnd)}${addendum.label ? ` (${addendum.label})` : ''}`,
       event_date: addendum.amendment_date || null, meta: { addendum_id: addendum.id, new_end: changes.extensionEnd },
     });
@@ -795,6 +806,7 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
       property_id: lease?.property_id || null,
       lease_id: leaseId,
       type: 'tenant_assigned',
+      tenant_name: a.newTenantName, // the tenant the lease becomes going forward
       description: `Tenant changed: ${priorTenant || '—'} → ${a.newTenantName}`,
       event_date: a.effectiveDate || addendum.amendment_date || null,
       meta: { prior_tenant: priorTenant, new_tenant: a.newTenantName, contact: a.newTenantContact || null, addendum_id: addendum.id },
@@ -1292,7 +1304,7 @@ export async function confirmRenewal(renewalId, today = new Date()) {
   const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid);
 
   await logHistoryEvent({
-    property_id: lease.property_id, lease_id: lease.id, type: 'renewal_confirmed',
+    property_id: lease.property_id, lease_id: lease.id, type: 'renewal_confirmed', tenant_name: lease.tenant_name,
     description: `Renewal confirmed${ren.option_label ? ` (${ren.option_label})` : ''} — term extended to ${fmtDate(newEnd)} at ${money(newRent)}`,
     event_date: null, meta: { renewal_id: ren.id },
   });
@@ -1343,7 +1355,7 @@ export async function declineRenewal(renewalId) {
   if (ren?.lease_id) {
     const lease = await getLease(ren.lease_id);
     await logHistoryEvent({
-      property_id: lease?.property_id || null, lease_id: ren.lease_id, type: 'renewal_declined',
+      property_id: lease?.property_id || null, lease_id: ren.lease_id, type: 'renewal_declined', tenant_name: lease?.tenant_name || null,
       description: `Renewal not exercised${ren.option_label ? ` (${ren.option_label})` : ''} — tenant is not renewing`,
       event_date: null, meta: { renewal_id: renewalId },
     });
@@ -1390,7 +1402,7 @@ export async function restoreRenewal(renewalId) {
   if (ren?.lease_id) {
     const lease = await getLease(ren.lease_id);
     await logHistoryEvent({
-      property_id: lease?.property_id || null, lease_id: ren.lease_id, type: 'renewal_reopened',
+      property_id: lease?.property_id || null, lease_id: ren.lease_id, type: 'renewal_reopened', tenant_name: lease?.tenant_name || null,
       description: 'Renewal decision reopened (undo) — option is pending again',
       event_date: null, meta: { renewal_id: renewalId },
     });

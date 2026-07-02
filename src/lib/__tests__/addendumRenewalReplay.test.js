@@ -151,4 +151,8 @@ test('an assignment addendum swaps the tenant and logs the prior tenant to histo
   expect(assigned).toBeTruthy();
   expect(assigned.meta.prior_tenant).toBe('Vibhakar & Vibhakar, PC');
   expect(assigned.meta.new_tenant).toBe('D & D Dental, LLC');
+  // Each event is attributed to a tenant so the History timeline can show WHO it's about.
+  expect(assigned.tenant_name).toBe('D & D Dental, LLC');
+  const extended = events.find((e) => e.type === 'term_extended');
+  expect(extended.tenant_name).toBe('Vibhakar & Vibhakar, PC'); // the tenant at the time
 });
