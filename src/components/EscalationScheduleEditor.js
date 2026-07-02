@@ -15,6 +15,29 @@ export default function EscalationScheduleEditor({ lease }) {
   const [type, setType] = useState('percent');
   const [value, setValue] = useState('');
   const [date, setDate] = useState('');
+  const [showAll, setShowAll] = useState(false);
+
+  // A long lease can carry 15-20 dated steps; that's a lot of scrolling. When there are
+  // many, collapse to the slice that matters NOW — the next few upcoming steps + the few
+  // most recent — and let the landlord expand to the full schedule on demand.
+  const COLLAPSE_OVER = 8;
+  const sortedEsc = [...escalations].sort((a, b) => String(b.effective_date).localeCompare(String(a.effective_date)));
+  const pad = (n) => String(n).padStart(2, '0');
+  const nowD = new Date();
+  const todayIso = `${nowD.getFullYear()}-${pad(nowD.getMonth() + 1)}-${pad(nowD.getDate())}`;
+  const collapsible = sortedEsc.length > COLLAPSE_OVER && !showAll;
+  let visibleEsc = sortedEsc;
+  let hiddenFuture = 0;
+  let hiddenPast = 0;
+  if (collapsible) {
+    const future = sortedEsc.filter((e) => String(e.effective_date) > todayIso); // descending: far-future first
+    const past = sortedEsc.filter((e) => String(e.effective_date) <= todayIso);  // descending: most-recent first
+    const visFuture = future.slice(-3); // the 3 nearest upcoming
+    const visPast = past.slice(0, 3);   // the 3 most recent
+    visibleEsc = [...visFuture, ...visPast];
+    hiddenFuture = future.length - visFuture.length;
+    hiddenPast = past.length - visPast.length;
+  }
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['escalations', leaseId] });
@@ -65,7 +88,7 @@ export default function EscalationScheduleEditor({ lease }) {
           <table style={{ minWidth: 0 }}>
             <thead><tr><th>Effective</th><th>Type</th><th className="num">Value</th><th className="num">New base rent</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {[...escalations].sort((a, b) => String(b.effective_date).localeCompare(String(a.effective_date))).map((e) => (
+              {visibleEsc.map((e) => (
                 <tr key={e.id}>
                   <td>{fmtDate(e.effective_date)}</td>
                   <td>{e.escalation_type}</td>
@@ -87,6 +110,19 @@ export default function EscalationScheduleEditor({ lease }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {escalations.length > COLLAPSE_OVER && (
+        <div className="row" style={{ alignItems: 'center', gap: 10, marginTop: -6, marginBottom: 16 }}>
+          <button type="button" className="ghost" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Show fewer' : `Show all ${escalations.length} steps`}
+          </button>
+          {collapsible && (hiddenPast > 0 || hiddenFuture > 0) && (
+            <span className="muted" style={{ fontSize: 12 }}>
+              {[hiddenPast > 0 ? `${hiddenPast} earlier` : null, hiddenFuture > 0 ? `${hiddenFuture} later` : null].filter(Boolean).join(' · ')} step{hiddenPast + hiddenFuture > 1 ? 's' : ''} hidden
+            </span>
+          )}
         </div>
       )}
 

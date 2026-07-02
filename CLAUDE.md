@@ -71,6 +71,46 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — Sync renewal options with the rent schedule + collapsible escalation list.
+  Deployed: frontend Cloudflare version `1ac93011`; live-data repair of the Ricki's lease rows.
+  No edge functions, no migrations, no new AI calls.
+  - **The bug (Ricki's-Lyons):** the lease prints rents for ALL 20 years (5-yr initial term + three
+    5-yr option periods), so on import the rent schedule correctly stepped through 2034 and the app
+    is already charging year-12 (Second-Option-Period) rent — but the three renewal-option ROWS never
+    learned their own windows. All three sat **Pending** with no rent + no notice date, and the First
+    Option Period (2020–2025, clearly lived through) still showed Renew/Not-renewing buttons. Options
+    had no concept of their time slot: `isLapsed` only compared the LEASE end (2031, future) so
+    nothing lapsed, and `resolveCurrentTerm` ignores options by design (0034).
+  - **Fix — `reconcileRenewalOptions(lease, today)`** (`src/lib/api.js`): derives each option's 5-yr
+    window from `lease_start` + the initial `term_months` (read from the cached `extraction_raw`),
+    chained in `cmpRenewal` order. Walks them: a window that has begun **and** has a matching dated
+    rent step at its start is marked **applied** (the rent proves the tenant exercised it), its
+    `new_rent` filled from that step, the committed term extended to cover it (via `max`, never
+    shrinking a landlord-entered date), logged as a silent `renewal_confirmed` history event (no
+    emails). The first still-future option stays **pending** but gets its `new_rent` (from the
+    scheduled step) and its `notice_by_date` (from a "N days prior" notes clause → committed end − N
+    days). **No rent evidence past the initial term → it stops (never guesses a renewal).**
+    Evidence-gated + idempotent: only runs on a clean AI-imported lease whose options are ALL still
+    pending — once any is applied/declined the manual confirm/decline flow (which moves `lease_start`)
+    owns it and this bails, so window math can't drift. Wired into `backfillLeaseToToday`'s active
+    branch (imports reconcile immediately) and the `promptDueRenewalDecisions` loop (app-load
+    self-heal via `Layout.js`).
+  - **Collapsible escalations** (`src/components/EscalationScheduleEditor.js`): a lease with >8 dated
+    steps now collapses to the slice that matters — the 3 nearest upcoming + 3 most recent — with a
+    "N earlier · M later steps hidden" line and a **Show all N steps / Show fewer** toggle (`useState`
+    only, no data change).
+  - Verified token-free: new `src/lib/__tests__/renewalScheduleSync.test.js` replays the exact live
+    Ricki's shape (start 2015-05-01, term 60, steps through 2034, three "180 days prior" pending
+    options) → Options 1-2 applied at $25,173 / $27,793.08, Option 3 pending at $30,685.80 + notice
+    2030-11-02, header label "Second Option Period"; term-end preserved (2031) and the extend case;
+    guards (manual lease w/ no cached file, no-evidence Vibhakar shape, idempotent re-run all no-op).
+    Full suite **60/60 green**; `CI=true` build compiles. Committed only this task's files.
+  - **Live data repaired** (lease `e9f51d85`): Options 1-2 → applied w/ the above rents, Option 3 →
+    pending w/ rent + notice 2030-11-02, term left at George's 2031-05-01, two `renewal_confirmed`
+    history events added — matching exactly what the deployed code computes (verified by re-query).
+    Options are now non-all-pending, so the deployed reconcile skips this lease (guard) — no
+    double-apply. No stale renewal bell prompt existed.
+
 - **2026-07-02** — Fix big-scan lease extraction timeout (HTTP 546) + "no start date → ask the
   landlord, then date the whole schedule" flow. Deployed: `extract-lease` edge function (Supabase
   `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `db1bf70e`. No migrations.

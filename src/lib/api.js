@@ -6,7 +6,7 @@ import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
-import { resolveCurrentTerm } from './leaseTerm';
+import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd } from './abatement';
 
 // An event is "recent" if its date is no more than this many days in the past.
@@ -854,6 +854,10 @@ export async function backfillLeaseToToday(leaseId, today = new Date()) {
   if (res.periodEnd) patch.lease_termination_date = res.periodEnd;
   await updateLease(leaseId, patch);
   await markAppliedSilently(res.consumedEscalationIds, res.consumedRenewalIds);
+  // Sync renewal options with the now-current schedule (evidence-gated + idempotent —
+  // bails immediately for leases it doesn't apply to). Re-fetch so it sees the dates
+  // this back-fill just wrote.
+  await reconcileRenewalOptions(await getLease(leaseId), today);
   return res;
 }
 
@@ -1666,6 +1670,100 @@ export async function draftRenewalApproachingEmail(renewalId) {
   };
 }
 
+// Sync a lease's renewal OPTIONS with the rent schedule it was imported with, so an
+// option's lifecycle matches the dated escalations + term. Many leases (e.g. Ricki's)
+// print rents for ALL years including the option periods, so the rent schedule keeps
+// stepping right through option windows the tenant evidently exercised — yet the option
+// rows stay "Pending" forever with no rent and no notice date, and a long-past option
+// still shows Renew/Not-renewing. This reads the evidence and reconciles it:
+//   • an option whose 5-year window has begun AND has a matching rent step at its start
+//     is marked APPLIED (it was exercised — the rent proves it), its new_rent filled from
+//     that step, and the committed term extended to cover it (never shrinking a date the
+//     landlord entered). Logged as a silent history event — no emails.
+//   • the first still-FUTURE option stays pending but gets its new_rent (from the scheduled
+//     step at its start) and its notice_by_date computed from a "N days prior" notes clause.
+//   • no rent evidence for a begun window → STOP (never guess a tenant renewed).
+// Evidence-gated + idempotent. It ONLY runs on a clean AI-imported lease whose options are
+// all still pending; once any option is applied/declined the manual confirm/decline flow
+// (which moves lease_start) owns the lease and this bails, so window math can't drift.
+export async function reconcileRenewalOptions(lease, today = new Date()) {
+  if (!lease || lease.is_active === false || !lease.lease_start || !lease.lease_file_id) return false;
+  const options = await rows(supabase.from('renewal_options').select('*').eq('lease_id', lease.id));
+  if (options.length === 0 || !options.every((o) => o.status === 'pending')) return false;
+
+  // The INITIAL (primary) term length, from the cached AI read on the linked file.
+  const fileRows = await rows(
+    supabase.from('lease_files').select('extraction_raw').eq('id', lease.lease_file_id).limit(1)
+  );
+  const initialTermMonths = Number(fileRows?.[0]?.extraction_raw?.term_months?.value) || 0;
+  if (initialTermMonths <= 0) return false;
+
+  const escs = await listEscalations(lease.id);
+  const dated = escs.filter((e) => e.effective_date)
+    .sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)));
+  const initialEnd = addMonths(lease.lease_start, initialTermMonths); // boundary = start of option 1
+  // Evidence gate: the rent schedule actually continued past the initial term (else there's
+  // nothing proving any option was exercised — leave everything alone).
+  if (!initialEnd || !dated.some((e) => e.effective_date >= initialEnd)) return false;
+
+  const toIso = (d) => d.toISOString().slice(0, 10);
+  const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const daysApart = (a, b) => Math.round(Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+  // The rent step that STARTS a window (within ±45 days of the boundary), if any.
+  const stepAt = (iso) => {
+    let best = null, bestDiff = Infinity;
+    for (const e of dated) {
+      const diff = daysApart(e.effective_date, iso);
+      if (diff <= 45 && diff < bestDiff) { best = e; bestDiff = diff; }
+    }
+    return best ? (Number(best.new_base_rent) || null) : null;
+  };
+
+  const todayIso = toIso(today);
+  const ordered = [...options].sort(cmpRenewal);
+  let windowStart = initialEnd;
+  let termEnd = lease.lease_termination_date || null;
+
+  for (const opt of ordered) {
+    const months = Number(opt.term_months) || initialTermMonths;
+    const windowEnd = addMonths(windowStart, months); // boundary (exclusive) — matches rollLeaseIntoRenewal
+    const evidenceRent = stepAt(windowStart);
+
+    if (windowStart <= todayIso) {
+      // The option's window has begun (past or current). Only treat it as exercised when
+      // the rent schedule actually stepped up at its start — otherwise STOP (never guess).
+      if (evidenceRent == null) break;
+      const patch = { status: 'applied', applied_at: new Date().toISOString() };
+      if (opt.new_rent == null) patch.new_rent = evidenceRent;
+      await updateRenewal(opt.id, patch);
+      if (!termEnd || (windowEnd && windowEnd > termEnd)) termEnd = windowEnd; // extend, never shrink
+      await logHistoryEvent({
+        property_id: lease.property_id, lease_id: lease.id, type: 'renewal_confirmed', tenant_name: lease.tenant_name,
+        description: `${opt.option_label || 'Renewal option'} exercised historically — reconciled from the rent schedule (rent ${money(evidenceRent)})`,
+        event_date: null, meta: { renewal_id: opt.id, reconciled: true },
+      });
+      windowStart = windowEnd;
+      continue;
+    }
+
+    // First still-future option: leave it PENDING, but fill the rent + notice date so it
+    // reads correctly, then stop (later options depend on this one being exercised first).
+    const patch = {};
+    if (opt.new_rent == null && evidenceRent != null) patch.new_rent = evidenceRent;
+    if (opt.notice_by_date == null) {
+      const m = /(\d+)\s*days?\s*prior/i.exec(opt.notes || '');
+      if (m && termEnd) patch.notice_by_date = addDays(termEnd, -Number(m[1])); // N days before the term then in effect
+    }
+    if (Object.keys(patch).length) await updateRenewal(opt.id, patch);
+    break;
+  }
+
+  if (termEnd && termEnd !== lease.lease_termination_date) {
+    await updateLease(lease.id, { lease_termination_date: termEnd });
+  }
+  return true;
+}
+
 // Scan active leases and, for each with a pending option whose decision is due and
 // no prompt already open, drop a one-time 'renewal_decision' notification. Runs on
 // app load (demo) and — at go-live — as the scheduled job (see migration 0034). It
@@ -1685,11 +1783,16 @@ export async function promptDueRenewalDecisions(today = new Date()) {
       continue;
     }
     if (l.is_active === false) continue; // outdated leases stay parked until an extension is added
+    // Self-heal: sync this lease's options with its rent schedule first, so a historically
+    // exercised option is marked applied (and won't prompt) and a future option carries its
+    // real notice-by date. No-op for leases it doesn't apply to.
+    const reconciled = await reconcileRenewalOptions(l, today);
+    const lease = reconciled ? await getLease(l.id) : l;
     const pending = await rows(
-      supabase.from('renewal_options').select('*').eq('lease_id', l.id).eq('status', 'pending').order('notice_by_date')
+      supabase.from('renewal_options').select('*').eq('lease_id', lease.id).eq('status', 'pending').order('notice_by_date')
     );
     const ren = pending[0];
-    if (!ren || !isRenewalDecisionDue(l, ren, today)) continue;
+    if (!ren || !isRenewalDecisionDue(lease, ren, today)) continue;
 
     // one open decision per lease at a time. Don't re-prompt if we already asked AND the
     // prompt already carries the tenant "renewal approaching" email; but DO enrich a bare
