@@ -55,6 +55,15 @@ export default function LeaseNewPage() {
 
   if (extractedDoc) {
     const ex = extractedDoc.extraction;
+    // Many leases print no commencement date (it's a formula — "120 days after delivery
+    // of possession"), so the AI reads the rent table by lease year with no real dates.
+    // When that's the case, ask for the start date up front: entering it here dates the
+    // whole schedule + end date automatically on save.
+    const missingStart = !val(ex.lease_start);
+    const hasDatedData =
+      Number(ex?.term_months?.value) > 0 ||
+      (Array.isArray(ex.escalations) && ex.escalations.some((e) => !isoDateOrNull(e.effective_date) && e.months_from_start != null)) ||
+      (Array.isArray(ex.abatements) && ex.abatements.length > 0);
     return (
       <div>
         <div className="page-head">
@@ -62,6 +71,19 @@ export default function LeaseNewPage() {
           <div className="head-actions"><button className="secondary" onClick={() => setExtractedDoc(null)}>Start over</button></div>
         </div>
         <div className="panel">
+          {missingStart && hasDatedData && (
+            <div className="callout warn" style={{ marginBottom: 16 }}>
+              <div className="alert-main">
+                <div className="alert-title"><strong>📅 This lease doesn’t print a start date — enter it below</strong></div>
+                <div className="muted">
+                  The lease sets its start by a formula (e.g. “120 days after delivery of possession”), not a fixed date,
+                  so the rent schedule was read by <strong>lease year</strong>. Type the date the lease actually started into
+                  <strong> Lease start</strong> and the app will fill in the end date and date every rent step for you when you save.
+                  You can also save now and add the date later on the lease page.
+                </div>
+              </div>
+            </div>
+          )}
           <LeaseForm initial={initialFromExtraction(ex)} extracted={ex} onSubmit={(lease) => createFromAi.mutate(lease)} submitLabel="Save lease" busy={createFromAi.isPending} />
           <SchedulePreview ex={ex} />
           {createFromAi.isError && <p className="note-msg danger" style={{ marginTop: 10 }}>{createFromAi.error.message}</p>}

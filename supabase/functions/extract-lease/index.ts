@@ -268,6 +268,19 @@ async function extractSupplement(content: Block[]): Promise<Record<string, any> 
   }
 }
 
+// The scan transcription's 16k-token output is the single slowest read on a large
+// multi-page scan and can alone approach the edge time limit. It's already best-effort
+// (only powers later Q&A, which degrades gracefully to the summary fields), so cap it:
+// whichever finishes first, the transcript or the timer (→ null), wins. This guarantees
+// the whole function returns well under the 150s wall-clock even on a worst-case scan.
+const TRANSCRIBE_TIMEOUT_MS = 90_000;
+function transcribeWithTimeout(model: string, docBlock: Block, ms: number): Promise<string | null> {
+  return Promise.race([
+    transcribeDocument(model, docBlock),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflight();
   try {
@@ -356,12 +369,23 @@ Deno.serve(async (req) => {
       }
     }
 
-    const parsed = await callClaude({ model: MODEL, system, maxTokens, schema, content });
+    // Run the THREE independent reads of the same document concurrently instead of
+    // one-after-another. Each re-reads the full (large) doc, so on a big multi-page
+    // SCAN the serial sum blew past the 150-second edge wall-clock limit and the
+    // request was KILLED (HTTP 546) before it could return — a 13 MB, 36-page scan
+    // was the trigger. They don't depend on each other, so Promise.all cuts wall time
+    // to the slowest single call at ZERO extra AI cost (same three calls). The
+    // transcription (vision path only) is additionally time-boxed below so its long
+    // 16k-token output can't dominate the budget on a huge scan.
+    const [parsed, supp, transcript] = await Promise.all([
+      callClaude({ model: MODEL, system, maxTokens, schema, content }),
+      extractSupplement(content),
+      visionDocBlock ? transcribeWithTimeout(MODEL, visionDocBlock, TRANSCRIBE_TIMEOUT_MS) : Promise.resolve(null),
+    ]);
 
-    // Supplement (contact + emails + raw rent basis) via a separate, non-fatal call.
-    // If it fails, the lease still returns; contacts stay blank and base_rent keeps the
-    // model's own figure.
-    const supp = await extractSupplement(content);
+    // Supplement (contact + emails + raw rent basis) merges into the main extraction.
+    // If it failed (null), the lease still returns; contacts stay blank and base_rent
+    // keeps the model's own figure.
     if (supp) {
       for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'term_months']) {
         if (supp[k]) (parsed as any)[k] = supp[k];
@@ -386,9 +410,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Scans have no free text layer — transcribe the document in a separate,
-    // best-effort call (non-fatal) so later Q&A still has the full text.
-    const transcript = visionDocBlock ? await transcribeDocument(MODEL, visionDocBlock) : null;
+    // The scan transcription (best-effort, non-fatal) ran concurrently above; use it
+    // for later Q&A when present, else fall back to the free text layer.
     const full_text = knownFullText ?? transcript ?? null;
 
     // Persist the raw extraction for audit / later re-review (file path only).

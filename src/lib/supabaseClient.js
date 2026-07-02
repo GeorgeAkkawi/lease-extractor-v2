@@ -31,6 +31,12 @@ export async function invokeFunction(name, body) {
     } catch {
       /* keep the default message */
     }
+    // A runtime kill (e.g. the edge wall-clock limit) returns no JSON body to read
+    // above, so the generic "non-2xx" would surface. Status 546 = the function was
+    // terminated (usually because it ran too long) — give a plain, actionable reason.
+    if (error.context?.status === 546) {
+      message = 'The document took too long to read. Please try again — or if it’s a large scan, split the PDF or upload a smaller/lower-resolution copy.';
+    }
     throw new Error(message);
   }
   return data;

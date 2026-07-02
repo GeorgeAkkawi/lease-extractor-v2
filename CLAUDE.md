@@ -71,6 +71,45 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — Fix big-scan lease extraction timeout (HTTP 546) + "no start date → ask the
+  landlord, then date the whole schedule" flow. Deployed: `extract-lease` edge function (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `db1bf70e`. No migrations.
+  - **The real failure (Ricki's Cafe Lease.pdf):** George blamed the missing start date, but the
+    Supabase edge log showed `POST | 546 /extract-lease` — the function was **killed at the ~150s
+    wall-clock ceiling**, not a data error. Ricki's is a 12.9 MB, 36-page **scan** (no PDF text
+    layer → vision path), and the function ran its **three** AI reads of the full doc
+    **sequentially** — main fields → rent/contact supplement → `transcribeDocument` (16k-token
+    transcription). The serial sum blew past 150s and the request died before returning (its
+    `lease_files` row had `extraction_raw = null`). Wingstop (9.7 MB *digital* PDF) worked because
+    the free text-layer path skips the vision reads. The generic "non-2xx" reached George because a
+    runtime kill returns no `{error}` body for `invokeFunction` to read.
+  - **Fix A — parallelize + time-box** (`extract-lease/index.ts`): the three reads are independent,
+    so they now run under one `Promise.all` (wall time = slowest single call, **zero** new AI cost —
+    same three calls). The transcription (vision-only, best-effort) is additionally capped at 90s via
+    `Promise.race` (`transcribeWithTimeout`) so its long output can't dominate the budget on a huge
+    scan; on timeout the lease still saves, only the cached Q&A text is missing (existing degrade
+    path). `supabaseClient.js invokeFunction` now maps `status === 546` to a plain "took too long —
+    try again / split the PDF" message as a safety net.
+  - **Fix B — "no start date on file" is now a first-class flow** (the machinery from the Wingstop
+    relative-schedule fix, but nothing asked for the date). A start-less lease keeps its **full read
+    cached** on the linked `lease_files.extraction_raw` (undated steps aren't inserted — they can't
+    be placed yet). New `anchorLeaseSchedule(leaseId, start)` (`api.js`) reads that cache and, once
+    the landlord enters the real start: sets `lease_start`, fills `lease_termination_date` from
+    `term_months` (start + term − 1 day), dates every rent step (`months_from_start` → real dates via
+    existing `buildEscalations`) and abatements, then `backfillLeaseToToday` rolls the current rent
+    forward. **Guarded** — only inserts rows the lease is missing, never duplicating or touching
+    hand-entered steps. Surfaced two ways: a prominent ask above the review form
+    (`LeaseNewPage.js`) and a **"📅 No start date on file"** banner + date input on the lease page
+    (`LeaseDetailPage.js`); the "Lease start" field edit routes through the same helper so both paths
+    behave identically. No migration — `extraction_raw`/`lease_file_id` already exist (0001).
+  - Verified token-free: new `src/lib/__tests__/leaseStartAnchor.test.js` replays Ricki's shape
+    (per-month lease-year rows, `term_months` 60) — relative rebuild → base $22,800 + undated steps;
+    save with no start keeps the cache but inserts no steps; `anchorLeaseSchedule('2016-01-01')`
+    dates the 4 steps (2017–2020-01-01), sets end 2020-12-31, rolls to today's rent; re-anchoring
+    doesn't duplicate. Full suite **53/53 green**; `CI=true` build compiles. Committed only this
+    task's files. Live check: re-upload Ricki's Cafe Lease.pdf (one Haiku vision read, ~cents) — it
+    now completes; enter the start date to date the schedule.
+
 - **2026-07-02** — Lease extractor: read undated "Year 1 / Year 2…" rent tables as RELATIVE, and
   suggest a term-based end date. Deployed: `extract-lease` edge function (Supabase
   `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `dedc9a4b`. No migrations.

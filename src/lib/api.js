@@ -311,6 +311,77 @@ export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease
   return getLease(row.id);
 }
 
+// Set (or correct) a lease's start date and, from it, DATE the whole rent schedule.
+// Many commercial leases print no commencement date — it's a formula ("120 days after
+// delivery of possession", "when the tenant opens"), so the AI reads the rent table by
+// LEASE YEAR ("Year 1 … Year 5") with no real dates and the lease is saved start-less,
+// its undated steps deliberately NOT inserted (buildEscalations can't place them). The
+// full read is still cached on the linked lease_files row (extraction_raw). Once the
+// landlord supplies the real start date, this re-derives everything from that cache:
+//   • sets lease_start (and, if blank, lease_termination_date = start + term − 1 day),
+//   • dates the escalations (months_from_start → real dates) and abatements,
+//   • rolls the lease forward to today so the current rent is right.
+// GUARDED: it only inserts schedule rows the lease is MISSING — it never duplicates or
+// overwrites steps the landlord entered by hand. Safe to call for any lease; when there's
+// no cached schedule or the rows already exist, it just updates the date(s).
+export async function anchorLeaseSchedule(leaseId, startDate) {
+  const start = isoDateOrNull(startDate);
+  if (!start) throw new Error('Enter a real date (YYYY-MM-DD).');
+  const lease = await getLease(leaseId);
+  if (!lease) throw new Error('Lease not found.');
+  const uid = await ownerId();
+
+  // The cached full extraction (raw AI read) lives on the linked lease_files row.
+  let ex = null;
+  if (lease.lease_file_id) {
+    const fileRows = await rows(
+      supabase.from('lease_files').select('extraction_raw').eq('id', lease.lease_file_id).limit(1)
+    );
+    ex = fileRows?.[0]?.extraction_raw || null;
+  }
+
+  // 1) The start date, and a term-based end date when none is on file.
+  const patch = { lease_start: start };
+  const termMonths = Number(ex?.term_months?.value) || 0;
+  if (!lease.lease_termination_date && termMonths > 0) {
+    const after = addMonths(start, termMonths); // first day AFTER the term
+    if (after) {
+      const d = new Date(after + 'T12:00:00');
+      d.setDate(d.getDate() - 1);              // term runs through the day before
+      patch.lease_termination_date = d.toISOString().slice(0, 10);
+    }
+  }
+  await updateLease(leaseId, patch);
+
+  // 2) Date + insert any schedule rows the lease is MISSING (never touch existing ones).
+  if (ex) {
+    const [existingEsc, existingAb] = await Promise.all([listEscalations(leaseId), listAbatements(leaseId)]);
+    if (existingEsc.length === 0) {
+      const base = Number(ex?.base_rent?.value) || Number(lease.base_rent) || 0;
+      const escs = buildEscalations(base, ex.escalations, start); // anchors months_from_start → real dates
+      if (escs.length) {
+        await rows(
+          supabase.from('rent_escalations').insert(escs.map((e) => ({ ...e, lease_id: leaseId, owner_id: uid, status: 'scheduled' })))
+        );
+      }
+    }
+    if (existingAb.length === 0 && Array.isArray(ex.abatements) && ex.abatements.length) {
+      // A free-rent window usually begins at rent commencement — fall its start back to
+      // the lease start when the lease didn't print a separate date for it.
+      const abs = buildAbatements(ex.abatements.map((a) => ({ ...a, start_date: a.start_date || start })));
+      if (abs.length) {
+        await rows(
+          supabase.from('rent_abatements').insert(abs.map((a) => ({ ...a, lease_id: leaseId, owner_id: uid })))
+        );
+      }
+    }
+  }
+
+  // 3) Roll forward to today so the current rent / period reflect the now-dated schedule.
+  await backfillLeaseToToday(leaseId);
+  return getLease(leaseId);
+}
+
 // Accept ONLY a real calendar date in YYYY-MM-DD form. Anything else — prose the model
 // sometimes returns for a relative deadline (e.g. "180 days prior to expiration of the
 // Original Term"), a blank, or a malformed value — becomes null, so it can never reach a

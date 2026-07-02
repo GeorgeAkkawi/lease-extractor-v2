@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule } from '../lib/api';
 import { buildLeaseAskContext } from '../lib/leaseContext';
 import { usePageChrome } from '../context/ChromeContext';
 import EditField from '../components/EditField';
@@ -38,6 +38,7 @@ export default function LeaseDetailPage() {
   const [flash, setFlash] = useState(null);
   const [showRemove, setShowRemove] = useState(false);
   const [showInsReq, setShowInsReq] = useState(false);
+  const [startInput, setStartInput] = useState(''); // banner date entry for a start-less lease
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
@@ -73,6 +74,25 @@ export default function LeaseDetailPage() {
       return updateLease(leaseId, { [field]: value, ai_confidence: conf, extraction_status: 'reviewed' });
     },
     onSuccess: invalidate,
+  });
+  // Set/correct the lease start date and DATE the whole schedule from the cached
+  // extraction (fills the end date + all rent steps). Used by the "no start date"
+  // banner and by editing the Lease start field, so both behave identically.
+  const anchorStart = useMutation({
+    mutationFn: async (raw) => {
+      const value = raw || null;
+      const conf = lease.ai_confidence ? { ...lease.ai_confidence, lease_start: 1 } : lease.ai_confidence;
+      if (conf !== lease.ai_confidence) await updateLease(leaseId, { ai_confidence: conf, extraction_status: 'reviewed' });
+      if (!value) return updateLease(leaseId, { lease_start: null });
+      return anchorLeaseSchedule(leaseId, value);
+    },
+    onSuccess: () => {
+      invalidate();
+      qc.invalidateQueries({ queryKey: ['escalations', leaseId] });
+      qc.invalidateQueries({ queryKey: ['abatements', leaseId] });
+      qc.invalidateQueries({ queryKey: ['renewals', leaseId] });
+      setStartInput('');
+    },
   });
   const setRoof = useMutation({
     mutationFn: (v) => updateLease(leaseId, { roof_responsible: v }),
@@ -185,6 +205,32 @@ export default function LeaseDetailPage() {
           <span className="muted">Click any field to edit — fixes AI mistakes</span>
         </div>
 
+        {!lease.lease_start && (
+          <div className="callout warn" style={{ margin: '0 0 16px' }}>
+            <div className="alert-main">
+              <div className="alert-title"><strong>📅 No start date on file — the schedule is waiting for it</strong></div>
+              <div className="muted" style={{ marginBottom: 10 }}>
+                This lease didn’t print a fixed start date (its commencement is a formula — e.g. “120 days after delivery of
+                possession”), so its rent steps aren’t dated yet. Enter the date the lease <strong>actually started</strong> and
+                the app will fill in the end date and date every rent step automatically.
+              </div>
+              <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                <input
+                  type="date"
+                  className="text-input"
+                  style={{ maxWidth: 200 }}
+                  value={startInput}
+                  onChange={(e) => setStartInput(e.target.value)}
+                />
+                <button type="button" onClick={() => anchorStart.mutate(startInput)} disabled={!startInput || anchorStart.isPending}>
+                  {anchorStart.isPending ? 'Saving…' : 'Save start date'}
+                </button>
+              </div>
+              {anchorStart.isError && <p className="note-msg danger" style={{ marginTop: 10 }}>{anchorStart.error.message}</p>}
+            </div>
+          </div>
+        )}
+
         {lease.is_active === false ? (
           <div className="callout warn" style={{ margin: '0 0 16px' }}>
             <div className="alert-main">
@@ -207,7 +253,7 @@ export default function LeaseDetailPage() {
               </div>
             </div>
           </div>
-        ) : (
+        ) : !lease.lease_start ? null : (
           <div className="callout" style={{ margin: '0 0 16px', borderLeftColor: 'var(--accent)' }}>
             <div className="alert-main">
               <div className="alert-title"><strong>Currently in: {phase.label}</strong></div>
@@ -235,7 +281,7 @@ export default function LeaseDetailPage() {
           <EditField label="Second email" value={lease.tenant_email_2 || ''} onCommit={commit('tenant_email_2')} hint="optional — offered when sending" />
           <EditField label="Square footage" type="number" value={lease.square_footage} onCommit={commit('square_footage')} conf={conf('square_footage')} hint="SF" />
           <EditField label="Base rent (annual)" type="number" prefix="$" value={lease.base_rent} onCommit={commit('base_rent')} conf={conf('base_rent')} hint={brPsf ? `${brPsf} base rent` : undefined} />
-          <EditField label="Lease start" type="date" value={lease.lease_start || ''} onCommit={commit('lease_start')} conf={conf('lease_start')} />
+          <EditField label="Lease start" type="date" value={lease.lease_start || ''} onCommit={(raw) => anchorStart.mutate(raw)} conf={conf('lease_start')} hint="dates the rent schedule" />
           <EditField label="Lease termination" type="date" value={lease.lease_termination_date || ''} onCommit={commit('lease_termination_date')} conf={conf('lease_termination_date')} />
           <EditField label="Tax/CAM share override (%)" type="number" value={lease.share_override_pct != null ? Math.round(lease.share_override_pct * 1000) / 10 : ''} onCommit={commit('share_override_pct')} hint="blank = pro-rata by SF" />
           <EditField label="Lease terms / notes" value={lease.lease_terms || ''} onCommit={commit('lease_terms')} conf={conf('lease_terms')} />
