@@ -12,22 +12,37 @@ function statusBadge(status) {
 }
 
 // The rent shown for an option, as { main, sub }: an explicit new_rent, else the
-// computed first renewal-year rent from the annual % (prior rent × (1+pct%)) with the
-// "+X%/yr" on a small sub-line so the numeric column stays clean, else a dash.
-function renewalRent(r, lease) {
+// computed first renewal-year rent from the annual % (base × (1+pct%)) with the
+// "+X%/yr" on a small sub-line so the numeric column stays clean, else a dash. The
+// base is the rent projected to the term end (estimateBase) — that's what a renewal
+// steps up from — falling back to today's base rent.
+function renewalRent(r, base) {
   if (r.new_rent != null) return { main: money0(r.new_rent), sub: null };
   const pct = Number(r.annual_escalation_pct) || 0;
   if (pct > 0) {
-    const base = Number(lease?.base_rent) || 0;
-    const firstYr = base > 0 ? Math.round(base * (1 + pct / 100)) : null;
+    const b = Number(base) || 0;
+    const firstYr = b > 0 ? Math.round(b * (1 + pct / 100)) : null;
     return firstYr ? { main: `≈ ${money0(firstYr)}`, sub: `+${pct}%/yr` } : { main: `+${pct}%/yr`, sub: null };
   }
   return { main: '—', sub: null };
 }
 
-export default function RenewalOptionsEditor({ leaseId, lease }) {
+export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
+  const base = estimateBase != null ? estimateBase : Number(lease?.base_rent) || 0;
   const qc = useQueryClient();
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
+
+  // A PENDING option lapses once the term it would have extended has already ended —
+  // its moment passed unused, so we stop listing it (applied/declined options remain
+  // as a record). Local-date compare avoids a UTC off-by-one.
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const todayIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const termEnd = lease?.lease_termination_date || null;
+  const isLapsed = (r) => r.status === 'pending' && termEnd && termEnd < todayIso;
+  const visibleRenewals = renewals.filter((r) => !isLapsed(r));
+  const lapsedCount = renewals.length - visibleRenewals.length;
+
   const [form, setForm] = useState({ option_label: '', notice_by_date: '', term_months: '', new_rent: '', annual_escalation_pct: '', notes: '' });
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
@@ -72,14 +87,14 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
 
   return (
     <div>
-      {renewals.length === 0 ? (
+      {visibleRenewals.length === 0 ? (
         <p className="empty-line muted">No renewal options.</p>
       ) : (
         <div className="table-wrap" style={{ marginBottom: 16 }}>
           <table style={{ minWidth: 0 }}>
             <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term (mo)</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => { const badge = statusBadge(r.status); const rent = renewalRent(r, lease); return (
+              {visibleRenewals.map((r) => { const badge = statusBadge(r.status); const rent = renewalRent(r, base); return (
                 <tr key={r.id}>
                   <td>{r.option_label || '—'}</td>
                   <td>{fmtDate(r.notice_by_date)}</td>
@@ -139,6 +154,12 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
         </div>
       )}
 
+      {lapsedCount > 0 && (
+        <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 12 }}>
+          {lapsedCount} lapsed option{lapsedCount > 1 ? 's' : ''} not shown — the term {lapsedCount > 1 ? 'they' : 'it'} could have extended has passed.
+        </p>
+      )}
+
       <form className="row" onSubmit={(e) => { e.preventDefault(); add.mutate(); }} style={{ alignItems: 'flex-end' }}>
         <label className="form-field" style={{ marginBottom: 0, maxWidth: 150 }}><span>Label</span><input className="text-input" placeholder="Option 1" value={form.option_label} onChange={set('option_label')} /></label>
         <label className="form-field" style={{ marginBottom: 0, maxWidth: 160 }}><span>Notice by</span><input className="text-input" type="date" value={form.notice_by_date} onChange={set('notice_by_date')} /></label>
@@ -149,11 +170,8 @@ export default function RenewalOptionsEditor({ leaseId, lease }) {
         <button type="submit" disabled={add.isPending}>+ Add option</button>
       </form>
       <ul className="muted" style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, lineHeight: 1.6 }}>
-        <li><strong>Renew</strong> applies the option — extends the term, sets the new rent, and drafts a tenant email.</li>
-        <li><strong>Not renewing</strong> closes the option and drafts a lease-end notice you can send the tenant (you can undo it).</li>
-        <li><strong>✉ Email tenant</strong> sends a "your renewal is coming up" heads-up — a ready-to-send draft you can send any time, before you decide.</li>
-        <li><strong>New rent</strong> = a flat option rent; <strong>+%/yr</strong> = an annual increase (e.g. "5% annual") — a +%/yr option adds one dated rent step per year when exercised.</li>
-        <li><strong>Notice-by</strong> is set only if the lease states a deadline — that's when we ask you to decide (otherwise ~3 months before the term ends).</li>
+        <li><strong>Renew</strong> extends the term + sets the new rent; <strong>Not renewing</strong> closes the option (both undoable).</li>
+        <li><strong>New rent</strong> = a flat option rent; <strong>+%/yr</strong> = an annual increase applied at renewal.</li>
       </ul>
 
       {emailNotif && (

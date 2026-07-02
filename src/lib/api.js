@@ -665,7 +665,13 @@ export async function backfillLeaseToToday(leaseId, today = new Date()) {
   const res = resolveCurrentTerm({ lease, escalations: escs, renewals: rens, today });
 
   if (res.status === 'expired') {
-    if (lease.is_active !== false) await updateLease(leaseId, { is_active: false });
+    // Outdated (term ended, nothing carrying it forward) — but still write the
+    // last-known rent so the base rent shown up top agrees with the escalation
+    // table. Without this, a past-dated rent step marked "applied" here would leave
+    // the header rent stale forever (applyDueEscalations skips applied rows).
+    const patch = { is_active: false };
+    if (res.currentRent != null && Number(res.currentRent) !== Number(lease.base_rent)) patch.base_rent = res.currentRent;
+    if (lease.is_active !== false || patch.base_rent != null) await updateLease(leaseId, patch);
     await markAppliedSilently(res.consumedEscalationIds, res.consumedRenewalIds);
     return res;
   }
@@ -724,8 +730,8 @@ export const deleteAddendum = (id) =>
 
 // One-time AI extraction of a rider/amendment (paid Claude call). Mirrors
 // extractContract: accepts pasted text or an uploaded file (PDF/scan/photo/Word).
-export async function extractAddendum({ text, storagePath }) {
-  const { fields, full_text } = await invokeFunction('extract-addendum', { text, storage_path: storagePath });
+export async function extractAddendum({ text, storagePath, squareFootage }) {
+  const { fields, full_text } = await invokeFunction('extract-addendum', { text, storage_path: storagePath, square_footage: squareFootage ?? null });
   return { fields: fields || {}, addendum_text: full_text || text || null };
 }
 
@@ -1201,9 +1207,11 @@ function isRenewalDecisionDue(lease, ren, today = new Date()) {
   const termEnd = lease?.lease_termination_date;
   if (!termEnd) return false;
   const todayIso = today.toISOString().slice(0, 10);
+  // Once the committed term has ended, the option lapsed unexercised — stop asking.
+  if (termEnd < todayIso) return false;
   // The prompt opens a bit before the deadline: at the option's notice-by date if the
-  // lease states one, else ~3 months before the committed term end (and stays open once
-  // the term has lapsed). Informational "renewal notice due" reminders warn even earlier.
+  // lease states one, else ~3 months before the committed term end. It stays open only
+  // through the decision window (up to term end).
   const trigger = ren?.notice_by_date || addMonths(termEnd, -3);
   return trigger ? todayIso >= trigger : false;
 }
@@ -1454,7 +1462,15 @@ export async function promptDueRenewalDecisions(today = new Date()) {
   const leases = await rows(supabase.from('leases').select('*'));
   const created = [];
 
+  const todayIso = today.toISOString().slice(0, 10);
   for (const l of leases) {
+    // Term already ended → any pending option lapsed unexercised. Clear a stale "Is the
+    // tenant renewing?" prompt we dropped earlier and don't ask again. This runs BEFORE
+    // the is_active check because a lapsed lease is typically already marked outdated.
+    if (l.lease_termination_date && l.lease_termination_date < todayIso) {
+      await rows(supabase.from('notifications').delete().eq('lease_id', l.id).eq('kind', 'renewal_decision'));
+      continue;
+    }
     if (l.is_active === false) continue; // outdated leases stay parked until an extension is added
     const pending = await rows(
       supabase.from('renewal_options').select('*').eq('lease_id', l.id).eq('status', 'pending').order('notice_by_date')

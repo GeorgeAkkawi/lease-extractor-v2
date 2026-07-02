@@ -11,3 +11,13 @@ export const DASHBOARD_WIDGETS = [
   { key: 'expirations', label: 'Lease expirations table',   hint: 'The list of leases ending in the next 90 days.' },
   { key: 'alerts',      label: 'Alerts & notifications',    hint: 'Reminders, renewal prompts, and key-date alerts.' },
 ];
+
+// Panels on the lease page and property Financials page a landlord can hide. Same
+// per-account store as DASHBOARD_WIDGETS (user_preferences.hidden_widgets) — each key
+// gates a panel via `!hidden.includes(key)`. Keep keys in sync with the render blocks
+// in LeaseDetailPage.js and PropertyFinancialsPage.js.
+export const PAGE_PANELS = [
+  { key: 'lease_monthly_rent', label: 'Monthly rent tracker (lease page)', hint: 'The 12 month boxes for checking off each month as it’s paid.' },
+  { key: 'lease_receivables',  label: 'Receivables (lease page)',          hint: 'The invoices & payments panel on each tenant’s lease page.' },
+  { key: 'property_rent_roll', label: 'Monthly rent roll (property page)', hint: 'The per-month “mark all tenants paid” grid on the property Financials page.' },
+];

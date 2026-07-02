@@ -26,7 +26,7 @@ const blankForm = () => ({
   opt_label: '', opt_term_months: '', opt_new_rent: '', opt_annual_pct: '', opt_notice_by: '',
   _aiRenewals: [], // any additional options beyond the first (rare)
   asg_tenant_name: '', asg_contact_name: '', asg_email: '', asg_email_2: '', asg_effective_date: '',
-  storage_path: null, addendum_text: null, extraction_raw: null, _fromAI: false,
+  storage_path: null, addendum_text: null, extraction_raw: null, _rentFlag: null, _fromAI: false,
 });
 
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
@@ -41,7 +41,7 @@ function primaryKind(f) {
   return 'other';
 }
 
-export default function AddendumEditor({ leaseId, leaseInactive }) {
+export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }) {
   const qc = useQueryClient();
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
 
@@ -153,6 +153,7 @@ export default function AddendumEditor({ leaseId, leaseInactive }) {
         asg_effective_date: asg?.assignment_effective_date || '',
         addendum_text: addendum_text || null,
         extraction_raw: fields || null,
+        _rentFlag: fields.rent_schedule_flag || null,
         _fromAI: true,
       }));
       setMode('manual'); // the review form (pre-filled)
@@ -163,10 +164,10 @@ export default function AddendumEditor({ leaseId, leaseInactive }) {
   const [showPaste, setShowPaste] = useState(false);
   const onFile = (e) => {
     const file = e.target.files?.[0];
-    if (file) intake(async () => extractAddendum({ storagePath: await uploadDoc(file) }));
+    if (file) intake(async () => extractAddendum({ storagePath: await uploadDoc(file), squareFootage }));
     e.target.value = '';
   };
-  const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim() })); };
+  const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim(), squareFootage })); };
 
   const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment;
   const canSave =
@@ -272,6 +273,11 @@ export default function AddendumEditor({ leaseId, leaseInactive }) {
 
               {/* Changes the rent */}
               <EffectCard on={form.fx_rent} onToggle={toggle('fx_rent')} title="Changes the rent" hint="One row per rent step. Amounts are ANNUAL base rent.">
+                {form._rentFlag && (
+                  <p className="badge warn" style={{ marginBottom: 8 }}>
+                    ⚠ Some amounts were read from a $/SF rate — double-check them against the addendum before saving.
+                  </p>
+                )}
                 <div className="table-wrap">
                   <table style={{ minWidth: 0 }}>
                     <thead><tr><th>Effective date</th><th className="num">Annual base rent ($)</th><th></th></tr></thead>

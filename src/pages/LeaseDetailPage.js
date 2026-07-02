@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, getHiddenWidgets } from '../lib/api';
 import { buildLeaseAskContext } from '../lib/leaseContext';
 import { usePageChrome } from '../context/ChromeContext';
 import EditField from '../components/EditField';
@@ -15,7 +15,7 @@ import LeaseAssistant from '../components/LeaseAssistant';
 import InsuranceVault from '../components/InsuranceVault';
 import EmailComposeModal from '../components/EmailComposeModal';
 import { buildInsuranceRequestEmail } from '../lib/emailTemplates';
-import { currentTermLabel } from '../lib/leaseTerm';
+import { currentPhase } from '../lib/leaseTerm';
 import { PageSkeleton } from '../components/Skeleton';
 import { sf, pct, psf, money, fmtDate } from '../lib/format';
 
@@ -42,12 +42,18 @@ export default function LeaseDetailPage() {
   const { data: lease, isLoading } = useQuery({ queryKey: ['lease', leaseId], queryFn: () => getLease(leaseId) });
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
+  const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
+  // Per-account Display settings — which lease/property panels the landlord hid.
+  const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
+  const showPanel = (k) => !hiddenWidgets.includes(k);
+  // Show the shared fiscal-year selector only when the monthly rent tracker (which
+  // follows it) is visible — hiding the tracker removes the year picker's only use here.
   usePageChrome([
     { label: 'Leases', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
     { label: prop?.name || '…', to: `/leases/${corpId}/${propId}` },
     { label: lease?.tenant_name || '…' },
-  ], true); // show the shared fiscal-year selector — the monthly rent tracker follows it
+  ], !hiddenWidgets.includes('lease_monthly_rent'));
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['lease', leaseId] });
@@ -108,6 +114,17 @@ export default function LeaseDetailPage() {
     saveField.mutate({ field, value });
   };
   const brPsf = lease.square_footage > 0 && lease.base_rent ? psf(lease.base_rent / lease.square_footage) : null;
+  // Where the lease stands TODAY — drives the "Currently in" header (label, the current
+  // rent period's window, the rent in effect, and the next scheduled step).
+  const phase = currentPhase({ lease, escalations, renewals, addendums });
+  const phasePsf = lease.square_footage > 0 && phase.rent ? psf(phase.rent / lease.square_footage) : null;
+  // Rent projected to the term end — what a +%/yr renewal option steps up from.
+  const rentAtTermEnd = (() => {
+    const end = lease.lease_termination_date;
+    const steps = (escalations || []).filter((e) => e.effective_date && (!end || e.effective_date <= end))
+      .sort((a, b) => String(b.effective_date).localeCompare(String(a.effective_date)));
+    return steps.length ? Number(steps[0].new_base_rent) || 0 : Number(lease.base_rent) || 0;
+  })();
   // A still-active lease whose term has already passed = month-to-month holdover.
   // We never auto-change its state; we prompt the landlord to decide (renew / keep
   // as holdover / remove). Local-date compare avoids a UTC off-by-one.
@@ -179,7 +196,7 @@ export default function LeaseDetailPage() {
             <div className="alert-main">
               <div className="alert-title"><strong>Term ended {fmtDate(lease.lease_termination_date)} — still on the books</strong></div>
               <div className="muted">
-                Past its term and currently treated as a <strong>month-to-month holdover</strong> at {money(lease.base_rent)}{brPsf ? ` (${brPsf})` : ''}. Your call:
+                Past its term and currently treated as a <strong>month-to-month holdover</strong> at {money(phase.rent)}{phasePsf ? ` (${phasePsf})` : ''}. Your call:
                 {' '}<strong>renew it</strong> (add a renewal option below), <strong>keep it as holdover</strong> (no action — it keeps billing),
                 or use <strong>Remove tenant</strong> above to mark it vacated or terminated. Nothing changes automatically.
               </div>
@@ -188,9 +205,10 @@ export default function LeaseDetailPage() {
         ) : (
           <div className="callout" style={{ margin: '0 0 16px', borderLeftColor: 'var(--accent)' }}>
             <div className="alert-main">
-              <div className="alert-title"><strong>Currently in: {currentTermLabel(lease, renewals)}</strong></div>
+              <div className="alert-title"><strong>Currently in: {phase.label}</strong></div>
               <div className="muted">
-                {fmtDate(lease.lease_start)} – {fmtDate(lease.lease_termination_date)} · base rent {money(lease.base_rent)}{brPsf ? ` (${brPsf})` : ''}
+                {fmtDate(phase.phaseStart)} – {fmtDate(phase.termEnd)} · rent {money(phase.rent)}{phasePsf ? ` (${phasePsf})` : ''}
+                {phase.nextStep ? ` · next step ${money(phase.nextStep.rent)} on ${fmtDate(phase.nextStep.date)}` : ''}
               </div>
             </div>
           </div>
@@ -237,13 +255,10 @@ export default function LeaseDetailPage() {
           <span className="muted">Notice-by = deadline to act on a renewal</span>
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          A renewal option is the tenant's <strong>right</strong> to extend — it never changes your term on its own. The
-          <strong> notice-by date</strong> is the deadline for written notice to exercise it. As the decision nears you're
-          asked <strong>"Is the tenant renewing?"</strong> — hit <strong>Renew</strong> (here or on the alert) only if they
-          are, and the term extends, the new rent takes effect, the prior term is archived to History, and you get a
-          ready-to-send tenant email. Otherwise mark <strong>Not renewing</strong>.
+          A renewal option is the tenant's <strong>right</strong> to extend — it never changes your term until you confirm
+          the tenant is exercising it.
         </p>
-        <RenewalOptionsEditor leaseId={leaseId} lease={lease} />
+        <RenewalOptionsEditor leaseId={leaseId} lease={lease} estimateBase={rentAtTermEnd} />
 
         <div className="no-ren">
           {lease.no_renewal_option ? (
@@ -267,34 +282,30 @@ export default function LeaseDetailPage() {
           <span className="muted">Amendments that extend the term or change the rent/options</span>
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          <strong style={{ color: 'var(--ink)' }}>Build your lease in layers.</strong> Start with the original lease — even one
-          from years back — then add each addendum or rider on top. The app reads every layer, works out the rent and term
-          you're in <strong>today</strong>, and files superseded terms in this building's History. Add what you have in any
-          order; the AI keeps the timeline straight.
+          Add each amendment on top of the original lease — the app works out the rent and term you're in <strong>today</strong>.
         </p>
-        <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} />
+        <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} squareFootage={lease.square_footage} />
       </div>
 
-      <div className="panel">
-        <div className="panel-head">
-          <strong>Monthly rent</strong>
-          <span className="muted">Check off each month as it's paid — resets each fiscal year</span>
+      {showPanel('lease_monthly_rent') && (
+        <div className="panel">
+          <div className="panel-head">
+            <strong>Monthly rent</strong>
+            <span className="muted">Check off each month as it's paid — follows the fiscal-year selector</span>
+          </div>
+          <MonthlyRentTracker lease={lease} />
         </div>
-        <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          Each box is one month's share (the year's rent ÷ 12). Click a month when it's paid; click again to undo.
-          It follows the <strong>fiscal-year selector</strong> up top — switch years to view or record a different year,
-          and each year keeps its own record. Every check-off feeds the same Receivables/AR below.
-        </p>
-        <MonthlyRentTracker lease={lease} />
-      </div>
+      )}
 
-      <div className="panel">
-        <div className="panel-head">
-          <strong>Receivables</strong>
-          <span className="muted">Invoices &amp; payments for this tenant</span>
+      {showPanel('lease_receivables') && (
+        <div className="panel">
+          <div className="panel-head">
+            <strong>Receivables</strong>
+            <span className="muted">Invoices &amp; payments for this tenant</span>
+          </div>
+          <InvoicesPanel leaseId={leaseId} />
         </div>
-        <InvoicesPanel leaseId={leaseId} />
-      </div>
+      )}
 
       <div className="panel">
         <div className="panel-head">
@@ -302,13 +313,12 @@ export default function LeaseDetailPage() {
           <span className="muted">Open the lease and ask questions</span>
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          Ask about the original terms or where the lease stands <strong>now</strong> — the assistant reads the original
-          lease, every rider you've added, and your current phase (term, rent, and any pending renewal).
+          Ask about the original terms or where the lease stands <strong>now</strong> — it reads the lease, every rider, and your current phase.
         </p>
         <LeaseAssistant
           leaseId={lease.id}
           leaseText={lease.lease_text}
-          askContext={buildLeaseAskContext({ lease, renewals, addendums })}
+          askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations })}
           canSave
         />
       </div>
@@ -321,8 +331,7 @@ export default function LeaseDetailPage() {
           </div>
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          The tenant's certificate of insurance. Add it once to fill the key facts, then ask anything —
-          e.g. “Is the landlord named as additional insured?” No copy on file? Use <strong>Request from tenant</strong> to email for it.
+          The tenant's certificate of insurance. No copy on file? Use <strong>Request from tenant</strong> to email for it.
         </p>
         <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} />
       </div>

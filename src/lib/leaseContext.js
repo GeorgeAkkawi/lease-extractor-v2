@@ -3,10 +3,11 @@
 // order. The original holds the complete base terms; riders add/override specifics; the
 // current phase says where things actually stand now. Fed to ask-lease as `lease_text`.
 import { fmtDate, money } from './format';
-import { currentTermLabel } from './leaseTerm';
+import { currentPhase } from './leaseTerm';
 
-export function buildLeaseAskContext({ lease, renewals = [], addendums = [] } = {}) {
+export function buildLeaseAskContext({ lease, renewals = [], addendums = [], escalations = [] } = {}) {
   if (!lease) return '';
+  const ph = currentPhase({ lease, escalations, renewals, addendums });
 
   const pending = (renewals || []).filter((r) => r.status === 'pending');
   const pendingLines = pending.length
@@ -22,12 +23,14 @@ export function buildLeaseAskContext({ lease, renewals = [], addendums = [] } = 
   const phase = [
     'CURRENT PHASE (computed by the app as of today — treat this as the authoritative current state):',
     `- Tenant: ${lease.tenant_name || '—'}${lease.tenant_contact_name ? ` (contact ${lease.tenant_contact_name})` : ''}`,
-    `- Currently in: ${currentTermLabel(lease, renewals)}`,
+    `- Currently in: ${ph.label}`,
     `- Committed term: ${fmtDate(lease.lease_start)} – ${fmtDate(lease.lease_termination_date)}`,
-    `- Current annual base rent: ${money(lease.base_rent)}`,
+    `- Current rent period: ${fmtDate(ph.phaseStart)} – ${fmtDate(ph.termEnd)}`,
+    `- Current annual base rent: ${money(ph.rent)}`,
+    ph.nextStep ? `- Next scheduled rent step: ${money(ph.nextStep.rent)} effective ${fmtDate(ph.nextStep.date)}` : null,
     '- Pending renewal options:',
     pendingLines,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const amendments = (addendums || []).length
     ? (addendums || []).map((a) => {

@@ -27,7 +27,9 @@ export function annualRentFrom(amount, period, sqft) {
 // surface as a flag for a human to eyeball before saving.
 //
 // Inputs:  { rentSchedule: [{ effective_date, amount, period }], sqft, modelEscalations }
-// Returns: { baseRent, escalations, flag } — any of which may be null (no change).
+// Returns: { baseRent, baseDate, escalations, flag } — any of which may be null (no
+//          change). baseDate is the earliest period's effective date (the addendum
+//          import uses it to date the opening rent step; the lease import ignores it).
 export function rebuildRentSchedule({ rentSchedule, sqft, modelEscalations } = {}) {
   const rawRows = (Array.isArray(rentSchedule) ? rentSchedule : []).map((r) => ({
     date: typeof r?.effective_date === 'string' ? r.effective_date : null,
@@ -63,10 +65,12 @@ export function rebuildRentSchedule({ rentSchedule, sqft, modelEscalations } = {
   };
 
   let baseRent = null;
+  let baseDate = null;
   let escalations = null;
   if (rows.length) {
     crossCheck(rows[0].date, rows[0].annual);
     baseRent = rows[0].annual;
+    baseDate = rows[0].date;
     const steps = rows.slice(1).filter((r) => r.date);
     if (steps.length) {
       steps.forEach((r) => crossCheck(r.date, r.annual));
@@ -83,5 +87,5 @@ export function rebuildRentSchedule({ rentSchedule, sqft, modelEscalations } = {
     ? { reason: unresolved.length ? 'missing_sqft_for_psf' : 'model_math_divergence', diverged, unresolved }
     : null;
 
-  return { baseRent, escalations, flag };
+  return { baseRent, baseDate, escalations, flag };
 }

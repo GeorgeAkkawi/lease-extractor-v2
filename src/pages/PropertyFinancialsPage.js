@@ -8,6 +8,7 @@ import {
   getExpenseRecord,
   upsertExpenseRecord,
   getPropertyAR,
+  getHiddenWidgets,
 } from '../lib/api';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import TenantShareTable from '../components/TenantShareTable';
@@ -28,6 +29,7 @@ export default function PropertyFinancialsPage() {
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: totals } = useQuery({ queryKey: ['propertyTotals', propId, year], queryFn: () => getPropertyTotals(propId, year), placeholderData: keepPreviousData });
   const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year), placeholderData: keepPreviousData });
+  const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   usePageChrome([
     { label: 'Financials', to: '/financials' },
     { label: corp?.name || '…', to: `/financials/${corpId}` },
@@ -114,7 +116,7 @@ export default function PropertyFinancialsPage() {
 
       <ARSummary propId={propId} />
 
-      <PropertyRentRoll propertyId={propId} year={year} />
+      {!hiddenWidgets.includes('property_rent_roll') && <PropertyRentRoll propertyId={propId} year={year} />}
 
       <h3 className="section-title">Per-tenant breakdown</h3>
       <TenantShareTable propertyId={propId} year={year} />

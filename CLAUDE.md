@@ -71,6 +71,46 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — Lease-page overhaul: addendum rent math, escalation→base-rent, current-phase
+  header, lapsed-option hiding, hide toggles, declutter. Deployed: `extract-addendum` edge function +
+  DB migration `0039` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `380885ee`.
+  - **Addendum base-rent math was wrong (the core bug).** `extract-addendum` asked the *model* to
+    multiply ($/mo×12, $/SF×sqft) — models read reliably but multiply unreliably. Ported the fix
+    extract-lease already uses: a separate non-fatal **rent-supplement call** returns the RAW figure +
+    basis and the shared `_shared/rentSchedule.js` `rebuildRentSchedule()` does the math in code, to the
+    cent, overriding the model's own new_base_rent/escalations. The app now passes the lease's own
+    `square_footage` so a $/SF row annualizes even when the rider doesn't restate the size; a bad-math /
+    missing-sqft row raises the same "double-check these amounts" badge as lease import. Files:
+    `extract-addendum/index.ts`, `_shared/rentSchedule.js` (now also returns `baseDate`), `api.js`
+    (`extractAddendum` passes `squareFootage`), `AddendumEditor.js` (sends sqft + shows the badge),
+    `LeaseDetailPage.js`.
+  - **Applied escalations now always update the base rent up top.** `backfillLeaseToToday`'s *expired*
+    branch marked past steps "applied" but never wrote `base_rent` — so a step like "Jun 1 2020 →
+    $24,200" showed applied while the header stayed stale forever (applyDueEscalations skips applied
+    rows). Fixed to also write the last-known rent. `EscalationScheduleEditor` now re-resolves the lease
+    (backfill) + refreshes `['lease']` on add/delete so a past-dated step takes effect immediately.
+  - **Lease terms header shows the CURRENT phase, not the lease from its original start.** New
+    `currentPhase()` in `leaseTerm.js` → label / current rent-period window / rent in effect / next
+    scheduled step. `currentTermLabel` now recognizes an applied EXTENSION addendum ("Extended term —
+    First Amendment"). Wired into `LeaseDetailPage` header + holdover banner and `leaseContext.js` (so the
+    AI assistant's stated phase matches).
+  - **Past-due renewal options no longer listed.** A *pending* option lapses once its term slot has
+    ended: hidden from `RenewalOptionsEditor` (with a small "N lapsed not shown" line),
+    `isRenewalDecisionDue` returns false past term end, `promptDueRenewalDecisions` clears any stale
+    prompt, and migration `0039` gives the SQL cron `apply_due_renewals()` the same cutoff (non-destructive
+    `create or replace`).
+  - **Monthly rent / Receivables / property rent roll are now hideable** (George: "give the option to
+    hide it"). Reused the per-account Display-settings store (`user_preferences.hidden_widgets`, no
+    migration) — new `PAGE_PANELS` group in `dashboardWidgets.js`, a second section in `DisplaySettings.js`,
+    gates in `LeaseDetailPage.js` (panels + the fiscal-year selector) and `PropertyFinancialsPage.js`.
+    Default shown; nothing deleted from the DB.
+  - **Decluttered** the long explainer paragraphs on the lease page (renewal, addendum, assistant,
+    insurance, monthly-rent) and the 5-bullet renewal help list → 2 bullets.
+  - Verified token-free: new `src/lib/__tests__/leasePhaseAndBackfill.test.js` replays the $24,200
+    expired-term symptom (base rent now updates), `currentPhase` label/date/rent/next-step, the addendum
+    $/SF math, and lapsed-prompt clearing. Full suite 28/28 green; `CI=true` build compiles. Committed only
+    this task's files.
+
 - **2026-07-01** — Renewal emails, follow-up: a lease-page **"✉ Email tenant"** button. Frontend
   Cloudflare version `f7920f34`. No migrations, no edge functions.
   - **Why:** the "renewal approaching" heads-up only appeared in the dashboard bell, and only inside the

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listEscalations, createEscalation, deleteEscalation } from '../lib/api';
+import { listEscalations, createEscalation, deleteEscalation, backfillLeaseToToday } from '../lib/api';
 import { computeEscalatedRent, priorRentBefore } from '../lib/escalations';
 import { money, fmtDate } from '../lib/format';
 
@@ -18,6 +18,7 @@ export default function EscalationScheduleEditor({ lease }) {
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['escalations', leaseId] });
+    qc.invalidateQueries({ queryKey: ['lease', leaseId] }); // base rent up top may have changed
     qc.invalidateQueries({ queryKey: ['propertyEscalations'] });
     qc.invalidateQueries({ queryKey: ['propertyTotals'] });
     qc.invalidateQueries({ queryKey: ['tenantShares'] });
@@ -25,8 +26,11 @@ export default function EscalationScheduleEditor({ lease }) {
     qc.invalidateQueries({ queryKey: ['corpRollups'] }); // escalations change current rent → corp revenue
   };
 
+  // Adding or removing a step can change the rent in effect TODAY — re-resolve the
+  // lease's current base rent so the header, financials, and this table always agree
+  // (a past-dated step takes effect immediately instead of waiting for a reload).
   const remove = useMutation({
-    mutationFn: (id) => deleteEscalation(id),
+    mutationFn: async (id) => { await deleteEscalation(id); await backfillLeaseToToday(leaseId); },
     onSuccess: refresh,
   });
 
@@ -36,16 +40,20 @@ export default function EscalationScheduleEditor({ lease }) {
     : null;
 
   const add = useMutation({
-    mutationFn: () =>
-      createEscalation({
+    mutationFn: async () => {
+      await createEscalation({
         lease_id: leaseId,
         effective_date: date,
         escalation_type: type,
         escalation_value: type === 'manual' ? null : Number(value),
         new_base_rent: type === 'manual' ? Number(value) : computeEscalatedRent(priorRent, { escalation_type: type, escalation_value: Number(value) }),
         status: 'scheduled',
-      }),
-    onSuccess: () => { setValue(''); setDate(''); qc.invalidateQueries({ queryKey: ['escalations', leaseId] }); },
+      });
+      // A step dated today or earlier takes effect now; backfill applies it and updates
+      // the lease's base rent (future-dated steps stay scheduled until their date).
+      await backfillLeaseToToday(leaseId);
+    },
+    onSuccess: () => { setValue(''); setDate(''); refresh(); },
   });
 
   return (

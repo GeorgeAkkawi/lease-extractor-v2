@@ -103,13 +103,52 @@ export function resolveCurrentTerm({ lease, escalations = [], today } = {}) {
   };
 }
 
-// Human label for the period a lease is in NOW, for display. After a back-fill the
-// lease's own dates already hold the current window, so the label comes from how
-// many renewal options have been applied (consumed) to reach today.
-export function currentTermLabel(lease, renewals = []) {
+// Human label for the period a lease is in NOW, for display. A confirmed renewal
+// option wins (its label); else an applied EXTENSION addendum means we're in the
+// extended term; else the original term.
+export function currentTermLabel(lease, renewals = [], addendums = []) {
   if (lease?.is_active === false) return 'Outdated';
   const applied = (renewals || []).filter((r) => r.status === 'applied');
-  if (!applied.length) return 'Original term';
-  const last = [...applied].sort(cmpRenewal).pop();
-  return last?.option_label || `Renewal option ${applied.length}`;
+  if (applied.length) {
+    const last = [...applied].sort(cmpRenewal).pop();
+    return last?.option_label || `Renewal option ${applied.length}`;
+  }
+  const extensions = (addendums || []).filter((a) => a.kind === 'extension');
+  if (extensions.length) {
+    const last = extensions[extensions.length - 1]; // listAddendums orders by amendment_date
+    return last.label ? `Extended term — ${last.label}` : 'Extended term';
+  }
+  return 'Original term';
+}
+
+// The phase a lease is in TODAY, for the "Currently in" header: the label, the window
+// of the CURRENT rent period (its start → the committed end), the rent in effect, and
+// the next scheduled step if one is coming. phaseStart is the effective date of the
+// latest rent change on/before today — so after an extension/escalation the header
+// shows the current slice, not the whole lease from its original start.
+export function currentPhase({ lease, escalations = [], renewals = [], addendums = [], today } = {}) {
+  if (!lease) return { label: '—', phaseStart: null, termEnd: null, rent: 0, status: 'active', nextStep: null };
+  const res = resolveCurrentTerm({ lease, escalations, today });
+  const nowT = (noon(today) || new Date()).getTime();
+
+  let phaseStart = lease.lease_start || null;
+  let bestT = time(lease.lease_start);
+  for (const e of escalations || []) {
+    const t = time(e.effective_date);
+    if (t != null && t <= nowT && (bestT == null || t >= bestT)) { bestT = t; phaseStart = e.effective_date; }
+  }
+
+  const future = (escalations || [])
+    .filter((e) => { const t = time(e.effective_date); return t != null && t > nowT; })
+    .sort((a, b) => time(a.effective_date) - time(b.effective_date));
+  const nextStep = future.length ? { date: future[0].effective_date, rent: Number(future[0].new_base_rent) || 0 } : null;
+
+  return {
+    label: currentTermLabel(lease, renewals, addendums),
+    phaseStart,
+    termEnd: lease.lease_termination_date || null,
+    rent: res.currentRent,
+    status: res.status,
+    nextStep,
+  };
 }
