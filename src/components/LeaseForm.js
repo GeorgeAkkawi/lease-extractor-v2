@@ -26,8 +26,14 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
   // term runs through the day before the start + term_months anniversary. Editable, and
   // never overwrites a date the user (or the extraction) already provided.
   const termMonths = Number(extracted?.term_months?.value) || 0;
+  // The only date many leases print is the signing / "entered into as of" date, which is
+  // NOT the commencement date. If the user types that same date as the Lease start, warn
+  // (non-blocking) — the term usually starts later (delivery of possession / opening).
+  const executionDate = extracted?.execution_date?.value || null;
+  const [signingWarn, setSigningWarn] = useState(false);
   const onStartChange = (e) => {
     const startVal = e.target.value;
+    setSigningWarn(!!(executionDate && startVal && startVal === executionDate));
     setForm((f) => {
       const next = { ...f, lease_start: startVal };
       if (startVal && termMonths > 0 && !f.lease_termination_date) {
@@ -79,7 +85,8 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
         <Field label="Base rent (annual $)" field="base_rent" extracted={extracted}>
           <input className="text-input num" type="number" step="any" value={form.base_rent} onChange={set('base_rent')} />
         </Field>
-        <Field label="Lease start" field="lease_start" extracted={extracted}>
+        <Field label="Lease start" field="lease_start" extracted={extracted}
+          warn={signingWarn ? '⚠ That’s the date the lease was signed — the term usually starts later (delivery of possession / opening). Double-check before saving.' : undefined}>
           <input className="text-input" type="date" value={form.lease_start || ''} onChange={onStartChange} />
         </Field>
         <Field label="Lease termination" field="lease_termination_date" extracted={extracted} hint={termMonths ? `suggested from the stated term — ${termMonths} months; editable` : undefined}>
@@ -98,7 +105,7 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
   );
 }
 
-function Field({ label, field, extracted, hint, children }) {
+function Field({ label, field, extracted, hint, warn, children }) {
   const meta = extracted?.[field];
   return (
     <div className="form-field" style={{ maxWidth: '100%', marginBottom: 0 }}>
@@ -111,6 +118,7 @@ function Field({ label, field, extracted, hint, children }) {
         {meta && <ConfidenceBadge meta={meta} />}
       </span>
       {children}
+      {warn && <span className="field-note" style={{ color: 'var(--gold)', fontWeight: 600 }}>{warn}</span>}
       {hint && <span className="field-note">{hint}</span>}
       {meta?.source_quote && (
         <span className="muted" style={{ fontSize: 11, textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>

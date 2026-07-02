@@ -146,7 +146,7 @@ const SYSTEM_FIELDS =
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'term_months', 'rent_schedule', 'abatements'],
+  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'term_months', 'execution_date', 'rent_schedule', 'abatements'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
@@ -158,6 +158,10 @@ const SUPPLEMENT_SCHEMA = {
     // so the app can suggest a termination date from the start date the user enters. Null when
     // the term is not stated as a fixed length.
     term_months: field(['number']),
+    // The date the lease was SIGNED / "entered into as of", if the doc prints one. This is
+    // NOT the commencement date — the app uses it only to warn the user if they mistakenly
+    // type the signing date as the lease start. Null when no signing date is printed.
+    execution_date: field(['string']),
     // The base-rent schedule, ONE entry per period of the term, read raw (no math).
     rent_schedule: {
       type: 'array',
@@ -245,6 +249,10 @@ const SUPPLEMENT_SYSTEM =
   'it as a fixed span — "five (5) years and eight (8) months" → 68, "ten years" → 120, ' +
   '"60 months" → 60. Read the number from the words; do not compute it from dates. If the term ' +
   'is not stated as a fixed length, return null.\n\n' +
+  'EXECUTION / SIGNING DATE. execution_date = the date the lease was signed or "entered into as ' +
+  'of", if the document prints one (often on the first page or the signature block). This is NOT ' +
+  'the commencement / start date — return it only so the app can warn the user if they later type ' +
+  'the signing date as the lease start by mistake. Null if no signing date is printed.\n\n' +
   'We do ALL the arithmetic ourselves — never multiply. If the lease states no rent schedule, ' +
   'return an empty array.\n\n' +
   'RENT ABATEMENT / FREE RENT. If the lease grants the tenant a period of FREE or REDUCED ' +
@@ -387,7 +395,7 @@ Deno.serve(async (req) => {
     // If it failed (null), the lease still returns; contacts stay blank and base_rent
     // keeps the model's own figure.
     if (supp) {
-      for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'term_months']) {
+      for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'term_months', 'execution_date']) {
         if (supp[k]) (parsed as any)[k] = supp[k];
       }
       // Free/reduced-rent windows read from the lease (raw: start + months + how much);

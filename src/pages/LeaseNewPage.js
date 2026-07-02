@@ -187,7 +187,13 @@ function SchedulePreview({ ex }) {
       <div style={{ fontSize: 14 }}>
         Current base rent as of today: <strong>{money(res.currentRent)}/yr</strong>
         {advanced && <span className="badge good" style={{ marginLeft: 8 }}>rolled forward</span>}
-        {res.status === 'expired' && <span className="muted"> (term appears past — it'll be flagged for an extension)</span>}
+        {res.status === 'expired' && (
+          <span className="muted">
+            {rens.length > 0
+              ? ' (term appears past — after saving, apply its renewal options on the lease page to roll it forward to today)'
+              : " (term appears past — it'll be flagged for an extension)"}
+          </span>
+        )}
       </div>
       {rens.length > 0 && <div className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>+ {rens.length} renewal option(s) imported.</div>}
       {abs.length > 0 && (

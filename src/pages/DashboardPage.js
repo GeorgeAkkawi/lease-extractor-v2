@@ -19,6 +19,7 @@ export default function DashboardPage() {
   const [emailNotif, setEmailNotif] = useState(null);
   const [busyNotif, setBusyNotif] = useState(null);
   const [undoDecline, setUndoDecline] = useState(null); // { id, tenant } after "Not renewing"
+  const [rentEntry, setRentEntry] = useState(null); // { leaseId, value } when a renewal has no listed rent
   usePageChrome([{ label: 'Overview' }]);
 
   // Which Overview widgets the landlord has chosen to hide (Display settings).
@@ -51,7 +52,18 @@ export default function DashboardPage() {
     ['notifications', 'alerts', 'leases', 'lease', 'escalations', 'renewals', 'expiredLeases', 'searchIndex', 'propertyTotals', 'tenantShares']
       .forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   }
-  async function confirmRenewal(n) { setBusyNotif(n.id); try { await confirmRenewalForLease(n.lease_id); } finally { setBusyNotif(null); refreshAfterRenewal(); } }
+  // Yes → apply the renewal. If the option states no rent (the lease left it open), the
+  // API returns { needsRent } instead of applying — reveal a rent input and re-call with
+  // the figure the landlord types.
+  async function confirmRenewal(n, newRent) {
+    setBusyNotif(n.id);
+    try {
+      const res = await confirmRenewalForLease(n.lease_id, new Date(), newRent != null ? { newRent } : {});
+      if (res?.needsRent) { setRentEntry({ leaseId: n.lease_id, value: '' }); return; }
+      setRentEntry(null);
+      refreshAfterRenewal();
+    } finally { setBusyNotif(null); }
+  }
   async function declineRenewal(n) {
     setBusyNotif(n.id);
     try {
@@ -193,16 +205,38 @@ export default function DashboardPage() {
                         onClick={(e) => { e.stopPropagation(); setEmailNotif(n); }}>✉ View / send tenant email</span>
                     )}
                     {n.kind === 'renewal_decision' && (
-                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                        <button className="secondary" disabled={busyNotif === n.id}
-                          onClick={(e) => { e.stopPropagation(); confirmRenewal(n); }}>
-                          {busyNotif === n.id ? 'Working…' : 'Yes — apply renewal'}
-                        </button>
-                        <button className="ghost" disabled={busyNotif === n.id}
-                          onClick={(e) => { e.stopPropagation(); declineRenewal(n); }}>
-                          No — not renewing
-                        </button>
-                      </div>
+                      rentEntry?.leaseId === n.lease_id ? (
+                        <div style={{ marginTop: 8 }}>
+                          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                            This option’s rent wasn’t set in the lease — enter the agreed new base rent to apply it.
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                            <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
+                              <span>New base rent ($/yr)</span>
+                              <input className="text-input num" type="number" step="any" autoFocus value={rentEntry.value}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => setRentEntry({ leaseId: n.lease_id, value: e.target.value })} />
+                            </label>
+                            <button className="secondary" disabled={busyNotif === n.id || !(Number(rentEntry.value) > 0)}
+                              onClick={(e) => { e.stopPropagation(); confirmRenewal(n, Number(rentEntry.value)); }}>
+                              {busyNotif === n.id ? 'Working…' : 'Apply renewal'}
+                            </button>
+                            <button className="ghost" disabled={busyNotif === n.id}
+                              onClick={(e) => { e.stopPropagation(); setRentEntry(null); }}>Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                          <button className="secondary" disabled={busyNotif === n.id}
+                            onClick={(e) => { e.stopPropagation(); confirmRenewal(n); }}>
+                            {busyNotif === n.id ? 'Working…' : 'Yes — apply renewal'}
+                          </button>
+                          <button className="ghost" disabled={busyNotif === n.id}
+                            onClick={(e) => { e.stopPropagation(); declineRenewal(n); }}>
+                            No — not renewing
+                          </button>
+                        </div>
+                      )
                     )}
                   </div>
                   <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => clearNotification(n.id)}>✕</button>

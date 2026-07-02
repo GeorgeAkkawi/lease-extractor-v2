@@ -1437,14 +1437,18 @@ function isRenewalDecisionDue(lease, ren, today = new Date()) {
 // dates, apply the new first-year rent, materialize any +%/yr step-ups, and mark the
 // option applied. Pure code — no email/notification. Returns the figures + business
 // so the caller can build the tenant email. Shared by confirmRenewal.
-async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map()) {
+async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newRentOverride = null) {
   const newStart = lease.lease_termination_date;              // new term begins as the old one ends
   const newEnd = addMonths(lease.lease_termination_date, ren.term_months || 12);
   const oldRent = Number(lease.base_rent) || 0;
-  // First renewal-year rent: explicit new_rent wins; else apply the annual % to the
-  // prior rent; else carry the prior rent.
+  // First renewal-year rent, in precedence: a figure the landlord typed at renewal
+  // (options whose rent the lease left open — "fair market value" etc.) wins; else the
+  // option's own explicit new_rent; else apply the annual % to the prior rent; else
+  // carry the prior rent.
   const pct = Number(ren.annual_escalation_pct) || 0;
-  const newRent = ren.new_rent != null ? Number(ren.new_rent) : (pct > 0 ? round2(oldRent * (1 + pct / 100)) : oldRent);
+  const newRent = newRentOverride != null && Number(newRentOverride) > 0
+    ? round2(Number(newRentOverride))
+    : ren.new_rent != null ? Number(ren.new_rent) : (pct > 0 ? round2(oldRent * (1 + pct / 100)) : oldRent);
   const prop = await getProperty(lease.property_id);
   if (prop?.corporation_id && !corpCache.has(prop.corporation_id)) {
     corpCache.set(prop.corporation_id, await getCorporation(prop.corporation_id));
@@ -1470,8 +1474,13 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map()) {
   // 2) roll the live lease into the new term + rent
   await updateLease(lease.id, { lease_start: newStart, lease_termination_date: newEnd, base_rent: newRent, is_active: true });
 
-  // 3) mark the option applied so it never re-runs
-  await updateRenewal(ren.id, { status: 'applied', applied_at: new Date().toISOString() });
+  // 3) mark the option applied so it never re-runs. If the landlord typed the rent
+  // (the lease left it open), record it on the option too so the row shows what was agreed.
+  await updateRenewal(ren.id, {
+    status: 'applied',
+    applied_at: new Date().toISOString(),
+    ...(newRentOverride != null && Number(newRentOverride) > 0 ? { new_rent: newRent } : {}),
+  });
 
   // 3b) materialize the option's annual step-ups (years 2..N) as scheduled
   // escalations so a "+pct%/yr" option becomes real, dated rent steps that
@@ -1499,14 +1508,14 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map()) {
 // The landlord confirmed the tenant IS exercising a renewal option → apply it now,
 // clear the open decision prompt, and drop a "renewed" notification carrying a
 // ready-to-send tenant email. Returns that notification (or null if not applicable).
-export async function confirmRenewal(renewalId, today = new Date()) {
+export async function confirmRenewal(renewalId, today = new Date(), opts = {}) {
   const uid = await ownerId();
   const ren = await one(supabase.from('renewal_options').select('*').eq('id', renewalId).maybeSingle());
   if (!ren || ren.status !== 'pending') return null;
   const lease = await getLease(ren.lease_id);
   if (!lease) return null;
 
-  const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid);
+  const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid, new Map(), opts.newRent);
 
   await logHistoryEvent({
     property_id: lease.property_id, lease_id: lease.id, type: 'renewal_confirmed', tenant_name: lease.tenant_name,
@@ -1620,12 +1629,17 @@ export async function restoreRenewal(renewalId) {
 
 // Bell-action helpers: a decision prompt only carries a lease_id, and there is at
 // most one open decision per lease (its first pending option), so resolve that here.
-export async function confirmRenewalForLease(leaseId, today = new Date()) {
+export async function confirmRenewalForLease(leaseId, today = new Date(), opts = {}) {
   const pending = await rows(
     supabase.from('renewal_options').select('*').eq('lease_id', leaseId).eq('status', 'pending').order('notice_by_date')
   );
   if (!pending.length) { await rows(supabase.from('notifications').delete().eq('lease_id', leaseId).eq('kind', 'renewal_decision')); return null; }
-  return confirmRenewal(pending[0].id, today);
+  const opt = pending[0];
+  // If the option states no rent (lease left it open) and the caller hasn't supplied one
+  // yet, don't apply blind — tell the caller to collect the agreed new base rent first.
+  const hasRent = opt.new_rent != null || Number(opt.annual_escalation_pct) > 0;
+  if (!hasRent && opts.newRent == null) return { needsRent: true, renewalId: opt.id };
+  return confirmRenewal(opt.id, today, { newRent: opts.newRent });
 }
 export async function declineRenewalForLease(leaseId) {
   const pending = await rows(

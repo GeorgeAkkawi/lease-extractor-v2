@@ -111,6 +111,51 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
     Options are now non-all-pending, so the deployed reconcile skips this lease (guard) — no
     double-apply. No stale renewal bell prompt existed.
 
+- **2026-07-02** — Wingstop follow-up: make an old lease's term structure ACTIONABLE (renewal
+  options that reach past-term leases + a "Not listed → enter" rent affordance). Deployed:
+  `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `bd1f6e51`. No migrations.
+  - **The problem (two screenshots):** the newest Wingstop extraction was actually CORRECT (verified
+    in `lease_files` id `add46dfb` — null start/end, `term_months` 68, four relative rent steps, and
+    **3 renewal options** with the 60-mo terms). What broke was everything downstream once the lease
+    was saved with a **past** term: (1) the only date the doc prints is the **May-4-2012 signing
+    date**, which got typed as the Lease start → end prefilled to ~Jan 2018 → whole term in the past;
+    (2) a term entirely in the past made the 3 renewal options — the lease's own way to reach today —
+    **hidden** as "lapsed" with no way to act on them; (3) options 2–3 state no rent ("greater of
+    $41,403 or CPI" / "mutually agreed"), so they showed "—" and confirming would silently carry the
+    old rent. So "5 years 8 months + three 5-year options" couldn't be turned into an actionable item.
+  - **Fix A — lapsed options stay actionable & chain** (`RenewalOptionsEditor.js`): a pending option
+    whose term window has passed is now shown (badged **"Lapsed"**), not hidden, and KEEPS its
+    **Renew** / **Not renewing** buttons (Renew copy → "apply retroactively"; the ✉ heads-up email is
+    hidden on lapsed rows). Applying one rolls the term forward from where it ended
+    (`rollLeaseIntoRenewal`, unchanged) — chain Option 1 → Option 2 … until the lease is current;
+    `backfillLeaseToToday` (already called by `confirmRenewal`) rolls the rent to today. A guidance
+    note replaces the old "N lapsed not shown" line.
+  - **Fix B — "Not listed → please enter" rent** (`RenewalOptionsEditor.js` + `api.js` + bell in
+    `DashboardPage.js`): an option with no `new_rent`/`%` now reads **"Not listed — enter at renewal"**.
+    Clicking Renew on it opens an inline row (shows the lease's own words from `notes`) to type the
+    agreed **new base rent**; the bell "Yes" does the same via a new `confirmRenewalForLease(...,
+    {needsRent})` handshake. `confirmRenewal(id, today, {newRent})` threads the override into
+    `rollLeaseIntoRenewal` (precedence: entered → option `new_rent` → `%` → carry old) and records the
+    entered figure back on the option row. Options that DO state a rent are unchanged (one-click).
+  - **Fix C — banners point at the options** (`LeaseDetailPage.js`): the "outdated" + holdover banners
+    now say "apply its N renewal option(s) below to bring it current" when pending options exist,
+    instead of only mentioning addendums. `LeaseNewPage` `SchedulePreview` expired note gains the same
+    nudge.
+  - **Fix D — don't let the signing date pose as the start** (`extract-lease/index.ts` + `LeaseForm.js`):
+    the supplement call now also reads `execution_date` (the signing / "entered into as of" date —
+    NOT commencement; merged onto `parsed` like `term_months`, +1 union → 13/16, prompt-only, no new
+    AI cost). If the user types that exact date as Lease start, a non-blocking **gold warn** appears
+    under the field ("that's the signing date — the term usually starts later").
+  - Verified token-free: new `src/lib/__tests__/renewalChainReplay.test.js` replays a past-term (2018)
+    Wingstop-shaped lease with three 60-mo options — Option 1 (listed rent) applies → term 2023;
+    Option 2 (unlisted) applies with an entered rent → term 2028, lease active again + rent recorded;
+    `confirmRenewalForLease` returns `{needsRent}` and touches nothing on an unlisted option; a
+    listed-rent option still one-clicks (regression). Full suite **63/63 green**; `CI=true` build
+    compiles. Committed only this task's files. Live check: re-upload Wingstop.pdf (~2 small Haiku
+    reads, ≈ a cent) — save with a past start → options listed as **Lapsed** with Renew, options 2–3
+    read "Not listed", chaining Option 1 rolls the lease forward.
+
 - **2026-07-02** — Fix big-scan lease extraction timeout (HTTP 546) + "no start date → ask the
   landlord, then date the whole schedule" flow. Deployed: `extract-lease` edge function (Supabase
   `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `db1bf70e`. No migrations.

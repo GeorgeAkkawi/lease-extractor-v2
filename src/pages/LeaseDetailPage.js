@@ -157,6 +157,10 @@ export default function LeaseDetailPage() {
   const now = new Date();
   const todayIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   const pastTerm = lease.is_active !== false && lease.lease_termination_date && lease.lease_termination_date < todayIso;
+  // A lease that has run past its term but still carries un-exercised renewal options can
+  // be brought current by applying them (Renewal options panel below) — surface that in
+  // the "outdated" / holdover banners rather than only pointing at addendums.
+  const pendingRenewals = renewals.filter((r) => r.status === 'pending').length;
 
   return (
     <div>
@@ -236,9 +240,15 @@ export default function LeaseDetailPage() {
             <div className="alert-main">
               <div className="alert-title"><strong>This lease is outdated — no information was added</strong></div>
               <div className="muted">
-                The term ended {fmtDate(lease.lease_termination_date)} with no active option reaching today. Add an
-                effective lease or an extension/addendum in <strong>Addendums &amp; riders</strong> below to bring it
-                current — the rent and financials will update automatically.
+                The term ended {fmtDate(lease.lease_termination_date)} with no active option reaching today.
+                {pendingRenewals > 0 ? (
+                  <> This lease has <strong>{pendingRenewals} renewal option{pendingRenewals > 1 ? 's' : ''}</strong> below — if the tenant
+                  renewed, apply {pendingRenewals > 1 ? 'them' : 'it'} under <strong>Renewal options</strong> to roll the lease forward. Otherwise add
+                  an extension/addendum in <strong>Addendums &amp; riders</strong>.</>
+                ) : (
+                  <> Add an effective lease or an extension/addendum in <strong>Addendums &amp; riders</strong> below to bring it
+                  current — the rent and financials will update automatically.</>
+                )}
               </div>
             </div>
           </div>
@@ -248,7 +258,7 @@ export default function LeaseDetailPage() {
               <div className="alert-title"><strong>Term ended {fmtDate(lease.lease_termination_date)} — still on the books</strong></div>
               <div className="muted">
                 Past its term and currently treated as a <strong>month-to-month holdover</strong> at {money(phase.rent)}{phasePsf ? ` (${phasePsf})` : ''}. Your call:
-                {' '}<strong>renew it</strong> (add a renewal option below), <strong>keep it as holdover</strong> (no action — it keeps billing),
+                {' '}<strong>renew it</strong> ({pendingRenewals > 0 ? 'apply one of its renewal options below' : 'add a renewal option below'}), <strong>keep it as holdover</strong> (no action — it keeps billing),
                 or use <strong>Remove tenant</strong> above to mark it vacated or terminated. Nothing changes automatically.
               </div>
             </div>
