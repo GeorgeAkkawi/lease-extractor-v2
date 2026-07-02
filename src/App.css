@@ -47,6 +47,10 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .badge.warn{background:var(--gold-soft);color:var(--gold)}
 .badge.danger{background:#F3E0DB;color:var(--danger)}
 .badge.info{background:#EAE4D6;color:#6E6655}
+/* Full-sentence status message (wraps inside its box, unlike the short nowrap .badge). */
+.note-msg{display:block;border-radius:3px;padding:8px 11px;font-size:12px;font-weight:600;line-height:1.5;white-space:normal;overflow-wrap:anywhere}
+.note-msg.warn{background:var(--gold-soft);color:var(--gold)}
+.note-msg.danger{background:#F3E0DB;color:var(--danger)}
 
 /* ---- monthly rent tracker (12-box per-tenant grid + property rent roll) ---- */
 .month-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}

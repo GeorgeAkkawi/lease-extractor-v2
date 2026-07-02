@@ -61,7 +61,7 @@ export default function LeaseNewPage() {
         <div className="panel">
           <LeaseForm initial={initialFromExtraction(ex)} extracted={ex} onSubmit={(lease) => createFromAi.mutate(lease)} submitLabel="Save lease" busy={createFromAi.isPending} />
           <SchedulePreview ex={ex} />
-          {createFromAi.isError && <p className="badge danger">{createFromAi.error.message}</p>}
+          {createFromAi.isError && <p className="note-msg danger" style={{ marginTop: 10 }}>{createFromAi.error.message}</p>}
         </div>
       </div>
     );
@@ -77,7 +77,7 @@ export default function LeaseNewPage() {
       <h3 className="section-title">…or enter manually</h3>
       <div className="panel">
         <LeaseForm onSubmit={(lease) => createManual.mutate(lease)} submitLabel="Create lease" busy={createManual.isPending} />
-        {createManual.isError && <p className="badge danger">{createManual.error.message}</p>}
+        {createManual.isError && <p className="note-msg danger" style={{ marginTop: 10 }}>{createManual.error.message}</p>}
       </div>
     </div>
   );
@@ -127,7 +127,7 @@ function SchedulePreview({ ex }) {
         The form above shows the lease's <strong>starting</strong> rent. On save it rolls forward to today through the step-ups below.
       </div>
       {flag && (
-        <p className="badge warn" style={{ marginBottom: 8 }}>
+        <p className="note-msg warn" style={{ marginBottom: 8 }}>
           ⚠ Some steps were read from a $/SF rate — double-check these amounts against the lease before saving.
         </p>
       )}
@@ -138,7 +138,7 @@ function SchedulePreview({ ex }) {
         ))}
       </ul>
       {escs.length === 0 && (
-        <p className="badge warn" style={{ marginBottom: 8 }}>
+        <p className="note-msg warn" style={{ marginBottom: 8 }}>
           No dated rent step-ups were detected. If the document has a rent schedule, add the steps under “Rent escalations” after saving, or re-upload a clearer copy.
         </p>
       )}

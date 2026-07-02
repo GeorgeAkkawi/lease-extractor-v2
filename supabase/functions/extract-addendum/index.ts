@@ -50,7 +50,7 @@ const SCHEMA = {
         required: ['option_label', 'notice_by_date', 'term_months', 'new_rent', 'annual_escalation_pct', 'notes'],
         properties: {
           option_label: { type: ['string', 'null'] },
-          notice_by_date: { type: ['string', 'null'], description: 'written-notice deadline to exercise — ONLY if stated, else null' },
+          notice_by_date: { type: ['string', 'null'], description: 'written-notice deadline to exercise — a specific calendar date YYYY-MM-DD ONLY; if stated relative to another event (e.g. "180 days prior to expiration"), use null and put the wording in notes' },
           term_months: { type: ['integer', 'null'] },
           new_rent: { type: ['number', 'null'], description: 'a flat ANNUAL rent for the option term if explicitly stated (else null)' },
           annual_escalation_pct: { type: ['number', 'null'], description: 'the percent if the option rent rises X% per year (e.g. "5% annual increase" → 5); else null' },
@@ -158,8 +158,10 @@ const SYSTEM_FIELDS =
   'renew for 5 years at a 5% annual increase") goes in renewal_options — NOT in ' +
   'escalations, which are only the rent steps WITHIN the current extended term. For ' +
   'such an option set term_months and annual_escalation_pct (5), leave new_rent null ' +
-  'unless a starting amount is stated, and set notice_by_date only if a written-notice ' +
-  'deadline is explicitly stated (else null — never invent one).';
+  'unless a starting amount is stated. notice_by_date MUST be a specific calendar date ' +
+  '(YYYY-MM-DD); if the deadline is stated only relative to another event (e.g. "180 days ' +
+  'prior to expiration of the term"), set notice_by_date to null and put that wording in ' +
+  'notes. Never put words in notice_by_date; it is an ISO date or null.';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflight();

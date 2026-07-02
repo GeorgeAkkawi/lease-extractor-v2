@@ -71,6 +71,26 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — Fix lease-import date crash + review-box text wrapping. Deployed:
+  `extract-lease` + `extract-addendum` edge functions (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `02970cf7`. No migration.
+  - **Crash on save fixed** (`invalid input syntax for type date: "180 days prior to expiration of
+    Original Term"`). A renewal's notice deadline was written in the lease relative to another event, so
+    the model returned that prose in `notice_by_date` — which is a Postgres `date` column, so the whole
+    lease save 400'd. New `isoDateOrNull()` in `api.js` accepts only a real `YYYY-MM-DD`; `buildRenewals`
+    now nulls a prose deadline and preserves the wording in the option's `notes` ("Notice: 180 days prior
+    …"), and `buildEscalations` drops any step without a real ISO date. Also hardened both extractor
+    prompts (`extract-lease` + `extract-addendum`) so a relative deadline returns null + goes to notes,
+    never prose in the date field. Prompt-only; no added AI cost.
+  - **Review-box text no longer runs off the page.** The long warning/error messages in the "What gets
+    saved — rent schedule" box (and the addendum review) used `.badge`, which is `white-space:nowrap` —
+    designed for short pills, so full sentences overflowed. Added a wrapping `.note-msg` style
+    (`App.css`) and switched the sentence-length warnings/errors in `LeaseNewPage.js` + `AddendumEditor.js`
+    to it. Short status badges are unchanged.
+  - Verified token-free: new `src/lib/__tests__/extractionDates.test.js` (isoDateOrNull + buildRenewals
+    prose-deadline → notes + buildEscalations drops prose dates). Full suite 28/28 green; `CI=true` build
+    compiles. Committed only this task's files.
+
 - **2026-07-02** — History tenant attribution + lease extractor business-vs-people. Deployed:
   `extract-lease` edge function + DB migration `0040` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
   Cloudflare version `2871c109`.

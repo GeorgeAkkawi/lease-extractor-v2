@@ -77,7 +77,7 @@ const SCHEMA = {
         required: ['option_label', 'notice_by_date', 'term_months', 'new_rent', 'annual_escalation_pct', 'notes'],
         properties: {
           option_label: { type: ['string', 'null'] },
-          notice_by_date: { type: ['string', 'null'], description: 'written-notice deadline to exercise the option — ONLY if the document states one, else null' },
+          notice_by_date: { type: ['string', 'null'], description: 'written-notice deadline to exercise — a specific calendar date YYYY-MM-DD ONLY; if stated relative to another event (e.g. "180 days prior to expiration"), use null and put the wording in notes' },
           term_months: { type: ['integer', 'null'] },
           new_rent: { type: ['number', 'null'], description: 'a flat ANNUAL rent for the option term if explicitly stated (else null)' },
           annual_escalation_pct: { type: ['number', 'null'], description: 'the percent if the option rent increases by X% per year during the term (e.g. "5% annual increase" → 5); else null' },
@@ -119,8 +119,11 @@ const SYSTEM_FIELDS =
   'rent increases by a percent each year (e.g. "5% annual increase in base rent"), set ' +
   'annual_escalation_pct to that number (5) and leave new_rent null unless a specific ' +
   'starting amount is also given. If it states a flat new rent, set new_rent (annual). ' +
-  'Set notice_by_date ONLY if the document states an explicit written-notice deadline — ' +
-  'otherwise null; never invent one.';
+  'notice_by_date MUST be a specific calendar date in YYYY-MM-DD form. If the deadline is ' +
+  'stated only relative to another event (e.g. "180 days prior to the expiration of the ' +
+  'Original Term"), you CANNOT compute a real date — set notice_by_date to null and put ' +
+  'that wording in the option\'s notes instead. Never put words or phrases in ' +
+  'notice_by_date; it is an ISO date or null. Never invent a date.';
 
 // A SEPARATE, non-fatal "supplement" call with its OWN tiny schema, kept off the main
 // SCHEMA on purpose (that schema sits at Anthropic's structured-output complexity

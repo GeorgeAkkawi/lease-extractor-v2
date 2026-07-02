@@ -303,12 +303,28 @@ export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease
   return getLease(row.id);
 }
 
+// Accept ONLY a real calendar date in YYYY-MM-DD form. Anything else — prose the model
+// sometimes returns for a relative deadline (e.g. "180 days prior to expiration of the
+// Original Term"), a blank, or a malformed value — becomes null, so it can never reach a
+// Postgres `date` column (which would reject it and fail the entire lease save).
+export function isoDateOrNull(v) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T12:00:00`);
+  return isNaN(d.getTime()) ? null : s;
+}
+
 // Shape AI-extracted escalation rows into rent_escalations inserts, computing the
 // new_base_rent for each step from the prior rent (shared by lease intake +
-// addendum import). Sorted by date so the % / $ steps compound correctly.
+// addendum import). Rows without a real ISO effective_date are dropped (they can't be
+// scheduled). Sorted by date so the % / $ steps compound correctly.
 export function buildEscalations(baseRent, escalations) {
   if (!escalations?.length) return [];
-  const sorted = [...escalations].filter((e) => e.effective_date).sort((a, b) => new Date(a.effective_date) - new Date(b.effective_date));
+  const sorted = escalations
+    .map((e) => ({ ...e, effective_date: isoDateOrNull(e.effective_date) }))
+    .filter((e) => e.effective_date)
+    .sort((a, b) => (a.effective_date < b.effective_date ? -1 : a.effective_date > b.effective_date ? 1 : 0));
   let prior = Number(baseRent) || 0;
   return sorted.map((e) => {
     const type = e.escalation_type || 'manual';
@@ -320,17 +336,25 @@ export function buildEscalations(baseRent, escalations) {
   });
 }
 
-// Shape AI-extracted renewal options into renewal_options inserts.
+// Shape AI-extracted renewal options into renewal_options inserts. notice_by_date is
+// sanitized to a real date or null; a relative/prose deadline is preserved in notes
+// rather than dropped or allowed to crash the save.
 export function buildRenewals(renewals) {
   if (!renewals?.length) return [];
-  return renewals.map((r) => ({
-    option_label: r.option_label ?? null,
-    notice_by_date: r.notice_by_date ?? null,
-    term_months: r.term_months ?? null,
-    new_rent: r.new_rent ?? null,
-    annual_escalation_pct: r.annual_escalation_pct ?? null,
-    notes: r.notes ?? null,
-  }));
+  return renewals.map((r) => {
+    const notice = isoDateOrNull(r.notice_by_date);
+    const rawNotice = r.notice_by_date != null ? String(r.notice_by_date).trim() : '';
+    const noticeNote = rawNotice && !notice ? `Notice: ${rawNotice}` : null;
+    const notes = [r.notes, noticeNote].filter(Boolean).join(' · ') || null;
+    return {
+      option_label: r.option_label ?? null,
+      notice_by_date: notice,
+      term_months: r.term_months ?? null,
+      new_rent: r.new_rent ?? null,
+      annual_escalation_pct: r.annual_escalation_pct ?? null,
+      notes,
+    };
+  });
 }
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;

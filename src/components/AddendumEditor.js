@@ -274,7 +274,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
               {/* Changes the rent */}
               <EffectCard on={form.fx_rent} onToggle={toggle('fx_rent')} title="Changes the rent" hint="One row per rent step. Amounts are ANNUAL base rent.">
                 {form._rentFlag && (
-                  <p className="badge warn" style={{ marginBottom: 8 }}>
+                  <p className="note-msg warn" style={{ marginBottom: 8 }}>
                     ⚠ Some amounts were read from a $/SF rate — double-check them against the addendum before saving.
                   </p>
                 )}
@@ -334,7 +334,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
               </div>
             </form>
           )}
-          {err && <p className="badge danger" style={{ marginTop: 10 }}>{err}</p>}
+          {err && <p className="note-msg danger" style={{ marginTop: 10 }}>{err}</p>}
         </div>
       )}
     </div>
