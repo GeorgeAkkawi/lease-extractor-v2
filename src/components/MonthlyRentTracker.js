@@ -24,6 +24,9 @@ export default function MonthlyRentTracker({ lease }) {
     queryKey: ['monthlyRent', leaseId, year],
     queryFn: () => getMonthlyRent(leaseId, year),
   });
+  // Per-month expected owed (full charges minus any base abatement). Free months show
+  // "Free" and aren't billed; reduced months carry the lower amount.
+  const schedule = data?.schedule || {};
 
   const [method, setMethod] = useState('check');
   const [amt, setAmt] = useState('');
@@ -40,7 +43,12 @@ export default function MonthlyRentTracker({ lease }) {
   };
 
   const mark = useMutation({
-    mutationFn: (month) => markMonthPaid(leaseId, propertyId, year, month, { amount: amt, method, paid_date: date }),
+    // Default the amount to that month's expected owed (already net of any abatement),
+    // unless the landlord typed an explicit override.
+    mutationFn: (month) => markMonthPaid(leaseId, propertyId, year, month, {
+      amount: amt !== '' ? amt : (schedule[month]?.owed ?? undefined),
+      method, paid_date: date,
+    }),
     onSuccess: refresh,
   });
   const unmark = useMutation({
@@ -84,22 +92,39 @@ export default function MonthlyRentTracker({ lease }) {
         </div>
       </div>
 
+      {data?.hasAbatement && (
+        <p className="muted" style={{ fontSize: 12, marginTop: -4, marginBottom: 10 }}>
+          Months in a rent-abatement window show <strong>Free</strong> (or the reduced amount) — base rent isn't billed then; CAM / taxes still apply.
+        </p>
+      )}
       <div className="month-grid">
         {MONTHS.map((label, i) => {
           const m = i + 1;
           const cell = byMonth[m];
           const paid = !!cell;
+          const s = schedule[m] || { owed: monthly, abated: false };
+          const owed = Number(s.owed) || 0;
+          const freeMonth = s.abated && owed <= 0;
+          // A fully-free month has nothing to collect — show it, don't make it clickable.
+          if (freeMonth && !paid) {
+            return (
+              <div key={m} className="month-cell abated" title={`${label}: base rent abated — nothing due`}>
+                <span className="month-label">{label}</span>
+                <span className="month-amt">Free</span>
+              </div>
+            );
+          }
           return (
             <button
               key={m}
               type="button"
-              className={`month-cell${paid ? ' paid' : ''}`}
+              className={`month-cell${paid ? ' paid' : ''}${s.abated ? ' abated' : ''}`}
               onClick={() => toggle(m)}
               disabled={busy}
-              title={paid ? `Paid ${money(cell.amount)} — click to undo` : `Mark ${label} paid (${money(monthly)})`}
+              title={paid ? `Paid ${money(cell.amount)} — click to undo` : `Mark ${label} paid (${money(owed)})${s.abated ? ' — base rent abated, CAM/taxes only' : ''}`}
             >
-              <span className="month-label">{label}</span>
-              <span className="month-amt">{paid ? `✓ ${money(cell.amount)}` : money(monthly)}</span>
+              <span className="month-label">{label}{s.abated && !paid ? ' ·' : ''}</span>
+              <span className="month-amt">{paid ? `✓ ${money(cell.amount)}` : money(owed)}</span>
             </button>
           );
         })}

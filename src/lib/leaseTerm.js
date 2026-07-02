@@ -4,6 +4,7 @@
 // pending option is a right, not a commitment, and only extends the lease once the
 // landlord confirms it (confirmRenewal in api.js) writes the new dates directly.
 // Drives the intake back-fill (backfillLeaseToToday in api.js) and the display.
+import { activeAbatement } from './abatement';
 
 // Parse an ISO date (or Date) at local noon so day-only strings don't shift back
 // in timezones behind UTC — same convention as src/lib/format.js fmtDate.
@@ -126,8 +127,8 @@ export function currentTermLabel(lease, renewals = [], addendums = []) {
 // the next scheduled step if one is coming. phaseStart is the effective date of the
 // latest rent change on/before today — so after an extension/escalation the header
 // shows the current slice, not the whole lease from its original start.
-export function currentPhase({ lease, escalations = [], renewals = [], addendums = [], today } = {}) {
-  if (!lease) return { label: '—', phaseStart: null, termEnd: null, rent: 0, status: 'active', nextStep: null };
+export function currentPhase({ lease, escalations = [], renewals = [], addendums = [], abatements = [], today } = {}) {
+  if (!lease) return { label: '—', phaseStart: null, termEnd: null, rent: 0, status: 'active', nextStep: null, abatement: null };
   const res = resolveCurrentTerm({ lease, escalations, today });
   const nowT = (noon(today) || new Date()).getTime();
 
@@ -150,5 +151,8 @@ export function currentPhase({ lease, escalations = [], renewals = [], addendums
     rent: res.currentRent,
     status: res.status,
     nextStep,
+    // The free/reduced-rent window in effect today (or null) — drives the "rent abated"
+    // note in the header. The reduced monthly owed is computed by the caller from this.
+    abatement: activeAbatement(abatements, today),
   };
 }

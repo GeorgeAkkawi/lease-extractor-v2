@@ -138,7 +138,7 @@ const SYSTEM_FIELDS =
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'rent_schedule'],
+  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'rent_schedule', 'abatements'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
@@ -157,6 +157,23 @@ const SUPPLEMENT_SCHEMA = {
           effective_date: { type: ['string', 'null'] },   // ISO date the period STARTS
           amount: { type: ['number', 'null'] },            // the rent for that period AS WRITTEN
           period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
+        },
+      },
+    },
+    // Rent abatement / free-rent periods (a stretch of free or reduced BASE rent). Read
+    // raw: WHEN it starts + HOW MANY months + HOW MUCH is abated. We compute the window.
+    abatements: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['start_date', 'months', 'kind', 'value', 'note'],
+        properties: {
+          start_date: { type: ['string', 'null'] },  // ISO the free/reduced rent begins (usually rent commencement)
+          months: { type: ['integer', 'null'] },      // how many months it lasts
+          kind: { type: 'string', enum: ['free', 'percent', 'amount'] },
+          value: { type: ['number', 'null'] },        // percent abated (kind='percent') or reduced $/month (kind='amount'); null for free
+          note: { type: ['string', 'null'] },         // the exact wording
         },
       },
     },
@@ -197,7 +214,16 @@ const SUPPLEMENT_SYSTEM =
   'Also return square_footage = the leased area in square feet exactly as written (the raw ' +
   'number), so we can turn any $/SF rate into an annual figure. ' +
   'We do ALL the arithmetic ourselves — never multiply. If the lease states no rent schedule, ' +
-  'return an empty array.';
+  'return an empty array.\n\n' +
+  'RENT ABATEMENT / FREE RENT. If the lease grants the tenant a period of FREE or REDUCED ' +
+  'base rent — "rent abatement", "rent concession", "N months of free rent", "rent holiday", ' +
+  '"abated", "rent shall be waived", "reduced rent for the first N months" — add ONE entry to ' +
+  'abatements: start_date = the ISO date it begins (the rent-commencement / lease-start date ' +
+  'unless another date is stated), months = how many months it lasts, kind = "free" (no base ' +
+  'rent that period), "percent" (a percentage of base rent is abated — put that percent in ' +
+  'value, e.g. 50), or "amount" (the tenant pays a reduced FIXED monthly base — put that ' +
+  'monthly dollar figure in value), note = the exact wording. Abatement applies to BASE rent ' +
+  'only. If the lease mentions no free/reduced rent, return an empty abatements array.';
 
 // Best-effort supplement. Runs as its OWN call so it can never bloat the main lease
 // schema or fail the whole extraction — returns null on ANY error.
@@ -308,6 +334,9 @@ Deno.serve(async (req) => {
       for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2']) {
         if (supp[k]) (parsed as any)[k] = supp[k];
       }
+      // Free/reduced-rent windows read from the lease (raw: start + months + how much);
+      // the app turns each into a dated abatement window on the review screen.
+      if (Array.isArray(supp.abatements)) (parsed as any).abatements = supp.abatements;
       // Rebuild the rent schedule from raw figures so EVERY amount (base + each step) is
       // computed in code, not by the model (overriding the model's drifted ×12 / ×SF
       // amounts). sqft can come from either call — a $/SF row needs one to annualize.

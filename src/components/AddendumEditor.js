@@ -20,12 +20,14 @@ const KIND_LABEL = {
 
 const blankForm = () => ({
   label: '', amendment_date: '', summary: '',
-  fx_extension: false, fx_rent: false, fx_option: false, fx_assignment: false,
+  fx_extension: false, fx_rent: false, fx_option: false, fx_assignment: false, fx_abatement: false,
   new_termination_date: '',
   rentSteps: [], // [{ effective_date, new_base_rent }]
   opt_label: '', opt_term_months: '', opt_new_rent: '', opt_annual_pct: '', opt_notice_by: '',
   _aiRenewals: [], // any additional options beyond the first (rare)
   asg_tenant_name: '', asg_contact_name: '', asg_email: '', asg_email_2: '', asg_effective_date: '',
+  ab_start: '', ab_months: '', ab_kind: 'free', ab_value: '', ab_note: '',
+  _aiAbatements: [], // any additional abatement windows beyond the first (rare)
   storage_path: null, addendum_text: null, extraction_raw: null, _rentFlag: null, _fromAI: false,
 });
 
@@ -92,6 +94,12 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
         effectiveDate: f.asg_effective_date || null,
       };
     }
+    if (f.fx_abatement && f.ab_start && f.ab_months !== '') {
+      const primary = { start_date: f.ab_start, months: Number(f.ab_months), kind: f.ab_kind, value: numOrNull(f.ab_value), note: f.ab_note || null };
+      changes.abatements = [primary, ...(f._aiAbatements || []).map((a) => ({
+        start_date: a.start_date ?? null, months: a.months ?? null, kind: a.kind || 'free', value: a.value ?? null, note: a.note ?? null,
+      }))];
+    }
     return changes;
   }
 
@@ -128,6 +136,8 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
       });
       const opts = fields.renewal_options || [];
       const first = opts[0] || null;
+      const abs = fields.abatements || [];
+      const ab0 = abs[0] || null;
 
       setForm((f) => ({
         ...f,
@@ -151,6 +161,13 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
         asg_email: asg?.new_tenant_email || '',
         asg_email_2: asg?.new_tenant_email_2 || '',
         asg_effective_date: asg?.assignment_effective_date || '',
+        fx_abatement: abs.length > 0,
+        ab_start: ab0?.start_date || '',
+        ab_months: ab0?.months ?? '',
+        ab_kind: ab0?.kind || 'free',
+        ab_value: ab0?.value ?? '',
+        ab_note: ab0?.note || '',
+        _aiAbatements: abs.slice(1),
         addendum_text: addendum_text || null,
         extraction_raw: fields || null,
         _rentFlag: fields.rent_schedule_flag || null,
@@ -169,11 +186,12 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
   };
   const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim(), squareFootage })); };
 
-  const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment;
+  const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment || form.fx_abatement;
   const canSave =
     (!form.fx_extension || !!form.new_termination_date) &&
     (!form.fx_option || (form.opt_term_months !== '' || form.opt_new_rent !== '' || form.opt_annual_pct !== '')) &&
     (!form.fx_assignment || !!form.asg_tenant_name) &&
+    (!form.fx_abatement || (!!form.ab_start && form.ab_months !== '')) &&
     (!form.fx_rent || (form.rentSteps || []).some((s) => s.new_base_rent !== '' && s.new_base_rent != null));
 
   return (
@@ -321,6 +339,28 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
                   <label className="form-field" style={{ marginBottom: 0 }}><span>Second email (optional)</span><input className="text-input" value={form.asg_email_2} onChange={set('asg_email_2')} /></label>
                   <label className="form-field" style={{ marginBottom: 0 }}><span>Effective date</span><input className="text-input" type="date" value={form.asg_effective_date} onChange={set('asg_effective_date')} /></label>
                 </div>
+              </EffectCard>
+
+              {/* Grants free / reduced rent (abatement) */}
+              <EffectCard on={form.fx_abatement} onToggle={toggle('fx_abatement')} title="Grants free / reduced rent"
+                hint="A stretch of free or reduced BASE rent. Credited on the invoice & monthly tracker — CAM / taxes still apply; base rent itself is unchanged.">
+                <div className="field-grid">
+                  <label className="form-field" style={{ marginBottom: 0 }}><span>Starts</span><input className="text-input" type="date" value={form.ab_start} onChange={set('ab_start')} /></label>
+                  <label className="form-field" style={{ marginBottom: 0 }}><span>For (months)</span><input className="text-input num" type="number" min="1" step="1" placeholder="e.g. 8" value={form.ab_months} onChange={set('ab_months')} /></label>
+                  <label className="form-field" style={{ marginBottom: 0 }}><span>Type</span>
+                    <select className="text-input" value={form.ab_kind} onChange={set('ab_kind')}>
+                      <option value="free">Free (no base rent)</option>
+                      <option value="percent">Reduced by %</option>
+                      <option value="amount">Reduced to fixed $/mo</option>
+                    </select>
+                  </label>
+                  {form.ab_kind !== 'free' && (
+                    <label className="form-field" style={{ marginBottom: 0 }}><span>{form.ab_kind === 'percent' ? '% abated' : 'Reduced $/mo'}</span><input className="text-input num" type="number" step="any" value={form.ab_value} onChange={set('ab_value')} /></label>
+                  )}
+                </div>
+                {(form._aiAbatements || []).length > 0 && (
+                  <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>+ {form._aiAbatements.length} more abatement window{form._aiAbatements.length > 1 ? 's' : ''} the AI found will also be added.</p>
+                )}
               </EffectCard>
 
               <div className="form-field" style={{ maxWidth: '100%', marginTop: 16 }}>

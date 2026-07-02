@@ -45,7 +45,8 @@ export default function PropertyRentRoll({ propertyId, year }) {
   if (!rows.length) return <p className="empty-line muted">No tenants with rent on file for FY {year}.</p>;
 
   const markAll = (m) => {
-    const unpaid = rows.filter((r) => !r.byMonth[m]).length;
+    // Count only tenants who actually owe this month — a fully-free abated month has nothing to collect.
+    const unpaid = rows.filter((r) => !r.byMonth[m] && (r.schedule?.[m]?.owed ?? 1) > 0).length;
     if (unpaid === 0) { setNote(`Everyone has already paid ${MONTHS[m - 1]}.`); return; }
     if (window.confirm(`Mark ${MONTHS[m - 1]} ${year} paid for all ${unpaid} tenant${unpaid === 1 ? '' : 's'} who haven't yet?`)) {
       allMut.mutate(m);
@@ -87,14 +88,20 @@ export default function PropertyRentRoll({ propertyId, year }) {
                   {MONTHS.map((ml, i) => {
                     const m = i + 1;
                     const paid = !!r.byMonth[m];
+                    const s = r.schedule?.[m];
+                    const freeMonth = s?.abated && (Number(s.owed) || 0) <= 0;
+                    // Fully-free abated month — nothing to collect; show "F", not a toggle.
+                    if (freeMonth && !paid) {
+                      return <td key={m}><span className="rr-cell abated" title={`${ml}: base rent abated — nothing due`}>F</span></td>;
+                    }
                     return (
                       <td key={m}>
                         <button
                           type="button"
-                          className={`rr-cell${paid ? ' paid' : ''}`}
+                          className={`rr-cell${paid ? ' paid' : ''}${s?.abated ? ' abated' : ''}`}
                           disabled={busy}
                           onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, paid })}
-                          title={paid ? 'Paid — click to undo' : `Mark ${ml} paid (${money(r.monthly)})`}
+                          title={paid ? 'Paid — click to undo' : `Mark ${ml} paid (${money(s?.owed ?? r.monthly)})${s?.abated ? ' — base rent abated' : ''}`}
                         >
                           {paid ? '✓' : '—'}
                         </button>

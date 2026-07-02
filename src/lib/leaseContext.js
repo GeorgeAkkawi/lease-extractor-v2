@@ -4,10 +4,11 @@
 // current phase says where things actually stand now. Fed to ask-lease as `lease_text`.
 import { fmtDate, money } from './format';
 import { currentPhase } from './leaseTerm';
+import { abatementKindLabel } from './abatement';
 
-export function buildLeaseAskContext({ lease, renewals = [], addendums = [], escalations = [] } = {}) {
+export function buildLeaseAskContext({ lease, renewals = [], addendums = [], escalations = [], abatements = [] } = {}) {
   if (!lease) return '';
-  const ph = currentPhase({ lease, escalations, renewals, addendums });
+  const ph = currentPhase({ lease, escalations, renewals, addendums, abatements });
 
   const pending = (renewals || []).filter((r) => r.status === 'pending');
   const pendingLines = pending.length
@@ -28,6 +29,8 @@ export function buildLeaseAskContext({ lease, renewals = [], addendums = [], esc
     `- Current rent period: ${fmtDate(ph.phaseStart)} – ${fmtDate(ph.termEnd)}`,
     `- Current annual base rent: ${money(ph.rent)}`,
     ph.nextStep ? `- Next scheduled rent step: ${money(ph.nextStep.rent)} effective ${fmtDate(ph.nextStep.date)}` : null,
+    ph.abatement ? `- Rent abatement ACTIVE now: ${abatementKindLabel(ph.abatement)} through ${fmtDate(ph.abatement.end_date)} (base rent free/reduced; CAM & taxes still apply)` : null,
+    (abatements || []).length ? `- Rent abatement windows on file: ${(abatements || []).map((a) => `${fmtDate(a.start_date)}–${fmtDate(a.end_date)} (${abatementKindLabel(a)})`).join('; ')}` : null,
     '- Pending renewal options:',
     pendingLines,
   ].filter(Boolean).join('\n');

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals } from '../lib/api';
+import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals, buildAbatements } from '../lib/api';
 import { resolveCurrentTerm } from '../lib/leaseTerm';
+import { abatementKindLabel } from '../lib/abatement';
 import { money, fmtDate } from '../lib/format';
 import { usePageChrome } from '../context/ChromeContext';
 import LeaseForm from '../components/LeaseForm';
@@ -44,6 +45,7 @@ export default function LeaseNewPage() {
         lease,
         escalations: buildEscalations(lease.base_rent, extractedDoc.extraction.escalations),
         renewals: buildRenewals(extractedDoc.extraction.renewal_options),
+        abatements: buildAbatements(extractedDoc.extraction.abatements),
         aiConfidence: buildAiConfidence(extractedDoc.extraction),
         leaseText: extractedDoc.lease_text,
       }),
@@ -116,6 +118,7 @@ function SchedulePreview({ ex }) {
   const end = val(ex.lease_termination_date) || null;
   const escs = buildEscalations(base, ex.escalations).map((e) => ({ ...e, status: 'scheduled' }));
   const rens = buildRenewals(ex.renewal_options).map((r, i) => ({ ...r, id: `r${i}`, status: 'pending' }));
+  const abs = buildAbatements(ex.abatements);
   const res = resolveCurrentTerm({ lease: { base_rent: base, lease_start: start, lease_termination_date: end }, escalations: escs, renewals: rens });
   const advanced = Math.round(res.currentRent) !== Math.round(base);
   const flag = ex.rent_schedule_flag;
@@ -148,6 +151,14 @@ function SchedulePreview({ ex }) {
         {res.status === 'expired' && <span className="muted"> (term appears past — it'll be flagged for an extension)</span>}
       </div>
       {rens.length > 0 && <div className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>+ {rens.length} renewal option(s) imported.</div>}
+      {abs.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <span className="badge warn">Rent abatement</span>{' '}
+          <span className="muted" style={{ fontSize: 12.5 }}>
+            {abs.map((a, i) => `${fmtDate(a.start_date)}–${fmtDate(a.end_date)} (${abatementKindLabel(a)})`).join('; ')} — credited on the invoice &amp; monthly tracker.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

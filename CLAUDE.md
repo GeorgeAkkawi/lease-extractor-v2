@@ -71,6 +71,39 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — Rent abatement (free / reduced rent periods) — brand-new feature, end to end.
+  Deployed: DB migration `0041` + edge functions `extract-lease`, `extract-addendum`, `draft-invoice`
+  (Supabase `awgrjmbcghdjgnqeiqkt`); frontend Cloudflare version `bb85704e`.
+  - **Why:** a lease/addendum often grants free or reduced base rent for a stretch ("months 1-8 free").
+    The app had **no concept of it anywhere** — the AI reader had no field, the DB couldn't store a $0
+    period (rent rows are NOT NULL and the rent math discards $0), and nothing showed it, so a free
+    period was silently dropped and the tenant still read as owing full rent. George asked for the full
+    version: AI auto-reads it, supports fully-free OR reduced, and it flows all the way through billing
+    and receivables. **Assumption (flagged):** abatement is BASE-RENT-only — CAM / taxes still accrue.
+  - **Data model** (`0041_rent_abatement.sql`): new owner-scoped `rent_abatements` table (window +
+    `kind` free/percent/amount + value + optional `addendum_id`); new SQL `abatement_credit(lease, year)`
+    that walks the 12 months and credits the strongest window per month; `v_tenant_shares` recreated to
+    append `abatement_amount`; `invoices.abatement_annual` column. All additive/idempotent.
+  - **Shared math** (`src/lib/abatement.js`): the ONE source of truth (per-month schedule, annual credit,
+    active-window, end-date-from-months) — mirrors `abatement_credit()` so JS + SQL agree to the cent
+    (same pattern `leaseTerm.js` has with `effective_rent`).
+  - **Reads it automatically:** `extract-lease` (supplement schema) + `extract-addendum` (rent schema)
+    gained an `abatements[]` array + prompt lines — folded into the existing supplement/rent calls, so
+    **no new AI calls** (negligible token bump only). `LeaseNewPage` maps them onto the review screen;
+    `AddendumEditor` gained a "Grants free / reduced rent" effect card (pre-ticked when the AI finds one).
+  - **Shows everywhere:** new `AbatementEditor` panel on the lease page (add/see/fix windows by hand);
+    the "Currently in" header + AI-assistant context note when a window is active; the **Monthly Rent
+    Tracker** + property rent roll now compute per-month owed (`getMonthlyRent`/`getPropertyMonthlyRoll`)
+    so abated months show **"Free"** (or the reduced amount) and aren't billed.
+  - **Billing & receivables:** `draft-invoice` returns `abatement_annual`; `InvoiceButton` +
+    `invoiceTemplate` show a **"Rent abatement (credit)"** line and net the total; `ensureInvoice` /
+    `markMonthPaid` net per-month owed → AR/receivables drop the free months automatically. `applyAddendum`
+    inserts the windows + logs a `rent_abated` history event (`HistoryPage` labels it).
+  - Verified: new `src/lib/__tests__/abatement.test.js` replays 8-month free (tracker 8 free + 4 full,
+    year-1 net = 4 months, reconciles to gross − credit), 50%/fixed-$ reduced, and a window spanning two
+    years; full suite **41/41 green**; `CI=true` build compiles; live DB confirmed `v_tenant_shares`
+    exposes `abatement_amount` and `abatement_credit` runs. Committed only this task's files.
+
 - **2026-07-02** — Fix lease-import date crash + review-box text wrapping. Deployed:
   `extract-lease` + `extract-addendum` edge functions (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
   Cloudflare version `02970cf7`. No migration.

@@ -83,6 +83,7 @@ Deno.serve(async (req) => {
       cam_annual: round(cur.cam_amount || 0),
       tax_annual: round(cur.tax_amount || 0),
       roof_annual: round(roof),
+      abatement_annual: round(cur.abatement_amount || 0), // free/reduced base rent credited off this year's bill
       today: now.toISOString().slice(0, 10),
       due: due.toISOString().slice(0, 10),
     };

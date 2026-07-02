@@ -7,6 +7,7 @@ import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm } from './leaseTerm';
+import { monthlyScheduleForYear, abatementEnd } from './abatement';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -265,7 +266,7 @@ export async function extractFromText(text) {
 // Persist an AI-extracted lease plus its escalations/renewals in one go.
 // leaseText (the cached plain-text copy) is stored so the AI assistant can read
 // it later without re-running extraction.
-export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease, escalations, renewals, aiConfidence, leaseText }) {
+export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease, escalations, renewals, abatements, aiConfidence, leaseText }) {
   const uid = await ownerId();
   const row = await one(
     supabase
@@ -295,6 +296,13 @@ export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease
       supabase
         .from('renewal_options')
         .insert(renewals.map((r) => ({ ...r, lease_id: row.id, owner_id: uid })))
+    );
+  }
+  if (abatements?.length) {
+    await rows(
+      supabase
+        .from('rent_abatements')
+        .insert(abatements.map((a) => ({ ...a, lease_id: row.id, owner_id: uid })))
     );
   }
   // Collapse the historical schedule to today: set the current rent + period (or
@@ -355,6 +363,46 @@ export function buildRenewals(renewals) {
       notes,
     };
   });
+}
+
+// ---- Rent abatements (free / reduced base-rent windows) ---------------------
+// A lease or addendum can grant free or reduced BASE rent for a period. The window
+// math lives in src/lib/abatement.js, mirrored by abatement_credit() in SQL; CAM /
+// taxes still accrue. These feed the monthly tracker, the phase header, and the
+// invoice credit line — nothing here touches the lease's own base_rent.
+export const listAbatements = (leaseId) =>
+  rows(supabase.from('rent_abatements').select('*').eq('lease_id', leaseId).order('start_date'));
+
+// Bulk: every abatement for a set of leases in ONE query, grouped by lease_id.
+export async function listAbatementsForLeases(leaseIds) {
+  const ids = [...new Set((leaseIds || []).filter(Boolean))];
+  const byLease = Object.fromEntries(ids.map((id) => [id, []]));
+  if (ids.length === 0) return byLease;
+  const all = await rows(supabase.from('rent_abatements').select('*').in('lease_id', ids).order('start_date'));
+  for (const a of all || []) (byLease[a.lease_id] ||= []).push(a);
+  return byLease;
+}
+
+export const createAbatement = async (a) =>
+  one(supabase.from('rent_abatements').insert({ ...a, owner_id: await ownerId() }).select().single());
+
+export const deleteAbatement = (id) => rows(supabase.from('rent_abatements').delete().eq('id', id));
+
+// Shape AI-extracted / review-form abatement rows into rent_abatements inserts. Each
+// input: { start_date, months?, end_date?, kind, value?, note? }. The window end comes
+// from an explicit end_date or start + N months (inclusive). Rows without a resolvable
+// start+end are dropped. Shared by lease intake + addendum apply so both agree.
+export function buildAbatements(abatements) {
+  if (!abatements?.length) return [];
+  return abatements
+    .map((a) => {
+      const start = isoDateOrNull(a.start_date);
+      const end = isoDateOrNull(a.end_date) || (start && a.months ? abatementEnd(start, a.months) : null);
+      if (!start || !end) return null;
+      const kind = ['free', 'percent', 'amount'].includes(a.kind) ? a.kind : 'free';
+      return { start_date: start, end_date: end, kind, value: kind === 'free' ? null : (a.value ?? null), note: a.note ?? null };
+    })
+    .filter(Boolean);
 }
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -848,6 +896,22 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
     );
   }
 
+  // Rent abatements the rider grants (free / reduced base-rent windows). Term-neutral:
+  // they net rent out of the invoices + monthly tracker but never touch base_rent.
+  const abRows = buildAbatements(changes.abatements);
+  if (abRows.length) {
+    await rows(
+      supabase.from('rent_abatements').insert(
+        abRows.map((a) => ({ ...a, lease_id: leaseId, owner_id: uid, addendum_id: addendum.id }))
+      )
+    );
+    await logHistoryEvent({
+      property_id: lease?.property_id || null, lease_id: leaseId, type: 'rent_abated', tenant_name: lease?.tenant_name || null,
+      description: `Rent abatement added${addendum.label ? ` (${addendum.label})` : ''}: ${abRows.length} window${abRows.length > 1 ? 's' : ''} (${fmtDate(abRows[0].start_date)} – ${fmtDate(abRows[abRows.length - 1].end_date)})`,
+      event_date: addendum.amendment_date || abRows[0].start_date || null, meta: { addendum_id: addendum.id, windows: abRows },
+    });
+  }
+
   return backfillLeaseToToday(leaseId, today);
 }
 
@@ -1002,6 +1066,7 @@ export async function ensureInvoice(leaseId, propertyId, year) {
   const cam = Number(facts?.cam_annual || 0);
   const tax = Number(facts?.tax_annual || 0);
   const roof = Number(facts?.roof_annual || 0);
+  const abatement = Number(facts?.abatement_annual || 0); // free/reduced base rent netted out
   return createInvoice({
     lease_id: leaseId,
     property_id: propertyId,
@@ -1013,7 +1078,8 @@ export async function ensureInvoice(leaseId, propertyId, year) {
     cam_annual: cam,
     tax_annual: tax,
     roof_annual: roof,
-    total_amount: base + cam + tax + roof,
+    abatement_annual: abatement,
+    total_amount: Math.max(0, base + cam + tax + roof - abatement),
   });
 }
 
@@ -1021,15 +1087,24 @@ export async function ensureInvoice(leaseId, propertyId, year) {
 // invoice (or null), the expected annual/monthly amount, and which months are paid
 // (period_month -> { amount, ids, paid_date, method }).
 export async function getMonthlyRent(leaseId, year) {
-  const invoice = await getYearInvoice(leaseId, year);
-  let annual;
+  const [invoice, abatements] = await Promise.all([getYearInvoice(leaseId, year), listAbatements(leaseId)]);
+  // GROSS base + other charges for the year — the abatement is applied per-month below,
+  // not baked into these, so the tracker can show which specific months are free.
+  let grossBase = 0;
+  let other = 0;
   if (invoice) {
-    annual = Number(invoice.total_amount || 0);
+    grossBase = Number(invoice.base_rent_annual || 0);
+    other = Number(invoice.cam_annual || 0) + Number(invoice.tax_annual || 0) + Number(invoice.roof_annual || 0);
   } else {
     const { facts } = await invokeFunction('draft-invoice', { lease_id: leaseId, year });
-    annual = ['base_rent_annual', 'cam_annual', 'tax_annual', 'roof_annual']
-      .reduce((s, k) => s + Number(facts?.[k] || 0), 0);
+    grossBase = Number(facts?.base_rent_annual || 0);
+    other = Number(facts?.cam_annual || 0) + Number(facts?.tax_annual || 0) + Number(facts?.roof_annual || 0);
   }
+  // Per-month expected owed (full charges minus any base abatement). The net annual is
+  // the sum — so the collected/remaining math nets out the free months automatically.
+  const schedule = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: other, abatements });
+  const annual = Object.values(schedule).reduce((s, c) => s + c.owed, 0);
+
   const payments = invoice ? await listPayments(invoice.id) : [];
   const byMonth = {};
   for (const p of payments) {
@@ -1039,14 +1114,28 @@ export async function getMonthlyRent(leaseId, year) {
     b.amount += Number(p.amount) || 0;
     b.ids.push(p.id);
   }
-  return { invoice, annual, monthly: annual / 12, byMonth };
+  return { invoice, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: (abatements || []).length > 0 };
 }
 
 // Mark month (1-12) paid: ensure the year's invoice exists, then record a payment
 // tagged with that month. amount defaults to the monthly share (invoice total / 12).
 export async function markMonthPaid(leaseId, propertyId, year, month, opts = {}) {
   const invoice = await ensureInvoice(leaseId, propertyId, year);
-  const amount = opts.amount != null && opts.amount !== '' ? Number(opts.amount) : Number(invoice.total_amount || 0) / 12;
+  let amount;
+  if (opts.amount != null && opts.amount !== '') {
+    amount = Number(opts.amount);
+  } else {
+    // Default to that month's expected owed, net of any base-rent abatement — NOT a flat
+    // total/12 (which would over-bill during free months and under-bill the rest).
+    const abatements = await listAbatements(leaseId);
+    const grossBase = Number(invoice.base_rent_annual || 0);
+    const other = Number(invoice.cam_annual || 0) + Number(invoice.tax_annual || 0) + Number(invoice.roof_annual || 0);
+    const sched = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: other, abatements });
+    amount = sched[Number(month)]?.owed ?? (Number(invoice.total_amount || 0) / 12);
+  }
+  // Nothing due this month (fully-free base and no other charges) — don't record a $0
+  // payment; the month simply shows "Free". An explicit amount override still records.
+  if (!(amount > 0) && (opts.amount == null || opts.amount === '')) return invoice;
   await recordPayment({
     invoice_id: invoice.id,
     lease_id: leaseId,
@@ -1097,6 +1186,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
     getTenantShares(propertyId, year),
     listInvoicesForProperty(propertyId),
   ]);
+  const abByLease = await listAbatementsForLeases(shares.map((s) => s.lease_id));
   const invByLease = {};
   for (const inv of invoices) {
     if (Number(inv.year) === Number(year) && inv.status !== 'void') invByLease[inv.lease_id] = inv;
@@ -1107,10 +1197,14 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
   );
   return shares.map((s) => {
     const inv = invByLease[s.lease_id] || null;
-    const annual = inv
-      ? Number(inv.total_amount || 0)
-      : Number(s.base_rent || 0) + Number(s.cam_amount || 0) + Number(s.tax_amount || 0)
-        + (s.roof_responsible ? Number(s.roof_amt || 0) : 0);
+    // GROSS base + other charges (abatement applied per-month via the schedule, not baked in).
+    const grossBase = inv ? Number(inv.base_rent_annual || 0) : Number(s.base_rent || 0);
+    const other = inv
+      ? Number(inv.cam_annual || 0) + Number(inv.tax_annual || 0) + Number(inv.roof_annual || 0)
+      : Number(s.cam_amount || 0) + Number(s.tax_amount || 0) + (s.roof_responsible ? Number(s.roof_amt || 0) : 0);
+    const abatements = abByLease[s.lease_id] || [];
+    const schedule = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: other, abatements });
+    const annual = Object.values(schedule).reduce((sum, c) => sum + c.owed, 0);
     const byMonth = {};
     if (inv) {
       for (const p of paymentsByInvoice[inv.id] || []) {
@@ -1119,7 +1213,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
         (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
       }
     }
-    return { lease_id: s.lease_id, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth };
+    return { lease_id: s.lease_id, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: abatements.length > 0 };
   });
 }
 

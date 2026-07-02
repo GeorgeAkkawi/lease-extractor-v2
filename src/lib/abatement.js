@@ -1,0 +1,149 @@
+// Rent abatement (free / reduced rent) math — the ONE source of truth shared by the
+// monthly rent tracker, the property rent roll, the "Currently in" phase header, the
+// invoice credit line, and the unit tests. It MIRRORS the SQL function
+// abatement_credit() in migration 0041 so the frontend and the database agree to the
+// cent (same relationship effective_rent has with leaseTerm.js).
+//
+// An abatement is a window [start_date, end_date] during which the tenant's BASE rent
+// is fully or partially abated. `kind`:
+//   'free'    → the base rent is $0 for those months
+//   'percent' → `value`% of the base rent is abated (value 50 → half off)
+//   'amount'  → the tenant pays a reduced FIXED monthly base of `value` dollars
+// Other charges (CAM / tax / roof) are NOT abated — the standard reading of a "rent
+// abatement" is base-rent-only; CAM/taxes continue to accrue.
+import { addMonths } from './renewals';
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const noon = (d) => {
+  if (!d) return null;
+  if (d instanceof Date) return d;
+  const s = typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T12:00:00` : d;
+  const t = new Date(s);
+  return isNaN(t) ? null : t;
+};
+const monthStart = (year, m) => new Date(year, m - 1, 1, 12);
+const monthEnd = (year, m) => new Date(year, m, 0, 12); // day 0 of next month = last day of this one
+
+// Does an abatement window overlap calendar month (year, m 1-12)? A month counts as
+// abated if the window touches ANY part of it (same rule as the SQL) — so a full-month
+// tracker box lights up whenever the abatement covers it.
+export function abatementCoversMonth(ab, year, m) {
+  const s = noon(ab?.start_date);
+  const e = noon(ab?.end_date);
+  if (!s && !e) return false;
+  const ms = monthStart(year, m);
+  const me = monthEnd(year, m);
+  if (s && s > me) return false; // window starts after this month
+  if (e && e < ms) return false; // window ended before this month
+  return true;
+}
+
+// The base rent still OWED for one covered month, given the full monthly base.
+export function reducedMonthlyBase(fullMonthlyBase, ab) {
+  const full = Number(fullMonthlyBase) || 0;
+  switch (ab?.kind) {
+    case 'percent': {
+      const p = Math.min(100, Math.max(0, Number(ab.value) || 0));
+      return round2(full * (1 - p / 100));
+    }
+    case 'amount': {
+      const owed = Math.max(0, Number(ab.value) || 0);
+      return round2(Math.min(full, owed));
+    }
+    case 'free':
+    default:
+      return 0;
+  }
+}
+
+// The base $ abated for one covered month (full − reduced).
+function monthlyCredit(fullMonthlyBase, ab) {
+  const full = Number(fullMonthlyBase) || 0;
+  return round2(full - reducedMonthlyBase(full, ab));
+}
+
+// The strongest abatement covering a given month (if several overlap, the one that
+// abates the MOST wins — deterministic, and "free" beats a partial reduction).
+export function abatementForMonth(abatements, year, m, fullMonthlyBase) {
+  let best = null;
+  let bestCredit = -1;
+  for (const ab of abatements || []) {
+    if (!abatementCoversMonth(ab, year, m)) continue;
+    const c = monthlyCredit(fullMonthlyBase, ab);
+    if (c > bestCredit) { bestCredit = c; best = ab; }
+  }
+  return best;
+}
+
+// Total base $ abated across a calendar YEAR given that year's annual base rent.
+// Mirrors abatement_credit(lease, year) in SQL. Capped at the annual base — you can
+// never abate more rent than there is.
+export function annualAbatementCredit(abatements, year, annualBaseRent) {
+  const fullMonthly = (Number(annualBaseRent) || 0) / 12;
+  let credit = 0;
+  for (let m = 1; m <= 12; m++) {
+    const ab = abatementForMonth(abatements, year, m, fullMonthly);
+    if (ab) credit += monthlyCredit(fullMonthly, ab);
+  }
+  return round2(Math.min(credit, Number(annualBaseRent) || 0));
+}
+
+// Per-month owed schedule for a year: full charges minus any base abatement.
+// otherAnnual = cam + tax + roof for the year (never abated). Returns a map
+// { [m]: { full, owed, abated, credit, kind } } for m = 1..12, where `owed` is what the
+// tenant actually pays that month and `full` is what it would be with no abatement.
+export function monthlyScheduleForYear({ year, annualBaseRent, otherAnnual = 0, abatements = [] }) {
+  const fullMonthlyBase = (Number(annualBaseRent) || 0) / 12;
+  const otherMonthly = (Number(otherAnnual) || 0) / 12;
+  const out = {};
+  for (let m = 1; m <= 12; m++) {
+    const ab = abatementForMonth(abatements, year, m, fullMonthlyBase);
+    const reducedBase = ab ? reducedMonthlyBase(fullMonthlyBase, ab) : fullMonthlyBase;
+    out[m] = {
+      full: round2(fullMonthlyBase + otherMonthly),
+      owed: round2(reducedBase + otherMonthly),
+      abated: !!ab,
+      credit: ab ? monthlyCredit(fullMonthlyBase, ab) : 0,
+      kind: ab?.kind || null,
+    };
+  }
+  return out;
+}
+
+// The abatement in effect on a given day (for the "Currently in" header), or null.
+export function activeAbatement(abatements, today) {
+  const t = today instanceof Date ? today : (noon(today) || new Date());
+  const year = t.getFullYear();
+  const m = t.getMonth() + 1;
+  const full = 1; // any positive base — we only need the strongest-covering window here
+  return abatementForMonth(abatements, year, m, full) || null;
+}
+
+// Compute an abatement's inclusive end date from a start + N months: the last day
+// before the (start + N months) boundary. e.g. start 2026-01-01 + 8 → 2026-08-31.
+export function abatementEnd(startIso, months) {
+  if (!startIso || !months) return null;
+  const next = addMonths(startIso, Number(months));
+  if (!next) return null;
+  const d = new Date(`${next}T12:00:00`);
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// Whole calendar months an abatement window spans (for display: "8 months free").
+export function abatementMonthCount(ab) {
+  const s = noon(ab?.start_date);
+  const e = noon(ab?.end_date);
+  if (!s || !e || e < s) return null;
+  return (e.getFullYear() - s.getFullYear()) * 12 + (e.getMonth() - s.getMonth()) + 1;
+}
+
+// A short human label for one abatement window ("Free rent", "50% off", "$2,000/mo").
+export function abatementKindLabel(ab) {
+  switch (ab?.kind) {
+    case 'percent': return `${Math.round(Number(ab.value) || 0)}% off base rent`;
+    case 'amount': return `reduced base rent`;
+    case 'free':
+    default: return 'Free base rent';
+  }
+}

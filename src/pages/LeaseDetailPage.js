@@ -1,12 +1,13 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, getHiddenWidgets } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets } from '../lib/api';
 import { buildLeaseAskContext } from '../lib/leaseContext';
 import { usePageChrome } from '../context/ChromeContext';
 import EditField from '../components/EditField';
 import EscalationScheduleEditor from '../components/EscalationScheduleEditor';
 import RenewalOptionsEditor from '../components/RenewalOptionsEditor';
+import AbatementEditor from '../components/AbatementEditor';
 import AddendumEditor from '../components/AddendumEditor';
 import InvoicesPanel from '../components/InvoicesPanel';
 import MonthlyRentTracker from '../components/MonthlyRentTracker';
@@ -16,6 +17,7 @@ import InsuranceVault from '../components/InsuranceVault';
 import EmailComposeModal from '../components/EmailComposeModal';
 import { buildInsuranceRequestEmail } from '../lib/emailTemplates';
 import { currentPhase } from '../lib/leaseTerm';
+import { reducedMonthlyBase, abatementKindLabel } from '../lib/abatement';
 import { PageSkeleton } from '../components/Skeleton';
 import { sf, pct, psf, money, fmtDate } from '../lib/format';
 
@@ -43,6 +45,7 @@ export default function LeaseDetailPage() {
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
   const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
+  const { data: abatements = [] } = useQuery({ queryKey: ['abatements', leaseId], queryFn: () => listAbatements(leaseId) });
   // Per-account Display settings — which lease/property panels the landlord hid.
   const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   const showPanel = (k) => !hiddenWidgets.includes(k);
@@ -116,8 +119,10 @@ export default function LeaseDetailPage() {
   const brPsf = lease.square_footage > 0 && lease.base_rent ? psf(lease.base_rent / lease.square_footage) : null;
   // Where the lease stands TODAY — drives the "Currently in" header (label, the current
   // rent period's window, the rent in effect, and the next scheduled step).
-  const phase = currentPhase({ lease, escalations, renewals, addendums });
+  const phase = currentPhase({ lease, escalations, renewals, addendums, abatements });
   const phasePsf = lease.square_footage > 0 && phase.rent ? psf(phase.rent / lease.square_footage) : null;
+  // If a free/reduced-rent window is active today, show the abated monthly base owed.
+  const abatedMonthly = phase.abatement ? reducedMonthlyBase((Number(phase.rent) || 0) / 12, phase.abatement) : null;
   // Rent projected to the term end — what a +%/yr renewal option steps up from.
   const rentAtTermEnd = (() => {
     const end = lease.lease_termination_date;
@@ -210,6 +215,15 @@ export default function LeaseDetailPage() {
                 {fmtDate(phase.phaseStart)} – {fmtDate(phase.termEnd)} · rent {money(phase.rent)}{phasePsf ? ` (${phasePsf})` : ''}
                 {phase.nextStep ? ` · next step ${money(phase.nextStep.rent)} on ${fmtDate(phase.nextStep.date)}` : ''}
               </div>
+              {phase.abatement && (
+                <div style={{ marginTop: 6 }}>
+                  <span className="badge warn">Rent abated</span>{' '}
+                  <span className="muted" style={{ fontSize: 12.5 }}>
+                    {abatementKindLabel(phase.abatement)} through {fmtDate(phase.abatement.end_date)} —
+                    {' '}base rent {abatedMonthly > 0 ? `reduced to ${money(abatedMonthly)}/mo` : 'free'} for now (CAM / taxes still apply).
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -247,6 +261,19 @@ export default function LeaseDetailPage() {
           <span className="muted">Applied automatically on the effective date — you’re reminded as it approaches</span>
         </div>
         <EscalationScheduleEditor lease={lease} />
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <strong>Rent abatement (free / reduced rent)</strong>
+          <span className="muted">Free or reduced base rent for a stretch of the term</span>
+        </div>
+        <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
+          A rent abatement is a period of <strong>free or reduced base rent</strong> (e.g. "first 8 months free"). The base
+          rent up top stays the same — those months are simply credited on the invoice, the receivables, and the monthly
+          tracker. CAM &amp; taxes still apply.
+        </p>
+        <AbatementEditor lease={lease} />
       </div>
 
       <div className={`panel${flash === 'renewal' ? ' panel-flash' : ''}`} ref={renRef}>
@@ -318,7 +345,7 @@ export default function LeaseDetailPage() {
         <LeaseAssistant
           leaseId={lease.id}
           leaseText={lease.lease_text}
-          askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations })}
+          askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations, abatements })}
           canSave
         />
       </div>

@@ -25,7 +25,10 @@ export default function InvoiceButton({ share }) {
   const subject = `Invoice — ${share.tenant_name} (${share.year})`;
 
   // Persist this invoice into receivables so it shows up in AR (status 'sent').
-  const total = facts ? (Number(facts.base_rent_annual || 0) + Number(facts.cam_annual || 0) + Number(facts.tax_annual || 0) + Number(facts.roof_annual || 0)) : 0;
+  // Base + CAM + tax + roof, minus any rent abatement credited off the year.
+  const total = facts
+    ? Math.max(0, Number(facts.base_rent_annual || 0) + Number(facts.cam_annual || 0) + Number(facts.tax_annual || 0) + Number(facts.roof_annual || 0) - Number(facts.abatement_annual || 0))
+    : 0;
   const saveAR = useMutation({
     mutationFn: () =>
       createInvoice({
@@ -39,6 +42,7 @@ export default function InvoiceButton({ share }) {
         cam_annual: Number(facts?.cam_annual || 0),
         tax_annual: Number(facts?.tax_annual || 0),
         roof_annual: Number(facts?.roof_annual || 0),
+        abatement_annual: Number(facts?.abatement_annual || 0),
         total_amount: total,
       }),
     onSuccess: () => {

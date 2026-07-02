@@ -34,6 +34,9 @@ export function buildInvoice(facts) {
   const cam = per(facts.cam_annual);
   const tax = per(facts.tax_annual);
   const roof = Number(facts.roof_annual) > 0 ? per(facts.roof_annual) : null;
+  // Free/reduced base rent shows as a negative credit line so the tenant sees why the
+  // total is lower — the base rent above stays at its full contractual figure.
+  const abatement = Number(facts.abatement_annual) > 0 ? per(-Number(facts.abatement_annual)) : null;
 
   const items = [
     { label: 'Base rent', v: base },
@@ -41,6 +44,7 @@ export function buildInvoice(facts) {
   ];
   if (roof) items.push({ label: `Roof (${facts.year})`, v: roof });
   items.push({ label: `Property tax (${facts.tax_year})`, v: tax });
+  if (abatement) items.push({ label: 'Rent abatement (credit)', v: abatement });
 
   const totalAnnual = items.reduce((s, it) => s + it.v.a, 0);
   const total = per(totalAnnual);
