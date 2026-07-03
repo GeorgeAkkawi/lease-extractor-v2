@@ -71,6 +71,61 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-03** — Chat-quality lease reads: an "analyst read" stage + prose rent-escalation
+  clauses ("Base rent will increase annually by 2%"). Deployed: `extract-lease` edge function
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `c2bbe895`. No migration.
+  **Costs money:** the new analyst read runs on **Sonnet 4.6**, adding **~10–15¢ per lease import**
+  (George approved). Form-filling stays on Haiku; a few leases/month → well under $2/mo.
+  - **What George saw (New Hong Kong 2.pdf):** import got start/end/term right but produced NO rent
+    escalation — the lease's only escalation language is one prose sentence ("Base rent will increase
+    annually by 2% and will be renegotiated in the 8th year"; §1, p.2). Pasting the same lease into a
+    regular AI chat reads it perfectly. He asked why the app can't match that.
+  - **Root causes (compounding):** (1) every extraction call uses **structured output** — the model
+    must emit the rigid form directly, no chat-style reasoning first; (2) the 16-union ceiling forced
+    the read into three narrow schema-locked calls, none reading holistically; (3) the supplement's
+    `rent_schedule` only accepted discrete rent **rows** — a prose formula had **no field to land in**,
+    so it was silently dropped (no model, however smart, can output what the form can't hold).
+    Everything downstream already supported it (`rent_escalations.escalation_type='percent'` (0001),
+    `computeEscalatedRent` compounding, `buildEscalations` dating `months_from_start`) — only the
+    reader was missing the concept.
+  - **Fix A — analyst read (the structural fix).** `extract-lease/index.ts`: a NEW first pass
+    (`analystRead`, `ANALYST_MODEL='claude-sonnet-4-6'`, plain text / NO schema so it can reason like
+    chat, `effort:'medium'`, **best-effort + time-boxed 60s + non-fatal**) writes a factual brief
+    (parties · term & dates: signing-vs-commencement · full rent progression incl. **prose escalation
+    formulas + where they stop** · renewal options · abatements). The two Haiku form-fillers then run
+    concurrently with the brief appended (`briefBlock`) so they inherit its interpretation of tricky
+    dates/terms while still quoting the document themselves ("if the brief and the document disagree,
+    trust the document"). Sequencing preserves the 546-timeout fix: transcription starts first (90s
+    cap), analyst awaited (≤60s), then the two form calls in parallel (~30s) — well under the 150s
+    edge ceiling. Brief persisted to `extraction_raw.analysis_brief` for audit. **No prompt caching**
+    — infeasible here (Sonnet analyst vs Haiku forms = model-specific caches can't share); Sonnet cost
+    is George-approved instead.
+  - **Fix B — prose escalation formula gets a home.** `SUPPLEMENT_SCHEMA` gains `escalation_pct` +
+    `escalation_stop_months` (both `field()`-wrapped → schema now 15/16 unions, main SCHEMA untouched).
+    New prompt paragraph: read the % + where it stops, never compute. New pure helper
+    `percentEscalations(baseAnnual, pct, termMonths, stopMonths)` (`_shared/rentSchedule.js`)
+    synthesizes one **percent** step per lease year, compounded round-each-step to the cent (matches
+    `computeEscalatedRent`). Wired into `rebuildRentSchedule` — applied ONLY when the printed schedule
+    prices ≤1 period (**a real rent TABLE always wins**; Wingstop/Ricki's regressions safe) — plus a
+    merge-block fallback off the model's own base_rent when the supplement priced no row. New Hong
+    Kong: base $1,904/mo → $22,848/yr; six 2% steps months 12–72 ($23,304.96 … $25,730.56, years
+    2–7); nothing past month 84 (renegotiated). Extraction stamps `rent_escalation_pct` /
+    `rent_renegotiation_months` onto the read for the UI.
+  - **Frontend (notes only; existing machinery dates & saves the steps):** `LeaseNewPage`
+    SchedulePreview shows "↗ raises base rent 2%/yr — N yearly steps" + the renegotiation note;
+    `LeaseDetailPage` shows a self-clearing "💬 Rent was set to be renegotiated ({date})" reminder
+    once that date passes and no step covers it (reads `extraction_raw` via a self-contained
+    `supabase` query, NOT `api.js`). **Zero changes to `api.js`/`leaseTerm.js`/EscalationScheduleEditor**
+    (other sessions' modified files) — my steps ride their existing functions unchanged.
+  - Verified token-free: new `src/lib/__tests__/percentEscalationClause.test.js` (9 tests) replays the
+    New Hong Kong shape — `percentEscalations` → 6 compounded steps; table-wins regression; pct-null =
+    unchanged; `buildEscalations` dates them 2018-06-01…2023-06-01. Full suite **100/100 green**;
+    `CI=true` build compiles; edge fn deployed clean (Deno accepted the TS). Committed only this task's
+    files (`30d4d04`); built + deployed frontend from an isolated git worktree at that commit so no
+    other session's uncommitted WIP shipped. **Live check:** re-upload New Hong Kong 2.pdf (~25–35¢,
+    scanned PDF through the Sonnet analyst) — expect base $22,848/yr, six 2% steps, the renegotiation
+    note, and NO invented options (§27 "Option to Extend: None").
+
 - **2026-07-03** — Remove the first-run onboarding picker. Deployed: frontend Cloudflare version
   `3d479b2d`. No migration, no edge functions, nothing that costs money.
   - **Why:** George didn't like the one-time Welcome screen. Settings alone is the place to pick
