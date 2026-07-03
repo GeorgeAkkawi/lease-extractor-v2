@@ -71,6 +71,37 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-03** — Make the property summary "$/SF" rate cards divide by the entered **building
+  size**, not leased SF (finishes what `0042` started for the per-tenant bills). Deployed: DB
+  migration `0044` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `a19be56a`. No edge
+  functions, no money, no tenant emails, no destructive data.
+  - **What George caught:** the Financials page's **"CAM / maintenance — charged per sq ft"** and
+    **"Property taxes"** cards read `cam_psf`/`tax_psf` from `v_property_totals`, which `0042` never
+    updated — so those headline rates still divided by **leased** SF and read *higher* than what each
+    tenant is actually billed just below (e.g. CAM 7,320 ÷ 11,791 leased = $0.62 shown vs. 7,320 ÷
+    13,750 building = $0.53 billed). George's framing: keep it codebase-generic, works for **every**
+    account, and re-divide **every time** the building size changes.
+  - **1) `0044_property_totals_building_sf.sql`** recreates `v_property_totals` identical to 0021
+    except `tax_psf`, `cam_psf`, and the roof `roof_recovered`/`roof_unrecovered` split now use the
+    building-first divisor `coalesce(nullif(p.building_sf,0), ls.total_sf)` — mirroring 0042 exactly, so
+    the summary matches `v_tenant_shares`. Falls back to leased SF until a building size is entered;
+    `roof_psf_rate` and the page's revenue/expense "per **leased** sq ft" figures deliberately left
+    leased-based. `security_invoker` re-asserted; non-destructive create-or-replace. (Named `0044`
+    because another session already shipped `0043_enabled_features.sql`.)
+  - **2) Re-divide on change** — `BuildingSizeEditor.js` `onSuccess` now also invalidates
+    `['tenantShares', propId]`, `['propertyRentRoll', propId]`, `['monthlyRent']` (plus the existing
+    property/propertyTotals/leases keys), so the rate cards, per-tenant breakdown, invoices, and rent
+    roll all recompute the instant the size is saved — no reload.
+  - **3) Per-tenant breakdown total** — `TenantShareTable.js` already had a Totals row summing every
+    tenant's SF; added a sub-line ("of N building") and a reconciliation note that the leased total may
+    differ from the building size (the difference is vacant space), for the landlord to reconcile.
+  - **4) Demo parity** — `mockClient.js propertyTotals()` now divides `tax_psf`/`cam_psf`/`roofRecovered`
+    by `buildingSf` too, matching the live view.
+  - Verified: new assertions in `contractCam.test.js` (building-SF → cam_psf/tax_psf; leased-SF
+    fallback). Full suite **102/102 green**; `CI=true` build compiles. Live check confirmed
+    `cam_psf × building_sf = cam_total` and `tax_psf × building_sf = taxes_total` for every property
+    with a building size. Committed only this task's files (left the untracked `.claude/` items alone).
+
 - **2026-07-03** — Chat-quality lease reads: an "analyst read" stage + prose rent-escalation
   clauses ("Base rent will increase annually by 2%"). Deployed: `extract-lease` edge function
   (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `c2bbe895`. No migration.

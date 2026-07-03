@@ -45,7 +45,10 @@ function propertyTotals(propertyId, year) {
   const buildingSf = Number(prop?.building_sf) || totalSf;
   const revenue = leases.reduce((s, l) => s + effectiveRent(l, escFor(l.id), year), 0);
   const totalExpenses = Number(exp.taxes_total) + Number(exp.cam_total) + Number(exp.roof_total);
-  const roofRecovered = totalSf > 0 ? exp.roof_total * (respSf / totalSf) : 0;
+  // Tax/CAM/roof rates divide by the WHOLE building's SF (matches v_property_totals in
+  // 0043 + the per-tenant bills), so the vacant share stays with the landlord. buildingSf
+  // already falls back to leased SF when no building size is entered.
+  const roofRecovered = buildingSf > 0 ? exp.roof_total * (respSf / buildingSf) : 0;
   return {
     property_id: propertyId, year,
     total_sf: totalSf, building_sf: buildingSf,
@@ -55,8 +58,8 @@ function propertyTotals(propertyId, year) {
     taxes_total: exp.taxes_total, cam_total: exp.cam_total, roof_total: exp.roof_total,
     total_expenses: totalExpenses,
     noi: revenue - totalExpenses,
-    tax_psf: totalSf > 0 ? exp.taxes_total / totalSf : null,
-    cam_psf: totalSf > 0 ? exp.cam_total / totalSf : null,
+    tax_psf: buildingSf > 0 ? exp.taxes_total / buildingSf : null,
+    cam_psf: buildingSf > 0 ? exp.cam_total / buildingSf : null,
     roof_psf_rate: totalSf > 0 ? exp.roof_total / totalSf : null,
     roof_recovered: roofRecovered,
     roof_unrecovered: exp.roof_total - roofRecovered,

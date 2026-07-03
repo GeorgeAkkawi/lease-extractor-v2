@@ -26,7 +26,8 @@ export default function TenantShareTable({ propertyId, year }) {
     queryFn: () => getTenantShares(propertyId, year),
   });
   const { data: property } = useQuery({ queryKey: ['property', propertyId], queryFn: () => getProperty(propertyId) });
-  const noBuildingSf = property != null && !(Number(property.building_sf) > 0);
+  const buildingSf = Number(property?.building_sf) || 0;
+  const noBuildingSf = property != null && !(buildingSf > 0);
 
   if (isLoading) return <p className="muted">Loading…</p>;
   if (shares.length === 0) return <p className="muted">No tenants/leases for this property yet.</p>;
@@ -92,7 +93,12 @@ export default function TenantShareTable({ propertyId, year }) {
           })}
           <tr className="total-row">
             <td>Totals</td>
-            <td className="num">{sf(tot.sf)}</td>
+            <td className="num">
+              <div className="cell-main">{sf(tot.sf)}</div>
+              {buildingSf > 0 && (
+                <div className="cell-sub">of {sf(buildingSf)} building</div>
+              )}
+            </td>
             <td className="num"></td>
             <td className="num"></td>
             <td className="num grp-start">{money(tot.tax)}</td>
@@ -108,6 +114,10 @@ export default function TenantShareTable({ propertyId, year }) {
         Tax &amp; CAM allocated per square foot of the {noBuildingSf ? 'leased space' : 'whole building'} (or a per-lease
         override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}. Roof is billed by PSF only to
         roof-responsible tenants; the rest is absorbed by the landlord and it stays out of the tax/CAM PSF pool.
+        {buildingSf > 0 && tot.sf !== buildingSf && (
+          <> The leased total ({sf(tot.sf)}) differs from the building size ({sf(buildingSf)}) by {sf(Math.abs(buildingSf - tot.sf))} of
+          {buildingSf > tot.sf ? ' vacant' : ' over-allocated'} space — yours to reconcile.</>
+        )}
       </div>
     </div>
   );

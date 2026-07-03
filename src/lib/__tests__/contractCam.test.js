@@ -7,6 +7,7 @@ import { contractCoversYear, contractAnnualCost } from '../contracts';
 import {
   createCorporation, createProperty, createLease, upsertExpenseRecord,
   addServiceContract, syncContractCamItems, listCamLineItems, getExpenseRecord, getTenantShares,
+  getPropertyTotals,
 } from '../api';
 
 beforeAll(() => { expect(DEMO_MODE).toBe(true); });
@@ -100,5 +101,33 @@ describe('per-building-SF share math (DEMO v_tenant_shares)', () => {
     // 2000 / 5000 leased = 0.4 → the old behaviour until a building size is entered.
     expect(c.share_pct).toBeCloseTo(0.4, 6);
     expect(c.cam_amount).toBeCloseTo(4000, 6);
+  });
+});
+
+describe('property summary $/SF rates (DEMO v_property_totals — 0043)', () => {
+  test('tax_psf/cam_psf divide by building_sf when set (match the per-tenant bills)', async () => {
+    const corp = await createCorporation('Totals Co, LLC');
+    const prop = await createProperty({ corporation_id: corp.id, name: 'Totals Plaza', address: 'Y2', building_sf: 10000 });
+    await createLease({ property_id: prop.id, tenant_name: 'A', square_footage: 2000, base_rent: 40000, lease_start: '2024-01-01', lease_termination_date: '2030-12-31' });
+    await createLease({ property_id: prop.id, tenant_name: 'B', square_footage: 3000, base_rent: 60000, lease_start: '2024-01-01', lease_termination_date: '2030-12-31' });
+    await upsertExpenseRecord({ property_id: prop.id, year: 2026, taxes_total: 5000, cam_total: 10000, roof_total: 0 });
+
+    const t = await getPropertyTotals(prop.id, 2026);
+    // Divided by building 10,000 (not leased 5,000): cam 10000/10000 = 1.0, tax 5000/10000 = 0.5.
+    expect(t.cam_psf).toBeCloseTo(1.0, 6);
+    expect(t.tax_psf).toBeCloseTo(0.5, 6);
+  });
+
+  test('falls back to leased SF when building_sf is not set', async () => {
+    const corp = await createCorporation('Totals NoSF Co, LLC');
+    const prop = await createProperty({ corporation_id: corp.id, name: 'Totals NoSF Plaza', address: 'Z2' }); // no building_sf
+    await createLease({ property_id: prop.id, tenant_name: 'C', square_footage: 2000, base_rent: 40000, lease_start: '2024-01-01', lease_termination_date: '2030-12-31' });
+    await createLease({ property_id: prop.id, tenant_name: 'D', square_footage: 3000, base_rent: 60000, lease_start: '2024-01-01', lease_termination_date: '2030-12-31' });
+    await upsertExpenseRecord({ property_id: prop.id, year: 2026, taxes_total: 5000, cam_total: 10000, roof_total: 0 });
+
+    const t = await getPropertyTotals(prop.id, 2026);
+    // Divided by leased 5,000: cam 10000/5000 = 2.0, tax 5000/5000 = 1.0.
+    expect(t.cam_psf).toBeCloseTo(2.0, 6);
+    expect(t.tax_psf).toBeCloseTo(1.0, 6);
   });
 });
