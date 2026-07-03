@@ -186,6 +186,11 @@ function SchedulePreview({ ex }) {
   const res = resolveCurrentTerm({ lease: { base_rent: base, lease_start: start, lease_termination_date: end }, escalations: escs, renewals: rens });
   const advanced = Math.round(res.currentRent) !== Math.round(base);
   const flag = ex.rent_schedule_flag;
+  // The AI analyst's full-document notes (Sonnet read) + any disagreement the edge function
+  // flagged between that read and the captured form. Both are best-effort: absent on older
+  // extractions or when the analyst timed out, so everything below no-ops gracefully.
+  const brief = typeof ex.analysis_brief === 'string' ? stripVerdicts(ex.analysis_brief) : '';
+  const mismatches = Array.isArray(ex.extraction_mismatch) ? ex.extraction_mismatch : [];
 
   return (
     <div className="callout" style={{ marginTop: 14 }}>
@@ -193,6 +198,15 @@ function SchedulePreview({ ex }) {
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
         The form above shows the lease's <strong>starting</strong> rent. On save it rolls forward to today through the step-ups below.
       </div>
+      {mismatches.length > 0 && (
+        <p className="note-msg warn" style={{ marginBottom: 8 }}>
+          ⚠ The AI analyst read the full document and found{' '}
+          <strong>{mismatches.map((m) => MISMATCH_LABELS[m] || m).join(' and ')}</strong>, but{' '}
+          {mismatches.length === 1 ? 'it was' : 'they were'} not captured onto the form. Open{' '}
+          <em>the AI analyst's notes</em> below to see what it read, then add{' '}
+          {mismatches.length === 1 ? 'it' : 'them'} by hand before saving — or re-upload a clearer copy of the lease.
+        </p>
+      )}
       {flag && (
         <p className="note-msg warn" style={{ marginBottom: 8 }}>
           ⚠ Some steps were read from a $/SF rate — double-check these amounts against the lease before saving.
@@ -225,10 +239,16 @@ function SchedulePreview({ ex }) {
           These step-ups are dated by lease year — they’ll get their real dates from the <strong>Lease start</strong> you enter above when you save.
         </p>
       )}
-      {escs.length === 0 && !showRelative && (
-        <p className="note-msg warn" style={{ marginBottom: 8 }}>
-          No dated rent step-ups were detected. If the document has a rent schedule, add the steps under “Rent escalations” after saving, or re-upload a clearer copy.
-        </p>
+      {escs.length === 0 && !showRelative && !mismatches.includes('escalation') && (
+        brief ? (
+          <p className="note-msg" style={{ marginBottom: 8, fontSize: 12.5 }}>
+            The AI analyst read the full document and found <strong>no rent escalation stated in it</strong>. If this lease should have one, double-check you uploaded the right version of the file — or add the steps under “Rent escalations” after saving.
+          </p>
+        ) : (
+          <p className="note-msg warn" style={{ marginBottom: 8 }}>
+            No dated rent step-ups were detected. If the document has a rent schedule, add the steps under “Rent escalations” after saving, or re-upload a clearer copy.
+          </p>
+        )
       )}
       <div style={{ fontSize: 14 }}>
         Current base rent as of today: <strong>{money(res.currentRent)}/yr</strong>
@@ -250,6 +270,30 @@ function SchedulePreview({ ex }) {
           </span>
         </div>
       )}
+      {brief && (
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12.5 }}>Read the AI analyst's notes</summary>
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            What the AI understood from reading the whole lease — check it against the form above before saving.
+          </div>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 6, fontFamily: 'inherit' }}>{brief}</pre>
+        </details>
+      )}
     </div>
   );
 }
+
+// Strip the trailing machine-readable "VERDICTS: …" line (parsed by the edge function) so
+// only the human-readable brief is shown.
+function stripVerdicts(brief) {
+  return String(brief).replace(/\n*^\s*VERDICTS:.*$/im, '').trimEnd();
+}
+
+// Labels for the disagreement codes the edge function flags (kept in sync with
+// analystVerdicts.js MISMATCH_LABELS; the app build can't import across into
+// supabase/functions, so they're mirrored here).
+const MISMATCH_LABELS = {
+  escalation: 'a rent escalation',
+  renewal_options: 'a renewal or extension option',
+  abatement: 'a free / reduced-rent (abatement) period',
+};

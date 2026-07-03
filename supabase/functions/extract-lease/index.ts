@@ -13,6 +13,7 @@ import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 import { rebuildRentSchedule, percentEscalations } from '../_shared/rentSchedule.js';
+import { parseAnalystVerdicts, extractionMismatches } from '../_shared/analystVerdicts.js';
 
 const MODEL = 'claude-haiku-4-5';
 // The "analyst read" (below) runs on a stronger model so it can reason through confusing
@@ -175,7 +176,18 @@ const ANALYST_SYSTEM =
   '"180 days prior to expiration"). If the lease says there are NO options, say so.\n' +
   '• OTHER NOTABLE TERMS — security deposit, assignment/subletting, holdover, and anything ' +
   'else that changes the rent or the term.\n\n' +
-  'Be factual and specific. This brief is data, not advice.';
+  'Be factual and specific. This brief is data, not advice.\n\n' +
+  'FINAL LINE — MACHINE-READABLE VERDICTS. After all the bullets, end your brief with ONE ' +
+  'final line in EXACTLY this format (nothing after it):\n' +
+  'VERDICTS: escalation=<yes|no|unclear>; renewal_options=<yes|no|unclear>; abatement=<yes|no|unclear>; start_date=<stated|not_stated>\n' +
+  'Set escalation=yes ONLY if the lease actually states a base-rent increase (a rent table ' +
+  'with different amounts over time, a percent/CPI formula, or stepped rent) — a cap on ' +
+  'CAM/Additional Rent (e.g. "103% of the prior year") is NOT a base-rent escalation, so it ' +
+  'is escalation=no. renewal_options=yes only if the lease grants an option to renew/extend ' +
+  '(an explicit "Option to Extend: None" is renewal_options=no). abatement=yes only if a ' +
+  'free/reduced base-rent period is granted. start_date=stated only if a real commencement ' +
+  'calendar date is printed. Use "unclear" only when you genuinely cannot tell. This line is ' +
+  'parsed by software — keep the exact keys, values and punctuation.';
 
 const ANALYST_TIMEOUT_MS = 60_000;
 
@@ -548,6 +560,21 @@ Deno.serve(async (req) => {
       // lease_files.extraction_raw; no schema/migration change needed).
       if (escalationPct) (parsed as any).rent_escalation_pct = escalationPct;
       if (escalationStopMonths) (parsed as any).rent_renegotiation_months = escalationStopMonths;
+    }
+
+    // Disagreement alarm: compare the analyst's machine-readable VERDICTS against what the
+    // form-fillers actually captured. When the analyst affirmed a term (escalation / option /
+    // abatement) but the form came up empty, flag it so the review screen warns instead of
+    // silently showing nothing. No brief / no VERDICTS line → no flags (behavior unchanged).
+    if (brief) {
+      const mismatches = extractionMismatches({
+        verdicts: parseAnalystVerdicts(brief),
+        escalations: (parsed as any).escalations,
+        renewalOptions: (parsed as any).renewal_options,
+        abatements: (parsed as any).abatements,
+        escalationPct: (parsed as any).rent_escalation_pct,
+      });
+      if (mismatches.length) (parsed as any).extraction_mismatch = mismatches;
     }
 
     // The scan transcription (best-effort, non-fatal) ran concurrently above; use it

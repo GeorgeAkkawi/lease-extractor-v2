@@ -71,6 +71,53 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-03** — Universal "extraction disagreement alarm" — when the AI analyst read finds a
+  term the form-filler dropped, warn instead of silently showing nothing. Deployed:
+  `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `763b9e72`. No migration. No new AI call (the analyst pass already runs); adds ~20 tokens/lease.
+  - **What George caught (New Hong Kong 2):** he re-uploaded the lease and got NO 2% escalation even
+    after the Sonnet analyst work shipped earlier today, and insisted the sentence is "literally in
+    the PDF." **Root cause was a file mix-up, not the extractor:** George has TWO near-identical copies
+    under the same name. The **July 2** copy has *"Base rent will increase annually by 2% and will be
+    renegotiated in the 8th year"* at the end of §1 RENT; the copy he **re-uploaded today** (and the
+    one attached to the chat) does NOT — §1 ends at "…may designate in writing." I pixel-verified both
+    scans (rendered page 2 of each stored PDF via macOS PDFKit) and diffed both docx text layers: byte
+    sizes differ (WITH clause = 3.6 MB pdf / 36 KB docx; without = 3.9 MB / 33 KB) and the ONLY textual
+    difference is that one sentence. The Sonnet analyst DID run on today's upload and correctly reported
+    "no base-rent escalation stated"; the only % in that file is the §4 103% CAM cap (not a base-rent
+    escalation). So the extractor behaved correctly on BOTH files — it was handed the copy without the
+    clause. Put the correct copies on George's Desktop as `New Hong Kong 2 — WITH escalation clause.pdf`
+    / `.docx` (pulled from the app's own July-2 storage).
+  - **The universal fix George asked for** (so this can't silently happen on any hard-to-read lease,
+    not just this one) — a three-layer safety net:
+    - **1) Analyst verdicts.** `ANALYST_SYSTEM` now ends every brief with a machine-readable line:
+      `VERDICTS: escalation=<yes|no|unclear>; renewal_options=…; abatement=…; start_date=<stated|not_stated>`,
+      with explicit guidance that a CAM/Additional-Rent cap is NOT a base-rent escalation and an
+      "Option to Extend: None" is renewal_options=no.
+    - **2) Disagreement alarm.** New pure `_shared/analystVerdicts.js` (`parseAnalystVerdicts` +
+      `extractionMismatches`, Deno+Jest dual-use like `rentSchedule.js`). After the form calls,
+      `extract-lease` compares each affirmed verdict against what actually landed: analyst says
+      escalation=yes but no steps AND no % captured → flag `escalation`; same for `renewal_options` /
+      `abatement`. Flags stored as `extraction_mismatch` on `extraction_raw` (no migration). Only
+      **yes** + empty flags — `no`/`unclear`/missing-line never cry wolf, so it degrades to prior
+      behavior when the analyst times out. Catches BOTH failure classes: prose clauses the rigid form
+      can't hold, and messy scans where strong Sonnet sees a term cheap Haiku misses.
+    - **3) Review screen explains itself** (`LeaseNewPage.js SchedulePreview`): a strong ⚠ banner when
+      `extraction_mismatch` is set ("the analyst found X but it wasn't captured — add it or re-upload");
+      the vague "no steps detected" warning is replaced, when a brief exists, by an honest "the analyst
+      read the whole document and found no rent escalation stated — check you uploaded the right file";
+      and a collapsible **"Read the AI analyst's notes"** panel on every import with a brief (VERDICTS
+      line stripped) so the chat-quality read is visible before saving. `extraction` already flows
+      untouched to the review screen — no new plumbing. Mismatch labels mirrored inline (CRA can't
+      import across into `supabase/functions`).
+  - Verified token-free: new `src/lib/__tests__/analystVerdicts.test.js` (16 cases — verdict parsing incl.
+    markdown/last-occurrence/junk; escalation=yes+empty flags, +%/+steps/+relative-steps don't; no/unclear/
+    missing never flag; options + abatement; multi-flag; New Hong Kong both-copies end-to-end). Full suite
+    **118/118 green**; `CI=true` build compiles (+503 B). Edge fn deployed clean (Deno bundled the new
+    shared module). Committed only this task's files. **Live check pending:** import the Desktop
+    `…WITH escalation clause.docx` (~10–15¢) — expect base $22,848/yr, six 2% steps (months 12–72,
+    $23,304.96…$25,730.56), the year-8 renegotiation note, the analyst-notes panel, and NO mismatch warning.
+
 - **2026-07-03** — Make the property summary "$/SF" rate cards divide by the entered **building
   size**, not leased SF (finishes what `0042` started for the per-tenant bills). Deployed: DB
   migration `0044` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `a19be56a`. No edge
