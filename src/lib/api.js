@@ -4,10 +4,11 @@
 import { supabase, invokeFunction } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildContractRenewalEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
+import { contractCoversYear, contractAnnualCost } from './contracts';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -765,7 +766,15 @@ export async function applyDueEscalations(today = new Date()) {
     supabase.from('rent_escalations').select('*').eq('status', 'scheduled').lte('effective_date', todayIso).order('effective_date')
   );
   const applied = [];
+  const leaseCache = new Map();
   for (const e of due) {
+    if (!leaseCache.has(e.lease_id)) leaseCache.set(e.lease_id, await getLease(e.lease_id));
+    const lease = leaseCache.get(e.lease_id);
+    // A step dated on/after the committed term end belongs to an un-exercised renewal
+    // option — leave it scheduled until the renewal is confirmed (which extends the
+    // term and pulls the step back inside it). Otherwise a lapsed lease would silently
+    // jump to an option's rent nobody exercised.
+    if (lease?.lease_termination_date && String(e.effective_date) >= String(lease.lease_termination_date)) continue;
     await applyEscalation(e);
     applied.push(e.id);
   }
@@ -1072,6 +1081,46 @@ export async function deleteCamLineItem(id, propertyId, year) {
   return syncCamTotal(propertyId, year);
 }
 
+// Auto-carry service contracts into CAM for a given fiscal year: one CAM line item per
+// covering contract, at its escalated annual cost (contract_id links them). Creating,
+// refreshing a drifted amount/label, and removing rows whose contract no longer covers
+// the year are all handled here — so a multi-year contract needs no re-entry when a new
+// fiscal year opens; viewing the year self-heals it. Idempotent: writes only on a real
+// change, then re-sums the CAM total. Mirrors src/lib/contracts.js.
+export async function syncContractCamItems(propertyId, year) {
+  const uid = await ownerId();
+  const [contracts, items] = await Promise.all([
+    listServiceContracts(propertyId),
+    listCamLineItems(propertyId, year),
+  ]);
+  const autoByContract = new Map();
+  for (const it of items) if (it.contract_id) autoByContract.set(it.contract_id, it);
+
+  const covering = contracts.filter((c) => contractCoversYear(c, year) && contractAnnualCost(c, year) > 0);
+  const coveringIds = new Set(covering.map((c) => c.id));
+  let changed = false;
+
+  for (const c of covering) {
+    const amount = contractAnnualCost(c, year);
+    const label = c.name || c.vendor || 'Service contract';
+    const existing = autoByContract.get(c.id);
+    if (!existing) {
+      await one(supabase.from('cam_line_items').insert({ property_id: propertyId, year, label, amount, contract_id: c.id, owner_id: uid }).select().single());
+      changed = true;
+    } else if (Number(existing.amount) !== amount || existing.label !== label) {
+      await one(supabase.from('cam_line_items').update({ amount, label }).eq('id', existing.id).select().single());
+      changed = true;
+    }
+  }
+  // Remove auto rows whose contract no longer covers this year (term change / made one-time).
+  for (const [cid, it] of autoByContract) {
+    if (!coveringIds.has(cid)) { await rows(supabase.from('cam_line_items').delete().eq('id', it.id)); changed = true; }
+  }
+
+  if (changed) return syncCamTotal(propertyId, year);
+  return items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
+}
+
 // ---- Computed views ---------------------------------------------------------
 export const getPropertyTotals = (propertyId, year) =>
   one(
@@ -1340,12 +1389,13 @@ function summarizeAR(invoices, today = new Date()) {
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
 export async function fetchAlertData() {
-  const [leasesR, escR, renR, propR, insR] = await Promise.all([
+  const [leasesR, escR, renR, propR, insR, conR] = await Promise.all([
     supabase.from('leases').select('id,tenant_name,property_id,lease_termination_date,no_renewal_option,is_active'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status'),
-    supabase.from('renewal_options').select('lease_id,notice_by_date,status'),
+    supabase.from('renewal_options').select('id,lease_id,notice_by_date,status'),
     supabase.from('properties').select('id,name,corporation_id'),
     supabase.from('insurance_policies').select('party,property_id,lease_id,insurer,expiry_date').is('archived_at', null),
+    supabase.from('service_contracts').select('id,name,vendor,vendor_email,end_date,property_id'),
   ]);
   return {
     leases: leasesR.data || [],
@@ -1353,6 +1403,7 @@ export async function fetchAlertData() {
     renewals: renR.data || [],
     properties: propR.data || [],
     insurance: insR.data || [],
+    contracts: conR.data || [],
   };
 }
 
@@ -1423,7 +1474,7 @@ export const dismissNotification = (id) =>
 
 // When is a renewal decision "due"? The window opens at the option's notice-by date
 // if the lease states one, else ~6 months before the committed term end, and stays
-// open once the term has lapsed.
+// open until the term has lapsed.
 function isRenewalDecisionDue(lease, ren, today = new Date()) {
   const termEnd = lease?.lease_termination_date;
   if (!termEnd) return false;
@@ -1431,17 +1482,28 @@ function isRenewalDecisionDue(lease, ren, today = new Date()) {
   // Once the committed term has ended, the option lapsed unexercised — stop asking.
   if (termEnd < todayIso) return false;
   // The prompt opens a bit before the deadline: at the option's notice-by date if the
-  // lease states one, else ~3 months before the committed term end. It stays open only
+  // lease states one, else ~6 months before the committed term end. It stays open only
   // through the decision window (up to term end).
-  const trigger = ren?.notice_by_date || addMonths(termEnd, -3);
+  const trigger = ren?.notice_by_date || addMonths(termEnd, -6);
   return trigger ? todayIso >= trigger : false;
 }
 
-// Roll a lease into a confirmed renewal option: archive the prior term, extend the
-// dates, apply the new first-year rent, materialize any +%/yr step-ups, and mark the
-// option applied. Pure code — no email/notification. Returns the figures + business
-// so the caller can build the tenant email. Shared by confirmRenewal.
-async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newRentOverride = null) {
+// Roll a lease into a confirmed renewal option. The new term begins where the current
+// one ends (newStart = today's committed end); how we apply it depends on WHEN that is:
+//
+//  • The window has already BEGUN (a past/lapsed option, or one whose start is today or
+//    earlier) → catch the lease up: archive the prior term, move lease_start to the new
+//    start, set base_rent to the new first-year rent, materialize any +%/yr step-ups.
+//    (Chaining a lapsed option forward, as the other session designed.)
+//  • The window is still in the FUTURE (confirming an option early) → do NOT touch
+//    lease_start or today's base_rent — just extend lease_termination_date to the new
+//    end and drop the option's rent in as DATED escalation steps so it takes effect on
+//    its start date. (Moving lease_start into the future was the old bug that made the
+//    page look unchanged and wiped today's rent.)
+//
+// Pure code — no email/notification. Returns the figures + business so the caller can
+// build the tenant email. Shared by confirmRenewal.
+async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newRentOverride = null, today = new Date()) {
   const newStart = lease.lease_termination_date;              // new term begins as the old one ends
   const newEnd = addMonths(lease.lease_termination_date, ren.term_months || 12);
   const oldRent = Number(lease.base_rent) || 0;
@@ -1459,52 +1521,85 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newR
   }
   const business = businessFromCorp(prop?.corporation_id ? corpCache.get(prop.corporation_id) : null);
 
-  // 1) archive the prior term into the History "expired & renewed" log
-  await rows(
-    supabase.from('expired_leases').insert({
-      owner_id: uid,
-      property_id: lease.property_id,
-      tenant_name: lease.tenant_name,
-      sf: lease.square_footage,
-      base_rent: oldRent,
-      lease_start: lease.lease_start,
-      lease_end: lease.lease_termination_date,
-      status: 'Renewed',
-      note: `Renewed (${ren.option_label || 'renewal option'}) — new term through ${fmtDate(newEnd)}`,
-      lease_text: lease.lease_text ?? null,
-    })
-  );
+  const todayIso = today.toISOString().slice(0, 10);
+  const years = Math.max(1, Math.round((ren.term_months || 12) / 12));
+  // Has the option's term window already started? (No end date on file → treat as begun.)
+  const hasBegun = !newStart || String(newStart) <= todayIso;
 
-  // 2) roll the live lease into the new term + rent
-  await updateLease(lease.id, { lease_start: newStart, lease_termination_date: newEnd, base_rent: newRent, is_active: true });
+  if (hasBegun) {
+    // ---- Past / due option: catch the lease up to the new term. ----
+    // 1) archive the prior term into the History "expired & renewed" log
+    await rows(
+      supabase.from('expired_leases').insert({
+        owner_id: uid,
+        property_id: lease.property_id,
+        tenant_name: lease.tenant_name,
+        sf: lease.square_footage,
+        base_rent: oldRent,
+        lease_start: lease.lease_start,
+        lease_end: lease.lease_termination_date,
+        status: 'Renewed',
+        note: `Renewed (${ren.option_label || 'renewal option'}) — new term through ${fmtDate(newEnd)}`,
+        lease_text: lease.lease_text ?? null,
+      })
+    );
+    // 2) roll the live lease into the new term + rent
+    await updateLease(lease.id, { lease_start: newStart, lease_termination_date: newEnd, base_rent: newRent, is_active: true });
+    // 3b) materialize the option's annual step-ups (years 2..N) as scheduled escalations
+    // so a "+pct%/yr" option becomes real, dated rent steps (year 1 is the new base rent).
+    if (pct > 0 && newStart) {
+      const escRows = [];
+      for (let y = 1; y < years; y++) {
+        escRows.push({
+          lease_id: lease.id,
+          owner_id: uid,
+          effective_date: addMonths(newStart, y * 12),
+          escalation_type: 'percent',
+          escalation_value: pct,
+          new_base_rent: round2(newRent * Math.pow(1 + pct / 100, y)),
+          status: 'scheduled',
+        });
+      }
+      if (escRows.length) await rows(supabase.from('rent_escalations').insert(escRows));
+    }
+  } else {
+    // ---- Future option confirmed early: extend the term, leave today's rent alone. ----
+    // Today's start + base rent are untouched; we only push the end out and lay the
+    // option's rent in as dated steps that apply on their own dates.
+    await updateLease(lease.id, { lease_termination_date: newEnd, is_active: true });
 
-  // 3) mark the option applied so it never re-runs. If the landlord typed the rent
-  // (the lease left it open), record it on the option too so the row shows what was agreed.
-  await updateRenewal(ren.id, {
-    status: 'applied',
-    applied_at: new Date().toISOString(),
-    ...(newRentOverride != null && Number(newRentOverride) > 0 ? { new_rent: newRent } : {}),
-  });
-
-  // 3b) materialize the option's annual step-ups (years 2..N) as scheduled
-  // escalations so a "+pct%/yr" option becomes real, dated rent steps that
-  // auto-apply on their anniversaries (year 1 is the new base rent above).
-  if (pct > 0) {
-    const years = Math.round((ren.term_months || 12) / 12);
+    // The imported schedule may already carry these steps (leases that print every
+    // year's rent, e.g. Ricki's) — skip a boundary that already has a step within 45
+    // days so we never double-book it.
+    const escs = await listEscalations(lease.id);
+    const dated = escs.filter((e) => e.effective_date);
+    const daysApart = (a, b) => Math.round(Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+    const hasStepNear = (iso) => dated.some((e) => daysApart(String(e.effective_date), iso) <= 45);
     const escRows = [];
-    for (let y = 1; y < years; y++) {
+    for (let y = 0; y < years; y++) {
+      if (y >= 1 && pct <= 0) break;                 // flat option → only the year-1 step matters
+      const d = addMonths(newStart, y * 12);
+      if (!d || hasStepNear(d)) continue;
       escRows.push({
         lease_id: lease.id,
         owner_id: uid,
-        effective_date: addMonths(newStart, y * 12),
-        escalation_type: 'percent',
-        escalation_value: pct,
-        new_base_rent: round2(newRent * Math.pow(1 + pct / 100, y)),
+        effective_date: d,
+        escalation_type: y === 0 ? 'manual' : 'percent',
+        escalation_value: y === 0 ? null : pct,
+        new_base_rent: y === 0 ? newRent : round2(newRent * Math.pow(1 + pct / 100, y)),
         status: 'scheduled',
       });
     }
     if (escRows.length) await rows(supabase.from('rent_escalations').insert(escRows));
   }
+
+  // Mark the option applied so it never re-runs. If the landlord typed the rent (the
+  // lease left it open), record it on the option too so the row shows what was agreed.
+  await updateRenewal(ren.id, {
+    status: 'applied',
+    applied_at: new Date().toISOString(),
+    ...(newRentOverride != null && Number(newRentOverride) > 0 ? { new_rent: newRent } : {}),
+  });
 
   return { newStart, newEnd, oldRent, newRent, business, prop };
 }
@@ -1519,7 +1614,7 @@ export async function confirmRenewal(renewalId, today = new Date(), opts = {}) {
   const lease = await getLease(ren.lease_id);
   if (!lease) return null;
 
-  const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid, new Map(), opts.newRent);
+  const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid, new Map(), opts.newRent, today);
 
   await logHistoryEvent({
     property_id: lease.property_id, lease_id: lease.id, type: 'renewal_confirmed', tenant_name: lease.tenant_name,
@@ -1686,6 +1781,56 @@ export async function draftRenewalApproachingEmail(renewalId) {
     email_subject: email.subject,
     email_body: email.body,
   };
+}
+
+// Build a ready-to-send email for a computed reminder (alert), so every reminder on the
+// dashboard can carry a "✉ Email" button with the right pre-written letter. Returns the
+// send-modal fields, or null when the alert has no outside recipient (e.g. the landlord's
+// own building insurance policy). Mirrors draftRenewalApproachingEmail's return shape.
+export async function draftAlertEmail(alert) {
+  if (!alert) return null;
+  const focus = alert.focus;
+
+  // Contract expiry → a vendor renewal note (no lease involved).
+  if (focus === 'contract') {
+    const contract = await one(supabase.from('service_contracts').select('*').eq('id', alert.contract_id).maybeSingle());
+    if (!contract) return null;
+    const prop = contract.property_id ? await getProperty(contract.property_id) : null;
+    const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
+    const email = buildContractRenewalEmail({
+      business,
+      vendorName: contract.vendor || contract.name,
+      vendorEmail: contract.vendor_email,
+      contractName: contract.name || contract.vendor,
+      propertyName: prop?.name,
+      endDate: contract.end_date,
+    });
+    return { kind: 'contract_renewal', email_to: contract.vendor_email || '', email_to_2: '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body };
+  }
+
+  // A renewal-notice alert reuses the "approaching" draft (the alert carries the option id).
+  if (focus === 'renewal' && alert.renewal_id) return draftRenewalApproachingEmail(alert.renewal_id);
+
+  // Everything else is lease-scoped. The landlord's own insurance alert has no lease_id
+  // (and no outside recipient), so it falls out here with null — no email button.
+  if (!alert.lease_id) return null;
+  const lease = await getLease(alert.lease_id);
+  if (!lease) return null;
+  const prop = await getProperty(lease.property_id);
+  const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
+  const common = { business, tenant_name: lease.tenant_name, contact_name: lease.tenant_contact_name, tenant_email: lease.tenant_email, propertyName: prop?.name };
+  const wrap = (email, kind) => ({ kind, email_to: lease.tenant_email || '', email_to_2: lease.tenant_email_2 || '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body });
+
+  if (focus === 'termination') return wrap(buildNonRenewalEmail({ ...common, leaseEnd: lease.lease_termination_date }), 'lease_ending');
+  if (focus === 'insurance') return wrap(buildInsuranceRequestEmail({ ...common }), 'insurance_request');
+  if (focus === 'escalation') {
+    const escs = await listEscalations(lease.id);
+    const esc = escs.find((e) => String(e.effective_date) === String(alert.date));
+    const priorRent = priorRentBefore(lease, escs, alert.date);
+    const newRent = esc?.new_base_rent != null ? Number(esc.new_base_rent) : priorRent;
+    return wrap(buildEscalationEmail({ ...common, effectiveDate: alert.date, priorRent, newRent, escalationType: esc?.escalation_type, escalationValue: esc?.escalation_value }), 'escalation_notice');
+  }
+  return null;
 }
 
 // Sync a lease's renewal OPTIONS with the rent schedule it was imported with, so an

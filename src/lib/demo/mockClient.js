@@ -66,18 +66,22 @@ function propertyTotals(propertyId, year) {
 function tenantShares(propertyId, year) {
   const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year);
   if (!exp) return [];
+  const prop = db.properties.find((p) => p.id === propertyId);
   const leases = db.leases.filter((l) => l.property_id === propertyId && l.is_active !== false);
   const totalSf = leases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
+  // Allocate over the WHOLE building's SF so the vacant share stays with the landlord.
+  // Fall back to leased SF until a building size is entered (mirrors v_tenant_shares).
+  const denom = Number(prop?.building_sf) || totalSf;
   return leases.map((l) => {
-    const proRata = totalSf > 0 ? l.square_footage / totalSf : 0;
-    const share = l.share_override_pct != null ? l.share_override_pct : proRata;
+    const perSf = denom > 0 ? l.square_footage / denom : 0;
+    const share = l.share_override_pct != null ? l.share_override_pct : perSf;
     return {
       lease_id: l.id, property_id: propertyId, tenant_name: l.tenant_name,
       tenant_email: l.tenant_email ?? null, tenant_email_2: l.tenant_email_2 ?? null, tenant_contact_name: l.tenant_contact_name ?? null, year,
       square_footage: l.square_footage, roof_responsible: !!l.roof_responsible,
       base_rent: effectiveRent(l, escFor(l.id), year),
       share_pct: share, tax_amount: share * exp.taxes_total, cam_amount: share * exp.cam_total,
-      roof_amt: l.roof_responsible ? exp.roof_total * proRata : 0,
+      roof_amt: l.roof_responsible ? exp.roof_total * perSf : 0,
     };
   });
 }

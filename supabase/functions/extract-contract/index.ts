@@ -20,12 +20,14 @@ const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingm
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['service_type', 'vendor', 'amount', 'frequency', 'start_date', 'end_date'],
+  required: ['service_type', 'vendor', 'vendor_email', 'amount', 'frequency', 'escalation_pct', 'start_date', 'end_date'],
   properties: {
     service_type: { anyOf: [{ type: 'string', enum: ['landscaping', 'snow_removal', 'security', 'other'] }, { type: 'null' }] },
     vendor: { type: ['string', 'null'] },
+    vendor_email: { type: ['string', 'null'] },  // the vendor's contact email, if the contract states one
     amount: { type: ['number', 'null'] },        // contract fee in dollars
     frequency: { anyOf: [{ type: 'string', enum: ['annual', 'monthly', 'one-time'] }, { type: 'null' }] },
+    escalation_pct: { type: ['number', 'null'] }, // yearly fee increase as a percent (e.g. "3% per year" → 3)
     start_date: { type: ['string', 'null'] },     // ISO YYYY-MM-DD
     end_date: { type: ['string', 'null'] },       // ISO YYYY-MM-DD
   },
@@ -34,9 +36,11 @@ const SCHEMA = {
 const SYSTEM_FIELDS =
   'You read commercial service / maintenance contracts (landscaping, snow removal, security, etc.). ' +
   'Extract only values explicitly present — use null for anything not found, never guess. ' +
-  'service_type = best category. vendor = the service provider / counterparty. amount = the contract ' +
-  'fee in dollars. frequency = how the fee recurs (annual, monthly, or one-time). start_date / end_date ' +
-  '= the contract term as ISO YYYY-MM-DD.';
+  'service_type = best category. vendor = the service provider / counterparty. vendor_email = the ' +
+  "vendor's contact email if one is printed (else null). amount = the contract fee in dollars. " +
+  'frequency = how the fee recurs (annual, monthly, or one-time). escalation_pct = the yearly ' +
+  'increase in the fee as a plain number if the contract states one (e.g. "increases 3% each year" → 3; ' +
+  'null if the fee is flat). start_date / end_date = the contract term as ISO YYYY-MM-DD.';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return preflight();

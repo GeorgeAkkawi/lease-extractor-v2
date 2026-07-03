@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listCamLineItems, addCamLineItem, deleteCamLineItem, upsertExpenseRecord } from '../lib/api';
+import { listCamLineItems, addCamLineItem, deleteCamLineItem, upsertExpenseRecord, syncContractCamItems } from '../lib/api';
 import { money } from '../lib/format';
 
 // CAM is comprised of many sub-expenses. List them; the app sums them into the
@@ -9,7 +9,9 @@ export default function CamSection({ propId, year, expense }) {
   const qc = useQueryClient();
   const { data: items = [] } = useQuery({
     queryKey: ['camLineItems', propId, year],
-    queryFn: () => listCamLineItems(propId, year),
+    // Carry this year's service contracts into CAM first (create/refresh at the escalated
+    // amount), then list — so opening any fiscal year keeps its contract costs current.
+    queryFn: async () => { await syncContractCamItems(propId, year); return listCamLineItems(propId, year); },
   });
 
   const [label, setLabel] = useState('');
@@ -50,10 +52,12 @@ export default function CamSection({ propId, year, expense }) {
       ) : (
         items.map((it, idx) => (
           <div className={`cam-row${idx === items.length - 1 ? ' last' : ''}`} key={it.id}>
-            <div>{it.label}</div>
+            <div>{it.label}{it.contract_id && <span className="badge info" style={{ marginLeft: 8 }}>from contract</span>}</div>
             <div className="num">{money(it.amount)}</div>
             <div className="num"></div>
-            <button className="icon-btn danger-btn" onClick={() => remove.mutate(it.id)}>✕</button>
+            {it.contract_id
+              ? <span className="muted" title="Managed by the service contract — edit it in Contracts" style={{ fontSize: 11 }}>auto</span>
+              : <button className="icon-btn danger-btn" onClick={() => remove.mutate(it.id)}>✕</button>}
           </div>
         ))
       )}

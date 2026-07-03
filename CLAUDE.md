@@ -71,6 +71,67 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-03** — Five asks in one round: (1) bill CAM/taxes per SF of the WHOLE building,
+  (2) show notifications up to 6 months ahead, (3) redesign the renewal-options table, (4) fix the
+  broken "Renew" on a future option + stop un-exercised option rents reading as committed, (5)
+  contract year-over-year escalations that auto-feed CAM, plus (6) contract-expiry reminders and a
+  ✉ email button on every reminder. Deployed: DB migration `0042`, `extract-contract` edge function
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `f524e422`. No money, no tenant
+  emails sent, no destructive data. No live-data repair needed.
+  - **1) CAM/taxes per building SF** (`0042` recreates `v_tenant_shares` with denominator
+    `coalesce(nullif(p.building_sf,0), pt.total_sf)`, `security_invoker` preserved; mirrored in
+    `mockClient.js`). Each tenant now pays `their SF ÷ building SF` for tax/CAM/roof, so the vacant
+    share stays with the landlord (standard net-lease practice) instead of being split across only the
+    leased tenants. Falls back to the old leased-SF split until a building size is entered, so nothing
+    breaks first. `TenantShareTable.js` shows a nudge to enter Building size when it's unset and the
+    footer note reflects building-wide vs leased-only. Only one invoice exists (D&D Dental 2026, CAM/tax
+    $0) so no bill repair; every downstream (draft-invoice, monthly tracker, rent roll, AR) reads the
+    view → fixed automatically. **George: enter Harlem Plaza's building SF** (Pershing already 13,750).
+  - **2) 6-month notifications** — `alerts.js bucket()` gains "Within 3 months" (warn) and "Within 6
+    months" (info — calm, not red) bands; all alert types inherit. `isRenewalDecisionDue` +
+    `apply_due_renewals()` (in `0042`) open the renewal prompt 6 months before term end (was 3).
+    Dashboard "Expiring ≤ 6 months" card + "next 6 months" panel (was 90 days). Owner reminder EMAILS
+    (`send-reminders`) keep their near-date schedule — untouched.
+  - **3) Renewal table redesign** (`RenewalOptionsEditor.js` + new `.btn-sm`/`.btn-row` App.css
+    classes) — Renew as a compact primary button, Not renewing / ✉ Email tenant as quiet secondary
+    ones (no more inline 3px/12px styling); Term reads "60 mo (5 yr)"; Notice-by a real date or muted
+    "—"; applied rows show "Applied · date".
+  - **4) The "Renew" fix (root cause) + gating.** `rollLeaseIntoRenewal` (`api.js`) always moved
+    `lease_start` to the old term end — right for catching up a PAST/lapsed option, but wrong for
+    confirming a FUTURE option early: it pushed the start into the future and wiped today's rent, so the
+    page looked unchanged (the Five Points Wings symptom). Now it branches on whether the option's
+    window has begun: begun → today's catch-up behaviour (unchanged, keeps the other session's
+    retro-chaining + `{newRent}` entry); future → **extend `lease_termination_date` only, leave
+    `lease_start` + base rent alone, and lay the option's rent in as DATED steps** (skipping any the
+    imported schedule already has within ±45 days, so no duplicate). Un-exercised option rents no longer
+    pose as committed: steps dated on/after the committed term end are gated out of `applyDueEscalations`,
+    `leaseTerm.js` (`nextStep` + the expired "last-known rent"), `alerts.js`, and shown in
+    `EscalationScheduleEditor.js` as a muted "Pending renewal — if renewed" group that rejoins the
+    schedule automatically once the renewal is confirmed. `reconcileRenewalOptions` untouched.
+  - **5) Contracts → CAM.** New pure `src/lib/contracts.js` (`contractCoversYear` / `contractAnnualCost`
+    — annualize by frequency, compound `escalation_pct` per year since start). `api.js
+    syncContractCamItems(prop, year)` upserts one CAM line item per covering contract at the escalated
+    amount (`contract_id` links it), refreshes drift, removes rows a contract no longer covers, re-sums
+    the CAM total — idempotent, writes only on a real change. `CamSection.js` syncs-then-lists (opening
+    any fiscal year self-heals it — the "fiscal-year carry-over"); contract rows show a "from contract"
+    badge + no ✕. `ServiceContractsSection.js` gained Escalation %/yr + Vendor email fields (AI
+    pre-fills them), a "+X%/yr · CAM {year}: $…" sub-line, and CAM-invalidating saves. `extract-contract`
+    reads `escalation_pct` + `vendor_email` in the same single Haiku call (no new AI cost).
+  - **6) Contract-expiry reminders + email on every reminder.** `buildAlerts` takes `contracts` →
+    `focus:'contract'` alerts off `end_date` (same 6-month buckets), keyed by contract id; `fetchAlertData`
+    fetches contracts; the dashboard row navigates to that property's Contracts tab. New `draftAlertEmail`
+    (`api.js`) drafts the right letter per reminder — escalation → `buildEscalationEmail`, lease-ending →
+    `buildNonRenewalEmail`, renewal → `buildRenewalApproachingEmail`, tenant insurance →
+    `buildInsuranceRequestEmail`, contract → new `buildContractRenewalEmail` (to the vendor). Every alert
+    row gets a ✉ button (except the landlord's own insurance — no outside recipient); sending does NOT
+    dismiss the reminder. Owner-only send rule unchanged.
+  - Verified token-free: new `contractCam.test.js`, `sixMonthAlerts.test.js`, `futureRenewalConfirm.test.js`
+    (Ricki's future Option-3 confirm → term 2031→2036-05-01, `lease_start` stays 2015-05-01, rent stays
+    $28,348.92, no duplicate 2031 step; leaseTerm gating; bucket 3m/6m; contract compounding + sync
+    idempotency; per-building-SF shares; contract alerts + `draftAlertEmail` per type). Full suite
+    **83/83 green**; `CI=true` build compiles. Committed only this task's files. **George: re-upload the
+    Five Points Wings lease and its renewal chain will apply cleanly; enter Harlem Plaza's building SF.**
+
 - **2026-07-02** — Wingstop round 3: use the signing date as the lease start + date the rent
   schedule from rent commencement (after the free period). Deployed: frontend Cloudflare version
   `22c33669`. **No edge function, no migration** — the deployed extractor already returns everything

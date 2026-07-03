@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listServiceContracts, addServiceContract, updateServiceContract, deleteServiceContract, extractContract, uploadDoc, askDoc } from '../lib/api';
+import { contractAnnualCost } from '../lib/contracts';
 import DocAssistant from './DocAssistant';
-import { money, fmtDate } from '../lib/format';
+import { money, fmtDate, currentYear } from '../lib/format';
 
 const TYPES = [['landscaping', 'Landscaping'], ['snow_removal', 'Snow removal'], ['security', 'Security'], ['other', 'Other']];
 const FREQ = [['annual', 'per year'], ['monthly', 'per month'], ['one-time', 'one-time']];
@@ -16,7 +17,13 @@ export default function ServiceContractsSection({ propId }) {
   const qc = useQueryClient();
   const { data: contracts = [] } = useQuery({ queryKey: ['serviceContracts', propId], queryFn: () => listServiceContracts(propId) });
   const [adding, setAdding] = useState(false);
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['serviceContracts', propId] });
+  // A contract change can change what CAM carries each year, which feeds the tenant
+  // shares / property totals / corp roll-up — refresh them all so the CAM auto-items
+  // re-sync next time that fiscal year is opened.
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['serviceContracts', propId] });
+    ['camLineItems', 'expenseRecord', 'propertyTotals', 'tenantShares', 'corpRollups'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+  };
 
   return (
     <div>
@@ -47,7 +54,16 @@ function ContractItem({ c, onChange }) {
   const saveFacts = useMutation({ mutationFn: (patch) => updateServiceContract(c.id, patch), onSuccess: () => { setEditing(false); onChange(); } });
 
   const term = c.start_date || c.end_date ? `${c.start_date ? fmtDate(c.start_date) : '—'} – ${c.end_date ? fmtDate(c.end_date) : '—'}` : '';
-  const sub = [c.vendor && c.vendor !== c.name ? c.vendor : null, c.amount != null ? `${money(c.amount)} ${freqLabel(c.frequency)}` : null, term].filter(Boolean).join(' · ');
+  const pct = Number(c.escalation_pct) || 0;
+  const thisYear = currentYear();
+  const camNow = c.frequency !== 'one-time' ? contractAnnualCost(c, thisYear) : 0;
+  const sub = [
+    c.vendor && c.vendor !== c.name ? c.vendor : null,
+    c.amount != null ? `${money(c.amount)} ${freqLabel(c.frequency)}` : null,
+    pct > 0 ? `+${pct}%/yr` : null,
+    camNow > 0 ? `CAM ${thisYear}: ${money(camNow)}` : null,
+    term,
+  ].filter(Boolean).join(' · ');
 
   return (
     <div className="svc-item">
@@ -103,8 +119,10 @@ function AddContract({ propId, onClose, onAdded }) {
         name: name.trim(),
         service_type: f.service_type || null,
         vendor: f.vendor || name.trim(),
+        vendor_email: f.vendor_email || null,
         amount: f.amount ?? null,
         frequency: f.frequency || null,
+        escalation_pct: f.escalation_pct ?? null,
         start_date: f.start_date || null,
         end_date: f.end_date || null,
         contract_text: ex.contract_text || null,
@@ -161,8 +179,10 @@ function ContractFactsForm({ c, busy, onSave, onCancel }) {
   const [f, setF] = useState({
     service_type: c.service_type || 'other',
     vendor: c.vendor || '',
+    vendor_email: c.vendor_email || '',
     amount: c.amount ?? '',
     frequency: c.frequency || 'annual',
+    escalation_pct: c.escalation_pct ?? '',
     start_date: c.start_date || '',
     end_date: c.end_date || '',
   });
@@ -172,13 +192,15 @@ function ContractFactsForm({ c, busy, onSave, onCancel }) {
       <div className="field-grid" style={{ marginBottom: 14 }}>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Type</span><select className="text-input" value={f.service_type} onChange={set('service_type')}>{TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Vendor</span><input className="text-input" value={f.vendor} onChange={set('vendor')} /></label>
+        <label className="form-field" style={{ marginBottom: 0 }}><span>Vendor email</span><input className="text-input" type="email" placeholder="for renewal reminders" value={f.vendor_email} onChange={set('vendor_email')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Amount ($)</span><input className="text-input num" type="number" step="any" value={f.amount} onChange={set('amount')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Frequency</span><select className="text-input" value={f.frequency} onChange={set('frequency')}>{FREQ.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        <label className="form-field" style={{ marginBottom: 0 }}><span>Escalation %/yr</span><input className="text-input num" type="number" step="any" placeholder="e.g. 3" value={f.escalation_pct} onChange={set('escalation_pct')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Start</span><input className="text-input" type="date" value={f.start_date} onChange={set('start_date')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>End</span><input className="text-input" type="date" value={f.end_date} onChange={set('end_date')} /></label>
       </div>
       <div className="row">
-        <button type="button" onClick={() => onSave({ service_type: f.service_type, vendor: f.vendor || null, amount: f.amount === '' ? null : Number(f.amount), frequency: f.frequency, start_date: f.start_date || null, end_date: f.end_date || null })} disabled={busy}>{busy ? 'Saving…' : 'Save terms'}</button>
+        <button type="button" onClick={() => onSave({ service_type: f.service_type, vendor: f.vendor || null, vendor_email: f.vendor_email || null, amount: f.amount === '' ? null : Number(f.amount), frequency: f.frequency, escalation_pct: f.escalation_pct === '' ? null : Number(f.escalation_pct), start_date: f.start_date || null, end_date: f.end_date || null })} disabled={busy}>{busy ? 'Saving…' : 'Save terms'}</button>
         <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
       </div>
     </div>

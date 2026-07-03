@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { getTenantShares } from '../lib/api';
+import { getTenantShares, getProperty } from '../lib/api';
 import { money, sf, pct } from '../lib/format';
 import InvoiceButton from './InvoiceButton';
 
@@ -25,6 +25,8 @@ export default function TenantShareTable({ propertyId, year }) {
     queryKey: ['tenantShares', propertyId, year],
     queryFn: () => getTenantShares(propertyId, year),
   });
+  const { data: property } = useQuery({ queryKey: ['property', propertyId], queryFn: () => getProperty(propertyId) });
+  const noBuildingSf = property != null && !(Number(property.building_sf) > 0);
 
   if (isLoading) return <p className="muted">Loading…</p>;
   if (shares.length === 0) return <p className="muted">No tenants/leases for this property yet.</p>;
@@ -41,6 +43,13 @@ export default function TenantShareTable({ propertyId, year }) {
 
   return (
     <div className="table-wrap">
+      {noBuildingSf && (
+        <div className="note-msg warn" style={{ margin: '10px 12px' }}>
+          Building size not set — CAM &amp; taxes are currently split over the leased space only.
+          Enter the building’s total square footage (in <strong>Building size</strong>) to bill each tenant true
+          per-SF of the whole building, leaving the vacant share with you.
+        </div>
+      )}
       <table className="grouped">
         <thead>
           <tr>
@@ -96,8 +105,9 @@ export default function TenantShareTable({ propertyId, year }) {
         </tbody>
       </table>
       <div className="table-note muted">
-        Tax &amp; CAM allocated pro-rata by square footage (or a per-lease override). Roof is billed by PSF
-        only to roof-responsible tenants; the rest is absorbed by the landlord and it stays out of the tax/CAM PSF pool.
+        Tax &amp; CAM allocated per square foot of the {noBuildingSf ? 'leased space' : 'whole building'} (or a per-lease
+        override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}. Roof is billed by PSF only to
+        roof-responsible tenants; the rest is absorbed by the landlord and it stays out of the tax/CAM PSF pool.
       </div>
     </div>
   );

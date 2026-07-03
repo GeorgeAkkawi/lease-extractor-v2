@@ -21,10 +21,19 @@ export default function EscalationScheduleEditor({ lease }) {
   // many, collapse to the slice that matters NOW — the next few upcoming steps + the few
   // most recent — and let the landlord expand to the full schedule on demand.
   const COLLAPSE_OVER = 8;
-  const sortedEsc = [...escalations].sort((a, b) => String(b.effective_date).localeCompare(String(a.effective_date)));
   const pad = (n) => String(n).padStart(2, '0');
   const nowD = new Date();
   const todayIso = `${nowD.getFullYear()}-${pad(nowD.getMonth() + 1)}-${pad(nowD.getDate())}`;
+
+  // Steps dated on/after the committed term end belong to an un-exercised renewal option:
+  // the lease PRINTS the rent for those years, but they only take effect once the option
+  // is confirmed. Split them out so they don't read as committed increases — confirming
+  // the renewal extends the term and they rejoin the schedule automatically.
+  const termEnd = lease?.lease_termination_date || null;
+  const allSorted = [...escalations].sort((a, b) => String(b.effective_date).localeCompare(String(a.effective_date)));
+  const sortedEsc = termEnd ? allSorted.filter((e) => String(e.effective_date) < String(termEnd)) : allSorted;
+  const pendingRenewalEsc = termEnd ? allSorted.filter((e) => String(e.effective_date) >= String(termEnd)) : [];
+
   const collapsible = sortedEsc.length > COLLAPSE_OVER && !showAll;
   let visibleEsc = sortedEsc;
   let hiddenFuture = 0;
@@ -81,7 +90,7 @@ export default function EscalationScheduleEditor({ lease }) {
 
   return (
     <div>
-      {escalations.length === 0 ? (
+      {sortedEsc.length === 0 ? (
         <p className="empty-line muted">No escalations scheduled.</p>
       ) : (
         <div className="table-wrap" style={{ marginBottom: 16 }}>
@@ -113,16 +122,53 @@ export default function EscalationScheduleEditor({ lease }) {
         </div>
       )}
 
-      {escalations.length > COLLAPSE_OVER && (
+      {sortedEsc.length > COLLAPSE_OVER && (
         <div className="row" style={{ alignItems: 'center', gap: 10, marginTop: -6, marginBottom: 16 }}>
           <button type="button" className="ghost" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => setShowAll((v) => !v)}>
-            {showAll ? 'Show fewer' : `Show all ${escalations.length} steps`}
+            {showAll ? 'Show fewer' : `Show all ${sortedEsc.length} steps`}
           </button>
           {collapsible && (hiddenPast > 0 || hiddenFuture > 0) && (
             <span className="muted" style={{ fontSize: 12 }}>
               {[hiddenPast > 0 ? `${hiddenPast} earlier` : null, hiddenFuture > 0 ? `${hiddenFuture} later` : null].filter(Boolean).join(' · ')} step{hiddenPast + hiddenFuture > 1 ? 's' : ''} hidden
             </span>
           )}
+        </div>
+      )}
+
+      {pendingRenewalEsc.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <p className="note-msg" style={{ background: 'var(--panel-2)', color: 'var(--muted)', marginBottom: 8 }}>
+            <strong>Pending renewal</strong> — the lease prints these rents for the option years, but they
+            apply <strong>only if the renewal option is exercised</strong>. Confirm the renewal (in Renewal options)
+            and they’ll move into the schedule above.
+          </p>
+          <div className="table-wrap">
+            <table style={{ minWidth: 0 }}>
+              <thead><tr><th>Effective</th><th>Type</th><th className="num">Value</th><th className="num">New base rent</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                {pendingRenewalEsc.map((e) => (
+                  <tr key={e.id} style={{ opacity: 0.7 }}>
+                    <td>{fmtDate(e.effective_date)}</td>
+                    <td>{e.escalation_type}</td>
+                    <td className="num">{e.escalation_type === 'percent' ? `${e.escalation_value}%` : e.escalation_type === 'fixed' ? money(e.escalation_value) : '—'}</td>
+                    <td className="num">{money(e.new_base_rent)}</td>
+                    <td><span className="badge info">if renewed</span></td>
+                    <td className="num">
+                      <button
+                        type="button"
+                        className="icon-btn danger-btn"
+                        title="Delete this escalation"
+                        disabled={remove.isPending}
+                        onClick={() => { if (window.confirm('Delete this escalation? This removes it from the lease.')) remove.mutate(e.id); }}
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

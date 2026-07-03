@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets } from '../lib/api';
+import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
 import { usePageChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
@@ -18,6 +18,7 @@ export default function DashboardPage() {
   const [snoozeFor, setSnoozeFor] = useState(null);
   const [emailNotif, setEmailNotif] = useState(null);
   const [busyNotif, setBusyNotif] = useState(null);
+  const [emailBusyAlert, setEmailBusyAlert] = useState(null); // alertKey while drafting its email
   const [undoDecline, setUndoDecline] = useState(null); // { id, tenant } after "Not renewing"
   const [rentEntry, setRentEntry] = useState(null); // { leaseId, value } when a renewal has no listed rent
   usePageChrome([{ label: 'Overview' }]);
@@ -72,6 +73,22 @@ export default function DashboardPage() {
     } finally { setBusyNotif(null); refreshAfterRenewal(); }
   }
   async function undoDeclineNow() { const u = undoDecline; setUndoDecline(null); if (u) { await restoreRenewal(u.id); refreshAfterRenewal(); } }
+  // Does this reminder have an outside recipient to email? (Landlord's own insurance
+  // policy doesn't — it has no lease/tenant.) Drives whether the ✉ button shows.
+  const alertCanEmail = (a) => {
+    if (a.focus === 'contract') return true;
+    if (a.focus === 'renewal') return !!a.renewal_id;
+    if (a.focus === 'insurance') return !!a.lease_id; // tenant policy only
+    return a.focus === 'termination' || a.focus === 'escalation';
+  };
+  // Draft the reminder's ready-to-send email and open the send modal. Sending it does NOT
+  // dismiss the reminder — the date still matters until it's actually handled.
+  async function emailForAlert(a) {
+    const k = alertKey(a);
+    setEmailBusyAlert(k);
+    try { const n = await draftAlertEmail(a); if (n) setEmailNotif(n); }
+    finally { setEmailBusyAlert(null); }
+  }
   // Dismiss / snooze persist server-side (alert_states) so they sync across devices.
   async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
   async function snooze(a, ms) { await upsertAlertState({ alert_key: alertKey(a), snoozed_until: new Date(Date.now() + ms).toISOString() }); setSnoozeFor(null); qc.invalidateQueries({ queryKey: ['alerts'] }); }
@@ -85,11 +102,11 @@ export default function DashboardPage() {
   const occupancy = buildingSf > 0 ? Math.round((leasedSf / buildingSf) * 100) : null;
   const vacantSf = buildingSf > 0 ? Math.max(0, buildingSf - leasedSf) : 0;
 
-  // Leases expiring within 90 days (active only), soonest first.
+  // Leases expiring within 6 months (active only), soonest first.
   const expiring = leases
     .filter((l) => l.lease_termination_date)
     .map((l) => ({ ...l, days: daysUntil(l.lease_termination_date) }))
-    .filter((l) => l.days != null && l.days >= 0 && l.days <= 90)
+    .filter((l) => l.days != null && l.days >= 0 && l.days <= 183)
     .sort((a, b) => a.days - b.days);
 
   const b = ar?.buckets || {};
@@ -126,7 +143,7 @@ export default function DashboardPage() {
           {show('rent_roll') && <Card label="Annual rent roll" main={money(rentRoll)} foot={leasedSf ? `${psf(rentRoll / leasedSf)} blended` : null} onClick={() => navigate('/financials')} />}
           {show('ar') && <Card label="Outstanding (AR)" main={money(ar?.outstanding || 0)} foot={ar ? `${ar.count} unpaid · ${money(lateTotal)} late` : null} tone={lateTotal > 0 ? 'danger' : undefined} />}
           {show('occupancy') && <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={buildingSf ? `${sf(vacantSf)} vacant` : 'add building sizes'} />}
-          {show('expiring') && <Card label="Expiring ≤ 90 days" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />}
+          {show('expiring') && <Card label="Expiring ≤ 6 months" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />}
         </div>
       </div>
       )}
@@ -144,11 +161,11 @@ export default function DashboardPage() {
         {showExpirations && (
         <div className="panel">
           <div className="panel-head">
-            <strong>Lease expirations · next 90 days</strong>
+            <strong>Lease expirations · next 6 months</strong>
             <span className="muted">Act before notice deadlines pass</span>
           </div>
           {expiring.length === 0 ? (
-            <p className="empty-line muted">No leases expiring in the next 90 days.</p>
+            <p className="empty-line muted">No leases expiring in the next 6 months.</p>
           ) : (
             <div className="table-wrap">
               <table style={{ minWidth: 0 }}>
@@ -247,14 +264,21 @@ export default function DashboardPage() {
               {alerts.map((a, i) => { const k = alertKey(a); return (
                 <div key={`${k}-${i}`} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start', borderLeftColor: a.tone === 'danger' ? 'var(--danger)' : a.tone === 'warn' ? 'var(--accent)' : 'var(--line)' }}>
                   <div role="button" tabIndex={0} style={{ flex: 1, cursor: 'pointer' }}
-                    onClick={() => a.lease_id
-                      ? navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`)
-                      : navigate(`/leases/${a.corporation_id}`)}>
+                    onClick={() => {
+                      if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
+                      else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
+                      else navigate(`/leases/${a.corporation_id}`);
+                    }}>
                     <div className="alert-title"><strong>{a.title}</strong></div>
                     <div className="muted" style={{ fontSize: 12.5 }}>{a.detail}</div>
                     <div className="muted" style={{ fontSize: 11.5 }}>{a.bucketLabel} · {fmtDate(a.date)}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
+                    {alertCanEmail(a) && (
+                      <button className="icon-btn" title="Email a ready-to-send reminder" aria-label="Email reminder" disabled={emailBusyAlert === k} onClick={() => emailForAlert(a)}>
+                        {emailBusyAlert === k ? '…' : '✉'}
+                      </button>
+                    )}
                     <button className="icon-btn" title="Remind me later" aria-label="Remind me later" onClick={() => setSnoozeFor(snoozeFor === k ? null : k)}>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'block' }}>
                         <circle cx="12" cy="12" r="9" />
@@ -286,9 +310,10 @@ export default function DashboardPage() {
           onClose={() => setEmailNotif(null)}
           onSent={async () => {
             // The "renewal approaching" email rides on the still-open decision prompt —
-            // sending it must NOT dismiss the Yes/No prompt. Terminal notices (renewed /
-            // not renewing) dismiss on send as before.
-            if (emailNotif.kind !== 'renewal_decision') await clearNotification(emailNotif.id);
+            // sending it must NOT dismiss the Yes/No prompt. A reminder-drafted email has
+            // no stored notification (no id) — nothing to dismiss. Terminal notices
+            // (renewed / not renewing) dismiss on send as before.
+            if (emailNotif.id && emailNotif.kind !== 'renewal_decision') await clearNotification(emailNotif.id);
             setEmailNotif(null);
           }}
         />

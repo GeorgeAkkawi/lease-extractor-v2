@@ -19,6 +19,13 @@ function statusBadge(status, lapsed) {
 // "greater of $X or CPI") — the landlord enters the agreed figure at renewal time.
 const optionHasRent = (r) => r.new_rent != null || Number(r.annual_escalation_pct) > 0;
 
+// Term shown as "60 mo (5 yr)" when it's a whole number of years, else "18 mo".
+const termLabel = (m) => {
+  const n = Number(m);
+  if (!n) return '—';
+  return n % 12 === 0 ? `${n} mo (${n / 12} yr)` : `${n} mo`;
+};
+
 // The rent shown for an option, as { main, sub }: an explicit new_rent, else the
 // computed first renewal-year rent from the annual % (base × (1+pct%)) with the
 // "+X%/yr" on a small sub-line so the numeric column stays clean. When the lease
@@ -127,14 +134,14 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
       ) : (
         <div className="table-wrap" style={{ marginBottom: 16 }}>
           <table style={{ minWidth: 0 }}>
-            <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term (mo)</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
+            <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
               {renewals.map((r) => { const lapsed = isLapsed(r); const badge = statusBadge(r.status, lapsed); const rent = renewalRent(r, base); return (
                 <Fragment key={r.id}>
                 <tr>
                   <td>{r.option_label || '—'}</td>
-                  <td>{fmtDate(r.notice_by_date)}</td>
-                  <td className="num">{r.term_months ?? '—'}</td>
+                  <td>{r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">—</span>}</td>
+                  <td className="num">{termLabel(r.term_months)}</td>
                   <td className="num">
                     <div>{rent.main}</div>
                     {rent.sub && <div className="cell-sub">{rent.sub}</div>}
@@ -142,19 +149,19 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
                   <td><span className={`badge ${badge.cls}`}>{badge.label}</span></td>
                   <td style={{ whiteSpace: 'normal' }}>
                     {r.status === 'pending' ? (
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <button type="button" className="secondary" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
+                      <div className="btn-row">
+                        <button type="button" className="btn-sm" disabled={acting}
                           title={lapsed ? 'Tenant renewed under this option — apply it retroactively (rolls the term forward + new rent)' : 'Tenant is exercising this option — apply it (extends the term + new rent)'}
                           onClick={() => onRenewClick(r, lapsed)}>
                           Renew
                         </button>
-                        <button type="button" className="ghost" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
+                        <button type="button" className="ghost btn-sm" disabled={acting}
                           title="Tenant is not exercising this option"
                           onClick={() => { if (window.confirm('Mark this option as not being exercised?')) decline.mutate(r.id); }}>
                           Not renewing
                         </button>
                         {!lapsed && (
-                          <button type="button" className="ghost" style={{ padding: '3px 8px', fontSize: 12 }} disabled={emailBusy === r.id}
+                          <button type="button" className="ghost btn-sm" disabled={emailBusy === r.id}
                             title="Email the tenant that their renewal is coming up (a ready-to-send heads-up)"
                             onClick={() => emailApproaching(r.id)}>
                             {emailBusy === r.id ? '…' : '✉ Email tenant'}
@@ -162,16 +169,16 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
                         )}
                       </div>
                     ) : r.status === 'declined' ? (
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <span className="muted" style={{ fontSize: 12 }}>Marked not renewing</span>
-                        <button type="button" className="ghost" style={{ padding: '3px 8px', fontSize: 12 }} disabled={acting}
+                      <div className="btn-row">
+                        <span className="muted" style={{ fontSize: 12 }}>Not renewing</span>
+                        <button type="button" className="ghost btn-sm" disabled={acting}
                           title="Undo — put this option back to Pending"
                           onClick={() => restore.mutate(r.id)}>
                           ↩ Undo
                         </button>
                       </div>
                     ) : (
-                      <span className="muted" style={{ fontSize: 12 }}>{r.notes || '—'}</span>
+                      <span className="muted" style={{ fontSize: 12 }}>{r.applied_at ? `Applied · ${fmtDate(r.applied_at)}` : (r.notes || '—')}</span>
                     )}
                   </td>
                   <td className="num">

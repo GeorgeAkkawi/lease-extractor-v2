@@ -119,6 +119,29 @@ export function buildInsuranceRequestEmail({ business, tenant_name, contact_name
   return { subject, body, to: tenant_email || '' };
 }
 
+// Sent to a service VENDOR (not a tenant) when their contract is nearing its end date:
+// a friendly note to line up a renewal or an updated proposal before service lapses.
+export function buildContractRenewalEmail({ business, vendorName, vendorEmail, contractName, propertyName, endDate }) {
+  const what = contractName || 'our service agreement';
+  const subject = `Service Contract Renewal — ${contractName || 'service agreement'} (expires ${longDate(endDate)})`;
+  const body = letter({
+    business,
+    toBlock: [
+      vendorName || contractName || 'Service Provider',
+      propertyName ? `Service provider at ${propertyName}` : null,
+      vendorEmail || null,
+    ],
+    reLine: `RE: Renewal of ${what}${propertyName ? ` at ${propertyName}` : ''}`,
+    paragraphs: [
+      `Dear ${vendorName || 'Service Provider'},`,
+      `Our records show that ${what}${propertyName ? ` for ${propertyName}` : ''} is set to expire on ${longDate(endDate)}. We'd like to arrange to renew the agreement so service continues without interruption.`,
+      `Please let us know your availability to review the terms — including pricing and scope for the coming term — at your earliest convenience. If you have an updated proposal or renewal contract ready, feel free to send it along in reply.`,
+      `Thank you for your service. We look forward to continuing to work with you.`,
+    ],
+  });
+  return { subject, body, to: vendorEmail || '' };
+}
+
 export function buildEscalationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, effectiveDate, priorRent, newRent, escalationType, escalationValue }) {
   const monthly = monthlyOf(newRent);
   const delta =

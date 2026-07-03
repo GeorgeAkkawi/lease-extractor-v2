@@ -83,8 +83,12 @@ export function resolveCurrentTerm({ lease, escalations = [], today } = {}) {
     if (ev.t != null && ev.t <= nowT && ev.t >= best) { best = ev.t; currentRent = ev.rent; }
   }
   if (status === 'expired') {
-    // past the whole schedule → the last known rent (latest event overall)
-    currentRent = events.reduce((acc, ev) => ((ev.t ?? -Infinity) >= (acc.t ?? -Infinity) ? ev : acc), events[0]).rent;
+    // Past the whole schedule → the last known rent (latest event overall), but ignore
+    // any step dated on/after the committed term end: those belong to an un-exercised
+    // renewal option, so a lapsed lease must not jump to a rent nobody exercised.
+    const endT = time(origEnd);
+    const inTerm = endT == null ? events : events.filter((ev) => ev.t == null || ev.t < endT);
+    currentRent = inTerm.reduce((acc, ev) => ((ev.t ?? -Infinity) >= (acc.t ?? -Infinity) ? ev : acc), inTerm[0]).rent;
   }
 
   // 3) What to mark applied at back-fill: escalations already in effect. Renewal
@@ -139,8 +143,11 @@ export function currentPhase({ lease, escalations = [], renewals = [], addendums
     if (t != null && t <= nowT && (bestT == null || t >= bestT)) { bestT = t; phaseStart = e.effective_date; }
   }
 
+  // The next scheduled step — but skip any dated on/after the committed term end: those
+  // belong to an un-exercised renewal option and only apply once it's confirmed.
+  const termEndT = time(lease.lease_termination_date);
   const future = (escalations || [])
-    .filter((e) => { const t = time(e.effective_date); return t != null && t > nowT; })
+    .filter((e) => { const t = time(e.effective_date); return t != null && t > nowT && (termEndT == null || t < termEndT); })
     .sort((a, b) => time(a.effective_date) - time(b.effective_date));
   const nextStep = future.length ? { date: future[0].effective_date, rent: Number(future[0].new_base_rent) || 0 } : null;
 
