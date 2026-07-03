@@ -26,14 +26,13 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
   // term runs through the day before the start + term_months anniversary. Editable, and
   // never overwrites a date the user (or the extraction) already provided.
   const termMonths = Number(extracted?.term_months?.value) || 0;
-  // The only date many leases print is the signing / "entered into as of" date, which is
-  // NOT the commencement date. If the user types that same date as the Lease start, warn
-  // (non-blocking) — the term usually starts later (delivery of possession / opening).
+  // Many leases print no commencement date, so the review screen pre-fills Lease start with
+  // the signing / "entered into as of" date. Show a neutral heads-up (derived, so it appears
+  // on load) telling the user where the date came from, so they confirm or adjust it.
   const executionDate = extracted?.execution_date?.value || null;
-  const [signingWarn, setSigningWarn] = useState(false);
+  const startFromSigning = !!(executionDate && form.lease_start && form.lease_start === executionDate);
   const onStartChange = (e) => {
     const startVal = e.target.value;
-    setSigningWarn(!!(executionDate && startVal && startVal === executionDate));
     setForm((f) => {
       const next = { ...f, lease_start: startVal };
       if (startVal && termMonths > 0 && !f.lease_termination_date) {
@@ -86,7 +85,7 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
           <input className="text-input num" type="number" step="any" value={form.base_rent} onChange={set('base_rent')} />
         </Field>
         <Field label="Lease start" field="lease_start" extracted={extracted}
-          warn={signingWarn ? '⚠ That’s the date the lease was signed — the term usually starts later (delivery of possession / opening). Double-check before saving.' : undefined}>
+          hint={startFromSigning ? 'Pre-filled from the signing date (“entered into as of”) — this lease prints no separate start date. Change it if the term actually began later.' : undefined}>
           <input className="text-input" type="date" value={form.lease_start || ''} onChange={onStartChange} />
         </Field>
         <Field label="Lease termination" field="lease_termination_date" extracted={extracted} hint={termMonths ? `suggested from the stated term — ${termMonths} months; editable` : undefined}>

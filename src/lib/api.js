@@ -7,7 +7,7 @@ import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
-import { monthlyScheduleForYear, abatementEnd } from './abatement';
+import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -358,7 +358,11 @@ export async function anchorLeaseSchedule(leaseId, startDate) {
     const [existingEsc, existingAb] = await Promise.all([listEscalations(leaseId), listAbatements(leaseId)]);
     if (existingEsc.length === 0) {
       const base = Number(ex?.base_rent?.value) || Number(lease.base_rent) || 0;
-      const escs = buildEscalations(base, ex.escalations, start); // anchors months_from_start → real dates
+      // If the lease opens with a FREE-rent period, paid rent commences after it — so a
+      // lease-year rent table is dated from that rent-commencement point, not the start.
+      const freeMo = leadingFreeMonths(start, ex.abatements);
+      const rentStart = freeMo > 0 ? (addMonths(start, freeMo) || start) : start;
+      const escs = buildEscalations(base, ex.escalations, rentStart); // anchors months_from_start → real dates
       if (escs.length) {
         await rows(
           supabase.from('rent_escalations').insert(escs.map((e) => ({ ...e, lease_id: leaseId, owner_id: uid, status: 'scheduled' })))

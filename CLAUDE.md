@@ -71,6 +71,47 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-02** — Wingstop round 3: use the signing date as the lease start + date the rent
+  schedule from rent commencement (after the free period). Deployed: frontend Cloudflare version
+  `22c33669`. **No edge function, no migration** — the deployed extractor already returns everything
+  needed (execution_date, the abatement's month count, and unshifted lease-year offsets); the fix is
+  entirely in how the app USES that read.
+  - **What George saw:** re-uploaded Wingstop still came out wrong — the app "didn't identify the
+    start date (May 4 2012)," "didn't account for the 8 months of free rent," and the rent steps
+    "didn't correspond with the renewal options." Claude.ai / ChatGPT read it "on the dot."
+  - **Root cause (my own, from rounds 1–2):** I had hardened the extractor + `LeaseForm` to REFUSE
+    the "entered into as of" signing date as the start (prompt: "do not use it as the lease start …
+    return null"; a gold ⚠ warned the user off typing it). Wingstop prints no commencement date —
+    the signing date is the ONLY date on the page — so `lease_start` came back null and stayed empty.
+    With no start, nothing downstream could be placed on a timeline: the 8-month abatement (start
+    null) was **dropped on save** (`buildAbatements` needs a start+end), the 5 rent steps stayed
+    undated, and the 3 renewal options had no term end to chain from. The extractor was actually
+    reading the doc correctly — the app was throwing the one date away.
+  - **Fix A — use the signing date as a suggested, editable start.** `LeaseNewPage.initialFromExtraction`
+    now falls `lease_start` back to `execution_date` when no commencement is printed, and pre-fills the
+    end from `start + term_months − 1 day`. `LeaseForm` swaps the scolding ⚠ ("that's the signing
+    date, the term usually starts later — double-check") for a neutral, derived hint that shows on load
+    ("Pre-filled from the signing date — change it if the term actually began later"). Extraction stays
+    honest (`lease_start` still null); the UI makes the helpful, correctable suggestion. No prompt change.
+  - **Fix B — a leading FREE period defers rent commencement.** New pure helper
+    `leadingFreeMonths(leaseStart, abatements)` (`src/lib/abatement.js`): months of fully-free rent
+    anchored at the start (reduced/percent periods and mid-term windows don't count). When it's > 0,
+    the lease-year rent table is dated from **rent commencement = start + freeMonths**, not the lease
+    start — so Wingstop's steps land Jan 2014/15/16/17 (12/24/36/48 mo after the 8 free months), inside
+    the term, instead of May 2013…. Wired into `LeaseNewPage` (`createFromAi` + `SchedulePreview`) and
+    `api.js anchorLeaseSchedule`. `createFromAi` also anchors the undated abatement's `start_date` to
+    the confirmed `lease_start` so the free window is actually **saved** (was silently dropped). The
+    review screen shows a "🎁 first N months free — paid rent starts {date}" note.
+  - **Options need no date work:** each option is term-length and rolls forward from the term END when
+    confirmed (round-2 chaining) — once the start (→ 2012) and end (→ Jan 2018) are right, Option 1 →
+    2023, Option 2 → 2028, Option 3 → 2033 fall out automatically. That's the "increments of five."
+  - Verified token-free: new `src/lib/__tests__/rentCommencementShift.test.js` (`leadingFreeMonths`
+    reads 8; reduced/mid-term/empty → 0; steps date from start+8mo = Jan 2014…2017 with rents
+    31450/32375/33300/34225; no-abatement regression dates from the start). Full suite **67/67 green**;
+    `CI=true` build compiles. Committed only this task's files. Live check: re-upload Wingstop.pdf —
+    start pre-fills to the signing date (adjust the day to the 4th), end auto-fills to ~Jan 2018, the
+    8 months show free, steps date from Jan 2013, and the 3 options chain forward in 5-year increments.
+
 - **2026-07-02** — Sync renewal options with the rent schedule + collapsible escalation list.
   Deployed: frontend Cloudflare version `1ac93011`; live-data repair of the Ricki's lease rows.
   No edge functions, no migrations, no new AI calls.

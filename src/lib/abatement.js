@@ -138,6 +138,26 @@ export function abatementMonthCount(ab) {
   return (e.getFullYear() - s.getFullYear()) * 12 + (e.getMonth() - s.getMonth()) + 1;
 }
 
+// How many months of FULLY FREE rent sit at the very START of the term (a "leading"
+// abatement). When rent is abated from day one, paid rent doesn't COMMENCE until that free
+// period ends — so a rent table dated only by lease year ("Year 1 … Year 5" with no printed
+// dates) is anchored to that rent-commencement point, NOT the lease start. A reduced-but-not-
+// free leading period doesn't count (the tenant is paying from day one). Returns 0 when no
+// free window is anchored at the start. Each `abatements` row may carry a raw `months`
+// (fresh extraction) or a start/end pair (saved rows); `leaseStart` is the ISO start or null.
+export function leadingFreeMonths(leaseStart, abatements) {
+  if (!Array.isArray(abatements) || !abatements.length) return 0;
+  let months = 0;
+  for (const a of abatements) {
+    if (a?.kind && a.kind !== 'free') continue;                 // reduced ≠ deferred commencement
+    const n = Number(a?.months) || abatementMonthCount(a) || 0;
+    if (!(n > 0)) continue;
+    const s = a?.start_date || null;                            // leading = begins at/before the
+    if (!s || !leaseStart || s <= leaseStart) months = Math.max(months, n); // start (or undated yet)
+  }
+  return months;
+}
+
 // A short human label for one abatement window ("Free rent", "50% off", "$2,000/mo").
 export function abatementKindLabel(ab) {
   switch (ab?.kind) {
