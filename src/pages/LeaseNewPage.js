@@ -207,6 +207,14 @@ function SchedulePreview({ ex }) {
           <li key={`rel${i}`}>After {s.months} months: <strong>{money(s.rent)}/yr</strong></li>
         ))}
       </ul>
+      {ex.rent_escalation_pct > 0 && (escs.length > 0 || showRelative) && (
+        <p className="note-msg" style={{ marginBottom: 8, fontSize: 12.5 }}>
+          ↗ The lease raises base rent <strong>{ex.rent_escalation_pct}% per year</strong> — the {escs.length || relativeSteps.length} yearly step{(escs.length || relativeSteps.length) === 1 ? '' : 's'} above {start ? 'are dated from the lease start' : 'will get real dates from the Lease start you enter'}.
+          {ex.rent_renegotiation_months > 0 && (
+            <> Rent is <strong>renegotiated in year {Math.floor(Number(ex.rent_renegotiation_months) / 12) + 1}</strong>{start ? ` (${fmtDate(addMonths(start, Number(ex.rent_renegotiation_months)))})` : ''} — no automatic steps run past then; enter the agreed rent on the lease page when you know it.</>
+          )}
+        </p>
+      )}
       {freeMo > 0 && start && rentStart && (
         <p className="note-msg" style={{ marginBottom: 8, fontSize: 12.5 }}>
           🎁 The first <strong>{freeMo} month{freeMo === 1 ? '' : 's'}</strong> are free (rent abatement), so paid rent starts <strong>{fmtDate(rentStart)}</strong> — the step-ups above are dated from there, not the lease start.

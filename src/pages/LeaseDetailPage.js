@@ -2,6 +2,8 @@ import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule } from '../lib/api';
+import { supabase } from '../lib/supabaseClient';
+import { addMonths } from '../lib/renewals';
 import { buildLeaseAskContext } from '../lib/leaseContext';
 import { useFeatures } from '../lib/features';
 import { usePageChrome } from '../context/ChromeContext';
@@ -50,6 +52,18 @@ export default function LeaseDetailPage() {
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
   const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
   const { data: abatements = [] } = useQuery({ queryKey: ['abatements', leaseId], queryFn: () => listAbatements(leaseId) });
+  // The raw AI read (cached on the linked lease_files row) — used only to surface the
+  // "rent renegotiated in year N" reminder for a lease imported with a prose escalation
+  // formula that stops mid-term. Read directly (not via api.js) so it stays self-contained.
+  const leaseFileId = lease?.lease_file_id || null;
+  const { data: extractionRaw = null } = useQuery({
+    queryKey: ['extractionRaw', leaseFileId],
+    enabled: !!leaseFileId,
+    queryFn: async () => {
+      const { data } = await supabase.from('lease_files').select('extraction_raw').eq('id', leaseFileId).limit(1);
+      return data?.[0]?.extraction_raw || null;
+    },
+  });
   // Per-account Display settings — which lease/property panels the landlord hid.
   const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   const showPanel = (k) => !hiddenWidgets.includes(k);
@@ -165,6 +179,19 @@ export default function LeaseDetailPage() {
   // the "outdated" / holdover banners rather than only pointing at addendums.
   const pendingRenewals = renewals.filter((r) => r.status === 'pending').length;
 
+  // "Rent renegotiated in year N" reminder. When this lease was imported with a prose
+  // escalation formula that STOPS mid-term ("2%/yr, renegotiated in the 8th year"), the
+  // app scheduled the automatic steps only up to that point. Once the renegotiation date
+  // has arrived and no rent step covers it yet, remind the landlord to enter the agreed
+  // figure. Clears itself the moment an escalation dated on/after that date exists.
+  const renegMonths = Number(extractionRaw?.rent_renegotiation_months) || 0;
+  const renegDate = renegMonths > 0 && lease.lease_start ? addMonths(lease.lease_start, renegMonths) : null;
+  const renegDue = !!renegDate && renegDate <= todayIso;
+  const renegCovered = renegDate
+    ? (escalations || []).some((e) => e.effective_date && String(e.effective_date) >= String(renegDate))
+    : false;
+  const showReneg = renegDue && !renegCovered && lease.is_active !== false;
+
   return (
     <div>
       <div className="page-head">
@@ -234,6 +261,20 @@ export default function LeaseDetailPage() {
                 </button>
               </div>
               {anchorStart.isError && <p className="note-msg danger" style={{ marginTop: 10 }}>{anchorStart.error.message}</p>}
+            </div>
+          </div>
+        )}
+
+        {showReneg && (
+          <div className="callout warn" style={{ margin: '0 0 16px' }}>
+            <div className="alert-main">
+              <div className="alert-title"><strong>💬 Rent was set to be renegotiated ({fmtDate(renegDate)})</strong></div>
+              <div className="muted">
+                This lease increased base rent automatically each year, but its own terms call for the rent to be
+                <strong> renegotiated</strong> starting {fmtDate(renegDate)}. The schedule is holding the last computed rent
+                ({money(phase.rent)}/yr) until you enter the newly agreed figure — add it as a step under
+                <strong> Rent escalations</strong> below (dated {fmtDate(renegDate)} or later) and this note will clear.
+              </div>
             </div>
           </div>
         )}
