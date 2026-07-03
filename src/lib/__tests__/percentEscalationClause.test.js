@@ -55,6 +55,35 @@ describe('rebuildRentSchedule — applies the formula only with no real rent tab
     expect(out.escalations.map((e) => e.new_base_rent)).toEqual(EXPECTED);
   });
 
+  // The REAL New Hong Kong failure (verified in the stored extraction_raw): the lease states
+  // its base rent TWICE — "$21.00 PSf" and "Monthly Base Rent: $1904.00" — and the model
+  // returned BOTH as rows at offset 0. The duplicate was mistaken for a rent step (a bogus
+  // escalation of $22,848 at month 0), which made escalations look non-empty and SUPPRESSED
+  // the 2%/yr formula → the tab showed one meaningless step and zero real yearly increases.
+  test('same base priced two ways at offset 0 ($/SF + $/mo) → collapses to one period, formula still fires', () => {
+    const dupRows = [
+      { effective_date: null, months_from_start: 0, amount: 21, period: 'per_sqft_year' }, // $21.00 PSf
+      { effective_date: null, months_from_start: 0, amount: 1904, period: 'per_month' },    // $1,904/mo
+    ];
+    const out = rebuildRentSchedule({ rentSchedule: dupRows, sqft: 1088, modelEscalations: [], escalationPct: 2, escalationStopMonths: 84, termMonths: 120 });
+    expect(out.baseRent).toBe(22848);
+    expect(out.escalations).toHaveLength(6);
+    expect(out.escalations.map((e) => e.new_base_rent)).toEqual(EXPECTED);
+    expect(out.escalations.every((e) => e.escalation_type === 'percent')).toBe(true);
+    expect(out.flag).toBeNull(); // the superseded $/SF row must not raise a false "missing sqft" flag
+  });
+
+  // Order-independence + the analyst-fed fallback path use the same collapse.
+  test('duplicate offset-0 rows collapse regardless of order (and even with no sqft)', () => {
+    const dupRows = [
+      { effective_date: null, months_from_start: 0, amount: 1904, period: 'per_month' },
+      { effective_date: null, months_from_start: 0, amount: 21, period: 'per_sqft_year' },
+    ];
+    const out = rebuildRentSchedule({ rentSchedule: dupRows, sqft: 0, modelEscalations: [], escalationPct: 2, escalationStopMonths: 84, termMonths: 120 });
+    expect(out.baseRent).toBe(22848);
+    expect(out.escalations.map((e) => e.new_base_rent)).toEqual(EXPECTED);
+  });
+
   test('a printed multi-row table WINS — the prose percent is ignored (regression)', () => {
     const table = [
       { effective_date: null, months_from_start: 0, amount: 30525, period: 'per_year' },

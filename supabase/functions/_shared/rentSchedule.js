@@ -91,13 +91,37 @@ export function rebuildRentSchedule({ rentSchedule, sqft, modelEscalations, esca
     annual: annualRentFrom(r?.amount, r?.period, sqft),
   }));
 
+  // Collapse rows that describe the SAME period two different ways into one. A lease often
+  // states its base rent both as a $/SF rate AND a plain monthly/annual dollar (e.g.
+  // "$21.00 PSf" alongside "Monthly Base Rent: $1904.00"), and the model dutifully returns
+  // BOTH — as two rows at the same offset (or the same printed date). Those are ONE period,
+  // not a step-up. Left alone the duplicate is mistaken for a rent step, which (a) invents a
+  // bogus escalation equal to the base and (b) — worse — makes the escalations array look
+  // non-empty, suppressing the prose "X% per year" formula whose yearly steps only generate
+  // when there are no real step rows. Group by period identity (printed date if any, else
+  // month offset) and keep the most reliable row: a resolvable amount over an unresolvable
+  // one, and a plain-dollar basis over a $/SF rate. Rows at genuinely different offsets /
+  // dates (a real graduated table) have distinct keys and are never merged.
+  const periodKey = (r) => (r.date != null ? `d:${r.date}` : `m:${r.months == null ? 0 : r.months}`);
+  const rowRank = (r) => {
+    if (r.annual == null) return 2;                                               // unresolvable ($/SF w/o sqft)
+    return r.period === 'per_sqft_year' || r.period === 'per_sqft_month' ? 1 : 0; // prefer a plain-dollar row
+  };
+  const bestByPeriod = new Map();
+  for (const r of rawRows) {
+    const k = periodKey(r);
+    const cur = bestByPeriod.get(k);
+    if (!cur || rowRank(r) < rowRank(cur)) bestByPeriod.set(k, r);
+  }
+  const collapsed = [...bestByPeriod.values()];
+
   // A $/SF row we couldn't resolve (no square footage anywhere) would otherwise be
   // dropped and silently fall back to the model's own math — surface it instead.
-  const unresolved = rawRows
+  const unresolved = collapsed
     .filter((r) => r.annual == null && (r.period === 'per_sqft_year' || r.period === 'per_sqft_month'))
     .map((r) => ({ effective_date: r.date, amount: r.amount, period: r.period }));
 
-  const usable = rawRows.filter((r) => r.annual != null);
+  const usable = collapsed.filter((r) => r.annual != null);
 
   // When the printed schedule has at most one priced period, there's no real step-up
   // table to honor — so a prose "X% per year" formula (if the model found one) becomes

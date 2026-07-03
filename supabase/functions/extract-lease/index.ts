@@ -179,15 +179,22 @@ const ANALYST_SYSTEM =
   'Be factual and specific. This brief is data, not advice.\n\n' +
   'FINAL LINE — MACHINE-READABLE VERDICTS. After all the bullets, end your brief with ONE ' +
   'final line in EXACTLY this format (nothing after it):\n' +
-  'VERDICTS: escalation=<yes|no|unclear>; renewal_options=<yes|no|unclear>; abatement=<yes|no|unclear>; start_date=<stated|not_stated>\n' +
+  'VERDICTS: escalation=<yes|no|unclear>; escalation_pct=<number|none>; escalation_stop_months=<number|none>; renewal_options=<yes|no|unclear>; abatement=<yes|no|unclear>; start_date=<stated|not_stated>\n' +
   'Set escalation=yes ONLY if the lease actually states a base-rent increase (a rent table ' +
   'with different amounts over time, a percent/CPI formula, or stepped rent) — a cap on ' +
   'CAM/Additional Rent (e.g. "103% of the prior year") is NOT a base-rent escalation, so it ' +
-  'is escalation=no. renewal_options=yes only if the lease grants an option to renew/extend ' +
-  '(an explicit "Option to Extend: None" is renewal_options=no). abatement=yes only if a ' +
-  'free/reduced base-rent period is granted. start_date=stated only if a real commencement ' +
-  'calendar date is printed. Use "unclear" only when you genuinely cannot tell. This line is ' +
-  'parsed by software — keep the exact keys, values and punctuation.';
+  'is escalation=no. When the base-rent escalation is a PERCENT-per-year formula stated in ' +
+  'prose ("increase annually by 2%", "3% each year"), set escalation_pct to that number ' +
+  '(2 for "2%") and set escalation_stop_months to the month offset from the start where the ' +
+  'increases STOP or the rent is renegotiated ("renegotiated in the 8th year" → 84, "for the ' +
+  'first five years" → 60; if they run to the end of the term, use the term length in months). ' +
+  'Use none for BOTH escalation_pct and escalation_stop_months when the escalation is a printed ' +
+  'dollar table (not a percent formula) or there is no base-rent escalation. renewal_options=yes ' +
+  'only if the lease grants an option to renew/extend (an explicit "Option to Extend: None" is ' +
+  'renewal_options=no). abatement=yes only if a free/reduced base-rent period is granted. ' +
+  'start_date=stated only if a real commencement calendar date is printed. Use "unclear" only ' +
+  'when you genuinely cannot tell. This line is parsed by software — keep the exact keys, ' +
+  'values and punctuation.';
 
 const ANALYST_TIMEOUT_MS = 60_000;
 
@@ -512,6 +519,14 @@ Deno.serve(async (req) => {
     ]);
     if (brief) (parsed as any).analysis_brief = brief; // persisted for audit/debugging
 
+    // Parse the analyst's machine-readable VERDICTS line ONCE — reused below both to feed the
+    // percent-escalation fallback and to raise the disagreement alarm.
+    const verdicts = brief ? parseAnalystVerdicts(brief) : {};
+    const numVerdict = (x: unknown): number | null => {
+      const n = Number(x);
+      return isFinite(n) && n > 0 ? n : null; // "none"/"unclear"/"" → null
+    };
+
     // Supplement (contact + emails + raw rent basis) merges into the main extraction.
     // If it failed (null), the lease still returns; contacts stay blank and base_rent
     // keeps the model's own figure.
@@ -529,8 +544,13 @@ Deno.serve(async (req) => {
                    (Number((supp as any)?.square_footage?.value) || 0);
       // A prose "X% per year" escalation formula (no printed rent table) — the model reads
       // only the percent + where it stops; rebuildRentSchedule synthesizes the yearly steps.
-      const escalationPct = Number((supp as any)?.escalation_pct?.value) || null;
-      const escalationStopMonths = Number((supp as any)?.escalation_stop_months?.value) || null;
+      // Haiku is unreliable on this prose clause (it has missed the percent entirely, or read
+      // the wrong stop point, on repeat uploads of the same lease), so when the cheap form-fill
+      // comes up empty, fall back to what the strong Sonnet analyst read — it interprets the
+      // clause the way a person reading the lease in chat would. Haiku's value still wins when
+      // present, so no working case regresses.
+      const escalationPct = (Number((supp as any)?.escalation_pct?.value) || null) || numVerdict((verdicts as any).escalation_pct);
+      const escalationStopMonths = (Number((supp as any)?.escalation_stop_months?.value) || null) || numVerdict((verdicts as any).escalation_stop_months);
       const termMonths = Number((supp as any)?.term_months?.value) || null;
       const rebuilt = rebuildRentSchedule({
         rentSchedule: supp.rent_schedule,
@@ -568,7 +588,7 @@ Deno.serve(async (req) => {
     // silently showing nothing. No brief / no VERDICTS line → no flags (behavior unchanged).
     if (brief) {
       const mismatches = extractionMismatches({
-        verdicts: parseAnalystVerdicts(brief),
+        verdicts,
         escalations: (parsed as any).escalations,
         renewalOptions: (parsed as any).renewal_options,
         abatements: (parsed as any).abatements,

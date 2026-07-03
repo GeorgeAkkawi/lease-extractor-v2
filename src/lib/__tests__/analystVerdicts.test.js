@@ -29,6 +29,24 @@ describe('parseAnalystVerdicts', () => {
     });
   });
 
+  test('captures numeric verdict values (escalation_pct, escalation_stop_months) for the fallback', () => {
+    const brief =
+      '### BASE RENT & ESCALATIONS\n- "Base rent will increase annually by 2% ... renegotiated in the 8th year."\n\n' +
+      'VERDICTS: escalation=yes; escalation_pct=2; escalation_stop_months=84; renewal_options=no; abatement=no; start_date=not_stated';
+    const v = parseAnalystVerdicts(brief);
+    expect(v.escalation).toBe('yes');
+    expect(Number(v.escalation_pct)).toBe(2);
+    expect(Number(v.escalation_stop_months)).toBe(84);
+  });
+
+  test('"none" numeric verdicts parse as non-numbers (so the fallback stays off)', () => {
+    const brief =
+      'VERDICTS: escalation=no; escalation_pct=none; escalation_stop_months=none; renewal_options=no; abatement=no; start_date=stated';
+    const v = parseAnalystVerdicts(brief);
+    expect(v.escalation_pct).toBe('none');
+    expect(Number.isFinite(Number(v.escalation_pct))).toBe(false);
+  });
+
   test('returns {} when there is no VERDICTS line, or on junk input', () => {
     expect(parseAnalystVerdicts('a brief with no verdict line')).toEqual({});
     expect(parseAnalystVerdicts('')).toEqual({});

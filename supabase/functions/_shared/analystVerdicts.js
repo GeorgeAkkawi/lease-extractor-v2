@@ -21,7 +21,9 @@ export function parseAnalystVerdicts(brief) {
   const line = matches[matches.length - 1][1];
   const out = {};
   for (const pair of line.split(';')) {
-    const m = pair.match(/([a-z_]+)\s*=\s*([a-z_]+)/i);
+    // Value can be a word (yes/no/unclear/stated) OR a number (escalation_pct=2,
+    // escalation_stop_months=84) — capture up to the next space/semicolon either way.
+    const m = pair.match(/([a-z_]+)\s*=\s*([^\s;]+)/i);
     if (m) out[m[1].toLowerCase()] = m[2].toLowerCase();
   }
   return out;

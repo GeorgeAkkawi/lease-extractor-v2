@@ -71,6 +71,45 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-03** — New Hong Kong 2: the 2%/yr prose escalation now actually lands as yearly steps.
+  Deployed: `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`). **No frontend deploy**
+  (fix is entirely edge-side; the review form already dates + saves the steps), no migration, no
+  money (re-extraction is George's own upload).
+  - **What George reported (correctly, this time it's a real bug):** he uploaded a copy that DOES
+    contain "Base rent will increase annually by 2% and will be renegotiated in the 8th year" (the
+    `New Hong Kong 2 (1).docx` / `.pdf` — 3.64 MB, byte-identical to `Downloads/New Hong Kong 2.pdf`;
+    the *without*-clause copy is the 3.9 MB `NASA/Leases/Hong Kong/New Hong Kong 2.pdf`). The app
+    "reads it but can't implement the yearly escalation in the rent escalations tab."
+  - **Root cause (found in the stored `extraction_raw`, id `f85a9dcd`):** Haiku DID capture
+    `escalation_pct=2`, `escalation_stop_months=84`, `term_months=120`, base `$22,848` — everything
+    `percentEscalations` needs for 6 steps. But the lease prints the SAME base rent two ways ("$21.00
+    PSf" **and** "Monthly Base Rent: $1904.00"), so Haiku returned TWO `rent_schedule` rows both at
+    `months_from_start:0`. `rebuildRentSchedule` treated the second as a step-up → one bogus escalation
+    of $22,848 at month 0 → escalations looked "non-empty" → the guard that only synthesizes the
+    prose-%/yr steps when there are NO real step rows was tripped, so the 2% formula never ran. The
+    stored escalations were exactly `[{months_from_start:0, new_base_rent:22848, manual}]` (and the
+    disagreement alarm stayed silent because that degenerate row counts as "a step"). So: read fine,
+    dropped by a dedupe gap — matches George's symptom exactly.
+  - **Fix A (the real fix) — collapse same-period rows** (`_shared/rentSchedule.js`): before splitting
+    base vs steps, group rows by period identity (printed date if any, else month offset) and keep the
+    most reliable one (resolvable > unresolvable; plain-dollar > $/SF). Two rows at offset 0 collapse to
+    one → escalations empty → the 2% formula fires → 6 steps ($23,304.96 … $25,730.56, months 12–72).
+    Rows at genuinely different offsets/dates (real graduated tables — Wingstop/Gzim/Ricki's) have
+    distinct keys and never merge. Superseded $/SF row no longer raises a false "missing sqft" flag.
+  - **Fix B (robustness) — analyst-fed percent fallback** (`extract-lease/index.ts`,
+    `_shared/analystVerdicts.js`): the same clause read differently across George's repeat uploads —
+    one got `pct=null` (Haiku missed it entirely), another `stop=96` (wrong). So the Sonnet analyst's
+    VERDICTS line now also emits `escalation_pct` + `escalation_stop_months`; the parser captures
+    numeric values; and the merge uses them as a FALLBACK when Haiku's supplement comes up empty
+    (Haiku still wins when present → no regression). The strong reader that nails the clause now feeds
+    the implementation, not just a yes/no. Verdicts parsed once and reused for the disagreement alarm.
+  - Verified token-free: `percentEscalationClause.test.js` +2 (the dup-row New Hong Kong case → 6
+    percent steps, order-independent, no false flag) and `analystVerdicts.test.js` +2 (numeric verdict
+    parsing incl. "none"). Full suite **122/122 green**; edge fn deployed clean (Deno bundled the shared
+    modules). Committed only this task's files. **Live check:** re-upload `New Hong Kong 2 (1).docx`
+    (~10–15¢) — expect base $22,848/yr and six 2% steps in the Rent escalations tab (dated from the
+    2017-06-01 start), NOT a single month-0 row.
+
 - **2026-07-03** — Universal "extraction disagreement alarm" — when the AI analyst read finds a
   term the form-filler dropped, warn instead of silently showing nothing. Deployed:
   `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
