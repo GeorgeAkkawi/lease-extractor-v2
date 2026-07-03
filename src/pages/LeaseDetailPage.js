@@ -3,6 +3,7 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule } from '../lib/api';
 import { buildLeaseAskContext } from '../lib/leaseContext';
+import { useFeatures } from '../lib/features';
 import { usePageChrome } from '../context/ChromeContext';
 import EditField from '../components/EditField';
 import EscalationScheduleEditor from '../components/EscalationScheduleEditor';
@@ -28,6 +29,8 @@ export default function LeaseDetailPage() {
   const insReq = searchParams.get('insreq'); // '1' = open the COI-request email (from the expiry alert link)
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const { isOn } = useFeatures();
+  const insuranceOn = isOn('insurance');
 
   // Refs to the sections an alert can point at, so we can scroll + flash them.
   const termsRef = useRef(null);
@@ -406,6 +409,7 @@ export default function LeaseDetailPage() {
         />
       </div>
 
+      {insuranceOn && (
       <div className={`panel${flash === 'insurance' ? ' panel-flash' : ''}`} ref={insRef}>
         <div className="panel-head">
           <strong>Insurance</strong>
@@ -418,6 +422,7 @@ export default function LeaseDetailPage() {
         </p>
         <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} />
       </div>
+      )}
 
       {showInsReq && (() => {
         const email = buildInsuranceRequestEmail({

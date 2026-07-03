@@ -5,6 +5,7 @@ import { getCorporation, listProperties, createProperty, listLeases } from '../l
 import { usePageChrome } from '../context/ChromeContext';
 import { usePrefetchers, leasesByPropertiesQuery } from '../lib/prefetch';
 import { money } from '../lib/format';
+import { useFeatures } from '../lib/features';
 import { CardGridSkeleton } from '../components/Skeleton';
 import { ShieldIcon } from '../components/icons';
 import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
@@ -81,6 +82,7 @@ export default function PropertiesPage() {
 
 function PropCard({ corpId, property, onInsurance, pf }) {
   const navigate = useNavigate();
+  const { isOn } = useFeatures();
   // Reads the cache seeded by the page's batched fetch — no own network round-trip.
   const { data: leases = [] } = useQuery({
     queryKey: ['leases', property.id],
@@ -98,13 +100,15 @@ function PropCard({ corpId, property, onInsurance, pf }) {
     <div className="prop-card" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} onMouseEnter={warm} onFocus={warm}>
       <div className="prop-card-head">
         <strong>{property.name}</strong>
-        <button
-          className="corp-edit"
-          title="Landlord insurance for this property"
-          onClick={(e) => { e.stopPropagation(); onInsurance(property); }}
-        >
-          <ShieldIcon /> Insurance
-        </button>
+        {isOn('insurance') && (
+          <button
+            className="corp-edit"
+            title="Landlord insurance for this property"
+            onClick={(e) => { e.stopPropagation(); onInsurance(property); }}
+          >
+            <ShieldIcon /> Insurance
+          </button>
+        )}
       </div>
       <div className="prop-addr muted">{property.address || 'No address'}</div>
       <div className="prop-card-stats">

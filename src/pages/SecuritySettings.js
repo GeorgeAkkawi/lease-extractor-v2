@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { getSecuritySettings, sendTwoFactorCode, verifyTwoFactorCode } from '../lib/api';
+import { usePageChrome } from '../context/ChromeContext';
 
 // Turn email 2FA on or off. Either way the user must enter a code we email them
 // first, so the toggle can only be flipped by someone who controls the inbox
 // (the server enforces this — the flag is never written directly by the client).
 export default function SecuritySettings() {
+  usePageChrome([{ label: 'Settings', to: '/settings' }, { label: 'Security & 2FA' }]);
   const { user } = useAuth();
   const [enabled, setEnabled] = useState(null); // null = loading
   const [stage, setStage] = useState('idle');   // idle | code

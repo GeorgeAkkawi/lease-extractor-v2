@@ -5,6 +5,7 @@ import Login from './pages/Login';
 import TwoFactorChallenge from './pages/TwoFactorChallenge';
 import SecuritySettings from './pages/SecuritySettings';
 import DisplaySettings from './pages/DisplaySettings';
+import SettingsPage from './pages/SettingsPage';
 import DashboardPage from './pages/DashboardPage';
 import CorporationsPage from './pages/CorporationsPage';
 import PropertiesPage from './pages/PropertiesPage';
@@ -48,8 +49,15 @@ export default function App() {
         <Route path="/history/:corpId" element={<FinancialsPropertiesPage mode="history" />} />
         <Route path="/history/:corpId/:propId" element={<HistoryPage />} />
 
-        <Route path="/security" element={<SecuritySettings />} />
-        <Route path="/display" element={<DisplaySettings />} />
+        {/* Settings hub — sections on the left, content on the right. */}
+        <Route path="/settings" element={<SettingsPage />}>
+          <Route index element={<Navigate to="display" replace />} />
+          <Route path="display" element={<DisplaySettings />} />
+          <Route path="security" element={<SecuritySettings />} />
+        </Route>
+        {/* Old standalone routes now live inside Settings — keep them working. */}
+        <Route path="/display" element={<Navigate to="/settings/display" replace />} />
+        <Route path="/security" element={<Navigate to="/settings/security" replace />} />
 
         <Route path="*" element={<Navigate to="/leases" replace />} />
       </Routes>

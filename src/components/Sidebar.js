@@ -5,7 +5,7 @@ import { supabase, DEMO_MODE } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { useChrome } from '../context/ChromeContext';
 import { usePrefetchers } from '../lib/prefetch';
-import { DocIcon, ChartIcon, ClockIcon, GridIcon, ShieldIcon, SlidersIcon, ChevronLeftIcon, SignOutIcon } from './icons';
+import { DocIcon, ChartIcon, ClockIcon, GridIcon, SlidersIcon, ChevronLeftIcon, SignOutIcon } from './icons';
 
 const COLLAPSE_KEY = 'amlak.sidebarCollapsed';
 
@@ -62,11 +62,8 @@ export default function Sidebar() {
       <div className="side-foot">
         {/* Alerts + notifications live in one place: the bell in the top bar. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <NavLink to="/display" className="reset-btn" {...tip('Display')}>
-            <SlidersIcon /> <span className="side-label">Display</span>
-          </NavLink>
-          <NavLink to="/security" className="reset-btn" {...tip('Security & 2FA')}>
-            <ShieldIcon /> <span className="side-label">Security &amp; 2FA</span>
+          <NavLink to="/settings" className="reset-btn" {...tip('Settings')}>
+            <SlidersIcon /> <span className="side-label">Settings</span>
           </NavLink>
           {DEMO_MODE && (
             <button className="reset-btn" onClick={resetDemo} {...tip('Reset demo data')}>

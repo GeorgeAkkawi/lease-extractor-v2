@@ -71,6 +71,50 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-03** — Feature switchboard (opt-in modules) + a real Settings page. Deployed: DB
+  migration `0043` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `9b971c06`. No
+  edge functions, no AI calls, nothing that costs money. First round of a larger plan
+  (`~/.claude/plans/can-you-do-a-structured-flask.md`) — this builds ONLY the foundation that
+  makes features opt-in; the four coming modules (expenses, maintenance, deposits, paper-trail)
+  each register into it later.
+  - **Why:** George is about to add several feature modules but doesn't want to force them on
+    anyone. Each user should pick what they want at first sign-in and add/remove features anytime.
+    He also wanted the old standalone "Display" page turned into a **Settings** page we can grow,
+    with "Display & features" as its first section.
+  - **Data (one additive column):** `0043_enabled_features.sql` adds `enabled_features jsonb` to
+    `user_preferences` (same per-user row as `hidden_widgets`, migration 0038; client-writable
+    under the existing RLS). `null` = never chosen → show the onboarding picker + treat everything
+    as on; an array = the explicit set of optional modules on. Turning a module off only hides it —
+    data is never deleted. Only pending migration (0042 already remote), pushed alone via `db push`.
+  - **Switchboard:** new `src/lib/features.js` — the `FEATURES` registry (`{key,label,hint}`,
+    mirrors `dashboardWidgets.js`), pure helpers `isFeatureOn` (null/undefined → on) + `toggleFeature`
+    (materializes the full set on first toggle-off), and a `useFeatures()` hook. api.js gained
+    `getEnabledFeatures`/`setEnabledFeatures` mirroring the widget pair (returns `null` when unset,
+    never `undefined`), cached under `['enabledFeatures']`. Optional modules live today: `insurance`,
+    `contracts` (new ones append one line each when built).
+  - **Onboarding (kept — George likes it):** new `src/components/WelcomeOnboarding.js`
+    ("What should Amlak handle for you?", all pre-checked, Save or "Skip — keep everything on").
+    Gated in `Layout.js`: when `enabled_features === null` (and not DEMO) it renders in place of the
+    app; saving makes it non-null so it shows exactly once. Existing accounts (George + beta user)
+    see it once, pre-checked to match today.
+  - **Settings page:** new `src/pages/SettingsPage.js` — sections down the left (reusing
+    `side-item`), content on the right via `<Outlet/>`. `App.js` nested `/settings` → index redirect
+    to `display`, `/settings/display`, `/settings/security`; old `/display` + `/security` now
+    `<Navigate>` redirects. `Sidebar.js` footer's two items collapse into one **Settings** item.
+    `DisplaySettings.js` retitled "Display & features" and grew a **Features** toggle group
+    (same row UI) above the existing widget/panel toggles — the single place to hide/restore both.
+    `SecuritySettings.js` gained a "Settings › Security & 2FA" breadcrumb.
+  - **Made the switch real on day one:** `useFeatures().isOn(...)` gates the two existing optional
+    modules — Contracts (hide the tab in `PropertyTabs.js`, redirect the Contracts route when off)
+    and Insurance (hide the property-card button in `PropertiesPage.js` + the tenant Insurance panel
+    in `LeaseDetailPage.js`). `isOn` defaults on while loading, so nothing flash-hides.
+  - Verified token-free: new `src/lib/__tests__/features.test.js` (null → all on; undefined → on;
+    `[]` → all off; subset honored; first toggle-off materializes full set minus one; pure/no-mutate;
+    unique keys). Full suite **91/91 green**; `CI=true` build compiles. Committed only this task's
+    files (left the untracked `.claude/` items alone). Live check: fresh load shows the Welcome
+    picker once; Settings shows the left rail with Display & features selected; toggle Contracts /
+    Insurance off → their UI vanishes, back on → returns.
+
 - **2026-07-03** — Five asks in one round: (1) bill CAM/taxes per SF of the WHOLE building,
   (2) show notifications up to 6 months ahead, (3) redesign the renewal-options table, (4) fix the
   broken "Renew" on a future option + stop un-exercised option rents reading as committed, (5)

@@ -1,13 +1,15 @@
-import { useParams } from 'react-router-dom';
+import { useParams, Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getCorporation, getProperty } from '../lib/api';
 import { usePageChrome } from '../context/ChromeContext';
+import { useFeatures } from '../lib/features';
 import PropertyTabs from '../components/PropertyTabs';
 import ServiceContractsSection from '../components/ServiceContractsSection';
 
 // Property "Contracts" tab — the standing service/maintenance agreements.
 export default function ContractsPage() {
   const { corpId, propId } = useParams();
+  const { isOn, loading: featuresLoading } = useFeatures();
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   usePageChrome([
@@ -16,6 +18,11 @@ export default function ContractsPage() {
     { label: prop?.name || '…', to: `/leases/${corpId}/${propId}` },
     { label: 'Contracts' },
   ]);
+
+  // Module switched off → nothing to show here; send them back to the property.
+  if (!featuresLoading && !isOn('contracts')) {
+    return <Navigate to={`/leases/${corpId}/${propId}`} replace />;
+  }
 
   return (
     <div>

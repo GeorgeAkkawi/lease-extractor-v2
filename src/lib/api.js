@@ -1454,6 +1454,40 @@ export const setHiddenWidgets = async (hidden_widgets) =>
       .single()
   );
 
+// ---- Enabled feature modules (the opt-in switchboard) -----------------------
+// Same user_preferences row as the widget prefs (column enabled_features, migration
+// 0043). Returns null when the user has never chosen — the caller uses that to show
+// the one-time onboarding picker and to treat everything as on until they decide.
+// An array is the explicit set of optional modules they want on. Never returns
+// undefined (React Query forbids it); null is a valid, meaningful value here.
+export async function getEnabledFeatures() {
+  try {
+    const uid = await ownerId();
+    if (!uid) return null;
+    const { data } = await supabase
+      .from('user_preferences')
+      .select('enabled_features')
+      .eq('user_id', uid)
+      .maybeSingle();
+    return data?.enabled_features ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Replace the full set of enabled feature keys for the current user.
+export const setEnabledFeatures = async (enabled_features) =>
+  one(
+    supabase
+      .from('user_preferences')
+      .upsert(
+        { user_id: await ownerId(), enabled_features, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
+      .select()
+      .single()
+  );
+
 // ---- Notifications ----------------------------------------------------------
 export const listNotifications = () =>
   rows(supabase.from('notifications').select('*').order('created_at', { ascending: false }));
