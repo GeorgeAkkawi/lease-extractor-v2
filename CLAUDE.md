@@ -71,6 +71,23 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-03** — Remove the first-run onboarding picker. Deployed: frontend Cloudflare version
+  `3d479b2d`. No migration, no edge functions, nothing that costs money.
+  - **Why:** George didn't like the one-time Welcome screen. Settings alone is the place to pick
+    features — Display & features first, Security & 2FA second — no upfront picker.
+  - **What changed:** deleted `src/components/WelcomeOnboarding.js` and stripped its gate from
+    `src/components/Layout.js` (removed the `['enabledFeatures']` onboarding query, the
+    `needsOnboarding` flag, the `WelcomeOnboarding`/`getEnabledFeatures` imports, and the unused
+    `useQuery` import — CI treats warnings as errors). Layout now always renders `children`.
+  - **The switchboard core is untouched** and still works: `enabled_features` stays `null` for
+    everyone until they toggle a module in Settings, and `isFeatureOn(null, …)` reads null as "on",
+    so every feature shows by default (same result the pre-checked picker gave) — just without the
+    intro screen. `features.js`, the api.js pair, and the Display & features toggles are unchanged.
+  - Verified token-free: no remaining `WelcomeOnboarding` references; full suite **91/91 green**
+    (features.test.js unchanged — it only tests the pure helpers); `CI=true` build compiles.
+    Committed only this task's files (`Layout.js` + the deletion); left the other session's
+    in-progress lease-extraction edits and the untracked `.claude/` items alone.
+
 - **2026-07-03** — Feature switchboard (opt-in modules) + a real Settings page. Deployed: DB
   migration `0043` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `9b971c06`. No
   edge functions, no AI calls, nothing that costs money. First round of a larger plan

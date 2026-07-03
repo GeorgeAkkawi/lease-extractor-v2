@@ -1,25 +1,13 @@
 import { useEffect, useRef } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
-import WelcomeOnboarding from './WelcomeOnboarding';
 import { DEMO_MODE } from '../lib/supabaseClient';
-import { promptDueRenewalDecisions, applyDueEscalations, getEnabledFeatures } from '../lib/api';
+import { promptDueRenewalDecisions, applyDueEscalations } from '../lib/api';
 
 export default function Layout({ children }) {
   const qc = useQueryClient();
   const ran = useRef(false);
-
-  // First-run onboarding gate: a fresh account stores enabled_features = null.
-  // Until the landlord makes their first pick we show the one-time Welcome picker
-  // in place of the app. Saving writes a non-null set, so this shows exactly once.
-  // Demo mode never has a persisted row, so it's skipped there entirely.
-  const { data: enabledFeatures, isLoading: featuresLoading } = useQuery({
-    queryKey: ['enabledFeatures'],
-    queryFn: getEnabledFeatures,
-    enabled: !DEMO_MODE,
-  });
-  const needsOnboarding = !DEMO_MODE && !featuresLoading && enabledFeatures === null;
 
   // On load: rent escalations whose effective date has arrived apply automatically
   // (they update the lease's base rent). Renewal options never apply on their own —
@@ -51,7 +39,7 @@ export default function Layout({ children }) {
             Supabase keys in <code>.env.local</code> to go live.
           </div>
         )}
-        <div className="content">{needsOnboarding ? <WelcomeOnboarding /> : children}</div>
+        <div className="content">{children}</div>
       </div>
     </div>
   );
