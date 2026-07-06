@@ -88,12 +88,12 @@ function PropCard({ corpId, property, onInsurance, pf }) {
     queryKey: ['leases', property.id],
     queryFn: () => listLeases(property.id),
   });
-  // Count only live tenancies — everywhere else in the app filters inactive leases,
-  // so the card's tenant count / SF / revenue match the property page instead of
-  // inflating with ended leases.
-  const active = leases.filter((l) => l.is_active !== false);
-  const totalSf = active.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
-  const revenue = active.reduce((s, l) => s + (Number(l.base_rent) || 0), 0);
+  // Count EVERY tenant, including an "outdated / needs-extension" lease — the tenant
+  // still occupies the space (and still owes rent) until the landlord removes them, so
+  // the card's tenant count / SF / occupancy / revenue match the Leases page instead of
+  // reading their space as vacant.
+  const totalSf = leases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
+  const revenue = leases.reduce((s, l) => s + (Number(l.base_rent) || 0), 0);
   const buildingSf = Number(property.building_sf) || totalSf;
   const occupancy = buildingSf > 0 ? totalSf / buildingSf : 1;
   const go = () => navigate(`/leases/${corpId}/${property.id}`);
@@ -116,7 +116,7 @@ function PropCard({ corpId, property, onInsurance, pf }) {
       </div>
       <div className="prop-addr muted">{property.address || 'No address'}</div>
       <div className="prop-card-stats">
-        <div><span className="muted">Tenants</span><b>{active.length}</b></div>
+        <div><span className="muted">Tenants</span><b>{leases.length}</b></div>
         <div><span className="muted">Sq ft</span><b>{Number(totalSf).toLocaleString()} / {Number(buildingSf).toLocaleString()}</b></div>
         <div><span className="muted">Leased</span><b>{Math.round(occupancy * 100)}%</b></div>
         <div><span className="muted">Revenue</span><b>{money(revenue)}</b></div>

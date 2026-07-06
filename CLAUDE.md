@@ -71,6 +71,35 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — Overview / property pages now count an **outdated ("needs extension") tenant as
+  occupied**, matching the Leases page (fixes my earlier "Overview↔property sync", which synced them to
+  each OTHER via `v_property_totals` instead of to the Leases page). Deployed: DB migration `0049`
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `a1e5d492`. No money, no tenant emails,
+  no destructive data (non-destructive `create or replace view`).
+  - **What George caught:** the Leases page sums EVERY lease's SF (`LeasesPage.js:34`, no `is_active`
+    filter), so an expired-but-not-removed tenant (his beauty/barbershop) still counts as occupied and
+    the bottom "Vacant space → Available" reads **882 SF**. But the Overview, property Financials page,
+    and property cards read `v_property_totals`, whose `leased` CTE filtered `where is_active` — so that
+    tenant's space showed as *vacant* and its rent dropped from the rent roll. George's rule: an
+    outdated tenant counts **fully** (space + rent) until HE removes it; a lapsed date shouldn't auto-evict
+    it from the numbers.
+  - **Fix (migration `0049` recreates `v_property_totals`):** added an `occupied` CTE = **all** leases
+    that now drives `total_sf` / `building_sf` fallback / `vacant_sf` / `occupancy`; dropped `and l.is_active`
+    from `total_revenue`/`noi` so the outdated lease's rent counts (`effective_rent` falls back to
+    `base_rent`); dropped the `periods` CTE's `is_active` filter. **Billing untouched** — the active-only
+    `leased` CTE still feeds `resp_sf` + `tax_psf`/`cam_psf`/roof denominators, so the summary $/SF rate
+    cards keep matching the per-tenant bills (`v_tenant_shares`, 0042). `DashboardPage.js` +
+    `PropertyFinancialsPage.js` read the view → both fixed by the one migration, no frontend edits there.
+  - **Frontend:** `PropertiesPage.js` property card now counts ALL leases for tenant count / SF /
+    occupancy / revenue (dropped the `is_active !== false` filter). `mockClient.js propertyTotals` mirrors
+    the SQL split (all leases for occupancy/revenue; active leased SF for the $/SF denominators).
+  - Verified token-free: `contractCam.test.js` +2 (an outdated lease counts in total_sf/vacant/occupancy/
+    revenue; with no building size, occupancy uses ALL leases but $/SF still divides by ACTIVE SF). Full
+    suite **139/139 green**; `CI=true` build compiles (−16 B). **Verified on LIVE data** (read-only query):
+    Pershing Plaza `v_property_totals` now reads total_sf **12,868** (was 11,791), vacant **882**, occupancy
+    **93.6%** — exactly matching the Leases page (the 1,077-SF outdated tenant is now counted). Committed
+    only this task's files.
+
 - **2026-07-06** — Six-in-one round: notifications audit + repairs, Overview↔property number sync,
   insurance send-log, renewal timing verify + guard, rent-roll speed, and Receivables toggle reaching
   the Finances page. Deployed: DB migrations `0047`+`0048`, `send-reminders` edge function scheduled

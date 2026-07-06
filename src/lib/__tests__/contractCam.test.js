@@ -131,3 +131,48 @@ describe('property summary $/SF rates (DEMO v_property_totals — 0043)', () => 
     expect(t.tax_psf).toBeCloseTo(1.0, 6);
   });
 });
+
+// An "outdated / needs-extension" tenant (past term end → is_active=false) still
+// occupies its space and still owes rent until the landlord removes it, so the summary
+// counts it FULLY — matching the Leases page (migration 0049). Billing $/SF cards stay
+// on the ACTIVE leased SF so they keep matching the per-tenant bills.
+describe('property summary counts outdated tenants as occupied (DEMO v_property_totals — 0049)', () => {
+  test('outdated lease counts in total_sf / vacant / occupancy / revenue; billing $/SF unchanged', async () => {
+    const corp = await createCorporation('Outdated Co, LLC');
+    const prop = await createProperty({ corporation_id: corp.id, name: 'Outdated Plaza', address: 'OD1', building_sf: 10000 });
+    // Active tenant: 2,000 SF, $40,000/yr.
+    await createLease({ property_id: prop.id, tenant_name: 'Active Tenant', square_footage: 2000, base_rent: 40000, lease_start: '2024-01-01', lease_termination_date: '2030-12-31' });
+    // Outdated tenant (term ended in the past → backfill flags is_active=false): 3,000 SF, $30,000/yr.
+    await createLease({ property_id: prop.id, tenant_name: 'Outdated Tenant', square_footage: 3000, base_rent: 30000, lease_start: '2018-01-01', lease_termination_date: '2020-12-31' });
+    await upsertExpenseRecord({ property_id: prop.id, year: 2026, taxes_total: 5000, cam_total: 10000, roof_total: 0 });
+
+    const t = await getPropertyTotals(prop.id, 2026);
+    // Occupied space counts BOTH tenants (5,000 of 10,000) — the outdated tenant is NOT vacant.
+    expect(t.total_sf).toBe(5000);
+    expect(t.vacant_sf).toBe(5000);
+    expect(t.occupancy).toBeCloseTo(0.5, 6);
+    // Rent roll includes the outdated tenant's rent: 40,000 + 30,000.
+    expect(t.total_revenue).toBeCloseTo(70000, 6);
+    // Billing $/SF still divides by the WHOLE building (10,000) — unchanged, matches the bills.
+    expect(t.cam_psf).toBeCloseTo(1.0, 6);
+    expect(t.tax_psf).toBeCloseTo(0.5, 6);
+  });
+
+  test('with no building size: occupancy uses ALL leases, but billing $/SF uses ACTIVE leased SF', async () => {
+    const corp = await createCorporation('Outdated NoSF Co, LLC');
+    const prop = await createProperty({ corporation_id: corp.id, name: 'Outdated NoSF Plaza', address: 'OD2' }); // no building_sf
+    await createLease({ property_id: prop.id, tenant_name: 'Active', square_footage: 2000, base_rent: 40000, lease_start: '2024-01-01', lease_termination_date: '2030-12-31' });
+    await createLease({ property_id: prop.id, tenant_name: 'Outdated', square_footage: 3000, base_rent: 30000, lease_start: '2018-01-01', lease_termination_date: '2020-12-31' });
+    await upsertExpenseRecord({ property_id: prop.id, year: 2026, taxes_total: 4000, cam_total: 8000, roof_total: 0 });
+
+    const t = await getPropertyTotals(prop.id, 2026);
+    // Display building falls back to ALL leased SF (5,000) → fully occupied, no vacancy.
+    expect(t.total_sf).toBe(5000);
+    expect(t.building_sf).toBe(5000);
+    expect(t.vacant_sf).toBe(0);
+    expect(t.occupancy).toBeCloseTo(1, 6);
+    // Billing $/SF still divides by ACTIVE leased SF (2,000), matching the per-tenant bills.
+    expect(t.cam_psf).toBeCloseTo(8000 / 2000, 6); // 4.0
+    expect(t.tax_psf).toBeCloseTo(4000 / 2000, 6); // 2.0
+  });
+});

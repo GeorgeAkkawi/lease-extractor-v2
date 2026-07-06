@@ -37,18 +37,21 @@ function propertyTotals(propertyId, year) {
   const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year);
   if (!exp) return null; // SQL view inner-joins expense_records
   const prop = db.properties.find((p) => p.id === propertyId);
-  // Outdated (is_active === false) leases are excluded from financials, mirroring
-  // the `where l.is_active` filter on the SQL views (migration 0021).
-  const leases = db.leases.filter((l) => l.property_id === propertyId && l.is_active !== false);
-  const totalSf = leases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
-  const respSf = leases.filter((l) => l.roof_responsible).reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
-  const buildingSf = Number(prop?.building_sf) || totalSf;
-  const revenue = leases.reduce((s, l) => s + effectiveRent(l, escFor(l.id), year), 0);
+  // Physical occupancy counts EVERY lease — an outdated (is_active === false) tenant
+  // still occupies its space (and still owes rent) until the landlord removes it, so
+  // total_sf / vacant / occupancy / revenue match the Leases page and v_property_totals
+  // (0049). Billing rate cards below stay on the ACTIVE leased SF so the $/SF figures
+  // keep matching the per-tenant bills (v_tenant_shares, 0042).
+  const allLeases = db.leases.filter((l) => l.property_id === propertyId);
+  const activeLeases = allLeases.filter((l) => l.is_active !== false);
+  const totalSf = allLeases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
+  const activeSf = activeLeases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
+  const respSf = activeLeases.filter((l) => l.roof_responsible).reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
+  const buildingSf = Number(prop?.building_sf) || totalSf;    // occupancy/vacant denominator (all leases)
+  const billingDenom = Number(prop?.building_sf) || activeSf; // $/SF rate-card denominator (active leased SF)
+  const revenue = allLeases.reduce((s, l) => s + effectiveRent(l, escFor(l.id), year), 0);
   const totalExpenses = Number(exp.taxes_total) + Number(exp.cam_total) + Number(exp.roof_total);
-  // Tax/CAM/roof rates divide by the WHOLE building's SF (matches v_property_totals in
-  // 0043 + the per-tenant bills), so the vacant share stays with the landlord. buildingSf
-  // already falls back to leased SF when no building size is entered.
-  const roofRecovered = buildingSf > 0 ? exp.roof_total * (respSf / buildingSf) : 0;
+  const roofRecovered = billingDenom > 0 ? exp.roof_total * (respSf / billingDenom) : 0;
   return {
     property_id: propertyId, year,
     total_sf: totalSf, building_sf: buildingSf,
@@ -58,9 +61,9 @@ function propertyTotals(propertyId, year) {
     taxes_total: exp.taxes_total, cam_total: exp.cam_total, roof_total: exp.roof_total,
     total_expenses: totalExpenses,
     noi: revenue - totalExpenses,
-    tax_psf: buildingSf > 0 ? exp.taxes_total / buildingSf : null,
-    cam_psf: buildingSf > 0 ? exp.cam_total / buildingSf : null,
-    roof_psf_rate: totalSf > 0 ? exp.roof_total / totalSf : null,
+    tax_psf: billingDenom > 0 ? exp.taxes_total / billingDenom : null,
+    cam_psf: billingDenom > 0 ? exp.cam_total / billingDenom : null,
+    roof_psf_rate: activeSf > 0 ? exp.roof_total / activeSf : null,
     roof_recovered: roofRecovered,
     roof_unrecovered: exp.roof_total - roofRecovered,
   };
