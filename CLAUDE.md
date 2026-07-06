@@ -61,7 +61,10 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 
 - **Target:** Cloudflare Worker named `amlak` (serves the static `./build` directory).
 - **Live URL:** https://amlak.akkawigeo-5.workers.dev
-- **Steps:** `CI=true npx react-scripts build` → `npx wrangler deploy`.
+- **Steps:** `npm run build` (= `vite build`, outputs `./build`) → `npx wrangler deploy`.
+  - **Build tooling is now Vite** (migrated off Create React App 2026-07-06). Tests run
+    via `npm test` (= `vitest run`). The old `react-scripts build`/`react-scripts test`
+    commands no longer exist.
 - There is **no GitHub CI** — deploys happen locally via wrangler. `main` is the
   deploy branch; after deploying, commit + push so GitHub matches what's live.
 
@@ -70,6 +73,25 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > **Standing instruction (George, 2026-06-30):** Every time George confirms a change
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
+
+- **2026-07-06** — **Build tooling: Create React App → Vite** (audit item L2). Deployed: frontend
+  Cloudflare version `bbd6b928`, commit `958a3c2`. No DB, no edge functions, no money, no tenant emails.
+  Purely under-the-hood — no user-visible change; faster builds.
+  - **Why:** react-scripts (CRA) is EOL. Swapped to **Vite 7** (build/dev) + **Vitest 3** (tests).
+  - **Config (`vite.config.js`):** esbuild `loader:'jsx', jsx:'automatic'` for `src/**.js` (the app keeps
+    JSX in `.js` files and uses the automatic runtime — components don't `import React`); **`envPrefix:
+    ['VITE_','REACT_APP_']`** so `.env.production`/`.env.local` and the live Supabase creds are untouched
+    (`supabaseClient.js` now reads `import.meta.env.REACT_APP_*`); `build.outDir:'build'` so `wrangler.jsonc`
+    (`assets.directory: ./build`) is unchanged; **`test.env`** forces the two Supabase vars empty so the
+    suite stays in DEMO mode (Vite loads `.env.local` in test mode, unlike CRA).
+  - **Files:** `public/index.html` → root `index.html` (drop `%PUBLIC_URL%`, add the `/src/index.js` module
+    script); `package.json` scripts now `vite`/`vite build`/`vitest run` (react-scripts + the `react-app`
+    eslintConfig removed); added `vite`/`@vitejs/plugin-react`/`vitest`/`jsdom` dev deps.
+  - **Gotcha hit + fixed:** `vite@latest` (v8, Rolldown bundler) failed to parse JSX-in-`.js`; pinned to the
+    proven **Vite 7 / plugin-react 4 / Vitest 3** stack where the esbuild jsx-loader recipe is stable.
+  - Verified: **141/141** via `vitest run`; `vite build` compiles (782 modules); the built bundle embeds the
+    live Supabase URL (NOT demo); and the built app boots in a real browser (login renders, **zero console
+    errors**) before deploy. Committed only this task's files.
 
 - **2026-07-06** — **Audit follow-through** (the held-back + open items George green-lit: real 2FA,
   atomic lease creation, overdue-invoice alerts, timezone pin, CORS lockdown, error surfacing).
