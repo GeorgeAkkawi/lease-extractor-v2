@@ -17,27 +17,59 @@ export default function PropertyRentRoll({ propertyId, year }) {
     queryFn: () => getPropertyMonthlyRoll(propertyId, year),
   });
   const [note, setNote] = useState('');
+  const rollKey = ['propertyRentRoll', propertyId, year];
 
-  const refresh = () => {
-    qc.invalidateQueries({ queryKey: ['propertyRentRoll', propertyId] });
+  // Scoped invalidation after a write settles — refresh only what this action can
+  // change (this property's roll + receivables, the lease trackers, the portfolio
+  // AR card). Deliberately NOT a blanket ['payments']/['invoices'] sweep, which
+  // would restale every tenant's data across the whole app.
+  const settle = () => {
+    qc.invalidateQueries({ queryKey: rollKey });
     qc.invalidateQueries({ queryKey: ['monthlyRent'] });
     qc.invalidateQueries({ queryKey: ['invoices'] });
-    qc.invalidateQueries({ queryKey: ['payments'] });
     qc.invalidateQueries({ queryKey: ['propertyAR', propertyId] });
     qc.invalidateQueries({ queryKey: ['portfolioAR'] });
   };
 
+  // Paint a set of cells paid/unpaid in the cached roll immediately, so the click
+  // feels instant while the write settles in the background.
+  const paintCell = (old, leaseId, month, markPaid) =>
+    (old || []).map((r) => {
+      if (r.lease_id !== leaseId) return r;
+      const byMonth = { ...r.byMonth };
+      if (markPaid) byMonth[month] = { amount: r.schedule?.[month]?.owed ?? r.monthly };
+      else delete byMonth[month];
+      return { ...r, byMonth };
+    });
+
   const cellMut = useMutation({
     mutationFn: ({ leaseId, month, paid }) =>
       paid ? unmarkMonthPaid(leaseId, year, month) : markMonthPaid(leaseId, propertyId, year, month),
-    onSuccess: refresh,
+    onMutate: async ({ leaseId, month, paid }) => {
+      await qc.cancelQueries({ queryKey: rollKey });
+      const prev = qc.getQueryData(rollKey);
+      qc.setQueryData(rollKey, (old) => paintCell(old, leaseId, month, !paid));
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(rollKey, ctx.prev); setNote('Could not save that change — please try again.'); },
+    onSettled: settle,
   });
   const allMut = useMutation({
     mutationFn: (month) => markMonthPaidAllTenants(propertyId, year, month),
-    onSuccess: (res, month) => {
-      refresh();
-      setNote(`Marked ${MONTHS[month - 1]} paid for ${res.paid} tenant${res.paid === 1 ? '' : 's'}${res.skipped ? ` (${res.skipped} already paid)` : ''}.`);
+    onMutate: async (month) => {
+      await qc.cancelQueries({ queryKey: rollKey });
+      const prev = qc.getQueryData(rollKey);
+      qc.setQueryData(rollKey, (old) => (old || []).map((r) => {
+        if (r.byMonth[month] || (Number(r.schedule?.[month]?.owed) || 0) <= 0) return r;
+        return { ...r, byMonth: { ...r.byMonth, [month]: { amount: r.schedule?.[month]?.owed ?? r.monthly } } };
+      }));
+      return { prev };
     },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(rollKey, ctx.prev); setNote('Could not mark all paid — please try again.'); },
+    onSuccess: (res, month) => {
+      setNote(`Marked ${MONTHS[month - 1]} paid for ${res.paid} tenant${res.paid === 1 ? '' : 's'}${res.skipped ? ` (${res.skipped} already paid or free)` : ''}.`);
+    },
+    onSettled: settle,
   });
   const busy = cellMut.isPending || allMut.isPending;
 

@@ -75,8 +75,10 @@ export function buildAlerts({ leases, escalations, renewals, properties, insuran
       const b = bucket(l.lease_termination_date, now);
       if (b) {
         // A lease is "ending with no renewal" when there's no live renewal option
-        // on file, or the landlord has explicitly confirmed there is none.
-        const liveRenewals = (renByLease[l.id] || []).filter((r) => r.status !== 'applied');
+        // on file, or the landlord has explicitly confirmed there is none. A
+        // *declined* option is not a live prospect — it means the tenant said no —
+        // so it must NOT soften the red warning. Only pending/applied options do.
+        const liveRenewals = (renByLease[l.id] || []).filter((r) => r.status !== 'declined');
         const noRenewal = l.no_renewal_option === true || liveRenewals.length === 0;
         out.push({
           ...ctx,

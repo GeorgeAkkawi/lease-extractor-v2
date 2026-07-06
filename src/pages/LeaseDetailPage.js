@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests } from '../lib/api';
 import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
 import { buildLeaseAskContext } from '../lib/leaseContext';
@@ -52,6 +52,9 @@ export default function LeaseDetailPage() {
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
   const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
   const { data: abatements = [] } = useQuery({ queryKey: ['abatements', leaseId], queryFn: () => listAbatements(leaseId) });
+  // Dated trail of certificate-of-insurance requests sent from here (newest first),
+  // so the Insurance panel can show when the tenant was last asked.
+  const { data: insReqs = [] } = useQuery({ queryKey: ['insuranceRequests', leaseId], queryFn: () => listInsuranceRequests(leaseId), enabled: insuranceOn });
   // The raw AI read (cached on the linked lease_files row) — used only to surface the
   // "rent renegotiated in year N" reminder for a lease imported with a prose escalation
   // formula that stops mid-term. Read directly (not via api.js) so it stays self-contained.
@@ -458,9 +461,16 @@ export default function LeaseDetailPage() {
             <button type="button" className="ghost" onClick={() => setShowInsReq(true)}>Request from tenant</button>
           </div>
         </div>
-        <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
+        <p className="muted" style={{ marginTop: -6, marginBottom: insReqs.length ? 6 : 14, fontSize: 12.5 }}>
           The tenant's certificate of insurance. No copy on file? Use <strong>Request from tenant</strong> to email for it.
         </p>
+        {insReqs.length > 0 && (
+          <p className="muted" style={{ marginTop: 0, marginBottom: 14, fontSize: 12.5 }}>
+            📨 Last requested <strong>{fmtDate(insReqs[0].event_date || insReqs[0].created_at)}</strong>
+            {insReqs.length > 1 && ` · ${insReqs.length} requests logged`}
+            <span style={{ marginLeft: 4 }}>(sent from Amlak — delivery isn't tracked).</span>
+          </p>
+        )}
         <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} />
       </div>
       )}
@@ -482,6 +492,11 @@ export default function LeaseDetailPage() {
             subject={email.subject}
             body={email.body}
             onClose={() => setShowInsReq(false)}
+            onSend={async ({ to, subject }) => {
+              await logInsuranceRequest({ propertyId: lease.property_id, leaseId: lease.id, tenantName: lease.tenant_name, to, subject });
+              qc.invalidateQueries({ queryKey: ['insuranceRequests', leaseId] });
+              qc.invalidateQueries({ queryKey: ['historyEvents', lease.property_id] });
+            }}
           />
         );
       })()}

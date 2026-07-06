@@ -39,6 +39,24 @@ describe('buildAlerts', () => {
     expect(alertKey(c)).toBe('contract:c1:2026-04-01');
   });
 
+  test('a DECLINED renewal option still triggers the red "no renewal" lease-ending alert', () => {
+    const lease = { id: 'L1', tenant_name: 'Tenant', property_id: 'p1', lease_termination_date: '2026-04-01', is_active: true };
+    const base = { leases: [lease], escalations: [], insurance: [], contracts: [], properties: [{ id: 'p1', corporation_id: 'corp1' }] };
+
+    // Declined → the tenant said no → this is genuinely "ending, no renewal" → red.
+    const declined = buildAlerts({ ...base, renewals: [{ id: 'R1', lease_id: 'L1', status: 'declined' }] }, undefined, NOW);
+    const dTerm = declined.find((a) => a.focus === 'termination');
+    expect(dTerm.noRenewal).toBe(true);
+    expect(dTerm.tone).toBe('danger');
+    expect(dTerm.title).toMatch(/no renewal/i);
+
+    // Pending → a live option is still on the table → soften to a plain "lease ending".
+    const pending = buildAlerts({ ...base, renewals: [{ id: 'R2', lease_id: 'L1', status: 'pending' }] }, undefined, NOW);
+    const pTerm = pending.find((a) => a.focus === 'termination');
+    expect(pTerm.noRenewal).toBe(false);
+    expect(pTerm.title).not.toMatch(/no renewal/i);
+  });
+
   test('escalation steps dated on/after the committed term end are gated out of alerts', () => {
     const lease = { id: 'L1', tenant_name: 'Tenant', property_id: 'p1', lease_termination_date: '2026-03-01', is_active: true };
     const out = buildAlerts({

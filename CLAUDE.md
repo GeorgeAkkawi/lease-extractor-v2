@@ -71,6 +71,56 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — Six-in-one round: notifications audit + repairs, Overview↔property number sync,
+  insurance send-log, renewal timing verify + guard, rent-roll speed, and Receivables toggle reaching
+  the Finances page. Deployed: DB migrations `0047`+`0048`, `send-reminders` edge function scheduled
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `3409280c`. **No money, no tenant
+  emails** (reminder emails go to the OWNER only), no destructive data.
+  - **Item 5 — rent roll no longer slow.** The "✓ all" bulk mark was a sequential N+1 (per tenant:
+    fetch invoice → list payments → full markMonthPaid, 60–100 queries). Rewrote `markMonthPaidAllTenants`
+    (`api.js`) to reuse the roll the component already has, `Promise.all` the missing-invoice creates, and
+    insert ALL payments in one batched `insert`. Added **optimistic updates** to `PropertyRentRoll.js` +
+    `MonthlyRentTracker.js` (the click paints instantly, rolls back on error) and **scoped** the cache
+    invalidations to the affected lease/property (was a blanket `['payments']`/`['invoices']` sweep that
+    restaled the whole app). Added `onError` so failures show a message instead of silently doing nothing.
+  - **Item 2 — Overview matches the property page.** The dashboard summed raw `base_rent` and computed
+    its own occupancy; the property Financials page reads the year-aware `v_property_totals` view
+    (escalated `effective_rent`, building-SF occupancy). `DashboardPage.js` now sums the SAME view
+    (`listPropertyTotalsByYear`, keyed on the shared fiscal year) for rent roll / leased SF / occupancy /
+    vacant SF. Property **cards** (`PropertiesPage.js`) now filter out inactive leases so their tenant
+    count / SF / revenue align too. Demo mock (`mockClient.js`) view branch handles the `.in(ids)` rollup.
+  - **Item 3 — insurance requests are logged.** "Request from tenant" (lease page) and the dashboard
+    insurance-expiry ✉ now record a dated `insurance_requested` **history event** when sent
+    (`EmailComposeModal`/`NotificationEmailModal` gained an `onSend` hook; `api.js`
+    `logInsuranceRequest`/`listInsuranceRequests`). The tenant Insurance panel shows **"📨 Last requested
+    {date}"** (with an honest "sent from Amlak — delivery isn't tracked" note); the property **History**
+    page lists each request. Demo seeds one event. No migration (reuses `history_events`, 0035/0040).
+  - **Item 1 — notifications inventoried + the nightly cron actually fixed.** Migration **0047** pins
+    `search_path = public` on the three 0002 reminder trigger functions (the empty search_path under the
+    SECURITY-DEFINER cron was crashing every night), adds the JS **term-end gate** to SQL
+    `apply_due_escalations` (un-exercised option rents stay scheduled until the renewal is confirmed), and
+    **schedules `send-reminders`** daily at 13:00 UTC (it was never scheduled — owner-only emails, first
+    due 8/31). Running the job then surfaced a SECOND latent bug — `apply_due_renewals()`'s cleanup
+    `delete … using public.leases l` collided with its own `l` record variable (`record "l" is not
+    assigned yet`), so the renewals half never ran; migration **0048** renames that alias. **Verified
+    live:** `apply_due_changes()` now runs clean (2 changes applied) and the stuck **Infinite Mobile
+    2026-07-01 → $28,745.04** escalation is now `applied`. Also fixed `alerts.js`: a *declined* renewal
+    option no longer mutes the red "lease ending — no renewal" warning (only pending/applied soften it).
+  - **Item 4 — renewals already behave correctly (verify-only) + a guard.** Confirmed: clicking Renew on
+    a FUTURE option only extends the end date and lays the new rent in as dated steps — today's rent and
+    `lease_start` are untouched until each step's date arrives. Added a guard so confirming a renewal on a
+    lease with **no term-end date** refuses with a friendly message (was silently nulling the lease dates):
+    `confirmRenewal` returns `{ needsTermEnd }`, surfaced in `RenewalOptionsEditor.js` + the dashboard bell.
+  - **Item 6 — hiding Receivables now also hides it on Finances.** `PropertyFinancialsPage.js` gates
+    `ARSummary` behind the same `ar` Display toggle (was unconditional); updated the toggle's hint.
+  - Verified token-free: `sixMonthAlerts.test.js` +1 (declined vs pending renewal → red vs softened
+    lease-ending alert), `futureRenewalConfirm.test.js` +1 (no-term-end lease refuses renewal, changes
+    nothing). Full suite **137/137 green**; `CI=true` build compiles (+1.56 kB). Committed only this
+    task's files. **George — two follow-ups on the email cron:** (1) the daily `send-reminders` emails
+    only YOU (never tenants) about due lease/insurance dates; (2) for those emails to actually send it
+    needs `REMINDER_FROM_EMAIL` (set to `onboarding@resend.dev` until a domain is verified) + `CRON_SECRET`
+    set as edge-function secrets — until then it still creates the in-app reminders, just no email.
+
 - **2026-07-06** — Removed the lease-search box; built **"Ask Amlak"** — a sidebar page that answers
   natural-language questions about the account's OWN records (tenants, insurance, contracts, rent,
   who owes money). Deployed: DB migration `0046` (drops `lease_qa_cache`, adds `portfolio_qa_cache`;

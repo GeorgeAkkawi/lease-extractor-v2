@@ -145,5 +145,10 @@ export function seed() {
     // Starts empty; the auto-renewal engine populates this on load (e.g. City
     // Dental, whose term has passed and has a pending renewal option).
     notifications: [],
+    // Lease/tenant lifecycle log (assignments, renewals, insurance requests…). One
+    // seeded insurance request so the "Last requested" line + History page render in demo.
+    history_events: [
+      { id: 'hist-1', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: 'lease-1', type: 'insurance_requested', description: 'Insurance certificate requested from Bright Coffee Co. → sam@brightcoffee.example', tenant_name: 'Bright Coffee Co.', event_date: iso(Y, 7, 15), meta: { to: 'sam@brightcoffee.example', subject: 'Certificate of insurance — Maple Plaza' }, created_at: iso(Y, 7, 15) },
+    ],
   };
 }

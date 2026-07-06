@@ -66,6 +66,24 @@ describe('confirmRenewal — future option confirmed early (DEMO, Ricki\'s shape
     expect(opt.status).toBe('applied');
   });
 
+  test('a lease with NO term-end date refuses the renewal (needsTermEnd) and changes nothing', async () => {
+    const corp = await createCorporation('NoEnd Co, LLC');
+    const prop = await createProperty({ corporation_id: corp.id, name: 'NoEnd Plaza', address: 'GA' });
+    // No lease_termination_date on file — rolling a renewal forward would null the dates.
+    const lease = await createLease({ property_id: prop.id, tenant_name: 'NoEnd Tenant', square_footage: 1000, base_rent: 24000, lease_start: '2020-01-01', lease_termination_date: null });
+    const opt = await createRenewal({ lease_id: lease.id, option_label: 'Option 1', term_months: 60, new_rent: 26000 });
+
+    const res = await confirmRenewal(opt.id, TODAY);
+    expect(res).toEqual({ needsTermEnd: true, renewalId: opt.id });
+
+    const after = await getLease(lease.id);
+    expect(after.lease_start).toBe('2020-01-01');      // untouched
+    expect(after.lease_termination_date == null).toBe(true); // still no end date — not nulled-into-a-date
+    expect(Number(after.base_rent)).toBe(24000);       // rent untouched
+    const optAfter = (await listRenewals(lease.id)).find((r) => r.id === opt.id);
+    expect(optAfter.status).toBe('pending');           // option not consumed
+  });
+
   test('a PAST option still catches the lease up (moves lease_start + rent)', async () => {
     const corp = await createCorporation('Past Co, LLC');
     const prop = await createProperty({ corporation_id: corp.id, name: 'Past Plaza', address: 'GA' });

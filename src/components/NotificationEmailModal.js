@@ -7,7 +7,7 @@ import RecipientField from './RecipientField';
 // The ready-to-send tenant email a renewal/escalation notification carries. Lets
 // the landlord pick the sending account + recipient and send via Gmail / mail app
 // or copy it. (Moved out of the old top-bar bell so the dashboard hub can use it.)
-export default function NotificationEmailModal({ notif, onClose, onSent }) {
+export default function NotificationEmailModal({ notif, onClose, onSent, onSend }) {
   const { data: senderEmails = [] } = useQuery({ queryKey: ['senderEmails'], queryFn: listSenderEmails });
   const [from, setFrom] = useState(notif.email_from || '');
   const [to, setTo] = useState(notif.email_to || '');
@@ -24,6 +24,13 @@ export default function NotificationEmailModal({ notif, onClose, onSent }) {
   function copy() {
     navigator.clipboard?.writeText(`To: ${to}\nSubject: ${subject}\n\n${body}`)
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); });
+  }
+
+  // Open the chosen mail client, then let the caller record that it went out
+  // (e.g. log an insurance request). Distinct from onSent, which dismisses the reminder.
+  function send(url) {
+    openCompose(url);
+    onSend?.({ to, subject });
   }
 
   return (
@@ -59,8 +66,8 @@ export default function NotificationEmailModal({ notif, onClose, onSent }) {
           <div className="modal-actions" style={{ justifyContent: 'flex-end', gap: 10 }}>
             <button className="secondary" onClick={onSent}>Mark sent &amp; dismiss</button>
             <button className="secondary" onClick={copy}>{copied ? '✓ Copied' : '⧉ Copy'}</button>
-            <button className="secondary" onClick={() => openCompose(mailtoUrl({ to, subject, body }))}>✉ Other app</button>
-            <button onClick={() => openCompose(gmailComposeUrl({ from, to, subject, body }))}>📧 Send via Gmail</button>
+            <button className="secondary" onClick={() => send(mailtoUrl({ to, subject, body }))}>✉ Other app</button>
+            <button onClick={() => send(gmailComposeUrl({ from, to, subject, body }))}>📧 Send via Gmail</button>
           </div>
         </div>
       </div>

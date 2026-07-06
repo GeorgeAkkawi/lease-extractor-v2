@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail } from '../lib/api';
+import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
-import { usePageChrome } from '../context/ChromeContext';
+import { usePageChrome, useChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
 import NotificationEmailModal from '../components/NotificationEmailModal';
 import { PageSkeleton } from '../components/Skeleton';
@@ -22,6 +22,7 @@ export default function DashboardPage() {
   const [undoDecline, setUndoDecline] = useState(null); // { id, tenant } after "Not renewing"
   const [rentEntry, setRentEntry] = useState(null); // { leaseId, value } when a renewal has no listed rent
   usePageChrome([{ label: 'Overview' }]);
+  const { year } = useChrome(); // shared fiscal year — same selector the property pages use
 
   // Which Overview widgets the landlord has chosen to hide (Display settings).
   // Defaults to showing everything; `show(key)` gates each block below.
@@ -29,6 +30,16 @@ export default function DashboardPage() {
   const show = (k) => !hidden.includes(k);
 
   const { data: index } = useQuery({ queryKey: ['searchIndex'], queryFn: fetchSearchIndex });
+  // Portfolio revenue/occupancy come from the SAME per-property, per-year view the
+  // property Financials page reads (v_property_totals) — so the Overview totals match
+  // each property exactly, including year-aware escalated rent (effective_rent) and the
+  // building-SF occupancy denominator. Summed across properties, keyed by the shared year.
+  const propIds = (index?.properties || []).map((p) => p.id);
+  const { data: totalsByProp } = useQuery({
+    queryKey: ['portfolioTotals', year, propIds.length],
+    queryFn: () => listPropertyTotalsByYear(propIds, year),
+    enabled: !!index,
+  });
   // Skip the receivables fetch entirely when that card is hidden.
   const { data: ar } = useQuery({ queryKey: ['portfolioAR'], queryFn: () => getPortfolioAR(), enabled: show('ar') });
   const { data: alerts = [] } = useQuery({
@@ -61,6 +72,7 @@ export default function DashboardPage() {
     try {
       const res = await confirmRenewalForLease(n.lease_id, new Date(), newRent != null ? { newRent } : {});
       if (res?.needsRent) { setRentEntry({ leaseId: n.lease_id, value: '' }); return; }
+      if (res?.needsTermEnd) { window.alert('Set this lease’s term-end date first — a renewal extends the term from where it ends, so there’s nothing to roll forward without it.'); return; }
       setRentEntry(null);
       refreshAfterRenewal();
     } finally { setBusyNotif(null); }
@@ -96,11 +108,17 @@ export default function DashboardPage() {
   const leases = (index?.leases || []).filter((l) => l.is_active !== false);
   const properties = index?.properties || [];
 
-  const rentRoll = leases.reduce((s, l) => s + (Number(l.base_rent) || 0), 0);
-  const leasedSf = leases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
-  const buildingSf = properties.reduce((s, p) => s + (Number(p.building_sf) || 0), 0);
+  // Revenue / leased SF / occupancy summed from the property-page view (year-aware),
+  // so the Overview never disagrees with what each property shows. buildingSf from the
+  // view is already coalesced to leased SF when a property has no building size entered.
+  const totalsList = Object.values(totalsByProp || {});
+  const rentRoll = totalsList.reduce((s, t) => s + (Number(t.total_revenue) || 0), 0);
+  const leasedSf = totalsList.reduce((s, t) => s + (Number(t.total_sf) || 0), 0);
+  const buildingSf = totalsList.reduce((s, t) => s + (Number(t.building_sf) || 0), 0);
   const occupancy = buildingSf > 0 ? Math.round((leasedSf / buildingSf) * 100) : null;
   const vacantSf = buildingSf > 0 ? Math.max(0, buildingSf - leasedSf) : 0;
+  // Only nudge "add building sizes" when NONE is set — otherwise show vacant SF.
+  const hasBuildingSizes = properties.some((p) => Number(p.building_sf) > 0);
 
   // Leases expiring within 6 months (active only), soonest first.
   const expiring = leases
@@ -142,7 +160,7 @@ export default function DashboardPage() {
         <div className="metrics">
           {show('rent_roll') && <Card label="Annual rent roll" main={money(rentRoll)} foot={leasedSf ? `${psf(rentRoll / leasedSf)} blended` : null} onClick={() => navigate('/financials')} />}
           {show('ar') && <Card label="Outstanding (AR)" main={money(ar?.outstanding || 0)} foot={ar ? `${ar.count} unpaid · ${money(lateTotal)} late` : null} tone={lateTotal > 0 ? 'danger' : undefined} />}
-          {show('occupancy') && <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={buildingSf ? `${sf(vacantSf)} vacant` : 'add building sizes'} />}
+          {show('occupancy') && <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={hasBuildingSizes ? `${sf(vacantSf)} vacant` : 'add building sizes'} />}
           {show('expiring') && <Card label="Expiring ≤ 6 months" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />}
         </div>
       </div>
@@ -308,6 +326,15 @@ export default function DashboardPage() {
         <NotificationEmailModal
           notif={emailNotif}
           onClose={() => setEmailNotif(null)}
+          onSend={async ({ to, subject }) => {
+            // Record COI requests sent straight from the insurance-expiry reminder, so the
+            // tenant's Insurance panel shows "Last requested" just like the lease-page button.
+            if (emailNotif.kind === 'insurance_request' && emailNotif.lease_id) {
+              await logInsuranceRequest({ propertyId: emailNotif.property_id, leaseId: emailNotif.lease_id, tenantName: emailNotif.tenant_name, to, subject });
+              qc.invalidateQueries({ queryKey: ['insuranceRequests', emailNotif.lease_id] });
+              qc.invalidateQueries({ queryKey: ['historyEvents', emailNotif.property_id] });
+            }
+          }}
           onSent={async () => {
             // The "renewal approaching" email rides on the still-open decision prompt —
             // sending it must NOT dismiss the Yes/No prompt. A reminder-drafted email has

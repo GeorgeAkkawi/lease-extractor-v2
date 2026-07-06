@@ -114,7 +114,7 @@ export default function PropertyFinancialsPage() {
         </div>
       </div>
 
-      <ARSummary propId={propId} />
+      {!hiddenWidgets.includes('ar') && <ARSummary propId={propId} />}
 
       {!hiddenWidgets.includes('property_rent_roll') && <PropertyRentRoll propertyId={propId} year={year} />}
 

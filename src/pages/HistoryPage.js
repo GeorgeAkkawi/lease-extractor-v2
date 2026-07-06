@@ -19,6 +19,7 @@ const EVENT_LABEL = {
   rent_stepped: 'Rent step',
   rent_abated: 'Rent abatement',
   lease_created: 'Lease created',
+  insurance_requested: 'Insurance requested',
 };
 const EVENT_BADGE = {
   tenant_assigned: 'info',
@@ -26,6 +27,7 @@ const EVENT_BADGE = {
   renewal_confirmed: 'good',
   renewal_declined: 'danger',
   rent_abated: 'warn',
+  insurance_requested: 'info',
 };
 
 const num = (v) => (v == null ? 0 : Number(v));

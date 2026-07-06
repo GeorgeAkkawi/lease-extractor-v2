@@ -982,6 +982,32 @@ export async function logHistoryEvent({ property_id, lease_id, type, description
   }
 }
 
+// Record that an insurance certificate was requested from a tenant, so the Insurance
+// panel + property History keep a dated trail. The app can only log that the request
+// was OPENED/sent from here — it can't confirm the mail app actually delivered it.
+// Best-effort (logHistoryEvent swallows errors): never blocks opening the email.
+export async function logInsuranceRequest({ propertyId, leaseId, tenantName, to, subject }) {
+  return logHistoryEvent({
+    property_id: propertyId,
+    lease_id: leaseId,
+    type: 'insurance_requested',
+    description: `Insurance certificate requested${tenantName ? ` from ${tenantName}` : ''}${to ? ` → ${to}` : ''}`,
+    tenant_name: tenantName || null,
+    event_date: paymentIsoToday(),
+    meta: { to: to || null, subject: subject || null },
+  });
+}
+
+// Prior insurance requests for one lease, newest first — powers the "Last requested"
+// line in the tenant Insurance panel.
+export async function listInsuranceRequests(leaseId) {
+  const events = await rows(
+    supabase.from('history_events').select('*').eq('lease_id', leaseId).eq('type', 'insurance_requested')
+  );
+  const stamp = (e) => e.event_date || e.created_at || '';
+  return [...events].sort((a, b) => (stamp(a) < stamp(b) ? 1 : -1));
+}
+
 // ---- Addendums / riders (tracked amendments that update a lease) -------------
 export const listAddendums = (leaseId) =>
   rows(supabase.from('lease_addendums').select('*').eq('lease_id', leaseId).order('amendment_date'));
@@ -1380,22 +1406,42 @@ export async function unmarkMonthPaid(leaseId, year, month) {
 }
 
 // Bulk: mark `month` paid for every tenant in a property that hasn't paid it yet
-// (for `year`). Idempotent — tenants already marked for that month are skipped.
-// Returns { paid, skipped, total }.
+// (for `year`). Idempotent — tenants already marked for that month, or with nothing
+// owed (a fully-free abated month), are skipped. Returns { paid, skipped, total }.
+//
+// Fast path: one batched read (getPropertyMonthlyRoll) tells us exactly who's unpaid
+// and what each owes; invoices that don't exist yet are drafted in PARALLEL; then all
+// the month's payments are written in ONE insert — instead of a per-tenant serial loop.
 export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}) {
-  const shares = await getTenantShares(propertyId, year); // one row per active tenant/lease for the year
-  let paid = 0;
-  let skipped = 0;
-  for (const s of shares) {
-    const invoice = await getYearInvoice(s.lease_id, year);
-    if (invoice) {
-      const payments = await listPayments(invoice.id);
-      if (payments.some((p) => Number(p.period_month) === Number(month))) { skipped++; continue; }
-    }
-    await markMonthPaid(s.lease_id, propertyId, year, month, opts);
-    paid++;
-  }
-  return { paid, skipped, total: shares.length };
+  const m = Number(month);
+  const roll = await getPropertyMonthlyRoll(propertyId, year);
+  // Owe this month (net of abatement) and not already marked paid for it.
+  const targets = roll.filter((r) => !r.byMonth[m] && (Number(r.schedule?.[m]?.owed) || 0) > 0);
+  const skipped = roll.length - targets.length;
+  if (targets.length === 0) return { paid: 0, skipped, total: roll.length };
+
+  // Draft any missing year-invoices concurrently (the only per-tenant remote cost left).
+  const withInvoice = await Promise.all(
+    targets.map(async (r) => ({
+      r,
+      invoiceId: r.invoice_id || (await ensureInvoice(r.lease_id, propertyId, year)).id,
+    }))
+  );
+
+  const owner = await ownerId();
+  const paidDate = opts.paid_date || paymentIsoToday();
+  const payRows = withInvoice.map(({ r, invoiceId }) => ({
+    invoice_id: invoiceId,
+    lease_id: r.lease_id,
+    amount: Number(r.schedule?.[m]?.owed) || 0,
+    paid_date: paidDate,
+    method: opts.method || 'check',
+    note: opts.note || null,
+    period_month: m,
+    owner_id: owner,
+  }));
+  await rows(supabase.from('payments').insert(payRows));
+  return { paid: payRows.length, skipped, total: roll.length };
 }
 
 // Property rent roll: one row per tenant for `year` with their monthly amount and
@@ -1434,7 +1480,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
         (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
       }
     }
-    return { lease_id: s.lease_id, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: abatements.length > 0 };
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: abatements.length > 0 };
   });
 }
 
@@ -1729,6 +1775,12 @@ export async function confirmRenewal(renewalId, today = new Date(), opts = {}) {
   const lease = await getLease(ren.lease_id);
   if (!lease) return null;
 
+  // Guard: a renewal rolls the new term forward from the committed term END. With no
+  // end date on file, addMonths(null) would null the lease's dates and wipe today's
+  // rent. Refuse and ask the landlord to set the term-end date first (mirrors the
+  // { needsRent } sentinel the UI already understands).
+  if (!lease.lease_termination_date) return { needsTermEnd: true, renewalId: ren.id };
+
   const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid, new Map(), opts.newRent, today);
 
   await logHistoryEvent({
@@ -1934,7 +1986,7 @@ export async function draftAlertEmail(alert) {
   const prop = await getProperty(lease.property_id);
   const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
   const common = { business, tenant_name: lease.tenant_name, contact_name: lease.tenant_contact_name, tenant_email: lease.tenant_email, propertyName: prop?.name };
-  const wrap = (email, kind) => ({ kind, email_to: lease.tenant_email || '', email_to_2: lease.tenant_email_2 || '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body });
+  const wrap = (email, kind) => ({ kind, lease_id: lease.id, property_id: lease.property_id, tenant_name: lease.tenant_name, email_to: lease.tenant_email || '', email_to_2: lease.tenant_email_2 || '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body });
 
   if (focus === 'termination') return wrap(buildNonRenewalEmail({ ...common, leaseEnd: lease.lease_termination_date }), 'lease_ending');
   if (focus === 'insurance') return wrap(buildInsuranceRequestEmail({ ...common }), 'insurance_request');

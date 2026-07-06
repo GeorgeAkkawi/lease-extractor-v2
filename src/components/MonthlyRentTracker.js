@@ -33,14 +33,31 @@ export default function MonthlyRentTracker({ lease }) {
   const [date, setDate] = useState('');
   const [showOpts, setShowOpts] = useState(false);
 
-  const refresh = () => {
+  const rentKey = ['monthlyRent', leaseId, year];
+  // Refresh only what a check-off can change (this lease's tracker + invoices, the
+  // property roll/AR, the portfolio AR) — not a blanket ['payments'] sweep.
+  const settle = () => {
     qc.invalidateQueries({ queryKey: ['monthlyRent', leaseId] });
     qc.invalidateQueries({ queryKey: ['invoices', leaseId] });
-    qc.invalidateQueries({ queryKey: ['payments'] });
     qc.invalidateQueries({ queryKey: ['portfolioAR'] });
     qc.invalidateQueries({ queryKey: ['propertyAR', propertyId] });
     qc.invalidateQueries({ queryKey: ['propertyRentRoll', propertyId] });
   };
+
+  // Optimistically flip a month in the cached tracker so the click paints instantly.
+  const optimistic = (month, markPaid, amount) => async () => {
+    await qc.cancelQueries({ queryKey: rentKey });
+    const prev = qc.getQueryData(rentKey);
+    qc.setQueryData(rentKey, (old) => {
+      if (!old) return old;
+      const byMonth = { ...old.byMonth };
+      if (markPaid) byMonth[month] = { amount };
+      else delete byMonth[month];
+      return { ...old, byMonth };
+    });
+    return { prev };
+  };
+  const rollback = (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(rentKey, ctx.prev); };
 
   const mark = useMutation({
     // Default the amount to that month's expected owed (already net of any abatement),
@@ -49,11 +66,15 @@ export default function MonthlyRentTracker({ lease }) {
       amount: amt !== '' ? amt : (schedule[month]?.owed ?? undefined),
       method, paid_date: date,
     }),
-    onSuccess: refresh,
+    onMutate: (month) => optimistic(month, true, amt !== '' ? Number(amt) : (schedule[month]?.owed ?? 0))(),
+    onError: rollback,
+    onSettled: settle,
   });
   const unmark = useMutation({
     mutationFn: (month) => unmarkMonthPaid(leaseId, year, month),
-    onSuccess: refresh,
+    onMutate: (month) => optimistic(month, false)(),
+    onError: rollback,
+    onSettled: settle,
   });
   const busy = mark.isPending || unmark.isPending;
 

@@ -8,7 +8,7 @@ import RecipientField from './RecipientField';
 // recipient, edit subject/body, then Send via Gmail / another mail app. Same send
 // flow as the bell's tenant emails and invoices (client-side compose, no backend).
 // `secondaryTo` (when the lease has a 2nd email) enables the Primary/Second/Both picker.
-export default function EmailComposeModal({ title = 'Email tenant', from: initialFrom = '', to: initialTo = '', secondaryTo = '', subject: initialSubject = '', body: initialBody = '', onClose }) {
+export default function EmailComposeModal({ title = 'Email tenant', from: initialFrom = '', to: initialTo = '', secondaryTo = '', subject: initialSubject = '', body: initialBody = '', onClose, onSend }) {
   const { data: senderEmails = [] } = useQuery({ queryKey: ['senderEmails'], queryFn: listSenderEmails });
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo] = useState(initialTo);
@@ -25,6 +25,13 @@ export default function EmailComposeModal({ title = 'Email tenant', from: initia
   function copy() {
     navigator.clipboard?.writeText(`To: ${to}\nSubject: ${subject}\n\n${body}`)
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); });
+  }
+
+  // Open the chosen mail client, then let the caller record that the request went out
+  // (e.g. log an insurance request). We can only note it was sent from here.
+  function send(url) {
+    openCompose(url);
+    onSend?.({ to, subject });
   }
 
   return (
@@ -59,8 +66,8 @@ export default function EmailComposeModal({ title = 'Email tenant', from: initia
         <div className="modal-foot">
           <div className="modal-actions" style={{ justifyContent: 'flex-end', gap: 10 }}>
             <button className="secondary" onClick={copy}>{copied ? '✓ Copied' : '⧉ Copy'}</button>
-            <button className="secondary" onClick={() => openCompose(mailtoUrl({ to, subject, body }))}>✉ Other app</button>
-            <button onClick={() => openCompose(gmailComposeUrl({ from, to, subject, body }))}>📧 Send via Gmail</button>
+            <button className="secondary" onClick={() => send(mailtoUrl({ to, subject, body }))}>✉ Other app</button>
+            <button onClick={() => send(gmailComposeUrl({ from, to, subject, body }))}>📧 Send via Gmail</button>
           </div>
         </div>
       </div>

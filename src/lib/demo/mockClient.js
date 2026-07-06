@@ -153,12 +153,21 @@ class QB {
       return this._wrap(list);
     }
 
-    // Views are read-only and computed.
+    // Views are read-only and computed. Supports a single property_id (eq), a set
+    // of them (.in — used by the portfolio rollup on the dashboard), or all.
     if (viewRows(this.table)) {
-      const pid = this.filters.find((f) => f.field === 'property_id')?.value;
+      const pidFilter = this.filters.find((f) => f.field === 'property_id');
       const yr = this.filters.find((f) => f.field === 'year')?.value;
-      const data = this.table === 'v_property_totals' ? propertyTotals(pid, yr) : tenantShares(pid, yr);
-      return this._wrap(this.table === 'v_property_totals' ? (data ? [data] : []) : data);
+      let pids;
+      if (pidFilter?.op === 'in') pids = pidFilter.value;
+      else if (pidFilter) pids = [pidFilter.value];
+      else pids = db.properties.map((p) => p.id);
+      const out = [];
+      for (const pid of pids) {
+        if (this.table === 'v_property_totals') { const r = propertyTotals(pid, yr); if (r) out.push(r); }
+        else out.push(...tenantShares(pid, yr));
+      }
+      return this._wrap(out);
     }
 
     const list = db[this.table] || (db[this.table] = []);

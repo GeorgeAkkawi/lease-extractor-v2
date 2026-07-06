@@ -64,6 +64,10 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
   // When Renew is clicked on an option with no stated rent, we expand an inline row to
   // collect the agreed new base rent instead of applying blind: { id, value }.
   const [renewEntry, setRenewEntry] = useState(null);
+  // A friendly note when a renewal can't be applied yet (e.g. the lease has no term-end
+  // date to roll forward from).
+  const [notice, setNotice] = useState('');
+  const NO_TERM_END = 'Set this lease’s term-end date first — a renewal extends the term from where it ends, so there’s nothing to roll forward without it.';
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['renewals', leaseId] });
@@ -77,7 +81,10 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
   const remove = useMutation({ mutationFn: (id) => deleteRenewal(id), onSuccess: refresh });
   const confirm = useMutation({
     mutationFn: ({ id, newRent }) => confirmRenewal(id, new Date(), newRent != null ? { newRent } : {}),
-    onSuccess: () => { setRenewEntry(null); refreshAll(); },
+    onSuccess: (res) => {
+      if (res?.needsTermEnd) { setNotice(NO_TERM_END); return; }
+      setNotice(''); setRenewEntry(null); refreshAll();
+    },
   });
   const decline = useMutation({ mutationFn: (id) => declineRenewal(id), onSuccess: refreshAll });
   const restore = useMutation({ mutationFn: (id) => restoreRenewal(id), onSuccess: refreshAll });
@@ -86,6 +93,9 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
   // Renew click: options that state a rent apply in one confirm; options with no stated
   // rent open the inline entry so the landlord types the agreed figure first.
   function onRenewClick(r, lapsed) {
+    // A renewal rolls the term forward from the committed end date. Without one, refuse
+    // up front (the API guards too) and tell the landlord what to fix.
+    if (!termEnd) { setNotice(NO_TERM_END); return; }
     if (optionHasRent(r)) {
       const msg = lapsed
         ? 'Apply this renewal retroactively? This rolls the term forward from where it ended and sets the new rent.'
@@ -122,6 +132,9 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
 
   return (
     <div>
+      {notice && (
+        <p className="note-msg warn" style={{ marginBottom: 12 }}>{notice}</p>
+      )}
       {lapsedExists && (
         <p className="note-msg warn" style={{ marginBottom: 12 }}>
           This term has ended. If the tenant actually renewed, click <strong>Renew</strong> on the
