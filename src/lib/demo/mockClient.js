@@ -264,11 +264,11 @@ const functions = {
     if (name === 'ask-lease') {
       return ok(demoAskLease(body));
     }
-    if (name === 'ask-leases') {
-      return ok(demoAskLeases(body));
-    }
     if (name === 'ask-doc') {
       return ok(demoAskDoc(body));
+    }
+    if (name === 'ask-portfolio') {
+      return ok(demoAskPortfolio(body));
     }
     if (name === 'extract-insurance') {
       return ok(demoExtractInsurance());
@@ -474,30 +474,34 @@ function demoAskLease(body) {
   return { answer: `Here's what the lease for ${lease.tenant_name} says: ${snippet}` + tail };
 }
 
-// Demo stand-in for the ask-leases Edge Function (cross-lease answers). Reads the
-// tenant-labeled clause excerpts the client already assembled and produces a plausible
-// grouped answer, so the "answer across these leases" UX works with no backend.
-function demoAskLeases(body) {
-  const term = String(body?.term || 'this').trim();
-  const tl = term.toLowerCase();
-  const contexts = Array.isArray(body?.contexts) ? body.contexts : [];
-  const lines = contexts.map((c) => {
-    const text = String(c?.text || '');
-    const low = text.toLowerCase();
-    const ti = low.indexOf(tl);
-    const near = ti >= 0 ? low.slice(Math.max(0, ti - 45), ti) : low;
-    const who = /landlord/.test(near) && !/tenant/.test(near) ? 'Landlord' : 'Tenant';
-    const clause = ti >= 0
-      ? text.slice(Math.max(0, ti - 35), ti + 65).replace(/\s+/g, ' ').trim()
-      : text.slice(0, 90).replace(/\s+/g, ' ').trim();
-    return `• ${c?.tenant || 'Tenant'}: ${who} responsible — “…${clause}…”`;
-  });
-  const detail = lines.length ? lines.join('\n') : `No tenant material mentions “${term}”.`;
-  return {
-    answer:
-      `Regarding “${term}”:\n${detail}\n\n` +
-      '(Demo mode gives a canned answer. Connected to your API key, the AI reads the matched clauses and answers precisely.)',
-  };
+// Demo stand-in for the ask-portfolio Edge Function ("Ask Amlak"). Reads the
+// structured snapshot the client already built and answers common questions from
+// the seeded data, so the assistant works with no backend.
+function demoAskPortfolio(body) {
+  const q = String(body?.question || '').toLowerCase();
+  const snap = body?.snapshot_obj || {};
+  const tenants = (snap.properties || []).flatMap((p) => p.tenants || []);
+  const foot =
+    '\n\n(Demo mode gives a data-driven canned answer. Connected to your API key, the AI answers any question about your portfolio.)';
+  const list = (arr, f) => (arr.length ? arr.map(f).join('\n') : '  (none)');
+
+  if (/insur/.test(q) && /(no |without|missing|don'?t|lack|not have|which don)/.test(q)) {
+    const none = tenants.filter((t) => !t.insurance_on_file);
+    return { answer: `Tenants with NO insurance on file (${none.length}):\n` + list(none, (t) => `• ${t.tenant} — ${t.property}`) + foot };
+  }
+  if (/insur/.test(q)) {
+    const ins = tenants.filter((t) => t.insurance_on_file);
+    return { answer: `Tenants WITH insurance on file (${ins.length}):\n` + list(ins, (t) => `• ${t.tenant} — ${t.insurer || 'insurer on file'}, expires ${t.insurance_expiry || '—'}`) + foot };
+  }
+  if (/(owe|owes|owing|balance|money|outstanding|behind|unpaid)/.test(q)) {
+    const owing = tenants.filter((t) => t.balance_owed > 0);
+    return { answer: `Tenants who owe money (${owing.length}):\n` + list(owing, (t) => `• ${t.tenant} — $${Math.round(t.balance_owed).toLocaleString()}`) + foot };
+  }
+  if (/contract/.test(q)) {
+    const props = (snap.properties || []).filter((p) => (p.service_contracts || []).length);
+    return { answer: `Properties with service contracts (${props.length}):\n` + list(props, (p) => `• ${p.property}: ` + p.service_contracts.map((c) => `${c.service_type || 'contract'}${c.vendor ? ` (${c.vendor})` : ''}`).join(', ')) + foot };
+  }
+  return { answer: `Your portfolio: ${snap.property_count || 0} properties, ${snap.tenant_count || 0} tenants. Ask about insurance, contracts, rent, expirations, or who owes money.` + foot };
 }
 
 function demoQuery(question) {

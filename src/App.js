@@ -7,6 +7,7 @@ import SecuritySettings from './pages/SecuritySettings';
 import DisplaySettings from './pages/DisplaySettings';
 import SettingsPage from './pages/SettingsPage';
 import DashboardPage from './pages/DashboardPage';
+import AskPage from './pages/AskPage';
 import CorporationsPage from './pages/CorporationsPage';
 import PropertiesPage from './pages/PropertiesPage';
 import LeasesPage from './pages/LeasesPage';
@@ -30,6 +31,7 @@ export default function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/ask" element={<AskPage />} />
 
         {/* Leases workspace */}
         <Route path="/leases" element={<CorporationsPage mode="leases" />} />

@@ -71,6 +71,50 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — Removed the lease-search box; built **"Ask Amlak"** — a sidebar page that answers
+  natural-language questions about the account's OWN records (tenants, insurance, contracts, rent,
+  who owes money). Deployed: DB migration `0046` (drops `lease_qa_cache`, adds `portfolio_qa_cache`;
+  Supabase `awgrjmbcghdjgnqeiqkt`), new `ask-portfolio` edge function, frontend Cloudflare version
+  `d5e81cf2`. **Costs money** (George approved): a fresh question is **well under ½¢**; repeats on an
+  unchanged portfolio are **$0** (cached); nothing runs without a click → a month is cents.
+  - **What George asked:** he did NOT want the earlier AI feature that read lease *documents*
+    ("nah i dont like that … i meant being able to read the website not the leases"). He wants to
+    ask the app about its **records** — e.g. "which tenants have an insurance contract saved and
+    which don't?", "who owes money?" — and click through to the tenant. He also said to **take out
+    the whole lease-search box** and **drop** its cache table.
+  - **Part 1 — removal.** Deleted `src/components/LeaseSearch.js` + the `ask-leases` edge function;
+    stripped `src/lib/leaseSearch.js` to just `byTermEnd` (the soonest-expiring tenant sort, a
+    SEPARATE feature — kept); removed `askLeasesQuestion`/`COMMON_QUESTION_TERMS`/cache
+    helpers/`listAddendumsByLeases` from `api.js`, the search box from `LeasesPage.js`, the
+    `ask-leases` demo route, and the `.lease-search*`/`.ai-answer*`/`.chip` CSS. Migration `0046`
+    `drop table if exists lease_qa_cache` (George OK'd — it only held regenerable cached answers).
+  - **Part 2 — Ask Amlak (cheap, facts-only).** The app assembles a compact **summary** of the
+    portfolio (per property → each tenant's insurance-on-file + expiry, rent, lease dates, renewal
+    option, balance owed; landlord insurance; service contracts) — **no documents**, a few KB — and a
+    small model (Haiku 4.5) answers over it. Sub-cent per question; cached per user keyed by a
+    portfolio **fingerprint** (`snapshotFingerprint` = row counts + latest `updated_at`) that flips
+    on any lease/insurance/contract change, so repeats are $0 and stale answers never match. Pieces:
+    new pure `src/lib/portfolio.js` (`buildPortfolioSnapshot` + `snapshotToText` + `snapshotFingerprint`
+    + `normalizeQuestion`); `api.js` `fetchPortfolioSnapshot`/`askPortfolioQuestion` + cache helpers;
+    `supabase/functions/ask-portfolio` (owner-scoped, rate-limited, summary in a `cache_control` block,
+    answer-only/no-arithmetic); new `src/pages/AskPage.js` (question box + suggested chips + Q&A log +
+    **"· saved answer (free)"** tag + **Open:** click-through links to each tenant/property named in an
+    answer); route `/ask` + a **Ask Amlak** sidebar item (reused `SparkIcon`); `.ask-*` CSS. Demo:
+    `demoAskPortfolio` answers from the seeded data so demo never calls out.
+  - Verified token-free: new `src/lib/__tests__/portfolio.test.js` (insurance-on-file flag incl.
+    archived-ignored; renewal option; balance owed w/ draft excluded; soonest-end sort + click-through
+    ids; expiry flips; inactive-lease exclusion; `snapshotToText` facts; fingerprint stable/flips;
+    `normalizeQuestion`); `leaseSearch.test.js` trimmed to `byTermEnd`. Full suite **135/135 green**;
+    `CI=true` build compiles (−214 B — the removal outweighed the new page). Migration pushed (only
+    0046 pending), edge fn deployed clean (Deno bundled the shared modules). **UI-verified inline in
+    demo:** the "no insurance" chip → "Tenants with NO insurance on file (2): City Dental — Maple
+    Plaza · Northwind Books — Oak Center" with working **Open:** links (clicking City Dental opened its
+    lease); the Leases page no longer shows a search box and still sorts tenants soonest-first; zero
+    console errors. Committed only this task's files.
+  - **Live check:** open **Ask Amlak** in the sidebar → tap "Which tenants have no insurance on file?"
+    (or type any question) → named answer + **Open:** links; ask again → instant "saved answer" with no
+    second model call. ~½¢ first time, $0 repeats.
+
 - **2026-07-06** — Hybrid AI lease answers: the free keyword search now has an optional "🤖 Answer
   this across these leases" that reads ONLY the matched clauses and answers by tenant (e.g. "who
   pays for the roof?"). Built for cost: three levers stacked. Deployed: DB migration `0045`,

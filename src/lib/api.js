@@ -9,7 +9,8 @@ import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
 import { contractCoversYear, contractAnnualCost } from './contracts';
-import { byTermEnd, gatherAnswerContext, leaseCorpusFingerprint, normalizeQuestion, buildLeaseQuestion } from './leaseSearch';
+import { byTermEnd } from './leaseSearch';
+import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -564,95 +565,79 @@ export async function askLease(leaseId, question, leaseText) {
   return answer;
 }
 
-// ---- Cross-lease AI answers (cheap, cached) --------------------------------
-// Answer a question ACROSS a property's leases (e.g. "who's responsible for the
-// roof?"). Three cost levers stack here so most questions end up free:
-//   1) only the clauses the free keyword search matched are sent to the model
-//      (gatherAnswerContext) — never the whole library, so it's sub-cent and flat
-//      as the library grows;
-//   2) every answer is cached per property keyed by a corpus fingerprint, so a
-//      repeat question on an unchanged corpus is $0 and never calls the model;
-//   3) common questions are warmed once (precomputeCommonQuestions) so they're
-//      already cached before the landlord asks.
-// `term` is the SEARCH TERM (e.g. "roof"), not a full English sentence — the
-// keyword filter needs the words to actually appear in the leases, so the question
-// is templated around the term (buildLeaseQuestion).
-export const COMMON_QUESTION_TERMS = ['roof', 'HVAC', 'property taxes', 'CAM', 'insurance', 'structural'];
+// ---- Ask Amlak: portfolio assistant ----------------------------------------
+// Answer a free-text question about the account's OWN records (tenants, insurance,
+// service contracts, rent, dates, balances). Cheap by design: only a compact,
+// facts-only summary is sent to the model — never any documents — so a question is
+// sub-cent; every answer is cached per user keyed by a portfolio fingerprint, so a
+// repeat on an unchanged portfolio is $0 and never calls the model.
 
-async function getCachedAnswer(propId, questionNorm, fingerprint) {
-  const { data } = await supabase
-    .from('lease_qa_cache')
-    .select('answer_json')
-    .eq('property_id', propId)
-    .eq('question_norm', questionNorm)
-    .eq('corpus_fingerprint', fingerprint)
-    .maybeSingle();
-  return data?.answer_json?.answer ?? null;
+// Assemble the compact snapshot from a few bulk reads (all under the caller's RLS).
+export async function fetchPortfolioSnapshot() {
+  const [corporations, properties, leases, insurance, contracts, renewals, balances] = await Promise.all([
+    rows(supabase.from('corporations').select('id,name,address')),
+    rows(supabase.from('properties').select('id,name,address,corporation_id,building_sf')),
+    rows(supabase.from('leases').select('id,tenant_name,property_id,square_footage,base_rent,lease_start,lease_termination_date,is_active,updated_at,created_at')),
+    rows(supabase.from('insurance_policies').select('id,party,property_id,lease_id,insurer,expiry_date,archived_at,updated_at,created_at').is('archived_at', null)),
+    rows(supabase.from('service_contracts').select('id,property_id,service_type,vendor,amount,frequency,end_date,updated_at,created_at')),
+    rows(supabase.from('renewal_options').select('lease_id,status')),
+    rows(supabase.from('v_invoice_balances').select('lease_id,balance,display_status,due_date')),
+  ]);
+  return buildPortfolioSnapshot({ corporations, properties, leases, insurance, contracts, renewals, balances });
 }
 
-async function writeCachedAnswer(propId, questionNorm, fingerprint, answer) {
+// Cache read/write (best-effort — the feature still works if the table is absent).
+async function getCachedPortfolioAnswer(questionNorm, fingerprint) {
+  try {
+    const { data } = await supabase
+      .from('portfolio_qa_cache')
+      .select('answer_json')
+      .eq('question_norm', questionNorm)
+      .eq('snapshot_fingerprint', fingerprint)
+      .maybeSingle();
+    return data?.answer_json?.answer ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedPortfolioAnswer(questionNorm, fingerprint, answer) {
   const uid = await ownerId();
-  // Keep the table lean: one row per (property, question). Drop any stale-fingerprint
-  // rows for this question before inserting the fresh answer.
-  await supabase.from('lease_qa_cache').delete().eq('property_id', propId).eq('question_norm', questionNorm);
-  await supabase.from('lease_qa_cache').insert({
+  // One row per (user, question): drop any stale-fingerprint rows for this question
+  // before inserting the fresh answer.
+  await supabase.from('portfolio_qa_cache').delete().eq('user_id', uid).eq('question_norm', questionNorm);
+  await supabase.from('portfolio_qa_cache').insert({
     user_id: uid,
-    property_id: propId,
     question_norm: questionNorm,
-    corpus_fingerprint: fingerprint,
+    snapshot_fingerprint: fingerprint,
     answer_json: { answer },
   });
 }
 
-// Returns { answer, fromCache, empty }. `empty` = the term matches no lease at this
-// property, so there's nothing to ask the model (no call, no charge).
-export async function askLeasesQuestion(propId, term, { leases = [], addendumsByLease = {} } = {}) {
-  const questionNorm = normalizeQuestion(term);
-  if (!questionNorm) return { answer: '', fromCache: false, empty: true };
+// Returns { answer, fromCache }. Pass the snapshot from fetchPortfolioSnapshot.
+export async function askPortfolioQuestion(question, snapshot) {
+  const questionNorm = normalizeQuestion(question);
+  if (!questionNorm) return { answer: '', fromCache: false };
+  const snapshotText = snapshotToText(snapshot);
 
-  const contexts = gatherAnswerContext(term, leases, addendumsByLease);
-  if (contexts.length === 0) {
-    return {
-      answer: `No lease at this property mentions “${String(term).trim()}”, so there's nothing to answer. Try a different word, or upload the missing lease documents.`,
-      fromCache: false,
-      empty: true,
-    };
-  }
-
-  const question = buildLeaseQuestion(term);
-
-  // Demo mode: canned answer, no network, no caching.
+  // Demo mode: canned, data-driven answer — no network, no caching. The structured
+  // snapshot rides along so the mock can answer from real seeded data.
   if (DEMO_MODE) {
-    const { answer } = await invokeFunction('ask-leases', { question, term, contexts });
+    const { answer } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText, snapshot_obj: snapshot });
     return { answer, fromCache: false };
   }
 
-  const fingerprint = leaseCorpusFingerprint(leases, addendumsByLease);
-  const cached = await getCachedAnswer(propId, questionNorm, fingerprint);
+  const fingerprint = snapshot?.fingerprint || snapshotFingerprint({});
+  const cached = await getCachedPortfolioAnswer(questionNorm, fingerprint);
   if (cached) return { answer: cached, fromCache: true };
 
-  const { answer } = await invokeFunction('ask-leases', { question, term, contexts });
+  const { answer } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText });
   try {
-    await writeCachedAnswer(propId, questionNorm, fingerprint, answer);
+    await writeCachedPortfolioAnswer(questionNorm, fingerprint, answer);
   } catch {
     /* caching is best-effort — never fail the answer on a cache write */
   }
   return { answer, fromCache: false };
-}
-
-// Warm the cache for the standard category questions so they're free when asked.
-// Best-effort and sequential (respects the AI rate limit). Skipped in demo. Not
-// auto-fired on page load — the UI calls it only on an explicit user action so no
-// spend ever happens without a click.
-export async function precomputeCommonQuestions(propId, ctx) {
-  if (DEMO_MODE) return;
-  for (const term of COMMON_QUESTION_TERMS) {
-    try {
-      await askLeasesQuestion(propId, term, ctx);
-    } catch {
-      /* best-effort warm — keep going on any single failure */
-    }
-  }
 }
 
 // ---- Generic document vault (insurance, contracts) -------------------------
@@ -1000,19 +985,6 @@ export async function logHistoryEvent({ property_id, lease_id, type, description
 // ---- Addendums / riders (tracked amendments that update a lease) -------------
 export const listAddendums = (leaseId) =>
   rows(supabase.from('lease_addendums').select('*').eq('lease_id', leaseId).order('amendment_date'));
-
-// Bulk: rider texts for a whole property's leases in ONE query, grouped by
-// lease_id — fetched lazily by the lease search so riders are searched too.
-export async function listAddendumsByLeases(leaseIds) {
-  const ids = [...new Set((leaseIds || []).filter(Boolean))];
-  const byLease = Object.fromEntries(ids.map((id) => [id, []]));
-  if (ids.length === 0) return byLease;
-  const all = await rows(
-    supabase.from('lease_addendums').select('id,lease_id,label,addendum_text').in('lease_id', ids)
-  );
-  for (const a of all || []) (byLease[a.lease_id] ||= []).push(a);
-  return byLease;
-}
 
 export const createAddendum = async (a) =>
   one(supabase.from('lease_addendums').insert({ ...a, owner_id: await ownerId() }).select().single());
