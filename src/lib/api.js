@@ -1708,6 +1708,29 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newR
     );
     // 2) roll the live lease into the new term + rent
     await updateLease(lease.id, { lease_start: newStart, lease_termination_date: newEnd, base_rent: newRent, is_active: true });
+    // 3a) record the renewal's year-1 rent as an APPLIED escalation so the rent ledger
+    // stays in sync with base_rent. Without this the ledger keeps the PRE-renewal rent;
+    // once a later step supersedes this year, effective_rent() reads it stale — the exact
+    // rent-roll-vs-property-card mismatch this branch used to cause. Written AFTER the
+    // lease update (an interruption then leaves base_rent right and the era-aware
+    // effective_rent still answers correctly). Skipped when the rent didn't change or a
+    // step already sits on this boundary (leases that print every year's rent).
+    if (newStart && Number(newRent) !== Number(oldRent)) {
+      const existing = await listEscalations(lease.id);
+      const daysApart = (a, b) => Math.round(Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+      const already = existing.some((e) => e.effective_date && daysApart(String(e.effective_date), String(newStart)) <= 45);
+      if (!already) {
+        await rows(supabase.from('rent_escalations').insert({
+          lease_id: lease.id,
+          owner_id: uid,
+          effective_date: newStart,
+          escalation_type: 'manual',
+          escalation_value: null,
+          new_base_rent: newRent,
+          status: 'applied',
+        }));
+      }
+    }
     // 3b) materialize the option's annual step-ups (years 2..N) as scheduled escalations
     // so a "+pct%/yr" option becomes real, dated rent steps (year 1 is the new base rent).
     if (pct > 0 && newStart) {

@@ -24,18 +24,30 @@ export function computeEscalatedRent(priorRent, esc) {
 }
 
 /**
- * Resolve the effective annual base rent for a lease in a given year.
- * Considers only APPLIED escalations with effective_date on/before Dec 31 of the year.
+ * Resolve the effective annual base rent for a lease in a given year — ERA-AWARE.
+ * Mirrors the SQL effective_rent() (migration 0054): base_rent is the CURRENT rent
+ * (kept live by applyDueEscalations, renewals, and manual edits), so it wins for the
+ * current era. The ledger is only consulted for a HISTORICAL year — one that has an
+ * applied step dated AFTER it, proving a later rent superseded it. This prevents a
+ * renewed lease (whose base_rent moved but whose ledger stayed put) from reporting a
+ * stale rent in the rent roll / financials.
  * @param {{base_rent: number}} lease
  * @param {Array} escalations  rows with {effective_date, new_base_rent, status}
  * @param {number} year
  */
 export function effectiveRent(lease, escalations, year) {
   const cutoff = parseDate(`${year}-12-31`);
-  const applied = (escalations || [])
-    .filter((e) => e.status === 'applied' && parseDate(e.effective_date) <= cutoff)
-    .sort((a, b) => parseDate(b.effective_date) - parseDate(a.effective_date));
-  return applied.length ? Number(applied[0].new_base_rent) : Number(lease.base_rent) || 0;
+  const applied = (escalations || []).filter((e) => e.status === 'applied');
+  // Historical year: an applied step is dated after it → answer from the ledger.
+  const supersededLater = applied.some((e) => parseDate(e.effective_date) > cutoff);
+  if (supersededLater) {
+    const atOrBefore = applied
+      .filter((e) => parseDate(e.effective_date) <= cutoff)
+      .sort((a, b) => parseDate(b.effective_date) - parseDate(a.effective_date));
+    return atOrBefore.length ? Number(atOrBefore[0].new_base_rent) : Number(lease.base_rent) || 0;
+  }
+  // Current era: base_rent is the live, authoritative rent.
+  return Number(lease.base_rent) || 0;
 }
 
 /**

@@ -74,6 +74,43 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — Fix: **Overview "Annual rent roll" ≠ property-page revenue** for a renewed lease.
+  Deployed: DB migration `0054` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `931cb67a`. **No money, no tenant emails**; migration is a non-destructive function replace, and the
+  live-data repair is additive (2 ledger rows + one already-approved invoice correction).
+  - **What George saw:** the Overview rent-roll card showed a different number than a property's revenue
+    (Leases → property). Verified live: Pershing Plaza card **$302,537.36** vs Overview **$295,359.36** —
+    a **$7,178** gap, entirely from **FIVE POINTS WINGS, LLC** (Wingstop).
+  - **Root cause:** two sources. The property card sums raw `leases.base_rent`
+    (`PropertiesPage.js:96`); the Overview + property Financials read `v_property_totals.total_revenue` =
+    Σ SQL `effective_rent(lease, year)` (`0001_init.sql`). `effective_rent` ALWAYS preferred the latest
+    APPLIED escalation over `base_rent`. Confirming a renewal (`rollLeaseIntoRenewal`, `api.js`) writes
+    the new rent onto `base_rent` but **never recorded a matching applied escalation**, so Wingstop's
+    ledger still ended at its 2017 step ($34,225) while `base_rent` was the renewed $41,403. Difference =
+    41403 − 34225 = **7178**, exactly. (Only this one lease mismatched portfolio-wide.)
+  - **Root fix — era-aware `effective_rent`** (`0054_effective_rent_era.sql`, non-destructive
+    `create or replace`; both views pick it up unchanged): `base_rent` is the CURRENT rent (kept live by
+    applyDueEscalations, renewals, manual edits), so it wins for the **current era**. The ledger is only
+    consulted for a **historical year** — one that has an applied step dated AFTER it. For a healthy
+    lease (ledger in sync) the output is IDENTICAL to before, so no other number shifts. Mirrored in the
+    JS `effectiveRent` (`src/lib/escalations.js`, used only by the demo mock) for demo parity.
+  - **Prevention** (`api.js` `rollLeaseIntoRenewal`, catch-up branch): after moving `base_rent`, it now
+    inserts an **applied** escalation at the new term start with the renewal's rent (when the rent
+    changed and no step already sits there), so the ledger stays in sync going forward. Written AFTER the
+    lease update, so an interruption still leaves `base_rent` right and the era-aware function correct.
+  - **Live-data repair** (via `supabase db query`): added Wingstop's two option-period rents to the
+    ledger as applied steps — `2018-01-01 → 37,648` and `2023-01-01 → 41,403` — so PAST fiscal years read
+    the rent that actually applied (2018-2022 → 37,648; 2023+ → 41,403). Corrected the 2026 invoice
+    (`ffae6313…`, still `sent`) from the stale $34,225 base ($53,884.33 total) to $41,403
+    (**$61,062.33** total; CAM/tax lines are SF-based, unchanged). January's recorded payment untouched —
+    the shortfall now correctly shows as owed. Both guarded (idempotent).
+  - Verified: new `src/lib/__tests__/effectiveRentEra.test.js` (6 tests — era-aware parity + the
+    stale-ledger bug + post-repair history + scheduled-step-doesn't-shift + the renewal→ledger→rent-roll
+    e2e). Full suite **147/147 green** (`vitest run`); `vite build` compiles. **Verified on LIVE data:**
+    zero leases mismatch base_rent vs effective_rent(2026); Pershing `v_property_totals` 2026
+    total_revenue = **$302,537.36** = the card sum; Wingstop year-by-year history correct. Committed only
+    this task's files. (Renumbered my migration 0051→0054 — sibling sessions had shipped 0051-0053.)
+
 - **2026-07-06** — **Build tooling: Create React App → Vite** (audit item L2). Deployed: frontend
   Cloudflare version `bbd6b928`, commit `958a3c2`. No DB, no edge functions, no money, no tenant emails.
   Purely under-the-hood — no user-visible change; faster builds.
