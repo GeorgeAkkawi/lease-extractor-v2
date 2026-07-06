@@ -3,7 +3,7 @@
 // Cheapest viable: small model (Haiku) + the document sent as a cached system
 // block (prompt caching), so a run of questions about the same document re-reads
 // it at ~90% off. The model only reads & answers — no calculations.
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude } from '../_shared/anthropic.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
@@ -17,6 +17,7 @@ const LABELS: Record<string, string> = {
 };
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 30, 60);

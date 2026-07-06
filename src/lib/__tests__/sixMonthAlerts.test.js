@@ -57,6 +57,30 @@ describe('buildAlerts', () => {
     expect(pTerm.title).not.toMatch(/no renewal/i);
   });
 
+  test('a past-due invoice with a balance raises a danger "Invoice overdue" alert; a paid or future one does not', () => {
+    const lease = { id: 'L1', tenant_name: 'Owing Tenant', property_id: 'p1', is_active: true };
+    const base = {
+      leases: [lease], escalations: [], renewals: [], insurance: [], contracts: [],
+      properties: [{ id: 'p1', corporation_id: 'corp1' }],
+    };
+    const out = buildAlerts({
+      ...base,
+      invoices: [
+        { lease_id: 'L1', property_id: 'p1', due_date: '2025-12-01', balance: 1500 }, // past-due, owed → alert
+        { lease_id: 'L1', property_id: 'p1', due_date: '2025-11-01', balance: 0 },     // past-due but paid → no alert
+        { lease_id: 'L1', property_id: 'p1', due_date: '2026-06-01', balance: 900 },    // owed but not yet due → no alert
+      ],
+    }, undefined, NOW);
+    const inv = out.filter((a) => a.focus === 'invoice');
+    expect(inv).toHaveLength(1);
+    expect(inv[0].tone).toBe('danger');
+    expect(inv[0].bucketLabel).toBe('Overdue');
+    expect(inv[0].title).toMatch(/Invoice overdue — Owing Tenant/);
+    expect(inv[0].detail).toMatch(/\$1,500/);
+    expect(inv[0].corporation_id).toBe('corp1');
+    expect(alertKey(inv[0])).toBe('invoice:L1:2025-12-01');
+  });
+
   test('escalation steps dated on/after the committed term end are gated out of alerts', () => {
     const lease = { id: 'L1', tenant_name: 'Tenant', property_id: 'p1', lease_termination_date: '2026-03-01', is_active: true };
     const out = buildAlerts({

@@ -132,7 +132,9 @@ class QB {
   eq(field, value) { this.filters.push({ field, op: 'eq', value }); return this; }
   neq(field, value) { this.filters.push({ field, op: 'neq', value }); return this; }
   in(field, value) { this.filters.push({ field, op: 'in', value }); return this; }
+  gt(field, value) { this.filters.push({ field, op: 'gt', value }); return this; }
   gte(field, value) { this.filters.push({ field, op: 'gte', value }); return this; }
+  lt(field, value) { this.filters.push({ field, op: 'lt', value }); return this; }
   lte(field, value) { this.filters.push({ field, op: 'lte', value }); return this; }
   is(field) { this.filters.push({ field, op: 'is' }); return this; }
   not(field) { this.filters.push({ field, op: 'not_is_null' }); return this; }
@@ -533,8 +535,39 @@ function demoQuery(question) {
   return { filter: { demo: true }, count: results.length, results };
 }
 
+// Postgres RPCs. Mirrors the real SQL functions so demo + tests exercise the same
+// behavior the live app gets through supabase.rpc().
+async function rpc(fn, args = {}) {
+  if (fn === 'create_lease_tx') {
+    const { p_lease = {}, p_escalations = [], p_renewals = [], p_abatements = [] } = args;
+    const now = new Date().toISOString();
+    const leaseId = newId('lea');
+    (db.leases ||= []).push({
+      id: leaseId, owner_id: DEMO_USER.id, created_at: now, updated_at: now,
+      source: 'ai_extracted', extraction_status: 'reviewed',
+      roof_responsible: false, no_renewal_option: false, is_active: true,
+      ...p_lease,
+    });
+    for (const e of (p_escalations || [])) (db.rent_escalations ||= []).push({
+      id: newId('esc'), owner_id: DEMO_USER.id, created_at: now, updated_at: now,
+      escalation_type: 'manual', status: 'scheduled', ...e, lease_id: leaseId,
+    });
+    for (const r of (p_renewals || [])) (db.renewal_options ||= []).push({
+      id: newId('ren'), owner_id: DEMO_USER.id, created_at: now, updated_at: now,
+      status: 'pending', ...r, lease_id: leaseId,
+    });
+    for (const a of (p_abatements || [])) (db.rent_abatements ||= []).push({
+      id: newId('aba'), owner_id: DEMO_USER.id, created_at: now, updated_at: now,
+      kind: 'free', ...a, lease_id: leaseId,
+    });
+    return ok(leaseId);
+  }
+  return { data: null, error: { message: `mock rpc: unknown function ${fn}` } };
+}
+
 export const mockSupabase = {
   from: (table) => new QB(table),
+  rpc,
   auth,
   storage,
   functions,

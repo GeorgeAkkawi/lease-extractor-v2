@@ -1,22 +1,37 @@
 import { createContext, useContext, useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { supabase } from '../lib/supabaseClient';
-import { getSecuritySettings } from '../lib/api';
+import { supabase, DEMO_MODE } from '../lib/supabaseClient';
 
 const AuthContext = createContext({ session: null, user: null, loading: true });
-
-// Per-browser-session marker that the second factor was cleared, so a refresh in
-// the same tab doesn't re-challenge. Cleared when the tab closes (sessionStorage).
-const twoFaKey = (uid) => `amlak.2fa_ok.${uid}`;
 
 export function AuthProvider({ children }) {
   const queryClient = useQueryClient();
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [twoFaEnabled, setTwoFaEnabled] = useState(null); // null = not yet known
-  const [twoFaPassed, setTwoFaPassed] = useState(false);
+  // Native (authenticator-app / TOTP) two-factor gate, driven by the session's real
+  // Authenticator Assurance Level — NOT a client flag anyone could set. `needs` is
+  // true when the user HAS a verified factor but the current session is still aal1,
+  // so they must complete a TOTP challenge to reach aal2. Server-side RLS enforces
+  // the same thing on the data itself (a bare aal1 JWT can't read the tables); this
+  // state is only the UI gate that shows the challenge screen.
+  const [mfa, setMfa] = useState({ loading: true, needs: false });
   // Last signed-in user id we've seen. `undefined` = first sync not done yet.
   const lastUidRef = useRef(undefined);
+
+  const refreshAal = useCallback(async () => {
+    if (DEMO_MODE) { setMfa({ loading: false, needs: false }); return; }
+    try {
+      const { data } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      // Step-up needed only when the user could reach aal2 (has a verified factor)
+      // but the current session hasn't (still aal1).
+      const needs = !!data && data.nextLevel === 'aal2' && data.currentLevel !== data.nextLevel;
+      setMfa({ loading: false, needs });
+    } catch {
+      // Fail OPEN on the UI gate — the RLS policy is the real guard, so a hiccup
+      // here can't expose data, and we don't want to lock the app on a transient error.
+      setMfa({ loading: false, needs: false });
+    }
+  }, []);
 
   useEffect(() => {
     // Whenever the signed-in user actually changes (login, logout, or switching
@@ -43,28 +58,22 @@ export function AuthProvider({ children }) {
     return () => sub.subscription.unsubscribe();
   }, [queryClient]);
 
-  // When the signed-in user changes, learn their 2FA preference and whether this
-  // browser session already cleared the second factor.
+  // When the signed-in user changes, re-evaluate their assurance level (do they
+  // have a factor, and is this session already stepped-up?).
   const uid = session?.user?.id ?? null;
   useEffect(() => {
-    if (!uid) { setTwoFaEnabled(null); setTwoFaPassed(false); return; }
-    let cancelled = false;
-    setTwoFaEnabled(null);
-    let passed = false;
-    try { passed = sessionStorage.getItem(twoFaKey(uid)) === '1'; } catch { /* ignore */ }
-    setTwoFaPassed(passed);
-    getSecuritySettings().then((s) => { if (!cancelled) setTwoFaEnabled(!!s.email_2fa_enabled); });
-    return () => { cancelled = true; };
-  }, [uid]);
+    if (!uid) { setMfa({ loading: false, needs: false }); return; }
+    setMfa((m) => ({ ...m, loading: true }));
+    refreshAal();
+  }, [uid, refreshAal]);
 
-  const passTwoFactor = useCallback(() => {
-    if (uid) { try { sessionStorage.setItem(twoFaKey(uid), '1'); } catch { /* ignore */ } }
-    setTwoFaPassed(true);
-  }, [uid]);
+  // Called by the challenge screen after a successful TOTP verify: the session is
+  // now aal2, so re-read the level and the gate drops.
+  const passTwoFactor = useCallback(() => { refreshAal(); }, [refreshAal]);
 
-  // Hold the app while we have a session but haven't yet learned the 2FA setting.
-  const securityLoading = !!session && twoFaEnabled === null;
-  const needsTwoFactor = !!session && twoFaEnabled === true && !twoFaPassed;
+  // Hold the app while we have a session but haven't yet learned the assurance level.
+  const securityLoading = !!session && mfa.loading;
+  const needsTwoFactor = !!session && mfa.needs;
 
   const value = {
     session,

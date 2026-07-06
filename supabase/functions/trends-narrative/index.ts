@@ -1,12 +1,13 @@
 // Writes a short year-over-year narrative from ALREADY-COMPUTED numbers.
 // Haiku. No math here — the client/DB computed the figures; Claude only narrates.
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude } from '../_shared/anthropic.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
 const MODEL = 'claude-haiku-4-5';
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 30, 60);

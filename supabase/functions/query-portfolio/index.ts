@@ -3,7 +3,7 @@
 // and NO data rows are sent to the model. The function validates the filter and
 // runs it against the DB under the caller's RLS.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude } from '../_shared/anthropic.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
@@ -40,6 +40,7 @@ const opMap: Record<string, string> = {
 };
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 30, 60);

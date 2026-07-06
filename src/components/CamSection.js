@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listCamLineItems, addCamLineItem, deleteCamLineItem, upsertExpenseRecord, syncContractCamItems } from '../lib/api';
 import { money } from '../lib/format';
+import MutationError from './MutationError';
 
 // CAM is comprised of many sub-expenses. List them; the app sums them into the
 // CAM total used everywhere. A flat entry is still available when there are none.
@@ -61,6 +62,8 @@ export default function CamSection({ propId, year, expense }) {
           </div>
         ))
       )}
+
+      <MutationError of={[add, remove, saveFlat]} />
 
       {items.length > 0 && (
         <div className="cam-row cam-total">

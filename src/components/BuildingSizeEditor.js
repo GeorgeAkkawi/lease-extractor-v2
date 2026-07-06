@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { updateProperty } from '../lib/api';
+import MutationError from './MutationError';
 
 // Edit a property's building size after creation (drives vacancy & occupancy).
 export default function BuildingSizeEditor({ propId, buildingSf }) {
@@ -24,13 +25,16 @@ export default function BuildingSizeEditor({ propId, buildingSf }) {
   });
 
   return (
-    <form className="row" onSubmit={(e) => { e.preventDefault(); save.mutate(); }} style={{ alignItems: 'flex-end', marginBottom: 16 }}>
-      <label className="form-field" style={{ marginBottom: 0, maxWidth: 200 }}>
-        <span>Building size (SF) — drives vacancy &amp; occupancy</span>
-        <input className="text-input num" type="number" step="any" value={val} onChange={(e) => setVal(e.target.value)} />
-      </label>
-      <button type="submit" className="secondary" disabled={save.isPending}>Save building size</button>
-      {save.isSuccess && <span className="badge good">Saved</span>}
-    </form>
+    <>
+      <form className="row" onSubmit={(e) => { e.preventDefault(); save.mutate(); }} style={{ alignItems: 'flex-end', marginBottom: 16 }}>
+        <label className="form-field" style={{ marginBottom: 0, maxWidth: 200 }}>
+          <span>Building size (SF) — drives vacancy &amp; occupancy</span>
+          <input className="text-input num" type="number" step="any" value={val} onChange={(e) => setVal(e.target.value)} />
+        </label>
+        <button type="submit" className="secondary" disabled={save.isPending}>Save building size</button>
+        {save.isSuccess && <span className="badge good">Saved</span>}
+      </form>
+      <MutationError of={[save]} />
+    </>
   );
 }

@@ -4,7 +4,7 @@
 // someone who controls the inbox). Codes are single-use, expire in 10 minutes, and
 // lock after 5 wrong attempts.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
 const MAX_ATTEMPTS = 5;
@@ -23,6 +23,7 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 10, 60);

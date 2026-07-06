@@ -8,10 +8,11 @@
 // bill in arrears); it's labeled with the lagging tax year. A roof-responsible
 // tenant's roof share is a separate line.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     // Not a paid (model) call, but rate-limit anyway so the endpoint can't be

@@ -7,7 +7,7 @@
 //   • the model only reads and answers — no arithmetic (amounts are precomputed).
 // The answer is cached client-side (portfolio_qa_cache), so repeats and unchanged
 // portfolios cost $0 and never reach this function.
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude } from '../_shared/anthropic.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
@@ -28,6 +28,7 @@ const INSTRUCTION =
   'financial calculations beyond simple counting — the amounts are already computed.';
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 30, 60);

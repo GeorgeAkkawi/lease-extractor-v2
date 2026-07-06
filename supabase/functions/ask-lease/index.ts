@@ -6,7 +6,7 @@
 //     run of questions about the same lease re-reads it at ~90% off,
 //   • the model only reads the document and answers — no arithmetic on figures.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude } from '../_shared/anthropic.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
@@ -30,6 +30,7 @@ const INSTRUCTION =
   'terms. Do not perform financial calculations beyond what the material states.';
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 30, 60);

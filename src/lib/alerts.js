@@ -1,4 +1,4 @@
-import { fmtDate } from './format';
+import { fmtDate, money } from './format';
 
 const DAY = 86400000;
 
@@ -50,7 +50,7 @@ export function bucket(iso, now = new Date()) {
 
 // Derive urgent alerts from lease key dates (escalations / termination / renewal
 // notice). `states` is the server dismiss/snooze lookup from toAlertStates().
-export function buildAlerts({ leases, escalations, renewals, properties, insurance, contracts }, states = { dismissed: new Set(), snoozedUntil: {} }, now = new Date()) {
+export function buildAlerts({ leases, escalations, renewals, properties, insurance, contracts, invoices }, states = { dismissed: new Set(), snoozedUntil: {} }, now = new Date()) {
   const propMap = Object.fromEntries((properties || []).map((p) => [p.id, p]));
   const leaseById = Object.fromEntries((leases || []).map((l) => [l.id, l]));
   const escByLease = {};
@@ -139,6 +139,26 @@ export function buildAlerts({ leases, escalations, renewals, properties, insuran
       date: p.expiry_date, days: daysUntil(p.expiry_date, now),
       title: `${isLandlord ? 'Landlord' : 'Tenant'} insurance ${expired ? 'expired' : 'expiring'} — ${who}`,
       detail: `${p.insurer ? p.insurer + ' · ' : ''}${expired ? 'expired' : 'expires'} ${fmtDate(p.expiry_date)}`,
+    });
+  });
+
+  // Overdue invoices — a bill with money still owed whose due date has passed. Unlike
+  // the date-horizon alerts above, an overdue invoice is ALWAYS shown (no 6-month
+  // window) until it's paid: it's money on the table right now. Keyed by lease + due
+  // date so each unpaid bill is its own dismissible alert.
+  (invoices || []).forEach((inv) => {
+    const bal = Number(inv.balance) || 0;
+    if (bal <= 0 || !inv.due_date) return;
+    const d = daysUntil(inv.due_date, now);
+    if (d == null || d >= 0) return; // only past-due
+    const lease = leaseById[inv.lease_id];
+    const corpId = propMap[inv.property_id]?.corporation_id;
+    out.push({
+      lease_id: inv.lease_id, property_id: inv.property_id, corporation_id: corpId,
+      focus: 'invoice', tone: 'danger', bucketLabel: 'Overdue',
+      date: inv.due_date, days: d,
+      title: `Invoice overdue — ${lease?.tenant_name || 'tenant'}`,
+      detail: `${money(bal)} unpaid · was due ${fmtDate(inv.due_date)}`,
     });
   });
 

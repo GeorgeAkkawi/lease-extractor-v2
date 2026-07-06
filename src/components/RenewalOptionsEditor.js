@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, draftRenewalApproachingEmail } from '../lib/api';
 import { money0, fmtDate } from '../lib/format';
 import NotificationEmailModal from './NotificationEmailModal';
+import MutationError from './MutationError';
 
 // Badge tone + label for an option's lifecycle status. A pending option whose term
 // window has already passed is shown as "Lapsed" (still actionable — the tenant may
@@ -132,6 +133,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
 
   return (
     <div>
+      <MutationError of={[add, remove, confirm, decline, restore]} />
       {notice && (
         <p className="note-msg warn" style={{ marginBottom: 12 }}>{notice}</p>
       )}

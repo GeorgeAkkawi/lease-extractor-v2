@@ -4,7 +4,7 @@
 // user are invalidated first. Rate-limited to curb email abuse / cost. Reuses the
 // same Resend sender as send-reminders.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY');
@@ -23,6 +23,7 @@ function sixDigitCode(): string {
 }
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     // Cap how often a user can request a code (email-abuse + cost guard).

@@ -4,6 +4,7 @@ import { listServiceContracts, addServiceContract, updateServiceContract, delete
 import { contractAnnualCost } from '../lib/contracts';
 import DocAssistant from './DocAssistant';
 import { money, fmtDate, currentYear } from '../lib/format';
+import MutationError from './MutationError';
 
 const TYPES = [['landscaping', 'Landscaping'], ['snow_removal', 'Snow removal'], ['security', 'Security'], ['other', 'Other']];
 const FREQ = [['annual', 'per year'], ['monthly', 'per month'], ['one-time', 'one-time']];
@@ -67,6 +68,7 @@ function ContractItem({ c, onChange }) {
 
   return (
     <div className="svc-item">
+      <MutationError of={[remove, saveFacts]} />
       <div className="svc-row">
         <span className="badge info">{typeLabel(c.service_type)}</span>
         <div className="svc-main">

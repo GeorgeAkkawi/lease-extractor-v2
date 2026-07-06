@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listEscalations, createEscalation, deleteEscalation, backfillLeaseToToday } from '../lib/api';
 import { computeEscalatedRent, priorRentBefore } from '../lib/escalations';
 import { money, fmtDate } from '../lib/format';
+import MutationError from './MutationError';
 
 // Lists, adds & removes rent escalations. New rent is computed BY CODE (no AI).
 // New escalations are 'scheduled' until accepted on the recommendation card.
@@ -90,6 +91,7 @@ export default function EscalationScheduleEditor({ lease }) {
 
   return (
     <div>
+      <MutationError of={[add, remove]} />
       {sortedEsc.length === 0 ? (
         <p className="empty-line muted">No escalations scheduled.</p>
       ) : (

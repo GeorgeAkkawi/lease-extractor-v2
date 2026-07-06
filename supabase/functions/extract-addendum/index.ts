@@ -6,7 +6,7 @@
 // Cost control mirrors extract-lease/extract-contract: free PDF/docx text layer with
 // a vision fallback for scans/photos. Sonnet 4.6.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude, transcribeDocument, MAX_VISION_BYTES, Block } from '../_shared/anthropic.ts';
 import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
@@ -187,6 +187,7 @@ const SYSTEM_FIELDS =
   'notes. Never put words in notice_by_date; it is an ISO date or null.';
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 10, 60);

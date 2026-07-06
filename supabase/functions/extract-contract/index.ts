@@ -6,7 +6,7 @@
 // that text to the model instead of paying it to transcribe; scans fall back to the
 // vision path, which still returns a transcription.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude, transcribeDocument, MAX_VISION_BYTES, Block } from '../_shared/anthropic.ts';
 import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
@@ -43,6 +43,7 @@ const SYSTEM_FIELDS =
   'null if the fee is flat). start_date / end_date = the contract term as ISO YYYY-MM-DD.';
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 10, 60);

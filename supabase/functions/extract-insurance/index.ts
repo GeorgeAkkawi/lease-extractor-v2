@@ -11,7 +11,7 @@
 // load-bearing for accuracy, so we keep vision. Pasted text has no layout to lose,
 // so that path skips the redundant transcription.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude, transcribeDocument, MAX_VISION_BYTES, Block } from '../_shared/anthropic.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 
@@ -40,6 +40,7 @@ const SYSTEM_FIELDS =
   'if the document names or endorses an additional insured (e.g. the landlord).';
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 10, 60);

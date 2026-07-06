@@ -7,7 +7,7 @@
 // source clauses (feature #1). Haiku 4.5 — fast schema-fill; low-confidence fields
 // are surfaced in the review UI.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { corsHeaders, json, preflight, serverError } from '../_shared/cors.ts';
+import { cors } from '../_shared/cors.ts';
 import { callClaude, transcribeDocument, MAX_VISION_BYTES, Block } from '../_shared/anthropic.ts';
 import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
@@ -406,6 +406,7 @@ function transcribeWithTimeout(model: string, docBlock: Block, ms: number): Prom
 }
 
 Deno.serve(async (req) => {
+  const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
     const limited = await enforceRateLimit(req, 10, 60);

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listInvoices, listPayments, recordPayment, deletePayment, updateInvoice, deleteInvoice } from '../lib/api';
 import { money, fmtDate } from '../lib/format';
+import MutationError from './MutationError';
 
 // Per-lease receivables: each saved invoice with its derived balance + status, a
 // "record payment" form (partial payments supported), and the payment history.
@@ -38,6 +39,7 @@ export default function InvoicesPanel({ leaseId }) {
 
   return (
     <div>
+      <MutationError of={[voidInv, removeInv]} />
       {owed > 0 && (
         <p className="muted" style={{ marginTop: -6, marginBottom: 12, fontSize: 12.5 }}>
           Outstanding from this tenant: <strong style={{ color: 'var(--ink)' }}>{money(owed)}</strong>
@@ -114,6 +116,7 @@ function PaymentBlock({ inv, onRefresh, onVoid, onDelete }) {
 
   return (
     <div style={{ padding: '12px 4px' }}>
+      <MutationError of={[add, remove]} />
       {payments.length > 0 ? (
         <table style={{ minWidth: 0, marginBottom: 12 }}>
           <thead><tr><th>Paid</th><th className="num">Amount</th><th>Method</th><th>Note</th><th></th></tr></thead>

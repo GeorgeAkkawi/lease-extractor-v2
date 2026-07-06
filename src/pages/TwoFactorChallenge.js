@@ -1,47 +1,55 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
-import { sendTwoFactorCode, verifyTwoFactorCode } from '../lib/api';
 
-// Second step at login for users who have email 2FA on. Shown by App.js when a
-// session exists but the second factor hasn't been cleared this browser session.
-// Sends a code on mount; on a correct code it calls passTwoFactor() and the app
-// renders.
+// Second step at login for users who have an authenticator-app (TOTP) factor.
+// Shown by App.js when the session is only aal1 but a verified factor exists.
+// It opens a challenge on mount; a correct 6-digit code from the authenticator app
+// steps the session up to aal2 and calls passTwoFactor(), and the app renders.
 export default function TwoFactorChallenge() {
-  const { user, passTwoFactor } = useAuth();
+  const { passTwoFactor } = useAuth();
+  const [factorId, setFactorId] = useState(null);
+  const [challengeId, setChallengeId] = useState(null);
   const [code, setCode] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
-  const [sending, setSending] = useState(true);
-  const sentOnce = useRef(false);
+  const [preparing, setPreparing] = useState(true);
+  const startedRef = useRef(false); // StrictMode double-invoke guard
 
   useEffect(() => {
-    if (sentOnce.current) return; // StrictMode double-invoke guard
-    sentOnce.current = true;
-    sendTwoFactorCode()
-      .then(() => setSending(false))
-      .catch(() => { setSending(false); setMsg('Could not send a code. Use Resend below.'); });
-  }, []);
+    if (startedRef.current) return;
+    startedRef.current = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase.auth.mfa.listFactors();
+        if (error) throw error;
+        const totp = data?.totp?.[0]; // verified TOTP factors
+        if (!totp) { passTwoFactor(); return; } // no factor to challenge → let them in
+        setFactorId(totp.id);
+        const { data: ch, error: cErr } = await supabase.auth.mfa.challenge({ factorId: totp.id });
+        if (cErr) throw cErr;
+        setChallengeId(ch.id);
+      } catch {
+        setMsg('Could not start verification. Sign out and try signing in again.');
+      } finally {
+        setPreparing(false);
+      }
+    })();
+  }, [passTwoFactor]);
 
   async function verify(e) {
     e.preventDefault();
+    if (!factorId || !challengeId) return;
     setBusy(true); setMsg('');
     try {
-      const r = await verifyTwoFactorCode(code.trim(), 'login');
-      if (r?.verified) { passTwoFactor(); return; }
-      setMsg(r?.error || 'Incorrect code.');
-    } catch (err) {
-      setMsg(err.message || 'Verification failed.');
+      const { error } = await supabase.auth.mfa.verify({ factorId, challengeId, code: code.trim() });
+      if (error) { setMsg('Incorrect or expired code — check your authenticator app and try again.'); setCode(''); }
+      else passTwoFactor();
+    } catch {
+      setMsg('Verification failed. Try again.');
     } finally {
       setBusy(false);
     }
-  }
-
-  async function resend() {
-    setMsg(''); setSending(true);
-    try { await sendTwoFactorCode(); setMsg('A new code is on its way.'); }
-    catch { setMsg('Could not send a code. Try again in a moment.'); }
-    finally { setSending(false); }
   }
 
   return (
@@ -49,7 +57,7 @@ export default function TwoFactorChallenge() {
       <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}>A</span>Amlak</h1>
       <p className="muted">Two-factor verification</p>
       <p className="muted" style={{ fontSize: 13 }}>
-        We emailed a 6-digit code to {user?.email ? <strong>{user.email}</strong> : 'your address'}. Enter it to continue.
+        Open your authenticator app and enter the current 6-digit code for Amlak to continue.
       </p>
       <form onSubmit={verify}>
         <label className="form-field"><span>6-digit code</span>
@@ -62,12 +70,14 @@ export default function TwoFactorChallenge() {
             onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
             required
             autoFocus
+            disabled={preparing || !challengeId}
           />
         </label>
-        <button type="submit" disabled={busy || code.length !== 6}>{busy ? '…' : 'Verify'}</button>
+        <button type="submit" disabled={busy || preparing || code.length !== 6 || !challengeId}>
+          {busy ? '…' : preparing ? 'Preparing…' : 'Verify'}
+        </button>
       </form>
-      <p style={{ marginTop: 14, display: 'flex', gap: 14 }}>
-        <button type="button" className="ghost" onClick={resend} disabled={sending}>Resend code</button>
+      <p style={{ marginTop: 14 }}>
         <button type="button" className="ghost" onClick={() => supabase.auth.signOut()}>Sign out</button>
       </p>
       {msg && <p className="muted">{msg}</p>}

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listAbatements, createAbatement, deleteAbatement } from '../lib/api';
 import { abatementEnd, abatementMonthCount, abatementKindLabel } from '../lib/abatement';
 import { money, fmtDate } from '../lib/format';
+import MutationError from './MutationError';
 
 // Lists, adds & removes rent-abatement windows (free / reduced BASE rent for a stretch
 // of the term). The base rent itself is never changed — a window just credits those
@@ -50,6 +51,7 @@ export default function AbatementEditor({ lease }) {
 
   return (
     <div>
+      <MutationError of={[add, remove]} />
       {abatements.length === 0 ? (
         <p className="empty-line muted">No rent abatement on file.</p>
       ) : (

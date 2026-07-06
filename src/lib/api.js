@@ -38,6 +38,15 @@ async function ownerId() {
   return data.user?.id;
 }
 
+// Call a Postgres function (RPC). Used for the money paths that must write several
+// rows in ONE transaction (e.g. create_lease_tx) so a mid-write failure can't leave
+// a half-built lease. Throws the raw supabase error (has .code) on failure.
+async function callRpc(fn, args) {
+  const { data, error } = await supabase.rpc(fn, args);
+  if (error) throw error;
+  return data;
+}
+
 // Client-side upload guardrails (defense in depth — the storage bucket enforces
 // the same allowlist + size cap server-side in migration 0020). Reject anything
 // that isn't a PDF or common image, and cap the size, before sending any bytes.
@@ -176,8 +185,15 @@ export const updateProperty = (id, patch) =>
 // ---- Leases (a "tenant" = one lease) ---------------------------------------
 // Soonest-expiring lease first (no end date last, ties alphabetical) — the
 // order every per-property tenant list shows, incl. the rent-roll export.
+// Columns for LIST views of leases — everything EXCEPT the big `lease_text` blob
+// (a full lease can be tens of KB). Only the single-lease detail page needs the
+// text, so property/tenant lists and the Overview prefetch stay light. getLease
+// (below) keeps select('*') for the detail page.
+const LEASE_LIST_COLS =
+  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,tenant_email_2';
+
 export const listLeases = async (propertyId) => {
-  const all = await rows(supabase.from('leases').select('*').eq('property_id', propertyId).order('tenant_name'));
+  const all = await rows(supabase.from('leases').select(LEASE_LIST_COLS).eq('property_id', propertyId).order('tenant_name'));
   return (all || []).sort(byTermEnd);
 };
 
@@ -189,7 +205,7 @@ export async function listLeasesByProperties(propertyIds) {
   const byProp = Object.fromEntries(ids.map((id) => [id, []]));
   if (ids.length === 0) return byProp;
   const all = await rows(
-    supabase.from('leases').select('*').in('property_id', ids).order('tenant_name')
+    supabase.from('leases').select(LEASE_LIST_COLS).in('property_id', ids).order('tenant_name')
   );
   for (const l of (all || []).sort(byTermEnd)) (byProp[l.property_id] ||= []).push(l);
   return byProp;
@@ -286,48 +302,31 @@ export async function extractFromText(text) {
 // leaseText (the cached plain-text copy) is stored so the AI assistant can read
 // it later without re-running extraction.
 export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease, escalations, renewals, abatements, aiConfidence, leaseText }) {
-  const uid = await ownerId();
-  const row = await one(
-    supabase
-      .from('leases')
-      .insert({
-        ...lease,
-        property_id: propertyId,
-        owner_id: uid,
-        source: 'ai_extracted',
-        extraction_status: 'reviewed',
-        ai_confidence: aiConfidence ?? null,
-        lease_file_id: leaseFileId,
-        lease_text: leaseText ?? null,
-      })
-      .select()
-      .single()
-  );
-  if (escalations?.length) {
-    await rows(
-      supabase.from('rent_escalations').insert(
-        escalations.map((e) => ({ ...e, lease_id: row.id, owner_id: uid, status: 'scheduled' }))
-      )
-    );
-  }
-  if (renewals?.length) {
-    await rows(
-      supabase
-        .from('renewal_options')
-        .insert(renewals.map((r) => ({ ...r, lease_id: row.id, owner_id: uid })))
-    );
-  }
-  if (abatements?.length) {
-    await rows(
-      supabase
-        .from('rent_abatements')
-        .insert(abatements.map((a) => ({ ...a, lease_id: row.id, owner_id: uid })))
-    );
-  }
+  // Build the exact rows to write (owner_id is forced server-side inside the RPC).
+  const leasePayload = {
+    ...lease,
+    property_id: propertyId,
+    source: 'ai_extracted',
+    extraction_status: 'reviewed',
+    ai_confidence: aiConfidence ?? null,
+    lease_file_id: leaseFileId,
+    lease_text: leaseText ?? null,
+  };
+  const escPayload = (escalations || []).map((e) => ({ ...e, status: 'scheduled' }));
+  // ATOMIC: insert the lease + all its escalations / renewals / abatements in ONE
+  // transaction. Previously these were separate REST calls, so a failure partway
+  // through left a half-built lease (e.g. no rent steps) that billed wrong and
+  // couldn't be re-derived. create_lease_tx makes it all-or-nothing.
+  const leaseId = await callRpc('create_lease_tx', {
+    p_lease: leasePayload,
+    p_escalations: escPayload,
+    p_renewals: renewals || [],
+    p_abatements: abatements || [],
+  });
   // Collapse the historical schedule to today: set the current rent + period (or
   // flag the lease outdated), marking past escalations/renewals applied silently.
-  await backfillLeaseToToday(row.id);
-  return getLease(row.id);
+  await backfillLeaseToToday(leaseId);
+  return getLease(leaseId);
 }
 
 // Set (or correct) a lease's start date and, from it, DATE the whole rent schedule.
@@ -1515,13 +1514,16 @@ function summarizeAR(invoices, today = new Date()) {
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
 export async function fetchAlertData() {
-  const [leasesR, escR, renR, propR, insR, conR] = await Promise.all([
+  const [leasesR, escR, renR, propR, insR, conR, invR] = await Promise.all([
     supabase.from('leases').select('id,tenant_name,property_id,lease_termination_date,no_renewal_option,is_active'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status'),
     supabase.from('renewal_options').select('id,lease_id,notice_by_date,status'),
     supabase.from('properties').select('id,name,corporation_id'),
     supabase.from('insurance_policies').select('party,property_id,lease_id,insurer,expiry_date').is('archived_at', null),
     supabase.from('service_contracts').select('id,name,vendor,vendor_email,end_date,property_id'),
+    // Overdue-invoice alerts read from the balance view: anything still owed (the
+    // view nets payments) with a due date. buildAlerts keeps only the past-due ones.
+    supabase.from('v_invoice_balances').select('lease_id,property_id,due_date,balance').gt('balance', 0),
   ]);
   return {
     leases: leasesR.data || [],
@@ -1530,6 +1532,7 @@ export async function fetchAlertData() {
     properties: propR.data || [],
     insurance: insR.data || [],
     contracts: conR.data || [],
+    invoices: invR.data || [],
   };
 }
 
