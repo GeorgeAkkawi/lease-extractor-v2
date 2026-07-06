@@ -71,6 +71,40 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — Per-property lease search (free, no AI) + tenants sorted soonest-expiring
+  first. Deployed: frontend Cloudflare version `78fe1932`. No migration, no edge functions,
+  **$0 per search** — no AI call anywhere.
+  - **What George asked:** a search bar inside a property that reads through the cached leases
+    (e.g. "which of my tenants must pay for the roof?"), preferably without AI calls and without
+    a canned list of preloaded questions; plus the tenant list ordered by soonest term end.
+  - **Search (new `src/lib/leaseSearch.js` + `src/components/LeaseSearch.js`, wired into
+    `LeasesPage.js`):** a pure in-browser keyword scan of the text already cached at import —
+    `leases.lease_text` (ships with `listLeases`'s `select('*')`, no new fetch) plus every
+    rider's `addendum_text` (new `listAddendumsByLeases` in api.js — one batched query, loaded
+    lazily only when a search starts). Free text, any words: every word must appear in the
+    tenant name / lease / riders; a match shows up to 3 highlighted clause snippets (60 chars
+    of context, rider label when the hit came from an amendment) so George judges "Tenant shall
+    repair the roof" vs "Landlord shall…" himself in seconds. Leases with no document on file
+    are listed as unsearchable with a nudge to upload/paste one. Clicking a hit opens the lease.
+  - **Not built (George picked "cheapest meaningful version"):** an "Ask AI" layer. If snippets
+    ever prove insufficient, one Haiku call over all cached texts per property (patterned on
+    `ask-lease`) would run ~3¢/question at Harlem Plaza, ~8–10¢ at Pershing (~1–2¢ repeats
+    within 5 min via prompt caching). Also noted: the structured `roof_responsible` column can't
+    answer the roof question — the extractor never fills it (manual toggle, set on 1 of 12 live
+    leases); the text search is the reliable path.
+  - **Sort (`api.js` `listLeases` + `listLeasesByProperties`):** new `byTermEnd` comparator —
+    soonest `lease_termination_date` first, no-end-date leases last, ties alphabetical — applied
+    in JS after fetch so live and demo behave identically. Flows everywhere those helpers feed:
+    the property's Tenants list, property-card tenant lists, and the rent-roll Excel export.
+  - Verified token-free: new `src/lib/__tests__/leaseSearch.test.js` (9 tests — dated order /
+    nulls last / ties; roof-clause snippet; case-insensitive; multi-word AND; tenant-name hit;
+    rider hit carries its label; snippet cap vs full count; empty query). Full suite **131/131
+    green**; `CI=true` build compiles. UI-verified inline in demo mode: City Dental (May 2026)
+    now lists above Bright Coffee (Dec 2027); typing "roof" surfaced "Landlord maintains the
+    roof" (City Dental) vs "Tenant is responsible for its pro-rata share of roof expenses"
+    (Bright Coffee) with highlights; clicking a hit opened the lease. Committed only this
+    task's files.
+
 - **2026-07-03** — New Hong Kong 2: the 2%/yr prose escalation now actually lands as yearly steps.
   Deployed: `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`). **No frontend deploy**
   (fix is entirely edge-side; the review form already dates + saves the steps), no migration, no

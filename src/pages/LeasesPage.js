@@ -5,6 +5,7 @@ import { getCorporation, getProperty, listLeases, listEscalations } from '../lib
 import { usePageChrome } from '../context/ChromeContext';
 import { usePrefetchers, escalationsByLeasesQuery } from '../lib/prefetch';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
+import LeaseSearch from '../components/LeaseSearch';
 import PropertyTabs from '../components/PropertyTabs';
 import { RowListSkeleton } from '../components/Skeleton';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
@@ -16,6 +17,7 @@ export default function LeasesPage() {
   const qc = useQueryClient();
   const pf = usePrefetchers();
   const [showBldg, setShowBldg] = useState(false);
+  const [search, setSearch] = useState('');
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: leases = [], isLoading } = useQuery({ queryKey: ['leases', propId], queryFn: () => listLeases(propId) });
@@ -73,6 +75,18 @@ export default function LeasesPage() {
       ) : leases.length === 0 && vacant === 0 ? (
         <p className="muted">No leases yet. Add one to get started.</p>
       ) : (
+        <>
+        {leases.length > 0 && (
+          <LeaseSearch
+            propId={propId}
+            query={search}
+            onChange={setSearch}
+            leases={leases}
+            onOpen={(id) => navigate(`/leases/${corpId}/${propId}/${id}`)}
+            onWarm={(id) => pf.leaseDetail(id)}
+          />
+        )}
+        {search.trim() ? null : (
         <div className="lease-list">
           {leases.map((l) => (
             <LeaseRow key={l.id} lease={l} pf={pf} onOpen={() => navigate(`/leases/${corpId}/${propId}/${l.id}`)} />
@@ -96,6 +110,8 @@ export default function LeasesPage() {
             </button>
           )}
         </div>
+        )}
+        </>
       )}
     </div>
   );

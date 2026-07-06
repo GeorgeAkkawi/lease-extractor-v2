@@ -9,6 +9,7 @@ import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
 import { contractCoversYear, contractAnnualCost } from './contracts';
+import { byTermEnd } from './leaseSearch';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -172,8 +173,12 @@ export const updateProperty = (id, patch) =>
   one(supabase.from('properties').update(patch).eq('id', id).select().single());
 
 // ---- Leases (a "tenant" = one lease) ---------------------------------------
-export const listLeases = (propertyId) =>
-  rows(supabase.from('leases').select('*').eq('property_id', propertyId).order('tenant_name'));
+// Soonest-expiring lease first (no end date last, ties alphabetical) — the
+// order every per-property tenant list shows, incl. the rent-roll export.
+export const listLeases = async (propertyId) => {
+  const all = await rows(supabase.from('leases').select('*').eq('property_id', propertyId).order('tenant_name'));
+  return (all || []).sort(byTermEnd);
+};
 
 // Bulk: every lease for a set of properties in ONE query, grouped by property_id.
 // Lets a property list load all its cards' leases at once (no per-card waterfall).
@@ -185,7 +190,7 @@ export async function listLeasesByProperties(propertyIds) {
   const all = await rows(
     supabase.from('leases').select('*').in('property_id', ids).order('tenant_name')
   );
-  for (const l of all || []) (byProp[l.property_id] ||= []).push(l);
+  for (const l of (all || []).sort(byTermEnd)) (byProp[l.property_id] ||= []).push(l);
   return byProp;
 }
 
@@ -904,6 +909,19 @@ export async function logHistoryEvent({ property_id, lease_id, type, description
 // ---- Addendums / riders (tracked amendments that update a lease) -------------
 export const listAddendums = (leaseId) =>
   rows(supabase.from('lease_addendums').select('*').eq('lease_id', leaseId).order('amendment_date'));
+
+// Bulk: rider texts for a whole property's leases in ONE query, grouped by
+// lease_id — fetched lazily by the lease search so riders are searched too.
+export async function listAddendumsByLeases(leaseIds) {
+  const ids = [...new Set((leaseIds || []).filter(Boolean))];
+  const byLease = Object.fromEntries(ids.map((id) => [id, []]));
+  if (ids.length === 0) return byLease;
+  const all = await rows(
+    supabase.from('lease_addendums').select('id,lease_id,label,addendum_text').in('lease_id', ids)
+  );
+  for (const a of all || []) (byLease[a.lease_id] ||= []).push(a);
+  return byLease;
+}
 
 export const createAddendum = async (a) =>
   one(supabase.from('lease_addendums').insert({ ...a, owner_id: await ownerId() }).select().single());
