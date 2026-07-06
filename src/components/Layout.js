@@ -13,9 +13,25 @@ export default function Layout({ children }) {
   // (they update the lease's base rent). Renewal options never apply on their own —
   // instead, when a decision is due we drop a "Is the tenant renewing?" prompt for
   // the owner to confirm. Neither happens early; nothing extends the term silently.
+  //
+  // This same engine runs nightly as a scheduled job (migrations 0034/0047), so
+  // re-running it on every single app load just repeats that work and fires dozens
+  // of queries per load. In live mode, gate it to once per calendar day per browser;
+  // demo has no cron and resets in memory each reload, so it always runs there.
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
+    if (!DEMO_MODE) {
+      const DAY_KEY = 'amlak_engine_ran';
+      const todayIso = new Date().toISOString().slice(0, 10);
+      try {
+        if (localStorage.getItem(DAY_KEY) === todayIso) {
+          qc.invalidateQueries({ queryKey: ['notifications'] });
+          return;
+        }
+        localStorage.setItem(DAY_KEY, todayIso);
+      } catch (_e) { /* storage blocked — just run it */ }
+    }
     Promise.allSettled([applyDueEscalations(), promptDueRenewalDecisions()])
       .then((results) => {
         qc.invalidateQueries({ queryKey: ['notifications'] });

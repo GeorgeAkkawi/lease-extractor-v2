@@ -489,3 +489,21 @@ textarea.text-input{resize:vertical;min-height:90px}
 .skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);animation:shimmer 1.3s ease-in-out infinite}
 @keyframes shimmer{100%{transform:translateX(100%)}}
 @media (prefers-reduced-motion:reduce){.skeleton::after{animation:none}}
+
+/* ---- small screens / phones ----
+   The layout is a fixed-width sidebar + fluid content, which squeezes badly on a
+   phone. Below 768px, force the sidebar to the same slim icon rail the collapse
+   toggle produces, tighten page padding, and let the dense fixed-column rows stack
+   instead of overflowing. Wide tables already scroll inside .table-wrap. */
+@media (max-width:768px){
+  .sidebar{width:64px;padding:20px 8px}
+  .sidebar .brand{justify-content:center;padding:2px 0 20px;gap:0}
+  .sidebar .side-item{justify-content:center;padding:11px 0}
+  .sidebar .reset-btn{justify-content:center;gap:0;padding:9px 0}
+  .sidebar .side-label{display:none}
+  .sidebar .collapse-toggle{display:none}
+  .content{padding:20px 16px 56px}
+  .lease-row{grid-template-columns:1fr auto;gap:8px 14px}
+  .esc-row{grid-template-columns:1fr 1fr;gap:12px}
+  .cam-row{grid-template-columns:1fr 110px 34px;gap:10px}
+}

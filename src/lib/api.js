@@ -216,6 +216,17 @@ export const deleteLease = (id) => rows(supabase.from('leases').delete().eq('id'
 // the active lease. The landlord keeps a complete record of past tenants.
 export async function archiveLease(lease, { status, note, endDate }) {
   const uid = await ownerId();
+  // Snapshot the tenant's billing history BEFORE deleting the lease. Deleting the
+  // lease row cascades to its invoices and payments (0023 ON DELETE CASCADE), so
+  // without this the entire AR / payment ledger for the tenant would be lost for
+  // good. Best-effort: a read hiccup must never block removing the tenant, but we
+  // preserve the record whenever we can (kept in expired_leases.financials).
+  let financials = null;
+  try {
+    const invoices = (await listInvoices(lease.id)) || [];
+    const payments = (await Promise.all(invoices.map((i) => listPayments(i.id)))).flat();
+    financials = { invoices, payments, archived_at: new Date().toISOString() };
+  } catch (_e) { /* keep null — never block removal on a history read */ }
   await rows(
     supabase.from('expired_leases').insert({
       owner_id: uid,
@@ -228,6 +239,7 @@ export async function archiveLease(lease, { status, note, endDate }) {
       status,
       note: note || null,
       lease_text: lease.lease_text ?? null,
+      financials,
     })
   );
   await deleteLease(lease.id);
@@ -793,8 +805,13 @@ export async function applyEscalation(escalation) {
   const priorRent = priorRentBefore(lease, escs, escalation.effective_date);
   const newRent = escalation.new_base_rent != null ? Number(escalation.new_base_rent) : priorRent;
 
-  const updated = await updateEscalation(escalation.id, { status: 'applied', applied_at: new Date().toISOString() });
+  // Order matters: write the new base rent FIRST, then mark the escalation applied.
+  // These are two separate non-transactional writes; if the tab dies between them,
+  // this ordering leaves the escalation still 'scheduled' (so the next run re-applies
+  // it harmlessly) instead of 'applied' with a stale rent that never catches up
+  // (applyDueEscalations skips applied rows, so that state would be permanent).
   await updateLease(escalation.lease_id, { base_rent: newRent }); // change the actual base rent in the lease terms
+  const updated = await updateEscalation(escalation.id, { status: 'applied', applied_at: new Date().toISOString() });
 
   // Only notify (and draft a tenant email) for a recently-crossed increase. An
   // escalation whose date is long past — e.g. a historical lease entered today —
@@ -923,24 +940,6 @@ export async function backfillLeaseToToday(leaseId, today = new Date()) {
     if (lease.is_active !== false || patch.base_rent != null) await updateLease(leaseId, patch);
     await markAppliedSilently(res.consumedEscalationIds, res.consumedRenewalIds);
     return res;
-  }
-
-  // Archive the original term once when today has rolled into a renewal option.
-  if (res.currentRenewalId && lease.lease_start && lease.lease_termination_date) {
-    await rows(
-      supabase.from('expired_leases').insert({
-        owner_id: await ownerId(),
-        property_id: lease.property_id,
-        tenant_name: lease.tenant_name,
-        sf: lease.square_footage,
-        base_rent: lease.base_rent,
-        lease_start: lease.lease_start,
-        lease_end: lease.lease_termination_date,
-        status: 'Renewed',
-        note: `Historical term — back-filled on entry; current term computed as of ${fmtDate(today.toISOString().slice(0, 10))}`,
-        lease_text: lease.lease_text ?? null,
-      })
-    );
   }
 
   const patch = { is_active: true, base_rent: res.currentRent };
@@ -2165,24 +2164,32 @@ export async function promptDueRenewalDecisions(today = new Date()) {
     const years = Math.round((ren.term_months || 12) / 12);
     const pct = Number(ren.annual_escalation_pct) || 0;
     const rentLabel = ren.new_rent != null ? money(ren.new_rent) : (pct > 0 ? `+${pct}%/yr` : 'the current rent');
-    const notif = await one(
-      supabase
-        .from('notifications')
-        .insert({
-          owner_id: uid,
-          lease_id: l.id,
-          property_id: l.property_id,
-          corporation_id: prop?.corporation_id || null,
-          kind: 'renewal_decision',
-          title: `Is ${l.tenant_name} renewing?`,
-          body: `${ren.option_label || 'A renewal option'} — ${years}-yr extension at ${rentLabel}. Confirm only if the tenant is exercising it; it won't change the term until you do.`,
-          ...emailFields,
-          read: false,
-        })
-        .select()
-        .single()
-    );
-    created.push(notif);
+    // A partial unique index (migration 0050) guarantees at most one open
+    // renewal_decision per lease. If a concurrent tab or the nightly cron created
+    // it between our check above and this insert, the DB rejects it (23505) — treat
+    // that as "already prompted" rather than surfacing an error.
+    try {
+      const notif = await one(
+        supabase
+          .from('notifications')
+          .insert({
+            owner_id: uid,
+            lease_id: l.id,
+            property_id: l.property_id,
+            corporation_id: prop?.corporation_id || null,
+            kind: 'renewal_decision',
+            title: `Is ${l.tenant_name} renewing?`,
+            body: `${ren.option_label || 'A renewal option'} — ${years}-yr extension at ${rentLabel}. Confirm only if the tenant is exercising it; it won't change the term until you do.`,
+            ...emailFields,
+            read: false,
+          })
+          .select()
+          .single()
+      );
+      created.push(notif);
+    } catch (e) {
+      if (e?.code !== '23505') throw e; // ignore the duplicate-prompt race; re-raise anything else
+    }
   }
   return created;
 }

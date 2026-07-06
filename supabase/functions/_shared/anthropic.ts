@@ -56,17 +56,28 @@ export async function callClaude(opts: CallOpts): Promise<any> {
   if (opts.effort && !opts.model.includes('haiku')) outputConfig.effort = opts.effort;
   if (Object.keys(outputConfig).length) body.output_config = outputConfig;
 
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': VERSION,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
+  // Retry transient failures (rate limit / overloaded / 5xx) with a short backoff.
+  // These are the errors Anthropic tells you to retry; without this, a momentary
+  // load spike fails the whole (paid) extraction and the user must re-upload. Real
+  // errors (400 bad request, 401 auth, refusal) are NOT retried — they'd never
+  // succeed. Up to 3 attempts total (~0.8s + 1.6s of waiting worst case).
+  const RETRYABLE = new Set([429, 500, 502, 503, 529]);
+  let res: Response;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': VERSION,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) break;
+    if (attempt < 2 && RETRYABLE.has(res.status)) {
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+      continue;
+    }
     const errText = await res.text();
     throw new Error(`Anthropic API ${res.status}: ${errText}`);
   }

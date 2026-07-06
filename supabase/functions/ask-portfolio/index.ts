@@ -37,7 +37,14 @@ Deno.serve(async (req) => {
     if (!question?.trim() || !String(snapshot || '').trim()) {
       return json({ error: 'question and snapshot are required' }, 400);
     }
-    const material = String(snapshot).slice(0, MAX_SNAPSHOT_CHARS);
+    // Guard the token bill, but never truncate silently: if we cut the summary, tell
+    // the model so it can caveat "based on the first N properties" instead of
+    // confidently answering from a portfolio it only half-saw.
+    const full = String(snapshot);
+    const material = full.length > MAX_SNAPSHOT_CHARS
+      ? full.slice(0, MAX_SNAPSHOT_CHARS) +
+        '\n\n[NOTE: the portfolio summary was truncated to fit — some later properties/tenants are not shown. Say your answer may be incomplete if the question could depend on them.]'
+      : full;
 
     const answer = await callClaude({
       model: MODEL,

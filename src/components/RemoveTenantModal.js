@@ -32,7 +32,8 @@ export default function RemoveTenantModal({ lease, onClose, onDone }) {
         <div className="modal-body">
           <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
             This ends the active lease but keeps it in <strong>History → Expired &amp; renewed leases</strong>, so you
-            always have a complete record of who has occupied the space.
+            always have a complete record of who has occupied the space. The tenant's invoices and recorded
+            payments are saved with that archived record and removed from active receivables.
           </p>
           <label className="form-field" style={{ maxWidth: '100%' }}>
             <span>Outcome</span>
