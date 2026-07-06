@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { mockSupabase } from './demo/mockClient';
 
-const url = process.env.REACT_APP_SUPABASE_URL;
-const anonKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
+const url = import.meta.env.REACT_APP_SUPABASE_URL;
+const anonKey = import.meta.env.REACT_APP_SUPABASE_ANON_KEY;
 
 // Demo mode: when no Supabase keys are configured, fall back to an in-memory
 // mock with seeded data so the app is fully clickable without any backend.
