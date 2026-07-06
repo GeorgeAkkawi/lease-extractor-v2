@@ -71,6 +71,53 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — **Audit follow-through** (the held-back + open items George green-lit: real 2FA,
+  atomic lease creation, overdue-invoice alerts, timezone pin, CORS lockdown, error surfacing).
+  Deployed: DB migrations `0051`/`0052`/`0053` (Supabase `awgrjmbcghdjgnqeiqkt`), 12 edge functions
+  redeployed (shared CORS change), `ALLOWED_ORIGINS` secret set, frontend Cloudflare version
+  `d203539c`. Commit `ab55940`. **No money, no tenant emails, no destructive data** (migrations are
+  additive: new fns/policies/column-free). Tests **141/141**.
+  - **C2 (Critical) — real authenticator 2FA, server-enforced.** Replaced the client-only email-OTP
+    (which a valid aal1 JWT bypassed via PostgREST) with Supabase **native TOTP MFA**: `SecuritySettings.js`
+    enrolls via QR + verify; `TwoFactorChallenge.js` steps the session up to aal2; `AuthContext.js` gates on
+    the real `getAuthenticatorAssuranceLevel()` (not a client flag). **Server enforcement** = `0052`:
+    `user_has_verified_mfa()` (SECURITY DEFINER, reads `auth.mfa_factors`) + a `require_aal2` RESTRICTIVE
+    RLS policy on **all 22 owner-scoped data tables** — `aal2 OR not user_has_verified_mfa()`. **Safe by
+    construction:** dormant for any user with no verified factor (there are **0** now → zero impact on
+    George today); it only bites after a user enrolls (which itself proves the code + elevates that session
+    to aal2). service_role/anon unaffected → cron/edge keep working. Email-2FA (0030 tables, send/verify
+    fns) left dormant (non-destructive). **George: enroll your authenticator in Settings → Security to turn
+    it on; if you ever lose the device, I can reset it from the backend.**
+  - **C3 (money path) — atomic lease creation.** `0053 create_lease_tx(jsonb…)` (SECURITY INVOKER, so RLS
+    still applies) inserts a lease + its escalations/renewals/abatements in ONE transaction;
+    `createLeaseFromExtraction` (`api.js`) now calls it via a new `callRpc` helper (owner_id forced
+    server-side), and `mockClient.js` mirrors the RPC so demo + the replay tests exercise the same path. A
+    failed import can no longer leave a half-built lease with missing rent steps. **Deliberately staged
+    (NOT done — flagged):** the `confirmRenewal`/`applyAddendum`/`reconcileRenewalOptions` (H4) RPC ports —
+    they're entangled read-modify-writes that already self-heal via `backfillLeaseToToday`, and hand-written
+    heterogeneous money-SQL is untestable in Jest, so rushing it into this batch risked corrupting live
+    lease/rent data. Recommend doing them as a focused, separately-verified step.
+  - **4a — overdue-invoice alerts.** `buildAlerts` (`alerts.js`) + `fetchAlertData` (`api.js`) now surface
+    any unpaid, past-due invoice (from `v_invoice_balances`, balance > 0) as a danger alert on the
+    dashboard, always shown until paid (no 6-month horizon). Mock `QB` gained `.gt`/`.lt`.
+  - **M1 — timezone.** `0051` adds `public.app_today()` (= Eastern date) and swaps `current_date` →
+    `app_today()` in `apply_due_escalations`/`apply_due_renewals`/`regenerate_lease_reminders` (byte-identical
+    otherwise). Behavior-neutral at the 13:00-UTC cron time (UTC date already == Eastern there); future-proofs
+    off-hours/manual runs.
+  - **M6 — CORS lockdown.** `_shared/cors.ts` now resolves the allowed origin **per request** via a
+    `cors(req)` factory (reflects the request origin when it's the prod origin or any localhost; else the
+    primary). Threaded through the 12 functions that import it (one destructure line each; no json() callsite
+    churn). Backward-compatible standalone exports kept. `ALLOWED_ORIGINS` secret set; built-in default also
+    hard-codes the prod origin so a deploy without the secret is still locked (not `*`).
+  - **6-residual — error surfacing + lighter loads.** New shared `MutationError` component drops a friendly
+    line when a save/delete fails, added to the money editors (CAM, building size, escalations, abatements,
+    invoices+payments, renewals, service contracts) — no more silent failed clicks. `listLeases`/
+    `listLeasesByProperties` now select an explicit `LEASE_LIST_COLS` (everything **except** the big
+    `lease_text` blob) so property/tenant lists load lighter; `getLease` (detail page) keeps `select('*')`.
+  - **Still open / not attempted:** the confirm/addendum/reconcile RPC ports (above); the **Vite** build swap
+    (large + touches build+test tooling — being done as an isolated follow-up so its risk doesn't co-mingle
+    with these security/data migrations).
+
 - **2026-07-06** — Security/quality **audit fixes** (10 items from the read-only audit; the two
   biggest-risk architectural ones deliberately held back — see note). Deployed: DB migration `0050`
   (Supabase `awgrjmbcghdjgnqeiqkt`), 8 edge functions redeployed (shared retry), frontend Cloudflare
