@@ -210,6 +210,16 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .hit-snippet mark{background:var(--gold-soft);color:var(--ink);padding:0 2px;border-radius:2px;font-weight:600}
 .hit-snippet em{color:var(--faint)}
 .search-note{font-size:12.5px;margin:4px 2px 0}
+/* common-question chips + cross-lease AI answer */
+.lease-search-chips{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:9px;font-size:12.5px}
+.chip{padding:3px 11px;border:1px solid var(--border);border-radius:999px;background:var(--card);color:var(--ink);font-size:12px;font-weight:600;cursor:pointer;text-transform:none;letter-spacing:0}
+.chip:hover{background:var(--gold-soft);border-color:var(--gold)}
+.ai-answer-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-bottom:10px}
+.ai-answer-hint{font-size:11.5px}
+.ai-answer{border:1px solid var(--gold);background:var(--gold-soft);border-radius:6px;padding:12px 14px;margin-bottom:14px}
+.ai-answer-head{font-family:var(--display);font-size:14px;margin-bottom:6px}
+.ai-answer-body{white-space:pre-wrap;font-size:13.5px;line-height:1.6;color:var(--ink)}
+.ai-answer-foot{font-size:11.5px;margin:8px 0 0}
 
 /* ---- CAM itemized editor ---- */
 .cam-block{border-top:1px solid var(--border);padding-top:20px}

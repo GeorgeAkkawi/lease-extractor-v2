@@ -71,6 +71,63 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — Hybrid AI lease answers: the free keyword search now has an optional "🤖 Answer
+  this across these leases" that reads ONLY the matched clauses and answers by tenant (e.g. "who
+  pays for the roof?"). Built for cost: three levers stacked. Deployed: DB migration `0045`,
+  `ask-leases` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `db33f513`. **Costs money** (George approved): a fresh question is **under ½¢**; repeats /
+  unchanged corpus are **$0**; common questions warm once. A normal month → well under $1.
+  - **What George asked:** make the earlier free search *answer* the question, but as cheaply as
+    possible without hurting quality. His insight (correct): don't re-read every lease's full text
+    per question — let the keyword search narrow it, then send the AI only the matched clauses. He
+    chose to **stack all three** cost levers.
+  - **Lever 1 — send less** (`src/lib/leaseSearch.js` new pure `gatherAnswerContext`): for each
+    lease that matches the term, widen each hit to its whole clause/paragraph (~600–900 chars,
+    deduped, capped per lease), labeled by tenant — the AI's evidence, far richer than the 60-char
+    display snippet, but a tiny fraction of the full library. Recall safety net: if the property's
+    whole corpus is small (≲ ~30k tokens, e.g. Harlem), send each matched lease's FULL text instead
+    (perfect coverage, still ~3¢). ~½¢ vs ~8¢ full-corpus at Pershing, and **flat as the library
+    grows** (unmatched leases are never sent).
+  - **Lever 2 — answer once, reuse free** (migration `0045_lease_qa_cache.sql` + `api.js`
+    `askLeasesQuestion`): every answer is cached per property, keyed by a **corpus fingerprint**
+    (`leaseCorpusFingerprint` — max lease/rider `updated_at` + text lengths). Re-asking the same
+    thing on an unchanged corpus returns the stored answer for **$0** and never calls the model; any
+    lease edit/add/remove flips the fingerprint so stale answers stop matching. New owner-scoped
+    `lease_qa_cache` table (RLS mirrors `user_preferences`/0038; additive, non-destructive). Cache
+    read misses degrade gracefully (feature still works if the table is absent); writes are
+    best-effort.
+  - **Lever 3 — warm the common questions** (`precomputeCommonQuestions` + `COMMON_QUESTION_TERMS`
+    = roof/HVAC/property taxes/CAM/insurance/structural): a row of **common-question chips** under
+    the search box; clicking one fills the search and answers it (cached after, so free next time).
+    **Implementation choice:** warming is done as a property-level cache — *not* by editing the
+    at-ceiling `extract-lease` import path (one field from the 16-union limit, and heavily touched
+    by other sessions). And warming is **never auto-fired** on page load (George is money-sensitive)
+    — it happens only on an explicit chip/button click. `precomputeCommonQuestions` exists (exported)
+    for a future bulk/automated warm but isn't wired to auto-run.
+  - **The keyword-vs-question gotcha (caught in planning):** the free search requires EVERY word to
+    appear in the lease, so a natural-English question ("who pays the roof?") would match nothing.
+    So the AI is keyed off the **search TERM** ("roof"); `buildLeaseQuestion(term)` templates the
+    per-tenant tenant-vs-landlord question around it, and the cache key is the normalized term.
+  - **Edge function `ask-leases`** (clone of `ask-lease`, array input): owner-scoped,
+    `enforceRateLimit`, Haiku 4.5, excerpts in a `cache_control` block (prompt caching for bursts),
+    tight `max_tokens`, group-by-tenant + quote-the-clause + no-arithmetic instruction, 40k-char
+    input backstop. Stateless — caching lives client-side. `ask-lease` (single-lease Q&A) untouched.
+  - **UI** (`LeaseSearch.js` + `App.css`): the answer panel renders **above** the snippet rows (which
+    stay as the visible evidence), with a "· saved answer (free)" tag on a cache hit and a "confirm
+    against the lease" footnote. Demo mode (`mockClient.js` `demoAskLeases`) returns a canned grouped
+    answer so demo never calls out.
+  - Verified token-free: `src/lib/__tests__/leaseSearch.test.js` +11 (normalizeQuestion;
+    buildLeaseQuestion; leaseCorpusFingerprint stable/flips on text|updated_at|rider change;
+    gatherAnswerContext matched-only + whole-clause widening + per-lease cap + small-corpus full-text
+    + rider label). Full suite **142/142 green**; `CI=true` build compiles (+1.91 kB). Migration
+    pushed (only 0045 pending), edge fn deployed clean (Deno bundled the shared modules). **UI-verified
+    inline in demo:** the roof chip → grouped answer "City Dental: Landlord responsible … Bright
+    Coffee: Tenant responsible …" with highlighted clauses below and tenants still sorted soonest
+    first. Committed only this task's files.
+  - **Live check:** open a property → Leases → type "roof" (or click the roof chip) → "🤖 Answer" →
+    grouped who-pays-what with clauses; ask again → instant "saved answer" with no second Haiku call
+    (edge logs). ~½¢ first time, $0 repeats.
+
 - **2026-07-06** — Per-property lease search (free, no AI) + tenants sorted soonest-expiring
   first. Deployed: frontend Cloudflare version `78fe1932`. No migration, no edge functions,
   **$0 per search** — no AI call anywhere.

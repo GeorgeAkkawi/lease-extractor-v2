@@ -1,7 +1,7 @@
 // Central data access. Every function is owner-scoped automatically by RLS.
 // Pages call these via @tanstack/react-query; shared query keys mean a Page 1
 // edit invalidates and refreshes Page 2.
-import { supabase, invokeFunction } from './supabaseClient';
+import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildContractRenewalEmail } from './emailTemplates';
@@ -9,7 +9,7 @@ import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
 import { contractCoversYear, contractAnnualCost } from './contracts';
-import { byTermEnd } from './leaseSearch';
+import { byTermEnd, gatherAnswerContext, leaseCorpusFingerprint, normalizeQuestion, buildLeaseQuestion } from './leaseSearch';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -562,6 +562,97 @@ export async function askLease(leaseId, question, leaseText) {
   if (leaseId) payload.lease_id = leaseId;
   const { answer } = await invokeFunction('ask-lease', payload);
   return answer;
+}
+
+// ---- Cross-lease AI answers (cheap, cached) --------------------------------
+// Answer a question ACROSS a property's leases (e.g. "who's responsible for the
+// roof?"). Three cost levers stack here so most questions end up free:
+//   1) only the clauses the free keyword search matched are sent to the model
+//      (gatherAnswerContext) — never the whole library, so it's sub-cent and flat
+//      as the library grows;
+//   2) every answer is cached per property keyed by a corpus fingerprint, so a
+//      repeat question on an unchanged corpus is $0 and never calls the model;
+//   3) common questions are warmed once (precomputeCommonQuestions) so they're
+//      already cached before the landlord asks.
+// `term` is the SEARCH TERM (e.g. "roof"), not a full English sentence — the
+// keyword filter needs the words to actually appear in the leases, so the question
+// is templated around the term (buildLeaseQuestion).
+export const COMMON_QUESTION_TERMS = ['roof', 'HVAC', 'property taxes', 'CAM', 'insurance', 'structural'];
+
+async function getCachedAnswer(propId, questionNorm, fingerprint) {
+  const { data } = await supabase
+    .from('lease_qa_cache')
+    .select('answer_json')
+    .eq('property_id', propId)
+    .eq('question_norm', questionNorm)
+    .eq('corpus_fingerprint', fingerprint)
+    .maybeSingle();
+  return data?.answer_json?.answer ?? null;
+}
+
+async function writeCachedAnswer(propId, questionNorm, fingerprint, answer) {
+  const uid = await ownerId();
+  // Keep the table lean: one row per (property, question). Drop any stale-fingerprint
+  // rows for this question before inserting the fresh answer.
+  await supabase.from('lease_qa_cache').delete().eq('property_id', propId).eq('question_norm', questionNorm);
+  await supabase.from('lease_qa_cache').insert({
+    user_id: uid,
+    property_id: propId,
+    question_norm: questionNorm,
+    corpus_fingerprint: fingerprint,
+    answer_json: { answer },
+  });
+}
+
+// Returns { answer, fromCache, empty }. `empty` = the term matches no lease at this
+// property, so there's nothing to ask the model (no call, no charge).
+export async function askLeasesQuestion(propId, term, { leases = [], addendumsByLease = {} } = {}) {
+  const questionNorm = normalizeQuestion(term);
+  if (!questionNorm) return { answer: '', fromCache: false, empty: true };
+
+  const contexts = gatherAnswerContext(term, leases, addendumsByLease);
+  if (contexts.length === 0) {
+    return {
+      answer: `No lease at this property mentions “${String(term).trim()}”, so there's nothing to answer. Try a different word, or upload the missing lease documents.`,
+      fromCache: false,
+      empty: true,
+    };
+  }
+
+  const question = buildLeaseQuestion(term);
+
+  // Demo mode: canned answer, no network, no caching.
+  if (DEMO_MODE) {
+    const { answer } = await invokeFunction('ask-leases', { question, term, contexts });
+    return { answer, fromCache: false };
+  }
+
+  const fingerprint = leaseCorpusFingerprint(leases, addendumsByLease);
+  const cached = await getCachedAnswer(propId, questionNorm, fingerprint);
+  if (cached) return { answer: cached, fromCache: true };
+
+  const { answer } = await invokeFunction('ask-leases', { question, term, contexts });
+  try {
+    await writeCachedAnswer(propId, questionNorm, fingerprint, answer);
+  } catch {
+    /* caching is best-effort — never fail the answer on a cache write */
+  }
+  return { answer, fromCache: false };
+}
+
+// Warm the cache for the standard category questions so they're free when asked.
+// Best-effort and sequential (respects the AI rate limit). Skipped in demo. Not
+// auto-fired on page load — the UI calls it only on an explicit user action so no
+// spend ever happens without a click.
+export async function precomputeCommonQuestions(propId, ctx) {
+  if (DEMO_MODE) return;
+  for (const term of COMMON_QUESTION_TERMS) {
+    try {
+      await askLeasesQuestion(propId, term, ctx);
+    } catch {
+      /* best-effort warm — keep going on any single failure */
+    }
+  }
 }
 
 // ---- Generic document vault (insurance, contracts) -------------------------

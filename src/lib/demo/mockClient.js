@@ -264,6 +264,9 @@ const functions = {
     if (name === 'ask-lease') {
       return ok(demoAskLease(body));
     }
+    if (name === 'ask-leases') {
+      return ok(demoAskLeases(body));
+    }
     if (name === 'ask-doc') {
       return ok(demoAskDoc(body));
     }
@@ -469,6 +472,32 @@ function demoAskLease(body) {
   }
   const snippet = doc ? doc.split('\n').filter(Boolean).slice(1, 4).join(' ') : lease.lease_terms;
   return { answer: `Here's what the lease for ${lease.tenant_name} says: ${snippet}` + tail };
+}
+
+// Demo stand-in for the ask-leases Edge Function (cross-lease answers). Reads the
+// tenant-labeled clause excerpts the client already assembled and produces a plausible
+// grouped answer, so the "answer across these leases" UX works with no backend.
+function demoAskLeases(body) {
+  const term = String(body?.term || 'this').trim();
+  const tl = term.toLowerCase();
+  const contexts = Array.isArray(body?.contexts) ? body.contexts : [];
+  const lines = contexts.map((c) => {
+    const text = String(c?.text || '');
+    const low = text.toLowerCase();
+    const ti = low.indexOf(tl);
+    const near = ti >= 0 ? low.slice(Math.max(0, ti - 45), ti) : low;
+    const who = /landlord/.test(near) && !/tenant/.test(near) ? 'Landlord' : 'Tenant';
+    const clause = ti >= 0
+      ? text.slice(Math.max(0, ti - 35), ti + 65).replace(/\s+/g, ' ').trim()
+      : text.slice(0, 90).replace(/\s+/g, ' ').trim();
+    return `• ${c?.tenant || 'Tenant'}: ${who} responsible — “…${clause}…”`;
+  });
+  const detail = lines.length ? lines.join('\n') : `No tenant material mentions “${term}”.`;
+  return {
+    answer:
+      `Regarding “${term}”:\n${detail}\n\n` +
+      '(Demo mode gives a canned answer. Connected to your API key, the AI reads the matched clauses and answers precisely.)',
+  };
 }
 
 function demoQuery(question) {
