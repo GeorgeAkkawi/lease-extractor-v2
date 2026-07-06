@@ -71,6 +71,43 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-06** — Security/quality **audit fixes** (10 items from the read-only audit; the two
+  biggest-risk architectural ones deliberately held back — see note). Deployed: DB migration `0050`
+  (Supabase `awgrjmbcghdjgnqeiqkt`), 8 edge functions redeployed (shared retry), frontend Cloudflare
+  version `1a5a716d`. **No money, no tenant emails, no destructive data** (migration is additive:
+  new column + index + function replace + grant revokes).
+  - **C1 (Critical) — tenant removal no longer destroys billing history.** Deleting a lease cascades to
+    its invoices+payments (0023 `on delete cascade`), and `archiveLease` only copied summary fields — so
+    an entire tenant's AR/payment ledger was lost for good, silently. `0050` adds `expired_leases.financials
+    jsonb`; `archiveLease` (`api.js`) now snapshots `listInvoices`+`listPayments` into it BEFORE the delete
+    (best-effort — a read hiccup never blocks removal). `RemoveTenantModal.js` copy updated.
+  - **C3 partial (Critical vector) — `applyEscalation` reordered.** It marked the step `applied` THEN
+    wrote `base_rent`; a tab death between the two left the step applied with a stale rent forever
+    (`applyDueEscalations` skips applied rows). Now writes `base_rent` first → an interruption leaves it
+    `scheduled` and re-appliable. (Full transactional RPC rewrite NOT done — held back.)
+  - **H1 (High) — duplicate renewal prompts killed at the DB.** `0050` adds a partial unique index
+    `(lease_id) where kind='renewal_decision'`, recreates `apply_due_renewals()` with `on conflict … do
+    nothing`, and `promptDueRenewalDecisions` (`api.js`) swallows the 23505 race.
+  - **H2 (High) — write-on-read gated.** `Layout.js` fired the escalation+prompt engine on EVERY load,
+    duplicating the nightly cron; now gated to once/calendar-day/browser via localStorage in live mode
+    (demo still runs each load).
+  - **H3 (High) — AI extraction survives a load spike.** `_shared/anthropic.ts callClaude` retries
+    transient 429/500/502/503/529 with backoff (≤3 tries). Redeployed the 8 functions that use it
+    (extract-lease/-addendum/-contract/-insurance, ask-portfolio/-lease/-doc, trends-narrative).
+  - **M4** — `ask-portfolio` appends a "summary truncated" note instead of silently dropping tenants.
+    **M5** — `0050` revokes `anon`/`public` EXECUTE on `log_security_event` + `ai_rate_check` (audit
+    spoofing; app calls them as service-role/authenticated, which keep working). **M3** — `App.css`
+    `@media (max-width:768px)`: sidebar → 64px icon rail, rows stack. **L1** — removed the dead
+    `currentRenewalId` archive branch in `backfillLeaseToToday`. **L3** — deleted leftover `vercel.json`.
+  - **Held back on purpose (need a careful, tested rollout — flagged to George):** **C2** 2FA is a
+    client-side UI gate only (a valid JWT bypasses it via PostgREST); the real fix is server-side
+    enforcement/native MFA and a wrong RLS change could lock George out. **C3-full** RPC-transactionalize
+    confirmRenewal/applyAddendum/createLeaseFromExtraction + **H4** port `reconcileRenewalOptions` to SQL
+    (large money-path rewrite, needs tests). **M6** set `ALLOWED_ORIGIN` (would break local dev), **M1**
+    timezone (local-vs-UTC decision touching the cron), **L2** CRA→Vite. Verified token-free: full suite
+    **139/139 green**; `CI=true` build compiles (+82 B); migration verified live. Committed only this
+    task's files.
+
 - **2026-07-06** — Overview / property pages now count an **outdated ("needs extension") tenant as
   occupied**, matching the Leases page (fixes my earlier "Overview↔property sync", which synced them to
   each OTHER via `v_property_totals` instead of to the Leases page). Deployed: DB migration `0049`
