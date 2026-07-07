@@ -313,15 +313,6 @@ const functions = {
     if (name === 'trends-narrative') {
       return ok({ narrative: 'Revenue held steady year over year while taxes rose ~14% and CAM ~12%, lifting the tax PSF from $4.40 to $5.00 and CAM PSF from $3.20 to $3.60. The new roof expense this year is tracked separately and excluded from PSF.' });
     }
-    if (name === 'query-portfolio') {
-      return ok(demoQuery(body?.question || ''));
-    }
-    if (name === 'send-2fa-code') {
-      return ok({ sent: true });
-    }
-    if (name === 'verify-2fa-code') {
-      return ok({ verified: true, intent: body?.intent || 'login' });
-    }
     return ok({});
   },
 };
@@ -529,23 +520,6 @@ function demoAskPortfolio(body) {
     return { answer: `Properties with service contracts (${props.length}):\n` + list(props, (p) => `• ${p.property}: ` + p.service_contracts.map((c) => `${c.service_type || 'contract'}${c.vendor ? ` (${c.vendor})` : ''}`).join(', ')) + foot };
   }
   return { answer: `Your portfolio: ${snap.property_count || 0} properties, ${snap.tenant_count || 0} tenants. Ask about insurance, contracts, rent, expirations, or who owes money.` + foot };
-}
-
-function demoQuery(question) {
-  const q = question.toLowerCase();
-  const yearMatch = q.match(/20\d{2}/);
-  let results = db.leases.map((l) => ({
-    lease_id: l.id, tenant_name: l.tenant_name,
-    property_name: db.properties.find((p) => p.id === l.property_id)?.name,
-    corporation_id: db.properties.find((p) => p.id === l.property_id)?.corporation_id, property_id: l.property_id,
-    square_footage: l.square_footage, base_rent: l.base_rent,
-    lease_termination_date: l.lease_termination_date,
-    has_renewal_option: db.renewal_options.some((r) => r.lease_id === l.id),
-  }));
-  if (yearMatch) results = results.filter((r) => (r.lease_termination_date || '').startsWith(yearMatch[0]));
-  if (q.includes('no renewal') || q.includes('without renewal')) results = results.filter((r) => !r.has_renewal_option);
-  else if (q.includes('renewal')) results = results.filter((r) => r.has_renewal_option);
-  return { filter: { demo: true }, count: results.length, results };
 }
 
 // Postgres RPCs. Mirrors the real SQL functions so demo + tests exercise the same

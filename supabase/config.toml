@@ -397,7 +397,7 @@ deno_version = 2
 # secret_key = "env(SECRET_VALUE)"
 
 # ---- Edge Functions -------------------------------------------------------
-# The AI functions (ask-lease, ask-doc, extract-*, query-portfolio,
+# The AI functions (ask-lease, ask-doc, ask-portfolio, extract-*,
 # trends-narrative, draft-invoice) keep the default verify_jwt = true and
 # additionally require a real authenticated user + per-user rate limiting in code.
 #

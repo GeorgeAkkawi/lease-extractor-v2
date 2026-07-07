@@ -503,6 +503,10 @@ textarea.text-input{resize:vertical;min-height:90px}
   .sidebar .side-label{display:none}
   .sidebar .collapse-toggle{display:none}
   .content{padding:20px 16px 56px}
+  /* Page-head actions ("Download rent roll", "Add tenant") clipped off the right
+     edge on phones — stack them under the title and let them wrap instead. */
+  .page-head{flex-wrap:wrap;align-items:flex-start}
+  .head-actions{flex-wrap:wrap}
   .lease-row{grid-template-columns:1fr auto;gap:8px 14px}
   .esc-row{grid-template-columns:1fr 1fr;gap:12px}
   .cam-row{grid-template-columns:1fr 110px 34px;gap:10px}

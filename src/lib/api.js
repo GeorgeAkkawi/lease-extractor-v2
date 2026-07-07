@@ -109,34 +109,8 @@ export const updateCorporation = (id, patch) =>
 const businessFromCorp = (corp) =>
   corp ? { company_name: corp.name, address: corp.address, contact_email: corp.contact_email, contact_phone: corp.contact_phone } : null;
 
-// Lightweight per-corporation counts for the corp cards (properties + tenants).
-export async function getCorpCounts(corpId) {
-  const props = await listProperties(corpId);
-  let tenants = 0;
-  for (const p of props) {
-    const ls = await listLeases(p.id);
-    tenants += ls.length;
-  }
-  return { properties: props.length, tenants };
-}
-
-// Per-corporation financial roll-up (sum of property totals for a year).
-export async function getCorpRollup(corpId, year) {
-  const props = await listProperties(corpId);
-  let revenue = 0, expenses = 0, noi = 0;
-  for (const p of props) {
-    const t = await getPropertyTotals(p.id, year);
-    if (t) {
-      revenue += Number(t.total_revenue) || 0;
-      expenses += Number(t.taxes_total) + Number(t.cam_total) + Number(t.roof_total);
-      noi += Number(t.noi) || 0;
-    }
-  }
-  return { revenue, expenses, noi };
-}
-
-// Batched counts for ALL corporations in two bulk queries (replaces the per-card
-// N+1 getCorpCounts). Returns a map { [corpId]: { properties, tenants } }.
+// Batched counts for ALL corporations in two bulk queries. Returns a map
+// { [corpId]: { properties, tenants } }.
 export async function listCorpCounts() {
   const [props, leaseRows] = await Promise.all([
     rows(supabase.from('properties').select('id,corporation_id')),
@@ -520,30 +494,6 @@ export function buildAbatements(abatements) {
 }
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-
-// ---- Email two-factor auth -------------------------------------------------
-// Read the current user's 2FA preference. Defaults to "off" on any error (or in
-// demo mode) so the app never gets stuck behind a challenge it can't satisfy.
-export async function getSecuritySettings() {
-  try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return { email_2fa_enabled: false, last_2fa_at: null };
-    const { data } = await supabase
-      .from('user_security')
-      .select('email_2fa_enabled,last_2fa_at')
-      .eq('user_id', user.id)
-      .maybeSingle();
-    return { email_2fa_enabled: !!data?.email_2fa_enabled, last_2fa_at: data?.last_2fa_at ?? null };
-  } catch {
-    return { email_2fa_enabled: false, last_2fa_at: null };
-  }
-}
-
-// Email a fresh 6-digit code to the signed-in user; verify a code they entered.
-// intent: 'login' (default), 'enable', or 'disable'.
-export const sendTwoFactorCode = () => invokeFunction('send-2fa-code', {});
-export const verifyTwoFactorCode = (code, intent = 'login') =>
-  invokeFunction('verify-2fa-code', { code, intent });
 
 // ---- Global search ("Ask Amlak") -------------------------------------------
 // One bulk load of the searchable entities; the search bar filters this locally
