@@ -3,11 +3,14 @@ import { useQuery } from '@tanstack/react-query';
 import { listSenderEmails } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import RecipientField from './RecipientField';
+import { useModalA11y } from './modalA11y';
 
 // The ready-to-send tenant email a renewal/escalation notification carries. Lets
 // the landlord pick the sending account + recipient and send via Gmail / mail app
 // or copy it. (Moved out of the old top-bar bell so the dashboard hub can use it.)
 export default function NotificationEmailModal({ notif, onClose, onSent, onSend }) {
+  // Escape closes; focus is trapped in the dialog and returned on close.
+  const modalRef = useModalA11y(onClose);
   const { data: senderEmails = [] } = useQuery({ queryKey: ['senderEmails'], queryFn: listSenderEmails });
   const [from, setFrom] = useState(notif.email_from || '');
   const [to, setTo] = useState(notif.email_to || '');
@@ -35,7 +38,7 @@ export default function NotificationEmailModal({ notif, onClose, onSent, onSend 
 
   return (
     <div className="modal-scrim" onClick={onClose}>
-      <div className="modal" style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <strong>Email to tenant</strong>
           <button className="icon-btn" onClick={onClose}>✕</button>

@@ -6,6 +6,7 @@ import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import { buildInvoice } from '../lib/invoiceTemplate';
 import { money } from '../lib/format';
 import RecipientField from './RecipientField';
+import { useModalA11y } from './modalA11y';
 
 // Builds a tenant invoice: the draft-invoice Edge Function returns the figures
 // (computed server-side from the views), and the shared template renders one
@@ -14,6 +15,9 @@ import RecipientField from './RecipientField';
 export default function InvoiceButton({ share }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  // Escape closes; focus is trapped in the dialog and returned on close. Only
+  // engages while the modal is actually open (this component always renders the button).
+  const modalRef = useModalA11y(() => setOpen(false), open);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState('');
   const [facts, setFacts] = useState(null);
@@ -93,7 +97,7 @@ export default function InvoiceButton({ share }) {
       <button className="ghost" onClick={draft}>Invoice</button>
       {open && (
         <div className="modal-scrim" onClick={() => setOpen(false)}>
-          <div className="modal" style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <strong>Invoice — {share.tenant_name} ({share.year})</strong>
               <button className="icon-btn" onClick={() => setOpen(false)}>✕</button>

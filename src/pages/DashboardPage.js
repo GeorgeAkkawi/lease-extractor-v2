@@ -102,6 +102,9 @@ export default function DashboardPage() {
     try { const n = await draftAlertEmail(a); if (n) setEmailNotif(n); }
     finally { setEmailBusyAlert(null); }
   }
+  // Make a click-only element keyboard-activatable (Enter/Space) — the role="button"
+  // divs/rows below aren't real buttons, so without this they can be focused but not used.
+  const keyActivate = (fn) => (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(e); } };
   // Dismiss / snooze persist server-side (alert_states) so they sync across devices.
   async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
   async function snooze(a, ms) { await upsertAlertState({ alert_key: alertKey(a), snoozed_until: new Date(Date.now() + ms).toISOString() }); setSnoozeFor(null); qc.invalidateQueries({ queryKey: ['alerts'] }); }
@@ -191,7 +194,7 @@ export default function DashboardPage() {
                 <thead><tr><th>Tenant</th><th>Property</th><th>Ends</th><th className="num">In</th><th>Renewal</th></tr></thead>
                 <tbody>
                   {expiring.slice(0, 8).map((l) => (
-                    <tr key={l.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/leases/${l.corporation_id}/${l.property_id}/${l.id}`)}>
+                    <tr key={l.id} style={{ cursor: 'pointer' }} tabIndex={0} onClick={() => navigate(`/leases/${l.corporation_id}/${l.property_id}/${l.id}`)} onKeyDown={keyActivate(() => navigate(`/leases/${l.corporation_id}/${l.property_id}/${l.id}`))}>
                       <td>{l.tenant_name}</td>
                       <td>{l.property_name}</td>
                       <td>{fmtDate(l.lease_termination_date)}</td>
@@ -232,13 +235,15 @@ export default function DashboardPage() {
                 <div key={n.id} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
                     <div role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                      onClick={() => n.lease_id && navigate(`/leases/${n.corporation_id}/${n.property_id}/${n.lease_id}`)}>
+                      onClick={() => n.lease_id && navigate(`/leases/${n.corporation_id}/${n.property_id}/${n.lease_id}`)}
+                      onKeyDown={keyActivate(() => n.lease_id && navigate(`/leases/${n.corporation_id}/${n.property_id}/${n.lease_id}`))}>
                       <div className="alert-title"><strong>{n.title}</strong></div>
                       <div className="muted" style={{ fontSize: 12.5 }}>{n.body}</div>
                     </div>
                     {n.email_body && (
                       <span className="bell-link" role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                        onClick={(e) => { e.stopPropagation(); setEmailNotif(n); }}>✉ View / send tenant email</span>
+                        onClick={(e) => { e.stopPropagation(); setEmailNotif(n); }}
+                        onKeyDown={keyActivate((e) => { e.stopPropagation(); setEmailNotif(n); })}>✉ View / send tenant email</span>
                     )}
                     {n.kind === 'renewal_decision' && (
                       rentEntry?.leaseId === n.lease_id ? (
@@ -287,7 +292,12 @@ export default function DashboardPage() {
                       if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
                       else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
                       else navigate(`/leases/${a.corporation_id}`);
-                    }}>
+                    }}
+                    onKeyDown={keyActivate(() => {
+                      if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
+                      else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
+                      else navigate(`/leases/${a.corporation_id}`);
+                    })}>
                     <div className="alert-title"><strong>{a.title}</strong></div>
                     <div className="muted" style={{ fontSize: 12.5 }}>{a.detail}</div>
                     <div className="muted" style={{ fontSize: 11.5 }}>{a.bucketLabel} · {fmtDate(a.date)}</div>

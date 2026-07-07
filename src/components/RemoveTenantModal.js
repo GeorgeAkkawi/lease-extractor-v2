@@ -2,12 +2,15 @@ import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { archiveLease } from '../lib/api';
 import { fmtDate } from '../lib/format';
+import { useModalA11y } from './modalA11y';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
 // Removes a tenant but keeps the lease in History's "Expired & renewed" log with
 // an outcome + note, so the landlord retains a full record of past tenants.
 export default function RemoveTenantModal({ lease, onClose, onDone }) {
+  // Escape closes; focus is trapped in the dialog and returned on close.
+  const modalRef = useModalA11y(onClose);
   const [status, setStatus] = useState('Terminated');
   const [endDate, setEndDate] = useState(today());
   const [note, setNote] = useState('');
@@ -24,7 +27,7 @@ export default function RemoveTenantModal({ lease, onClose, onDone }) {
 
   return (
     <div className="modal-scrim" onClick={onClose}>
-      <div className="modal" style={{ width: 540 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 540 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <strong>Remove {lease.tenant_name}</strong>
           <button className="icon-btn" onClick={onClose}>✕</button>

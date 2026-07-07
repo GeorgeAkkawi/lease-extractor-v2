@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { updateCorporation } from '../lib/api';
+import { useModalA11y } from './modalA11y';
 
 // Edits one corporation's identity — its name plus the address/email/phone used
 // as the letterhead + signature on the tenant emails & invoices it sends. Each
 // corporation can therefore correspond to a different sending email.
 export default function CorporationProfileModal({ corp, onClose }) {
+  // Escape closes; focus is trapped in the dialog and returned on close.
+  const modalRef = useModalA11y(onClose);
   const qc = useQueryClient();
   const [form, setForm] = useState({
     name: corp.name || '',
@@ -26,7 +29,7 @@ export default function CorporationProfileModal({ corp, onClose }) {
 
   return (
     <div className="modal-scrim" onClick={onClose}>
-      <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <strong>{corp.name} — business profile</strong>
           <button className="icon-btn" onClick={onClose}>✕</button>

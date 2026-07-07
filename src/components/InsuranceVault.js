@@ -7,6 +7,7 @@ import {
 } from '../lib/api';
 import DocAssistant from './DocAssistant';
 import { money, fmtDate } from '../lib/format';
+import { useModalA11y } from './modalA11y';
 
 // Insurance vault for one scope: landlord (per property) or tenant (per lease).
 // Add a policy (paste or upload) → key-facts auto-fill + a copy is saved once →
@@ -306,9 +307,11 @@ function ArchivedSection({ party, propertyId, leaseId, archivedKey }) {
 
 // Remove-policy confirmation with the archive-or-delete choice.
 function RemovePolicyModal({ onArchive, onDelete, onCancel, busy }) {
+  // Escape closes; focus is trapped in the dialog and returned on close.
+  const modalRef = useModalA11y(onCancel);
   return (
     <div className="modal-scrim" onClick={onCancel}>
-      <div className="modal" style={{ width: 470 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 470 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <strong>Remove policy</strong>
           <button className="icon-btn" onClick={onCancel}>✕</button>

@@ -3,12 +3,15 @@ import { useQuery } from '@tanstack/react-query';
 import { listSenderEmails } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import RecipientField from './RecipientField';
+import { useModalA11y } from './modalA11y';
 
 // Reusable compose-and-send modal: pick the sending account, confirm the
 // recipient, edit subject/body, then Send via Gmail / another mail app. Same send
 // flow as the bell's tenant emails and invoices (client-side compose, no backend).
 // `secondaryTo` (when the lease has a 2nd email) enables the Primary/Second/Both picker.
 export default function EmailComposeModal({ title = 'Email tenant', from: initialFrom = '', to: initialTo = '', secondaryTo = '', subject: initialSubject = '', body: initialBody = '', onClose, onSend }) {
+  // Escape closes; focus is trapped in the dialog and returned on close.
+  const modalRef = useModalA11y(onClose);
   const { data: senderEmails = [] } = useQuery({ queryKey: ['senderEmails'], queryFn: listSenderEmails });
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo] = useState(initialTo);
@@ -36,7 +39,7 @@ export default function EmailComposeModal({ title = 'Email tenant', from: initia
 
   return (
     <div className="modal-scrim" onClick={onClose}>
-      <div className="modal" style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <strong>{title}</strong>
           <button className="icon-btn" onClick={onClose}>✕</button>
