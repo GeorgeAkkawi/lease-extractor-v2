@@ -17,6 +17,8 @@ import {
 } from '../api';
 import { monthlyScheduleForYear } from '../abatement';
 import { buildInvoice } from '../invoiceTemplate';
+import { buildAlerts } from '../alerts';
+import { buildPaymentReminderEmail } from '../emailTemplates';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -138,6 +140,33 @@ describe('AR aging (summarizeAR)', () => {
       count: 4,
       buckets: { current: 100, d30: 50, d60: 25, d90: 10 },
     });
+  });
+});
+
+describe('overdue-invoice alert → payment reminder email', () => {
+  it('the alert carries the balance + year, and the letter states them', () => {
+    const now = new Date(`${Y}-07-07T12:00:00`);
+    const data = {
+      leases: [{ id: 'L1', tenant_name: 'City Dental', property_id: 'P1', is_active: true }],
+      escalations: [], renewals: [], contracts: [],
+      properties: [{ id: 'P1', name: 'Maple Plaza', corporation_id: 'C1' }],
+      insurance: [],
+      invoices: [{ lease_id: 'L1', property_id: 'P1', year: Y, due_date: `${Y}-01-31`, balance: 98500 }],
+    };
+    const alert = buildAlerts(data, undefined, now).find((a) => a.focus === 'invoice');
+    expect(alert).toBeTruthy();
+    expect(alert.balance).toBe(98500);
+    expect(alert.invoice_year).toBe(Y);
+
+    const email = buildPaymentReminderEmail({
+      business: null, tenant_name: 'City Dental', contact_name: 'Dana Lee',
+      tenant_email: 'billing@citydental.example', propertyName: 'Maple Plaza',
+      year: alert.invoice_year, balance: alert.balance, dueDate: alert.date,
+    });
+    expect(email.subject).toContain('Payment Reminder');
+    expect(email.body).toContain('$98,500.00');
+    expect(email.body).toContain(`January 31, ${Y}`);
+    expect(email.to).toBe('billing@citydental.example');
   });
 });
 

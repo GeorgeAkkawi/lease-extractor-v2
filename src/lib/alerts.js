@@ -157,6 +157,8 @@ export function buildAlerts({ leases, escalations, renewals, properties, insuran
       lease_id: inv.lease_id, property_id: inv.property_id, corporation_id: corpId,
       focus: 'invoice', tone: 'danger', bucketLabel: 'Overdue',
       date: inv.due_date, days: d,
+      // Carried so the ✉ payment-reminder email can state the exact figures.
+      balance: bal, invoice_year: inv.year ?? null,
       title: `Invoice overdue — ${lease?.tenant_name || 'tenant'}`,
       detail: `${money(bal)} unpaid · was due ${fmtDate(inv.due_date)}`,
     });

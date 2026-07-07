@@ -142,6 +142,24 @@ export function buildContractRenewalEmail({ business, vendorName, vendorEmail, c
   return { subject, body, to: vendorEmail || '' };
 }
 
+// Friendly-but-firm reminder for an overdue invoice: the balance, when it was due,
+// and how to arrange payment. Powers the ✉ on the "Invoice overdue" dashboard alert.
+export function buildPaymentReminderEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, balance, dueDate }) {
+  const subject = `Payment Reminder — ${propertyName || 'your premises'}${year ? ` (invoice for ${year})` : ''}`;
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: Outstanding balance on your account at ${propertyName || 'the premises'}`,
+    paragraphs: [
+      `Dear ${contact_name || tenant_name || 'Tenant'},`,
+      `Our records show an outstanding balance of ${money(balance)} on your${year ? ` ${year}` : ''} invoice for ${propertyName || 'the premises'}${dueDate ? `, which was due on ${longDate(dueDate)}` : ''}. As of today, we have not received this payment.`,
+      `Please arrange to remit the outstanding amount at your earliest convenience. If payment has already been sent, kindly disregard this notice and accept our thanks — or reply with the payment details so we can update our records.`,
+      `If you have any questions about the balance or would like to discuss payment arrangements, please contact our office. We appreciate your prompt attention and your continued tenancy.`,
+    ],
+  });
+  return { subject, body, to: tenant_email || '' };
+}
+
 export function buildEscalationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, effectiveDate, priorRent, newRent, escalationType, escalationValue }) {
   const monthly = monthlyOf(newRent);
   const delta =

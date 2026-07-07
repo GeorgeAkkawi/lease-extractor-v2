@@ -19,13 +19,21 @@ export function normalizeQuestion(q) {
 // stamp of each record type. Adding, editing (the updated_at trigger bumps it),
 // or removing any lease / policy / contract flips the fingerprint, so a cached
 // answer built on the old data stops matching. Order-independent.
-export function snapshotFingerprint({ leases = [], insurance = [], contracts = [] } = {}) {
+// Balances get their own component: recording or deleting a PAYMENT changes who
+// owes money but bumps no updated_at above — without this, "who owes money?"
+// kept serving the stale cached answer after a payment was recorded.
+export function snapshotFingerprint({ leases = [], insurance = [], contracts = [], balances = [] } = {}) {
   const maxStamp = (arr) => arr.reduce((m, r) => { const s = stamp(r); return s > m ? s : m; }, '');
+  const open = (balances || []).filter(
+    (b) => b && b.display_status !== 'void' && b.display_status !== 'draft' && Number(b.balance) > 0
+  );
+  const owedCents = Math.round(open.reduce((s, b) => s + Number(b.balance), 0) * 100);
   return [
-    'v1',
+    'v2',
     `L${leases.length}:${maxStamp(leases)}`,
     `I${insurance.length}:${maxStamp(insurance)}`,
     `C${contracts.length}:${maxStamp(contracts)}`,
+    `B${open.length}:${owedCents}`,
   ].join('|');
 }
 
@@ -42,7 +50,12 @@ export function buildPortfolioSnapshot({
   balances = [],
   today,
 } = {}) {
-  const todayIso = today || new Date().toISOString().slice(0, 10);
+  // Local calendar date, not UTC — after ~8pm Eastern the UTC date is already
+  // tomorrow, which would flip expiry/overdue flags a day early (same rule as
+  // localDateIso in api.js / app_today() in SQL).
+  const now = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const todayIso = today || `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`;
   const isPast = (d) => !!d && String(d) < todayIso;
 
   const corpById = Object.fromEntries(corporations.map((c) => [c.id, c]));
@@ -134,7 +147,7 @@ export function buildPortfolioSnapshot({
   const tenantCount = propsOut.reduce((n, p) => n + p.tenants.length, 0);
   return {
     today: todayIso,
-    fingerprint: snapshotFingerprint({ leases: activeLeases, insurance, contracts }),
+    fingerprint: snapshotFingerprint({ leases: activeLeases, insurance, contracts, balances }),
     property_count: propsOut.length,
     tenant_count: tenantCount,
     properties: propsOut,

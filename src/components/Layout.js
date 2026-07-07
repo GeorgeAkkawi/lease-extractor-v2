@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import { DEMO_MODE } from '../lib/supabaseClient';
-import { promptDueRenewalDecisions, applyDueEscalations } from '../lib/api';
+import { promptDueRenewalDecisions, applyDueEscalations, localDateIso } from '../lib/api';
 
 export default function Layout({ children }) {
   const qc = useQueryClient();
@@ -23,7 +23,7 @@ export default function Layout({ children }) {
     ran.current = true;
     if (!DEMO_MODE) {
       const DAY_KEY = 'amlak_engine_ran';
-      const todayIso = new Date().toISOString().slice(0, 10);
+      const todayIso = localDateIso(); // local calendar day, matching the engine's own "today"
       try {
         if (localStorage.getItem(DAY_KEY) === todayIso) {
           qc.invalidateQueries({ queryKey: ['notifications'] });

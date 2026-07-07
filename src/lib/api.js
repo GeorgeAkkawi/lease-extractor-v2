@@ -4,7 +4,7 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildContractRenewalEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildContractRenewalEmail, buildPaymentReminderEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
@@ -20,6 +20,15 @@ function isRecentDate(iso, today = new Date()) {
   if (!iso) return true;
   const days = (today.getTime() - new Date(iso + 'T12:00:00').getTime()) / 86400000;
   return days <= RECENT_DAYS;
+}
+
+// The app's "today" is the LANDLORD'S calendar date (the browser's local clock) —
+// never the UTC date, which after ~8pm Eastern already reads tomorrow and made the
+// on-load engine apply escalations / open renewal prompts a day early. Mirrors the
+// database's app_today() (migration 0051).
+export function localDateIso(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 async function rows(promise) {
@@ -366,7 +375,7 @@ export async function anchorLeaseSchedule(leaseId, startDate) {
     if (after) {
       const d = new Date(after + 'T12:00:00');
       d.setDate(d.getDate() - 1);              // term runs through the day before
-      patch.lease_termination_date = d.toISOString().slice(0, 10);
+      patch.lease_termination_date = localDateIso(d);
     }
   }
   await updateLease(leaseId, patch);
@@ -858,7 +867,7 @@ export async function applyEscalation(escalation) {
 // app load (and as a scheduled job at go-live) — the same "only on the date" rule
 // as renewals.
 export async function applyDueEscalations(today = new Date()) {
-  const todayIso = today.toISOString().slice(0, 10);
+  const todayIso = localDateIso(today);
   const due = await rows(
     supabase.from('rent_escalations').select('*').eq('status', 'scheduled').lte('effective_date', todayIso).order('effective_date')
   );
@@ -1289,11 +1298,7 @@ export const deletePayment = (id) => rows(supabase.from('payments').delete().eq(
 // using the exact figures the manual invoice flow uses (draft-invoice). Because
 // each fiscal year has its own invoice, switching years shows a fresh grid and
 // prior years stay intact — that's the per-year "reset".
-const paymentIsoToday = () => {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-};
+const paymentIsoToday = () => localDateIso();
 
 // The live (non-void) invoice for a lease + year, or null.
 export async function getYearInvoice(leaseId, year) {
@@ -1565,7 +1570,7 @@ export async function fetchAlertData() {
     supabase.from('service_contracts').select('id,name,vendor,vendor_email,end_date,property_id'),
     // Overdue-invoice alerts read from the balance view: anything still owed (the
     // view nets payments) with a due date. buildAlerts keeps only the past-due ones.
-    supabase.from('v_invoice_balances').select('lease_id,property_id,due_date,balance').gt('balance', 0),
+    supabase.from('v_invoice_balances').select('lease_id,property_id,year,due_date,balance').gt('balance', 0),
   ]);
   return {
     leases: leasesR.data || [],
@@ -1683,7 +1688,7 @@ export const dismissNotification = (id) =>
 function isRenewalDecisionDue(lease, ren, today = new Date()) {
   const termEnd = lease?.lease_termination_date;
   if (!termEnd) return false;
-  const todayIso = today.toISOString().slice(0, 10);
+  const todayIso = localDateIso(today);
   // Once the committed term has ended, the option lapsed unexercised — stop asking.
   if (termEnd < todayIso) return false;
   // The prompt opens a bit before the deadline: at the option's notice-by date if the
@@ -1726,7 +1731,7 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newR
   }
   const business = businessFromCorp(prop?.corporation_id ? corpCache.get(prop.corporation_id) : null);
 
-  const todayIso = today.toISOString().slice(0, 10);
+  const todayIso = localDateIso(today);
   const years = Math.max(1, Math.round((ren.term_months || 12) / 12));
   // Has the option's term window already started? (No end date on file → treat as begun.)
   const hasBegun = !newStart || String(newStart) <= todayIso;
@@ -2057,6 +2062,10 @@ export async function draftAlertEmail(alert) {
 
   if (focus === 'termination') return wrap(buildNonRenewalEmail({ ...common, leaseEnd: lease.lease_termination_date }), 'lease_ending');
   if (focus === 'insurance') return wrap(buildInsuranceRequestEmail({ ...common }), 'insurance_request');
+  // Overdue invoice → a payment reminder with the exact balance + original due date.
+  if (focus === 'invoice') {
+    return wrap(buildPaymentReminderEmail({ ...common, year: alert.invoice_year, balance: alert.balance, dueDate: alert.date }), 'payment_reminder');
+  }
   if (focus === 'escalation') {
     const escs = await listEscalations(lease.id);
     const esc = escs.find((e) => String(e.effective_date) === String(alert.date));
@@ -2103,8 +2112,7 @@ export async function reconcileRenewalOptions(lease, today = new Date()) {
   // nothing proving any option was exercised — leave everything alone).
   if (!initialEnd || !dated.some((e) => e.effective_date >= initialEnd)) return false;
 
-  const toIso = (d) => d.toISOString().slice(0, 10);
-  const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return localDateIso(d); };
   const daysApart = (a, b) => Math.round(Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
   // The rent step that STARTS a window (within ±45 days of the boundary), if any.
   const stepAt = (iso) => {
@@ -2116,7 +2124,7 @@ export async function reconcileRenewalOptions(lease, today = new Date()) {
     return best ? (Number(best.new_base_rent) || null) : null;
   };
 
-  const todayIso = toIso(today);
+  const todayIso = localDateIso(today);
   const ordered = [...options].sort(cmpRenewal);
   let windowStart = initialEnd;
   let termEnd = lease.lease_termination_date || null;
@@ -2167,10 +2175,12 @@ export async function reconcileRenewalOptions(lease, today = new Date()) {
 // NEVER modifies the lease; only confirmRenewal does that.
 export async function promptDueRenewalDecisions(today = new Date()) {
   const uid = await ownerId();
-  const leases = await rows(supabase.from('leases').select('*'));
+  // LEASE_LIST_COLS, not '*': this runs on the first load of every day across ALL
+  // leases — select('*') dragged every lease's multi-KB lease_text blob down with it.
+  const leases = await rows(supabase.from('leases').select(LEASE_LIST_COLS));
   const created = [];
 
-  const todayIso = today.toISOString().slice(0, 10);
+  const todayIso = localDateIso(today);
   for (const l of leases) {
     // Term already ended → any pending option lapsed unexercised. Clear a stale "Is the
     // tenant renewing?" prompt we dropped earlier and don't ask again. This runs BEFORE

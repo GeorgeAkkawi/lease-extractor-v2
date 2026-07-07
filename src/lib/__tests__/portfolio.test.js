@@ -136,11 +136,23 @@ describe('snapshotFingerprint — flips when the portfolio changes', () => {
     expect(snapshotFingerprint({ leases: [d.leases[0]], insurance: d.insurance, contracts: d.contracts })).not.toBe(f0);
   });
 
-  test('the built snapshot carries the same fingerprint', () => {
+  test('flips when a payment changes who owes money (no updated_at involved)', () => {
+    const d = base();
+    const f0 = snapshotFingerprint({ leases: d.leases, insurance: d.insurance, contracts: d.contracts, balances: d.balances });
+    // Bright Coffee pays its $1,250 → the open balance disappears. The cached
+    // "who owes money?" answer must stop matching even though no lease/policy/contract changed.
+    const paidUp = d.balances.map((b) => (b.balance === 1250 ? { ...b, balance: 0, display_status: 'paid' } : b));
+    expect(snapshotFingerprint({ leases: d.leases, insurance: d.insurance, contracts: d.contracts, balances: paidUp })).not.toBe(f0);
+    // …and a draft's figure changing never flips it (drafts don't count as owed).
+    const draftBump = d.balances.map((b) => (b.display_status === 'draft' ? { ...b, balance: 900 } : b));
+    expect(snapshotFingerprint({ leases: d.leases, insurance: d.insurance, contracts: d.contracts, balances: draftBump })).toBe(f0);
+  });
+
+  test('the built snapshot carries the same fingerprint (balances included)', () => {
     const d = base();
     const snap = buildPortfolioSnapshot(d);
     expect(snap.fingerprint).toBe(
-      snapshotFingerprint({ leases: d.leases, insurance: d.insurance, contracts: d.contracts })
+      snapshotFingerprint({ leases: d.leases, insurance: d.insurance, contracts: d.contracts, balances: d.balances })
     );
   });
 });

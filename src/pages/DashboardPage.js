@@ -91,6 +91,7 @@ export default function DashboardPage() {
     if (a.focus === 'contract') return true;
     if (a.focus === 'renewal') return !!a.renewal_id;
     if (a.focus === 'insurance') return !!a.lease_id; // tenant policy only
+    if (a.focus === 'invoice') return true; // overdue invoice → payment reminder
     return a.focus === 'termination' || a.focus === 'escalation';
   };
   // Draft the reminder's ready-to-send email and open the send modal. Sending it does NOT
