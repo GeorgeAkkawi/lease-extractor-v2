@@ -25,6 +25,11 @@ interface CallOpts {
   // known schema) needs little reasoning, so those callers pass 'low'. Sonnet 4.6
   // only — effort is rejected on Haiku, so never set it for Haiku-based callers.
   effort?: 'low' | 'medium' | 'high';
+  // Per-ATTEMPT cap on the HTTP request (default 90s — long enough for a 16k-token
+  // transcription). A hung connection used to wait forever and burn the edge
+  // function's 150s wall clock (HTTP 546) after paid calls had already run. Callers
+  // on a tight budget (e.g. extract-lease's form fills) pass something smaller.
+  timeoutMs?: number;
 }
 
 /** Returns parsed JSON (if schema given) or the concatenated text. Throws on refusal/error. */
@@ -61,21 +66,33 @@ export async function callClaude(opts: CallOpts): Promise<any> {
   // load spike fails the whole (paid) extraction and the user must re-upload. Real
   // errors (400 bad request, 401 auth, refusal) are NOT retried — they'd never
   // succeed. Up to 3 attempts total (~0.8s + 1.6s of waiting worst case).
+  // Every attempt is capped by AbortSignal.timeout; a hung/dropped connection gets
+  // ONE retry then fails fast, so the call's worst wall clock is bounded instead of
+  // eating the whole edge budget.
   const RETRYABLE = new Set([429, 500, 502, 503, 529]);
+  const perAttemptMs = opts.timeoutMs ?? 90_000;
   let res: Response;
-  for (let attempt = 0; ; attempt++) {
-    res = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': VERSION,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+  let hangs = 0;
+  for (let attempt = 0; ; ) {
+    try {
+      res = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': VERSION,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(perAttemptMs),
+      });
+    } catch (_e) {
+      if (hangs++ < 1) { await new Promise((r) => setTimeout(r, 800)); continue; }
+      throw new Error('The AI service did not respond in time. Please try again.');
+    }
     if (res.ok) break;
-    if (attempt < 2 && RETRYABLE.has(res.status)) {
-      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+    attempt++;
+    if (attempt < 3 && RETRYABLE.has(res.status)) {
+      await new Promise((r) => setTimeout(r, 800 * attempt));
       continue;
     }
     const errText = await res.text();
