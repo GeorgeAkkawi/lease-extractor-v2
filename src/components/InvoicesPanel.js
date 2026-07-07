@@ -18,6 +18,10 @@ export default function InvoicesPanel({ leaseId }) {
     qc.invalidateQueries({ queryKey: ['invoices', leaseId] });
     qc.invalidateQueries({ queryKey: ['portfolioAR'] });
     invoices.forEach((i) => qc.invalidateQueries({ queryKey: ['propertyAR', i.property_id] }));
+    // Deleting/recording a payment here can change which MONTHS read as paid —
+    // refresh the monthly tracker + property rent roll so they never show stale checks.
+    qc.invalidateQueries({ queryKey: ['monthlyRent', leaseId] });
+    qc.invalidateQueries({ queryKey: ['propertyRentRoll'] });
   };
 
   const voidInv = useMutation({ mutationFn: (id) => updateInvoice(id, { status: 'void' }), onSuccess: refresh });

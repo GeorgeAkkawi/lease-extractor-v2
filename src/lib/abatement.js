@@ -96,16 +96,36 @@ export function monthlyScheduleForYear({ year, annualBaseRent, otherAnnual = 0, 
   const fullMonthlyBase = (Number(annualBaseRent) || 0) / 12;
   const otherMonthly = (Number(otherAnnual) || 0) / 12;
   const out = {};
+  let totalCredit = 0;
   for (let m = 1; m <= 12; m++) {
     const ab = abatementForMonth(abatements, year, m, fullMonthlyBase);
     const reducedBase = ab ? reducedMonthlyBase(fullMonthlyBase, ab) : fullMonthlyBase;
+    const credit = ab ? monthlyCredit(fullMonthlyBase, ab) : 0;
+    totalCredit += credit;
     out[m] = {
       full: round2(fullMonthlyBase + otherMonthly),
       owed: round2(reducedBase + otherMonthly),
       abated: !!ab,
-      credit: ab ? monthlyCredit(fullMonthlyBase, ab) : 0,
+      credit,
       kind: ab?.kind || null,
     };
+  }
+  // Penny-true: rounding each month to cents can lose a few cents across the year
+  // ($98,500/12 → $8,208.33 ×12 = $98,499.96), which left a fully-paid year showing a
+  // phantom 4¢ balance forever. Fold the remainder into the LAST month that still owes
+  // anything so the 12 figures sum exactly to the year's net total. Only rounding-sized
+  // drift is folded — a larger gap would be a real logic error and must stay visible.
+  const target = round2((Number(annualBaseRent) || 0) + (Number(otherAnnual) || 0) - totalCredit);
+  const sum = round2(Object.values(out).reduce((s, c) => s + c.owed, 0));
+  const diff = round2(target - sum);
+  if (diff !== 0 && Math.abs(diff) <= 0.12) {
+    for (let m = 12; m >= 1; m--) {
+      if (out[m].owed > 0) {
+        out[m].owed = round2(out[m].owed + diff);
+        if (!out[m].abated) out[m].full = out[m].owed; // a normal month's "full" stays equal to owed
+        break;
+      }
+    }
   }
   return out;
 }

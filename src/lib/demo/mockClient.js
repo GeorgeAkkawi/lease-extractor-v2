@@ -100,11 +100,14 @@ function invoiceBalances() {
   const today = new Date(); today.setHours(12, 0, 0, 0);
   return (db.invoices || []).map((i) => {
     const paid = (db.payments || []).filter((p) => p.invoice_id === i.id).reduce((s, p) => s + (Number(p.amount) || 0), 0);
-    const balance = (Number(i.total_amount) || 0) - paid;
+    const raw = (Number(i.total_amount) || 0) - paid;
+    // Mirror the 0055 view: rounding dust within ±5¢ reads as settled (balance 0,
+    // status paid) — a real balance beyond that is untouched.
+    const balance = Math.abs(raw) <= 0.05 ? 0 : raw;
     let display_status;
     if (i.status === 'void') display_status = 'void';
     else if (i.status === 'draft') display_status = 'draft';
-    else if (balance <= 0) display_status = 'paid';
+    else if (raw <= 0.05) display_status = 'paid';
     else if (paid > 0) display_status = 'partial';
     else if (i.due_date && new Date(i.due_date + 'T12:00:00') < today) display_status = 'overdue';
     else display_status = 'sent';
@@ -179,6 +182,16 @@ class QB {
 
     if (this._op === 'insert') {
       const items = Array.isArray(this._payload) ? this._payload : [this._payload];
+      // Mirror the 0055 partial unique index: at most ONE live (non-void) invoice per
+      // (lease_id, year). Raise the same 23505 the real DB does, so ensureInvoice /
+      // upsertYearInvoice exercise their duplicate-fallback in demo + tests.
+      if (this.table === 'invoices') {
+        const dup = items.find((it) => (it.status ?? 'sent') !== 'void' &&
+          list.some((r) => r.status !== 'void' && r.lease_id === it.lease_id && Number(r.year) === Number(it.year)));
+        if (dup) {
+          return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "invoices_one_live_per_lease_year"' } };
+        }
+      }
       const created = items.map((it) => ({ id: newId(this.table.slice(0, 3)), created_at: new Date().toISOString(), ...it }));
       list.push(...created);
       return this._wrap(created);

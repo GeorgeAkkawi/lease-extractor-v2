@@ -1312,20 +1312,51 @@ export async function ensureInvoice(leaseId, propertyId, year) {
   const tax = Number(facts?.tax_annual || 0);
   const roof = Number(facts?.roof_annual || 0);
   const abatement = Number(facts?.abatement_annual || 0); // free/reduced base rent netted out
-  return createInvoice({
-    lease_id: leaseId,
-    property_id: propertyId,
-    year: Number(year),
-    issue_date: facts?.today || null,
-    due_date: facts?.due || null,
-    status: 'sent',
-    base_rent_annual: base,
-    cam_annual: cam,
-    tax_annual: tax,
-    roof_annual: roof,
-    abatement_annual: abatement,
-    total_amount: Math.max(0, base + cam + tax + roof - abatement),
-  });
+  try {
+    return await createInvoice({
+      lease_id: leaseId,
+      property_id: propertyId,
+      year: Number(year),
+      issue_date: facts?.today || null,
+      due_date: facts?.due || null,
+      status: 'sent',
+      base_rent_annual: base,
+      cam_annual: cam,
+      tax_annual: tax,
+      roof_annual: roof,
+      abatement_annual: abatement,
+      total_amount: Math.max(0, base + cam + tax + roof - abatement),
+    });
+  } catch (e) {
+    // Unique index (0055): a concurrent tab / the bulk mark-all created this year's
+    // invoice between our check and this insert — use theirs instead of failing.
+    if (e?.code === '23505') {
+      const raced = await getYearInvoice(leaseId, year);
+      if (raced) return raced;
+    }
+    throw e;
+  }
+}
+
+// Save (or refresh) the year's invoice in receivables WITHOUT ever creating a
+// duplicate: at most one live invoice exists per (lease, year) — enforced by the
+// 0055 unique index. If one already exists (a prior "Save to receivables", or the
+// monthly tracker auto-created it), its figures are refreshed in place instead of
+// doubling the AR. Returns { invoice, updated } so the UI can say which happened.
+export async function upsertYearInvoice({ lease_id, property_id, year, issue_date, due_date, base_rent_annual, cam_annual, tax_annual, roof_annual, abatement_annual, total_amount }) {
+  const figures = { issue_date, due_date, base_rent_annual, cam_annual, tax_annual, roof_annual, abatement_annual, total_amount };
+  const existing = await getYearInvoice(lease_id, year);
+  if (existing) return { invoice: await updateInvoice(existing.id, figures), updated: true };
+  try {
+    const invoice = await createInvoice({ lease_id, property_id, year: Number(year), status: 'sent', ...figures });
+    return { invoice, updated: false };
+  } catch (e) {
+    if (e?.code === '23505') {
+      const raced = await getYearInvoice(lease_id, year);
+      if (raced) return { invoice: await updateInvoice(raced.id, figures), updated: true };
+    }
+    throw e;
+  }
 }
 
 // Everything the monthly grid needs for one lease + year in one call: the year's
@@ -1366,6 +1397,11 @@ export async function getMonthlyRent(leaseId, year) {
 // tagged with that month. amount defaults to the monthly share (invoice total / 12).
 export async function markMonthPaid(leaseId, propertyId, year, month, opts = {}) {
   const invoice = await ensureInvoice(leaseId, propertyId, year);
+  const m = Number(month);
+  // Already marked — from this screen, the property rent roll, or another device.
+  // Recording again would double-count the month, so this is an idempotent no-op.
+  const existingPayments = await listPayments(invoice.id);
+  if (existingPayments.some((p) => Number(p.period_month) === m)) return invoice;
   let amount;
   if (opts.amount != null && opts.amount !== '') {
     amount = Number(opts.amount);
@@ -1376,7 +1412,7 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
     const grossBase = Number(invoice.base_rent_annual || 0);
     const other = Number(invoice.cam_annual || 0) + Number(invoice.tax_annual || 0) + Number(invoice.roof_annual || 0);
     const sched = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: other, abatements });
-    amount = sched[Number(month)]?.owed ?? (Number(invoice.total_amount || 0) / 12);
+    amount = sched[m]?.owed ?? (Number(invoice.total_amount || 0) / 12);
   }
   // Nothing due this month (fully-free base and no other charges) — don't record a $0
   // payment; the month simply shows "Free". An explicit amount override still records.
@@ -1388,7 +1424,7 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
     paid_date: opts.paid_date || paymentIsoToday(),
     method: opts.method || 'check',
     note: opts.note || null,
-    period_month: Number(month),
+    period_month: m,
   });
   return invoice;
 }
@@ -1413,8 +1449,13 @@ export async function unmarkMonthPaid(leaseId, year, month) {
 export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}) {
   const m = Number(month);
   const roll = await getPropertyMonthlyRoll(propertyId, year);
-  // Owe this month (net of abatement) and not already marked paid for it.
-  const targets = roll.filter((r) => !r.byMonth[m] && (Number(r.schedule?.[m]?.owed) || 0) > 0);
+  // Owe this month (net of abatement), not already marked paid for it, and the year's
+  // invoice isn't already settled — a tenant who paid the whole year in one recorded
+  // payment (no month tags) has balance 0 and must not be billed 12 more months.
+  const targets = roll.filter((r) =>
+    !r.byMonth[m] &&
+    (Number(r.schedule?.[m]?.owed) || 0) > 0 &&
+    (r.balance == null || Number(r.balance) > 0));
   const skipped = roll.length - targets.length;
   if (targets.length === 0) return { paid: 0, skipped, total: roll.length };
 
@@ -1478,7 +1519,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
         (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
       }
     }
-    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: abatements.length > 0 };
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null };
   });
 }
 
@@ -1494,7 +1535,8 @@ export async function getPortfolioAR(today = new Date()) {
 
 // Sum the still-owed balance across live (non-void, non-draft) invoices, bucketed
 // by how overdue each is. Pure code — mirrors what an accountant calls AR aging.
-function summarizeAR(invoices, today = new Date()) {
+// Exported so the money-path tests can exercise the aging directly.
+export function summarizeAR(invoices, today = new Date()) {
   const owing = (invoices || []).filter((i) => i.display_status !== 'void' && i.display_status !== 'draft' && Number(i.balance) > 0);
   const day = 86400000;
   const buckets = { current: 0, d30: 0, d60: 0, d90: 0 };

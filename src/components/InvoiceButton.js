@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { invokeFunction } from '../lib/supabaseClient';
-import { listSenderEmails, createInvoice } from '../lib/api';
+import { listSenderEmails, upsertYearInvoice } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import { buildInvoice } from '../lib/invoiceTemplate';
 import { money } from '../lib/format';
@@ -26,18 +26,20 @@ export default function InvoiceButton({ share }) {
 
   // Persist this invoice into receivables so it shows up in AR (status 'sent').
   // Base + CAM + tax + roof, minus any rent abatement credited off the year.
+  // upsertYearInvoice never duplicates: if the year's invoice already exists (a prior
+  // save, or the monthly tracker created it), its figures are refreshed in place —
+  // a second click must not double the outstanding AR.
   const total = facts
     ? Math.max(0, Number(facts.base_rent_annual || 0) + Number(facts.cam_annual || 0) + Number(facts.tax_annual || 0) + Number(facts.roof_annual || 0) - Number(facts.abatement_annual || 0))
     : 0;
   const saveAR = useMutation({
     mutationFn: () =>
-      createInvoice({
+      upsertYearInvoice({
         lease_id: share.lease_id,
         property_id: share.property_id,
         year: share.year,
         issue_date: facts?.today || null,
         due_date: facts?.due || null,
-        status: 'sent',
         base_rent_annual: Number(facts?.base_rent_annual || 0),
         cam_annual: Number(facts?.cam_annual || 0),
         tax_annual: Number(facts?.tax_annual || 0),
@@ -123,7 +125,11 @@ export default function InvoiceButton({ share }) {
               <div className="modal-actions" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <div>
                   {saveAR.isSuccess ? (
-                    <span className="badge good">✓ Saved to receivables ({money(total)})</span>
+                    <span className="badge good">
+                      {saveAR.data?.updated
+                        ? `✓ Receivables updated — refreshed this year's existing invoice (${money(total)})`
+                        : `✓ Saved to receivables (${money(total)})`}
+                    </span>
                   ) : (
                     <button className="secondary" onClick={() => saveAR.mutate()} disabled={busy || !facts || saveAR.isPending}>
                       {saveAR.isPending ? 'Saving…' : `＋ Save to receivables (${money(total)})`}
