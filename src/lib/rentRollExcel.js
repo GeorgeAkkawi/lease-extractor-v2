@@ -246,7 +246,7 @@ export async function downloadRentRollXlsx({ leases = [], properties = [], fileL
   }
 
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'Amlak';
+  wb.creator = 'Lease Extractor V2';
   const usedNames = new Set();
   // one sheet per property that has at least one active lease, in name order
   const ordered = [...byProp.keys()].sort((a, b) =>

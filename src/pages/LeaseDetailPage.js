@@ -468,7 +468,7 @@ export default function LeaseDetailPage() {
           <p className="muted" style={{ marginTop: 0, marginBottom: 14, fontSize: 12.5 }}>
             📨 Last requested <strong>{fmtDate(insReqs[0].event_date || insReqs[0].created_at)}</strong>
             {insReqs.length > 1 && ` · ${insReqs.length} requests logged`}
-            <span style={{ marginLeft: 4 }}>(sent from Amlak — delivery isn't tracked).</span>
+            <span style={{ marginLeft: 4 }}>(sent from Lease Extractor V2 — delivery isn't tracked).</span>
           </p>
         )}
         <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} />

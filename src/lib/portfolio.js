@@ -1,4 +1,4 @@
-// Portfolio snapshot for the "Ask Amlak" assistant. Pure JS — no network, no AI.
+// Portfolio snapshot for the "Ask AI" assistant. Pure JS — no network, no AI.
 // It shapes the account's structured records (tenants, insurance, service
 // contracts, rent, dates, balances) into a compact, facts-only summary the AI
 // answers over. Deliberately carries NO document text — just the facts the app

@@ -1,4 +1,4 @@
-// The "Ask Amlak" portfolio snapshot. Pure JS — no network, no AI. Replays the
+// The "Ask AI" portfolio snapshot. Pure JS — no network, no AI. Replays the
 // real use cases George asked for: "which tenants have insurance on file and which
 // don't?", "who owes money?", "which properties have service contracts?".
 import {

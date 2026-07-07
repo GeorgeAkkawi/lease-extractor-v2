@@ -495,7 +495,7 @@ export function buildAbatements(abatements) {
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
-// ---- Global search ("Ask Amlak") -------------------------------------------
+// ---- Global search ("Ask AI") ----------------------------------------------
 // One bulk load of the searchable entities; the search bar filters this locally
 // (no AI, no per-keystroke network) so results appear instantly as you type.
 export async function fetchSearchIndex() {
@@ -535,7 +535,7 @@ export async function askLease(leaseId, question, leaseText) {
   return answer;
 }
 
-// ---- Ask Amlak: portfolio assistant ----------------------------------------
+// ---- Ask AI: portfolio assistant -------------------------------------------
 // Answer a free-text question about the account's OWN records (tenants, insurance,
 // service contracts, rent, dates, balances). Cheap by design: only a compact,
 // facts-only summary is sent to the model — never any documents — so a question is
