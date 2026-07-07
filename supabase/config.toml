@@ -307,9 +307,12 @@ auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
 max_enrolled_factors = 10
 
 # Control MFA via App Authenticator (TOTP)
+# SECURITY: production RELIES on TOTP 2FA (SecuritySettings enrollment + the aal2
+# RLS policies, migrations 0052/0056). Keep these true so a future `config push`
+# can never silently turn authenticator sign-in off while enforcement stays on.
 [auth.mfa.totp]
-enroll_enabled = false
-verify_enabled = false
+enroll_enabled = true
+verify_enabled = true
 
 # Configure MFA via Phone Messaging
 [auth.mfa.phone]
