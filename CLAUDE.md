@@ -74,6 +74,28 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-07** — **Project renamed Amlak → "Lease Extractor V2" + GitHub repo made PUBLIC** (George is
+  submitting it and wants reviewers to read the source). **⚠️ THE REPO IS NOW PUBLIC** —
+  `GeorgeAkkawi/lease-extractor-v2` (was `my-dashboard`; old URL 301-redirects). **Never commit a secret**:
+  real keys live only in `.env.local` / `.env.secrets.local` (gitignored) and Supabase edge-function
+  secrets. `.env.production` is committed but holds ONLY the public `sb_publishable_` key + the
+  `GENERATE_SOURCEMAP` flag (the block-secrets hook still guards it). Before flipping public I audited the
+  full tree AND git history — zero service-role keys / API keys / passwords / private keys anywhere.
+  - **Rename (commit `e56f01b`):** all user-visible "Amlak" → "Lease Extractor V2" (sidebar wordmark + "L"
+    mark, browser `<title>` + meta description, Login/2FA headings, Excel `wb.creator`, the insurance-email
+    footer) and the **"Ask Amlak" assistant → "Ask AI"** (sidebar nav, AskPage, README bullet); `package.json`
+    name → `lease-extractor-v2`; internal comments updated. **Left untouched on purpose:** applied SQL
+    migrations (immutable) and edge-function internals (avoid deployed-vs-source drift) — those keep
+    historical "Amlak" mentions; and CLAUDE.md (this file — internal notes, now public; George may want it
+    trimmed/removed). No behavior change; suite **161/161**. The DEMO sandbox was rebuilt + redeployed with
+    the new name (Cloudflare `amlak-demo`, version `6d876f32`) — verified live: wordmark wraps cleanly to two
+    lines, nav reads "Ask AI", zero console errors. The **live `amlak` app was NOT redeployed** (still shows
+    "Amlak"); redeploy it if the production app should rebrand too — but that also rebrands tenant-facing
+    invoice/email copy, so confirm with George first.
+  - **GitHub:** `gh repo rename lease-extractor-v2` (auto-updated the local `origin` remote) + `gh repo edit
+    --visibility public`. The Cloudflare **demo worker name is still `amlak-demo`** (renaming a worker changes
+    its URL, which would break the link already shared — left as-is deliberately).
+
 - **2026-07-07** — **Standalone demo sandbox for a submission** (George is submitting Amlak and needed a
   shareable demo with fake data and no reviewer setup). Deployed a **separate** Cloudflare Worker
   **`amlak-demo`** at **https://amlak-demo.akkawigeo-5.workers.dev** (version id `ef551d7d`). **No money**
