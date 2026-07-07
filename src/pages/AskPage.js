@@ -5,7 +5,7 @@ import { fetchPortfolioSnapshot, askPortfolioQuestion } from '../lib/api';
 import { usePageChrome } from '../context/ChromeContext';
 import { SparkIcon } from '../components/icons';
 
-// "Ask AI" — a natural-language assistant over the account's OWN records
+// "Ask Amlak" — a natural-language assistant over the account's OWN records
 // (tenants, insurance, service contracts, rent, dates, balances). It reads a
 // compact facts-only summary (no documents), so a question is sub-cent and
 // repeats are free. Answers link straight to the tenant/property mentioned.
@@ -18,7 +18,7 @@ const SUGGESTED = [
 ];
 
 export default function AskPage() {
-  usePageChrome([{ label: 'Ask AI' }]);
+  usePageChrome([{ label: 'Ask Amlak' }]);
   const [q, setQ] = useState('');
   const [log, setLog] = useState([]); // newest first: [{ q, answer, fromCache, pending, error }]
 
@@ -70,7 +70,7 @@ export default function AskPage() {
     <div className="ask-page">
       <div className="page-head">
         <div>
-          <h1><SparkIcon /> Ask AI</h1>
+          <h1><SparkIcon /> Ask Amlak</h1>
           <div className="muted">
             Ask about your tenants, insurance, contracts, rent, or who owes money — in plain English.
             It reads a summary of your records (never your documents) and links you straight to what it finds.

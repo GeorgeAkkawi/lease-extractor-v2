@@ -1,4 +1,4 @@
-# Lease Extractor V2 — commercial lease & financials dashboard
+# Amlak — commercial lease & financials dashboard
 
 A property-management app for commercial landlords. One Corporation → Property →
 Tenant data model drives everything:
@@ -14,7 +14,7 @@ Tenant data model drives everything:
 3. **Overview & alerts** — rent roll, occupancy, receivables, expirations, and
    actionable reminders (escalations, renewals, insurance/contract expiry, overdue
    invoices), each with a ready-to-send email.
-4. **Ask AI** — natural-language questions over the account's own records
+4. **Ask Amlak** — natural-language questions over the account's own records
    (tenants, insurance, balances), answered from a compact facts-only summary and
    cached so repeats are free.
 

@@ -49,12 +49,12 @@ export default function Sidebar() {
   return (
     <aside className={'sidebar' + (collapsed ? ' collapsed' : '')}>
       <div className="brand">
-        <span className="brand-mark">L</span> <span className="side-label brand-text">Lease Extractor V2</span>
+        <span className="brand-mark">A</span> <span className="side-label brand-text">Amlak</span>
       </div>
 
       <nav className="side-nav">
         <NavLink end className={navClass} to="/" {...tip('Overview')} {...warm(pf.dashboard)}><GridIcon /> <span className="side-label">Overview</span></NavLink>
-        <NavLink className={navClass} to="/ask" {...tip('Ask AI')}><SparkIcon /> <span className="side-label">Ask AI</span></NavLink>
+        <NavLink className={navClass} to="/ask" {...tip('Ask Amlak')}><SparkIcon /> <span className="side-label">Ask Amlak</span></NavLink>
         <NavLink className={navClass} to="/leases" {...tip('Leases')} {...warm(pf.corporations)}><DocIcon /> <span className="side-label">Leases</span></NavLink>
         <NavLink className={navClass} to="/financials" {...tip('Financials')} {...warm(() => pf.corporationsFinancials(year))}><ChartIcon /> <span className="side-label">Financials</span></NavLink>
         <NavLink className={navClass} to="/history" {...tip('History')} {...warm(() => pf.corporationsFinancials(year))}><ClockIcon /> <span className="side-label">History</span></NavLink>

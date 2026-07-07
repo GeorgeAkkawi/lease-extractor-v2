@@ -54,10 +54,10 @@ export default function TwoFactorChallenge() {
 
   return (
     <div className="login-wrap">
-      <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}>L</span>Lease Extractor V2</h1>
+      <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}>A</span>Amlak</h1>
       <p className="muted">Two-factor verification</p>
       <p className="muted" style={{ fontSize: 13 }}>
-        Open your authenticator app and enter the current 6-digit code for Lease Extractor V2 to continue.
+        Open your authenticator app and enter the current 6-digit code for Amlak to continue.
       </p>
       <form onSubmit={verify}>
         <label className="form-field"><span>6-digit code</span>

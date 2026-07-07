@@ -492,7 +492,7 @@ function demoAskLease(body) {
   return { answer: `Here's what the lease for ${lease.tenant_name} says: ${snippet}` + tail };
 }
 
-// Demo stand-in for the ask-portfolio Edge Function ("Ask AI"). Reads the
+// Demo stand-in for the ask-portfolio Edge Function ("Ask Amlak"). Reads the
 // structured snapshot the client already built and answers common questions from
 // the seeded data, so the assistant works with no backend.
 function demoAskPortfolio(body) {

@@ -1,4 +1,4 @@
-/* Lease Extractor V2 — "Ivory & Brass-ink" luxury system
+/* Amlak — "Ivory & Brass-ink" luxury system
    Ported from the Claude Design handoff (design_handoff_amlak/app/styles.css).
    Palette B (warm ivory paper, oxblood + forest) · Type A (Cormorant Garamond + Hanken Grotesk) */
 :root{
@@ -200,7 +200,7 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .lease-col b{font-size:14.5px;font-weight:600;font-variant-numeric:tabular-nums}
 .psf-sub{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:1px}
 
-/* ---- Ask AI (portfolio assistant) ---- */
+/* ---- Ask Amlak (portfolio assistant) ---- */
 .ask-page h1{display:flex;align-items:center;gap:9px}
 .ask-page h1 .si-ico{width:22px;height:22px;color:var(--gold)}
 .ask-form{display:flex;gap:10px;align-items:center;margin:6px 0 12px;max-width:680px}
