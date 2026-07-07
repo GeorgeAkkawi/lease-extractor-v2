@@ -74,6 +74,67 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-07** — **Comprehensive review + 6 fix groups** (George approved the full findings report —
+  plan file `~/.claude/plans/you-are-doing-a-wobbly-steele.md` — then the fixes shipped one reviewable
+  commit per group). Deployed: DB migrations `0055`+`0056` (Supabase `awgrjmbcghdjgnqeiqkt`), **8 edge
+  functions** redeployed (shared anthropic.ts timeout) + **`query-portfolio` deleted** (dead, no live
+  caller), frontend Cloudflare version `e580d0d3`. **No money, no tenant emails, no destructive data**
+  (0055's dedupe-void step was verified a no-op on live — zero duplicate invoices existed; the
+  index/view/policies are additive). Tests **161/161** (was 147 — new money suite). Commits `6e16b2d`,
+  `fdc4bf8`, `7142b24`, `72c9c74`, `23b930d`, `4eb1936` (one per group — review each with `git show`).
+  - **Group 1 — billing integrity (the two live-reproduced bugs).** (a) *Duplicate invoices*: nothing
+    stopped a second "Save to receivables" (or the monthly tracker racing the invoice modal) from creating
+    TWO live invoices for the same tenant+year — Outstanding AR doubled ($98,500→$208,300 in demo). `0055`
+    voids any existing duplicates (live had none) + partial unique index `invoices(lease_id, year) where
+    status<>'void'`; `ensureInvoice` treats the 23505 as "use the existing one"; new `upsertYearInvoice`
+    refreshes-in-place (InvoiceButton badge now says *updated* vs *saved*). (b) *Penny leak*: $98,500/12 →
+    $8,208.33×12 = $98,499.96, so a fully-paid year read "partial" with 4¢ owed forever.
+    `monthlyScheduleForYear` is now penny-true (last owed month absorbs the rounding cents) and `0055`
+    rebuilds `v_invoice_balances` with a ±5¢ dust clamp (drop+create — the live view predated
+    `invoices.abatement_annual`, so REPLACE couldn't line up columns; grants + security_invoker
+    re-established; the view now also exposes abatement_annual). Also: `markMonthPaid` is idempotent per
+    month (double-click / two screens can't double-pay), bulk "✓ all" skips tenants whose year invoice is
+    already settled (an annual lump payment no longer gets 12 extra charges), deleting a payment in
+    Receivables refreshes the tracker/roll caches. **New `moneyCollection.test.js`** (13 tests): dedupe,
+    exact 12-month reconciliation, bulk mark-all, AR aging, abatement credit line.
+  - **Group 2 — alerts & freshness.** The overdue-invoice reminder (the one about money!) was the only
+    alert with no ✉ — new `buildPaymentReminderEmail` letter wired through `draftAlertEmail` (the alert now
+    carries balance + invoice year). Ask-Amlak cache fingerprint (v2) includes open balances, so recording
+    a payment invalidates stale "who owes money?" answers. New `localDateIso()` — the browser's "today" is
+    now the LOCAL calendar date, not UTC (after ~8pm Eastern the on-load engine could apply an escalation a
+    day early; JS twin of `app_today()`/0051) — applied to the engine, renewal windows, reconcile, the
+    once-a-day gate, and the portfolio snapshot. `promptDueRenewalDecisions` selects `LEASE_LIST_COLS`
+    instead of `*` (stops downloading every lease's full text daily).
+  - **Group 3 — security/config.** `0056`: `require_aal2` extended to the 4 tables 0052 missed
+    (**`portfolio_qa_cache`** — cached answers naming tenants/balances were readable by a bare-password
+    aal1 session — plus `user_preferences`, `user_security`, `email_2fa_codes`); and
+    `apply_due_escalations()` notifications now carry `email_to`/`email_to_2` (the bell's send modal opened
+    blank for cron-applied escalations). `config.toml` `[auth.mfa.totp]` flipped to true so a future config
+    push can't silently disable 2FA.
+  - **Group 4 — resilience.** `callClaude` attempts now run under `AbortSignal.timeout` (default 90s,
+    caller-tunable); a hung connection gets ONE retry then a clear error. extract-lease's form calls run at
+    40s so the whole function fits the 150s edge wall clock — a hung Anthropic call can no longer burn a
+    paid extraction into an HTTP 546.
+  - **Group 5 — hygiene.** Deleted dead code: `getCorpCounts`/`getCorpRollup`, the email-2FA client
+    helpers (native TOTP replaced them; the dormant send/verify-2fa-code edge fns stay deployed),
+    `query-portfolio` (source + deployed fn + demo route), `reportWebVitals.js` + `web-vitals` dep.
+    `@testing-library/*` → devDependencies. README rewritten (was "PropManager"/CRA/3 migrations).
+    `.page-head` actions wrap on phones instead of clipping. NOTE: `.env.production` still carries the dead
+    CRA `GENERATE_SOURCEMAP` flag — the block-secrets hook protects that file; harmless (Vite ignores it),
+    remove by hand whenever.
+  - **Group 6 — accessibility.** New shared `useModalA11y` hook (Escape closes, focus moves in / traps /
+    returns to the opener) wired into all 7 modals (now `role="dialog"`); Dashboard's clickable
+    notification/alert bodies + expiring-lease rows are Enter/Space-activatable.
+  - **Verified:** unit (161/161), `vite build`, and end-to-end in demo with a real browser — the exact
+    dup-invoice repro now shows "✓ Receivables updated" with ONE invoice; 12 tracker clicks settle
+    $98,500.00 to $0.00 / "paid"; the overdue alert's ✉ opens the full letter with the right figures;
+    Escape closes modals. **Live DB verified:** unique index present, 4 aal2 policies present, rebuilt view
+    serves 8 rows, zero duplicate invoices, zero dust balances. Live site 200s.
+  - **Still open from the review (deliberately deferred):** **A-1** transactional RPC ports for
+    confirmRenewal/applyAddendum/reconcile (the long-staged item — do next, now that the money tests
+    exist); **S-2** storage-file cleanup on delete; **T-2** component/render tests; P-2/P-3 minor batching;
+    the corp/property-card ARIA nesting nit.
+
 - **2026-07-06** — Fix: **Overview "Annual rent roll" ≠ property-page revenue** for a renewed lease.
   Deployed: DB migration `0054` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
   `931cb67a`. **No money, no tenant emails**; migration is a non-destructive function replace, and the

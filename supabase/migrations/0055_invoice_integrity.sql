@@ -45,9 +45,14 @@ create unique index if not exists invoices_one_live_per_lease_year
   on public.invoices (lease_id, year)
   where status <> 'void';
 
--- 2) v_invoice_balances: same shape as 0023, plus the ±5¢ dust clamp on balance /
---    paid status. security_invoker re-asserted so RLS still applies through the view.
-create or replace view v_invoice_balances as
+-- 2) v_invoice_balances: same query as 0023, plus the ±5¢ dust clamp on balance /
+--    paid status. DROP + CREATE (not create-or-replace): the live view was created
+--    before 0041 added invoices.abatement_annual, so its expanded `i.*` column list
+--    no longer matches a fresh expansion and REPLACE refuses. Nothing depends on
+--    this view (it's a leaf read by the app), so the drop is safe; grants and
+--    security_invoker are re-established explicitly below.
+drop view if exists v_invoice_balances;
+create view v_invoice_balances as
 select
   i.*,
   coalesce(p.amount_paid, 0) as amount_paid,
@@ -69,3 +74,4 @@ left join (
 ) p on p.invoice_id = i.id;
 
 alter view v_invoice_balances set (security_invoker = on);
+grant select on v_invoice_balances to authenticated, service_role;
