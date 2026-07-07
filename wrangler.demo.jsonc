@@ -1,0 +1,15 @@
+{
+  // Standalone DEMO deployment — separate Cloudflare Worker from the live `amlak`
+  // one, so the sandbox and production never collide. Serves the demo-mode bundle
+  // built into ./build-demo (via `vite build --config vite.demo.config.js
+  // --outDir build-demo`), which runs entirely on in-memory mock data and cannot
+  // reach the real Supabase backend. Deploy with:
+  //   npx wrangler deploy -c wrangler.demo.jsonc
+  // Lands at https://amlak-demo.<account-subdomain>.workers.dev
+  "name": "amlak-demo",
+  "compatibility_date": "2025-06-01",
+  "assets": {
+    "directory": "./build-demo",
+    "not_found_handling": "single-page-application"
+  }
+}

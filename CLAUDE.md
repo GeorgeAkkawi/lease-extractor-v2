@@ -74,6 +74,33 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-07** — **Standalone demo sandbox for a submission** (George is submitting Amlak and needed a
+  shareable demo with fake data and no reviewer setup). Deployed a **separate** Cloudflare Worker
+  **`amlak-demo`** at **https://amlak-demo.akkawigeo-5.workers.dev** (version id `ef551d7d`). **No money**
+  (same free `*.workers.dev` subdomain, no domain bought; demo AI answers are canned so no API spend),
+  **no real data exposed** (the bundle has no Supabase creds — verified it contains zero references to the
+  live project ref `awgrjmbcghdjgnqeiqkt`), **no production DB writes**, no beta-account slot used. The live
+  `amlak` worker (version `e580d0d3`) and its `./build` were untouched.
+  - **What George chose (via questions):** standalone sandbox (not a real seeded account on the live app),
+    **auto-enter** (no login — just share the URL), **built-in demo data** as-is.
+  - **How it works:** the app already has a full DEMO path — empty Supabase creds flip `DEMO_MODE`
+    (`src/lib/supabaseClient.js`) so everything runs on the in-memory mock (`src/lib/demo/mockClient.js`)
+    seeded from `src/lib/demo/store.js` (Acme Holdings / Northwind Group, Maple Plaza & Oak Center, tenants
+    with leases/escalations/invoices/AR/insurance/history). Demo auth auto-returns a session
+    (`mockClient.js:245`), so the reviewer lands straight in a populated Overview; 2FA is skipped
+    (`AuthContext.js:22`). The app **already ships** a "🧪 Demo mode — seeded sample data, no backend" banner
+    + a "Reset demo data" button, so **no app-source changes were needed** — this was purely build + deploy.
+  - **New files (committed):** `vite.demo.config.js` (reuses the base build but points `envDir` at an empty
+    `./demo-env/` so Vite loads NO creds → deterministic DEMO_MODE — the `.env*` files are hook-protected and
+    never touched), `wrangler.demo.jsonc` (the `amlak-demo` worker → `./build-demo`), `demo-env/.gitkeep`,
+    and `/build-demo` added to `.gitignore`. Build: `npx vite build --config vite.demo.config.js --outDir
+    build-demo`; deploy: `npx wrangler deploy -c wrangler.demo.jsonc`.
+  - **Trade-offs (agreed):** sandbox resets each visit (a plus — always pristine, unbreakable); AI features
+    return canned demo answers, not live AI. **To redeploy the demo** after future changes: rebuild with the
+    command above, then `wrangler deploy -c wrangler.demo.jsonc`. **Verified:** demo URL 200s, auto-enters to
+    a populated dashboard + Leases list, **zero console errors**; live app still 200s and still shows its real
+    login; demo bundle confirmed free of the live backend ref.
+
 - **2026-07-07** — **Comprehensive review + 6 fix groups** (George approved the full findings report —
   plan file `~/.claude/plans/you-are-doing-a-wobbly-steele.md` — then the fixes shipped one reviewable
   commit per group). Deployed: DB migrations `0055`+`0056` (Supabase `awgrjmbcghdjgnqeiqkt`), **8 edge
