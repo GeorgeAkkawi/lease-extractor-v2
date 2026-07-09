@@ -9,8 +9,8 @@ import { getEnabledFeatures } from './api';
 // everywhere: the onboarding picker, the Settings "Features" toggles, and the
 // useFeatures() guards on its own UI.
 export const FEATURES = [
-  { key: 'insurance', label: 'Insurance vault',    hint: 'Store landlord and tenant policies, track expiry, and request certificates.' },
-  { key: 'contracts', label: 'Service contracts',  hint: 'Landscaping, snow removal, security and other standing service agreements.' },
+  { key: 'insurance', label: 'Insurance vault',    hint: 'Store landlord and tenant policies, track expiry, and request certificates. Turning this off also silences its dashboard reminders and emails.' },
+  { key: 'contracts', label: 'Service contracts',  hint: 'Landscaping, snow removal, security and other standing service agreements. Turning this off also silences its dashboard reminders and emails.' },
 ];
 
 export const FEATURE_KEYS = FEATURES.map((f) => f.key);

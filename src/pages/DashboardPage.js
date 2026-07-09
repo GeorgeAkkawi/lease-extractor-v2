@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
+import { useFeatures } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
 import NotificationEmailModal from '../components/NotificationEmailModal';
@@ -28,6 +29,9 @@ export default function DashboardPage() {
   // Defaults to showing everything; `show(key)` gates each block below.
   const { data: hidden = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   const show = (k) => !hidden.includes(k);
+  // The enabled feature set, so alerts belonging to a switched-off module silence too
+  // (Insurance, Contracts). null/undefined = everything on.
+  const { enabled: enabledFeatures } = useFeatures();
 
   const { data: index } = useQuery({ queryKey: ['searchIndex'], queryFn: fetchSearchIndex });
   // Portfolio revenue/occupancy come from the SAME per-property, per-year view the
@@ -43,10 +47,11 @@ export default function DashboardPage() {
   // Skip the receivables fetch entirely when that card is hidden.
   const { data: ar } = useQuery({ queryKey: ['portfolioAR'], queryFn: () => getPortfolioAR(), enabled: show('ar') });
   const { data: alerts = [] } = useQuery({
-    queryKey: ['alerts'],
+    // Feature/widget prefs are part of the key so toggling a module re-filters the feed.
+    queryKey: ['alerts', enabledFeatures, hidden],
     queryFn: async () => {
       const [data, states] = await Promise.all([fetchAlertData(), listAlertStates()]);
-      return buildAlerts(data, toAlertStates(states));
+      return buildAlerts(data, toAlertStates(states), new Date(), { features: enabledFeatures, hiddenWidgets: hidden });
     },
     refetchInterval: 60_000,
   });

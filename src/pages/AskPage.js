@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { fetchPortfolioSnapshot, askPortfolioQuestion } from '../lib/api';
+import { useFeatures } from '../lib/features';
 import { usePageChrome } from '../context/ChromeContext';
 import { SparkIcon } from '../components/icons';
 
@@ -9,23 +10,30 @@ import { SparkIcon } from '../components/icons';
 // (tenants, insurance, service contracts, rent, dates, balances). It reads a
 // compact facts-only summary (no documents), so a question is sub-cent and
 // repeats are free. Answers link straight to the tenant/property mentioned.
+// Each suggestion carries the feature it depends on (if any) so a chip about a
+// switched-off module isn't offered.
 const SUGGESTED = [
-  'Which tenants have no insurance on file?',
-  'Whose insurance expires this year?',
-  'Which properties have service contracts?',
-  'Who owes money?',
-  'Which leases end next year?',
+  { text: 'Which tenants have no insurance on file?', feature: 'insurance' },
+  { text: 'Whose insurance expires this year?', feature: 'insurance' },
+  { text: 'Which properties have service contracts?', feature: 'contracts' },
+  { text: 'Who owes money?' },
+  { text: 'Which leases end next year?' },
 ];
 
 export default function AskPage() {
   usePageChrome([{ label: 'Ask Amlak' }]);
   const [q, setQ] = useState('');
   const [log, setLog] = useState([]); // newest first: [{ q, answer, fromCache, pending, error }]
+  // The snapshot is gated to the enabled modules, so Ask Amlak never reads (or answers
+  // about) a section the landlord turned off. Feature changes re-key the query → refetch.
+  const { enabled, isOn } = useFeatures();
 
   const { data: snapshot, isLoading } = useQuery({
-    queryKey: ['portfolioSnapshot'],
-    queryFn: fetchPortfolioSnapshot,
+    queryKey: ['portfolioSnapshot', enabled],
+    queryFn: () => fetchPortfolioSnapshot(enabled),
   });
+
+  const suggestions = SUGGESTED.filter((s) => !s.feature || isOn(s.feature));
 
   const askM = useMutation({
     mutationFn: (question) => askPortfolioQuestion(question, snapshot),
@@ -94,9 +102,9 @@ export default function AskPage() {
 
       <div className="ask-chips">
         <span className="muted">Try:</span>
-        {SUGGESTED.map((s) => (
-          <button key={s} type="button" className="ask-chip" onClick={() => ask(s)} disabled={disabled}>
-            {s}
+        {suggestions.map((s) => (
+          <button key={s.text} type="button" className="ask-chip" onClick={() => ask(s.text)} disabled={disabled}>
+            {s.text}
           </button>
         ))}
       </div>

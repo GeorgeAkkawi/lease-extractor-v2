@@ -9,6 +9,9 @@ const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v)
 const txt = (s) => String(s ?? '').trim();
 const stamp = (r) => r?.updated_at || r?.created_at || '';
 
+// null / undefined enabled set = everything on (mirrors isFeatureOn in features.js).
+const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(key));
+
 // Lowercase / trim / collapse whitespace so "Who owes money?" and "who  owes money"
 // map to the same cache key.
 export function normalizeQuestion(q) {
@@ -22,18 +25,22 @@ export function normalizeQuestion(q) {
 // Balances get their own component: recording or deleting a PAYMENT changes who
 // owes money but bumps no updated_at above — without this, "who owes money?"
 // kept serving the stale cached answer after a payment was recorded.
-export function snapshotFingerprint({ leases = [], insurance = [], contracts = [], balances = [] } = {}) {
+export function snapshotFingerprint({ leases = [], insurance = [], contracts = [], balances = [], features } = {}) {
   const maxStamp = (arr) => arr.reduce((m, r) => { const s = stamp(r); return s > m ? s : m; }, '');
   const open = (balances || []).filter(
     (b) => b && b.display_status !== 'void' && b.display_status !== 'draft' && Number(b.balance) > 0
   );
   const owedCents = Math.round(open.reduce((s, b) => s + Number(b.balance), 0) * 100);
+  // The enabled feature set is part of the fingerprint so a cached answer built while a
+  // module was ON can't be served after it's turned OFF (and vice-versa).
+  const feat = features == null ? 'all' : [...features].sort().join(',');
   return [
-    'v2',
+    'v3',
     `L${leases.length}:${maxStamp(leases)}`,
     `I${insurance.length}:${maxStamp(insurance)}`,
     `C${contracts.length}:${maxStamp(contracts)}`,
     `B${open.length}:${owedCents}`,
+    `F${feat}`,
   ].join('|');
 }
 
@@ -48,8 +55,15 @@ export function buildPortfolioSnapshot({
   contracts = [],
   renewals = [],
   balances = [],
+  features,
   today,
 } = {}) {
+  // Skip the insurance / contract facts entirely when the module is switched off in
+  // Settings, so Ask Amlak never reads (or answers about) a section the landlord hid.
+  const insuranceOn = featureOn(features, 'insurance');
+  const contractsOn = featureOn(features, 'contracts');
+  if (!insuranceOn) insurance = [];
+  if (!contractsOn) contracts = [];
   // Local calendar date, not UTC — after ~8pm Eastern the UTC date is already
   // tomorrow, which would flip expiry/overdue flags a day early (same rule as
   // localDateIso in api.js / app_today() in SQL).
@@ -147,9 +161,13 @@ export function buildPortfolioSnapshot({
   const tenantCount = propsOut.reduce((n, p) => n + p.tenants.length, 0);
   return {
     today: todayIso,
-    fingerprint: snapshotFingerprint({ leases: activeLeases, insurance, contracts, balances }),
+    fingerprint: snapshotFingerprint({ leases: activeLeases, insurance, contracts, balances, features }),
     property_count: propsOut.length,
     tenant_count: tenantCount,
+    // Let snapshotToText omit a whole section (rather than say "NONE on file") when the
+    // module is off — off ≠ empty.
+    insurance_shown: insuranceOn,
+    contracts_shown: contractsOn,
     properties: propsOut,
   };
 }
@@ -163,28 +181,40 @@ export function snapshotToText(snapshot) {
   const sf = (n) => (n == null ? '—' : `${Number(n).toLocaleString('en-US')} SF`);
   const date = (d) => d || '—';
 
+  // Off ≠ empty: when a module is hidden in Settings, leave its facts out of the summary
+  // entirely so the assistant doesn't answer about a section the landlord turned off.
+  const showInsurance = snapshot.insurance_shown !== false;
+  const showContracts = snapshot.contracts_shown !== false;
+
   const lines = [`PORTFOLIO SUMMARY (as of ${snapshot.today})`, `${snapshot.property_count} properties · ${snapshot.tenant_count} tenants`, ''];
 
   for (const p of snapshot.properties) {
     lines.push(`PROPERTY: ${p.property}${p.address ? ` — ${p.address}` : ''}${p.building_sf ? ` (${sf(p.building_sf)})` : ''}${p.corporation ? ` · owner: ${p.corporation}` : ''}`);
-    const li = p.landlord_insurance;
-    lines.push(
-      `  Landlord insurance: ${li.on_file ? `on file${li.insurer ? ` (${li.insurer})` : ''}, expires ${date(li.expiry)}${li.expired ? ' — EXPIRED' : ''}` : 'NONE on file'}`
-    );
-    if (p.service_contracts.length) {
-      const cs = p.service_contracts
-        .map((c) => `${c.service_type || 'contract'}${c.vendor ? ` — ${c.vendor}` : ''} (ends ${date(c.end_date)}${c.expired ? ', EXPIRED' : ''}${c.amount != null ? `, ${money(c.amount)}${c.frequency ? `/${c.frequency}` : ''}` : ''})`)
-        .join('; ');
-      lines.push(`  Service contracts: ${cs}`);
-    } else {
-      lines.push('  Service contracts: none on file');
+    if (showInsurance) {
+      const li = p.landlord_insurance;
+      lines.push(
+        `  Landlord insurance: ${li.on_file ? `on file${li.insurer ? ` (${li.insurer})` : ''}, expires ${date(li.expiry)}${li.expired ? ' — EXPIRED' : ''}` : 'NONE on file'}`
+      );
+    }
+    if (showContracts) {
+      if (p.service_contracts.length) {
+        const cs = p.service_contracts
+          .map((c) => `${c.service_type || 'contract'}${c.vendor ? ` — ${c.vendor}` : ''} (ends ${date(c.end_date)}${c.expired ? ', EXPIRED' : ''}${c.amount != null ? `, ${money(c.amount)}${c.frequency ? `/${c.frequency}` : ''}` : ''})`)
+          .join('; ');
+        lines.push(`  Service contracts: ${cs}`);
+      } else {
+        lines.push('  Service contracts: none on file');
+      }
     }
     if (p.tenants.length) {
       lines.push('  Tenants (soonest lease end first):');
       for (const t of p.tenants) {
+        const ins = showInsurance
+          ? ` Insurance: ${t.insurance_on_file ? `on file${t.insurer ? ` (${t.insurer})` : ''}, expires ${date(t.insurance_expiry)}${t.insurance_expired ? ' — EXPIRED' : ''}` : 'NONE on file'}.`
+          : '';
         lines.push(
-          `   - ${t.tenant} — ${sf(t.sqft)}, base rent ${money(t.base_rent)}/yr, lease ${date(t.lease_start)} to ${date(t.lease_end)}, renewal option: ${t.has_renewal_option ? 'yes' : 'no'}. ` +
-          `Insurance: ${t.insurance_on_file ? `on file${t.insurer ? ` (${t.insurer})` : ''}, expires ${date(t.insurance_expiry)}${t.insurance_expired ? ' — EXPIRED' : ''}` : 'NONE on file'}. ` +
+          `   - ${t.tenant} — ${sf(t.sqft)}, base rent ${money(t.base_rent)}/yr, lease ${date(t.lease_start)} to ${date(t.lease_end)}, renewal option: ${t.has_renewal_option ? 'yes' : 'no'}.` +
+          `${ins} ` +
           `Owes: ${money(t.balance_owed)}.`
         );
       }

@@ -9,11 +9,25 @@ import DocAssistant from './DocAssistant';
 import { money, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
 
+// Expiry status of a policy by its date: green while current, amber within a month,
+// red once expired. Drives the badge on the card and whether a tenant policy shows the
+// "Request renewed certificate" button. null date → no status.
+export function expiryStatus(expiryDate, now = new Date()) {
+  if (!expiryDate) return null;
+  const days = Math.round((new Date(expiryDate + 'T12:00:00') - now) / 86400000);
+  if (days < 0) return { key: 'expired', tone: 'danger', label: 'Expired', stale: true };
+  if (days <= 31) return { key: 'expiring', tone: 'warn', label: 'Expiring soon', stale: true };
+  return { key: 'current', tone: 'good', label: 'Current', stale: false };
+}
+
 // Insurance vault for one scope: landlord (per property) or tenant (per lease).
 // Add a policy (paste or upload) → key-facts auto-fill + a copy is saved once →
 // glanceable card + ask-anything Q&A. Extra documents (renewals, premium notices)
 // can be attached, and a removed policy can be archived to history.
-export default function InsuranceVault({ party, propertyId, leaseId }) {
+// `onRequestRenewal(policy)` (tenant scope only) is called by the "Request renewed
+// certificate" button on an expiring/expired policy — the lease page opens the
+// professional renewal-request email with it.
+export default function InsuranceVault({ party, propertyId, leaseId, onRequestRenewal }) {
   const qc = useQueryClient();
   const scopeKey = party === 'landlord' ? propertyId : leaseId;
   const queryKey = ['insurance', party, scopeKey];
@@ -68,6 +82,8 @@ export default function InsuranceVault({ party, propertyId, leaseId }) {
 
   if (isLoading) return <p className="muted">Loading…</p>;
 
+  const status = policy ? expiryStatus(policy.expiry_date) : null;
+
   return (
     <div>
       {policy && !replacing && (
@@ -79,11 +95,24 @@ export default function InsuranceVault({ party, propertyId, leaseId }) {
               <div><span className="ins-k">Insurer</span><span className="ins-v">{policy.insurer || '—'}</span></div>
               <div><span className="ins-k">Coverage limit</span><span className="ins-v">{policy.coverage_amount != null ? money(policy.coverage_amount) : '—'}</span></div>
               <div><span className="ins-k">Premium</span><span className="ins-v">{policy.premium_amount != null ? money(policy.premium_amount) : '—'}</span></div>
-              <div><span className="ins-k">Expires</span><span className="ins-v">{policy.expiry_date ? fmtDate(policy.expiry_date) : '—'}</span></div>
+              <div>
+                <span className="ins-k">Expires</span>
+                <span className="ins-v" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {policy.expiry_date ? fmtDate(policy.expiry_date) : '—'}
+                  {status && <span className={`badge ${status.tone}`}>{status.label}</span>}
+                </span>
+              </div>
               {/* Additional insured only matters on the tenant's policy (does it name the landlord?). */}
               {party === 'tenant' && (
                 <div><span className="ins-k">Additional insured</span><span className={`badge ${policy.additional_insured ? 'good' : 'warn'}`} style={{ alignSelf: 'flex-start', marginTop: 4 }}>{policy.additional_insured ? 'Yes' : 'No'}</span></div>
               )}
+            </div>
+          )}
+          {/* On an expiring/expired tenant policy, offer to email for the renewed certificate. */}
+          {!editFacts && party === 'tenant' && status?.stale && onRequestRenewal && (
+            <div className="note-msg warn" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <span>{status.key === 'expired' ? 'This certificate has expired.' : 'This certificate is expiring soon.'} Ask the tenant for the renewed copy.</span>
+              <button type="button" onClick={() => onRequestRenewal(policy)}>✉ Request renewed certificate</button>
             </div>
           )}
           {!editFacts && (

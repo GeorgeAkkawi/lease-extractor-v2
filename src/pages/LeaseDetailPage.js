@@ -18,7 +18,7 @@ import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
 import InsuranceVault from '../components/InsuranceVault';
 import EmailComposeModal from '../components/EmailComposeModal';
-import { buildInsuranceRequestEmail } from '../lib/emailTemplates';
+import { buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail } from '../lib/emailTemplates';
 import { currentPhase } from '../lib/leaseTerm';
 import { reducedMonthlyBase, abatementKindLabel } from '../lib/abatement';
 import { PageSkeleton } from '../components/Skeleton';
@@ -43,6 +43,7 @@ export default function LeaseDetailPage() {
   const [flash, setFlash] = useState(null);
   const [showRemove, setShowRemove] = useState(false);
   const [showInsReq, setShowInsReq] = useState(false);
+  const [renewalPolicy, setRenewalPolicy] = useState(null); // expiring/expired policy → renewed-cert request
   const [startInput, setStartInput] = useState(''); // banner date entry for a start-less lease
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
@@ -471,9 +472,37 @@ export default function LeaseDetailPage() {
             <span style={{ marginLeft: 4 }}>(sent from Amlak — delivery isn't tracked).</span>
           </p>
         )}
-        <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} />
+        <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} onRequestRenewal={setRenewalPolicy} />
       </div>
       )}
+
+      {renewalPolicy && (() => {
+        const email = buildInsuranceRenewalRequestEmail({
+          business: corp ? { company_name: corp.name, address: corp.address, contact_email: corp.contact_email, contact_phone: corp.contact_phone } : null,
+          tenant_name: lease.tenant_name,
+          contact_name: lease.tenant_contact_name,
+          tenant_email: lease.tenant_email,
+          propertyName: prop?.name,
+          insurer: renewalPolicy.insurer,
+          expiryDate: renewalPolicy.expiry_date,
+        });
+        return (
+          <EmailComposeModal
+            title="Request renewed certificate"
+            from={corp?.contact_email || ''}
+            to={lease.tenant_email || ''}
+            secondaryTo={lease.tenant_email_2 || ''}
+            subject={email.subject}
+            body={email.body}
+            onClose={() => setRenewalPolicy(null)}
+            onSend={async ({ to, subject }) => {
+              await logInsuranceRequest({ propertyId: lease.property_id, leaseId: lease.id, tenantName: lease.tenant_name, to, subject });
+              qc.invalidateQueries({ queryKey: ['insuranceRequests', leaseId] });
+              qc.invalidateQueries({ queryKey: ['historyEvents', lease.property_id] });
+            }}
+          />
+        );
+      })()}
 
       {showInsReq && (() => {
         const email = buildInsuranceRequestEmail({

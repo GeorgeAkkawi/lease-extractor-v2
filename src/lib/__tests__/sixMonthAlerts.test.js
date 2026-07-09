@@ -124,6 +124,18 @@ describe('draftAlertEmail (DEMO)', () => {
     expect(none).toBe(null);
   });
 
+  test('tenant insurance-expiry alert → the expiry-aware "send the renewed certificate" letter', async () => {
+    const corp = await createCorporation('Cover Co, LLC');
+    const prop = await createProperty({ corporation_id: corp.id, name: 'Cover Plaza', address: 'Q' });
+    const lease = await createLease({ property_id: prop.id, tenant_name: 'Insured Tenant', tenant_email: 'i@x.com', square_footage: 1000, base_rent: 20000, lease_start: '2022-01-01', lease_termination_date: '2028-01-01' });
+    const email = await draftAlertEmail({ focus: 'insurance', lease_id: lease.id, property_id: prop.id, insurer: 'Harbor Casualty', expiry_date: '2025-12-01', expired: true });
+    expect(email).toBeTruthy();
+    expect(email.email_to).toBe('i@x.com');
+    expect(email.email_subject).toMatch(/Expired Certificate of Insurance/i);
+    expect(email.email_body).toMatch(/Harbor Casualty/);
+    expect(email.email_body).toMatch(/expired on/);
+  });
+
   test('renewal-notice alert → the "approaching" tenant heads-up', async () => {
     const corp = await createCorporation('Ren Co, LLC');
     const prop = await createProperty({ corporation_id: corp.id, name: 'Ren Plaza', address: 'Z' });

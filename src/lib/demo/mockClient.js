@@ -503,6 +503,15 @@ function demoAskPortfolio(body) {
     '\n\n(Demo mode gives a data-driven canned answer. Connected to your API key, the AI answers any question about your portfolio.)';
   const list = (arr, f) => (arr.length ? arr.map(f).join('\n') : '  (none)');
 
+  // Respect the Settings switchboard: if a module is off, its facts aren't in the
+  // snapshot, so don't answer about it (mirrors snapshotToText omitting the section).
+  if (/insur/.test(q) && snap.insurance_shown === false) {
+    return { answer: 'The Insurance module is turned off in Settings, so I’m not tracking policies right now. Turn it back on under Settings → Display & features to ask about insurance.' + foot };
+  }
+  if (/contract/.test(q) && snap.contracts_shown === false) {
+    return { answer: 'Service contracts are turned off in Settings, so I’m not tracking them right now. Turn the module back on under Settings → Display & features to ask about contracts.' + foot };
+  }
+
   if (/insur/.test(q) && /(no |without|missing|don'?t|lack|not have|which don)/.test(q)) {
     const none = tenants.filter((t) => !t.insurance_on_file);
     return { answer: `Tenants with NO insurance on file (${none.length}):\n` + list(none, (t) => `• ${t.tenant} — ${t.property}`) + foot };

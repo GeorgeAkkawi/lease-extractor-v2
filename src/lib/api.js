@@ -4,7 +4,7 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildContractRenewalEmail, buildPaymentReminderEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildPaymentReminderEmail } from './emailTemplates';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
@@ -543,7 +543,7 @@ export async function askLease(leaseId, question, leaseText) {
 // repeat on an unchanged portfolio is $0 and never calls the model.
 
 // Assemble the compact snapshot from a few bulk reads (all under the caller's RLS).
-export async function fetchPortfolioSnapshot() {
+export async function fetchPortfolioSnapshot(features) {
   const [corporations, properties, leases, insurance, contracts, renewals, balances] = await Promise.all([
     rows(supabase.from('corporations').select('id,name,address')),
     rows(supabase.from('properties').select('id,name,address,corporation_id,building_sf')),
@@ -553,7 +553,7 @@ export async function fetchPortfolioSnapshot() {
     rows(supabase.from('renewal_options').select('lease_id,status')),
     rows(supabase.from('v_invoice_balances').select('lease_id,balance,display_status,due_date')),
   ]);
-  return buildPortfolioSnapshot({ corporations, properties, leases, insurance, contracts, renewals, balances });
+  return buildPortfolioSnapshot({ corporations, properties, leases, insurance, contracts, renewals, balances, features });
 }
 
 // Cache read/write (best-effort — the feature still works if the table is absent).
@@ -712,8 +712,17 @@ export const listServiceContracts = (propertyId) =>
 export const addServiceContract = async (c) =>
   one(supabase.from('service_contracts').insert({ ...c, owner_id: await ownerId() }).select().single());
 
-export const updateServiceContract = (id, patch) =>
-  one(supabase.from('service_contracts').update(patch).eq('id', id).select().single());
+// Changing the end date re-arms the contract-expiry reminder emails: clear
+// end_notice_bucket so the send-reminders sweep notifies again for the new date
+// (same pattern saveInsurance uses for expiry_notice_bucket).
+export async function updateServiceContract(id, patch) {
+  const body = { ...patch };
+  if ('end_date' in patch) {
+    const existing = await one(supabase.from('service_contracts').select('end_date').eq('id', id).maybeSingle());
+    if (existing && patch.end_date !== existing.end_date) body.end_notice_bucket = null;
+  }
+  return one(supabase.from('service_contracts').update(body).eq('id', id).select().single());
+}
 
 export const deleteServiceContract = (id) =>
   rows(supabase.from('service_contracts').delete().eq('id', id));
@@ -1511,16 +1520,22 @@ export function summarizeAR(invoices, today = new Date()) {
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
 export async function fetchAlertData() {
-  const [leasesR, escR, renR, propR, insR, conR, invR] = await Promise.all([
+  const [leasesR, escR, renR, propR, insR, conR, invR, abaR, insReqR] = await Promise.all([
     supabase.from('leases').select('id,tenant_name,property_id,lease_termination_date,no_renewal_option,is_active'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status'),
     supabase.from('renewal_options').select('id,lease_id,notice_by_date,status'),
     supabase.from('properties').select('id,name,corporation_id'),
-    supabase.from('insurance_policies').select('party,property_id,lease_id,insurer,expiry_date').is('archived_at', null),
+    // created_at/updated_at let buildAlerts tell whether a tenant answered an insurance
+    // request (a policy saved AFTER the request) for the chase-up alert.
+    supabase.from('insurance_policies').select('id,party,property_id,lease_id,insurer,expiry_date,created_at,updated_at').is('archived_at', null),
     supabase.from('service_contracts').select('id,name,vendor,vendor_email,end_date,property_id'),
     // Overdue-invoice alerts read from the balance view: anything still owed (the
     // view nets payments) with a due date. buildAlerts keeps only the past-due ones.
     supabase.from('v_invoice_balances').select('lease_id,property_id,year,due_date,balance').gt('balance', 0),
+    // Free-rent-ending alerts: abatement windows about to close.
+    supabase.from('rent_abatements').select('lease_id,start_date,end_date,kind,value'),
+    // Insurance chase-up: when each tenant was last asked for a certificate.
+    supabase.from('history_events').select('lease_id,event_date,created_at').eq('type', 'insurance_requested'),
   ]);
   return {
     leases: leasesR.data || [],
@@ -1530,6 +1545,8 @@ export async function fetchAlertData() {
     insurance: insR.data || [],
     contracts: conR.data || [],
     invoices: invR.data || [],
+    abatements: abaR.data || [],
+    insuranceRequests: insReqR.data || [],
   };
 }
 
@@ -2011,7 +2028,12 @@ export async function draftAlertEmail(alert) {
   const wrap = (email, kind) => ({ kind, lease_id: lease.id, property_id: lease.property_id, tenant_name: lease.tenant_name, email_to: lease.tenant_email || '', email_to_2: lease.tenant_email_2 || '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body });
 
   if (focus === 'termination') return wrap(buildNonRenewalEmail({ ...common, leaseEnd: lease.lease_termination_date }), 'lease_ending');
-  if (focus === 'insurance') return wrap(buildInsuranceRequestEmail({ ...common }), 'insurance_request');
+  // A tenant insurance-expiry alert or a chase-up → the expiry-aware "please send the
+  // renewed certificate" letter, naming the insurer + expiry the alert carries. (The
+  // landlord's own building-policy alert has no lease_id, so it returned null above.)
+  if (focus === 'insurance' || focus === 'insurance_chase') {
+    return wrap(buildInsuranceRenewalRequestEmail({ ...common, insurer: alert.insurer, expiryDate: alert.expiry_date, expired: alert.expired }), 'insurance_request');
+  }
   // Overdue invoice → a payment reminder with the exact balance + original due date.
   if (focus === 'invoice') {
     return wrap(buildPaymentReminderEmail({ ...common, year: alert.invoice_year, balance: alert.balance, dueDate: alert.date }), 'payment_reminder');

@@ -9,6 +9,13 @@ const soon = (() => {
   dt.setDate(dt.getDate() + 21);
   return dt.toISOString().slice(0, 10);
 })();
+// ~3 weeks in the PAST — a lapsed tenant certificate, so the demo shows the red
+// "Expired" badge + the "Request renewed certificate" flow.
+const lapsed = (() => {
+  const dt = new Date();
+  dt.setDate(dt.getDate() - 21);
+  return dt.toISOString().slice(0, 10);
+})();
 
 export const DEMO_USER = { id: 'demo-user', email: 'demo@local' };
 
@@ -65,6 +72,14 @@ export function seed() {
       'Deductible: $2,500 per occurrence.',
       `Policy period: ${fmtDate(iso(Y, 7, 1))} to ${fmtDate(soon)}.`,
       'Additional insured: Acme Holdings LLC (landlord) is named as additional insured per the lease (CG 20 11 endorsement).',
+    ].join('\n'),
+    'lease-2': [
+      'CERTIFICATE OF LIABILITY INSURANCE',
+      'Named insured: City Dental (tenant), Suite 120, Maple Plaza.',
+      'Insurer: Summit Indemnity Group.',
+      'Commercial General Liability — each occurrence: $1,000,000; general aggregate: $2,000,000.',
+      `Policy period: ${fmtDate(iso(Y - 1, 6, 1))} to ${fmtDate(lapsed)} (EXPIRED).`,
+      'Additional insured: Acme Holdings LLC (landlord) per the lease.',
     ].join('\n'),
   };
 
@@ -128,6 +143,9 @@ export function seed() {
       // Expiries set near-term so the bell shows the expiring-insurance reminders.
       { id: 'ins-1', owner_id: DEMO_USER.id, party: 'landlord', property_id: 'prop-1', lease_id: null, insurer: 'Granite Mutual Insurance', coverage_amount: 2000000, expiry_date: soon, additional_insured: false, policy_text: policyText['prop-1'], storage_path: null, created_at: iso(Y, 4, 1) },
       { id: 'ins-2', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-1', insurer: 'Harbor Casualty', coverage_amount: 1000000, expiry_date: soon, additional_insured: true, policy_text: policyText['lease-1'], storage_path: null, created_at: iso(Y, 7, 1) },
+      // City Dental's certificate has already lapsed — drives the red "Expired" badge and
+      // the "Request renewed certificate" flow in demo.
+      { id: 'ins-3', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-2', insurer: 'Summit Indemnity Group', coverage_amount: 1000000, expiry_date: lapsed, additional_insured: true, policy_text: policyText['lease-2'], storage_path: null, created_at: iso(Y - 1, 6, 1) },
     ],
     // Starts empty — the landlord adds contracts via the Contracts tab.
     service_contracts: [],
