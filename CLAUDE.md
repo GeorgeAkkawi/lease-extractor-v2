@@ -74,6 +74,69 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-09** — **Notifications: full audit + synced to the Settings switchboard + expiry-focused
+  additions** (George approved the plan — `~/.claude/plans/i-want-to-go-federated-whale.md`). Deployed: DB
+  migration `0057` (Supabase `awgrjmbcghdjgnqeiqkt`), `send-reminders` edge function redeployed, frontend
+  Cloudflare version `24435051`, commit `e7593e3`. **No money** (owner-only emails on the existing Resend
+  setup; zero AI calls), **no tenant emails** (every tenant letter stays behind a ✉ click), **no destructive
+  data** (0057 is two additive nullable columns). Tests **178/178** (was 161 — +17 gating tests).
+  - **What George asked (three rounds):** (1) audit every notification + how far ahead it fires; (2) add
+    notifications a landlord needs and **tie them to the Settings page** so hiding a module silences its
+    notifications everywhere; (3) focus insurance on **policies EXPIRING** (not "no policy on file"), add a
+    professional **"your certificate expired — please send the renewed one"** tenant email with neat UI; and
+    (4) **link the notifications to the emails**: show WHICH email they go to, guarantee he's never emailed
+    about something he hid, and **explain it in Settings**.
+  - **The audit (4 channels, verified in code):** dashboard alert list (`buildAlerts`) — escalations / lease
+    ending / renewal-notice / contract ending / insurance expiry (both landlord + tenant), 6 months out; +
+    overdue invoices (until paid). Bell (stored) — renewal Yes/No prompt (6mo), escalation-applied, key-date
+    copies (1mo/2wk/1wk). Owner emails (daily 13:00 UTC cron, Resend live) — lease dates 30/14/7d, insurance
+    1mo/2wk/1wk/at-expiry. Health email — backend only. **Gap closed:** nothing respected the feature toggles.
+  - **Part 1 — every notification now obeys Settings.** `buildAlerts(data, states, now, {features,
+    hiddenWidgets})` gates insurance (+ chase-up) by the **Insurance** feature, contract alerts by
+    **Service contracts**, overdue-invoice + free-rent alerts by the **Outstanding (receivables)** display
+    toggle; core lease dates never gated (`src/lib/alerts.js`; `DashboardPage.js` passes `useFeatures().enabled`
+    + hidden set, folded into the `['alerts', …]` query key so a toggle re-filters instantly). Server side:
+    `send-reminders` loads all `user_preferences` once/run and skips insurance/contract/overdue-rent emails for
+    owners who toggled them off. **Ask Amlak** (`portfolio.js`) omits a switched-off module's facts entirely
+    (off ≠ "none on file") and folds the enabled set into `snapshotFingerprint` (v3) so cached answers can't
+    leak a hidden section; `AskPage.js` drops the matching suggestion chips and re-keys the snapshot query.
+  - **Part 2A — the headline "policy expired → send the renewed certificate" flow.** New
+    `buildInsuranceRenewalRequestEmail` (`emailTemplates.js`, on the shared professional `letter()` scaffold) —
+    names the policy on file + insurer, "expired on {date}" vs "set to expire on {date}", asks for the renewed
+    cert naming the landlord as additional insured. `InsuranceVault.js`: an expiry status **badge** on every
+    policy card (green Current / amber Expiring soon / red Expired) and, on an expiring/expired **tenant**
+    policy, a prominent **"✉ Request renewed certificate"** button → the existing `EmailComposeModal` prefilled
+    with the new letter (logs the `insurance_requested` history event, so "📨 Last requested" updates). The
+    dashboard tenant-insurance alert's ✉ (`draftAlertEmail`) now uses the same expiry-aware letter; the
+    landlord's own building-policy alert still has no ✉ (no outside recipient).
+  - **Part 2B — new alerts.** Free-rent period ending within a month (`rent_abatements`; calm info→warn, owner
+    heads-up, no tenant email); holdover wording (a still-active lease past term end reads "Tenant in holdover"
+    not a generic overdue); insurance chase-up (a cert requested 21+ days ago with no policy saved/updated
+    since → "renewed certificate not received", ✉ re-opens the letter). `fetchAlertData` now also selects
+    rent_abatements, insurance_requested events, and policy created/updated stamps.
+  - **Part 2C — new owner-email sweeps** in `send-reminders`, same 1mo/2wk/1wk/ended cadence + once-per-threshold
+    dedupe as insurance: **contract expiry** (via new `service_contracts.end_notice_bucket`, re-armed by
+    `updateServiceContract` when the end date changes) and **overdue rent** at 1 day / 1 week / 1 month late
+    with the exact balance (via new `invoices.overdue_notice_bucket`; no reset needed — a paid invoice drops out
+    of `v_invoice_balances`). Both gated by the owner's Settings toggles.
+  - **Part "link + explain" (George's 4th ask) — new "Notifications & emails" card** at the top of Settings →
+    Display & features (`DisplaySettings.js`): shows **"Reminder emails go to {your sign-in email}"** (live from
+    `useAuth().user?.email`; demo shows a "no emails in demo" line), a plain-English schedule of what's emailed
+    and when, and the promise **"Anything you turn off below is silenced everywhere — dashboard alerts AND
+    emails. You'll never be emailed about something you've hidden"** + the reminder that tenants are never
+    emailed automatically. Per-toggle hints (`features.js`/`dashboardWidgets.js`) gained "…also silences its
+    reminders and emails."
+  - **Deliberately deferred (flagged):** rent-renegotiation date as a dashboard alert (needs the date promoted
+    out of `extraction_raw` first), "rent due soon" pre-due notices (noise for annual invoices), sign-in
+    security alerts.
+  - **Verified:** unit **178/178** (`vitest run`), `vite build` compiles, and end-to-end in demo with a real
+    browser — City Dental's seeded lapsed cert shows the red **Expired** badge + **✉ Request renewed
+    certificate**, and the compose modal opens with the professional "Expired Certificate of Insurance — Maple
+    Plaza" letter naming Summit Indemnity + the expiry date; the Settings card renders the schedule + promise;
+    toggling **Insurance off** dropped the 3 insurance alerts (8→5 active) AND made Ask Amlak reply "the
+    Insurance module is turned off in Settings" — zero console errors. **Live DB verified:** both 0057 columns
+    present. Live site 200s. Committed only this task's files (left the untracked `.claude/` tooling alone).
+
 - **2026-07-07** — **Project renamed Amlak → "Lease Extractor V2" + GitHub repo made PUBLIC** (George is
   submitting it and wants reviewers to read the source). **⚠️ THE REPO IS NOW PUBLIC** —
   `GeorgeAkkawi/lease-extractor-v2` (was `my-dashboard`; old URL 301-redirects). **Never commit a secret**:
