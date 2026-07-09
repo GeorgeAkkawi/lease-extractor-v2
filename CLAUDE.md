@@ -74,6 +74,18 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-09** — **Follow-up: the "Request certificate" button now shows on ANY tenant policy on file**
+  (George couldn't see it — all his live tenant certs are current/2027, and the button only appeared on an
+  expiring/expired one; his only expired policy is his own building/landlord policy, which has no ✉). Deployed:
+  frontend Cloudflare version `fe7e2a3a`, commit `5908c70`. No DB/edge/money/tenant-emails. Now: a prominent
+  **"✉ Request renewed certificate"** warning box when the tenant cert is expiring/expired, and a quiet
+  **"✉ Request updated certificate"** action whenever a current cert is on file. `buildInsuranceRenewalRequestEmail`
+  wording adapts — "expired on {date}" (compliance ask) vs a neutral "…on file, with coverage through {date} …
+  requesting your most recent certificate" that never sounds alarmist for a far-from-expiry policy (subject
+  flips too). Files: `InsuranceVault.js` (button condition `status?.stale` → `policy`), `emailTemplates.js`,
+  `LeaseDetailPage.js` (modal title adapts). Tests **178/178**; verified in demo the amber/red policies show the
+  renewed-cert button; live bundle carries the new copy, site 200s.
+
 - **2026-07-09** — **Notifications: full audit + synced to the Settings switchboard + expiry-focused
   additions** (George approved the plan — `~/.claude/plans/i-want-to-go-federated-whale.md`). Deployed: DB
   migration `0057` (Supabase `awgrjmbcghdjgnqeiqkt`), `send-reminders` edge function redeployed, frontend
