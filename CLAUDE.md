@@ -74,6 +74,32 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-09** — **Follow-up: the downloadable rent-roll Excel now shows holdover tenants AND vacancy too**
+  (George: "i didn't see the vacancy or the lease that needs an extension as holdover listed in the
+  downloadable rent roll excel file"). Deployed: frontend Cloudflare version `61eac44b`. **No DB, no edge
+  function, no money, no tenant emails.** Tests **209/209** (was 201 — +8 rentRollExcel).
+  - **Root cause:** the on-screen roll got the holdover + vacancy fix (0058, prior entry) but the **Excel
+    export is a separate code path** (`src/lib/rentRollExcel.js`, built from `fetchSearchIndex` leases +
+    properties, NOT the view). It (a) hard-filtered `leases.filter(l => l.is_active !== false)` — dropping
+    every held-over/outdated tenant from the workbook — and (b) never rendered a vacancy row at all.
+  - **Fix:** extracted a pure, exported `rentRollRows(property, leases, now)` that builds the ordered data
+    rows — tenant rows first (sorted by name), then a **"Vacant space"** row when `building_sf − ALL leases'
+    SF > 0` (the same figure the Overview/Leases page use since 0049). Holdover leases are **included and
+    flagged**, never dropped: a lease with `is_active === false` OR past its term end gets `kind:'holdover'`,
+    an amber row fill, `In Term? = "Holdover"`, and a Notes prefix **"Expired — held over"** (+ "· needs
+    extension" when `is_active===false`) — mirroring the on-screen badge. The vacant row is muted italic,
+    `In Term? = "Vacant"`, "Unleased — nothing to collect", no rent. `downloadRentRollXlsx` dropped the
+    `is_active` filter (so a property whose leases are ALL outdated still gets a sheet) and now buckets ALL
+    leases by property. `addPropertySheet` just maps `rentRollRows` output onto the COLS by key and styles
+    by `kind`; the summary occupancy/rent/Wtd-PSF now correctly count held-over tenants too (they were
+    under-counted before). Both callers (`LeasesPage` per-property, `DashboardPage` portfolio-wide) already
+    pass all leases + `building_sf`, so no caller change.
+  - **Verified:** new `src/lib/__tests__/rentRollExcel.test.js` (8 tests — holdover incl. is_active=false and
+    past-term, "needs extension" wording, in-term untouched, vacant row = building−leased & last, no vacancy
+    when fully leased / no building size, purity). Full suite **209/209** (`vitest run`), `vite build`
+    compiles, live site 200s. Committed only this task's 2 files. (Live-browser download not re-driven —
+    the pure `rentRollRows` unit tests cover the row logic; the styling is unchanged plumbing.)
+
 - **2026-07-09** — **Rent-roll holdover sync + Leases-page CAM/tax & Total columns + sorting/drag + a
   per-lease Address box (replacing the second-email feature)** (George approved the plan —
   `~/.claude/plans/make-sure-that-the-shiny-platypus.md`). Deployed: DB migration `0058` (Supabase

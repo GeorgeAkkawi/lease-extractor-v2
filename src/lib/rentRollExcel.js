@@ -27,6 +27,8 @@ const LAST_COL = 'N'; // 14th column
 const NAVY = 'FF1F3A5F';
 const GROUP_FILL = 'FFD9E1EC';
 const SUB_FILL = 'FFEEF2F7';
+const HOLDOVER_FILL = 'FFFCE8CF'; // light amber — matches the on-screen "held over" badge
+const MUTED = 'FF5A6B82';
 
 const fill = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
 const thin = { style: 'thin', color: { argb: 'FFBFC8D6' } };
@@ -61,6 +63,58 @@ function safeSheetName(name, used) {
   while (used.has(n)) { const suffix = ` (${i++})`; n = base.slice(0, 31 - suffix.length) + suffix; }
   used.add(n);
   return n;
+}
+
+// Pure: the ordered data rows for one property's rent roll — tenant rows first
+// (sorted by name), then a "Vacant space" row when the building has unleased SF.
+// Holdover / outdated leases (is_active === false, or past their term end) are
+// INCLUDED and flagged, never dropped — an outdated tenant still occupies space and
+// collects rent until the landlord removes it, so it belongs on the roll. This
+// mirrors the on-screen rent roll (the amber "Expired — held over" badge + the
+// muted vacancy row). Keys line up 1:1 with COLS so the sheet builder just maps by
+// key. Exported for unit tests (no ExcelJS / no browser needed).
+export function rentRollRows(property, leases = [], now = new Date()) {
+  const buildingSf = Number(property?.building_sf) || 0;
+  const leasedSf = leases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
+  const annualRent = leases.reduce((s, l) => s + (Number(l.base_rent) || 0), 0);
+  const sorted = [...leases].sort((a, b) => (a.tenant_name || '').localeCompare(b.tenant_name || ''));
+  const rows = sorted.map((l) => {
+    const sf = Number(l.square_footage) || 0;
+    const rent = Number(l.base_rent) || 0;
+    const exp = toDate(l.lease_termination_date);
+    const heldOver = l.is_active === false || !!(exp && now >= exp);
+    const holdNote = heldOver ? `Expired — held over${l.is_active === false ? ' · needs extension' : ''}` : '';
+    return {
+      kind: heldOver ? 'holdover' : 'tenant',
+      suite: '',
+      tenant: l.tenant_name || '',
+      sf: sf || null,
+      pctNrsf: buildingSf > 0 ? sf / buildingSf : null,
+      annual: rent || null,
+      psf: sf > 0 ? rent / sf : null,
+      pctTotal: annualRent > 0 ? rent / annualRent : null,
+      type: '',
+      commence: toDate(l.lease_start),
+      expiration: exp,
+      term: termMonths(l.lease_start, l.lease_termination_date),
+      inTerm: heldOver ? 'Holdover' : isInTerm(l.lease_start, l.lease_termination_date, now),
+      notes: [holdNote, l.lease_terms].filter(Boolean).join(' · '),
+      category: heldOver ? 'Holdover' : '',
+    };
+  });
+  // Vacant space = building SF − ALL leases' SF (holdover included). Same figure the
+  // Overview / Leases page use (v_property_totals.vacant_sf since 0049).
+  const vacantSf = buildingSf > 0 ? Math.max(0, buildingSf - leasedSf) : 0;
+  if (vacantSf > 0) {
+    rows.push({
+      kind: 'vacant', suite: '', tenant: 'Vacant space',
+      sf: vacantSf, pctNrsf: vacantSf / buildingSf,
+      annual: null, psf: null, pctTotal: null, type: '',
+      commence: null, expiration: null, term: null,
+      inTerm: 'Vacant', notes: 'Unleased — nothing to collect', category: 'Vacant',
+    });
+  }
+  return rows;
 }
 
 // Build one property's worksheet.
@@ -162,35 +216,20 @@ function addPropertySheet(wb, usedNames, property, leases, now) {
     for (let c = 1; c <= COLS.length; c++) ws.getCell(r, c).border = allBorders;
   }
 
-  // --- Tenant rows ---
-  const sorted = [...leases].sort((a, b) => (a.tenant_name || '').localeCompare(b.tenant_name || ''));
+  // --- Tenant rows (holdover included + flagged), then a vacancy row ---
+  const dataRows = rentRollRows(property, leases, now);
   let r = h + 1;
-  for (const l of sorted) {
+  for (const row of dataRows) {
     const rowIdx = r;
-    const sf = Number(l.square_footage) || 0;
-    const rent = Number(l.base_rent) || 0;
-    const values = [
-      '', // Suite — not tracked yet
-      l.tenant_name || '',
-      sf || null,
-      buildingSf > 0 ? sf / buildingSf : null,
-      rent || null,
-      sf > 0 ? rent / sf : null,
-      annualRent > 0 ? rent / annualRent : null,
-      '', // Lease Type — not tracked yet
-      toDate(l.lease_start),
-      toDate(l.lease_termination_date),
-      termMonths(l.lease_start, l.lease_termination_date),
-      isInTerm(l.lease_start, l.lease_termination_date, now),
-      l.lease_terms || '',
-      '', // Tenant Category — not tracked yet
-    ];
+    const values = COLS.map((c) => row[c.key]);
     values.forEach((v, i) => {
       const cell = ws.getCell(rowIdx, i + 1);
-      cell.value = v;
+      cell.value = v == null ? '' : v;
       if (COLS[i].fmt && v != null && v !== '') cell.numFmt = COLS[i].fmt;
       cell.border = allBorders;
       cell.font = { size: 10 };
+      if (row.kind === 'holdover') cell.fill = fill(HOLDOVER_FILL);
+      if (row.kind === 'vacant') { cell.fill = fill(SUB_FILL); cell.font = { size: 10, italic: true, color: { argb: MUTED } }; }
       if (['sf', 'pctNrsf', 'annual', 'psf', 'pctTotal', 'term'].includes(COLS[i].key))
         cell.alignment = { horizontal: 'right' };
       if (['commence', 'expiration', 'inTerm'].includes(COLS[i].key))
@@ -235,11 +274,13 @@ export async function downloadRentRollXlsx({ leases = [], properties = [], fileL
   const ExcelJS = mod.default || mod;
   const now = new Date();
 
-  const active = leases.filter((l) => l.is_active !== false);
+  // Include holdover / outdated leases (is_active === false): an outdated tenant still
+  // occupies space and collects rent until removed, so it stays on the roll (flagged
+  // "held over" by rentRollRows). Matches the on-screen roll + Overview + Leases page.
   const propById = Object.fromEntries(properties.map((p) => [p.id, p]));
-  // group active leases by property, preserving an "Unassigned" bucket for orphans
+  // group leases by property, preserving an "Unassigned" bucket for orphans
   const byProp = new Map();
-  for (const l of active) {
+  for (const l of leases) {
     const key = l.property_id || '__none__';
     if (!byProp.has(key)) byProp.set(key, []);
     byProp.get(key).push(l);
@@ -248,7 +289,7 @@ export async function downloadRentRollXlsx({ leases = [], properties = [], fileL
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Amlak';
   const usedNames = new Set();
-  // one sheet per property that has at least one active lease, in name order
+  // one sheet per property that has at least one lease (active or held over), in name order
   const ordered = [...byProp.keys()].sort((a, b) =>
     (propById[a]?.name || '￿').localeCompare(propById[b]?.name || '￿'));
   for (const key of ordered) {
