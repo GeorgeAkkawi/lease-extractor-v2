@@ -1,16 +1,20 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getPropertyMonthlyRoll, markMonthPaid, unmarkMonthPaid, markMonthPaidAllTenants } from '../lib/api';
-import { money } from '../lib/format';
+import { money, sf } from '../lib/format';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const todayIso = () => new Date().toISOString().slice(0, 10);
 
 // Property-level monthly rent roll: tenants down the side, the 12 months across.
 // Click any box to mark that tenant's month paid (or undo); "✓ all" under a month
 // marks it paid for every tenant that hasn't yet — rent day for the whole building
 // in one click. Every change writes a real payment, so the receivables above and the
 // dashboard AR update automatically. Scoped to the selected fiscal year.
-export default function PropertyRentRoll({ propertyId, year }) {
+// `vacantSf` (from v_property_totals) adds a final "Vacant space" row so the roll
+// mirrors the Leases/Overview view of the building. Holdover tenants (term expired
+// but not removed) stay on the roll and keep billing, flagged with a badge.
+export default function PropertyRentRoll({ propertyId, year, vacantSf = 0 }) {
   const qc = useQueryClient();
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ['propertyRentRoll', propertyId, year],
@@ -73,8 +77,10 @@ export default function PropertyRentRoll({ propertyId, year }) {
   });
   const busy = cellMut.isPending || allMut.isPending;
 
+  const vacant = Number(vacantSf) || 0;
+
   if (isLoading) return <p className="muted">Loading…</p>;
-  if (!rows.length) return <p className="empty-line muted">No tenants with rent on file for FY {year}.</p>;
+  if (!rows.length && vacant <= 0) return <p className="empty-line muted">No tenants with rent on file for FY {year}.</p>;
 
   const markAll = (m) => {
     // Count only tenants who actually owe this month — a fully-free abated month has nothing to collect.
@@ -111,10 +117,24 @@ export default function PropertyRentRoll({ propertyId, year }) {
           <tbody>
             {rows.map((r) => {
               const paidCount = Object.keys(r.byMonth).length;
+              // Holdover: the lease term has ended but the tenant hasn't been removed/extended,
+              // so rent still collects. Flag it (matches the "Outdated" badge on the Leases page).
+              const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso()) || r.is_active === false;
               return (
                 <tr key={r.lease_id}>
                   <td>
                     {r.tenant_name}
+                    {heldOver && (
+                      <div>
+                        <span
+                          className="badge warn"
+                          style={{ marginTop: 3 }}
+                          title="This lease has expired but the tenant is being held over — rent still collects until you remove or extend the lease."
+                        >
+                          Expired — held over{r.is_active === false ? ' · needs extension' : ''}
+                        </span>
+                      </div>
+                    )}
                     <div className="muted" style={{ fontSize: 11 }}>{money(r.monthly)}/mo</div>
                   </td>
                   {MONTHS.map((ml, i) => {
@@ -144,6 +164,18 @@ export default function PropertyRentRoll({ propertyId, year }) {
                 </tr>
               );
             })}
+            {vacant > 0 && (
+              <tr className="rr-vacant">
+                <td>
+                  <span className="muted">Vacant space</span>
+                  <div className="muted" style={{ fontSize: 11 }}>{sf(vacant)} · nothing to collect</div>
+                </td>
+                {MONTHS.map((ml) => (
+                  <td key={ml}><span className="rr-cell vacant" title={`${ml}: unleased space — no rent`}>—</span></td>
+                ))}
+                <td className="muted">—</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

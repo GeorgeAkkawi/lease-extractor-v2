@@ -2,14 +2,12 @@ import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { listSenderEmails } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
-import RecipientField from './RecipientField';
 import { useModalA11y } from './modalA11y';
 
 // Reusable compose-and-send modal: pick the sending account, confirm the
 // recipient, edit subject/body, then Send via Gmail / another mail app. Same send
 // flow as the bell's tenant emails and invoices (client-side compose, no backend).
-// `secondaryTo` (when the lease has a 2nd email) enables the Primary/Second/Both picker.
-export default function EmailComposeModal({ title = 'Email tenant', from: initialFrom = '', to: initialTo = '', secondaryTo = '', subject: initialSubject = '', body: initialBody = '', onClose, onSend }) {
+export default function EmailComposeModal({ title = 'Email tenant', from: initialFrom = '', to: initialTo = '', subject: initialSubject = '', body: initialBody = '', onClose, onSend }) {
   // Escape closes; focus is trapped in the dialog and returned on close.
   const modalRef = useModalA11y(onClose);
   const { data: senderEmails = [] } = useQuery({ queryKey: ['senderEmails'], queryFn: listSenderEmails });
@@ -56,7 +54,10 @@ export default function EmailComposeModal({ title = 'Email tenant', from: initia
             )}
             <small className="field-note">Be signed into this Google account in your browser — otherwise Gmail opens in whichever account you’re logged into.</small>
           </label>
-          <RecipientField primary={initialTo} secondary={secondaryTo} value={to} onChange={setTo} />
+          <label className="form-field" style={{ maxWidth: '100%' }}>
+            <span>To</span>
+            <input className="text-input" type="email" value={to} onChange={(e) => setTo(e.target.value)} placeholder="tenant@email.com" />
+          </label>
           <label className="form-field" style={{ maxWidth: '100%' }}>
             <span>Subject</span>
             <input className="text-input" value={subject} onChange={(e) => setSubject(e.target.value)} />

@@ -5,7 +5,7 @@ const EMPTY = {
   tenant_name: '',
   tenant_contact_name: '',
   tenant_email: '',
-  tenant_email_2: '',
+  premises_address: '',
   square_footage: '',
   base_rent: '',
   lease_start: '',
@@ -53,7 +53,7 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
       tenant_name: form.tenant_name.trim(),
       tenant_contact_name: form.tenant_contact_name.trim() || null,
       tenant_email: form.tenant_email.trim() || null,
-      tenant_email_2: form.tenant_email_2.trim() || null,
+      premises_address: form.premises_address.trim() || null,
       square_footage: numOrNull(form.square_footage),
       base_rent: numOrNull(form.base_rent),
       lease_start: form.lease_start || null,
@@ -75,8 +75,8 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
         <Field label="Tenant email (for sending)" field="tenant_email" extracted={extracted}>
           <input className="text-input" type="email" value={form.tenant_email} onChange={set('tenant_email')} placeholder="billing@tenant.com" />
         </Field>
-        <Field label="Second email (optional)" field="tenant_email_2" extracted={extracted}>
-          <input className="text-input" type="email" value={form.tenant_email_2} onChange={set('tenant_email_2')} placeholder="owner@tenant.com" />
+        <Field label="Address" field="premises_address" extracted={extracted} hint="the leased unit's street address — used for sorting">
+          <input className="text-input" value={form.premises_address} onChange={set('premises_address')} placeholder="e.g. 241 W 116th St — Unit 4" />
         </Field>
         <Field label="Square footage" field="square_footage" extracted={extracted}>
           <input className="text-input num" type="number" step="any" value={form.square_footage} onChange={set('square_footage')} />

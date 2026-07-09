@@ -75,6 +75,8 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .rr-cell:hover:not(:disabled){border-color:var(--accent)}
 .rr-cell:disabled{opacity:.55;cursor:default}
 .rr-cell.paid{background:var(--forest-soft);border-color:var(--forest);color:var(--forest)}
+.rr-cell.vacant{cursor:default;background:transparent;border-style:dashed}
+.rent-roll tr.rr-vacant td{opacity:.72}
 
 /* ---- layout ---- */
 .app{display:flex;height:100vh;overflow:hidden}
@@ -185,9 +187,18 @@ button.danger-solid:hover{filter:brightness(1.07)}
 
 /* ---- lease list ---- */
 .lease-list{display:flex;flex-direction:column;gap:9px}
-.lease-row{display:grid;grid-template-columns:1.6fr 1fr 1fr 1.4fr auto;align-items:center;gap:16px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:17px 22px;text-align:left;color:var(--ink);font-weight:400;text-transform:none;letter-spacing:0;text-decoration:none;cursor:pointer}
+.lease-row{display:grid;grid-template-columns:1.6fr 1fr .9fr 1.1fr 1fr 1.15fr auto;align-items:center;gap:14px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:17px 22px;text-align:left;color:var(--ink);font-weight:400;text-transform:none;letter-spacing:0;text-decoration:none;cursor:pointer}
 .lease-row:hover{border-color:var(--accent);filter:none}
-.lease-row.empty-slot{border-style:dashed;background:transparent;align-items:center}
+.lease-row[draggable=true]{cursor:grab}
+.lease-row.dragging{opacity:.5;border-style:dashed}
+.lease-row.drag-over{border-color:var(--accent);box-shadow:0 -2px 0 0 var(--accent) inset}
+.lease-sortbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.lease-sortbar label{display:flex;align-items:center;gap:8px;margin:0}
+.lease-sortbar .muted{font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.lease-sortbar select{max-width:180px;padding:6px 10px}
+.sort-dir{padding:6px 12px}
+.sortbar-hint{font-size:11px}
+.lease-row.empty-slot{grid-template-columns:1.6fr 1fr 1fr 1fr auto;border-style:dashed;background:transparent;align-items:center;cursor:pointer}
 .lease-row.empty-slot:hover{border-color:var(--accent);background:var(--accent-soft)}
 .lease-row.empty-slot .lease-name strong{color:var(--muted);font-style:italic}
 .slot-cta{display:flex;align-items:center;gap:9px;color:var(--accent);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.08em}

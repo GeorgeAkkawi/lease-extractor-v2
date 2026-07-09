@@ -1,14 +1,17 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, listLeases, listEscalations } from '../lib/api';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { getCorporation, getProperty, listLeases, listEscalations, getTenantShares, getLeaseSort, setLeaseSort } from '../lib/api';
 import { usePageChrome } from '../context/ChromeContext';
 import { usePrefetchers, escalationsByLeasesQuery } from '../lib/prefetch';
+import { sortLeases, LEASE_SORTS } from '../lib/leaseSort';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import PropertyTabs from '../components/PropertyTabs';
 import { RowListSkeleton } from '../components/Skeleton';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 import { money, psf, sf, fmtDate } from '../lib/format';
+
+const CURRENT_YEAR = new Date().getFullYear();
 
 export default function LeasesPage() {
   const { corpId, propId } = useParams();
@@ -25,6 +28,14 @@ export default function LeasesPage() {
     ...escalationsByLeasesQuery(qc, propId, leases),
     enabled: leases.length > 0,
   });
+  // Per-tenant CAM/tax/roof shares for this calendar year — powers the CAM+tax and
+  // Total columns (and the Total-rent sort). One query for the whole property.
+  const { data: shares = [] } = useQuery({
+    queryKey: ['tenantShares', propId, CURRENT_YEAR],
+    queryFn: () => getTenantShares(propId, CURRENT_YEAR),
+    enabled: leases.length > 0,
+  });
+  const { data: leaseSort = {} } = useQuery({ queryKey: ['leaseSort'], queryFn: getLeaseSort });
   usePageChrome([
     { label: 'Leases', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
@@ -35,6 +46,59 @@ export default function LeasesPage() {
   const buildingSf = Number(prop?.building_sf) || 0;
   const vacant = buildingSf > 0 ? Math.max(0, buildingSf - leasedSf) : 0;
   const newLease = () => navigate(`/leases/${corpId}/${propId}/new`);
+
+  // lease_id -> { camTax, roof, total, totalPsf }. Total = base + CAM + tax + roof
+  // (matches the real invoice). base uses the lease's own base_rent (what the Base
+  // rent column shows); CAM/tax/roof come from the per-tenant share row.
+  const shareByLease = Object.fromEntries(shares.map((s) => [s.lease_id, s]));
+  const totals = {};
+  for (const l of leases) {
+    const s = shareByLease[l.id];
+    const camTax = s ? Number(s.cam_amount || 0) + Number(s.tax_amount || 0) : 0;
+    const roof = s && s.roof_responsible ? Number(s.roof_amt || 0) : 0;
+    const total = Number(l.base_rent || 0) + camTax + roof;
+    const sqft = Number(l.square_footage) || 0;
+    totals[l.id] = { camTax, roof, total, totalPsf: sqft ? total / sqft : null };
+  }
+
+  const mode = leaseSort.mode || 'term_end';
+  const dir = leaseSort.dir || 'asc';
+  const manualOrder = leaseSort.manual?.[propId] || [];
+  const ordered = sortLeases(leases, { mode, dir, manualOrder, totals });
+
+  const saveSort = useMutation({
+    mutationFn: setLeaseSort,
+    onMutate: async (patch) => {
+      await qc.cancelQueries({ queryKey: ['leaseSort'] });
+      const prev = qc.getQueryData(['leaseSort']);
+      qc.setQueryData(['leaseSort'], (old = {}) => {
+        const next = { ...(old || {}), ...patch };
+        if (patch.manual) next.manual = { ...((old || {}).manual || {}), ...patch.manual };
+        return next;
+      });
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(['leaseSort'], ctx.prev); },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['leaseSort'] }),
+  });
+
+  // Drag-and-drop custom order. Dropping row A onto row B moves A to B's slot and
+  // saves the new id order as the per-property manual order (switching to Custom).
+  const [dragId, setDragId] = useState(null);
+  const [overId, setOverId] = useState(null);
+  const onDrop = (targetId) => {
+    if (dragId && dragId !== targetId) {
+      const ids = ordered.map((l) => l.id);
+      const from = ids.indexOf(dragId);
+      const to = ids.indexOf(targetId);
+      if (from >= 0 && to >= 0) {
+        ids.splice(to, 0, ids.splice(from, 1)[0]);
+        saveSort.mutate({ mode: 'custom', manual: { [propId]: ids } });
+      }
+    }
+    setDragId(null);
+    setOverId(null);
+  };
 
   const subtitle = prop
     ? `${prop.address ? prop.address + ' · ' : ''}${sf(leasedSf)} leased${buildingSf ? ` of ${Number(buildingSf).toLocaleString()} SF` : ''}${vacant > 0 ? ` · ${Number(vacant).toLocaleString()} SF vacant` : buildingSf ? ' · fully leased' : ''}`
@@ -68,14 +132,58 @@ export default function LeasesPage() {
         </div>
       )}
 
+      {leases.length > 1 && (
+        <div className="lease-sortbar">
+          <label>
+            <span className="muted">Sort by</span>
+            <select
+              className="text-input"
+              value={mode}
+              onChange={(e) => saveSort.mutate({ mode: e.target.value })}
+            >
+              {LEASE_SORTS.map((s) => (
+                <option key={s.key} value={s.key}>{s.label}</option>
+              ))}
+            </select>
+          </label>
+          {mode !== 'custom' && (
+            <button
+              type="button"
+              className="secondary sort-dir"
+              onClick={() => saveSort.mutate({ dir: dir === 'asc' ? 'desc' : 'asc' })}
+              title={dir === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
+            >
+              {dir === 'asc' ? '↑ Asc' : '↓ Desc'}
+            </button>
+          )}
+          {mode === 'custom'
+            ? <span className="muted sortbar-hint">Drag rows to reorder</span>
+            : <span className="muted sortbar-hint">Drag a row to set a custom order</span>}
+        </div>
+      )}
+
       {showSkeleton ? (
         <RowListSkeleton className="lease-list" count={3} />
       ) : leases.length === 0 && vacant === 0 ? (
         <p className="muted">No leases yet. Add one to get started.</p>
       ) : (
         <div className="lease-list">
-          {leases.map((l) => (
-            <LeaseRow key={l.id} lease={l} pf={pf} onOpen={() => navigate(`/leases/${corpId}/${propId}/${l.id}`)} />
+          {ordered.map((l) => (
+            <LeaseRow
+              key={l.id}
+              lease={l}
+              totals={totals[l.id]}
+              pf={pf}
+              onOpen={() => navigate(`/leases/${corpId}/${propId}/${l.id}`)}
+              draggable
+              dragging={dragId === l.id}
+              dragOver={overId === l.id && dragId !== l.id}
+              onDragStart={() => setDragId(l.id)}
+              onDragEnter={() => dragId && setOverId(l.id)}
+              onDragOver={(e) => { if (dragId) e.preventDefault(); }}
+              onDrop={() => onDrop(l.id)}
+              onDragEnd={() => { setDragId(null); setOverId(null); }}
+            />
           ))}
           {vacant > 0 && (
             <button className="lease-row empty-slot" onClick={newLease}>
@@ -101,7 +209,7 @@ export default function LeasesPage() {
   );
 }
 
-function LeaseRow({ lease, onOpen, pf }) {
+function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd }) {
   // Reads the cache seeded by the page's batched fetch — no own network round-trip.
   const { data: escalations = [] } = useQuery({
     queryKey: ['escalations', lease.id],
@@ -109,10 +217,23 @@ function LeaseRow({ lease, onOpen, pf }) {
   });
   const next = nextEscalation(escalations);
   const brPsf = lease.square_footage > 0 ? lease.base_rent / lease.square_footage : null;
+  const camTax = totals?.camTax || 0;
+  const hasCamTax = camTax > 0;
   const warm = () => pf.leaseDetail(lease.id);
 
   return (
-    <button className="lease-row" onClick={onOpen} onMouseEnter={warm} onFocus={warm}>
+    <button
+      className={`lease-row${dragging ? ' dragging' : ''}${dragOver ? ' drag-over' : ''}`}
+      onClick={onOpen}
+      onMouseEnter={warm}
+      onFocus={warm}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+    >
       <span className="lease-name">
         <strong>{lease.tenant_name}</strong>
         <span className="muted">{sf(lease.square_footage)}</span>
@@ -122,6 +243,15 @@ function LeaseRow({ lease, onOpen, pf }) {
         <span className="muted">Base rent</span>
         <b>{money(lease.base_rent)}</b>
         <span className="psf-sub">{brPsf == null ? '' : psf(brPsf)}</span>
+      </span>
+      <span className="lease-col">
+        <span className="muted">CAM + tax</span>
+        <b title={hasCamTax ? undefined : "No expenses entered for this year yet — add them on the Finances page"}>{hasCamTax ? money(camTax) : '—'}</b>
+      </span>
+      <span className="lease-col">
+        <span className="muted">Total rent</span>
+        <b>{money(totals?.total ?? lease.base_rent)}</b>
+        <span className="psf-sub">{totals?.totalPsf == null ? '' : psf(totals.totalPsf)}</span>
       </span>
       <span className="lease-col">
         <span className="muted">Term ends</span>

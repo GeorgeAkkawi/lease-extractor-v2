@@ -116,7 +116,7 @@ export default function PropertyFinancialsPage() {
 
       {!hiddenWidgets.includes('ar') && <ARSummary propId={propId} />}
 
-      {!hiddenWidgets.includes('property_rent_roll') && <PropertyRentRoll propertyId={propId} year={year} />}
+      {!hiddenWidgets.includes('property_rent_roll') && <PropertyRentRoll propertyId={propId} year={year} vacantSf={totals?.vacant_sf} />}
 
       <h3 className="section-title">Per-tenant breakdown</h3>
       <TenantShareTable propertyId={propId} year={year} />

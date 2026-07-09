@@ -138,7 +138,7 @@ function initialFromExtraction(ex) {
     tenant_name: val(ex.tenant_name),
     tenant_contact_name: val(ex.tenant_contact_name),
     tenant_email: val(ex.tenant_email),
-    tenant_email_2: val(ex.tenant_email_2),
+    premises_address: val(ex.premises_address),
     square_footage: val(ex.square_footage),
     base_rent: val(ex.base_rent),
     lease_start: start,
@@ -149,7 +149,7 @@ function initialFromExtraction(ex) {
 }
 function buildAiConfidence(ex) {
   const map = {};
-  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms'].forEach((f) => {
+  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms'].forEach((f) => {
     if (ex[f] && ex[f].confidence != null) map[f] = ex[f].confidence;
   });
   return Object.keys(map).length ? map : null;

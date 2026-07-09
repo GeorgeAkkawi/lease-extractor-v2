@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { listSenderEmails } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
-import RecipientField from './RecipientField';
 import { useModalA11y } from './modalA11y';
 
 // The ready-to-send tenant email a renewal/escalation notification carries. Lets
@@ -55,7 +54,10 @@ export default function NotificationEmailModal({ notif, onClose, onSent, onSend 
             )}
             <small className="field-note">Be signed into this Google account in your browser — otherwise Gmail opens in whichever account you’re logged into.</small>
           </label>
-          <RecipientField primary={notif.email_to || ''} secondary={notif.email_to_2 || ''} value={to} onChange={setTo} />
+          <label className="form-field" style={{ maxWidth: '100%' }}>
+            <span>To</span>
+            <input className="text-input" type="email" value={to} onChange={(e) => setTo(e.target.value)} placeholder="tenant@email.com" />
+          </label>
           <label className="form-field" style={{ maxWidth: '100%' }}>
             <span>Subject</span>
             <input className="text-input" value={subject} onChange={(e) => setSubject(e.target.value)} />

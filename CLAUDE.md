@@ -74,6 +74,64 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-09** — **Rent-roll holdover sync + Leases-page CAM/tax & Total columns + sorting/drag + a
+  per-lease Address box (replacing the second-email feature)** (George approved the plan —
+  `~/.claude/plans/make-sure-that-the-shiny-platypus.md`). Deployed: DB migration `0058` (Supabase
+  `awgrjmbcghdjgnqeiqkt`), `extract-lease` edge function redeployed, frontend Cloudflare version `d86de65b`.
+  **No money** (the address rides the existing supplement extraction call — zero new AI cost), **no tenant
+  emails**, **no destructive data** (0058 is two additive nullable columns + a non-destructive view replace).
+  Tests **201/201** (was 178 — +16 leaseSort, +3 holdover-roll, +4 render smoke tests).
+  - **1) Rent roll now shows holdover/outdated tenants (the core ask).** Root cause: the monthly rent roll is
+    built from `v_tenant_shares` (`getPropertyMonthlyRoll` → `getTenantShares`), and that view filtered
+    `where l.is_active` (0042) — so a lease flagged `is_active=false` ("Outdated — needs extension") vanished
+    from the roll even though the Leases page/Overview still counted it. `0058` recreates `v_tenant_shares`
+    WITHOUT the `is_active` filter (body + `periods` CTE), **appends** `is_active` / `lease_termination_date` /
+    `premises_address` (create-or-replace can only append, so the 15 prior columns keep their exact 0042 order),
+    switches the active-SF fallback-denominator subquery `pt` to a `left join` (so a property whose leases are
+    ALL outdated still surfaces its holdover rows), and keeps `pt` active-only so **no existing tenant's
+    CAM/tax/roof bill changes**. `getPropertyMonthlyRoll` carries `is_active` + `lease_termination_date` onto
+    each roll row; `PropertyRentRoll.js` shows an amber **"Expired — held over"** badge (adds "· needs
+    extension" when `is_active=false`) with a title explaining rent still collects until removal. **Side
+    benefit:** the lease-page MonthlyRentTracker + `draft-invoice` now work for a holdover lease too (the share
+    row exists). **Live-verified:** George's real outdated tenant ("beauty and barber shop", term ended
+    2025-05-31) now returns a share row (was 0 holdover rows before, 1 now) with its correct CAM/tax split;
+    every active tenant's figures unchanged.
+  - **Vacancy row (George's follow-up).** The roll also shows a muted **"Vacant space · {sf} SF — nothing to
+    collect"** final row (months as non-clickable "—", excluded from "✓ all"/Paid count), driven by
+    `v_property_totals.vacant_sf` (the same building-minus-all-leases figure the Overview/Leases page use since
+    0049), passed from `PropertyFinancialsPage.js`.
+  - **2) Leases page: CAM+tax and Total-rent columns.** Each `LeaseRow` now shows **"CAM + tax"** and
+    **"Total rent"** (= base + CAM + tax + roof, matching the real invoice, with a $/SF sub-line) next to Base
+    rent, pulled from `getTenantShares(propId, currentYear)`. "—" with a hint when no expenses are entered for
+    the year. `.lease-row` grid widened to 7 columns (empty-slot vacancy row keeps its own grid).
+  - **3) Sorting + drag-and-drop.** A sort bar (Term ending · Base rent · $/SF · Total rent · Address · Custom
+    order) with an ↑/↓ direction toggle; nulls/blanks always sort last in BOTH directions. New pure
+    `src/lib/leaseSort.js` (`LEASE_SORTS` + `sortLeases`). Custom order = HTML5 drag-and-drop; dropping a row
+    reorders + persists per-property. Saved to `user_preferences.lease_sort` (jsonb) via new
+    `getLeaseSort`/`setLeaseSort` (merge-patch so mode/dir and per-property manual orders don't clobber each
+    other), React Query key `['leaseSort']` with optimistic updates. `api.listLeases` keeps its `byTermEnd`
+    default (property cards / Excel export untouched).
+  - **4) Address box replaces the second email (George: "remove it completely").** New nullable
+    `leases.premises_address` (0058); `create_lease_tx` populates it automatically via `jsonb_populate_record`
+    (no RPC change) and `LEASE_LIST_COLS` swapped `tenant_email_2` → `premises_address`. The extractor reads it
+    in the existing `SUPPLEMENT_SCHEMA` (swapped `tenant_email_2` → `premises_address` — **union-neutral**, no
+    schema-ceiling risk) with a prompt for "the leased premises' street address, never the landlord's notice
+    address". The **Second email** field became an **Address** field on the review form (`LeaseForm.js`) + lease
+    page (`LeaseDetailPage.js`) + review mapping (`LeaseNewPage.js`). The Primary/Second/Both send picker is
+    gone: deleted `RecipientField.js` and un-wired it from `EmailComposeModal.js` / `NotificationEmailModal.js`
+    / `InvoiceButton.js` back to a plain "To" line. **Data-safe:** the `leases.tenant_email_2` /
+    `notifications.email_to_2` columns + trigger stay in the DB (1 live lease has a 2nd email) — simply unread.
+  - **Demo parity:** `mockClient.js tenantShares` includes outdated leases + the 3 new fields (active-only
+    fallback denominator, mirroring the SQL); `store.js` seeds premises addresses; `user_preferences` Just Works
+    through the mock's generic table handler, so demo sorting persists too.
+  - **Verified:** unit **201/201** (`vitest run`) incl. two **render smoke tests** that mount the real
+    `PropertyRentRoll` (holdover badge + vacancy row) and `LeasesPage` (CAM+tax/Total columns + sort bar) against
+    the demo mock; `vite build` compiles (783 modules); live DB confirmed the 3 new view columns in order + the
+    holdover tenant now returns a share row + `user_preferences.lease_sort` present; live site 200s. **Note:** the
+    shared Playwright browser was held by a concurrent session, so the live-browser click-through wasn't run —
+    the jsdom render tests cover the same components instead. Committed only this task's files (left the
+    untracked `.claude/` tooling alone).
+
 - **2026-07-09** — **Follow-up: the "Request certificate" button now shows on ANY tenant policy on file**
   (George couldn't see it — all his live tenant certs are current/2027, and the button only appeared on an
   expiring/expired one; his only expired policy is his own building/landlord policy, which has no ✉). Deployed:

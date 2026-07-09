@@ -73,11 +73,15 @@ function tenantShares(propertyId, year) {
   const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year);
   if (!exp) return [];
   const prop = db.properties.find((p) => p.id === propertyId);
-  const leases = db.leases.filter((l) => l.property_id === propertyId && l.is_active !== false);
-  const totalSf = leases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
+  // Include ALL leases (incl. outdated/holdover, is_active === false) so a held-over
+  // tenant still appears on the rent roll and keeps billing — mirrors v_tenant_shares
+  // after migration 0058. The fallback denominator stays ACTIVE-only leased SF (like
+  // the SQL `pt` subquery), so no existing tenant's CAM/tax/roof bill changes.
+  const leases = db.leases.filter((l) => l.property_id === propertyId);
+  const activeSf = leases.filter((l) => l.is_active !== false).reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
   // Allocate over the WHOLE building's SF so the vacant share stays with the landlord.
-  // Fall back to leased SF until a building size is entered (mirrors v_tenant_shares).
-  const denom = Number(prop?.building_sf) || totalSf;
+  // Fall back to active leased SF until a building size is entered (mirrors v_tenant_shares).
+  const denom = Number(prop?.building_sf) || activeSf;
   return leases.map((l) => {
     const perSf = denom > 0 ? l.square_footage / denom : 0;
     const share = l.share_override_pct != null ? l.share_override_pct : perSf;
@@ -88,6 +92,7 @@ function tenantShares(propertyId, year) {
       base_rent: effectiveRent(l, escFor(l.id), year),
       share_pct: share, tax_amount: share * exp.taxes_total, cam_amount: share * exp.cam_total,
       roof_amt: l.roof_responsible ? exp.roof_total * perSf : 0,
+      is_active: l.is_active !== false, lease_termination_date: l.lease_termination_date ?? null, premises_address: l.premises_address ?? null,
     };
   });
 }

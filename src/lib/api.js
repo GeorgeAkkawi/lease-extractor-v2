@@ -173,7 +173,7 @@ export const updateProperty = (id, patch) =>
 // text, so property/tenant lists and the Overview prefetch stay light. getLease
 // (below) keeps select('*') for the detail page.
 const LEASE_LIST_COLS =
-  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,tenant_email_2';
+  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,premises_address';
 
 export const listLeases = async (propertyId) => {
   const all = await rows(supabase.from('leases').select(LEASE_LIST_COLS).eq('property_id', propertyId).order('tenant_name'));
@@ -1483,7 +1483,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
         (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
       }
     }
-    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null };
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: annual / 12, byMonth, schedule, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date };
   });
 }
 
@@ -1630,6 +1630,46 @@ export const setEnabledFeatures = async (enabled_features) =>
       .select()
       .single()
   );
+
+// ---- Leases-page sort preference --------------------------------------------
+// Same user_preferences row (column lease_sort, migration 0058). Shape:
+//   { mode: 'term_end'|'base_rent'|'psf'|'total_rent'|'address'|'custom',
+//     dir: 'asc'|'desc',
+//     manual: { [propId]: [leaseId, …] } }  // saved drag order, per property
+// Returns {} for a fresh account or on any error, so the page falls back to its
+// default (term ending, ascending) until the landlord chooses otherwise.
+export async function getLeaseSort() {
+  try {
+    const uid = await ownerId();
+    if (!uid) return {};
+    const { data } = await supabase
+      .from('user_preferences')
+      .select('lease_sort')
+      .eq('user_id', uid)
+      .maybeSingle();
+    return data?.lease_sort || {};
+  } catch {
+    return {};
+  }
+}
+
+// Merge a patch into the saved lease_sort (so updating the mode doesn't wipe the
+// per-property manual orders, and vice-versa). Reads the current value first.
+export const setLeaseSort = async (patch) => {
+  const current = await getLeaseSort();
+  const next = { ...current, ...patch };
+  if (patch.manual) next.manual = { ...(current.manual || {}), ...patch.manual };
+  return one(
+    supabase
+      .from('user_preferences')
+      .upsert(
+        { user_id: await ownerId(), lease_sort: next, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
+      .select()
+      .single()
+  );
+};
 
 // ---- Notifications ----------------------------------------------------------
 export const listNotifications = () =>

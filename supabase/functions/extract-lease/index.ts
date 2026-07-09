@@ -249,11 +249,13 @@ async function analystRead(content: Block[]): Promise<string | null> {
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'square_footage', 'term_months', 'execution_date', 'escalation_pct', 'escalation_stop_months', 'rent_schedule', 'abatements'],
+  required: ['tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'term_months', 'execution_date', 'escalation_pct', 'escalation_stop_months', 'rent_schedule', 'abatements'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
-    tenant_email_2: field(['string']),
+    // The street address of the LEASED PREMISES / demised unit as printed (street number
+    // + street + suite/unit if given) — never the landlord's notice/mailing address.
+    premises_address: field(['string']),
     // Leased area — a fallback source of sqft so we can annualize $/SF rows even if the
     // main call missed it (a $/SF row with no sqft anywhere would otherwise be dropped).
     square_footage: field(['number']),
@@ -320,11 +322,12 @@ const SUPPLEMENT_SYSTEM =
   'personal name, NEVER the company/entity name and NEVER the landlord/lessor side. If the ' +
   'lease names two people who run the business, return the primary signer (or join two names ' +
   'with " & "). If the tenant is a company but NO individual person is named anywhere, return ' +
-  'null — do not fall back to the company name. Capture up ' +
-  'to TWO tenant-side email addresses: the tenant\'s main / billing email as tenant_email ' +
-  '(primary), and a second tenant-side email (e.g. the contact person\'s) as tenant_email_2. ' +
-  'ONLY extract emails belonging to the TENANT side — NEVER the landlord\'s / lessor\'s / ' +
-  'property manager\'s own email. For each string field give a confidence (0–1), the exact ' +
+  'null — do not fall back to the company name. Capture the ' +
+  'tenant\'s main / billing email as tenant_email — ONLY an email belonging to the TENANT ' +
+  'side, NEVER the landlord\'s / lessor\'s / property manager\'s own email. Also extract ' +
+  'premises_address = the street address of the LEASED PREMISES / demised unit exactly as ' +
+  'printed (street number + street, plus suite / unit / floor if given) — the physical space ' +
+  'being rented, NEVER the landlord\'s notice / mailing address. For each string field give a confidence (0–1), the exact ' +
   'source_quote, and the page; when not found set value null, confidence 0, source_quote "", page 1.\n\n' +
   'RENT SCHEDULE — READ THE NUMBERS, DON\'T DO MATH. rent_schedule lists the tenant\'s base ' +
   'rent over time: ONE entry per period / row of the rent table, earliest first, INCLUDING ' +
@@ -538,7 +541,7 @@ Deno.serve(async (req) => {
     // If it failed (null), the lease still returns; contacts stay blank and base_rent
     // keeps the model's own figure.
     if (supp) {
-      for (const k of ['tenant_contact_name', 'tenant_email', 'tenant_email_2', 'term_months', 'execution_date']) {
+      for (const k of ['tenant_contact_name', 'tenant_email', 'premises_address', 'term_months', 'execution_date']) {
         if (supp[k]) (parsed as any)[k] = supp[k];
       }
       // Free/reduced-rent windows read from the lease (raw: start + months + how much);
