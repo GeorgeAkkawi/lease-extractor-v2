@@ -108,12 +108,21 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
               )}
             </div>
           )}
-          {/* On an expiring/expired tenant policy, offer to email for the renewed certificate. */}
-          {!editFacts && party === 'tenant' && status?.stale && onRequestRenewal && (
-            <div className="note-msg warn" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <span>{status.key === 'expired' ? 'This certificate has expired.' : 'This certificate is expiring soon.'} Ask the tenant for the renewed copy.</span>
-              <button type="button" onClick={() => onRequestRenewal(policy)}>✉ Request renewed certificate</button>
-            </div>
+          {/* Request a certificate from the tenant, always available while a policy is on
+              file. On an expiring/expired one it's a prominent warning; on a current one
+              it's a quiet "keep our copy up to date" action. */}
+          {!editFacts && party === 'tenant' && policy && onRequestRenewal && (
+            status?.stale ? (
+              <div className="note-msg warn" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <span>{status.key === 'expired' ? 'This certificate has expired.' : 'This certificate is expiring soon.'} Ask the tenant for the renewed copy.</span>
+                <button type="button" onClick={() => onRequestRenewal(policy)}>✉ Request renewed certificate</button>
+              </div>
+            ) : (
+              <div className="row" style={{ marginBottom: 12, gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className="muted" style={{ fontSize: 12.5 }}>Need the latest copy on file?</span>
+                <button type="button" className="ghost" onClick={() => onRequestRenewal(policy)}>✉ Request updated certificate</button>
+              </div>
+            )
           )}
           {!editFacts && (
             <div className="row" style={{ marginBottom: 14, gap: 14 }}>

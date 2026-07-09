@@ -127,19 +127,24 @@ export function buildInsuranceRenewalRequestEmail({ business, tenant_name, conta
   const company = business?.company_name || 'the landlord';
   const policyRef = insurer ? `your policy with ${insurer}` : 'the certificate of insurance on file';
   const past = expired || (expiryDate && /^\d{4}-\d{2}-\d{2}$/.test(expiryDate) && new Date(expiryDate + 'T12:00:00') < new Date());
-  const whenPhrase = expiryDate
-    ? (past ? `expired on ${longDate(expiryDate)}` : `is set to expire on ${longDate(expiryDate)}`)
-    : (past ? 'has expired' : 'is expiring soon');
-  const subject = `${past ? 'Expired' : 'Expiring'} Certificate of Insurance — ${propertyName || 'your premises'}${expiryDate ? ` (${past ? 'expired' : 'expires'} ${longDate(expiryDate)})` : ''}`;
+  // Two tones: a lapsed policy is a compliance ask ("renewed certificate"); a policy still
+  // on file is a routine "keep our copy current" ask, so the wording never sounds alarmist
+  // when the coverage is far from expiring.
+  const subject = past
+    ? `Expired Certificate of Insurance — ${propertyName || 'your premises'}${expiryDate ? ` (expired ${longDate(expiryDate)})` : ''}`
+    : `Certificate of Insurance — updated copy requested — ${propertyName || 'your premises'}`;
+  const situation = past
+    ? `Our records show that ${policyRef} for ${propertyName || 'the premises'} expired${expiryDate ? ` on ${longDate(expiryDate)}` : ''}. Your lease requires that coverage be maintained continuously, so we're writing to ask for the renewed certificate.`
+    : `We have ${policyRef} for ${propertyName || 'the premises'} on file${expiryDate ? `, with coverage through ${longDate(expiryDate)}` : ''}. To keep our records current, we're writing to request your most recent certificate of insurance.`;
   const body = letter({
     business,
     toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
-    reLine: `RE: Renewed certificate of insurance for ${propertyName || 'the premises'}`,
+    reLine: `RE: ${past ? 'Renewed' : 'Current'} certificate of insurance for ${propertyName || 'the premises'}`,
     paragraphs: [
       `Dear ${contact_name || tenant_name || 'Tenant'},`,
-      `Our records show that ${policyRef} for ${propertyName || 'the premises'} ${whenPhrase}. Your lease requires that coverage be maintained continuously, so we're writing to ask for the renewed certificate.`,
-      `Please send an updated certificate of insurance showing the new policy period, and confirm it names ${company} as an additional insured with the coverage limits required under the lease. This keeps your file current and your coverage in compliance with the lease.`,
-      `You can reply to this email with the renewed certificate attached, or have your insurance agent send it directly to our office. If coverage has already been renewed, we'd appreciate the updated copy at your earliest convenience. Please let us know if you have any questions.`,
+      situation,
+      `Please send an updated certificate of insurance showing the current policy period, and confirm it names ${company} as an additional insured with the coverage limits required under the lease. This keeps your file current and your coverage in compliance with the lease.`,
+      `You can reply to this email with the certificate attached, or have your insurance agent send it directly to our office. Thank you for your prompt attention — please let us know if you have any questions.`,
     ],
   });
   return { subject, body, to: tenant_email || '' };

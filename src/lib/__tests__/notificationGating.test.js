@@ -160,10 +160,12 @@ describe('buildInsuranceRenewalRequestEmail', () => {
     expect(e.to).toBe('t@x.com');
   });
 
-  test('a still-current policy → "set to expire on" wording + Expiring subject', () => {
+  test('a still-current policy → neutral "updated copy" wording, coverage-through date, no alarm', () => {
     const e = buildInsuranceRenewalRequestEmail({ ...common, insurer: 'Harbor Casualty', expiryDate: '2030-12-01', expired: false });
-    expect(e.subject).toMatch(/^Expiring Certificate of Insurance/);
-    expect(e.body).toMatch(/set to expire on/);
+    expect(e.subject).toMatch(/updated copy requested/i);
+    expect(e.body).toMatch(/coverage through/);
+    expect(e.body).toMatch(/most recent certificate/);
+    expect(e.body).not.toMatch(/expired/i); // never say "expired" for a current policy
   });
 });
 

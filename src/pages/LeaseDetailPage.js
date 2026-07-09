@@ -477,6 +477,7 @@ export default function LeaseDetailPage() {
       )}
 
       {renewalPolicy && (() => {
+        const polPast = renewalPolicy.expiry_date && new Date(renewalPolicy.expiry_date + 'T12:00:00') < new Date();
         const email = buildInsuranceRenewalRequestEmail({
           business: corp ? { company_name: corp.name, address: corp.address, contact_email: corp.contact_email, contact_phone: corp.contact_phone } : null,
           tenant_name: lease.tenant_name,
@@ -488,7 +489,7 @@ export default function LeaseDetailPage() {
         });
         return (
           <EmailComposeModal
-            title="Request renewed certificate"
+            title={polPast ? 'Request renewed certificate' : 'Request updated certificate'}
             from={corp?.contact_email || ''}
             to={lease.tenant_email || ''}
             secondaryTo={lease.tenant_email_2 || ''}
