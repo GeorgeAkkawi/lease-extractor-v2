@@ -74,6 +74,21 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-10** — **Live-data repair (beta user fakkawi3@gmail.com): GENA promoted from a property under
+  NASA Property to its own corporation; the property renamed "Joliet"** (George approved the plan —
+  `~/.claude/plans/the-user-under-fakkawi3-gmail-com-serene-breeze.md`). **DB-only** — no code change, no
+  deploy, no migration (one-off row repair, Supabase `awgrjmbcghdjgnqeiqkt`), **no money, no tenant emails,
+  nothing deleted**. The user had created "GENA Property, LLC" as a *property* inside his "NASA Property"
+  corporation. One atomic statement (insert + 2 updates): created corporation **GENA Property, LLC**
+  (`e44da7bf-c53d-4dc9-8e35-df80b9a63db3`); moved property `d70b45c6…` onto it and renamed it **"Joliet"**
+  (address kept: 2545 Plainfield rd; same row id, so its whole subtree rode along); repointed the 3
+  `renewal_applied` notifications' `corporation_id` NASA→GENA so their deep-links stay right. **Verified
+  live:** GENA → Joliet holds all 4 leases (Eye 2 Eye, Mario Jirjess (Cards), Mario Thaeir Jirjess, Ruiz
+  Saldivar Victor) + 10 history events; `v_property_totals`/`v_tenant_shares` still serve the property;
+  NASA → Pershing Plaza (9 leases) untouched; the one Pershing notification correctly stays on NASA. The
+  new corporation's Business-profile fields (address/contact) start empty — the user can fill them via the
+  corporation card's "Business profile" button.
+
 - **2026-07-09** — **Annual reports: a new AI-read filing-deadline tab on every corporation + a
   1-month reminder (bell + owner email)** (George approved the plan —
   `~/.claude/plans/we-also-need-to-snappy-gizmo.md`). Deployed: DB migration `0059` (Supabase
