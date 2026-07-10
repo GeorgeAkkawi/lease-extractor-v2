@@ -4,9 +4,9 @@ const DAY = 86400000;
 
 // Dismiss / snooze of computed alerts are stored SERVER-SIDE (table alert_states),
 // keyed by this stable alert_key, so they sync across the landlord's devices. A
-// contract alert has no lease, so its own id anchors the key (falls back to lease_id
-// for every other alert type, keeping existing saved keys stable).
-export const alertKey = (a) => `${a.focus}:${a.contract_id || a.lease_id}:${a.date}`;
+// contract or annual-report alert has no lease, so its own id anchors the key (falls
+// back to lease_id for every other alert type, keeping existing saved keys stable).
+export const alertKey = (a) => `${a.focus}:${a.contract_id || a.report_id || a.lease_id}:${a.date}`;
 
 // Transform alert_states rows (from listAlertStates) into the lookup buildAlerts
 // filters against: a Set of dismissed keys + a { key: untilMs } snooze map.
@@ -64,7 +64,7 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 //                     overdue-invoice and free-rent-ending alerts.
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, invoices, abatements, insuranceRequests },
+  { leases, escalations, renewals, properties, insurance, contracts, invoices, abatements, insuranceRequests, annualReports, corporations },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
   { features = null, hiddenWidgets = [] } = {},
@@ -251,6 +251,30 @@ export function buildAlerts(
       date: a.end_date, days: d,
       title: `Free rent ending — ${lease.tenant_name || 'tenant'}`,
       detail: `Free/reduced rent ends ${fmtDate(a.end_date)} · full billing resumes`,
+    });
+  });
+
+  // Annual-report filing deadlines — one per corporation. Unlike leases, George only
+  // wants a heads-up ~1 month ahead, so this alert appears ONLY within 31 days (no
+  // 3/6-month noise). Past the deadline it turns red "Overdue" and stays shown until
+  // he marks it filed (which rolls the date forward a year). Not tied to any Settings
+  // module — a corporation's filing obligation is core. Keyed by the corp id.
+  const corpNameById = Object.fromEntries((corporations || []).map((c) => [c.id, c.name]));
+  (annualReports || []).forEach((r) => {
+    if (!r.due_date) return;
+    const d = daysUntil(r.due_date, now);
+    if (d == null) return;
+    if (d > 31) return; // only within a month of the deadline
+    const overdue = d < 0;
+    const name = corpNameById[r.corporation_id] || 'corporation';
+    out.push({
+      focus: 'annual_report', report_id: r.corporation_id, corporation_id: r.corporation_id,
+      lease_id: null, property_id: null,
+      tone: overdue ? 'danger' : 'warn',
+      bucketLabel: overdue ? 'Overdue' : (bucket(r.due_date, now)?.label || 'Within 1 month'),
+      date: r.due_date, days: d, overdue,
+      title: overdue ? `Annual report overdue — ${name}` : `Annual report due — ${name}`,
+      detail: `File by ${fmtDate(r.due_date)}`,
     });
   });
 

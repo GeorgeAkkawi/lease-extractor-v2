@@ -149,6 +149,11 @@ export function seed() {
     ],
     // Starts empty — the landlord adds contracts via the Contracts tab.
     service_contracts: [],
+    // One corporation's annual state filing due ~3 weeks out, so the demo bell shows
+    // the "Annual report due" 1-month alert on load. Northwind has none on file yet.
+    annual_reports: [
+      { id: 'ar-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', due_date: soon, last_filed_date: iso(Y - 1, 3, 15), docs: [], due_notice_bucket: null, created_at: iso(Y, 1, 1), updated_at: iso(Y, 1, 1) },
+    ],
     // Starts empty — the landlord records riders/amendments per lease.
     lease_addendums: [],
     // Receivables: one fully-paid invoice + one overdue, so AR has something to show.

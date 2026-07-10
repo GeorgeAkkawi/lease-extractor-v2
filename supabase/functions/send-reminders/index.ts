@@ -255,7 +255,40 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ processed, insurance: insuranceProcessed, contracts: contractProcessed, overdue: overdueProcessed });
+    // --- Annual-report filing reminders (email the owner) ------------------
+    // One email ~1 month before each corporation's annual-report deadline (George's
+    // choice: a single 1-month heads-up, not the 2w/1w escalation). Dedupe via
+    // due_notice_bucket, which saveAnnualReport resets when the due date rolls forward
+    // (Mark filed) so next year re-arms. Past-due sends nothing — the dashboard bell
+    // shows it red until it's filed. Not gated by any Settings module (core filing).
+    let annualProcessed = 0;
+    const { data: reports, error: arErr } = await supabase
+      .from('annual_reports')
+      .select('id, owner_id, due_date, due_notice_bucket, corporations(name)')
+      .not('due_date', 'is', null);
+    if (arErr) {
+      await logEvent('api_error', 'annual_reports query failed', ip);
+    } else {
+      const now = new Date();
+      for (const r of (reports ?? []) as any[]) {
+        const ab = annualBucket(r.due_date, now);
+        if (!ab || ab === r.due_notice_bucket) continue; // outside the window, or already sent
+        if (!RESEND_API_KEY) { await logEvent('reminder_skipped', `annual report ${r.id} not emailed — RESEND_API_KEY unset`, ip); continue; }
+        const email = await resolveEmail(r.owner_id, emailCache);
+        if (!email) { await logEvent('reminder_skipped', `annual report ${r.id} not emailed — no owner address`, ip); continue; }
+
+        const who = r.corporations?.name || 'a corporation';
+        const subject = `Annual report due soon — ${who}`;
+        const text = `${who}'s annual report must be filed by ${r.due_date} (about a month away). File it with the state to keep the corporation in good standing.`;
+
+        const delivered = await sendEmail(email, subject, text);
+        if (!delivered) { await logEvent('reminder_failed', `Resend send failed for annual report ${r.id}`, ip); continue; }
+        await supabase.from('annual_reports').update({ due_notice_bucket: ab }).eq('id', r.id);
+        annualProcessed++;
+      }
+    }
+
+    return json({ processed, insurance: insuranceProcessed, contracts: contractProcessed, overdue: overdueProcessed, annual: annualProcessed });
   } catch (e) {
     console.error('[send-reminders] unhandled error:', e);
     await logEvent('api_error', String((e as any)?.message ?? e), ip);
@@ -308,6 +341,15 @@ function overdueBucket(dueDate: string, now: Date): string | null {
   if (days >= 30) return '1m_late';
   if (days >= 7) return '1w_late';
   if (days >= 1) return '1d_late';
+  return null;
+}
+
+// Annual-report deadline → a single '1m' bucket in the month before it's due. Past
+// due returns null (no email — the dashboard bell shows it red until filed).
+function annualBucket(due: string, now: Date): string | null {
+  const days = Math.round((new Date(due + 'T12:00:00').getTime() - now.getTime()) / 86400000);
+  if (days < 0) return null;
+  if (days <= 31) return '1m';
   return null;
 }
 

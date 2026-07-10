@@ -294,12 +294,14 @@ export default function DashboardPage() {
                 <div key={`${k}-${i}`} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start', borderLeftColor: a.tone === 'danger' ? 'var(--danger)' : a.tone === 'warn' ? 'var(--accent)' : 'var(--line)' }}>
                   <div role="button" tabIndex={0} style={{ flex: 1, cursor: 'pointer' }}
                     onClick={() => {
-                      if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
+                      if (a.focus === 'annual_report') navigate('/leases'); // corporations grid → Annual report button
+                      else if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
                       else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
                       else navigate(`/leases/${a.corporation_id}`);
                     }}
                     onKeyDown={keyActivate(() => {
-                      if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
+                      if (a.focus === 'annual_report') navigate('/leases'); // corporations grid → Annual report button
+                      else if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
                       else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
                       else navigate(`/leases/${a.corporation_id}`);
                     })}>

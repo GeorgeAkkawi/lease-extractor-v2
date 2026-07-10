@@ -393,6 +393,7 @@ table.grouped{min-width:880px}
 .corp-edit{flex-shrink:0;align-self:center;display:inline-flex;align-items:center;gap:6px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:6px 12px;cursor:pointer;line-height:1;white-space:nowrap}
 .corp-edit:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft);filter:none}
 .corp-edit svg{width:13px;height:13px;flex-shrink:0}
+.corp-actions{flex-shrink:0;align-self:center;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 
 /* secondary line of small stats under a metric card (e.g. roof billed/absorbed):
    one tidy line, the two figures pushed to opposite ends */

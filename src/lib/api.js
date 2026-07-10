@@ -11,6 +11,7 @@ import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abate
 import { contractCoversYear, contractAnnualCost } from './contracts';
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
+import { advanceDueDate } from './annualReports';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -108,6 +109,38 @@ export const updateCorporation = (id, patch) =>
 // from a corporation record (the corporation IS the sending entity).
 const businessFromCorp = (corp) =>
   corp ? { company_name: corp.name, address: corp.address, contact_email: corp.contact_email, contact_phone: corp.contact_phone } : null;
+
+// ---- Annual reports (one per corporation: state filing deadline) ------------
+// One row per corporation, holding the next filing deadline + the documents on file.
+export const getAnnualReport = (corporationId) =>
+  one(supabase.from('annual_reports').select('*').eq('corporation_id', corporationId).maybeSingle());
+
+// All annual-report records (for the dashboard alerts feed).
+export const listAnnualReports = () =>
+  rows(supabase.from('annual_reports').select('*'));
+
+// Insert-or-update the annual-report row for one corporation. Changing the due date
+// clears due_notice_bucket so the 1-month reminder email re-arms for the new date
+// (mirrors saveInsurance's expiry_notice_bucket re-arm).
+export async function saveAnnualReport(corporationId, patch) {
+  const uid = await ownerId();
+  const existing = await getAnnualReport(corporationId);
+  const payload = { ...patch };
+  if (existing && 'due_date' in patch && patch.due_date !== existing.due_date) {
+    payload.due_notice_bucket = null;
+  }
+  if (existing) return one(supabase.from('annual_reports').update(payload).eq('id', existing.id).select().single());
+  return one(supabase.from('annual_reports').insert({ ...payload, corporation_id: corporationId, owner_id: uid }).select().single());
+}
+
+// Mark this year's report filed: stamp today's filed date and roll the deadline
+// forward one year (re-arming the reminder for next year). No-op if no due date yet.
+export async function markAnnualReportFiled(corporationId, today = new Date()) {
+  const existing = await getAnnualReport(corporationId);
+  const todayIso = localDateIso(today);
+  const nextDue = advanceDueDate(existing?.due_date) || null;
+  return saveAnnualReport(corporationId, { last_filed_date: todayIso, due_date: nextDue });
+}
 
 // Batched counts for ALL corporations in two bulk queries. Returns a map
 // { [corpId]: { properties, tenants } }.
@@ -643,6 +676,14 @@ export async function extractInsurance({ text, storagePath }) {
 export async function extractContract({ text, storagePath, name }) {
   const { fields, full_text } = await invokeFunction('extract-contract', { text, storage_path: storagePath, name });
   return { fields: fields || {}, contract_text: full_text || text || null };
+}
+
+// One-time AI read of a corporation's annual-report document → just the filing
+// deadline. Passes the landlord's LOCAL today so a recurring rule ("by April 1")
+// resolves to the next occurrence against their clock, not UTC.
+export async function extractAnnualReport({ text, storagePath }) {
+  const { fields } = await invokeFunction('extract-annual-report', { text, storage_path: storagePath, today: localDateIso() });
+  return { fields: fields || {} };
 }
 
 // ---- Insurance policies (landlord per-property, tenant per-lease) -----------
@@ -1520,7 +1561,7 @@ export function summarizeAR(invoices, today = new Date()) {
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
 export async function fetchAlertData() {
-  const [leasesR, escR, renR, propR, insR, conR, invR, abaR, insReqR] = await Promise.all([
+  const [leasesR, escR, renR, propR, insR, conR, invR, abaR, insReqR, corpR, arR] = await Promise.all([
     supabase.from('leases').select('id,tenant_name,property_id,lease_termination_date,no_renewal_option,is_active'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status'),
     supabase.from('renewal_options').select('id,lease_id,notice_by_date,status'),
@@ -1536,6 +1577,9 @@ export async function fetchAlertData() {
     supabase.from('rent_abatements').select('lease_id,start_date,end_date,kind,value'),
     // Insurance chase-up: when each tenant was last asked for a certificate.
     supabase.from('history_events').select('lease_id,event_date,created_at').eq('type', 'insurance_requested'),
+    // Annual-report alerts need the corporation name for the alert title/click target.
+    supabase.from('corporations').select('id,name'),
+    supabase.from('annual_reports').select('corporation_id,due_date,last_filed_date'),
   ]);
   return {
     leases: leasesR.data || [],
@@ -1547,6 +1591,8 @@ export async function fetchAlertData() {
     invoices: invR.data || [],
     abatements: abaR.data || [],
     insuranceRequests: insReqR.data || [],
+    corporations: corpR.data || [],
+    annualReports: arR.data || [],
   };
 }
 

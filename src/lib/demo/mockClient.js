@@ -305,6 +305,9 @@ const functions = {
     if (name === 'extract-insurance') {
       return ok(demoExtractInsurance());
     }
+    if (name === 'extract-annual-report') {
+      return ok(demoExtractAnnualReport());
+    }
     if (name === 'extract-contract') {
       return ok(demoExtractContract(body));
     }
@@ -444,6 +447,14 @@ function demoExtractInsurance() {
       'Additional insured: the landlord is named as additional insured per the lease (endorsement CG 20 11).',
     ].join('\n'),
   };
+}
+
+// Demo stand-in for extract-annual-report: returns a canned filing deadline (~2
+// months out) so the upload/paste path pre-fills a date to review.
+function demoExtractAnnualReport() {
+  const dt = new Date();
+  dt.setDate(dt.getDate() + 60);
+  return { fields: { due_date: dt.toISOString().slice(0, 10) } };
 }
 
 // Demo stand-in for the ask-lease Edge Function: keyword-routes the question to a

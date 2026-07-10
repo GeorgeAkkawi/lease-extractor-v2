@@ -7,7 +7,8 @@ import { usePrefetchers } from '../lib/prefetch';
 import { money } from '../lib/format';
 import { CardGridSkeleton } from '../components/Skeleton';
 import CorporationProfileModal from '../components/CorporationProfileModal';
-import { BuildingIcon } from '../components/icons';
+import AnnualReportModal from '../components/AnnualReportModal';
+import { BuildingIcon, DocIcon } from '../components/icons';
 
 const TITLES = { leases: 'Leases', financials: 'Financials', history: 'History' };
 const SUBS = {
@@ -25,6 +26,7 @@ export default function CorporationsPage({ mode }) {
   const fin = mode !== 'leases';
   const [name, setName] = useState('');
   const [editCorp, setEditCorp] = useState(null);
+  const [arCorp, setArCorp] = useState(null);
 
   const { data: corps = [], isPending } = useQuery({ queryKey: ['corporations'], queryFn: listCorporations });
   // Batched in one request (replaces the per-card N+1) so every card's counts /
@@ -79,17 +81,18 @@ export default function CorporationsPage({ mode }) {
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} counts={counts[c.id]} rollup={rollups[c.id]} pf={pf} year={year} />
+            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} counts={counts[c.id]} rollup={rollups[c.id]} pf={pf} year={year} />
           ))}
         </div>
       )}
 
       {editCorp && <CorporationProfileModal corp={editCorp} onClose={() => setEditCorp(null)} />}
+      {arCorp && <AnnualReportModal corp={arCorp} onClose={() => setArCorp(null)} />}
     </div>
   );
 }
 
-function CorpCard({ corp, mode, onEdit, counts, rollup, pf, year }) {
+function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, pf, year }) {
   const navigate = useNavigate();
   const fin = mode !== 'leases';
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
@@ -100,13 +103,22 @@ function CorpCard({ corp, mode, onEdit, counts, rollup, pf, year }) {
   const warm = fin ? () => pf.corpFinancials(corp.id, year) : () => pf.corpLeases(corp.id);
   const hover = { onMouseEnter: warm, onFocus: warm };
   const editBtn = (
-    <button
-      className="corp-edit"
-      title="Edit this corporation's email identity (name, address, sending email)"
-      onClick={(e) => { e.stopPropagation(); onEdit(corp); }}
-    >
-      <BuildingIcon /> Business profile
-    </button>
+    <span className="corp-actions">
+      <button
+        className="corp-edit"
+        title="Edit this corporation's email identity (name, address, sending email)"
+        onClick={(e) => { e.stopPropagation(); onEdit(corp); }}
+      >
+        <BuildingIcon /> Business profile
+      </button>
+      <button
+        className="corp-edit"
+        title="This corporation's yearly state annual-report filing deadline + reminders"
+        onClick={(e) => { e.stopPropagation(); onAnnual(corp); }}
+      >
+        <DocIcon /> Annual report
+      </button>
+    </span>
   );
 
   if (fin) {

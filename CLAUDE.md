@@ -74,6 +74,64 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-09** — **Annual reports: a new AI-read filing-deadline tab on every corporation + a
+  1-month reminder (bell + owner email)** (George approved the plan —
+  `~/.claude/plans/we-also-need-to-snappy-gizmo.md`). Deployed: DB migration `0059` (Supabase
+  `awgrjmbcghdjgnqeiqkt`), new `extract-annual-report` edge function, `send-reminders` redeployed,
+  frontend Cloudflare version `4accb8fc`. **Costs money** (George approved, disclosed): one small Haiku
+  read per uploaded report ≈ **1¢ or less** (no transcription call — the cheapest possible read);
+  manual date entry is **$0**; **no recurring cost**. **No tenant emails** (owner-only), **no
+  destructive data** (0059 is a brand-new additive table). Tests **221/221** (was 161 — +9
+  annualReportAlerts, +3 corp/modal render smoke; sibling sessions had already pushed the count up).
+  - **What George asked:** every corporation must file a state annual report yearly. He wanted an
+    **"Annual report" button on each corporation card** (next to "Business profile") where he uploads
+    the report; the **AI reads only one thing — the date it must be filed each year**; and the app
+    **reminds him 1 month ahead, every year**. No other details extracted. Two decisions he made:
+    notification = **dashboard bell + one email to him at the 1-month mark**; and **if the deadline
+    passes unfiled the alert turns red "Overdue" and stays** until he clicks "Mark filed" (which rolls
+    the date forward a year and re-arms next year's reminder).
+  - **Data (`0059_annual_reports.sql`):** new owner-scoped `annual_reports`, **one row per corporation**
+    (unique index on `corporation_id`) — `due_date`, `last_filed_date`, `docs jsonb` (`{path,
+    uploaded_at}` so every year's report stays on file), `due_notice_bucket` (email dedupe, exact 0057
+    pattern). RLS = `owner_all` PERMISSIVE **plus** the `require_aal2` RESTRICTIVE policy every other
+    owner table carries (0052) — dormant until 2FA is enrolled. Additive/idempotent; verified live (9
+    columns + both policies present).
+  - **Edge fn `extract-annual-report`:** clone of `extract-insurance` **minus** the transcription call
+    (nothing to Q&A here), single field `due_date`. The landlord's LOCAL today is injected so a
+    recurring rule ("by April 1 each year", "anniversary of incorporation") resolves to the NEXT
+    upcoming occurrence; returns null / never guesses if no deadline is stated. Haiku 4.5, vision path
+    for uploads / paste-text path otherwise, rate-limited, 20 MB guard.
+  - **Frontend:** new `src/components/AnnualReportModal.js` (upload/paste → AI pre-fills the date field
+    for review → Save appends the doc to `docs[]` + saves the date; a plain date input for $0 manual
+    entry; **"✓ Mark filed"** rolls the deadline +1 year; "Reports on file" list with Open buttons).
+    `CorporationsPage.js` gained the second `corp-edit` pill ("Annual report", `DocIcon`) wrapped in a
+    new `.corp-actions` flex span (App.css). `api.js` — `getAnnualReport` / `listAnnualReports` /
+    `saveAnnualReport` (upsert; **nulls `due_notice_bucket` when the due date changes** so the reminder
+    re-arms) / `markAnnualReportFiled` (stamps today, advances the date) / `extractAnnualReport`;
+    `fetchAlertData` now also pulls `annual_reports` + `corporations (id,name)`. New pure
+    `src/lib/annualReports.js` `advanceDueDate` (+1 yr, Feb-29 → Feb-28 clamp).
+  - **Notifications:** `alerts.js` — new `focus:'annual_report'` section, shown **only within 31 days**
+    (warn "Within 1 month"), past due → **red "Overdue", always shown** until filed; **`alertKey`
+    gained a `report_id` anchor** (`a.contract_id || a.report_id || a.lease_id`) so two corps due the
+    same day don't collide. `DashboardPage.js` — clicking the alert routes to the corporations grid
+    (`/leases`); **no ✉ button** (no outside recipient — like the landlord's own insurance).
+    `send-reminders` — new owner-email sweep (single **1-month** threshold per George, deduped by
+    `due_notice_bucket`, **not** gated by any Settings module — filing is core). Past-due sends no email
+    (the red bell covers it).
+  - **Demo parity:** `store.js` seeds one `annual_reports` row (Acme Holdings due ~3 weeks out → the
+    demo bell shows the 1-month alert; Northwind has none). `mockClient.js` — canned
+    `extract-annual-report` route (returns a due date ~2 months out) + the generic mock QB handles the
+    new table.
+  - **Verified:** unit **221/221** (`vitest run`) incl. `annualReportAlerts.test.js` (45d → no alert;
+    ~20d → warn "Within 1 month"; past due → red "Overdue" still shown; two corps same day → distinct
+    keys; `advanceDueDate` +1yr + Feb-29 clamp) and `corporationsAnnualReport.test.js` (2 render smoke
+    tests: the "Annual report" button on both corp cards + the modal reading the seeded record / empty
+    state). `vite build` compiles (785 modules). **Live DB verified:** table + 9 columns + both RLS
+    policies present; migration 0059 applied clean. Live site 200s. **Note:** the shared Playwright
+    browser was held by a concurrent session, so the live-browser click-through wasn't re-driven — the
+    jsdom render tests mount the real modal + corp card against the demo mock in its place. Committed
+    only this task's files (left the untracked `.claude/` tooling alone).
+
 - **2026-07-09** — **Follow-up: the downloadable rent-roll Excel now shows holdover tenants AND vacancy too**
   (George: "i didn't see the vacancy or the lease that needs an extension as holdover listed in the
   downloadable rent roll excel file"). Deployed: frontend Cloudflare version `61eac44b`. **No DB, no edge
