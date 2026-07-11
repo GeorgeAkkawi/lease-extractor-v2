@@ -3,11 +3,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getPropertyInsurance, getTenantInsurance, saveInsurance, extractInsurance, uploadDoc, askDoc,
   listInsuranceDocuments, addInsuranceDocument, removeInsuranceDocument, signDocUrl,
-  listArchivedInsurance, archiveInsurance, deleteInsurance,
+  listArchivedInsurance, archiveInsurance, deleteInsurance, listAlertStates, upsertAlertState,
 } from '../lib/api';
 import DocAssistant from './DocAssistant';
 import { money, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
+import { missingAdditionalInsured, additionalInsuredAlertKey } from '../lib/insuranceNotices';
 
 // Expiry status of a policy by its date: green while current, amber within a month,
 // red once expired. Drives the badge on the card and whether a tenant policy shows the
@@ -24,9 +25,10 @@ export function expiryStatus(expiryDate, now = new Date()) {
 // Add a policy (paste or upload) → key-facts auto-fill + a copy is saved once →
 // glanceable card + ask-anything Q&A. Extra documents (renewals, premium notices)
 // can be attached, and a removed policy can be archived to history.
-// `onRequestRenewal(policy)` (tenant scope only) is called by the "Request renewed
-// certificate" button on an expiring/expired policy — the lease page opens the
-// professional renewal-request email with it.
+// `onRequestRenewal(policy, reason?)` (tenant scope only) is called by the "Request
+// renewed certificate" button on an expiring/expired policy and — with reason
+// 'additional_insured' — by the not-listed-as-additional-insured banner/pop-up; the
+// lease page opens the matching professional request email with it.
 export default function InsuranceVault({ party, propertyId, leaseId, onRequestRenewal }) {
   const qc = useQueryClient();
   const scopeKey = party === 'landlord' ? propertyId : leaseId;
@@ -80,14 +82,44 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
     e.target.value = '';
   };
 
+  // Additional-insured notice (tenant scope): a cert on file that doesn't name the
+  // landlord shows a red banner + a one-time center pop-up. The pop-up's dismissal
+  // is stored in alert_states keyed per certificate (policy id + expiry), so a
+  // renewed cert that still leaves the landlord off re-arms it.
+  const missingAI = party === 'tenant' && missingAdditionalInsured(policy);
+  const { data: alertStates, isSuccess: statesLoaded } = useQuery({
+    queryKey: ['alertStates'],
+    queryFn: listAlertStates,
+    enabled: missingAI,
+  });
+  const aiKey = missingAI ? additionalInsuredAlertKey(policy) : null;
+  const aiDismissed = !!alertStates?.some((s) => s.alert_key === aiKey && s.dismissed);
+  const dismissAiPopup = useMutation({
+    mutationFn: () => upsertAlertState({ alert_key: aiKey, dismissed: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['alertStates'] }),
+  });
+
   if (isLoading) return <p className="muted">Loading…</p>;
 
   const status = policy ? expiryStatus(policy.expiry_date) : null;
+  // Only pop up once the dismiss store has actually loaded — no flicker for a
+  // certificate that was already dismissed.
+  const showAiPopup = missingAI && statesLoaded && !aiDismissed && !replacing && !removing;
 
   return (
     <div>
       {policy && !replacing && (
         <>
+          {/* Persistent in-place signal — stays after the pop-up is dismissed, until a
+              cert naming the landlord is on file. */}
+          {!editFacts && missingAI && (
+            <div className="note-msg danger" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <span>⚠ You are not listed as additional insured on this certificate. Ask the tenant for a corrected copy.</span>
+              {onRequestRenewal && (
+                <button type="button" onClick={() => onRequestRenewal(policy, 'additional_insured')}>✉ Request corrected certificate</button>
+              )}
+            </div>
+          )}
           {editFacts ? (
             <FactsForm policy={policy} party={party} busy={saveFacts.isPending} onSave={(vals) => saveFacts.mutate(vals)} onCancel={() => setEditFacts(false)} />
           ) : (
@@ -104,7 +136,7 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
               </div>
               {/* Additional insured only matters on the tenant's policy (does it name the landlord?). */}
               {party === 'tenant' && (
-                <div><span className="ins-k">Additional insured</span><span className={`badge ${policy.additional_insured ? 'good' : 'warn'}`} style={{ alignSelf: 'flex-start', marginTop: 4 }}>{policy.additional_insured ? 'Yes' : 'No'}</span></div>
+                <div><span className="ins-k">Additional insured</span><span className={`badge ${policy.additional_insured ? 'good' : 'danger'}`} style={{ alignSelf: 'flex-start', marginTop: 4 }}>{policy.additional_insured ? 'Yes' : 'No — not listed'}</span></div>
               )}
             </div>
           )}
@@ -182,6 +214,49 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
           onCancel={() => setRemoving(false)}
         />
       )}
+
+      {showAiPopup && (
+        <AdditionalInsuredPopup
+          policy={policy}
+          busy={dismissAiPopup.isPending}
+          onDismiss={() => dismissAiPopup.mutate()}
+          onRequest={onRequestRenewal ? () => { dismissAiPopup.mutate(); onRequestRenewal(policy, 'additional_insured'); } : null}
+        />
+      )}
+    </div>
+  );
+}
+
+// Center-screen "you are not listed as additional insured" notice, shown once per
+// certificate when the tenant's policy loads. Dismiss (button / ✕ / Escape) keeps it
+// quiet for THIS certificate; a renewed cert that still omits the landlord re-arms it.
+function AdditionalInsuredPopup({ policy, onRequest, onDismiss, busy }) {
+  const modalRef = useModalA11y(onDismiss);
+  return (
+    <div className="modal-scrim" onClick={onDismiss}>
+      <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 500 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <strong>⚠ Not listed as additional insured</strong>
+          <button className="icon-btn" onClick={onDismiss} aria-label="Dismiss">✕</button>
+        </div>
+        <div className="modal-body">
+          <p style={{ marginTop: 0 }}>
+            This tenant's certificate of insurance{policy.insurer ? ` (${policy.insurer})` : ''} does{' '}
+            <strong>not</strong> name you as additional insured. Most leases require the tenant's policy to
+            include you — without it, their coverage may not protect you in a claim.
+          </p>
+          <p className="muted" style={{ fontSize: 12.5, marginBottom: 0 }}>
+            Dismiss keeps this quiet for this certificate — you'll be reminded again if a new certificate
+            still leaves you off. The red note stays on the policy below.
+          </p>
+        </div>
+        <div className="modal-foot">
+          <div className="modal-actions" style={{ justifyContent: 'flex-end', gap: 8 }}>
+            <button className="secondary" onClick={onDismiss} disabled={busy}>Dismiss</button>
+            {onRequest && <button onClick={onRequest} disabled={busy}>✉ Request corrected certificate</button>}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

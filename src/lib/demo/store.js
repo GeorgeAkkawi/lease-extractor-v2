@@ -71,7 +71,7 @@ export function seed() {
       'Commercial General Liability — each occurrence: $1,000,000; general aggregate: $2,000,000.',
       'Deductible: $2,500 per occurrence.',
       `Policy period: ${fmtDate(iso(Y, 7, 1))} to ${fmtDate(soon)}.`,
-      'Additional insured: Acme Holdings LLC (landlord) is named as additional insured per the lease (CG 20 11 endorsement).',
+      'Additional insured: none listed on this certificate.',
     ].join('\n'),
     'lease-2': [
       'CERTIFICATE OF LIABILITY INSURANCE',
@@ -142,7 +142,9 @@ export function seed() {
     insurance_policies: [
       // Expiries set near-term so the bell shows the expiring-insurance reminders.
       { id: 'ins-1', owner_id: DEMO_USER.id, party: 'landlord', property_id: 'prop-1', lease_id: null, insurer: 'Granite Mutual Insurance', coverage_amount: 2000000, expiry_date: soon, additional_insured: false, policy_text: policyText['prop-1'], storage_path: null, created_at: iso(Y, 4, 1) },
-      { id: 'ins-2', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-1', insurer: 'Harbor Casualty', coverage_amount: 1000000, expiry_date: soon, additional_insured: true, policy_text: policyText['lease-1'], storage_path: null, created_at: iso(Y, 7, 1) },
+      // Bright Coffee's cert doesn't name the landlord — drives the "not listed as
+      // additional insured" pop-up + red banner in demo.
+      { id: 'ins-2', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-1', insurer: 'Harbor Casualty', coverage_amount: 1000000, expiry_date: soon, additional_insured: false, policy_text: policyText['lease-1'], storage_path: null, created_at: iso(Y, 7, 1) },
       // City Dental's certificate has already lapsed — drives the red "Expired" badge and
       // the "Request renewed certificate" flow in demo.
       { id: 'ins-3', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-2', insurer: 'Summit Indemnity Group', coverage_amount: 1000000, expiry_date: lapsed, additional_insured: true, policy_text: policyText['lease-2'], storage_path: null, created_at: iso(Y - 1, 6, 1) },

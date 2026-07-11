@@ -150,6 +150,27 @@ export function buildInsuranceRenewalRequestEmail({ business, tenant_name, conta
   return { subject, body, to: tenant_email || '' };
 }
 
+// Sent when the tenant's certificate ON FILE does not name the landlord as
+// additional insured: asks for a corrected certificate / endorsement. Powers the
+// "✉ Request corrected certificate" button on the additional-insured notice.
+export function buildAdditionalInsuredRequestEmail({ business, tenant_name, contact_name, tenant_email, propertyName, insurer, expiryDate }) {
+  const company = business?.company_name || 'the landlord';
+  const policyRef = insurer ? `your policy with ${insurer}` : 'the certificate of insurance on file';
+  const subject = `Additional Insured Endorsement Needed — ${propertyName || 'your premises'}`;
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: Additional insured endorsement for ${propertyName || 'the premises'}`,
+    paragraphs: [
+      `Dear ${contact_name || tenant_name || 'Tenant'},`,
+      `Our records show that ${policyRef} for ${propertyName || 'the premises'}${expiryDate ? `, with coverage through ${longDate(expiryDate)},` : ''} does not name ${company} as an additional insured, as required under the insurance provisions of your lease.`,
+      `Please have your insurance agent issue an updated certificate of insurance (or endorsement) naming ${company} as an additional insured, and send us the corrected copy for our files. No change to your coverage dates is needed — only the additional-insured designation.`,
+      `You can reply to this email with the corrected certificate attached, or have your agent send it directly to our office. Thank you for your prompt attention — please let us know if you have any questions.`,
+    ],
+  });
+  return { subject, body, to: tenant_email || '' };
+}
+
 // Sent to a service VENDOR (not a tenant) when their contract is nearing its end date:
 // a friendly note to line up a renewal or an updated proposal before service lapses.
 export function buildContractRenewalEmail({ business, vendorName, vendorEmail, contractName, propertyName, endDate }) {

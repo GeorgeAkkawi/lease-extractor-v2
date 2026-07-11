@@ -74,6 +74,51 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-11** — **Additional-insured notice: center pop-up + persistent red banner on a tenant
+  certificate that doesn't name the landlord** (George: the current amber "No" badge is "pretty subtle";
+  he chose a MIX of a quickly-dismissible center pop-up AND a red banner, dismissal quiet-until-the-cert-
+  changes, with an email button — plan `~/.claude/plans/for-the-insurance-section-modular-bonbon.md`).
+  Deployed: frontend Cloudflare version `a5a56d8c`. **Frontend-only — no DB migration, no edge function,
+  no AI calls, $0, no tenant emails** (the letter opens in the compose modal; nothing auto-sends).
+  Tests **234/234** (was 221 — +10 insuranceNotices, +3 render smoke).
+  - **What shows now** (tenant Insurance section, when `additional_insured !== true` — explicit "No" AND
+    "not stated on the document" both warn, same rule as the old badge): (1) a **center pop-up** the
+    moment the tenant's policy loads — "⚠ Not listed as additional insured", names the insurer, explains
+    the risk; Dismiss / ✕ / Escape closes it; (2) a **persistent red banner** on the policy ("You are not
+    listed as additional insured on this certificate") that stays after the pop-up is dismissed; (3) the
+    badge upgraded from amber "No" to red **"No — not listed"**. Pop-up + banner each carry
+    **"✉ Request corrected certificate"** → a new professional letter (`buildAdditionalInsuredRequestEmail`,
+    subject "Additional Insured Endorsement Needed — {property}") asking the tenant's agent to issue an
+    endorsement naming the landlord; sending logs the `insurance_requested` history event ("📨 Last
+    requested" + property History both update). The pop-up's email button also dismisses it.
+  - **"Quiet until the cert changes" mechanic:** dismissal is stored in the existing `alert_states`
+    dismiss store (server-synced, cross-device, works in demo via the mock's generic table handling) under
+    key `addins:{policy.id}:{expiry_date}` (new pure `src/lib/insuranceNotices.js` —
+    `missingAdditionalInsured` + `additionalInsuredAlertKey`). Replacing a policy updates the SAME row
+    (`saveInsurance`), so keying on the expiry makes a renewed cert (new expiry) that still omits George
+    **re-arm the pop-up**; a cert that names him clears everything (condition false). The pop-up renders
+    only after the alert-states query resolves — no flicker on an already-dismissed cert.
+  - **Files:** `InsuranceVault.js` (banner + badge + new `AdditionalInsuredPopup` on the shared
+    modal-scrim/`useModalA11y` pattern; `onRequestRenewal(policy, reason?)` now passes an
+    `'additional_insured'` reason), `LeaseDetailPage.js` (`renewalPolicy` is now `{policy, reason}`;
+    reason branches to the new letter + "Request corrected certificate" title — the expired/current
+    renewal-request flow is unchanged), `emailTemplates.js` (new letter on the `letter()` scaffold),
+    `insuranceNotices.js` (new), demo `store.js` (Bright Coffee's ins-2 flipped to
+    `additional_insured: false` + its policy_text line, so the pop-up/banner are demoable; City Dental
+    keeps demoing the expired-cert flow). **Settings gating free:** everything lives inside the
+    Insurance-feature-gated panel; no new dashboard alert or owner email, so nothing to add in
+    buildAlerts/send-reminders/Ask AI.
+  - **Verified:** unit **234/234** (`vitest run`) incl. `insuranceNotices.test.js` (warn on false/null,
+    quiet on true/none; key stable per cert, flips on expiry change = the re-arm guarantee; letter
+    content) and `insuranceAdditionalInsured.test.js` (mounts the real InsuranceVault against the demo
+    mock: pop-up + banner + badge, dismiss persists across remount, reason callback, compliant cert
+    quiet). **Real-browser click-through** (the shared MCP browser was held by a concurrent session, so I
+    drove system Chrome headless via playwright-core, installed `--no-save`, against a local demo dev
+    server): 17/17 checks — pop-up on open naming Harbor Casualty, email button → modal with the exact
+    subject/recipient/letter, dismissal sticks while the banner stays, Escape works, City Dental shows no
+    notice and its "Request renewed certificate" (expired) flow still opens the old letter — zero console
+    errors. `vite build` compiles; live site 200s. Committed only this task's files.
+
 - **2026-07-10** — **Live-data repair (beta user fakkawi3@gmail.com): GENA promoted from a property under
   NASA Property to its own corporation; the property renamed "Joliet"** (George approved the plan —
   `~/.claude/plans/the-user-under-fakkawi3-gmail-com-serene-breeze.md`). **DB-only** — no code change, no

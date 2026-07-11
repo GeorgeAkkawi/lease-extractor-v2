@@ -18,7 +18,7 @@ import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
 import InsuranceVault from '../components/InsuranceVault';
 import EmailComposeModal from '../components/EmailComposeModal';
-import { buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail } from '../lib/emailTemplates';
+import { buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildAdditionalInsuredRequestEmail } from '../lib/emailTemplates';
 import { currentPhase } from '../lib/leaseTerm';
 import { reducedMonthlyBase, abatementKindLabel } from '../lib/abatement';
 import { PageSkeleton } from '../components/Skeleton';
@@ -43,7 +43,7 @@ export default function LeaseDetailPage() {
   const [flash, setFlash] = useState(null);
   const [showRemove, setShowRemove] = useState(false);
   const [showInsReq, setShowInsReq] = useState(false);
-  const [renewalPolicy, setRenewalPolicy] = useState(null); // expiring/expired policy → renewed-cert request
+  const [renewalPolicy, setRenewalPolicy] = useState(null); // { policy, reason? } → cert-request email (renewal or additional-insured fix)
   const [startInput, setStartInput] = useState(''); // banner date entry for a start-less lease
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
@@ -472,24 +472,27 @@ export default function LeaseDetailPage() {
             <span style={{ marginLeft: 4 }}>(sent from Amlak — delivery isn't tracked).</span>
           </p>
         )}
-        <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} onRequestRenewal={setRenewalPolicy} />
+        <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} onRequestRenewal={(policy, reason) => setRenewalPolicy({ policy, reason })} />
       </div>
       )}
 
       {renewalPolicy && (() => {
-        const polPast = renewalPolicy.expiry_date && new Date(renewalPolicy.expiry_date + 'T12:00:00') < new Date();
-        const email = buildInsuranceRenewalRequestEmail({
+        const { policy: reqPolicy, reason } = renewalPolicy;
+        const forAddIns = reason === 'additional_insured';
+        const polPast = reqPolicy.expiry_date && new Date(reqPolicy.expiry_date + 'T12:00:00') < new Date();
+        const emailArgs = {
           business: corp ? { company_name: corp.name, address: corp.address, contact_email: corp.contact_email, contact_phone: corp.contact_phone } : null,
           tenant_name: lease.tenant_name,
           contact_name: lease.tenant_contact_name,
           tenant_email: lease.tenant_email,
           propertyName: prop?.name,
-          insurer: renewalPolicy.insurer,
-          expiryDate: renewalPolicy.expiry_date,
-        });
+          insurer: reqPolicy.insurer,
+          expiryDate: reqPolicy.expiry_date,
+        };
+        const email = forAddIns ? buildAdditionalInsuredRequestEmail(emailArgs) : buildInsuranceRenewalRequestEmail(emailArgs);
         return (
           <EmailComposeModal
-            title={polPast ? 'Request renewed certificate' : 'Request updated certificate'}
+            title={forAddIns ? 'Request corrected certificate' : polPast ? 'Request renewed certificate' : 'Request updated certificate'}
             from={corp?.contact_email || ''}
             to={lease.tenant_email || ''}
             subject={email.subject}
