@@ -14,7 +14,11 @@
 
 // Built-in production origin so a deploy WITHOUT the secret is still locked down
 // (not wide open). Override/extend via the ALLOWED_ORIGINS secret.
-const DEFAULT_ORIGINS = ['https://amlak.akkawigeo-5.workers.dev'];
+const DEFAULT_ORIGINS = [
+  'https://amlakre.com',
+  'https://www.amlakre.com',
+  'https://amlak.akkawigeo-5.workers.dev',
+];
 
 const CONFIGURED = ((Deno.env.get('ALLOWED_ORIGINS') ?? Deno.env.get('ALLOWED_ORIGIN') ?? '')
   .split(',')

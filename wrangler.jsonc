@@ -8,6 +8,16 @@
   // Name must match the Cloudflare project ("amlak") or CI overrides it + warns.
   "name": "amlak",
   "compatibility_date": "2025-06-01",
+  // Custom domains (registered via Cloudflare Registrar 2026-07-11). Deploying
+  // with these routes provisions the DNS records + TLS certs automatically.
+  // The old amlak.akkawigeo-5.workers.dev URL keeps working alongside them.
+  "routes": [
+    { "pattern": "amlakre.com", "custom_domain": true },
+    { "pattern": "www.amlakre.com", "custom_domain": true }
+  ],
+  // Keep the original workers.dev URL live alongside the custom domain —
+  // wrangler disables it by default once "routes" exist.
+  "workers_dev": true,
   "assets": {
     "directory": "./build",
     "not_found_handling": "single-page-application"

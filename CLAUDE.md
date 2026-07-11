@@ -60,7 +60,8 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 ## Deploying to production
 
 - **Target:** Cloudflare Worker named `amlak` (serves the static `./build` directory).
-- **Live URL:** https://amlak.akkawigeo-5.workers.dev
+- **Live URLs:** https://amlakre.com (primary, custom domain since 2026-07-11) +
+  https://www.amlakre.com + https://amlak.akkawigeo-5.workers.dev (original, kept working).
 - **Steps:** `npm run build` (= `vite build`, outputs `./build`) → `npx wrangler deploy`.
   - **Build tooling is now Vite** (migrated off Create React App 2026-07-06). Tests run
     via `npm test` (= `vitest run`). The old `react-scripts build`/`react-scripts test`
@@ -73,6 +74,31 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > **Standing instruction (George, 2026-06-30):** Every time George confirms a change
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
+
+- **2026-07-11** — **Custom domain AmlakRE.com attached to the live app + edge-function CORS updated**
+  (Part B of the approved plan `~/.claude/plans/precious-stirring-puppy.md`; George registered
+  `amlakre.com` himself via Cloudflare Registrar on his own card — ~$10–12/yr, his purchase, nothing
+  spent by Claude). Deployed: worker version `bf88d77c` (assets unchanged — config-only), **12 edge
+  functions redeployed** (ask-doc, ask-lease, ask-portfolio, draft-invoice, extract-addendum,
+  extract-annual-report, extract-contract, extract-insurance, extract-lease, send-2fa-code,
+  trends-narrative, verify-2fa-code), secret `ALLOWED_ORIGINS` set. **No DB migration, no AI calls,
+  no tenant emails.**
+  - **App now serves on** `https://amlakre.com` + `https://www.amlakre.com` (Cloudflare Custom
+    Domains, added via `wrangler.jsonc` `routes` with `custom_domain: true` — DNS + TLS auto-
+    provisioned) **and still on** `https://amlak.akkawigeo-5.workers.dev`. Gotcha caught mid-deploy:
+    adding `routes` silently disables workers.dev by default — fixed with explicit
+    `"workers_dev": true` and redeployed, so the URL George + the beta user use never broke.
+  - **CORS:** `_shared/cors.ts` `DEFAULT_ORIGINS` now lists amlakre.com (primary), www, and the
+    workers.dev origin; `ALLOWED_ORIGINS` secret set to the same three. Verified live: an OPTIONS
+    preflight with `Origin: https://amlakre.com` reflects that origin back.
+  - **Verified:** apex + www + workers.dev all 200 and serve the app (`<title>Amlak</title>`); the
+    apex initially looked dead from this machine — stale local negative-DNS cache from before the
+    registration, confirmed fine against Cloudflare's authoritative NS + direct-IP HTTPS.
+  - **Still pending (next step, George's dashboards + my dictation):** Resend domain verification
+    (add `amlakre.com` in Resend → paste its SPF/DKIM records into Cloudflare DNS → Verified), then
+    `supabase secrets set REMINDER_FROM_EMAIL="reminders@amlakre.com"` so owner reminder emails come
+    from the branded address. Emailing REAL TENANTS from the server remains a separate feature
+    needing George's explicit OK — the domain is the prerequisite, not the trigger.
 
 - **2026-07-11** — **"Clear history" button on the property History page + the Leases tab renamed
   "Portfolio"** (George approved the plan — `~/.claude/plans/precious-stirring-puppy.md`; the plan's
