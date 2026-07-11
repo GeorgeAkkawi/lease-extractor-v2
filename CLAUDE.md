@@ -75,6 +75,58 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-11** — **"📨 Send now": landlord letters send directly from the app under their business
+  identity** (George's explicit OK — he asked that "the emails the landlord sends to their tenants come
+  from their business email that they enter," while owner reminders keep coming from Amlak; the Resend
+  domain `amlakre.com` verified earlier the same day is the prerequisite that made this safe). Deployed:
+  new `send-tenant-email` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `36dd662d`. **$0** (Resend free tier — 3,000 emails/mo; no AI calls), **no DB migration, no destructive
+  data.** Tests **238/238** (was 236 — +2 sendNowEmail). **Landlord-initiated only — nothing auto-sends;
+  a letter goes out solely on a Send-now click.**
+  - **What changed for George:** every tenant letter (renewal notices, insurance requests, invoices) used
+    to only *open Gmail* pre-filled for him to send himself. Now each compose screen also has a **"📨 Send
+    now"** button that delivers the letter **directly from the app in one click** — no Gmail window. The
+    Gmail / Other app / Copy / Download buttons all stay as alternatives (Gmail demoted from primary to a
+    quiet secondary). Owner reminder/2FA/health emails are untouched (still from `reminders@amlakre.com` /
+    `alerts@amlakre.com`).
+  - **Sender identity (the one anti-spoofing constraint, handled the industry-standard way):** DMARC
+    forbids a server sending literally "from" an address on a domain it doesn't own (e.g. a landlord's
+    @gmail.com), so — exactly like DocuSign/QuickBooks — the message goes out as **From: `"{Business name}"
+    <letters@amlakre.com>`** with **Reply-To: the corporation's business email** (the one in its Business
+    profile). The tenant sees the **business name** as the sender; hitting Reply reaches the landlord's
+    business inbox; delivery rides the verified amlakre.com domain so it passes spam checks. The business
+    NAME is looked up under the caller's **own JWT** (`corporations.name` where `contact_email = reply_to`,
+    RLS-scoped `.limit(1)` — a landlord can only ever borrow one of *his* business names; fallback "Amlak";
+    sanitized header-safe, ≤60 chars).
+  - **Edge fn `send-tenant-email/index.ts`** (13th `cors.ts` importer; keeps default `verify_jwt=true`):
+    `cors(req)` + preflight (ask-portfolio scaffold). **Real auth is a separate gate** — an anon-key client
+    with the caller's Authorization header → `auth.getUser()` → **401 if no signed-in user** (because
+    `enforceRateLimit` FAILS OPEN on a limiter fault, so it's a cost guard, not the gate); then
+    `enforceRateLimit(req, 10, 60)`. Validates `{to, subject, body, reply_to}` (email regex on to/reply_to,
+    non-empty subject/body, subject ≤300, body ≤50k). Friendly **503** if `RESEND_API_KEY` unset → "use the
+    Gmail button"; Resend rejection → friendly **502** → same fallback; success → `{id}`. Sends via the
+    same Resend `fetch` pattern as `send-reminders`. From-address env-tunable via `TENANT_FROM_EMAIL`
+    (default `letters@amlakre.com`); **no new secrets needed** — `RESEND_API_KEY` was already set.
+  - **Frontend:** new shared `src/components/SendNowButton.js` (idle → "Sending…" → `✓ Sent to {to}` via
+    `.badge good`; inline `.note-msg danger` on failure that points at the Gmail button; disabled until
+    To/subject/body are all filled; `onSent` keeps the caller's existing logging). New
+    `sendTenantEmail({to,subject,body,replyTo})` in `api.js` (next to `listSenderEmails`) → `invokeFunction
+    ('send-tenant-email', …)`. Wired into `EmailComposeModal.js`, `NotificationEmailModal.js` (Send-now
+    success fires the existing `onSend({to,subject})` so insurance-request logging still records; **"Mark
+    sent & dismiss" stays manual** — a Send-now does NOT auto-dismiss the reminder), and `InvoiceButton.js`
+    (footer, using its own from/to/subject/text). "Send from" field-notes reworded. Demo: `mockClient.js`
+    routes `send-tenant-email` → `ok({id:'demo-email'})` (the sandbox never emails anyone).
+  - **Verified:** unit **238/238** (`vitest run`) incl. new `src/components/__tests__/sendNowEmail.test.js`
+    (mounts the real EmailComposeModal vs the demo mock → click Send now → `✓ Sent` + `onSend` fires with
+    `{to,subject}`; Send now disabled with an empty To). `vite build` compiles. **Live function verified
+    gated:** an unauthenticated POST → platform **401**; a valid anon JWT with no signed-in user → my
+    `auth.getUser` **401 "Please sign in and try again."** Live site 200s. **Live end-to-end send NOT
+    re-driven from here** — an authenticated send needs George's own logged-in session (I can't/shouldn't
+    mint his JWT from the shell); the delivery path is the same verified Resend/amlakre.com setup already
+    sending his owner emails. **George: click "📨 Send now" on any tenant letter to your OWN email to watch
+    it land** (make sure each corporation's Business profile has its business email filled in — that's the
+    reply-to + what names the sender). Committed only this task's files.
+
 - **2026-07-11** — **Custom domain AmlakRE.com attached to the live app + edge-function CORS updated**
   (Part B of the approved plan `~/.claude/plans/precious-stirring-puppy.md`; George registered
   `amlakre.com` himself via Cloudflare Registrar on his own card — ~$10–12/yr, his purchase, nothing

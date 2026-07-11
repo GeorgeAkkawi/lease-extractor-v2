@@ -3,10 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { listSenderEmails } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import { useModalA11y } from './modalA11y';
+import SendNowButton from './SendNowButton';
 
-// Reusable compose-and-send modal: pick the sending account, confirm the
-// recipient, edit subject/body, then Send via Gmail / another mail app. Same send
-// flow as the bell's tenant emails and invoices (client-side compose, no backend).
+// Reusable compose-and-send modal: pick the sending account, confirm the recipient,
+// edit subject/body, then "Send now" (delivered directly from the app) or via Gmail /
+// another mail app. Same send flow as the bell's tenant emails and invoices.
 export default function EmailComposeModal({ title = 'Email tenant', from: initialFrom = '', to: initialTo = '', subject: initialSubject = '', body: initialBody = '', onClose, onSend }) {
   // Escape closes; focus is trapped in the dialog and returned on close.
   const modalRef = useModalA11y(onClose);
@@ -52,7 +53,7 @@ export default function EmailComposeModal({ title = 'Email tenant', from: initia
             ) : (
               <input className="text-input" type="email" value={from} onChange={(e) => setFrom(e.target.value)} placeholder="your@email.com" />
             )}
-            <small className="field-note">Be signed into this Google account in your browser — otherwise Gmail opens in whichever account you’re logged into.</small>
+            <small className="field-note">“Send now” delivers it directly — replies come back to this address. The Gmail button opens this account instead.</small>
           </label>
           <label className="form-field" style={{ maxWidth: '100%' }}>
             <span>To</span>
@@ -71,7 +72,8 @@ export default function EmailComposeModal({ title = 'Email tenant', from: initia
           <div className="modal-actions" style={{ justifyContent: 'flex-end', gap: 10 }}>
             <button className="secondary" onClick={copy}>{copied ? '✓ Copied' : '⧉ Copy'}</button>
             <button className="secondary" onClick={() => send(mailtoUrl({ to, subject, body }))}>✉ Other app</button>
-            <button onClick={() => send(gmailComposeUrl({ from, to, subject, body }))}>📧 Send via Gmail</button>
+            <button className="secondary" onClick={() => send(gmailComposeUrl({ from, to, subject, body }))}>📧 Gmail</button>
+            <SendNowButton to={to} subject={subject} body={body} replyTo={from} onSent={() => onSend?.({ to, subject })} />
           </div>
         </div>
       </div>

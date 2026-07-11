@@ -98,6 +98,15 @@ export async function listSenderEmails() {
   return [...new Set((corps || []).map((c) => c.contact_email).filter(Boolean))];
 }
 
+// Send a tenant letter directly from the app (the "Send now" button). Delivered by
+// the verified amlakre.com domain, but the tenant sees the landlord's business name
+// and replies go to replyTo (the corporation's business email). Landlord-initiated
+// only — never auto-sends. Returns { id } from Resend on success; throws a friendly
+// message (surfaced by invokeFunction) so the UI can point back at the Gmail button.
+export function sendTenantEmail({ to, subject, body, replyTo }) {
+  return invokeFunction('send-tenant-email', { to, subject, body, reply_to: replyTo || null });
+}
+
 export const createCorporation = async (name) =>
   one(supabase.from('corporations').insert({ name, owner_id: await ownerId() }).select().single());
 

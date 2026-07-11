@@ -318,6 +318,10 @@ const functions = {
       const facts = demoInvoiceFacts(body);
       return ok({ facts, from: facts.business?.contact_email ?? null });
     }
+    if (name === 'send-tenant-email') {
+      // The demo sandbox never emails anyone — pretend it went out.
+      return ok({ id: 'demo-email' });
+    }
     if (name === 'trends-narrative') {
       return ok({ narrative: 'Revenue held steady year over year while taxes rose ~14% and CAM ~12%, lifting the tax PSF from $4.40 to $5.00 and CAM PSF from $3.20 to $3.60. The new roof expense this year is tracked separately and excluded from PSF.' });
     }

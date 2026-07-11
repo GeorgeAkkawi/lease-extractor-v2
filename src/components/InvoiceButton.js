@@ -6,6 +6,7 @@ import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import { buildInvoice } from '../lib/invoiceTemplate';
 import { money } from '../lib/format';
 import { useModalA11y } from './modalA11y';
+import SendNowButton from './SendNowButton';
 
 // Builds a tenant invoice: the draft-invoice Edge Function returns the figures
 // (computed server-side from the views), and the shared template renders one
@@ -116,7 +117,7 @@ export default function InvoiceButton({ share }) {
                       ) : (
                         <input className="text-input" type="email" value={from} onChange={(e) => setFrom(e.target.value)} placeholder="your@email.com" />
                       )}
-                      <small className="field-note">Be signed into this Google account for Gmail to open there.</small>
+                      <small className="field-note">“Send now” delivers it directly — replies come back here. The Gmail button opens this account instead.</small>
                     </label>
                     <label className="form-field" style={{ flex: 1, marginBottom: 12 }}>
                       <span>To</span>
@@ -146,7 +147,8 @@ export default function InvoiceButton({ share }) {
                 <div className="row" style={{ gap: 8 }}>
                   <button className="secondary" onClick={download} disabled={busy || !text}>⬇ Download</button>
                   <button className="secondary" onClick={() => openCompose(mailtoUrl({ to, subject, body: text }))} disabled={busy || !text}>✉ Other app</button>
-                  <button onClick={() => openCompose(gmailComposeUrl({ from, to, subject, body: text }))} disabled={busy || !text}>📧 Send via Gmail</button>
+                  <button className="secondary" onClick={() => openCompose(gmailComposeUrl({ from, to, subject, body: text }))} disabled={busy || !text}>📧 Gmail</button>
+                  <SendNowButton to={to} subject={subject} body={text} replyTo={from} disabled={busy || !text} />
                 </div>
               </div>
             </div>
