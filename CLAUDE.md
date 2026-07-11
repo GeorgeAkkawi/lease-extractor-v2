@@ -94,11 +94,16 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
   - **Verified:** apex + www + workers.dev all 200 and serve the app (`<title>Amlak</title>`); the
     apex initially looked dead from this machine — stale local negative-DNS cache from before the
     registration, confirmed fine against Cloudflare's authoritative NS + direct-IP HTTPS.
-  - **Still pending (next step, George's dashboards + my dictation):** Resend domain verification
-    (add `amlakre.com` in Resend → paste its SPF/DKIM records into Cloudflare DNS → Verified), then
-    `supabase secrets set REMINDER_FROM_EMAIL="reminders@amlakre.com"` so owner reminder emails come
-    from the branded address. Emailing REAL TENANTS from the server remains a separate feature
-    needing George's explicit OK — the domain is the prerequisite, not the trigger.
+  - **Resend domain DONE (same day):** George added `amlakre.com` in Resend and used Resend's
+    built-in "authorize via Cloudflare" flow (one-time OAuth — Resend added its own MX/SPF/DKIM
+    records on the `send` subdomain + `resend._domainkey`, all DNS-only; no manual paste needed,
+    no ongoing access). Domain shows **Verified**. Secrets set: `REMINDER_FROM_EMAIL=
+    reminders@amlakre.com` + `HEALTH_FROM_EMAIL=alerts@amlakre.com` — covers send-reminders,
+    send-2fa-code (falls back to REMINDER_FROM_EMAIL), and health-check; no code change, no
+    redeploy needed (secrets restart the functions). Verified end-to-end: a one-time test email
+    from `reminders@amlakre.com` to George (owner — allowed) accepted by Resend (id `9a9049a1`).
+    All owner emails are branded from now on. Emailing REAL TENANTS from the server remains a
+    separate feature needing George's explicit OK — the domain is the prerequisite, not the trigger.
 
 - **2026-07-11** — **"Clear history" button on the property History page + the Leases tab renamed
   "Portfolio"** (George approved the plan — `~/.claude/plans/precious-stirring-puppy.md`; the plan's
