@@ -31,7 +31,7 @@ export default function PropertiesPage() {
     ...leasesByPropertiesQuery(qc, corpId, properties),
     enabled: properties.length > 0,
   });
-  usePageChrome([{ label: 'Leases', to: '/leases' }, { label: corp?.name || '…' }]);
+  usePageChrome([{ label: 'Portfolio', to: '/leases' }, { label: corp?.name || '…' }]);
 
   const add = useMutation({
     mutationFn: () => createProperty({ corporation_id: corpId, name: name.trim(), address: address.trim(), building_sf: buildingSf === '' ? null : Number(buildingSf) }),

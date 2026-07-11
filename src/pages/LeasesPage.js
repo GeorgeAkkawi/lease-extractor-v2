@@ -37,7 +37,7 @@ export default function LeasesPage() {
   });
   const { data: leaseSort = {} } = useQuery({ queryKey: ['leaseSort'], queryFn: getLeaseSort });
   usePageChrome([
-    { label: 'Leases', to: '/leases' },
+    { label: 'Portfolio', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
     { label: prop?.name || '…' },
   ]);

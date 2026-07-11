@@ -13,7 +13,7 @@ export default function ContractsPage() {
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   usePageChrome([
-    { label: 'Leases', to: '/leases' },
+    { label: 'Portfolio', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
     { label: prop?.name || '…', to: `/leases/${corpId}/${propId}` },
     { label: 'Contracts' },

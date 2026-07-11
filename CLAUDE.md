@@ -74,6 +74,35 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-11** — **"Clear history" button on the property History page + the Leases tab renamed
+  "Portfolio"** (George approved the plan — `~/.claude/plans/precious-stirring-puppy.md`; the plan's
+  third part, the AmlakRE.com domain, is a separate collaborative runbook George drives — nothing of
+  it shipped here). Deployed: frontend Cloudflare version `545aee6b`. **Frontend-only — no DB
+  migration, no edge function, no AI calls, $0, no tenant emails.** Tests **236/236** (was 234 —
+  +2 clearPropertyHistory).
+  - **Clear history (Part A):** each property's "Lease & tenant history" timeline now has a
+    **"Clear history"** button (shown only when events exist, disabled while clearing) that
+    permanently deletes that property's `history_events` after a confirm that names the consequences
+    — including that it also clears the "📨 Last requested" insurance markers (same table). Scope
+    guardrails: the "Expired & renewed leases" archive and closed-year snapshots are untouched. New
+    `clearPropertyHistory(propertyId)` in `api.js` (beside `deleteExpiredLease`); RLS `owner_all`
+    scopes the delete, demo mock needed zero changes. Invalidates `['historyEvents', propId]` +
+    `['insuranceRequests']`.
+  - **Portfolio rename (Part C):** label-only — the route stays `/leases` so every deep link keeps
+    working. Sidebar label + collapsed-rail tooltip (`Sidebar.js`), `TITLES.leases`
+    (`CorporationsPage.js` — its h1 "Corporations" now reads naturally under a Portfolio tab), and
+    the breadcrumb root in `PropertiesPage` / `LeasesPage` / `LeaseNewPage` / `LeaseDetailPage` /
+    `ContractsPage`.
+  - **Verified:** unit **236/236** (`vitest run`) incl. new `clearPropertyHistory.test.js` (wipes only
+    that property's timeline incl. its insurance-request trail; other property + expired-lease archive
+    untouched). **Real-browser click-through** (shared MCP browser held by a concurrent session again,
+    so drove system Chrome headless via the existing playwright-core against a local demo dev server):
+    **11/11** — sidebar reads Portfolio (no "Leases"), tab lands on the corporations grid at `/leases`,
+    breadcrumb roots read Portfolio, Clear history shows with events → confirm names Maple Plaza +
+    "can't be undone" → timeline empties to "No recorded changes yet" → button hides → expired archive
+    2 before/2 after → snapshots still present — zero console errors. Live site 200s; deployed bundle
+    carries the new strings. Committed only this task's files.
+
 - **2026-07-11** — **Additional-insured notice: center pop-up + persistent red banner on a tenant
   certificate that doesn't name the landlord** (George: the current amber "No" badge is "pretty subtle";
   he chose a MIX of a quickly-dismissible center pop-up AND a red banner, dismissal quiet-until-the-cert-

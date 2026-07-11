@@ -55,7 +55,7 @@ export default function Sidebar() {
       <nav className="side-nav">
         <NavLink end className={navClass} to="/" {...tip('Overview')} {...warm(pf.dashboard)}><GridIcon /> <span className="side-label">Overview</span></NavLink>
         <NavLink className={navClass} to="/ask" {...tip('Ask Amlak')}><SparkIcon /> <span className="side-label">Ask Amlak</span></NavLink>
-        <NavLink className={navClass} to="/leases" {...tip('Leases')} {...warm(pf.corporations)}><DocIcon /> <span className="side-label">Leases</span></NavLink>
+        <NavLink className={navClass} to="/leases" {...tip('Portfolio')} {...warm(pf.corporations)}><DocIcon /> <span className="side-label">Portfolio</span></NavLink>
         <NavLink className={navClass} to="/financials" {...tip('Financials')} {...warm(() => pf.corporationsFinancials(year))}><ChartIcon /> <span className="side-label">Financials</span></NavLink>
         <NavLink className={navClass} to="/history" {...tip('History')} {...warm(() => pf.corporationsFinancials(year))}><ClockIcon /> <span className="side-label">History</span></NavLink>
       </nav>

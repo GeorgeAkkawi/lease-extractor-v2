@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
 } from 'recharts';
-import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents } from '../lib/api';
+import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents, clearPropertyHistory } from '../lib/api';
 import { invokeFunction } from '../lib/supabaseClient';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { money, psf, sf, fmtDate } from '../lib/format';
@@ -55,6 +55,14 @@ export default function HistoryPage() {
   const close = useMutation({ mutationFn: () => closeYear(propId, year), onSuccess: () => qc.invalidateQueries({ queryKey: ['snapshots', propId] }) });
   const reopen = useMutation({ mutationFn: () => reopenYear(propId, year), onSuccess: () => qc.invalidateQueries({ queryKey: ['snapshots', propId] }) });
   const removeExpired = useMutation({ mutationFn: (id) => deleteExpiredLease(id), onSuccess: () => qc.invalidateQueries({ queryKey: ['expiredLeases', propId] }) });
+  const clearHistory = useMutation({
+    mutationFn: () => clearPropertyHistory(propId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['historyEvents', propId] });
+      // "📨 Last requested" on tenants' insurance panels reads the same table.
+      qc.invalidateQueries({ queryKey: ['insuranceRequests'] });
+    },
+  });
 
   const [narrative, setNarrative] = useState('');
   const [busy, setBusy] = useState(false);
@@ -204,7 +212,23 @@ export default function HistoryPage() {
             <strong>Lease &amp; tenant history</strong>
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>What each tenant's lease has been through — assignments, term extensions, and renewal decisions — newest first. The <strong>Tenant</strong> column shows who each change applies to.</div>
           </div>
+          {events.length > 0 && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={clearHistory.isPending}
+              onClick={() => {
+                if (window.confirm(
+                  `Clear ${prop?.name || 'this property'}'s lease & tenant history?\n\n`
+                  + `This permanently deletes the timeline below (renewals, assignments, insurance requests, etc.). `
+                  + `It can't be undone, and it also clears the "📨 Last requested" date shown on tenants' insurance panels. `
+                  + `Your leases, tenants, invoices, and the "Expired & renewed leases" archive are NOT affected.`
+                )) clearHistory.mutate();
+              }}
+            >{clearHistory.isPending ? 'Clearing…' : 'Clear history'}</button>
+          )}
         </div>
+        {clearHistory.isError && <p className="badge danger" style={{ marginTop: 10 }}>{clearHistory.error.message}</p>}
         {events.length === 0 ? (
           <p className="muted" style={{ marginTop: 14 }}>No recorded changes yet for this property.</p>
         ) : (

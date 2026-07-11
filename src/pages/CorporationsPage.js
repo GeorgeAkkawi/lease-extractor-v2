@@ -10,7 +10,7 @@ import CorporationProfileModal from '../components/CorporationProfileModal';
 import AnnualReportModal from '../components/AnnualReportModal';
 import { BuildingIcon, DocIcon } from '../components/icons';
 
-const TITLES = { leases: 'Leases', financials: 'Financials', history: 'History' };
+const TITLES = { leases: 'Portfolio', financials: 'Financials', history: 'History' };
 const SUBS = {
   leases: 'Pick a corporation to see its properties and leases.',
   financials: 'Revenue & expenses by corporation.',

@@ -2348,6 +2348,10 @@ export const listExpiredLeases = (propertyId) =>
 export const deleteExpiredLease = (id) =>
   rows(supabase.from('expired_leases').delete().eq('id', id));
 
+// Permanently clear this property's activity timeline (history_events).
+export const clearPropertyHistory = (propertyId) =>
+  rows(supabase.from('history_events').delete().eq('property_id', propertyId));
+
 // Freeze a year: compute current totals + per-tenant breakdown and store an
 // immutable snapshot so History never recomputes against later edits.
 export async function closeYear(propertyId, year) {

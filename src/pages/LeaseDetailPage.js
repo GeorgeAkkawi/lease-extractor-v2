@@ -74,7 +74,7 @@ export default function LeaseDetailPage() {
   // Show the shared fiscal-year selector only when the monthly rent tracker (which
   // follows it) is visible — hiding the tracker removes the year picker's only use here.
   usePageChrome([
-    { label: 'Leases', to: '/leases' },
+    { label: 'Portfolio', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
     { label: prop?.name || '…', to: `/leases/${corpId}/${propId}` },
     { label: lease?.tenant_name || '…' },
