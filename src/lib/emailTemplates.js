@@ -233,3 +233,42 @@ export function buildEscalationEmail({ business, tenant_name, contact_name, tena
   });
   return { subject, body, to: tenant_email || '' };
 }
+
+// Year-end CAM & tax reconciliation statement: the tenant paid ESTIMATED additional
+// rent (CAM / property tax / roof where applicable) during the year; this letter
+// shows the estimate-vs-actual breakdown and either bills the shortfall or promises
+// the refund. `lines` = [{ label, est, actual }] (roof included only when it was in
+// play); `diff` = actual − estimate (signed); `direction` = tenant_owes |
+// landlord_owes | even. Like every letter, nothing auto-sends.
+export function buildCamReconciliationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, lines, diff, direction }) {
+  const amount = money(Math.abs(Number(diff) || 0));
+  // Plain-text breakdown table (same monospace-friendly shape as the invoice).
+  const rows = (lines || []).map((l) => {
+    const d = (Number(l.actual) || 0) - (Number(l.est) || 0);
+    const sign = d > 0 ? '+' : d < 0 ? '−' : '';
+    return `  ${String(l.label).padEnd(14)} estimated ${money(l.est).padStart(12)}   actual ${money(l.actual).padStart(12)}   difference ${(sign + money(Math.abs(d))).padStart(12)}`;
+  });
+  const table = ['  Charge         Billed (estimated)     Actual share        Difference', ...rows].join('\n');
+
+  const settle =
+    direction === 'tenant_owes'
+      ? `The actual expenses came in above the estimates you were billed, leaving a balance of ${amount} due. Please remit this amount within 30 days of the date of this letter. A reconciliation invoice for the balance accompanies this statement in our records.`
+      : direction === 'landlord_owes'
+        ? `The actual expenses came in below the estimates you were billed, so a refund of ${amount} is due to you. We will issue the refund promptly — no action is needed on your part.`
+        : `The actual expenses matched the estimates you were billed, so no balance is due in either direction and your account is settled for the year.`;
+
+  const subject = `CAM & Tax Reconciliation — ${propertyName || 'your premises'} (${year})`;
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: ${year} reconciliation of estimated CAM & tax charges at ${propertyName || 'the premises'}`,
+    paragraphs: [
+      `Dear ${contact_name || tenant_name || 'Tenant'},`,
+      `As provided under your lease at ${propertyName || 'the premises'}, the additional rent you paid during ${year} was based on estimated operating expenses. Now that the year's actual figures are final, we have completed the annual reconciliation of those charges against your proportionate share:`,
+      table,
+      settle,
+      `Supporting detail for the year's expenses is available on request. If you have any questions about this reconciliation, please contact our office and we will be glad to walk through the figures with you.`,
+    ],
+  });
+  return { subject, body, to: tenant_email || '' };
+}

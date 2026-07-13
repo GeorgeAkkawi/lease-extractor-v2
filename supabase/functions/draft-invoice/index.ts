@@ -68,7 +68,18 @@ Deno.serve(async (req) => {
     const round = (n: number) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
     const now = new Date();
     const due = new Date(now.getTime() + 30 * 86400000);
-    const roof = cur.roof_responsible ? Number(cur.roof_amt || 0) : 0; // separate roof line
+
+    // Estimated additional rent (0060): during the year the tenant pays the lease's
+    // typed ESTIMATE — the true CAM isn't known until the year closes. Each component
+    // falls back to the actual share when no estimate is entered (e.g. the landlord
+    // enters only the CAM estimate and lets the known tax figure bill as-is), so a
+    // lease with no estimates bills exactly as before. Year-end reconciliation
+    // settles estimate-vs-actual separately (kind='reconciliation' invoices).
+    const cam = cur.est_cam_annual != null ? Number(cur.est_cam_annual) : Number(cur.cam_amount || 0);
+    const tax = cur.est_tax_annual != null ? Number(cur.est_tax_annual) : Number(cur.tax_amount || 0);
+    const roof = cur.roof_responsible
+      ? (cur.est_roof_annual != null ? Number(cur.est_roof_annual) : Number(cur.roof_amt || 0))
+      : 0; // separate roof line, roof-responsible tenants only
 
     const facts = {
       business,
@@ -81,10 +92,16 @@ Deno.serve(async (req) => {
       tax_year: priorYear, // taxes lag a year — used for the tax line label + note
       square_footage: cur.square_footage,
       base_rent_annual: round(cur.base_rent || 0),
-      cam_annual: round(cur.cam_amount || 0),
-      tax_annual: round(cur.tax_amount || 0),
+      cam_annual: round(cam),
+      tax_annual: round(tax),
       roof_annual: round(roof),
       abatement_annual: round(cur.abatement_amount || 0), // free/reduced base rent credited off this year's bill
+      // which lines are estimates (drives the "est." labels + reconciliation note)
+      estimated: {
+        cam: cur.est_cam_annual != null,
+        tax: cur.est_tax_annual != null,
+        roof: cur.roof_responsible && cur.est_roof_annual != null,
+      },
       today: now.toISOString().slice(0, 10),
       due: due.toISOString().slice(0, 10),
     };

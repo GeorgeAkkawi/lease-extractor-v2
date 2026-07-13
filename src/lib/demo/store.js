@@ -103,7 +103,12 @@ export function seed() {
       { id: 'prop-2', owner_id: DEMO_USER.id, corporation_id: 'corp-2', name: 'Oak Center', address: '250 Oak Ave', building_sf: 6000 },
     ],
     leases: [
-      { id: 'lease-1', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'Bright Coffee Co.', tenant_email: 'sam@brightcoffee.example', tenant_contact_name: 'Sam Rivera', premises_address: '100 Maple St — Suite 120', square_footage: 2000, base_rent: 60000, lease_start: iso(Y - 2, 1, 1), lease_termination_date: iso(Y + 1, 12, 31), lease_terms: 'NNN lease, 5 year term.', share_override_pct: null, roof_responsible: true, no_renewal_option: false, lease_text: leaseText['lease-1'], source: 'manual', extraction_status: 'reviewed' },
+      // Bright Coffee pays typed ESTIMATED CAM/tax/roof (0060). Its year invoice inv-1
+      // already exists, so the finances table's Difference runs off that billed snapshot
+      // (est 9,000 + 7,500 + 1,600 = 18,100) vs the actual share (7,200 + 10,000 + 1,600
+      // = 18,800) → a live "+$700 tenant owes", demoing the Reconcile flow. City Dental
+      // stays estimate-free to demo the bill-actuals fallback.
+      { id: 'lease-1', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'Bright Coffee Co.', tenant_email: 'sam@brightcoffee.example', tenant_contact_name: 'Sam Rivera', premises_address: '100 Maple St — Suite 120', square_footage: 2000, base_rent: 60000, lease_start: iso(Y - 2, 1, 1), lease_termination_date: iso(Y + 1, 12, 31), lease_terms: 'NNN lease, 5 year term.', share_override_pct: null, roof_responsible: true, no_renewal_option: false, est_cam_annual: 6500, est_tax_annual: 10000, est_roof_annual: 1500, lease_text: leaseText['lease-1'], source: 'manual', extraction_status: 'reviewed' },
       { id: 'lease-2', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'City Dental', tenant_email: 'billing@citydental.example', tenant_email_2: 'dana.lee@citydental.example', tenant_contact_name: 'Dana Lee', premises_address: '100 Maple St — Suite 30', square_footage: 3000, base_rent: 84000, lease_start: iso(Y - 1, 6, 1), lease_termination_date: iso(2026, 5, 31), lease_terms: 'Includes one 5-year renewal option.', share_override_pct: null, roof_responsible: false, no_renewal_option: false, lease_text: leaseText['lease-2'], source: 'manual', extraction_status: 'reviewed' },
       // Ends soon with no renewal option on file → demonstrates the "lease ending —
       // no renewal" reminder, and the manual no-renewal flag set to confirmed.

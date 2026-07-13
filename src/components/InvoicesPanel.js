@@ -76,7 +76,12 @@ function Row({ inv, open, onToggle, onRefresh, onVoid, onDelete }) {
   return (
     <>
       <tr>
-        <td>FY {inv.year}</td>
+        <td>
+          FY {inv.year}
+          {inv.kind === 'reconciliation' && (
+            <span className="badge info" style={{ marginLeft: 6 }} title="Year-end true-up of estimated vs actual CAM & tax">Reconciliation</span>
+          )}
+        </td>
         <td>{fmtDate(inv.issue_date)}</td>
         <td>{fmtDate(inv.due_date)}</td>
         <td className="num">{money(inv.total_amount)}</td>

@@ -12,6 +12,8 @@ const EMPTY = {
   lease_termination_date: '',
   lease_terms: '',
   share_override_pct: '',
+  est_cam_annual: '',
+  est_tax_annual: '',
 };
 
 // Reusable lease form (create + edit). `extracted` is an optional map of
@@ -60,6 +62,8 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
       lease_termination_date: form.lease_termination_date || null,
       lease_terms: form.lease_terms || null,
       share_override_pct: form.share_override_pct === '' ? null : Number(form.share_override_pct) / 100,
+      est_cam_annual: numOrNull(form.est_cam_annual),
+      est_tax_annual: numOrNull(form.est_tax_annual),
     });
   }
 
@@ -93,6 +97,12 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
         </Field>
         <Field label="Tax/CAM share override (%)" field="share_override_pct" extracted={extracted} hint="Blank = pro-rata by SF">
           <input className="text-input num" type="number" step="any" placeholder="auto (pro-rata)" value={form.share_override_pct} onChange={set('share_override_pct')} />
+        </Field>
+        <Field label="Est. CAM (annual $)" field="est_cam_annual" extracted={extracted} hint="What the tenant pays during the year — reconciled against actuals at year end. Blank = bill actuals.">
+          <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_cam_annual} onChange={set('est_cam_annual')} />
+        </Field>
+        <Field label="Est. taxes (annual $)" field="est_tax_annual" extracted={extracted} hint="Blank = bill the known tax figure">
+          <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_tax_annual} onChange={set('est_tax_annual')} />
         </Field>
       </div>
       <div className="form-field" style={{ maxWidth: '100%', marginTop: 16 }}>

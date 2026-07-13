@@ -75,6 +75,73 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-12** — **Estimated CAM & tax billing + year-end reconciliation** (George approved the plan —
+  `~/.claude/plans/need-to-add-a-jazzy-creek.md`; his picks: estimates typed **per tenant**, ONE combined
+  Leases-page column with the in-depth detail on Finances, overpayments settled by **refund**, roof gets
+  the identical estimate→reconcile treatment as its own separate line). Deployed: DB migration `0060`
+  (Supabase `awgrjmbcghdjgnqeiqkt`), `draft-invoice` edge fn redeployed, frontend Cloudflare version
+  `0d307b7d`. **$0** (no AI calls anywhere in the feature), **no tenant emails** (the reconciliation
+  statement opens in the compose modal like every letter — nothing auto-sends), **no destructive data**
+  (0060 is additive; the one structural change: 0055's `invoices_one_live_per_lease_year` unique index was
+  REPLACED by two kind-scoped ones — constraint-only, verified created-before-dropped, no rows touched).
+  Tests **255/255** (was 238 — +14 reconciliation, +3 component smoke). Migration pre-reviewed by the
+  migration-reviewer agent (APPROVE); UI verified by a real-browser click-through (8/8, zero console errors).
+  - **The concept (George's ask):** the true CAM is only known once the year closes, so during the year the
+    tenant pays a typed **estimate**; the app tracks the **actual** share in the background, shows the live
+    difference, and at year end a **Reconcile** button settles it — tenant underpaid → a reconciliation
+    invoice for the shortfall; tenant overpaid → a refund George marks paid once he's paid the tenant back.
+  - **Data (`0060_cam_tax_estimates.sql`):** `leases.est_cam_annual/est_tax_annual/est_roof_annual`
+    (nullable — **null = that component keeps billing actuals exactly as before**, so all of George's real
+    tenants bill byte-identically until he types an estimate; he can enter only the CAM estimate and let
+    the known tax bill as-is). `v_tenant_shares` recreated appending those 3 columns (19–21; 0058 body
+    otherwise identical, security_invoker re-asserted). `invoices.kind` ('annual' default backfills, |
+    'reconciliation') + the two kind-scoped partial unique indexes. New owner-scoped `cam_reconciliations`
+    (billed-est vs actual snapshot per component, signed `diff`, direction, refund open/settled state,
+    linked `invoice_id`; unique lease+year; owner_all + require_aal2 policies — 0059 pattern).
+  - **Billing spine flipped in ONE choke point:** `draft-invoice` now bills each component
+    estimate-else-actual and returns `estimated` flags — so the Invoice modal, `ensureInvoice`, the monthly
+    tracker, and the property rent roll all follow automatically. `getYearInvoice` +
+    `getPropertyMonthlyRoll` filter `kind='annual'` (**the ÷12 gotcha:** a $700 true-up must never be
+    mistaken for the year invoice and divided into monthly boxes — unit-tested). Invoice template tags
+    "est." lines dynamically + notes "estimated charges are reconciled against actual expenses after year
+    end"; monthly-roll previews use the same est-preferred math (`billedComponents`).
+  - **Reconciliation core:** pure `src/lib/reconciliation.js` (`billedComponents` / `reconcileFigures`;
+    est side = the year invoice's **billed snapshot** when one exists — immune to later estimate edits —
+    else the current estimates; ±5¢ = even, the 0055 dust convention) — the ONE math both the live
+    Difference column and the Reconcile action use. `api.js`: `reconcileCamTax` (idempotent per lease-year;
+    tenant_owes → `kind='reconciliation'` invoice with the NET in total_amount (per-component diffs can be
+    negative and invoice components are ≥0-checked; breakdown lives on the recon row + letter) → flows into
+    AR/aging/the overdue alert + owner overdue emails automatically, all already gated by the `ar` Settings
+    toggle — **no new notification gating needed**; landlord_owes → refund record, `markReconciliationRefunded`
+    settles it; both log `cam_reconciled`/`cam_refunded` history events), `draftCamReconciliationEmail` →
+    new `buildCamReconciliationEmail` letter (est/actual/difference table + "balance due in 30 days" vs
+    "we will refund $X").
+  - **UI:** Leases page — the CAM+tax column now shows the **billed figure** ("$16,500 est." + sub-line
+    "actual so far $17,200"; Total rent follows; untouched look when no estimate). Finances per-tenant
+    table — new **Estimated (billed)** column (click-to-edit inline: CAM/tax/+roof-when-responsible inputs
+    saved onto the lease, placeholder = the actual it would fall back to) and a live signed **Difference**
+    column ("+$700 tenant owes" / "−$X you owe tenant"; recomputes on every expense/CAM/contract/building
+    edit via the existing `tenantShares` invalidations), totals row sums est/actual/net; per-row
+    **⚖ Reconcile** (confirm names the figures) → outcome badge ("Owed $700 — invoiced/collected ✓/overdue",
+    "You owe $X" + **Mark refunded**, or "Reconciled ✓" even) + **✉ Statement**. Estimate fields also
+    editable on the lease page (beside the share override; roof one only when roof-responsible) + the
+    new-lease form. Receivables panels tag `Reconciliation` invoices; History page labels the new events.
+  - **Demo parity:** Bright Coffee seeded with estimates (6,500/10,000/1,500) — its saved inv-1 snapshot
+    (18,100) vs actual share (18,800) demos a live **"+$700 tenant owes"** and the full Reconcile flow;
+    City Dental stays estimate-free (demos the bill-actuals fallback). Mock: est columns on tenantShares,
+    est-preferred demo invoice facts, kind-scoped 23505 + recon-unique emulation.
+  - **Verified:** unit **255/255** (`vitest run`) incl. `reconciliation.test.js` (per-component fallback;
+    both directions + dust→even; invoice-snapshot-wins; recon invoice created only when tenant owes;
+    idempotent; refund settle; the ÷12 isolation; est. invoice labels) and `camReconciliation.test.js`
+    (mounts the real TenantShareTable: est cell + inline editor + live diff + reconcile → badge + invoice).
+    **Real-browser click-through 8/8** (vite demo dev server + playwright): combined Leases column, est
+    edit round-trip, tax 25k→26k moved the Difference +$700→+$1,100 live and back, Reconcile dialog names
+    billed 18,100 vs actual 18,800 → "Owed $700 — invoiced" + statement letter with the breakdown, lease
+    receivables show BOTH invoices (78,100 paid + 700 Reconciliation) while the tracker stays $6,508.33/mo,
+    "est." lines + reconciliation note on the invoice — zero console errors. **Live DB verified** (3 lease
+    columns, view cols 19–21, kind, both indexes present/old one gone, both recon policies); live site 200s.
+    Committed only this task's files.
+
 - **2026-07-11** — **"📨 Send now": landlord letters send directly from the app under their business
   identity** (George's explicit OK — he asked that "the emails the landlord sends to their tenants come
   from their business email that they enter," while owner reminders keep coming from Amlak; the Resend

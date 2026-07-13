@@ -93,6 +93,8 @@ function tenantShares(propertyId, year) {
       share_pct: share, tax_amount: share * exp.taxes_total, cam_amount: share * exp.cam_total,
       roof_amt: l.roof_responsible ? exp.roof_total * perSf : 0,
       is_active: l.is_active !== false, lease_termination_date: l.lease_termination_date ?? null, premises_address: l.premises_address ?? null,
+      // Estimated additional rent (0060) — mirrors the three columns appended to v_tenant_shares.
+      est_cam_annual: l.est_cam_annual ?? null, est_tax_annual: l.est_tax_annual ?? null, est_roof_annual: l.est_roof_annual ?? null,
     };
   });
 }
@@ -187,14 +189,24 @@ class QB {
 
     if (this._op === 'insert') {
       const items = Array.isArray(this._payload) ? this._payload : [this._payload];
-      // Mirror the 0055 partial unique index: at most ONE live (non-void) invoice per
-      // (lease_id, year). Raise the same 23505 the real DB does, so ensureInvoice /
-      // upsertYearInvoice exercise their duplicate-fallback in demo + tests.
+      // Mirror the 0060 kind-scoped partial unique indexes (which replaced 0055's): at
+      // most ONE live (non-void) invoice per (lease_id, year) PER KIND — the annual bill
+      // and its year-end CAM/tax reconciliation coexist. Raise the same 23505 the real
+      // DB does, so ensureInvoice / upsertYearInvoice / reconcileCamTax exercise their
+      // duplicate-fallbacks in demo + tests.
       if (this.table === 'invoices') {
+        const kindOf = (r) => r.kind ?? 'annual';
         const dup = items.find((it) => (it.status ?? 'sent') !== 'void' &&
-          list.some((r) => r.status !== 'void' && r.lease_id === it.lease_id && Number(r.year) === Number(it.year)));
+          list.some((r) => r.status !== 'void' && kindOf(r) === kindOf(it) && r.lease_id === it.lease_id && Number(r.year) === Number(it.year)));
         if (dup) {
-          return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "invoices_one_live_per_lease_year"' } };
+          return { data: null, error: { code: '23505', message: `duplicate key value violates unique constraint "invoices_one_live_${(items[0]?.kind ?? 'annual') === 'reconciliation' ? 'recon' : 'annual'}_per_lease_year"` } };
+        }
+      }
+      // Mirror the 0060 unique index: one CAM/tax reconciliation per (lease_id, year).
+      if (this.table === 'cam_reconciliations') {
+        const dup = items.find((it) => list.some((r) => r.lease_id === it.lease_id && Number(r.year) === Number(it.year)));
+        if (dup) {
+          return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "cam_reconciliations_lease_year_idx"' } };
         }
       }
       const created = items.map((it) => ({ id: newId(this.table.slice(0, 3)), created_at: new Date().toISOString(), ...it }));
@@ -346,7 +358,13 @@ function demoInvoiceFacts(body) {
     : null;
   const now = new Date();
   const due = new Date(now.getTime() + 30 * 86400000);
-  const roof = share && share.roof_responsible ? share.roof_amt : 0; // separate roof line
+  // Estimate-preferred per component (0060) — mirrors the real draft-invoice edge fn:
+  // a typed estimate bills; a blank one falls back to the actual share.
+  const cam = share ? (share.est_cam_annual != null ? Number(share.est_cam_annual) : share.cam_amount) : 0;
+  const tax = share ? (share.est_tax_annual != null ? Number(share.est_tax_annual) : share.tax_amount) : 0;
+  const roof = share && share.roof_responsible
+    ? (share.est_roof_annual != null ? Number(share.est_roof_annual) : share.roof_amt)
+    : 0; // separate roof line
   return {
     business,
     tenant: share?.tenant_name || lease?.tenant_name || 'Tenant',
@@ -358,9 +376,14 @@ function demoInvoiceFacts(body) {
     tax_year: year - 1, // taxes lag a year — used for the tax line label + note
     square_footage: share?.square_footage || lease?.square_footage || 0,
     base_rent_annual: share ? share.base_rent : (lease?.base_rent || 0),
-    cam_annual: share ? share.cam_amount : 0,
-    tax_annual: share ? share.tax_amount : 0,
+    cam_annual: cam,
+    tax_annual: tax,
     roof_annual: roof,
+    estimated: {
+      cam: share?.est_cam_annual != null,
+      tax: share?.est_tax_annual != null,
+      roof: !!share?.roof_responsible && share?.est_roof_annual != null,
+    },
     today: now.toISOString().slice(0, 10),
     due: due.toISOString().slice(0, 10),
   };

@@ -38,12 +38,16 @@ export function buildInvoice(facts) {
   // total is lower — the base rent above stays at its full contractual figure.
   const abatement = Number(facts.abatement_annual) > 0 ? per(-Number(facts.abatement_annual)) : null;
 
+  // Which lines bill from a typed ESTIMATE (0060) — drives the "est." tags and the
+  // year-end reconciliation note. CAM keeps its "est." tag either way (billed in
+  // advance, it is inherently an estimate of the year).
+  const est = facts.estimated || {};
   const items = [
     { label: 'Base rent', v: base },
     { label: `CAM (${facts.year} est.)`, v: cam },
   ];
-  if (roof) items.push({ label: `Roof (${facts.year})`, v: roof });
-  items.push({ label: `Property tax (${facts.tax_year})`, v: tax });
+  if (roof) items.push({ label: `Roof (${facts.year}${est.roof ? ' est.' : ''})`, v: roof });
+  items.push({ label: `Property tax (${facts.tax_year}${est.tax ? ' est.' : ''})`, v: tax });
   if (abatement) items.push({ label: 'Rent abatement (credit)', v: abatement });
 
   const totalAnnual = items.reduce((s, it) => s + it.v.a, 0);
@@ -95,6 +99,11 @@ export function buildInvoice(facts) {
   const stop = /[.!?]$/.test(remitTo) ? '' : '.'; // avoid "Inc.." when the name already ends in a period
   const ask = biz.contact_email ? ` Questions? ${biz.contact_email}.` : '';
   L.push(`Please remit ${usd(total.m)}/month to ${remitTo}${stop}${ask} Thank you.`);
+  if (est.cam || est.tax || est.roof) {
+    L.push('');
+    L.push('Note: charges marked "est." are estimated additional rent, reconciled');
+    L.push('against the actual expenses after year end.');
+  }
 
   return L.join('\n');
 }

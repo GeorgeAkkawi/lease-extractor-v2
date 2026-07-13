@@ -4,7 +4,8 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildPaymentReminderEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildPaymentReminderEmail, buildCamReconciliationEmail } from './emailTemplates';
+import { reconcileFigures, billedComponents } from './reconciliation';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
@@ -215,7 +216,7 @@ export const updateProperty = (id, patch) =>
 // text, so property/tenant lists and the Overview prefetch stay light. getLease
 // (below) keeps select('*') for the detail page.
 const LEASE_LIST_COLS =
-  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,premises_address';
+  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,premises_address,est_cam_annual,est_tax_annual,est_roof_annual';
 
 export const listLeases = async (propertyId) => {
   const all = await rows(supabase.from('leases').select(LEASE_LIST_COLS).eq('property_id', propertyId).order('tenant_name'));
@@ -1309,10 +1310,15 @@ export const deletePayment = (id) => rows(supabase.from('payments').delete().eq(
 // prior years stay intact — that's the per-year "reset".
 const paymentIsoToday = () => localDateIso();
 
-// The live (non-void) invoice for a lease + year, or null.
+// The live (non-void) ANNUAL invoice for a lease + year, or null. A year-end CAM/tax
+// reconciliation is its own kind='reconciliation' invoice for the same lease + year —
+// it must never be mistaken for the year invoice (the tracker would divide the
+// true-up by 12). Old rows predate the kind column, so a missing kind reads 'annual'.
+export const isAnnualInvoice = (i) => (i.kind ?? 'annual') === 'annual';
+
 export async function getYearInvoice(leaseId, year) {
   const list = await listInvoices(leaseId);
-  return list.find((i) => Number(i.year) === Number(year) && i.status !== 'void') || null;
+  return list.find((i) => Number(i.year) === Number(year) && i.status !== 'void' && isAnnualInvoice(i)) || null;
 }
 
 // Ensure a 'sent' invoice exists for (lease, year), creating it from the same
@@ -1509,7 +1515,9 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
   const abByLease = await listAbatementsForLeases(shares.map((s) => s.lease_id));
   const invByLease = {};
   for (const inv of invoices) {
-    if (Number(inv.year) === Number(year) && inv.status !== 'void') invByLease[inv.lease_id] = inv;
+    // Annual invoices only — a kind='reconciliation' invoice is a one-off true-up,
+    // not the year's rent (it would corrupt the monthly ÷12 math).
+    if (Number(inv.year) === Number(year) && inv.status !== 'void' && isAnnualInvoice(inv)) invByLease[inv.lease_id] = inv;
   }
   const paymentsByInvoice = {};
   await Promise.all(
@@ -1518,10 +1526,13 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
   return shares.map((s) => {
     const inv = invByLease[s.lease_id] || null;
     // GROSS base + other charges (abatement applied per-month via the schedule, not baked in).
+    // With no invoice yet, preview the ESTIMATE-preferred figures (billedComponents) — the
+    // same per-component est-else-actual math the invoice will bill once a month is marked.
     const grossBase = inv ? Number(inv.base_rent_annual || 0) : Number(s.base_rent || 0);
+    const billed = billedComponents(s);
     const other = inv
       ? Number(inv.cam_annual || 0) + Number(inv.tax_annual || 0) + Number(inv.roof_annual || 0)
-      : Number(s.cam_amount || 0) + Number(s.tax_amount || 0) + (s.roof_responsible ? Number(s.roof_amt || 0) : 0);
+      : billed.cam + billed.tax + billed.roof;
     const abatements = abByLease[s.lease_id] || [];
     const schedule = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: other, abatements });
     const annual = Object.values(schedule).reduce((sum, c) => sum + c.owed, 0);
@@ -1566,6 +1577,154 @@ export function summarizeAR(invoices, today = new Date()) {
     else buckets.d90 += bal;
   }
   return { outstanding, count: owing.length, buckets };
+}
+
+// ---- CAM & tax reconciliation (0060) -----------------------------------------
+// Tenants pay the lease's typed ESTIMATE during the year; at year end the landlord
+// reconciles it against the actual share. Tenant underpaid → the shortfall becomes
+// its own kind='reconciliation' invoice (flows into AR / aging / the overdue alert
+// like any bill). Tenant overpaid → a refund record, open until the landlord marks
+// it refunded (paid outside the app, per George). One reconciliation per lease-year
+// (unique index); the math lives in the pure lib/reconciliation.js.
+export const listReconciliations = (propertyId, year) =>
+  rows(supabase.from('cam_reconciliations').select('*').eq('property_id', propertyId).eq('year', year));
+
+export async function getReconciliation(leaseId, year) {
+  const list = await rows(
+    supabase.from('cam_reconciliations').select('*').eq('lease_id', leaseId).eq('year', year).limit(1)
+  );
+  return list?.[0] || null;
+}
+
+export async function reconcileCamTax(leaseId, propertyId, year) {
+  // Idempotent: already reconciled → hand back the existing record untouched.
+  const existing = await getReconciliation(leaseId, year);
+  if (existing) return { recon: existing, created: false };
+
+  const [shares, invoice] = await Promise.all([
+    getTenantShares(propertyId, year),
+    getYearInvoice(leaseId, year),
+  ]);
+  const share = (shares || []).find((s) => s.lease_id === leaseId);
+  if (!share) throw new Error('No financial data for this tenant/year.');
+
+  // Estimate side = the year invoice's billed snapshot when one exists (what was
+  // truly billed, immune to later estimate edits), else the current estimate fields.
+  const fig = reconcileFigures({ share, invoice });
+
+  // Shortfall → its own reconciliation invoice. Per-component diffs can be negative
+  // individually (CAM under, tax over) and the invoice check constraints require
+  // components >= 0, so the NET goes in total_amount (components stay 0); the full
+  // breakdown lives on the reconciliation row + the tenant statement letter.
+  let invoiceId = null;
+  if (fig.direction === 'tenant_owes') {
+    const inv = await createInvoice({
+      lease_id: leaseId,
+      property_id: propertyId,
+      year: Number(year),
+      kind: 'reconciliation',
+      status: 'sent',
+      issue_date: paymentIsoToday(),
+      due_date: localDateIso(new Date(Date.now() + 30 * 86400000)),
+      total_amount: fig.diff,
+      notes:
+        `CAM & tax reconciliation ${year} — ` +
+        fig.lines.map((l) => `${l.label}: est ${money(l.est)} vs actual ${money(l.actual)}`).join('; '),
+    });
+    invoiceId = inv.id;
+  }
+
+  let recon;
+  try {
+    recon = await one(
+      supabase.from('cam_reconciliations').insert({
+        owner_id: await ownerId(),
+        lease_id: leaseId,
+        property_id: propertyId,
+        year: Number(year),
+        est_cam: fig.est.cam,
+        est_tax: fig.est.tax,
+        est_roof: fig.est.roof,
+        actual_cam: fig.actual.cam,
+        actual_tax: fig.actual.tax,
+        actual_roof: fig.actual.roof,
+        diff: fig.diff,
+        direction: fig.direction,
+        // 'status' is the REFUND lifecycle: only a landlord_owes stays open here.
+        // A tenant_owes settles through its invoice's payments (derived in the UI);
+        // 'even' has nothing to settle.
+        status: fig.direction === 'even' ? 'settled' : 'open',
+        invoice_id: invoiceId,
+        settled_at: fig.direction === 'even' ? paymentIsoToday() : null,
+      }).select().single()
+    );
+  } catch (e) {
+    // Two tabs raced the same reconcile — the unique index kept one; use it.
+    if (e?.code === '23505') {
+      const raced = await getReconciliation(leaseId, year);
+      if (raced) return { recon: raced, created: false };
+    }
+    throw e;
+  }
+
+  const label =
+    fig.direction === 'tenant_owes'
+      ? `tenant owes ${money(fig.diff)}`
+      : fig.direction === 'landlord_owes'
+        ? `refund due to tenant ${money(Math.abs(fig.diff))}`
+        : 'estimate and actual came out even';
+  await logHistoryEvent({
+    property_id: propertyId,
+    lease_id: leaseId,
+    type: 'cam_reconciled',
+    description: `CAM & tax reconciled for ${year} — ${label}`,
+    tenant_name: share.tenant_name || null,
+    event_date: paymentIsoToday(),
+    meta: { year: Number(year), diff: fig.diff, direction: fig.direction, invoice_id: invoiceId },
+  });
+
+  return { recon, created: true };
+}
+
+// The landlord paid the tenant back (outside the app) — close the refund.
+export async function markReconciliationRefunded(id) {
+  const recon = await one(
+    supabase.from('cam_reconciliations').update({ status: 'settled', settled_at: paymentIsoToday() }).eq('id', id).select().single()
+  );
+  await logHistoryEvent({
+    property_id: recon.property_id,
+    lease_id: recon.lease_id,
+    type: 'cam_refunded',
+    description: `CAM & tax refund of ${money(Math.abs(Number(recon.diff)))} for ${recon.year} marked paid to tenant`,
+    event_date: paymentIsoToday(),
+    meta: { year: recon.year, diff: recon.diff },
+  });
+  return recon;
+}
+
+// The reconciliation statement letter for the compose modal (nothing auto-sends).
+export async function draftCamReconciliationEmail(recon) {
+  const lease = await getLease(recon.lease_id);
+  const prop = await getProperty(recon.property_id);
+  const corp = prop?.corporation_id ? await getCorporation(prop.corporation_id) : null;
+  const lines = [
+    { label: 'CAM', est: Number(recon.est_cam) || 0, actual: Number(recon.actual_cam) || 0 },
+    { label: 'Property tax', est: Number(recon.est_tax) || 0, actual: Number(recon.actual_tax) || 0 },
+  ];
+  if (Number(recon.est_roof) > 0 || Number(recon.actual_roof) > 0) {
+    lines.push({ label: 'Roof', est: Number(recon.est_roof) || 0, actual: Number(recon.actual_roof) || 0 });
+  }
+  return buildCamReconciliationEmail({
+    business: businessFromCorp(corp),
+    tenant_name: lease?.tenant_name,
+    contact_name: lease?.tenant_contact_name,
+    tenant_email: lease?.tenant_email,
+    propertyName: prop?.name,
+    year: recon.year,
+    lines,
+    diff: Number(recon.diff) || 0,
+    direction: recon.direction,
+  });
 }
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------

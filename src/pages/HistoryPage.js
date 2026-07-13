@@ -20,6 +20,8 @@ const EVENT_LABEL = {
   rent_abated: 'Rent abatement',
   lease_created: 'Lease created',
   insurance_requested: 'Insurance requested',
+  cam_reconciled: 'CAM & tax reconciled',
+  cam_refunded: 'CAM & tax refund paid',
 };
 const EVENT_BADGE = {
   tenant_assigned: 'info',
@@ -28,6 +30,8 @@ const EVENT_BADGE = {
   renewal_declined: 'danger',
   rent_abated: 'warn',
   insurance_requested: 'info',
+  cam_reconciled: 'info',
+  cam_refunded: 'good',
 };
 
 const num = (v) => (v == null ? 0 : Number(v));
