@@ -75,6 +75,68 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Receivables panel on the Finances page: name WHO's behind (+ link to each lease), define
+  "Outstanding", and judge "behind" against each tenant's real rent schedule** (George's three asks: the
+  "behind on rent / 1 month behind" boxes "dont make sense if i dont know which tenants its applied to"; "what
+  number is the outstanding balance refering to where it says 10 invoices still owed"; and "some leases start
+  mid year … that logic must be affecting something — evaluate". He approved the plan
+  `~/.claude/plans/the-receivables-on-the-fluffy-pillow.md`; his three scoping picks were the recommended ones:
+  keep all-years totals with per-row FY tags · named tenant list replaces the count boxes · fix the math
+  everywhere). Deployed: frontend Cloudflare version `6648163b`. **Frontend + `src/lib` only — $0 (no AI), no
+  DB migration, no edge function, no tenant emails, no destructive data.** Tests **312/312** (was 306 — +5
+  arStatus schedule-aware cases, +1 summarizeAR detail).
+  - **What George saw + the evaluation (all confirmed in code).** (1) The AR boxes were pure aggregates with
+    nothing to click; `byMonthsBehind.m1/m2plus` even counted *invoices*, not tenants (a tenant with an unpaid
+    annual AND an overdue reconciliation counted once in "N tenants" but twice across the boxes), and an
+    overdue reconciliation was mislabeled "2+ months behind". (2) "Outstanding · N invoices still owed" = Σ
+    unpaid balances across **every** saved invoice for the property — **all fiscal years, annual +
+    reconciliation** — while the query key `['propertyAR', propId]` carried no year, so it silently ignored the
+    FY selector the rest of the page follows. (3) Mid-year lease STARTS were already handled right
+    (`occupancyStart` → `inTermMonths`/`monthsDueByNow`; invoices prorated since 0061; holdover months keep
+    owing) — BUT a real blind spot: `monthsBehindForInvoice` assumed LEVEL rent (total ÷ in-term months) while
+    the rent roll **on the same page** is schedule-aware. Worked example: $1,000/mo gross, Jan–Mar free, net
+    invoice $9,000 → the cards' flat $750/mo made a tenant who'd properly paid April's $1,000 read "$2,000 / 3
+    months behind" while the roll showed every due month settled. The dashboard bell shared the blind spot.
+  - **Fix — one schedule-aware definition, used everywhere.** New pure **`src/lib/leaseSchedule.js`**:
+    `buildLeaseSchedule` moved out of `api.js` unchanged (3 call sites updated), plus new
+    **`owedByMonthForInvoice(invoice, {leaseStart, escalations, abatements})`** → a length-12 owed-per-month
+    array built from the invoice's own gross figures (base/cam/tax/roof_annual) + the escalation ledger +
+    abatement windows, **scaled to the invoice total** so free months are $0, pre-tenancy months are $0, and a
+    mid-year rate step bills the old rate before it. Returns null when an invoice has no gross breakdown → the
+    caller falls back to the even-split (never reads an all-$0 schedule as "never behind").
+    `arStatus.monthsBehindForInvoice` gained an optional `ctx.owedByMonth` path (walks the DUE months —
+    earliest-first — counting the ones a payment doesn't cover; **byte-identical even-split fallback** when
+    absent). `summarizeAR` now precomputes the schedule for the **current fiscal year's annual invoices only**
+    (a past year has all months due → the even-split is already exact) and returns a new **`detail`** list —
+    one row per owing invoice `{invoice_id, lease_id, tenant_name, year, kind, balance, behind, isReconciliation,
+    monthsBehind, amountBehind, due_date}`, sorted most-behind first — while every existing aggregate field
+    (`outstanding, count, tenantsBehind, amountBehind, byMonthsBehind`) is unchanged, so the Dashboard AR foot
+    keeps working untouched. `occInfoForInvoices` enriched (leases select adds `tenant_name, base_rent`; batches
+    abatements). **The same fix reaches the dashboard bell** — `alerts.js`'s behind-on-rent block builds the
+    identical owed-per-month for current-year annual invoices (fetchAlertData's invoice select widened to carry
+    the gross components; leases select gained `base_rent`).
+  - **UI (`PropertyFinancialsPage.js` + `.ar-*` in `App.css`).** The two count boxes are **replaced by a named
+    list**: each behind tenant by name, tags reading "N months behind · $X" / "Reconciliation overdue · $X"
+    with an **FY** chip, every row a link to `/leases/{corp}/{prop}/{lease}`. Two cards stay — **Outstanding**
+    (foot now reads "N invoices · all years", finally answering George's question) and **Behind on rent** (foot
+    "N tenants"). A quiet **"Show the N outstanding invoices"** toggle expands a full breakdown (tenant · FY ·
+    Reconciliation badge · balance · link); an **"All tenants are current"** empty state when nothing's owed.
+    Rewritten explainer states the total spans all years and that free / pre-lease months don't count as behind.
+  - **Files:** `src/lib/leaseSchedule.js` (new), `src/lib/arStatus.js`, `src/lib/api.js`, `src/lib/alerts.js`,
+    `src/pages/PropertyFinancialsPage.js`, `src/App.css`, `src/lib/__tests__/arStatus.test.js`,
+    `src/lib/__tests__/moneyCollection.test.js`. (Demo mock needed no change — its generic query builder already
+    serves the widened selects; `v_invoice_balances` mock carries the gross components + kind defaults to
+    'annual'.)
+  - **Verified:** unit **312/312** (`vitest run`) incl. the Jan–Mar-free worked example (schedule-aware = NOT
+    behind where the old even-split said 3 months), a genuinely-behind-with-abatement case, a mid-year step
+    where the amount-behind uses the NEW rate (not total/12), malformed-owedByMonth fallback parity, and the
+    `detail`-list naming/sort/kind assertions. `vite build` compiles (792 modules). **Real-browser check**
+    (system playwright vs the demo dev server): Maple Plaza shows **City Dental · "7 months behind ·
+    $57,458.31" · FY 2026** linking to its lease, Outstanding **$98,500 · 1 invoice · all years**, the breakdown
+    expands to the single invoice, the row click lands on the lease page, and Oak Center (no invoices) shows the
+    "All tenants are current" empty state — the behind figure ties to the schedule-scaled roll — **zero console
+    errors**. Live sites 200 (amlakre.com + www + workers.dev). Committed only this task's files.
+
 - **2026-07-13** — **Corporation cards fit + page heading matches the tab on Financials & History** (George:
   "fix corporations tab formatting on the financials page as well as the history page" — he confirmed the two
   symptoms: the corp NAME was cut off / cards cramped, and the page TITLE said "Corporations"). Deployed:
