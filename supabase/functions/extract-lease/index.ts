@@ -12,7 +12,7 @@ import { callClaude, transcribeDocument, MAX_VISION_BYTES, Block } from '../_sha
 import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
-import { rebuildRentSchedule, percentEscalations } from '../_shared/rentSchedule.js';
+import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom } from '../_shared/rentSchedule.js';
 import { parseAnalystVerdicts, extractionMismatches } from '../_shared/analystVerdicts.js';
 
 const MODEL = 'claude-haiku-4-5';
@@ -174,7 +174,9 @@ const ANALYST_SYSTEM =
   'term (a stated amount, a percent formula, or explicitly "not stated / to be ' +
   'negotiated"), and the notice deadline (an exact date, or the relative wording such as ' +
   '"180 days prior to expiration"). If the lease says there are NO options, say so.\n' +
-  '• OTHER NOTABLE TERMS — security deposit, assignment/subletting, holdover, and anything ' +
+  '• OTHER NOTABLE TERMS — security deposit, assignment/subletting, holdover, any stated ' +
+  'ESTIMATED CAM / operating-expense / real-estate-tax charge the tenant pays (the figure ' +
+  'exactly as written and its basis — per month, per year, or per square foot), and anything ' +
   'else that changes the rent or the term.\n\n' +
   'Be factual and specific. This brief is data, not advice.\n\n' +
   'FINAL LINE — MACHINE-READABLE VERDICTS. After all the bullets, end your brief with ONE ' +
@@ -249,7 +251,7 @@ async function analystRead(content: Block[]): Promise<string | null> {
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'term_months', 'execution_date', 'escalation_pct', 'escalation_stop_months', 'rent_schedule', 'abatements'],
+  required: ['tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'term_months', 'execution_date', 'escalation_pct', 'escalation_stop_months', 'rent_schedule', 'abatements', 'expense_estimates'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
@@ -308,6 +310,27 @@ const SUPPLEMENT_SCHEMA = {
           kind: { type: 'string', enum: ['free', 'percent', 'amount'] },
           value: { type: ['number', 'null'] },        // percent abated (kind='percent') or reduced $/month (kind='amount'); null for free
           note: { type: ['string', 'null'] },         // the exact wording
+        },
+      },
+    },
+    // ESTIMATED CAM / property-tax charges some leases state as a specific figure the
+    // tenant pays during the year (trued up against actuals at year end — the 0060
+    // estimate columns). Read RAW + basis, exactly like rent_schedule — code does the
+    // math. Every item field is REQUIRED (non-nullable) on purpose: the model simply
+    // omits an entry when no figure is stated, so this whole array costs ZERO of the
+    // 16 union-typed-parameter budget (the schema sits at 15/16).
+    expense_estimates: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['charge', 'amount', 'period', 'confidence', 'source_quote'],
+        properties: {
+          charge: { type: 'string', enum: ['cam', 'tax', 'roof', 'combined'] }, // 'combined' = one figure covering CAM + taxes together
+          amount: { type: 'number' },  // the figure EXACTLY as written — never multiplied
+          period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
+          confidence: { type: 'number' },
+          source_quote: { type: 'string' },
         },
       },
     },
@@ -388,7 +411,19 @@ const SUPPLEMENT_SYSTEM =
   'rent that period), "percent" (a percentage of base rent is abated — put that percent in ' +
   'value, e.g. 50), or "amount" (the tenant pays a reduced FIXED monthly base — put that ' +
   'monthly dollar figure in value), note = the exact wording. Abatement applies to BASE rent ' +
-  'only. If the lease mentions no free/reduced rent, return an empty abatements array.';
+  'only. If the lease mentions no free/reduced rent, return an empty abatements array.\n\n' +
+  'ESTIMATED CAM / TAX CHARGES. Some leases state a specific figure the tenant pays toward ' +
+  'common-area maintenance (CAM / operating expenses) or real-estate taxes during the year — ' +
+  'often labeled "estimated" and subject to year-end reconciliation, e.g. "Tenant shall pay ' +
+  'estimated CAM charges of $4.50 per square foot per annum", "estimated monthly tax charges ' +
+  'of $833.33", "additional rent of $1,200 per month for taxes and common area costs". Add ONE ' +
+  'expense_estimates entry per stated figure: charge = "cam" (CAM / operating expenses), "tax" ' +
+  '(real-estate / property taxes), "roof" (a separate roof charge), or "combined" (ONE figure ' +
+  'covering CAM and taxes together); amount = the figure EXACTLY as written (never multiply or ' +
+  'annualize it); period = how it is expressed, same choices as rent_schedule; source_quote = ' +
+  'the exact wording. ONLY capture a stated dollar or $/SF figure — a pro-rata percentage or ' +
+  'share formula with no dollar figure is NOT an estimate (skip it), and base rent NEVER goes ' +
+  'here. If the lease states no such figure, return an empty array.';
 
 // Best-effort supplement. Runs as its OWN call so it can never bloat the main lease
 // schema or fail the whole extraction — returns null on ANY error.
@@ -590,6 +625,22 @@ Deno.serve(async (req) => {
       // lease_files.extraction_raw; no schema/migration change needed).
       if (escalationPct) (parsed as any).rent_escalation_pct = escalationPct;
       if (escalationStopMonths) (parsed as any).rent_renegotiation_months = escalationStopMonths;
+
+      // Estimated CAM/tax charges the lease states (0060 estimate columns): raw figure +
+      // basis from the model, annualized HERE in code (same never-let-the-model-multiply
+      // rule as the rent schedule). Exposed in the standard {value, confidence,
+      // source_quote} field shape so the review form shows the badge + quoted clause.
+      const estAnnuals = estimateAnnualsFrom((supp as any).expense_estimates, sqft);
+      for (const [charge, key] of [['cam', 'est_cam_annual'], ['tax', 'est_tax_annual'], ['roof', 'est_roof_annual']] as const) {
+        if (estAnnuals[charge] != null) {
+          (parsed as any)[key] = {
+            value: estAnnuals[charge],
+            confidence: estAnnuals.confidence[charge] ?? null,
+            source_quote: estAnnuals.quotes[charge] ?? '',
+            page: null,
+          };
+        }
+      }
     }
 
     // Disagreement alarm: compare the analyst's machine-readable VERDICTS against what the

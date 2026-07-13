@@ -19,6 +19,41 @@ export function annualRentFrom(amount, period, sqft) {
   }
 }
 
+// Estimated additional-rent charges (CAM / property tax / roof) some leases state as a
+// specific figure the tenant pays during the year — "estimated CAM charges of $4.50 per
+// square foot per annum", "estimated monthly tax charges of $833.33". The model reads each
+// figure RAW with its basis (same contract as rent_schedule); this converts them to the
+// ANNUAL dollars the lease est_* columns store. One figure per charge — the FIRST stated
+// entry wins (a later re-estimate clause never silently overrides the primary one), and a
+// 'combined' figure (one amount covering CAM + taxes together) lands on cam only when no
+// separate CAM figure exists. Unusable rows (unknown basis, $/SF with no sqft) are skipped
+// — better no prefill than a wrong one.
+// Returns { cam, tax, roof, quotes: {cam,tax,roof}, confidence: {cam,tax,roof} } — every
+// value null when not stated.
+export function estimateAnnualsFrom(estimates, sqft) {
+  const out = { cam: null, tax: null, roof: null, quotes: {}, confidence: {} };
+  const rows = Array.isArray(estimates) ? estimates : [];
+  const put = (key, r, annual) => {
+    if (out[key] != null) return; // first stated figure wins
+    out[key] = annual;
+    if (typeof r.source_quote === 'string' && r.source_quote) out.quotes[key] = r.source_quote;
+    if (isFinite(Number(r.confidence))) out.confidence[key] = Number(r.confidence);
+  };
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const annual = annualRentFrom(r.amount, r.period, sqft);
+    if (annual == null) continue;
+    if (r.charge === 'cam' || r.charge === 'tax' || r.charge === 'roof') put(r.charge, r, annual);
+  }
+  // A combined CAM+tax figure only fills the gap a separate CAM figure didn't.
+  for (const r of rows) {
+    if (!r || typeof r !== 'object' || r.charge !== 'combined') continue;
+    const annual = annualRentFrom(r.amount, r.period, sqft);
+    if (annual != null) put('cam', r, annual);
+  }
+  return out;
+}
+
 // A prose rent-escalation FORMULA ("base rent increases 2% annually") with no printed
 // period-by-period table. The model reads only the PERCENT and where the formula stops;
 // we synthesize one relative step per lease year here — same compound, round-each-step

@@ -6,6 +6,12 @@ import { fmtDate } from './format';
 // and per-square-foot (monthly + annual) cost. ALL arithmetic happens here in
 // code — no AI, no rounding surprises.
 //
+// FORMAT RULE — must read right in a PROPORTIONAL font. This text lands in Gmail's
+// compose window and in received email, which render in proportional fonts where
+// space-padded columns fall apart. So: no padStart/padEnd alignment, never two
+// spaces in a row — each charge is ONE line with every figure unit-labeled
+// ($/mo · $/yr · $/SF/mo · $/SF/yr) so nothing depends on lining up.
+//
 // facts: {
 //   business: { company_name, address, contact_email, contact_phone } | null,
 //   tenant, tenant_contact_name, tenant_email,
@@ -16,10 +22,11 @@ import { fmtDate } from './format';
 //   base_rent_annual, cam_annual, tax_annual, roof_annual,
 //   today, due,      // ISO date strings (passed in so this stays pure/testable)
 // }
-const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-const LW_MIN = 22; // minimum label column width (grows to fit the longest label)
-const CW = 13; // numeric column width
+const usd = (n) => {
+  const v = Number(n) || 0;
+  const s = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (v < 0 ? '-$' : '$') + s;
+};
 
 export function buildInvoice(facts) {
   const sf = Number(facts.square_footage) || 0;
@@ -53,30 +60,28 @@ export function buildInvoice(facts) {
   const totalAnnual = items.reduce((s, it) => s + it.v.a, 0);
   const total = per(totalAnnual);
 
-  // Label column sized to the longest label (+2 gap) so a long line — e.g.
-  // "Property tax (2025 est.)" — never pushes its numbers out of alignment.
-  const lw = Math.max(LW_MIN, ...items.map((it) => it.label.length + 2));
-  const cell = (s) => String(s).padStart(CW);
-  const line = (label, v) => label.padEnd(lw) + cell(usd(v.m)) + cell(usd(v.a)) + cell(usd(v.pm)) + cell(usd(v.py));
-  const divider = '-'.repeat(lw + CW * 4);
+  // One charge per line, every figure unit-labeled — nothing to line up.
+  const line = (label, v) => {
+    const figs = [`${usd(v.m)}/mo`, `${usd(v.a)}/yr`];
+    if (sf) figs.push(`${usd(v.pm)}/SF/mo`, `${usd(v.py)}/SF/yr`);
+    return `• ${label} — ${figs.join(' · ')}`;
+  };
 
   const biz = facts.business || {};
   const invNo = `INV-${facts.year}-${(facts.tenant || 'TEN').replace(/\W+/g, '').slice(0, 4).toUpperCase()}`;
   const bizContact = [biz.contact_email, biz.contact_phone].filter(Boolean).join(' · ');
-  const W = divider.length; // full invoice width, matches the table
 
   const L = [];
 
-  // Letterhead: sending corporation, then a full-width rule.
+  // Letterhead: sending corporation.
   if (biz.company_name) L.push(biz.company_name);
   if (biz.address) L.push(biz.address);
   if (bizContact) L.push(bizContact);
-  if (L.length) L.push(divider);
+  if (L.length) L.push('');
 
-  // Invoice number right-aligned beside the heading, then dates on aligned lines.
-  L.push('INVOICE'.padEnd(Math.max(8, W - invNo.length)) + invNo);
-  L.push('Invoice date:'.padEnd(15) + fmtDate(facts.today));
-  L.push('Payment due:'.padEnd(15) + fmtDate(facts.due) + '  (Net 30)');
+  L.push(`INVOICE ${invNo}`);
+  L.push(`Invoice date: ${fmtDate(facts.today)}`);
+  L.push(`Payment due: ${fmtDate(facts.due)} (Net 30)`);
   L.push('');
 
   L.push('BILL TO');
@@ -86,15 +91,13 @@ export function buildInvoice(facts) {
     const premises = `${facts.property}${facts.property_address ? `, ${facts.property_address}` : ''}`;
     L.push(`Premises: ${premises}${sf ? ` (${sf.toLocaleString('en-US')} SF)` : ''}`);
   }
-  L.push(divider);
+  L.push('');
 
   // Itemized charges — kept at full detail (monthly / annual / $ per SF).
-  L.push('CHARGE'.padEnd(lw) + cell('MONTHLY') + cell('ANNUAL') + cell('$/SF/MO') + cell('$/SF/YR'));
-  L.push(divider);
+  L.push('CHARGES');
   items.forEach((it) => L.push(line(it.label, it.v)));
-  L.push(divider);
-  L.push(line('AMOUNT DUE', total));
-  L.push(divider);
+  L.push('');
+  L.push(`AMOUNT DUE: ${usd(total.a)}/yr (${usd(total.m)}/mo)`);
   L.push('');
 
   // Remittance.
@@ -104,8 +107,7 @@ export function buildInvoice(facts) {
   L.push(`Please remit ${usd(total.m)}/month to ${remitTo}${stop}${ask} Thank you.`);
   if (est.cam || est.tax || est.roof) {
     L.push('');
-    L.push('Note: charges marked "est." are estimated additional rent, reconciled');
-    L.push('against the actual expenses after year end.');
+    L.push('Note: charges marked "est." are estimated additional rent, reconciled against the actual expenses after year end.');
   }
 
   return L.join('\n');

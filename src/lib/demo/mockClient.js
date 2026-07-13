@@ -291,6 +291,9 @@ const functions = {
           lease_terms: { value: 'NNN; 3% annual escalations.', confidence: 0.7, source_quote: 'triple net, escalating 3% annually', page: 3 },
           escalations: [{ effective_date: '2026-03-01', escalation_type: 'percent', escalation_value: 3, new_base_rent: null }],
           renewal_options: [{ option_label: 'Option 1', notice_by_date: '2029-08-31', term_months: 60, new_rent: null, notes: 'FMV' }],
+          // Stated estimated CAM (annualized in code from "$3.50/SF per annum" × 4,200 SF)
+          // — prefills the review form's Est. CAM field, like the live extractor.
+          est_cam_annual: { value: 14700, confidence: 0.9, source_quote: 'estimated CAM charges of $3.50 per square foot per annum', page: null },
         },
         // One-time plain-text copy cached on the lease for the AI assistant.
         full_text: [
@@ -299,7 +302,8 @@ const functions = {
           'Base Rent: $96,000.00 per annum, payable in equal monthly installments of $8,000.00.',
           'Term: Five (5) years commencing March 1, 2025 and expiring February 28, 2030.',
           'Annual Adjustment: Base Rent shall increase by three percent (3%) on each anniversary, first effective March 1, 2026.',
-          'Lease Type: Triple net (NNN). Tenant pays its pro-rata share of property taxes, CAM, and insurance.',
+          'Lease Type: Triple net (NNN). Tenant pays its pro-rata share of property taxes, CAM, and insurance,',
+          'including estimated CAM charges of $3.50 per square foot per annum, reconciled annually.',
           'Renewal: Tenant shall have one (1) option to renew for five (5) years at fair market value upon written notice no later than August 31, 2029.',
           'Maintenance: Landlord maintains roof and structure; Tenant maintains the interior of the Premises.',
         ].join('\n'),

@@ -75,6 +75,51 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Extractor reads estimated CAM/tax from the lease + the invoice/statement emails no
+  longer break in Gmail** (George: "sometimes certain leases will have an estimated cam and tax can you make
+  the AI extractor also look for that? also when i click the invoice button or statement button it formats
+  weird in gmail can you fix that?"). Deployed: `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`),
+  frontend Cloudflare version `3692adfe`. **$0 new AI cost** (the estimates ride the EXISTING supplement +
+  analyst calls — no new model call), **no DB migration, no tenant emails, no destructive data.** Tests
+  **265/265** (was 258 — +7 expenseEstimates).
+  - **1) AI extractor reads estimated CAM/tax (and roof).** New `expense_estimates` array on the supplement
+    schema — read RAW + basis (`per_month/per_year/per_sqft_year/…`), exactly the rent_schedule contract, so
+    CODE does every ×12/×SF (never the model). **Schema-ceiling safe:** every item field is REQUIRED
+    (non-nullable), so the whole array costs ZERO of the 16-union budget — the supplement stays at 15/16.
+    New shared `estimateAnnualsFrom(estimates, sqft)` (`_shared/rentSchedule.js`, unit-tested from the same
+    module the edge fn runs): first stated figure per charge wins, a 'combined' CAM+tax figure lands on cam
+    only when no separate CAM figure exists, unusable rows (unknown basis, $/SF with no sqft) are skipped —
+    better no prefill than a wrong one. Merged onto the extraction as field-shaped
+    `est_cam_annual`/`est_tax_annual`/`est_roof_annual` (value + confidence + source_quote → the review form
+    shows the AI badge and the quoted clause). Analyst brief's OTHER NOTABLE TERMS now asks for stated
+    estimated charges, steering the form-filler to the clause.
+  - **Review-form prefill with an exact round-trip:** `initialFromExtraction` (LeaseNewPage, now exported for
+    the test) divides the annual estimate to the $/SF rate the form multiplies back at save — 6-dp quotient so
+    an awkward figure ($10,000 over 1,077 SF) still saves as exactly $10,000.00, not $10,005.33; with no SF
+    the annual prefills directly. `buildAiConfidence` carries the two est fields. Roof estimates are read +
+    stored on the extraction but NOT silently saved (the form has no roof field — roof responsibility is a
+    manual toggle; enter the roof estimate on the lease page after toggling it). Demo mock's canned extraction
+    gained a stated "$3.50/SF per annum" CAM estimate (prefills 3.5) for parity.
+  - **2) Gmail formatting fix — root cause: space-padded columns.** Both the invoice (`invoiceTemplate.js`)
+    and the reconciliation statement (`buildCamReconciliationEmail`) aligned their tables with runs of spaces,
+    which collapse in Gmail's proportional font (compose window AND received mail) → ragged "weird" columns.
+    Both rebuilt as one self-labeled line per charge with NO alignment to break: invoice
+    `• Base rent — $5,000.00/mo · $60,000.00/yr · $2.50/SF/mo · $30.00/SF/yr` (all four detail figures kept,
+    per George's 6/30 preference; /SF figures omitted when no SF) + `AMOUNT DUE: $/yr ($/mo)`; statement
+    `• CAM — billed $6,500.00 · actual $7,200.00 · difference +$700.00` + `BALANCE DUE: $X` /
+    `REFUND DUE TO TENANT: $X`. Letterhead/BILL TO/dates unchanged in content, just unpadded. usd() is now
+    sign-aware (`-$83.33`, not `$-83.33`). New regression invariant in the tests: **no run of two spaces
+    anywhere** in either document — the "won't break in a proportional font" property itself.
+  - **Files:** `extract-lease/index.ts` (schema + prompt + merge), `_shared/rentSchedule.js`
+    (estimateAnnualsFrom), `LeaseNewPage.js` (est prefill + export), `mockClient.js` (demo extraction),
+    `invoiceTemplate.js` + `emailTemplates.js` (proportional-safe rewrites), `expenseEstimates.test.js` (new),
+    `reconciliation.test.js` (alignment tests → Gmail-proof assertions).
+  - **Verified:** unit **265/265** (`vitest run`) incl. the round-trip-to-the-cent prefill case and both
+    no-double-space invariants; `vite build` compiles; edge fn deployed clean; live site 200s (amlakre.com +
+    www + workers.dev). **George: upload a lease that states estimated CAM/tax charges (~10–15¢, the normal
+    per-lease read) — the Est. CAM / Est. taxes fields on the review screen arrive pre-filled with the quoted
+    clause under them.** Committed only this task's files.
+
 - **2026-07-13** — **Reconciliation math fix: the estimated/difference view now ties out and stays dormant
   until an estimate is typed** (George: "the current math doesnt look right to me … how is it getting an
   estimate of about 101 thousand if there are no estimates set?"). Deployed: frontend Cloudflare version

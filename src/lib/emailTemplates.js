@@ -236,11 +236,16 @@ export function buildEscalationEmail({ business, tenant_name, contact_name, tena
 
 // Year-end CAM & tax reconciliation statement: the tenant paid ESTIMATED additional
 // rent (CAM / property tax / roof where applicable) during the year; this email
-// carries an invoice-style STATEMENT document (letterhead, aligned billed-vs-actual
-// table, BALANCE DUE / REFUND DUE row) followed by a short letter explaining the
-// outcome from those numbers. `lines` = [{ label, est, actual }] (roof included only
-// when it was in play); `diff` = actual − estimate (signed); `direction` =
+// carries an invoice-style STATEMENT document (letterhead, billed-vs-actual
+// breakdown, BALANCE DUE / REFUND DUE line) followed by a short letter explaining
+// the outcome from those numbers. `lines` = [{ label, est, actual }] (roof included
+// only when it was in play); `diff` = actual − estimate (signed); `direction` =
 // tenant_owes | landlord_owes | even. Like every letter, nothing auto-sends.
+//
+// FORMAT RULE (same as the invoice template): must read right in a PROPORTIONAL
+// font — Gmail's compose window and received mail don't render space-padded
+// columns, so each charge is ONE line with its billed / actual / difference
+// figures labeled in place. Never two spaces in a row, no padStart/padEnd.
 export function buildCamReconciliationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, lines, diff, direction }) {
   const amount = money(Math.abs(Number(diff) || 0));
   const rows = (lines || []).map((l) => {
@@ -251,39 +256,29 @@ export function buildCamReconciliationEmail({ business, tenant_name, contact_nam
   const estTotal = rows.reduce((s, r) => s + r.est, 0);
   const actualTotal = rows.reduce((s, r) => s + r.actual, 0);
   const signed = (d) => (d > 0 ? `+${money(d)}` : d < 0 ? `−${money(Math.abs(d))}` : money(0));
+  const row = (label, est, actual, d) => `${label} — billed ${money(est)} · actual ${money(actual)} · difference ${signed(d)}`;
 
-  // Same table conventions as the invoice: label column sized to the longest label,
-  // right-aligned numeric columns, full-width dividers.
-  const CW = 14;
-  const lw = Math.max(14, ...rows.map((r) => r.label.length + 2));
-  const cell = (s) => String(s).padStart(CW);
-  const row = (label, a, b, c) => label.padEnd(lw) + cell(a) + cell(b) + cell(c);
-  const divider = '-'.repeat(lw + CW * 3);
-  const W = divider.length;
   const stmtNo = `REC-${year}-${(tenant_name || 'TEN').replace(/\W+/g, '').slice(0, 4).toUpperCase()}`;
   const contact = [business?.contact_email, business?.contact_phone].filter(Boolean).join(' · ');
 
   const doc = [];
   [business?.company_name, business?.address, contact].filter(Boolean).forEach((l) => doc.push(l));
-  if (doc.length) doc.push(divider);
-  doc.push('RECONCILIATION STATEMENT'.padEnd(Math.max(25, W - stmtNo.length)) + stmtNo);
-  doc.push('Statement date:'.padEnd(17) + today());
-  doc.push('Period:'.padEnd(17) + `Calendar year ${year}`);
+  if (doc.length) doc.push('');
+  doc.push(`RECONCILIATION STATEMENT ${stmtNo}`);
+  doc.push(`Statement date: ${today()}`);
+  doc.push(`Period: Calendar year ${year}`);
   doc.push('');
   doc.push('BILL TO');
   doc.push([contact_name, tenant_name].filter(Boolean).join(' — ') || 'Tenant');
   if (tenant_email) doc.push(tenant_email);
   if (propertyName) doc.push(`Premises: ${propertyName}`);
-  doc.push(divider);
-  doc.push(row('CHARGE', 'BILLED (EST.)', 'ACTUAL', 'DIFFERENCE'));
-  doc.push(divider);
-  rows.forEach((r) => doc.push(row(r.label, money(r.est), money(r.actual), signed(r.d))));
-  doc.push(divider);
-  doc.push(row('TOTAL', money(estTotal), money(actualTotal), signed(Number(diff) || 0)));
-  doc.push(divider);
+  doc.push('');
+  doc.push('CHARGES — BILLED (EST.) VS ACTUAL');
+  rows.forEach((r) => doc.push(`• ${row(r.label, r.est, r.actual, r.d)}`));
+  doc.push(row('TOTAL', estTotal, actualTotal, Number(diff) || 0));
+  doc.push('');
   const dueLabel = direction === 'landlord_owes' ? 'REFUND DUE TO TENANT' : 'BALANCE DUE';
-  const dueAmount = direction === 'even' ? money(0) : amount;
-  doc.push(dueLabel.padEnd(W - dueAmount.length) + dueAmount);
+  doc.push(`${dueLabel}: ${direction === 'even' ? money(0) : amount}`);
 
   const settle =
     direction === 'tenant_owes'

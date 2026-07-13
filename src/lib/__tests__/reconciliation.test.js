@@ -137,14 +137,17 @@ describe('reconcileCamTax — landlord owes (Northwind, refund flow)', () => {
     expect(letter.subject).toContain('CAM & Tax Reconciliation');
     expect(letter.to).toBe('accounts@northwindbooks.example');
     expect(letter.body).toContain('refund of $2,000.00');
-    // Invoice-style statement document ahead of the explanation letter: the
-    // billed/actual/difference table with aligned rows and the REFUND DUE row.
+    // Invoice-style statement document ahead of the explanation letter: one
+    // self-labeled billed/actual/difference line per charge and the REFUND DUE line.
     expect(letter.body).toContain('RECONCILIATION STATEMENT');
     expect(letter.body).toContain('BILLED (EST.)');
-    expect(letter.body).toMatch(/REFUND DUE TO TENANT\s+\$2,000\.00/);
-    const rows = letter.body.split('\n').filter((l) => /^(CHARGE|CAM|Property tax|TOTAL)\s+\S/.test(l));
-    expect(rows.length).toBe(4);
-    expect(new Set(rows.map((l) => l.length)).size).toBe(1); // columns line up
+    expect(letter.body).toContain('REFUND DUE TO TENANT: $2,000.00');
+    const rows = letter.body.split('\n').filter((l) => /^(• CAM|• Property tax|TOTAL)/.test(l));
+    expect(rows.length).toBe(3); // CAM + tax rows + the TOTAL line (no roof for Northwind)
+    rows.forEach((l) => expect(l).toMatch(/billed \$[\d,.]+ · actual \$[\d,.]+ · difference/));
+    // Gmail-proof: the document never relies on space-padded columns (proportional
+    // fonts collapse them) — no run of two spaces anywhere in the email.
+    expect(letter.body).not.toMatch(/ {2}/);
   });
 
   it('mark refunded settles the record', async () => {
@@ -169,14 +172,16 @@ describe('invoice template — estimated labels', () => {
     expect(text).toContain('reconciled');
   });
 
-  it('keeps every charge row aligned even with the longer est. labels', () => {
-    // "Property tax (2025 est.)" outgrows the old fixed label column — the label
-    // width must stretch so all four numeric columns still line up.
+  it('formats each charge as one self-labeled line that survives Gmail (proportional fonts)', () => {
+    // The old space-padded columns fell apart in Gmail's compose window / received
+    // mail (proportional fonts collapse runs of spaces). Every charge is now one
+    // line carrying all four unit-labeled figures, with no alignment to break.
     const text = buildInvoice({ ...facts, estimated: { cam: true, tax: true, roof: true } });
-    const rows = text.split('\n').filter((l) => /^(Base rent|CAM \(|Roof \(|Property tax \(|AMOUNT DUE)/.test(l));
-    expect(rows.length).toBe(5);
-    const widths = new Set(rows.map((l) => l.length));
-    expect(widths.size).toBe(1); // identical width ⇒ identical column positions
+    const rows = text.split('\n').filter((l) => l.startsWith('• '));
+    expect(rows.length).toBe(4); // base rent, CAM, roof, property tax
+    rows.forEach((l) => expect(l).toMatch(/\$[\d,.]+\/mo · \$[\d,.]+\/yr · \$[\d,.]+\/SF\/mo · \$[\d,.]+\/SF\/yr$/));
+    expect(text).toContain('AMOUNT DUE: $78,000.00/yr ($6,500.00/mo)');
+    expect(text).not.toMatch(/ {2}/); // never relies on space-padding
   });
 
   it('renders exactly as before when nothing is estimated', () => {

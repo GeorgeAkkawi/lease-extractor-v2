@@ -118,7 +118,8 @@ export default function LeaseNewPage() {
 }
 
 const val = (f) => (f && f.value != null ? f.value : '');
-function initialFromExtraction(ex) {
+// Exported for the unit test (the est-rate prefill must round-trip the stated figure).
+export function initialFromExtraction(ex) {
   // Many commercial leases print no commencement date (it's a formula — "120 days after
   // delivery"), so the only date on the page is the signing / "entered into as of" date.
   // Use it as a SUGGESTED, editable start so the whole schedule can be dated; the user
@@ -134,6 +135,16 @@ function initialFromExtraction(ex) {
       end = d.toISOString().slice(0, 10);
     }
   }
+  // The AI reads estimated CAM/tax as ANNUAL dollars; the form's est fields are entered
+  // in $/SF/yr and multiplied back by the square footage at save — so prefill the exact
+  // quotient (6 dp, trimmed) to round-trip the stated figure to the cent. With no SF on
+  // file the form treats the entry as plain $/yr, so the annual prefills directly.
+  const sqftV = Number(val(ex.square_footage)) || 0;
+  const estRate = (f) => {
+    const annual = Number(val(f));
+    if (!annual || !isFinite(annual) || annual <= 0) return '';
+    return sqftV > 0 ? Number((annual / sqftV).toFixed(6)) : annual;
+  };
   return {
     tenant_name: val(ex.tenant_name),
     tenant_contact_name: val(ex.tenant_contact_name),
@@ -145,11 +156,13 @@ function initialFromExtraction(ex) {
     lease_termination_date: end,
     lease_terms: val(ex.lease_terms),
     share_override_pct: '',
+    est_cam_annual: estRate(ex.est_cam_annual),
+    est_tax_annual: estRate(ex.est_tax_annual),
   };
 }
 function buildAiConfidence(ex) {
   const map = {};
-  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms'].forEach((f) => {
+  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms', 'est_cam_annual', 'est_tax_annual'].forEach((f) => {
     if (ex[f] && ex[f].confidence != null) map[f] = ex[f].confidence;
   });
   return Object.keys(map).length ? map : null;
