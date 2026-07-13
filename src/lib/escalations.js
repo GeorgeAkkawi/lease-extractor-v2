@@ -62,6 +62,64 @@ export function dueEscalations(escalations, withinDays = 31, now = new Date()) {
 }
 
 /**
+ * Occupancy start for a lease — the earliest date it was actually being occupied,
+ * for prorating a mid-year start (a July-start tenant owes Jul–Dec, not the whole year)
+ * and for knowing which months a tenant is "behind" on.
+ *
+ * = min(lease_start, earliest APPLIED escalation date). Why not lease_start alone: a
+ * catch-up renewal moves lease_start forward to the CURRENT term's start, so a
+ * long-time tenant renewed in place would look like it just moved in. But a renewed
+ * lease keeps its old applied rent steps — evidence it was occupied earlier — so the
+ * earliest applied step pulls the occupancy start back to the real move-in. A genuinely
+ * new tenancy's only applied step is at/after its start, so lease_start wins. Returns
+ * null when neither is known (an old lease with no start on file bills the full year —
+ * the safe, unchanged default).
+ */
+export function occupancyStart(lease, escalations) {
+  const dates = [];
+  if (lease?.lease_start) dates.push(String(lease.lease_start));
+  (escalations || []).forEach((e) => { if (e.status === 'applied' && e.effective_date) dates.push(String(e.effective_date)); });
+  if (!dates.length) return null;
+  dates.sort(); // yyyy-mm-dd sorts lexicographically == chronologically
+  return dates[0];
+}
+
+/**
+ * The annual base rent in effect during each of the 12 months of `year`, as an array
+ * [Jan..Dec]. Lets a monthly schedule bill the OLD rate for the months before a
+ * mid-year escalation and the NEW rate after — instead of applying the post-step rent
+ * to the whole year (which over-bills). ERA-AWARE, mirroring effectiveRent(): base_rent
+ * is the live authoritative rent for the current era (the segment at/after the latest
+ * applied step), and the ledger supplies the rate for historical segments. A month
+ * before any recorded applied step falls back to base_rent (its true prior rate isn't
+ * recoverable once base_rent moved — a small, bounded degradation, never a crash).
+ * @param {Array} escalations rows with {effective_date, new_base_rent, status}
+ * @param {number} baseRent   lease.base_rent (the current authoritative annual rent)
+ * @param {number} year
+ * @returns {number[]} length-12 array of annual base rents, index 0 = January
+ */
+export function monthlyBases(escalations, baseRent, year) {
+  const base = Number(baseRent) || 0;
+  const applied = (escalations || [])
+    .filter((e) => e.status === 'applied' && e.effective_date && e.new_base_rent != null)
+    .map((e) => ({ t: parseDate(e.effective_date).getTime(), rent: Number(e.new_base_rent) || 0 }))
+    .sort((a, b) => a.t - b.t);
+  const maxT = applied.length ? applied[applied.length - 1].t : null;
+  const out = [];
+  for (let m = 1; m <= 12; m++) {
+    const ref = new Date(year, m - 1, 1, 12).getTime(); // first day of the month, local noon
+    const prior = applied.filter((s) => s.t <= ref);
+    if (!prior.length) { out.push(base); continue; } // before any step → current best
+    const latest = prior[prior.length - 1];
+    // Latest applicable step is the globally-latest applied step → the current era →
+    // base_rent is authoritative. Otherwise a later step supersedes it → historical
+    // segment → read the ledger rate.
+    out.push(latest.t === maxT ? base : latest.rent);
+  }
+  return out;
+}
+
+/**
  * The rent in effect immediately before `date` — the most recent escalation's
  * new_base_rent before that date, else the lease base rent.
  */

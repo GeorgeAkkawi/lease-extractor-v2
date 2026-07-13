@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPropertyMonthlyRoll, markMonthPaid, unmarkMonthPaid, markMonthPaidAllTenants } from '../lib/api';
+import { getPropertyMonthlyRoll, markMonthPaid, unmarkMonthPaid, markMonthPaidAllTenants, localDateIso } from '../lib/api';
 import { money, sf } from '../lib/format';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const todayIso = () => new Date().toISOString().slice(0, 10);
 
 // Property-level monthly rent roll: tenants down the side, the 12 months across.
 // Click any box to mark that tenant's month paid (or undo); "✓ all" under a month
@@ -75,27 +74,67 @@ export default function PropertyRentRoll({ propertyId, year, vacantSf = 0 }) {
     },
     onSettled: settle,
   });
-  const busy = cellMut.isPending || allMut.isPending;
+  const catchUpAll = useMutation({
+    // Mark every DUE month (up through the current one) paid for every tenant that still
+    // owes it — rent-day catch-up for the whole building at once.
+    mutationFn: async (months) => {
+      let paid = 0;
+      for (const m of months) { const res = await markMonthPaidAllTenants(propertyId, year, m); paid += res.paid; }
+      return paid;
+    },
+    onSuccess: (paid) => setNote(paid ? `Recorded ${paid} tenant-month${paid === 1 ? '' : 's'} of rent.` : 'Everyone was already caught up.'),
+    onError: () => setNote('Could not catch up the roll — please try again.'),
+    onSettled: settle,
+  });
+  const busy = cellMut.isPending || allMut.isPending || catchUpAll.isPending;
 
   const vacant = Number(vacantSf) || 0;
 
   if (isLoading) return <p className="muted">Loading…</p>;
   if (!rows.length && vacant <= 0) return <p className="empty-line muted">No tenants with rent on file for FY {year}.</p>;
 
+  // Calendar awareness (localDateIso = the landlord's local "today", not UTC).
+  const today = localDateIso();
+  const curY = Number(today.slice(0, 4));
+  const curM = Number(today.slice(5, 7));
+  const isCurrentFy = year === curY;
+  const started = (m) => year < curY || (year === curY && m <= curM);
+  const throughM = year < curY ? 12 : (isCurrentFy ? curM : 0);
+
   const markAll = (m) => {
-    // Count only tenants who actually owe this month — a fully-free abated month has nothing to collect.
-    const unpaid = rows.filter((r) => !r.byMonth[m] && (r.schedule?.[m]?.owed ?? 1) > 0).length;
+    // Count only tenants who actually owe this month — a fully-free abated month or a
+    // pre-tenancy month has nothing to collect.
+    const unpaid = rows.filter((r) => !r.byMonth[m] && (r.schedule?.[m]?.owed ?? 1) > 0 && !r.schedule?.[m]?.outsideTerm).length;
     if (unpaid === 0) { setNote(`Everyone has already paid ${MONTHS[m - 1]}.`); return; }
     if (window.confirm(`Mark ${MONTHS[m - 1]} ${year} paid for all ${unpaid} tenant${unpaid === 1 ? '' : 's'} who haven't yet?`)) {
       allMut.mutate(m);
     }
   };
+  const catchUp = () => {
+    if (!throughM) return;
+    const months = Array.from({ length: throughM }, (_, i) => i + 1);
+    if (window.confirm(`Mark rent paid for every tenant through ${MONTHS[throughM - 1]} ${year} (only the months they still owe)?`)) {
+      catchUpAll.mutate(months);
+    }
+  };
+  // How many tenant-months have come due but aren't yet marked — drives the catch-up button.
+  const behindTotal = rows.reduce((acc, r) => acc + MONTHS.reduce((n, _l, i) => {
+    const m = i + 1; const s = r.schedule?.[m];
+    return n + ((started(m) && !r.byMonth[m] && (Number(s?.owed) || 0) > 0 && !s?.outsideTerm) ? 1 : 0);
+  }, 0), 0);
 
   return (
     <div className="metric-group">
-      <div className="fin-subhead">Monthly rent roll · FY {year}</div>
-      <div className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 12 }}>
-        Click any box to mark that tenant's month paid (or undo). Use <strong>✓ all</strong> under a month to mark it paid for every tenant at once. Feeds the same receivables above.
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+        <div className="fin-subhead" style={{ marginBottom: 0 }}>Monthly rent roll · FY {year}</div>
+        {throughM > 0 && behindTotal > 0 && (
+          <button type="button" className="ghost" disabled={busy} onClick={catchUp} title={`Record every unpaid month that has come due, for all tenants, through ${MONTHS[throughM - 1]}`}>
+            {catchUpAll.isPending ? 'Recording…' : `✓ Mark everyone paid through ${MONTHS[throughM - 1]}`}
+          </button>
+        )}
+      </div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 12 }}>
+        Click any box to mark that tenant's month paid (or undo). Use <strong>✓ all</strong> under a month to mark it for every tenant. Amber months have come due and aren't paid; <strong>—</strong> months are before the tenant moved in. Feeds the same receivables above.
       </div>
       {note && <p className="badge good" style={{ marginBottom: 10 }}>{note}</p>}
       <div className="table-wrap">
@@ -104,7 +143,7 @@ export default function PropertyRentRoll({ propertyId, year, vacantSf = 0 }) {
             <tr>
               <th>Tenant</th>
               {MONTHS.map((ml, i) => (
-                <th key={ml}>
+                <th key={ml} className={isCurrentFy && i + 1 === curM ? 'rr-current' : undefined}>
                   <div className="rr-mhead">
                     <span>{ml}</span>
                     <button type="button" className="ghost rr-all" disabled={busy} onClick={() => markAll(i + 1)} title={`Mark ${ml} paid for all tenants`}>✓ all</button>
@@ -116,10 +155,19 @@ export default function PropertyRentRoll({ propertyId, year, vacantSf = 0 }) {
           </thead>
           <tbody>
             {rows.map((r) => {
-              const paidCount = Object.keys(r.byMonth).length;
+              // "Due" months = in-term, owed, and already started; the Paid column reads
+              // paid-of-due, not paid-of-12, so a mid-year or partial-year tenant reads honestly.
+              const dueMonths = MONTHS.reduce((n, _l, i) => {
+                const m = i + 1; const s = r.schedule?.[m];
+                return n + ((started(m) && (Number(s?.owed) || 0) > 0 && !s?.outsideTerm) ? 1 : 0);
+              }, 0);
+              const paidDue = MONTHS.reduce((n, _l, i) => {
+                const m = i + 1; const s = r.schedule?.[m];
+                return n + ((started(m) && r.byMonth[m] && !s?.outsideTerm) ? 1 : 0);
+              }, 0);
               // Holdover: the lease term has ended but the tenant hasn't been removed/extended,
               // so rent still collects. Flag it (matches the "Outdated" badge on the Leases page).
-              const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso()) || r.is_active === false;
+              const heldOver = (r.lease_termination_date && r.lease_termination_date < today) || r.is_active === false;
               return (
                 <tr key={r.lease_id}>
                   <td>
@@ -135,32 +183,38 @@ export default function PropertyRentRoll({ propertyId, year, vacantSf = 0 }) {
                         </span>
                       </div>
                     )}
-                    <div className="muted" style={{ fontSize: 11 }}>{money(r.monthly)}/mo</div>
+                    <div className="muted" style={{ fontSize: 11 }}>{money(r.monthly)}/mo{r.owedMonths < 12 ? ` · ${r.owedMonths} mo` : ''}</div>
                   </td>
                   {MONTHS.map((ml, i) => {
                     const m = i + 1;
                     const paid = !!r.byMonth[m];
                     const s = r.schedule?.[m];
-                    const freeMonth = s?.abated && (Number(s.owed) || 0) <= 0;
+                    const outside = !!s?.outsideTerm;
+                    const freeMonth = s?.abated && (Number(s.owed) || 0) <= 0 && !outside;
+                    // A pre-tenancy month ("—" muted) — nothing owed, not clickable.
+                    if (outside) {
+                      return <td key={m}><span className="rr-cell outside" title={`${ml}: before this lease began`}>—</span></td>;
+                    }
                     // Fully-free abated month — nothing to collect; show "F", not a toggle.
                     if (freeMonth && !paid) {
                       return <td key={m}><span className="rr-cell abated" title={`${ml}: base rent abated — nothing due`}>F</span></td>;
                     }
+                    const late = !paid && started(m) && (Number(s?.owed) || 0) > 0; // came due, unpaid
                     return (
                       <td key={m}>
                         <button
                           type="button"
-                          className={`rr-cell${paid ? ' paid' : ''}${s?.abated ? ' abated' : ''}`}
+                          className={`rr-cell${paid ? ' paid' : ''}${late ? ' late' : ''}${s?.abated ? ' abated' : ''}`}
                           disabled={busy}
                           onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, paid })}
-                          title={paid ? 'Paid — click to undo' : `Mark ${ml} paid (${money(s?.owed ?? r.monthly)})${s?.abated ? ' — base rent abated' : ''}`}
+                          title={paid ? 'Paid — click to undo' : `${late ? 'Overdue — mark' : 'Mark'} ${ml} paid (${money(s?.owed ?? r.monthly)})${s?.abated ? ' — base rent abated' : ''}`}
                         >
                           {paid ? '✓' : '—'}
                         </button>
                       </td>
                     );
                   })}
-                  <td><strong>{paidCount}/12</strong></td>
+                  <td><strong>{paidDue}/{dueMonths}</strong></td>
                 </tr>
               );
             })}

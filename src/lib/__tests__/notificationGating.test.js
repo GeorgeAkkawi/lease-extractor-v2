@@ -25,7 +25,8 @@ function fullData() {
       { party: 'landlord', property_id: 'p1', insurer: 'Granite', expiry_date: '2026-02-20' },
     ],
     contracts: [{ id: 'c1', name: 'Landscaping', vendor: 'GreenCo', vendor_email: 'g@x.com', end_date: '2026-03-01', property_id: 'p1' }],
-    invoices: [{ lease_id: 'L1', property_id: 'p1', year: 2025, due_date: '2025-12-01', balance: 1500 }],
+    // A closed-year (2025) annual bill, nothing paid → behind on rent (all 12 months came due).
+    invoices: [{ lease_id: 'L1', property_id: 'p1', year: 2025, kind: 'annual', due_date: '2025-12-01', total_amount: 1500, amount_paid: 0, balance: 1500 }],
     abatements: [{ lease_id: 'L1', start_date: '2025-11-01', end_date: '2026-02-01', kind: 'free' }],
     insuranceRequests: [],
   };

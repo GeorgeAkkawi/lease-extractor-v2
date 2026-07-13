@@ -30,10 +30,16 @@ const usd = (n) => {
 
 export function buildInvoice(facts) {
   const sf = Number(facts.square_footage) || 0;
+  // Months this year's bill actually covers (a mid-year lease start prorates the annual —
+  // draft-invoice returns the prorated figures + months_billed). Default 12 = full year, so
+  // an ordinary invoice is byte-identical to before. Dividing the annual by the months BILLED
+  // (not always 12) keeps "$/mo" the TRUE monthly rent the tenant pays during their occupancy.
+  const monthsBilled = Math.min(12, Math.max(1, Number(facts.months_billed) || 12));
+  const prorated = monthsBilled < 12;
   // Annual -> the four figures we display for every line.
   const per = (annual) => {
     const a = Number(annual) || 0;
-    const m = a / 12;
+    const m = a / monthsBilled;
     return { m, a, pm: sf ? m / sf : 0, py: sf ? a / sf : 0 };
   };
 
@@ -98,6 +104,10 @@ export function buildInvoice(facts) {
   items.forEach((it) => L.push(line(it.label, it.v)));
   L.push('');
   L.push(`AMOUNT DUE: ${usd(total.a)}/yr (${usd(total.m)}/mo)`);
+  if (prorated) {
+    const begins = facts.occupancy_start ? ` — lease begins ${fmtDate(facts.occupancy_start)}` : '';
+    L.push(`Prorated${begins} · billed for ${monthsBilled} of 12 months (rates shown are per month).`);
+  }
   L.push('');
 
   // Remittance.

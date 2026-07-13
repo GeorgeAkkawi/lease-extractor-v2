@@ -123,49 +123,61 @@ describe('marking months paid', () => {
   });
 });
 
-describe('AR aging (summarizeAR)', () => {
-  it('buckets balances by how overdue the due date is and skips draft/void/paid', () => {
-    const today = new Date(`${Y}-07-07T12:00:00`);
+describe('AR summary (summarizeAR) — months behind, not 30/60/90 aging', () => {
+  it('counts tenants behind on rent (annual invoices) + overdue reconciliations, skips draft/void/paid', () => {
+    const today = new Date(`${Y}-07-07T12:00:00`); // 7 calendar months have come due
     const rows = [
-      { display_status: 'sent', balance: 100, due_date: `${Y}-08-01` },   // not due yet → current
-      { display_status: 'overdue', balance: 50, due_date: `${Y}-06-20` }, // 17 days late → ≤30
-      { display_status: 'partial', balance: 25, due_date: `${Y}-05-15` }, // 53 days late → ≤60
-      { display_status: 'overdue', balance: 10, due_date: `${Y}-01-31` }, // 157 days late → 90+
-      { display_status: 'draft', balance: 999, due_date: `${Y}-01-01` },  // drafts never count
-      { display_status: 'void', balance: 999, due_date: `${Y}-01-01` },   // voids never count
-      { display_status: 'paid', balance: 0, due_date: `${Y}-01-01` },     // nothing owed
+      // A — behind: full-year annual bill, nothing paid → ~7 months' rent overdue (2+ bucket).
+      { lease_id: 'A', display_status: 'sent', kind: 'annual', year: Y, total_amount: 98500, amount_paid: 0, balance: 98500, due_date: `${Y}-08-01` },
+      // B — on track: paid the 7 months due so far of a $24k/yr bill; a balance remains but isn't behind.
+      { lease_id: 'B', display_status: 'partial', kind: 'annual', year: Y, total_amount: 24000, amount_paid: 14000, balance: 10000, due_date: `${Y}-08-01` },
+      // C — 1 month behind: paid 6 of the 7 months due ($1k/mo).
+      { lease_id: 'C', display_status: 'partial', kind: 'annual', year: Y, total_amount: 12000, amount_paid: 6000, balance: 6000, due_date: `${Y}-08-01` },
+      // D — an overdue year-end reconciliation (a lump true-up past its due date → severe bucket).
+      { lease_id: 'D', display_status: 'overdue', kind: 'reconciliation', year: Y, total_amount: 700, amount_paid: 0, balance: 700, due_date: `${Y}-01-31` },
+      { display_status: 'draft', kind: 'annual', year: Y, total_amount: 999, amount_paid: 0, balance: 999, due_date: `${Y}-01-01` }, // drafts never count
+      { display_status: 'void', kind: 'annual', year: Y, total_amount: 999, amount_paid: 0, balance: 999, due_date: `${Y}-01-01` },  // voids never count
+      { lease_id: 'E', display_status: 'paid', kind: 'annual', year: Y, total_amount: 12000, amount_paid: 12000, balance: 0, due_date: `${Y}-01-01` }, // settled
     ];
+    // amountBehind: A = round2(98500/12 × 7) = 57458.33; C = 1000; D = 700 → 59158.33.
     expect(summarizeAR(rows, today)).toEqual({
-      outstanding: 185,
+      outstanding: 115200, // 98500 + 10000 + 6000 + 700 (every owing balance, behind or not)
       count: 4,
-      buckets: { current: 100, d30: 50, d60: 25, d90: 10 },
+      tenantsBehind: 3, // A, C, D (B is caught up)
+      amountBehind: 59158.33,
+      byMonthsBehind: { m1: 1, m2plus: 2 }, // C is 1 month; A (7 mo) + D (recon) are severe
     });
   });
 });
 
-describe('overdue-invoice alert → payment reminder email', () => {
-  it('the alert carries the balance + year, and the letter states them', () => {
-    const now = new Date(`${Y}-07-07T12:00:00`);
+describe('behind-on-rent alert → payment reminder email', () => {
+  it('the alert states how many months behind + the amount, and the letter reflects it', () => {
+    const now = new Date(`${Y}-07-07T12:00:00`); // 7 months have come due
     const data = {
       leases: [{ id: 'L1', tenant_name: 'City Dental', property_id: 'P1', is_active: true }],
       escalations: [], renewals: [], contracts: [],
       properties: [{ id: 'P1', name: 'Maple Plaza', corporation_id: 'C1' }],
       insurance: [],
-      invoices: [{ lease_id: 'L1', property_id: 'P1', year: Y, due_date: `${Y}-01-31`, balance: 98500 }],
+      // A full-year annual invoice, nothing paid → behind on the months that have come due.
+      invoices: [{ lease_id: 'L1', property_id: 'P1', year: Y, due_date: `${Y}-01-31`, balance: 98500, total_amount: 98500, amount_paid: 0, kind: 'annual' }],
     };
     const alert = buildAlerts(data, undefined, now).find((a) => a.focus === 'invoice');
     expect(alert).toBeTruthy();
+    expect(alert.title).toContain('Behind on rent');
     expect(alert.balance).toBe(98500);
     expect(alert.invoice_year).toBe(Y);
+    expect(alert.months_behind).toBe(7);
+    expect(alert.amount_behind).toBe(57458.33);
 
     const email = buildPaymentReminderEmail({
       business: null, tenant_name: 'City Dental', contact_name: 'Dana Lee',
       tenant_email: 'billing@citydental.example', propertyName: 'Maple Plaza',
       year: alert.invoice_year, balance: alert.balance, dueDate: alert.date,
+      monthsBehind: alert.months_behind, amountBehind: alert.amount_behind,
     });
-    expect(email.subject).toContain('Payment Reminder');
-    expect(email.body).toContain('$98,500.00');
-    expect(email.body).toContain(`January 31, ${Y}`);
+    expect(email.subject).toContain('Rent Reminder');
+    expect(email.body).toContain('7 months behind on rent');
+    expect(email.body).toContain('$57,458.33');
     expect(email.to).toBe('billing@citydental.example');
   });
 });

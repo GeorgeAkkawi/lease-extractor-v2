@@ -81,6 +81,88 @@ Deno.serve(async (req) => {
       ? (cur.est_roof_annual != null ? Number(cur.est_roof_annual) : Number(cur.roof_amt || 0))
       : 0; // separate roof line, roof-responsible tenants only
 
+    // --- Term-aware proration (mirrors occupancyStart + monthlyBases + monthlyScheduleForYear
+    // in src/lib/{escalations,abatement}.js, so the invoice total ties to the monthly tracker's
+    // schedule to within the balance view's ±5¢ dust clamp). A lease that begins mid-year is
+    // billed only for the months it covers (a July-start tenant owes Jul–Dec, not the whole
+    // year); a mid-year rent step bills the old rate before it and the new rate after. A
+    // full-year lease (occupancy in the past, no mid-year step) prorates to exactly the same
+    // figures as before — inTerm = 12, ratio = 1, base = the gross annual.
+    const yr = Number(year);
+    const parseNoon = (d: string) => new Date(`${String(d).slice(0, 10)}T12:00:00`);
+    const monthStartD = (m: number) => new Date(yr, m - 1, 1, 12);
+    const monthEndD = (m: number) => new Date(yr, m, 0, 12); // day 0 of next month = last day of this one
+
+    const { data: escs } = await supabase
+      .from('rent_escalations')
+      .select('effective_date, new_base_rent, status')
+      .eq('lease_id', lease_id);
+    // occupancyStart = min(lease_start, earliest APPLIED escalation date).
+    const occDates: string[] = [];
+    if (cur.lease_start) occDates.push(String(cur.lease_start).slice(0, 10));
+    for (const e of (escs ?? []) as any[]) if (e.status === 'applied' && e.effective_date) occDates.push(String(e.effective_date).slice(0, 10));
+    occDates.sort();
+    const occIso = occDates.length ? occDates[0] : null;
+    const occ = occIso ? parseNoon(occIso) : null;
+
+    // monthlyBases: the annual base rent in effect each month (era-aware — base_rent is the
+    // live authoritative rent for the current era; the ledger supplies historical segments).
+    const grossBase = Number(cur.base_rent || 0);
+    const applied = ((escs ?? []) as any[])
+      .filter((e) => e.status === 'applied' && e.effective_date && e.new_base_rent != null)
+      .map((e) => ({ t: parseNoon(e.effective_date).getTime(), rent: Number(e.new_base_rent) || 0 }))
+      .sort((a, b) => a.t - b.t);
+    const maxT = applied.length ? applied[applied.length - 1].t : null;
+    const baseForMonth = (m: number) => {
+      const ref = monthStartD(m).getTime();
+      const prior = applied.filter((s) => s.t <= ref);
+      if (!prior.length) return grossBase;
+      const latest = prior[prior.length - 1];
+      return latest.t === maxT ? grossBase : latest.rent;
+    };
+
+    // Per-month base abatement credit (mirrors abatement.js — strongest window wins).
+    const { data: abs } = await supabase
+      .from('rent_abatements')
+      .select('start_date, end_date, kind, value')
+      .eq('lease_id', lease_id);
+    const covers = (ab: any, m: number) => {
+      const s = ab.start_date ? parseNoon(ab.start_date) : null;
+      const e = ab.end_date ? parseNoon(ab.end_date) : null;
+      if (!s && !e) return false;
+      if (s && s > monthEndD(m)) return false;
+      if (e && e < monthStartD(m)) return false;
+      return true;
+    };
+    const reducedBaseFor = (full: number, ab: any) => {
+      switch (ab?.kind) {
+        case 'percent': { const p = Math.min(100, Math.max(0, Number(ab.value) || 0)); return round(full * (1 - p / 100)); }
+        case 'amount': return round(Math.min(full, Math.max(0, Number(ab.value) || 0)));
+        default: return 0; // 'free'
+      }
+    };
+    const monthCredit = (m: number, full: number) => {
+      let best = -1;
+      for (const ab of (abs ?? []) as any[]) {
+        if (!covers(ab, m)) continue;
+        const c = round(full - reducedBaseFor(full, ab));
+        if (c > best) best = c;
+      }
+      return best > 0 ? best : 0;
+    };
+
+    let inTerm = 0;
+    let proratedBaseGross = 0;
+    let proratedAbatement = 0;
+    for (let m = 1; m <= 12; m++) {
+      if (occ && monthEndD(m) < occ) continue; // before the tenancy began — not billed
+      inTerm++;
+      const fullMonthly = baseForMonth(m) / 12;
+      proratedBaseGross += fullMonthly;
+      proratedAbatement += monthCredit(m, fullMonthly);
+    }
+    const ratio = inTerm / 12;
+
     const facts = {
       business,
       tenant: cur.tenant_name,
@@ -91,11 +173,14 @@ Deno.serve(async (req) => {
       year: Number(year),
       tax_year: priorYear, // taxes lag a year — used for the tax line label + note
       square_footage: cur.square_footage,
-      base_rent_annual: round(cur.base_rent || 0),
-      cam_annual: round(cam),
-      tax_annual: round(tax),
-      roof_annual: round(roof),
-      abatement_annual: round(cur.abatement_amount || 0), // free/reduced base rent credited off this year's bill
+      base_rent_annual: round(proratedBaseGross),        // gross base for the months the lease covers
+      cam_annual: round(cam * ratio),
+      tax_annual: round(tax * ratio),
+      roof_annual: round(roof * ratio),
+      abatement_annual: round(proratedAbatement),        // free/reduced base rent credited off this year's bill
+      // Proration transparency for the invoice document (a "lease begins {date}" note when < 12).
+      occupancy_start: occIso,
+      months_billed: inTerm,
       // which lines are estimates (drives the "est." labels + reconciliation note)
       estimated: {
         cam: cur.est_cam_annual != null,

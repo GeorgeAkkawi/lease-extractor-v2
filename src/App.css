@@ -66,6 +66,14 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .month-cell .month-amt{font-size:12.5px;color:var(--ink)}
 .month-cell.paid{background:var(--forest-soft);border-color:var(--forest)}
 .month-cell.paid .month-label,.month-cell.paid .month-amt{color:var(--forest);font-weight:700}
+/* Calendar-aware states (receivables audit): a month that has come due and is still
+   unpaid reads amber "late"; a month before the tenancy began reads a muted, dashed,
+   non-clickable "—"; the current month wears an accent ring. */
+.month-cell.late{background:var(--gold-soft);border-color:var(--gold)}
+.month-cell.late .month-label,.month-cell.late .month-amt{color:var(--gold);font-weight:700}
+.month-cell.outside{background:transparent;border-style:dashed;cursor:default;opacity:.7}
+.month-cell.outside .month-amt{color:var(--muted)}
+.month-cell.current{box-shadow:0 0 0 2px var(--accent)}
 @media (max-width:680px){.month-grid{grid-template-columns:repeat(3,1fr)}}
 /* Tight horizontal padding on the 12 month columns so the whole year fits the
    panel without sideways scrolling; the tenant column keeps normal padding. */
@@ -78,7 +86,9 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .rr-cell:hover:not(:disabled){border-color:var(--accent)}
 .rr-cell:disabled{opacity:.55;cursor:default}
 .rr-cell.paid{background:var(--forest-soft);border-color:var(--forest);color:var(--forest)}
-.rr-cell.vacant{cursor:default;background:transparent;border-style:dashed}
+.rr-cell.late{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
+.rr-cell.vacant,.rr-cell.outside{cursor:default;background:transparent;border-style:dashed}
+.rent-roll th.rr-current{box-shadow:inset 0 -2px 0 var(--accent)}
 .rent-roll tr.rr-vacant td{opacity:.72}
 
 /* ---- layout ---- */

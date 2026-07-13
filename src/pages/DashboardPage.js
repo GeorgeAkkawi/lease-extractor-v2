@@ -136,8 +136,9 @@ export default function DashboardPage() {
     .filter((l) => l.days != null && l.days >= 0 && l.days <= 183)
     .sort((a, b) => a.days - b.days);
 
-  const b = ar?.buckets || {};
-  const lateTotal = (b.d30 || 0) + (b.d60 || 0) + (b.d90 || 0);
+  // Receivables reframed around "who's behind on rent" (arStatus.js) instead of 30/60/90 aging.
+  const behindTenants = ar?.tenantsBehind || 0;
+  const behindAmt = ar?.amountBehind || 0;
 
   // Which blocks to render, per the landlord's Display settings. The two panels
   // share a 2-column grid — if only one shows, it goes full-width.
@@ -168,7 +169,7 @@ export default function DashboardPage() {
       <div className="metric-group">
         <div className="metrics">
           {show('rent_roll') && <Card label="Annual rent roll" main={money(rentRoll)} foot={leasedSf ? `${psf(rentRoll / leasedSf)} blended` : null} onClick={() => navigate('/financials')} />}
-          {show('ar') && <Card label="Outstanding (AR)" main={money(ar?.outstanding || 0)} foot={ar ? `${ar.count} unpaid · ${money(lateTotal)} late` : null} tone={lateTotal > 0 ? 'danger' : undefined} />}
+          {show('ar') && <Card label="Outstanding (AR)" main={money(ar?.outstanding || 0)} foot={ar ? (behindTenants > 0 ? `${behindTenants} tenant${behindTenants === 1 ? '' : 's'} behind · ${money(behindAmt)}` : `${ar.count} open · all current`) : null} tone={behindTenants > 0 ? 'danger' : undefined} />}
           {show('occupancy') && <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={hasBuildingSizes ? `${sf(vacantSf)} vacant` : 'add building sizes'} />}
           {show('expiring') && <Card label="Expiring ≤ 6 months" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />}
         </div>

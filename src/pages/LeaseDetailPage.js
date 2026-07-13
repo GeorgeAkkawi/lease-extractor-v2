@@ -448,8 +448,8 @@ export default function LeaseDetailPage() {
       {showPanel('lease_receivables') && (
         <div className="panel">
           <div className="panel-head">
-            <strong>Receivables</strong>
-            <span className="muted">Invoices &amp; payments for this tenant</span>
+            <strong>Invoices &amp; payments</strong>
+            <span className="muted">Invoices and recorded payments for this tenant</span>
           </div>
           <InvoicesPanel leaseId={leaseId} />
         </div>

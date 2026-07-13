@@ -87,8 +87,9 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
       </QueryClientProvider>
     );
     await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
-    expect(screen.getByText('＋ set estimate')).toBeTruthy();
-    expect(screen.getByText('billing actuals')).toBeTruthy();
+    // prop-2 has two estimate-free tenants (Northwind + the mid-year Sunrise Yoga seed).
+    expect(screen.getAllByText('＋ set estimate').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('billing actuals').length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText('⚖ Reconcile')).toBeNull(); // nothing to true up
     // Totals "Estimated" + "Difference" read — (an em dash), never a summed fallback.
     // (The totals live in the ledger's closing band since the no-sideways-scroll redesign.)

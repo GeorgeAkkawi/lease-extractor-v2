@@ -90,37 +90,61 @@ export function annualAbatementCredit(abatements, year, annualBaseRent) {
 
 // Per-month owed schedule for a year: full charges minus any base abatement.
 // otherAnnual = cam + tax + roof for the year (never abated). Returns a map
-// { [m]: { full, owed, abated, credit, kind } } for m = 1..12, where `owed` is what the
-// tenant actually pays that month and `full` is what it would be with no abatement.
-export function monthlyScheduleForYear({ year, annualBaseRent, otherAnnual = 0, abatements = [] }) {
-  const fullMonthlyBase = (Number(annualBaseRent) || 0) / 12;
+// { [m]: { full, owed, abated, credit, kind, outsideTerm } } for m = 1..12, where `owed`
+// is what the tenant actually pays that month and `full` is what it would be with no
+// abatement.
+//
+// Two optional term/date-aware inputs (both default off → byte-identical to before):
+//   • occupancyStartIso — months whose LAST day is before this date are outside the
+//     tenancy: `{ owed: 0, outsideTerm: true }` — not owed, not billed, not "behind"
+//     (a July-start lease owes Jul–Dec, so the annual is a half-year, not a full one).
+//     Months AFTER term end are NOT zeroed — a holdover tenant keeps owing until removed.
+//   • monthlyBases — a length-12 array [Jan..Dec] of the annual base rent in effect that
+//     month (from the escalation ledger), so a mid-year rent step bills the old rate
+//     before it and the new rate after, instead of the new rate all year. When omitted,
+//     every month uses annualBaseRent/12.
+export function monthlyScheduleForYear({ year, annualBaseRent, otherAnnual = 0, abatements = [], occupancyStartIso = null, monthlyBases = null }) {
+  const flatMonthlyBase = (Number(annualBaseRent) || 0) / 12;
   const otherMonthly = (Number(otherAnnual) || 0) / 12;
+  const occ = occupancyStartIso ? noon(occupancyStartIso) : null;
   const out = {};
-  let totalCredit = 0;
+  let grossInTerm = 0;   // full charges for the months the lease covers (unrounded)
+  let creditInTerm = 0;  // base $ abated for those months (the per-month rounded credit)
   for (let m = 1; m <= 12; m++) {
+    if (occ && monthEnd(year, m) < occ) {
+      // Before the tenancy began — nothing owed this month.
+      out[m] = { full: 0, owed: 0, abated: false, credit: 0, kind: null, outsideTerm: true };
+      continue;
+    }
+    const fullMonthlyBase = (monthlyBases && monthlyBases[m - 1] != null)
+      ? (Number(monthlyBases[m - 1]) || 0) / 12
+      : flatMonthlyBase;
     const ab = abatementForMonth(abatements, year, m, fullMonthlyBase);
     const reducedBase = ab ? reducedMonthlyBase(fullMonthlyBase, ab) : fullMonthlyBase;
     const credit = ab ? monthlyCredit(fullMonthlyBase, ab) : 0;
-    totalCredit += credit;
+    grossInTerm += fullMonthlyBase + otherMonthly;
+    creditInTerm += credit;
     out[m] = {
       full: round2(fullMonthlyBase + otherMonthly),
       owed: round2(reducedBase + otherMonthly),
       abated: !!ab,
       credit,
       kind: ab?.kind || null,
+      outsideTerm: false,
     };
   }
   // Penny-true: rounding each month to cents can lose a few cents across the year
   // ($98,500/12 → $8,208.33 ×12 = $98,499.96), which left a fully-paid year showing a
-  // phantom 4¢ balance forever. Fold the remainder into the LAST month that still owes
-  // anything so the 12 figures sum exactly to the year's net total. Only rounding-sized
-  // drift is folded — a larger gap would be a real logic error and must stay visible.
-  const target = round2((Number(annualBaseRent) || 0) + (Number(otherAnnual) || 0) - totalCredit);
+  // phantom 4¢ balance forever. Fold the remainder into the LAST in-term month that
+  // still owes anything so the 12 figures sum exactly to the year's net total (gross for
+  // the months covered, minus what was abated — so owed + credit reconciles to gross).
+  // Only rounding-sized drift is folded — a larger gap would be a real logic error.
+  const target = round2(grossInTerm - creditInTerm);
   const sum = round2(Object.values(out).reduce((s, c) => s + c.owed, 0));
   const diff = round2(target - sum);
   if (diff !== 0 && Math.abs(diff) <= 0.12) {
     for (let m = 12; m >= 1; m--) {
-      if (out[m].owed > 0) {
+      if (!out[m].outsideTerm && out[m].owed > 0) {
         out[m].owed = round2(out[m].owed + diff);
         if (!out[m].abated) out[m].full = out[m].owed; // a normal month's "full" stays equal to owed
         break;

@@ -128,18 +128,19 @@ export default function PropertyFinancialsPage() {
 function ARSummary({ propId }) {
   const { data: ar } = useQuery({ queryKey: ['propertyAR', propId], queryFn: () => getPropertyAR(propId) });
   if (!ar) return null;
-  const b = ar.buckets || {};
+  const bm = ar.byMonthsBehind || { m1: 0, m2plus: 0 };
+  const behind = ar.tenantsBehind || 0;
   return (
     <div className="metric-group">
       <div className="fin-subhead">Receivables · outstanding</div>
       <div className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 12 }}>
-        Across all saved invoices for this property (excludes paid, void, and drafts). Aged by how far past due.
+        Across all saved invoices for this property (excludes paid, void, and drafts). A tenant is “behind” on the months of rent that have come due and aren’t yet paid.
       </div>
       <div className="metrics">
         <StatCard label="Outstanding" main={money(ar.outstanding)} footValue={`${ar.count} invoice${ar.count === 1 ? '' : 's'}`} footCap="still owed" />
-        <StatCard label="Current / not due" main={money(b.current || 0)} />
-        <StatCard label="1–60 days late" main={money((b.d30 || 0) + (b.d60 || 0))} />
-        <StatCard label="60+ days late" main={money(b.d90 || 0)} footCap={b.d90 > 0 ? 'follow up' : undefined} />
+        <StatCard label="Behind on rent" main={money(ar.amountBehind || 0)} footValue={`${behind} tenant${behind === 1 ? '' : 's'}`} footCap={behind > 0 ? 'follow up' : 'all current'} />
+        <StatCard label="1 month behind" main={String(bm.m1 || 0)} />
+        <StatCard label="2+ months behind" main={String(bm.m2plus || 0)} footCap={bm.m2plus > 0 ? 'follow up' : undefined} />
       </div>
     </div>
   );

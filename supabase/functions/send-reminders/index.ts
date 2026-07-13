@@ -212,17 +212,21 @@ Deno.serve(async (req) => {
       }
     }
 
-    // --- Overdue-rent reminders (email the owner) ---------------------------
-    // Any invoice still owed past its due date, emailed at 1 day / 1 week / 1 month late,
-    // once per threshold via invoices.overdue_notice_bucket. No reset needed: a paid
-    // invoice drops out of the balance view; a new year is a new invoice/bucket. Gated by
-    // the Outstanding (receivables) display toggle.
+    // --- Overdue reconciliation reminders (email the owner) -----------------
+    // ONLY year-end CAM/tax reconciliation invoices email the owner — they're a genuine
+    // one-off lump bill with a real due date. A regular ANNUAL rent invoice comes due once
+    // for the whole year, so emailing "$3X,XXX overdue" from ~Aug 1 was misleading; monthly
+    // lateness is now surfaced in-app only (the "Behind on rent" dashboard alert). Emailed
+    // at 1 day / 1 week / 1 month late, once per threshold via invoices.overdue_notice_bucket.
+    // No reset needed: a paid invoice drops out of the balance view. Gated by the
+    // Outstanding (receivables) display toggle.
     let overdueProcessed = 0;
     // Embedding leases(tenant_name) through a VIEW is unreliable in PostgREST, so read the
     // balances plainly and resolve tenant names with one lookup by lease_id.
     const { data: balances, error: balErr } = await supabase
       .from('v_invoice_balances')
-      .select('id, owner_id, lease_id, year, due_date, balance, overdue_notice_bucket')
+      .select('id, owner_id, lease_id, year, due_date, balance, overdue_notice_bucket, kind')
+      .eq('kind', 'reconciliation')
       .gt('balance', 0)
       .not('due_date', 'is', null);
     if (balErr) {
@@ -245,8 +249,8 @@ Deno.serve(async (req) => {
 
         const who = nameByLease.get(b.lease_id) || 'a tenant';
         const amount = `$${Number(b.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const subject = `Rent overdue — ${who}${b.year ? ` (${b.year})` : ''}`;
-        const text = `${who} has an overdue balance of ${amount}${b.year ? ` on the ${b.year} invoice` : ''}, which was due on ${b.due_date}. Consider following up with a payment reminder.`;
+        const subject = `Reconciliation overdue — ${who}${b.year ? ` (${b.year})` : ''}`;
+        const text = `${who} has an overdue balance of ${amount}${b.year ? ` on the ${b.year} reconciliation statement` : ''}, which was due on ${b.due_date}. Consider following up with a payment reminder.`;
 
         const delivered = await sendEmail(email, subject, text);
         if (!delivered) { await logEvent('reminder_failed', `Resend send failed for invoice ${b.id}`, ip); continue; }

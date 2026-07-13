@@ -194,17 +194,27 @@ export function buildContractRenewalEmail({ business, vendorName, vendorEmail, c
   return { subject, body, to: vendorEmail || '' };
 }
 
-// Friendly-but-firm reminder for an overdue invoice: the balance, when it was due,
-// and how to arrange payment. Powers the ✉ on the "Invoice overdue" dashboard alert.
-export function buildPaymentReminderEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, balance, dueDate }) {
-  const subject = `Payment Reminder — ${propertyName || 'your premises'}${year ? ` (invoice for ${year})` : ''}`;
+// Friendly-but-firm reminder that a tenant is behind on rent: how many months they're
+// behind, the amount, and how to arrange payment. Powers the ✉ on the "Behind on rent"
+// dashboard alert. A year-end reconciliation true-up is a single lump bill, so its letter
+// speaks of a past-due balance instead of "months behind".
+export function buildPaymentReminderEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, balance, dueDate, monthsBehind, amountBehind, reconciliation }) {
+  const owed = amountBehind != null ? amountBehind : balance;
+  const n = Number(monthsBehind) || 0;
+  const behindPhrase = n > 0 ? `${n} month${n === 1 ? '' : 's'} behind on rent` : 'an outstanding balance';
+  const subject = reconciliation
+    ? `Payment Reminder — ${propertyName || 'your premises'}${year ? ` (${year} reconciliation)` : ''}`
+    : `Rent Reminder — ${propertyName || 'your premises'}${n > 0 ? ` (${n} month${n === 1 ? '' : 's'} behind)` : ''}`;
+  const opening = reconciliation
+    ? `Our records show a past-due balance of ${money(owed)} on your${year ? ` ${year}` : ''} reconciliation statement for ${propertyName || 'the premises'}${dueDate ? `, which was due on ${longDate(dueDate)}` : ''}. As of today, we have not received this payment.`
+    : `Our records show your account for ${propertyName || 'the premises'} is ${behindPhrase}, with ${money(owed)} currently outstanding${year ? ` for ${year}` : ''}. As of today, we have not received this payment.`;
   const body = letter({
     business,
     toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
     reLine: `RE: Outstanding balance on your account at ${propertyName || 'the premises'}`,
     paragraphs: [
       `Dear ${contact_name || tenant_name || 'Tenant'},`,
-      `Our records show an outstanding balance of ${money(balance)} on your${year ? ` ${year}` : ''} invoice for ${propertyName || 'the premises'}${dueDate ? `, which was due on ${longDate(dueDate)}` : ''}. As of today, we have not received this payment.`,
+      opening,
       `Please arrange to remit the outstanding amount at your earliest convenience. If payment has already been sent, kindly disregard this notice and accept our thanks — or reply with the payment details so we can update our records.`,
       `If you have any questions about the balance or would like to discuss payment arrangements, please contact our office. We appreciate your prompt attention and your continued tenancy.`,
     ],

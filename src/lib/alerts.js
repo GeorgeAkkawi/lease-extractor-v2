@@ -1,4 +1,6 @@
 import { fmtDate, money } from './format';
+import { occupancyStart } from './escalations';
+import { monthsBehindForInvoice } from './arStatus';
 
 const DAY = 86400000;
 
@@ -212,26 +214,48 @@ export function buildAlerts(
     });
   }
 
-  // Overdue invoices — a bill with money still owed whose due date has passed. Unlike
-  // the date-horizon alerts above, an overdue invoice is ALWAYS shown (no 6-month
-  // window) until it's paid: it's money on the table right now. Keyed by lease + due
-  // date so each unpaid bill is its own dismissible alert. Silenced with the Outstanding
-  // (receivables) display toggle.
+  // Behind on rent (+ overdue reconciliations). The old model flagged an annual invoice
+  // the moment its single due date passed — turning every tenant red from ~Aug 1, because a
+  // whole-year bill comes due once even though rent is really paid monthly. Now an ANNUAL
+  // invoice raises an alert only for the months that have come DUE and remain unpaid (see
+  // arStatus.js: months due = in-term months whose 1st ≤ today, minus what's been paid),
+  // so a mid-year tenant and a new-August lease aren't wrongly red. A RECONCILIATION
+  // invoice is a one-off year-end true-up, so it keeps the plain past-the-due-date test.
+  // Always shown until cleared (money on the table); silenced with the Outstanding
+  // (receivables) display toggle. Both use focus:'invoice' so the dashboard routes/emails
+  // them the same way.
   (arOn ? invoices || [] : []).forEach((inv) => {
-    const bal = Number(inv.balance) || 0;
-    if (bal <= 0 || !inv.due_date) return;
-    const d = daysUntil(inv.due_date, now);
-    if (d == null || d >= 0) return; // only past-due
+    if ((Number(inv.balance) || 0) <= 0) return;
     const lease = leaseById[inv.lease_id];
+    // Occupancy start = min(lease_start, earliest applied step) — so a July-start tenant is
+    // only "behind" on the months they actually owe (Jul–Dec), never Jan–Jun.
+    const occ = lease ? occupancyStart({ lease_start: lease.lease_start }, escByLease[inv.lease_id] || []) : null;
+    const status = monthsBehindForInvoice(inv, { occupancyStartIso: occ }, now);
+    if (!status.behind) return;
     const corpId = propMap[inv.property_id]?.corporation_id;
+    if (status.isReconciliation) {
+      out.push({
+        lease_id: inv.lease_id, property_id: inv.property_id, corporation_id: corpId,
+        focus: 'invoice', tone: 'danger', bucketLabel: 'Overdue', reconciliation: true,
+        date: inv.due_date, days: inv.due_date ? daysUntil(inv.due_date, now) : 0,
+        balance: Number(inv.balance) || 0, invoice_year: inv.year ?? null,
+        title: `Reconciliation overdue — ${lease?.tenant_name || 'tenant'}`,
+        detail: `${money(status.amountBehind)} unpaid · was due ${fmtDate(inv.due_date)}`,
+      });
+      return;
+    }
+    const n = status.monthsBehind;
     out.push({
       lease_id: inv.lease_id, property_id: inv.property_id, corporation_id: corpId,
-      focus: 'invoice', tone: 'danger', bucketLabel: 'Overdue',
-      date: inv.due_date, days: d,
+      focus: 'invoice', tone: n >= 2 ? 'danger' : 'warn',
+      bucketLabel: n >= 2 ? `${n} months behind` : '1 month behind',
+      // Sort by the annual invoice's (past) due date so behind tenants surface near the top.
+      date: inv.due_date || `${inv.year}-01-01`, days: inv.due_date ? daysUntil(inv.due_date, now) : 0,
       // Carried so the ✉ payment-reminder email can state the exact figures.
-      balance: bal, invoice_year: inv.year ?? null,
-      title: `Invoice overdue — ${lease?.tenant_name || 'tenant'}`,
-      detail: `${money(bal)} unpaid · was due ${fmtDate(inv.due_date)}`,
+      balance: Number(inv.balance) || 0, invoice_year: inv.year ?? null,
+      months_behind: n, amount_behind: status.amountBehind,
+      title: `Behind on rent — ${lease?.tenant_name || 'tenant'}`,
+      detail: `${n} month${n === 1 ? '' : 's'} behind · ${money(status.amountBehind)} · FY ${inv.year}`,
     });
   });
 

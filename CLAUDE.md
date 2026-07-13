@@ -75,6 +75,80 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Receivables audit: calendar/term-aware rent tracking + "months behind" replaces 30/60/90
+  aging** (George approved the plan — `~/.claude/plans/do-a-full-audit-floating-eagle.md`; full scope: bug
+  fixes + overdue-model reframe + UI simplification; behind-on-rent = **in-app alert only**, no owner emails
+  for monthly lateness). Deployed: DB migration `0061` (Supabase `awgrjmbcghdjgnqeiqkt`), `draft-invoice` +
+  `send-reminders` edge functions redeployed, frontend Cloudflare version `23e569fb`. **$0 (no AI calls) · no
+  tenant emails (in-app alerts only) · migration is a non-destructive view rebuild/append · the only data
+  writes are Phase 4's two named repairs on unpaid/mistagged rows.** Tests **288/288** (was 265 — +19
+  arStatus, +4 midYearRent; updated money/notification/sixMonth/camRecon). Migration pre-reviewed by the
+  migration-reviewer agent (APPROVE).
+  - **BUG 1 (urgent, root cause) — `v_invoice_balances` froze its `i.*` column list at the 0055 rebuild;
+    0057 + 0060 added `overdue_notice_bucket` + `kind` to `invoices` without rebuilding it.** Live symptoms
+    (all confirmed): `isAnnualInvoice()` read undefined → Ricki's monthly tracker showed **"No rent on file
+    for FY 2026"** (its $985 reconciliation invoice was mistaken for the year invoice); the Reconciliation
+    badge never rendered; and send-reminders' overdue sweep selected a non-existent column → **400'd every
+    night since 7/09** (overdue owner emails silently never sent). `0061` DROPs+recreates the view with the
+    byte-identical 0055 body (±5¢ dust clamp preserved) so the fresh `i.*` picks up both columns + any future
+    ones; `security_invoker`/grants re-established. **Prevention:** added rule #7 to the migration-reviewer
+    agent (any `add column` to a table a view selects `X.*` from must rebuild that view same-migration).
+  - **BUG 2 — "overdue" was judged from the ANNUAL invoice's due date** (issue+30d), so from ~Aug 1 every
+    tenant's entire remaining year read red. Replaced with a **months-behind** model: a month is *due* only
+    once its 1st has arrived; behind = perMonth × monthsDue − amount_paid (≤$0.05 dust → not behind). A
+    lump-annual payer is never "behind". Reconciliation invoices keep plain due-date overdue.
+  - **BUG 3 — calendar-naive monthly model, three parts, all fixed by ONE shared term-aware schedule.**
+    (3a) mid-year starts over-billed — **Infinite Mobile (lease_start 2026-07-01) was invoiced $36,561.97 for
+    a 6-month tenancy (~$18,281 over)**; (3b) no today-awareness (a missed March looked like a not-yet-due
+    December, no current-month marker, counters read "2/12" when only 7 were due); (3c) mid-year escalations
+    billed the new rate all year. New `occupancyStart(lease, applied)` = `min(lease_start, earliest APPLIED
+    escalation date)` distinguishes a genuinely new tenancy (step AT start → pre-months not owed) from a
+    renewed-in-place lease (old applied steps → full year owed); `monthlyBases(escalations, base, year)` makes
+    each month's rent era-aware. Extended `monthlyScheduleForYear` (abatement.js) with `occupancyStartIso` +
+    per-month bases → out-of-term months become `{owed:0, outsideTerm:true}`, proration falls out. New pure
+    **`src/lib/arStatus.js`** (`inTermMonths`/`monthsDueByNow`/`monthsBehindForInvoice`).
+  - **The tracker↔invoice consistency guarantee:** new shared `buildLeaseSchedule({year, grossBase,
+    otherAnnual, abatements, escalations, leaseStart, invoiceTotal})` in `api.js` builds the calendar/term-
+    aware schedule, then **scales it to the invoice total when one exists** (penny-folded so Σ owed ==
+    invoice total — preserves the 0055 penny invariant) so the monthly tracker and the invoice agree to the
+    cent while staying term-aware. `getMonthlyRent`/`markMonthPaid`/`getPropertyMonthlyRoll` all route
+    through it; `draft-invoice` + `invoiceTemplate` prorate to the owed months (note: "Prorated — lease
+    begins {date} ({n} of 12 months)"). `0061` also **appends `lease_start` to `v_tenant_shares`** (append-
+    only after the 0060 columns) so the roll builds schedules without an extra query.
+  - **Reframe + gating (George's notifications-follow-settings rule):** `alerts.js` overdue-invoice alert →
+    **"Behind on rent — {tenant}"** (warn 1mo / danger 2+) for annuals + a due-date "Reconciliation overdue"
+    for recon invoices — both under the SAME `arOn` (receivables Settings toggle) gate. `summarizeAR` returns
+    `{outstanding, count, tenantsBehind, amountBehind, byMonthsBehind:{m1,m2plus}}` (30/60/90 buckets gone);
+    Dashboard AR foot → "N tenant(s) behind · $X" (danger only when N>0); ARSummary cards → Outstanding /
+    Behind on rent / 1 month behind / 2+ months behind. `send-reminders` overdue email sweep filtered to
+    **`kind='reconciliation'` only** (annual lateness is in-app only) — its per-owner `ar`-toggle check kept.
+  - **UI (calendar-aware + declutter):** MonthlyRentTracker + PropertyRentRoll now read the calendar via
+    `localDateIso` — month states `—` not-owed / `Free` abated / `✓` paid / **late** (amber) / upcoming, a
+    ring on the current month, honest counters ("Paid {n} of {m} due · {b} behind"), and one-click catch-up
+    ("✓ Mark paid through {month}" per tenant, "✓ Mark everyone paid through {month}" on the roll).
+    InvoicesPanel: dropped 'draft', single **"Remove invoice"** (= void; voided collapse under "N removed —
+    show"); LeaseDetailPage panel title "Receivables" → "Invoices & payments".
+  - **Phase 4 — live-data repair** (the two named writes): Infinite Mobile's FY2026 invoice re-prorated to
+    the 6-month figure **$18,280.99** (base $14,372.52 · CAM $213.00 · tax $3,695.47; balance $12,187.33) and
+    its two $3,046.83 payments re-tagged period_month **1→7 / 2→8** (amounts unchanged — they were already
+    the correct in-term monthly). **NOT executed** (destructive, needs George's separate OK): deleting the
+    empty duplicate Infinite Mobile lease (created 6/27, re-imported 7/01 — double-counts SF/rent). One
+    sentence back — "yes, delete the empty duplicate Infinite Mobile lease" — and it's gone.
+  - **Files:** `supabase/migrations/0061_invoice_balances_rebuild.sql` (new), `src/lib/arStatus.js` (new),
+    `src/lib/{abatement,escalations,alerts,api,emailTemplates,invoiceTemplate,dashboardWidgets}.js`,
+    `src/lib/demo/{mockClient,store}.js`, `src/components/{MonthlyRentTracker,PropertyRentRoll,InvoicesPanel}.js`,
+    `src/pages/{DashboardPage,LeaseDetailPage,PropertyFinancialsPage}.js`, `src/App.css`,
+    `supabase/functions/{draft-invoice,send-reminders}/index.ts`, tests (`arStatus.test.js`,
+    `midYearRent.test.js` new; money/notification/sixMonth/camRecon updated).
+  - **Verified:** unit **288/288** (`vitest run`) incl. the mid-year integration tests vs the demo mock
+    (July-start lease → 6 owed months, Jan–Jun unbillable, "✓ all" skips them; occupancyStart new-vs-renewed;
+    mid-year escalation penny-true; holdover months stay owed) and the component renders. `vite build`
+    compiles; both edge functions deployed clean. **Live post-push verified:** `v_invoice_balances` now
+    exposes kind + overdue_notice_bucket; `v_tenant_shares` carries lease_start (col 22); Ricki's annual
+    ($39,395.59) is now distinguishable from its $985.04 reconciliation; Infinite Mobile invoice reads
+    $18,280.99 with payments on July + August. Live site 200s (amlakre.com + www + workers.dev). Committed
+    only this task's files.
+
 - **2026-07-13** — **Finances page fits the screen — no more scrolling right** (George: "can you make it so
   that i dont have to scroll right to get to the end of that page? use that design skill and make it look
   nice"). Deployed: frontend Cloudflare version `39e5dfbe`. **Frontend-only — layout/CSS, zero logic or math

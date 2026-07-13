@@ -113,6 +113,12 @@ export function seed() {
       // Ends soon with no renewal option on file → demonstrates the "lease ending —
       // no renewal" reminder, and the manual no-renewal flag set to confirmed.
       { id: 'lease-3', owner_id: DEMO_USER.id, property_id: 'prop-2', tenant_name: 'Northwind Books', tenant_email: 'accounts@northwindbooks.example', tenant_contact_name: 'Jordan Pak', premises_address: '250 Oak Ave — Unit 2', square_footage: 5000, base_rent: 125000, lease_start: iso(Y - 3, 1, 1), lease_termination_date: soon, lease_terms: 'Tenant pays 40% of CAM by agreement.', share_override_pct: 0.4, roof_responsible: false, no_renewal_option: true, lease_text: leaseText['lease-3'], source: 'ai_extracted', extraction_status: 'reviewed', ai_confidence: { square_footage: 0.99, base_rent: 0.97, lease_termination_date: 0.72, lease_terms: 0.6 } },
+      // A MID-YEAR-START tenant (moved in July 1 of the current year) so the sandbox shows a
+      // calendar-aware tracker: Jan–Jun read "—" (before the tenancy — not owed, not billed),
+      // its year invoice is prorated to the 6 months it covers, and it only counts as "behind"
+      // on months that have actually come due. Shares the 40% CAM override so it doesn't
+      // disturb Northwind's reconciliation demo (both keep fixed override shares).
+      { id: 'lease-4', owner_id: DEMO_USER.id, property_id: 'prop-2', tenant_name: 'Sunrise Yoga Studio', tenant_email: 'hello@sunriseyoga.example', tenant_contact_name: 'Priya Anand', premises_address: '250 Oak Ave — Unit 5', square_footage: 1000, base_rent: 36000, lease_start: iso(Y, 7, 1), lease_termination_date: iso(Y + 3, 6, 30), lease_terms: 'New tenancy commencing mid-year.', share_override_pct: null, roof_responsible: false, no_renewal_option: false, lease_text: 'COMMERCIAL LEASE AGREEMENT\nTenant: Sunrise Yoga Studio. Premises: Unit 5, approximately 1,000 rentable square feet at Oak Center.\nBase Rent: $36,000.00 per annum, payable monthly.', source: 'manual', extraction_status: 'reviewed' },
     ],
     rent_escalations: [
       // esc-1 is in the future → shows as an advance reminder; auto-applies on its date.

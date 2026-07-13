@@ -5,7 +5,7 @@
 // block must match a key here.
 export const DASHBOARD_WIDGETS = [
   { key: 'rent_roll',   label: 'Annual rent roll',          hint: 'Total yearly rent across all your active leases.' },
-  { key: 'ar',          label: 'Outstanding (receivables)', hint: 'What tenants still owe you, and how much is overdue. Hides both the Overview card and the receivables section on each property’s Financials page. Turning this off also silences overdue-rent reminders and emails.' },
+  { key: 'ar',          label: 'Outstanding (receivables)', hint: 'What tenants still owe you, and who is behind on rent. Hides both the Overview card and the receivables section on each property’s Financials page. Turning this off also silences the “behind on rent” dashboard alerts; the only receivables emails are for overdue year-end reconciliations, and those stop too.' },
   { key: 'occupancy',   label: 'Occupancy',                 hint: 'How much of your space is leased versus vacant.' },
   { key: 'expiring',    label: 'Expiring ≤ 90 days',        hint: 'A count of leases ending within the next 90 days.' },
   { key: 'expirations', label: 'Lease expirations table',   hint: 'The list of leases ending in the next 90 days.' },

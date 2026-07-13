@@ -2,7 +2,8 @@
 // fully clickable in demo mode without any backend. Computes the v_property_totals
 // and v_tenant_shares views the same way the SQL does (math stays in code).
 import { seed, DEMO_USER } from './store';
-import { effectiveRent } from '../escalations';
+import { effectiveRent, occupancyStart, monthlyBases } from '../escalations';
+import { monthlyScheduleForYear } from '../abatement';
 import { fmtDate } from '../format';
 
 const db = seed();
@@ -92,6 +93,8 @@ function tenantShares(propertyId, year) {
       base_rent: effectiveRent(l, escFor(l.id), year),
       share_pct: share, tax_amount: share * exp.taxes_total, cam_amount: share * exp.cam_total,
       roof_amt: l.roof_responsible ? exp.roof_total * perSf : 0,
+      // lease_start appended to v_tenant_shares by 0061 — lets the tracker/roll prorate a mid-year start.
+      lease_start: l.lease_start ?? null,
       is_active: l.is_active !== false, lease_termination_date: l.lease_termination_date ?? null, premises_address: l.premises_address ?? null,
       // Estimated additional rent (0060) — mirrors the three columns appended to v_tenant_shares.
       est_cam_annual: l.est_cam_annual ?? null, est_tax_annual: l.est_tax_annual ?? null, est_roof_annual: l.est_roof_annual ?? null,
@@ -177,11 +180,16 @@ class QB {
       if (pidFilter?.op === 'in') pids = pidFilter.value;
       else if (pidFilter) pids = [pidFilter.value];
       else pids = db.properties.map((p) => p.id);
-      const out = [];
+      let out = [];
       for (const pid of pids) {
         if (this.table === 'v_property_totals') { const r = propertyTotals(pid, yr); if (r) out.push(r); }
         else out.push(...tenantShares(pid, yr));
       }
+      // Apply any remaining filters (e.g. getTenantShare's .eq('lease_id', …)) + limit — the
+      // property_id/year handled above are re-applied harmlessly. Without this a by-lease
+      // view query returned every row and .limit(1) picked the wrong tenant.
+      out = applyFilters(out, this.filters);
+      if (this._limit) out = out.slice(0, this._limit);
       return this._wrap(out);
     }
 
@@ -369,6 +377,26 @@ function demoInvoiceFacts(body) {
   const roof = share && share.roof_responsible
     ? (share.est_roof_annual != null ? Number(share.est_roof_annual) : share.roof_amt)
     : 0; // separate roof line
+  // Term-aware proration (mirrors the real draft-invoice edge fn): a mid-year lease start
+  // bills only the months it covers. Reuse the same pure helpers the app runtime uses.
+  const escs = escFor(body?.lease_id);
+  const abatements = (db.rent_abatements || []).filter((a) => a.lease_id === body?.lease_id);
+  const grossBase = share ? share.base_rent : (lease?.base_rent || 0);
+  const occ = occupancyStart({ lease_start: share?.lease_start ?? lease?.lease_start }, escs);
+  const bases = monthlyBases(escs, grossBase, year);
+  const sched = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: cam + tax + roof, abatements, occupancyStartIso: occ, monthlyBases: bases });
+  const months = Object.values(sched);
+  const inTerm = months.filter((c) => !c.outsideTerm).length;
+  const ratio = inTerm / 12;
+  // Prorated gross base over in-term months (sum of that month's base rate ÷ 12).
+  let proratedBaseGross = 0;
+  let proratedAbatement = 0;
+  for (let m = 1; m <= 12; m++) {
+    if (sched[m].outsideTerm) continue;
+    proratedBaseGross += (bases[m - 1] != null ? Number(bases[m - 1]) : grossBase) / 12;
+    proratedAbatement += Number(sched[m].credit) || 0;
+  }
+  const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
   return {
     business,
     tenant: share?.tenant_name || lease?.tenant_name || 'Tenant',
@@ -379,10 +407,13 @@ function demoInvoiceFacts(body) {
     year,
     tax_year: year - 1, // taxes lag a year — used for the tax line label + note
     square_footage: share?.square_footage || lease?.square_footage || 0,
-    base_rent_annual: share ? share.base_rent : (lease?.base_rent || 0),
-    cam_annual: cam,
-    tax_annual: tax,
-    roof_annual: roof,
+    base_rent_annual: r2(proratedBaseGross),
+    cam_annual: r2(cam * ratio),
+    tax_annual: r2(tax * ratio),
+    roof_annual: r2(roof * ratio),
+    abatement_annual: r2(proratedAbatement),
+    occupancy_start: occ,
+    months_billed: inTerm,
     estimated: {
       cam: share?.est_cam_annual != null,
       tax: share?.est_tax_annual != null,
