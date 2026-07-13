@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase, DEMO_MODE } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { getAutoLogoutMinutes } from '../lib/api';
-import { idlePhase, secondsUntilLogout, resolveMinutes, WARN_SECONDS } from '../lib/idleLogout';
+import { idlePhase, secondsUntilLogout, resolveMinutes, initialActivityStamp, WARN_SECONDS } from '../lib/idleLogout';
 import { useModalA11y } from './modalA11y';
 
 // Auto sign-out after a period of inactivity (configurable in Settings → Security).
@@ -56,8 +56,11 @@ export default function AutoLogout() {
   // every tab; the localStorage write is what makes cross-tab activity count.
   useEffect(() => {
     if (!active) return undefined;
-    // Seed an initial stamp so a freshly-loaded tab doesn't inherit a stale one.
-    if (!localStorage.getItem(ACTIVITY_KEY)) writeLastActivity(Date.now());
+    // Reconcile the shared activity stamp before the idle poll first reads it. Signing in /
+    // loading the page is itself activity, and the stamp survives sign-out — so a returning
+    // user must NOT inherit a stale prior-session stamp (that would sign them straight back
+    // out). A RECENT stamp is kept so genuine cross-tab activity still counts.
+    writeLastActivity(initialActivityStamp(Number(localStorage.getItem(ACTIVITY_KEY)), Date.now(), minutes));
     let lastWrite = 0;
     const onActivity = () => {
       const now = Date.now();
@@ -68,7 +71,9 @@ export default function AutoLogout() {
     const events = ['pointerdown', 'keydown', 'touchstart', 'scroll'];
     events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
     return () => events.forEach((e) => window.removeEventListener(e, onActivity));
-  }, [active]);
+    // `minutes` in deps so a preference that loads AFTER mount (e.g. a tighter window than
+    // the 30-min default) re-reconciles the stamp before the poll can act on the old one.
+  }, [active, minutes]);
 
   // Poll the idle phase on an interval; also re-evaluate when the warning opens so
   // the countdown starts immediately.

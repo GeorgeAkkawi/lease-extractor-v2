@@ -3,6 +3,7 @@ import {
   idlePhase,
   secondsUntilLogout,
   resolveMinutes,
+  initialActivityStamp,
   DEFAULT_MINUTES,
   WARN_SECONDS,
 } from '../idleLogout';
@@ -45,6 +46,40 @@ describe('idlePhase — boundaries', () => {
   test('null minutes falls back to the 30-minute default', () => {
     expect(idlePhase(0, 30 * MIN, null)).toBe('expired');
     expect(idlePhase(0, 30 * MIN - MIN, null)).toBe('warn');
+  });
+});
+
+describe('initialActivityStamp — never inherit a stale prior-session stamp', () => {
+  const now = 100 * MIN; // arbitrary "now"
+
+  test('a STALE leftover (older than the window) → reset to now (the sign-in-lockout fix)', () => {
+    // The bug: a returning user carried a stamp from 40 min ago; on sign-in the first idle
+    // check read it as long-expired and signed them straight back out. Now → reset to now.
+    expect(initialActivityStamp(now - 40 * MIN, now, 30)).toBe(now);
+    // exactly at the cutoff counts as stale too
+    expect(initialActivityStamp(now - 30 * MIN, now, 30)).toBe(now);
+  });
+
+  test('a RECENT stamp is kept, so genuine cross-tab activity still counts', () => {
+    expect(initialActivityStamp(now - 5 * MIN, now, 30)).toBe(now - 5 * MIN);
+  });
+
+  test('missing / invalid / future stamps → now', () => {
+    expect(initialActivityStamp(NaN, now, 30)).toBe(now);
+    expect(initialActivityStamp(0, now, 30)).toBe(now);
+    expect(initialActivityStamp(-1, now, 30)).toBe(now);
+    expect(initialActivityStamp(now + 5 * MIN, now, 30)).toBe(now); // clock skew
+  });
+
+  test('a tighter window makes a middling stamp stale (the pref-loads-late edge)', () => {
+    // 20-min-old stamp: fine under the 30-min default, but stale once a 15-min pref loads.
+    expect(initialActivityStamp(now - 20 * MIN, now, 30)).toBe(now - 20 * MIN);
+    expect(initialActivityStamp(now - 20 * MIN, now, 15)).toBe(now);
+  });
+
+  test('null minutes uses the 30-min default; off (0) never treats a stamp as stale', () => {
+    expect(initialActivityStamp(now - 40 * MIN, now, null)).toBe(now);       // default 30 → stale
+    expect(initialActivityStamp(now - 40 * MIN, now, 0)).toBe(now - 40 * MIN); // off → keep (unused anyway)
   });
 });
 

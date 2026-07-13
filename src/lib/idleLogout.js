@@ -38,6 +38,21 @@ export function idlePhase(lastActivityMs, nowMs, minutes) {
   return 'active';
 }
 
+// The activity timestamp to adopt when the auto sign-out watcher (re)starts — on sign-in
+// or a page load, both of which ARE themselves user activity. localStorage survives a
+// sign-out, so a returning user can carry a STALE stamp from a previous session; adopting
+// it unchanged signs them out the instant they sign back in (the very first idle check
+// reads the old time as long-expired). Rule: KEEP a recent stored stamp (so genuine
+// cross-tab activity still counts), but fall back to `nowMs` when the stamp is missing,
+// unparseable, in the future, or already past the idle window.
+export function initialActivityStamp(storedMs, nowMs, minutes) {
+  const mins = resolveMinutes(minutes);
+  if (!Number.isFinite(storedMs) || storedMs <= 0) return nowMs; // missing / invalid
+  if (storedMs > nowMs) return nowMs;                            // clock skew / future stamp
+  if (mins > 0 && nowMs - storedMs >= mins * 60 * 1000) return nowMs; // stale leftover
+  return storedMs;                                               // recent — keep it
+}
+
 // Seconds remaining before sign-out (for the live countdown in the warning modal).
 // Clamped to [0, WARN_SECONDS].
 export function secondsUntilLogout(lastActivityMs, nowMs, minutes) {
