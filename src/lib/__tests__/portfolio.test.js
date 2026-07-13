@@ -94,12 +94,103 @@ describe('buildPortfolioSnapshot — facts across tenants/insurance/contracts', 
     expect(snap.properties[0].service_contracts[0].expired).toBe(true);
   });
 
-  test('inactive leases are excluded', () => {
+  test('holdover (inactive) leases are INCLUDED and flagged', () => {
+    // George's rule: an outdated tenant still occupies its space and owes rent until
+    // he removes it, so Ask Amlak must be able to answer about it — flagged as held over.
     const data = base();
-    data.leases.push({ id: 'l3', tenant_name: 'Old Tenant', property_id: 'p1', is_active: false });
+    data.leases.push({ id: 'l3', tenant_name: 'Old Tenant', property_id: 'p1', is_active: false, lease_termination_date: '2024-01-01' });
     const snap = buildPortfolioSnapshot(data);
-    expect(snap.tenant_count).toBe(2);
-    expect(tenant(snap, 'Old Tenant')).toBeUndefined();
+    expect(snap.tenant_count).toBe(3);
+    const old = tenant(snap, 'Old Tenant');
+    expect(old).toBeDefined();
+    expect(old.holdover).toBe(true);
+    expect(tenant(snap, 'City Dental').holdover).toBe(false);
+    // and the text flags it so the model can say "held over"
+    expect(snapshotToText(snap)).toContain('HELD OVER');
+  });
+});
+
+// A richer fixture exercising the new facts (roof, lease terms, contact, this year's
+// billed CAM/tax share, next rent step, free-rent, additional insured, occupancy,
+// annual-report dates).
+const rich = () => {
+  const d = base();
+  d.leases[0].roof_responsible = true;            // City Dental (l1) pays roof
+  d.leases[0].lease_terms = 'NNN lease, 5 yr';
+  d.leases[0].tenant_contact_name = 'Dr. Smith';
+  d.leases[0].tenant_email = 'dr@city.example';
+  d.leases[0].premises_address = 'Suite 30';
+  d.insurance[1].additional_insured = true;       // Bright Coffee (l2) cert names landlord
+  d.escalations = [
+    { lease_id: 'l2', effective_date: '2027-01-01', status: 'scheduled', new_base_rent: 39000 },  // the "next"
+    { lease_id: 'l2', effective_date: '2025-01-01', status: 'applied', new_base_rent: 36000 },     // past/applied — ignored
+    { lease_id: 'l2', effective_date: '2028-06-01', status: 'scheduled', new_base_rent: 41000 },   // past the 2027-12-31 term end — gated out
+  ];
+  d.abatements = [
+    { lease_id: 'l1', kind: 'free', start_date: '2026-06-01', end_date: '2026-09-30' }, // active as of TODAY
+    { lease_id: 'l1', kind: 'free', start_date: '2020-01-01', end_date: '2020-06-30' }, // ended — ignored
+  ];
+  d.shares = [
+    { lease_id: 'l1', property_id: 'p1', cam_amount: 3000, tax_amount: 2000, roof_amt: 500, base_rent: 48000 },
+  ];
+  d.totals = [
+    { property_id: 'p1', occupancy: 0.8, vacant_sf: 2000, total_revenue: 84000 },
+  ];
+  d.annualReports = [
+    { corporation_id: 'c1', due_date: '2026-09-01', last_filed_date: '2025-09-01' },
+  ];
+  return d;
+};
+
+describe('buildPortfolioSnapshot — enriched facts', () => {
+  test('roof responsibility (the reported gap) is now a fact', () => {
+    const snap = buildPortfolioSnapshot(rich());
+    expect(tenant(snap, 'City Dental').roof_billed).toBe(true);
+    expect(tenant(snap, 'Bright Coffee Co.').roof_billed).toBe(false);
+    const text = snapshotToText(snap);
+    expect(text).toContain('Roof expenses billed to tenant: YES');
+  });
+
+  test('this year\'s billed CAM/tax share + total from the shares view', () => {
+    const city = tenant(buildPortfolioSnapshot(rich()), 'City Dental');
+    expect(city.billed_cam).toBe(3000);
+    expect(city.billed_tax).toBe(2000);
+    expect(city.billed_roof).toBe(500);
+    // total = base 48000 + cam 3000 + tax 2000 + roof 500
+    expect(city.billed_total).toBe(53500);
+  });
+
+  test('next scheduled rent step respects the committed term end', () => {
+    const bright = tenant(buildPortfolioSnapshot(rich()), 'Bright Coffee Co.');
+    expect(bright.next_step).toEqual({ date: '2027-01-01', amount: 39000 }); // not the 2028 one past term end
+  });
+
+  test('active free-rent window surfaces (ended ones ignored)', () => {
+    const city = tenant(buildPortfolioSnapshot(rich()), 'City Dental');
+    expect(city.free_rent).toEqual({ kind: 'free', start: '2026-06-01', end: '2026-09-30', active: true });
+  });
+
+  test('additional-insured flag + contact facts', () => {
+    const snap = buildPortfolioSnapshot(rich());
+    expect(tenant(snap, 'Bright Coffee Co.').additional_insured).toBe('yes');
+    const city = tenant(snap, 'City Dental');
+    expect(city.contact_name).toBe('Dr. Smith');
+    expect(city.suite).toBe('Suite 30');
+  });
+
+  test('property occupancy/vacancy/revenue from the totals view', () => {
+    const p = buildPortfolioSnapshot(rich()).properties[0];
+    expect(p.occupancy).toBe(0.8);
+    expect(p.vacant_sf).toBe(2000);
+    expect(p.annual_revenue).toBe(84000);
+  });
+
+  test('corporations carry annual-report dates', () => {
+    const snap = buildPortfolioSnapshot(rich());
+    const acme = snap.corporations.find((c) => c.name === 'Acme Holdings');
+    expect(acme.annual_report_due).toBe('2026-09-01');
+    expect(acme.has_annual_report).toBe(true);
+    expect(snapshotToText(snap)).toContain('annual report due 2026-09-01');
   });
 });
 
@@ -154,6 +245,24 @@ describe('snapshotFingerprint — flips when the portfolio changes', () => {
     expect(snap.fingerprint).toBe(
       snapshotFingerprint({ leases: d.leases, insurance: d.insurance, contracts: d.contracts, balances: d.balances })
     );
+  });
+
+  test('bumped to v4 (kills every v3-era cached answer)', () => {
+    expect(snapshotFingerprint({}).startsWith('v4|')).toBe(true);
+  });
+
+  test('flips when a new source changes — escalation, abatement, annual report, or expense', () => {
+    const f0 = snapshotFingerprint({});
+    // a scheduled rent step appears
+    expect(snapshotFingerprint({ escalations: [{ lease_id: 'l1', updated_at: '2026-08-01' }] })).not.toBe(f0);
+    // a free-rent window is added
+    expect(snapshotFingerprint({ abatements: [{ lease_id: 'l1', updated_at: '2026-08-01' }] })).not.toBe(f0);
+    // an annual report date changes
+    expect(snapshotFingerprint({ annualReports: [{ corporation_id: 'c1', updated_at: '2026-08-01' }] })).not.toBe(f0);
+    // an expense edit re-splits the CAM/tax share (value-based, no updated_at)
+    expect(snapshotFingerprint({ shares: [{ lease_id: 'l1', cam_amount: 3000, tax_amount: 2000 }] })).not.toBe(f0);
+    expect(snapshotFingerprint({ shares: [{ lease_id: 'l1', cam_amount: 9999, tax_amount: 2000 }] }))
+      .not.toBe(snapshotFingerprint({ shares: [{ lease_id: 'l1', cam_amount: 3000, tax_amount: 2000 }] }));
   });
 });
 

@@ -326,6 +326,9 @@ const functions = {
     if (name === 'ask-portfolio') {
       return ok(demoAskPortfolio(body));
     }
+    if (name === 'ask-leases') {
+      return ok(demoAskLeases(body));
+    }
     if (name === 'extract-insurance') {
       return ok(demoExtractInsurance());
     }
@@ -606,7 +609,41 @@ function demoAskPortfolio(body) {
     const props = (snap.properties || []).filter((p) => (p.service_contracts || []).length);
     return { answer: `Properties with service contracts (${props.length}):\n` + list(props, (p) => `• ${p.property}: ` + p.service_contracts.map((c) => `${c.service_type || 'contract'}${c.vendor ? ` (${c.vendor})` : ''}`).join(', ')) + foot };
   }
-  return { answer: `Your portfolio: ${snap.property_count || 0} properties, ${snap.tenant_count || 0} tenants. Ask about insurance, contracts, rent, expirations, or who owes money.` + foot };
+  // Roof — now answerable from the facts (the "Roof share billed" flag). No docs needed.
+  if (/roof/.test(q)) {
+    const yes = tenants.filter((t) => t.roof_billed);
+    const no = tenants.filter((t) => !t.roof_billed);
+    return { answer:
+      `Roof expenses are billed to these tenants (${yes.length}):\n` + list(yes, (t) => `• ${t.tenant} — ${t.property}`) +
+      `\n\nRoof is NOT billed to (landlord absorbs it) (${no.length}):\n` + list(no, (t) => `• ${t.tenant} — ${t.property}`) + foot };
+  }
+  // Anything else: the facts summary can't answer it → signal the "read my leases"
+  // fallback so the 📄 button appears (demo mirrors the live needs_docs marker).
+  return {
+    answer: `That's not something the records summary tracks directly. You can have me read the full lease documents to answer it.`,
+    needs_docs: true,
+  };
+}
+
+// Demo stand-in for the ask-leases Edge Function ("read my leases"). Keyword-routes
+// to a canned grouped answer drawn from the seeded leases, so the docs fallback UX
+// works with no backend. Connected to a real API key, it reads the full lease texts.
+function demoAskLeases(body) {
+  const q = String(body?.question || '').toLowerCase();
+  const foot = '\n\n(Demo mode gives a canned answer from the seeded leases. Connected to your API key, the AI reads every lease document and answers grouped by tenant.)';
+  const leases = (db.leases || []).filter((l) => l.is_active !== false);
+  const propName = (id) => (db.properties.find((p) => p.id === id) || {}).name || 'property';
+  const line = (l, verdict) => `• ${l.tenant_name} — ${propName(l.property_id)}: ${verdict}`;
+  if (/(roof|structural|structure)/.test(q)) {
+    return { answer: 'From the lease documents (roof responsibility):\n' +
+      leases.map((l) => line(l, l.roof_responsible ? 'Tenant pays its pro-rata share of roof expenses.' : 'Landlord maintains the roof and structure.')).join('\n') + foot };
+  }
+  if (/(cam|tax|nnn|triple net|additional rent|expense)/.test(q)) {
+    return { answer: 'From the lease documents (expense responsibility):\n' +
+      leases.map((l) => line(l, l.lease_terms || 'See the lease document.')).join('\n') + foot };
+  }
+  return { answer: 'From the lease documents:\n' +
+    leases.map((l) => line(l, l.lease_terms || (l.lease_text || '').split('\n').filter(Boolean)[1] || 'See the lease document.')).join('\n') + foot };
 }
 
 // Postgres RPCs. Mirrors the real SQL functions so demo + tests exercise the same

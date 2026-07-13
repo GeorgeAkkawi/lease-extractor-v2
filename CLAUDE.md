@@ -75,6 +75,73 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Ask Amlak: Clear-answers button + a LOT more facts in the summary (roof, lease terms,
+  billed CAM/tax, next rent step, free rent, additional-insured, occupancy, annual-report dates) + a
+  "📄 read my leases" fallback when the facts fall short + a configurable auto sign-out** (George approved
+  the plan — `~/.claude/plans/need-a-way-to-cheerful-narwhal.md`; his picks: expand the facts AND add a
+  quick-model docs fallback, keep the visible-list Clear, idle timeout chosen in Settings, 60-second stay-
+  signed-in warning). Deployed: DB migration `0062` (Supabase `awgrjmbcghdjgnqeiqkt`), NEW `ask-leases`
+  edge fn + `ask-portfolio` redeployed, frontend Cloudflare version `9658c863`. **The only spend is the
+  explicit-click docs fallback (~5–10¢/question, repeats $0 via cache); expanding the facts is $0 per
+  question; the migration is one additive nullable column; no tenant emails, no destructive data.** Tests
+  **303/303** (was 288 — +6 idleLogout, +9 portfolio: enriched facts + v4 fingerprint + holdover-inclusion).
+  - **Why George asked:** Ask Amlak answered "which tenants pay for roof?" with *"the summary does not track
+    roof responsibility."* Root cause: it reads a compact **facts-only records summary** (never lease
+    documents), and roof wasn't one of the facts. He wanted BOTH — pack far more facts in, then a fallback
+    that reads the actual leases with a quick model. Plus a Clear button and an auto-logout.
+  - **1) Clear answers (`AskPage.js`):** the Q&A log is component state (memory only — zero storage; the
+    saved-answer cache is one tiny per-user row per question with stale rows auto-deleted, so no scaling
+    concern), so a quiet "Clear answers" ghost button just wipes the visible list.
+  - **2) Richer facts (`portfolio.js` + `fetchPortfolioSnapshot` in `api.js`):** per tenant now — **roof
+    share billed yes/no** (`leases.roof_responsible`, the reported gap), lease-terms note, contact/email/
+    suite, **this year's billed CAM+tax(+roof) share and total** (from `v_tenant_shares`), **next scheduled
+    rent step** (gated to within the committed term), **active/upcoming free-rent window** (`rent_abatements`),
+    **additional-insured** (gated under the Insurance feature). Per property — **occupancy / vacant SF /
+    annual revenue** (`v_property_totals`). New **CORPORATIONS** section — each corp's annual-report due/last-
+    filed (`annual_reports`, core/never gated). **Holdover (is_active=false) tenants are now INCLUDED and
+    flagged "held over"** (were dropped entirely) — matches George's rule that outdated tenants count until
+    removed. Feature gating unchanged in shape (insurance/contract facts vanish when the module's off).
+    Fetch adds the extra lease/insurance columns + 4 bulk queries (escalations, abatements, annual_reports,
+    the two views by property_id + current year).
+  - **Cache-staleness fix — fingerprint `v3→v4`:** bumping the version kills every thinner-summary cached
+    answer instantly (so the wrong "doesn't track roof" answer dies), and new components (escalations /
+    abatements / annual_reports count+max-stamp, plus a **value-based shares sum** so an expense edit that
+    re-splits CAM/tax flips the cache with no updated_at to key on) keep future edits invalidating correctly.
+  - **3) "📄 Read my leases" fallback:** new `ask-leases` edge fn (Haiku 4.5, user-scoped RLS client from the
+    caller's JWT — reads ALL the caller's `lease_text` + `lease_addendums` server-side, corpus in a
+    `cache_control` block, per-doc 30k / total 250k caps with an honest truncation note, grouped-by-tenant +
+    quote-the-clause). `ask-portfolio` now ends a can't-answer reply with a `[NEEDS_DOCS]` token which the fn
+    strips and returns `{answer, needs_docs}`; `askLeasesDocs()` (client) is cache-first under a `docs::`
+    key + a light corpus fingerprint (leases+riders count/updated_at) so repeats are $0. AskPage shows a
+    prominent **"📄 Read my leases to answer this (~a few cents)"** when `needsDocs`, and a quiet ghost
+    "Answer from the lease documents instead" on every answer (for when the fact answer is wrong, not just
+    missing); the docs answer appends under the same entry with the saved-answer tag on cache hits. Only ever
+    runs on an explicit click (George's cost-sensitivity). Demo: `mockClient` routes `ask-leases` → a canned
+    grouped answer, `demoAskPortfolio` now answers roof from facts + returns `needs_docs` for off-topic asks.
+  - **4) Auto sign-out (migration `0062` + `idleLogout.js` + `AutoLogout.js` + Settings→Security picker):**
+    `0062` adds nullable `user_preferences.auto_logout_minutes` (null=default 30, 0=off). Pure
+    `idlePhase(lastActivity, now, minutes)` → active/warn/expired (WARN_SECONDS=60), unit-tested at the
+    boundaries. `AutoLogout` (mounted in `Layout`, inert in demo / signed-out / when Off) stamps
+    `localStorage['amlak:lastActivity']` (throttled ~1/10s, so activity in ANY tab counts), polls every 15s,
+    shows a `useModalA11y` "Still there? …signed out in {n}s / Stay signed in" modal for the last 60s (any
+    activity or the button resets), and on expiry does `queryClient.clear()` + `supabase.auth.signOut()`.
+    Settings→Security gains an **Auto sign-out** card with an Off / 15 min / 30 min / 1 hour segmented picker
+    (`getAutoLogoutMinutes`/`setAutoLogoutMinutes`, plain-English line; shown-but-inactive in demo).
+  - **Files:** `supabase/migrations/0062_auto_logout_pref.sql` (new), `supabase/functions/ask-leases/index.ts`
+    (new), `supabase/functions/ask-portfolio/index.ts`, `src/lib/{portfolio,api,idleLogout}.js` (idleLogout
+    new), `src/components/{AutoLogout.js (new),Layout.js}`, `src/pages/{AskPage,SecuritySettings}.js`,
+    `src/lib/demo/mockClient.js`, `src/App.css`, tests (`idleLogout.test.js` new; `portfolio.test.js` updated).
+  - **Verified:** unit **303/303** (`vitest run`); `vite build` compiles. **Real-browser click-through 8/8**
+    (system Chrome headless via playwright-core — the shared MCP browser was held by a concurrent session —
+    against the demo dev server): roof chip → answer names the roof-billed tenant **from the facts** (the
+    reported gap fixed); Clear answers empties the log; an off-topic question shows the 📄 docs button →
+    canned grouped docs answer; Settings→Security shows the Auto sign-out picker with all four options —
+    **zero console errors**. **Live verified:** `user_preferences.auto_logout_minutes` present; both edge fns
+    deployed clean; `ask-leases` unauthenticated POST → **401** (RLS-gated, reads only the caller's own
+    leases); site 200s (amlakre.com + www + workers.dev). **George: ask "which tenants pay for the roof?" —
+    it now answers from the "Roof share billed" flag (flip that toggle On for the tenants whose leases make
+    them pay), or click 📄 to have the lease documents read (~5–10¢).** Committed only this task's files.
+
 - **2026-07-13** — **Receivables audit: calendar/term-aware rent tracking + "months behind" replaces 30/60/90
   aging** (George approved the plan — `~/.claude/plans/do-a-full-audit-floating-eagle.md`; full scope: bug
   fixes + overdue-model reframe + UI simplification; behind-on-rent = **in-app alert only**, no owner emails

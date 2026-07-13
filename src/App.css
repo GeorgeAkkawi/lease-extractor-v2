@@ -243,6 +243,11 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .ask-a-body{white-space:pre-wrap;font-size:13.5px;line-height:1.6;color:var(--ink)}
 .ask-jump{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:12px;padding-top:11px;border-top:1px solid var(--border);font-size:12.5px}
 .ask-empty{margin-top:22px}
+.ask-log-head{display:flex;justify-content:flex-end;margin-top:18px;margin-bottom:-6px}
+.ask-docs-btn{margin-top:14px;text-transform:none;letter-spacing:0;font-size:13px}
+.ask-docs-btn .muted{font-weight:400}
+.ask-docs-link{margin-top:12px;font-size:12.5px}
+.ask-docs-answer{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
 
 /* ---- CAM itemized editor ---- */
 .cam-block{border-top:1px solid var(--border);padding-top:20px}

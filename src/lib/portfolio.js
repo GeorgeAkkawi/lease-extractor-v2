@@ -1,8 +1,11 @@
 // Portfolio snapshot for the "Ask Amlak" assistant. Pure JS — no network, no AI.
 // It shapes the account's structured records (tenants, insurance, service
-// contracts, rent, dates, balances) into a compact, facts-only summary the AI
-// answers over. Deliberately carries NO document text — just the facts the app
-// already computed — so it stays a few KB and the AI call stays sub-cent.
+// contracts, rent, dates, balances, roof responsibility, lease terms, escalations,
+// abatements, annual reports) into a compact, facts-only summary the AI answers
+// over. Deliberately carries NO document text — just the facts the app already
+// computed — so it stays a few KB and the AI call stays sub-cent. When a question
+// needs something not in these facts (e.g. an obscure clause), the app offers a
+// separate "read my leases" fallback that reads the cached documents.
 import { byTermEnd } from './leaseSearch';
 
 const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
@@ -20,26 +23,51 @@ export function normalizeQuestion(q) {
 
 // A cheap content fingerprint of the portfolio: row counts + the latest change
 // stamp of each record type. Adding, editing (the updated_at trigger bumps it),
-// or removing any lease / policy / contract flips the fingerprint, so a cached
-// answer built on the old data stops matching. Order-independent.
-// Balances get their own component: recording or deleting a PAYMENT changes who
-// owes money but bumps no updated_at above — without this, "who owes money?"
-// kept serving the stale cached answer after a payment was recorded.
-export function snapshotFingerprint({ leases = [], insurance = [], contracts = [], balances = [], features } = {}) {
+// or removing any lease / policy / contract / escalation / abatement / annual
+// report flips the fingerprint, so a cached answer built on the old data stops
+// matching. Order-independent.
+// Two record types get a value-based component instead of a stamp, because they
+// change who-owes / what's-billed WITHOUT bumping any updated_at above:
+//   • balances — recording/deleting a PAYMENT changes outstanding money;
+//   • shares — editing a property's expenses re-splits every tenant's CAM/tax/roof.
+export function snapshotFingerprint({
+  leases = [],
+  insurance = [],
+  contracts = [],
+  balances = [],
+  escalations = [],
+  abatements = [],
+  annualReports = [],
+  shares = [],
+  features,
+} = {}) {
   const maxStamp = (arr) => arr.reduce((m, r) => { const s = stamp(r); return s > m ? s : m; }, '');
   const open = (balances || []).filter(
     (b) => b && b.display_status !== 'void' && b.display_status !== 'draft' && Number(b.balance) > 0
   );
   const owedCents = Math.round(open.reduce((s, b) => s + Number(b.balance), 0) * 100);
+  // Sum every share row's billed components so an expense edit (which re-splits
+  // CAM/tax/roof but bumps no lease/updated_at) flips the fingerprint too.
+  const sharesCents = Math.round(
+    (shares || []).reduce(
+      (s, r) => s + (Number(r.cam_amount) || 0) + (Number(r.tax_amount) || 0) + (Number(r.roof_amt) || 0),
+      0
+    ) * 100
+  );
   // The enabled feature set is part of the fingerprint so a cached answer built while a
   // module was ON can't be served after it's turned OFF (and vice-versa).
   const feat = features == null ? 'all' : [...features].sort().join(',');
   return [
-    'v3',
+    'v4', // bumped from v3: the summary now carries far more facts — every v3-era
+          // cached answer (built on the thinner summary) must stop matching.
     `L${leases.length}:${maxStamp(leases)}`,
     `I${insurance.length}:${maxStamp(insurance)}`,
     `C${contracts.length}:${maxStamp(contracts)}`,
+    `E${escalations.length}:${maxStamp(escalations)}`,
+    `A${abatements.length}:${maxStamp(abatements)}`,
+    `R${annualReports.length}:${maxStamp(annualReports)}`,
     `B${open.length}:${owedCents}`,
+    `S${shares.length}:${sharesCents}`,
     `F${feat}`,
   ].join('|');
 }
@@ -55,6 +83,11 @@ export function buildPortfolioSnapshot({
   contracts = [],
   renewals = [],
   balances = [],
+  escalations = [],
+  abatements = [],
+  annualReports = [],
+  shares = [],
+  totals = [],
   features,
   today,
 } = {}) {
@@ -94,43 +127,122 @@ export function buildPortfolioSnapshot({
     (renewals || []).filter((r) => r.status !== 'applied').map((r) => r.lease_id)
   );
 
-  // Amount still owed per tenant: sum live (non-void, non-draft) invoice balances.
+  // Amount still owed per tenant + the earliest due date behind it (for "overdue
+  // since"): sum live (non-void, non-draft) invoice balances.
   const owedByLease = {};
+  const overdueSinceByLease = {};
   for (const b of balances || []) {
     if (b.display_status === 'void' || b.display_status === 'draft') continue;
     const bal = Number(b.balance) || 0;
-    if (bal > 0 && b.lease_id) owedByLease[b.lease_id] = (owedByLease[b.lease_id] || 0) + bal;
+    if (bal > 0 && b.lease_id) {
+      owedByLease[b.lease_id] = (owedByLease[b.lease_id] || 0) + bal;
+      if (b.due_date && (!overdueSinceByLease[b.lease_id] || b.due_date < overdueSinceByLease[b.lease_id])) {
+        overdueSinceByLease[b.lease_id] = b.due_date;
+      }
+    }
   }
 
-  const activeLeases = leases.filter((l) => l.is_active !== false);
+  // This year's billed CAM / tax / roof share per tenant (from v_tenant_shares).
+  const shareByLease = {};
+  for (const s of shares || []) if (s.lease_id) shareByLease[s.lease_id] = s;
+
+  // Property-level occupancy / vacancy / revenue (from v_property_totals).
+  const totalsByProp = {};
+  for (const t of totals || []) if (t.property_id) totalsByProp[t.property_id] = t;
+
+  // Next SCHEDULED rent step per lease: the earliest step dated after today, and
+  // still within the committed term (a step past the term end belongs to an
+  // un-exercised renewal — same gate the schedule editor uses).
+  const leaseEndById = {};
+  for (const l of leases) leaseEndById[l.id] = l.lease_termination_date || null;
+  const nextStepByLease = {};
+  for (const e of escalations || []) {
+    if (!e.lease_id || e.status !== 'scheduled') continue;
+    const d = e.effective_date;
+    if (!d || d <= todayIso) continue;
+    const end = leaseEndById[e.lease_id];
+    if (end && d > end) continue; // past the committed term → belongs to an un-exercised renewal
+    const prev = nextStepByLease[e.lease_id];
+    if (!prev || d < prev.effective_date) nextStepByLease[e.lease_id] = e;
+  }
+
+  // Active or upcoming free/reduced-rent window per lease (an ended one is history).
+  const freeRentByLease = {};
+  for (const a of abatements || []) {
+    if (!a.lease_id) continue;
+    if (a.end_date && a.end_date < todayIso) continue; // ended
+    const active = (!a.start_date || a.start_date <= todayIso);
+    const prev = freeRentByLease[a.lease_id];
+    // Prefer an active window; otherwise the soonest upcoming one.
+    if (!prev || (active && !prev.active) || (a.start_date && prev.start_date && a.start_date < prev.start_date)) {
+      freeRentByLease[a.lease_id] = { ...a, active };
+    }
+  }
+
+  // Annual state-report status per corporation.
+  const reportByCorp = {};
+  for (const r of annualReports || []) if (r.corporation_id) reportByCorp[r.corporation_id] = r;
+
+  // Include ALL leases — a holdover (is_active === false) tenant still occupies
+  // its space and still owes rent until the landlord removes it (George's rule),
+  // so it must be answerable here; it's flagged so the AI can say "expired — held
+  // over" rather than treating it as a current lease.
   const leasesByProp = {};
-  for (const l of activeLeases) (leasesByProp[l.property_id] ||= []).push(l);
+  for (const l of leases) (leasesByProp[l.property_id] ||= []).push(l);
 
   const propsOut = [...properties]
     .sort((a, b) => txt(a.name).localeCompare(txt(b.name)))
     .map((prop) => {
       const li = landlordInsByProp[prop.id];
+      const pt = totalsByProp[prop.id] || null;
       const tenants = (leasesByProp[prop.id] || [])
         .slice()
         .sort(byTermEnd)
         .map((l) => {
           const ti = tenantInsByLease[l.id];
+          const sh = shareByLease[l.id];
+          const cam = sh ? num(sh.cam_amount) : null;
+          const tax = sh ? num(sh.tax_amount) : null;
+          const roof = sh ? num(sh.roof_amt) : null;
+          const base = num(l.base_rent);
+          const total = sh
+            ? (base || 0) + (cam || 0) + (tax || 0) + (roof || 0)
+            : null;
+          const step = nextStepByLease[l.id] || null;
+          const fr = freeRentByLease[l.id] || null;
           return {
             tenant: txt(l.tenant_name) || 'Tenant',
             tenant_id: l.id,
             corpId: prop.corporation_id || null,
             propId: prop.id,
             property: txt(prop.name),
+            holdover: l.is_active === false,
             sqft: num(l.square_footage),
-            base_rent: num(l.base_rent),
+            base_rent: base,
             lease_start: l.lease_start || null,
             lease_end: l.lease_termination_date || null,
             has_renewal_option: hasRenewal.has(l.id),
+            roof_billed: !!l.roof_responsible,
+            lease_terms: txt(l.lease_terms) || null,
+            contact_name: txt(l.tenant_contact_name) || null,
+            email: txt(l.tenant_email) || null,
+            suite: txt(l.premises_address) || null,
+            billed_cam: cam,
+            billed_tax: tax,
+            billed_roof: roof,
+            billed_total: total,
+            next_step: step ? { date: step.effective_date, amount: num(step.new_base_rent) } : null,
+            free_rent: fr
+              ? { kind: txt(fr.kind) || 'free', start: fr.start_date || null, end: fr.end_date || null, active: fr.active }
+              : null,
             insurance_on_file: !!ti,
             insurer: ti ? txt(ti.insurer) || null : null,
             insurance_expiry: ti ? ti.expiry_date || null : null,
             insurance_expired: ti ? isPast(ti.expiry_date) : false,
+            // additional_insured: true (named) / false (explicitly not) / null (unknown).
+            additional_insured: ti ? (ti.additional_insured === true ? 'yes' : ti.additional_insured === false ? 'no' : null) : null,
             balance_owed: owedByLease[l.id] || 0,
+            overdue_since: overdueSinceByLease[l.id] || null,
           };
         });
       return {
@@ -140,6 +252,9 @@ export function buildPortfolioSnapshot({
         property: txt(prop.name),
         address: txt(prop.address) || null,
         building_sf: num(prop.building_sf),
+        occupancy: pt ? num(pt.occupancy) : null,
+        vacant_sf: pt ? num(pt.vacant_sf) : null,
+        annual_revenue: pt ? num(pt.total_revenue) : null,
         landlord_insurance: {
           on_file: !!li,
           insurer: li ? txt(li.insurer) || null : null,
@@ -158,16 +273,32 @@ export function buildPortfolioSnapshot({
       };
     });
 
+  // Corporations with their annual-report filing status (core — never feature-gated).
+  const corpsOut = [...corporations]
+    .sort((a, b) => txt(a.name).localeCompare(txt(b.name)))
+    .map((c) => {
+      const r = reportByCorp[c.id];
+      return {
+        id: c.id,
+        name: txt(c.name) || 'Corporation',
+        annual_report_due: r ? r.due_date || null : null,
+        annual_report_last_filed: r ? r.last_filed_date || null : null,
+        annual_report_overdue: r ? isPast(r.due_date) : false,
+        has_annual_report: !!r,
+      };
+    });
+
   const tenantCount = propsOut.reduce((n, p) => n + p.tenants.length, 0);
   return {
     today: todayIso,
-    fingerprint: snapshotFingerprint({ leases: activeLeases, insurance, contracts, balances, features }),
+    fingerprint: snapshotFingerprint({ leases, insurance, contracts, balances, escalations, abatements, annualReports, shares, features }),
     property_count: propsOut.length,
     tenant_count: tenantCount,
     // Let snapshotToText omit a whole section (rather than say "NONE on file") when the
     // module is off — off ≠ empty.
     insurance_shown: insuranceOn,
     contracts_shown: contractsOn,
+    corporations: corpsOut,
     properties: propsOut,
   };
 }
@@ -179,6 +310,7 @@ export function snapshotToText(snapshot) {
   if (!snapshot || !Array.isArray(snapshot.properties)) return '(no portfolio data)';
   const money = (n) => (n == null ? '—' : `$${Math.round(Number(n)).toLocaleString('en-US')}`);
   const sf = (n) => (n == null ? '—' : `${Number(n).toLocaleString('en-US')} SF`);
+  const pct = (n) => (n == null ? '—' : `${Math.round(Number(n) * 100)}%`);
   const date = (d) => d || '—';
 
   // Off ≠ empty: when a module is hidden in Settings, leave its facts out of the summary
@@ -188,8 +320,28 @@ export function snapshotToText(snapshot) {
 
   const lines = [`PORTFOLIO SUMMARY (as of ${snapshot.today})`, `${snapshot.property_count} properties · ${snapshot.tenant_count} tenants`, ''];
 
+  // Corporations + their annual-report filing dates.
+  if ((snapshot.corporations || []).length) {
+    lines.push('CORPORATIONS (annual state report filing):');
+    for (const c of snapshot.corporations) {
+      lines.push(
+        `  - ${c.name}: ${c.has_annual_report
+          ? `annual report due ${date(c.annual_report_due)}${c.annual_report_overdue ? ' — OVERDUE' : ''}${c.annual_report_last_filed ? `, last filed ${date(c.annual_report_last_filed)}` : ''}`
+          : 'no annual report on file'}`
+      );
+    }
+    lines.push('');
+  }
+
   for (const p of snapshot.properties) {
     lines.push(`PROPERTY: ${p.property}${p.address ? ` — ${p.address}` : ''}${p.building_sf ? ` (${sf(p.building_sf)})` : ''}${p.corporation ? ` · owner: ${p.corporation}` : ''}`);
+    if (p.occupancy != null || p.vacant_sf != null || p.annual_revenue != null) {
+      const bits = [];
+      if (p.occupancy != null) bits.push(`occupancy ${pct(p.occupancy)}`);
+      if (p.vacant_sf != null) bits.push(`vacant ${sf(p.vacant_sf)}`);
+      if (p.annual_revenue != null) bits.push(`annual rent roll ${money(p.annual_revenue)}`);
+      lines.push(`  ${bits.join(' · ')}`);
+    }
     if (showInsurance) {
       const li = p.landlord_insurance;
       lines.push(
@@ -209,14 +361,34 @@ export function snapshotToText(snapshot) {
     if (p.tenants.length) {
       lines.push('  Tenants (soonest lease end first):');
       for (const t of p.tenants) {
-        const ins = showInsurance
-          ? ` Insurance: ${t.insurance_on_file ? `on file${t.insurer ? ` (${t.insurer})` : ''}, expires ${date(t.insurance_expiry)}${t.insurance_expired ? ' — EXPIRED' : ''}` : 'NONE on file'}.`
-          : '';
+        // Line 1: identity + lease term + rent.
         lines.push(
-          `   - ${t.tenant} — ${sf(t.sqft)}, base rent ${money(t.base_rent)}/yr, lease ${date(t.lease_start)} to ${date(t.lease_end)}, renewal option: ${t.has_renewal_option ? 'yes' : 'no'}.` +
-          `${ins} ` +
-          `Owes: ${money(t.balance_owed)}.`
+          `   - ${t.tenant}${t.holdover ? ' [EXPIRED — HELD OVER]' : ''} — ${sf(t.sqft)}, base rent ${money(t.base_rent)}/yr, lease ${date(t.lease_start)} to ${date(t.lease_end)}, renewal option: ${t.has_renewal_option ? 'yes' : 'no'}.`
         );
+        // Line 2: who-pays-what facts (roof, lease type, this year's CAM/tax bill, next step, free rent).
+        const parts2 = [`Roof expenses billed to tenant: ${t.roof_billed ? 'YES' : 'no'}.`];
+        if (t.lease_terms) parts2.push(`Lease type/notes: ${t.lease_terms}.`);
+        if (t.billed_total != null) {
+          const comps = [];
+          if (t.billed_cam != null) comps.push(`CAM ${money(t.billed_cam)}`);
+          if (t.billed_tax != null) comps.push(`tax ${money(t.billed_tax)}`);
+          if (t.billed_roof) comps.push(`roof ${money(t.billed_roof)}`);
+          parts2.push(`This year's additional-rent share: ${comps.join(' + ') || '—'}; total annual bill ${money(t.billed_total)}.`);
+        }
+        if (t.next_step) parts2.push(`Next rent step: ${date(t.next_step.date)}${t.next_step.amount != null ? ` → ${money(t.next_step.amount)}/yr` : ''}.`);
+        if (t.free_rent) parts2.push(`${t.free_rent.kind === 'free' ? 'Free' : 'Reduced'} rent ${t.free_rent.active ? '(active)' : '(upcoming)'} ${date(t.free_rent.start)} to ${date(t.free_rent.end)}.`);
+        lines.push(`     ${parts2.join(' ')}`);
+        // Line 3: insurance + contact + balance.
+        const parts3 = [];
+        if (showInsurance) {
+          parts3.push(
+            `Insurance: ${t.insurance_on_file ? `on file${t.insurer ? ` (${t.insurer})` : ''}, expires ${date(t.insurance_expiry)}${t.insurance_expired ? ' — EXPIRED' : ''}` : 'NONE on file'}${t.additional_insured ? `, landlord named as additional insured: ${t.additional_insured}` : ''}.`
+          );
+        }
+        const contact = [t.contact_name, t.email, t.suite && `suite ${t.suite}`].filter(Boolean).join(', ');
+        if (contact) parts3.push(`Contact: ${contact}.`);
+        parts3.push(`Owes: ${money(t.balance_owed)}${t.balance_owed > 0 && t.overdue_since ? ` (overdue since ${date(t.overdue_since)})` : ''}.`);
+        lines.push(`     ${parts3.join(' ')}`);
       }
     } else {
       lines.push('  Tenants: none');

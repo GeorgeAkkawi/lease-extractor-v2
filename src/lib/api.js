@@ -587,26 +587,53 @@ export async function askLease(leaseId, question, leaseText) {
 // repeat on an unchanged portfolio is $0 and never calls the model.
 
 // Assemble the compact snapshot from a few bulk reads (all under the caller's RLS).
+// It carries a lot of facts now (roof responsibility, lease terms, contact, this
+// year's billed CAM/tax share + total, next rent step, free-rent window, additional
+// insured, annual-report dates, occupancy) so the assistant can answer most
+// questions from records alone — never any documents.
 export async function fetchPortfolioSnapshot(features) {
-  const [corporations, properties, leases, insurance, contracts, renewals, balances] = await Promise.all([
-    rows(supabase.from('corporations').select('id,name,address')),
-    rows(supabase.from('properties').select('id,name,address,corporation_id,building_sf')),
-    rows(supabase.from('leases').select('id,tenant_name,property_id,square_footage,base_rent,lease_start,lease_termination_date,is_active,updated_at,created_at')),
-    rows(supabase.from('insurance_policies').select('id,party,property_id,lease_id,insurer,expiry_date,archived_at,updated_at,created_at').is('archived_at', null)),
-    rows(supabase.from('service_contracts').select('id,property_id,service_type,vendor,amount,frequency,end_date,updated_at,created_at')),
-    rows(supabase.from('renewal_options').select('lease_id,status')),
-    rows(supabase.from('v_invoice_balances').select('lease_id,balance,display_status,due_date')),
-  ]);
-  return buildPortfolioSnapshot({ corporations, properties, leases, insurance, contracts, renewals, balances, features });
+  const year = Number(localDateIso().slice(0, 4)); // current calendar/fiscal year for the views
+  const [corporations, properties, leases, insurance, contracts, renewals, balances, escalations, abatements, annualReports] =
+    await Promise.all([
+      rows(supabase.from('corporations').select('id,name,address')),
+      rows(supabase.from('properties').select('id,name,address,corporation_id,building_sf')),
+      rows(supabase.from('leases').select('id,tenant_name,tenant_email,tenant_contact_name,premises_address,property_id,square_footage,base_rent,lease_start,lease_termination_date,is_active,roof_responsible,lease_terms,updated_at,created_at')),
+      rows(supabase.from('insurance_policies').select('id,party,property_id,lease_id,insurer,expiry_date,additional_insured,archived_at,updated_at,created_at').is('archived_at', null)),
+      rows(supabase.from('service_contracts').select('id,property_id,service_type,vendor,amount,frequency,end_date,updated_at,created_at')),
+      rows(supabase.from('renewal_options').select('lease_id,status')),
+      rows(supabase.from('v_invoice_balances').select('lease_id,balance,display_status,due_date')),
+      rows(supabase.from('rent_escalations').select('lease_id,effective_date,status,new_base_rent,updated_at,created_at')),
+      rows(supabase.from('rent_abatements').select('lease_id,kind,value,start_date,end_date,updated_at,created_at')),
+      rows(supabase.from('annual_reports').select('corporation_id,due_date,last_filed_date,updated_at,created_at')),
+    ]);
+
+  // Per-tenant billed CAM/tax/roof share and per-property occupancy for the current
+  // year (from the two computed views). Query by the property ids we just loaded.
+  const propIds = (properties || []).map((p) => p.id);
+  let shares = [];
+  let totals = [];
+  if (propIds.length) {
+    [shares, totals] = await Promise.all([
+      rows(supabase.from('v_tenant_shares').select('lease_id,property_id,cam_amount,tax_amount,roof_amt,base_rent').in('property_id', propIds).eq('year', year)),
+      rows(supabase.from('v_property_totals').select('property_id,occupancy,vacant_sf,total_revenue').in('property_id', propIds).eq('year', year)),
+    ]);
+  }
+
+  return buildPortfolioSnapshot({
+    corporations, properties, leases, insurance, contracts, renewals, balances,
+    escalations, abatements, annualReports, shares, totals, features,
+  });
 }
 
 // Cache read/write (best-effort — the feature still works if the table is absent).
-async function getCachedPortfolioAnswer(questionNorm, fingerprint) {
+// `questionKey` is the row key; the docs fallback prefixes it with 'docs::' so a
+// records answer and a documents answer for the same question never collide.
+async function getCachedPortfolioAnswer(questionKey, fingerprint) {
   try {
     const { data } = await supabase
       .from('portfolio_qa_cache')
       .select('answer_json')
-      .eq('question_norm', questionNorm)
+      .eq('question_norm', questionKey)
       .eq('snapshot_fingerprint', fingerprint)
       .maybeSingle();
     return data?.answer_json?.answer ?? null;
@@ -615,41 +642,90 @@ async function getCachedPortfolioAnswer(questionNorm, fingerprint) {
   }
 }
 
-async function writeCachedPortfolioAnswer(questionNorm, fingerprint, answer) {
+async function writeCachedPortfolioAnswer(questionKey, fingerprint, answer) {
   const uid = await ownerId();
-  // One row per (user, question): drop any stale-fingerprint rows for this question
-  // before inserting the fresh answer.
-  await supabase.from('portfolio_qa_cache').delete().eq('user_id', uid).eq('question_norm', questionNorm);
+  // One row per (user, question key): drop any stale-fingerprint rows for this
+  // question before inserting the fresh answer.
+  await supabase.from('portfolio_qa_cache').delete().eq('user_id', uid).eq('question_norm', questionKey);
   await supabase.from('portfolio_qa_cache').insert({
     user_id: uid,
-    question_norm: questionNorm,
+    question_norm: questionKey,
     snapshot_fingerprint: fingerprint,
     answer_json: { answer },
   });
 }
 
-// Returns { answer, fromCache }. Pass the snapshot from fetchPortfolioSnapshot.
+// Returns { answer, fromCache, needsDocs }. Pass the snapshot from
+// fetchPortfolioSnapshot. `needsDocs` is true when the facts summary didn't contain
+// what the question needs — the UI then offers the "read my leases" fallback below.
 export async function askPortfolioQuestion(question, snapshot) {
   const questionNorm = normalizeQuestion(question);
-  if (!questionNorm) return { answer: '', fromCache: false };
+  if (!questionNorm) return { answer: '', fromCache: false, needsDocs: false };
   const snapshotText = snapshotToText(snapshot);
 
   // Demo mode: canned, data-driven answer — no network, no caching. The structured
   // snapshot rides along so the mock can answer from real seeded data.
   if (DEMO_MODE) {
-    const { answer } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText, snapshot_obj: snapshot });
-    return { answer, fromCache: false };
+    const { answer, needs_docs } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText, snapshot_obj: snapshot });
+    return { answer, fromCache: false, needsDocs: !!needs_docs };
   }
 
   const fingerprint = snapshot?.fingerprint || snapshotFingerprint({});
   const cached = await getCachedPortfolioAnswer(questionNorm, fingerprint);
-  if (cached) return { answer: cached, fromCache: true };
+  // A cached answer never carries needs_docs (we don't persist the flag) — that's
+  // fine: the ghost "read the documents instead" link is always available, and a
+  // repeat of a fact-answerable question doesn't need the docs button anyway.
+  if (cached) return { answer: cached, fromCache: true, needsDocs: false };
 
-  const { answer } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText });
+  const { answer, needs_docs } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText });
   try {
     await writeCachedPortfolioAnswer(questionNorm, fingerprint, answer);
   } catch {
     /* caching is best-effort — never fail the answer on a cache write */
+  }
+  return { answer, fromCache: false, needsDocs: !!needs_docs };
+}
+
+// A light fingerprint of the lease-document corpus (counts + latest change stamp of
+// leases and their riders). Flips whenever a lease/rider text changes, so a cached
+// docs answer built on the old corpus stops matching.
+async function leaseDocsFingerprint() {
+  try {
+    const [leases, addendums] = await Promise.all([
+      rows(supabase.from('leases').select('updated_at').eq('is_active', true)),
+      rows(supabase.from('lease_addendums').select('updated_at')),
+    ]);
+    const maxStamp = (arr) => (arr || []).reduce((m, r) => { const s = r?.updated_at || ''; return s > m ? s : m; }, '');
+    return `docs-v1|L${(leases || []).length}:${maxStamp(leases)}|A${(addendums || []).length}:${maxStamp(addendums)}`;
+  } catch {
+    return 'docs-v1|unknown';
+  }
+}
+
+// The "read my leases" fallback: reads the cached lease DOCUMENTS (server-side,
+// under RLS) with a quick model and answers grouped by tenant. Costs ~a few cents
+// per fresh question (repeats on an unchanged corpus are $0, cached). Only ever
+// runs on an explicit click. Returns { answer, fromCache }.
+export async function askLeasesDocs(question) {
+  const questionNorm = normalizeQuestion(question);
+  if (!questionNorm) return { answer: '', fromCache: false };
+
+  // Demo mode: canned grouped answer from the seeded lease texts — no network.
+  if (DEMO_MODE) {
+    const { answer } = await invokeFunction('ask-leases', { question });
+    return { answer, fromCache: false };
+  }
+
+  const key = `docs::${questionNorm}`;
+  const fingerprint = await leaseDocsFingerprint();
+  const cached = await getCachedPortfolioAnswer(key, fingerprint);
+  if (cached) return { answer: cached, fromCache: true };
+
+  const { answer } = await invokeFunction('ask-leases', { question });
+  try {
+    await writeCachedPortfolioAnswer(key, fingerprint, answer);
+  } catch {
+    /* caching is best-effort */
   }
   return { answer, fromCache: false };
 }
@@ -1926,6 +2002,39 @@ export const setEnabledFeatures = async (enabled_features) =>
       .from('user_preferences')
       .upsert(
         { user_id: await ownerId(), enabled_features, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
+      .select()
+      .single()
+  );
+
+// ---- Auto sign-out preference -----------------------------------------------
+// Same user_preferences row (column auto_logout_minutes, migration 0062).
+// Semantics: null = the app default (30 min), 0 = off (never auto-sign-out),
+// otherwise the idle minutes before sign-out. Returns null on a fresh account or
+// any error, so the caller applies its default.
+export async function getAutoLogoutMinutes() {
+  try {
+    const uid = await ownerId();
+    if (!uid) return null;
+    const { data } = await supabase
+      .from('user_preferences')
+      .select('auto_logout_minutes')
+      .eq('user_id', uid)
+      .maybeSingle();
+    return data?.auto_logout_minutes ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Save the idle-minutes choice (0 = off) for the current user.
+export const setAutoLogoutMinutes = async (auto_logout_minutes) =>
+  one(
+    supabase
+      .from('user_preferences')
+      .upsert(
+        { user_id: await ownerId(), auto_logout_minutes, updated_at: new Date().toISOString() },
         { onConflict: 'user_id' }
       )
       .select()

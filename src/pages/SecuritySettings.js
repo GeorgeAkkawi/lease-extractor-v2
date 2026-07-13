@@ -1,6 +1,55 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase, DEMO_MODE } from '../lib/supabaseClient';
 import { usePageChrome } from '../context/ChromeContext';
+import { getAutoLogoutMinutes, setAutoLogoutMinutes } from '../lib/api';
+import { AUTO_LOGOUT_OPTIONS, resolveMinutes } from '../lib/idleLogout';
+
+// Auto sign-out card: pick how long of inactivity before the app signs you out of
+// this browser (a 60-second warning lets you stay). Saved per account.
+function AutoSignOutCard() {
+  const qc = useQueryClient();
+  const { data: pref } = useQuery({ queryKey: ['autoLogout'], queryFn: getAutoLogoutMinutes, enabled: !DEMO_MODE });
+  const save = useMutation({
+    mutationFn: setAutoLogoutMinutes,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['autoLogout'] }),
+  });
+  const current = DEMO_MODE ? 30 : resolveMinutes(pref); // null → default 30
+
+  return (
+    <div className="panel" style={{ maxWidth: 560, marginTop: 18 }}>
+      <div className="panel-head"><strong>Security · Auto sign-out</strong></div>
+      <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+        Signs you out after a stretch of inactivity on this browser — a 60-second warning lets you
+        stay signed in first. Handy on a shared or public computer.
+      </p>
+      <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        {AUTO_LOGOUT_OPTIONS.map((o) => {
+          const selected = current === o.value;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              className={selected ? '' : 'ghost'}
+              aria-pressed={selected}
+              disabled={DEMO_MODE || save.isPending}
+              onClick={() => save.mutate(o.value)}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      {DEMO_MODE ? (
+        <p className="muted" style={{ fontSize: 12, marginTop: 12 }}>Auto sign-out is inactive in the demo sandbox.</p>
+      ) : (
+        <p className="muted" style={{ fontSize: 12, marginTop: 12 }}>
+          {current > 0 ? `You’ll be signed out after ${current} minute${current === 1 ? '' : 's'} of inactivity.` : 'Auto sign-out is off — you’ll stay signed in until you sign out yourself.'}
+        </p>
+      )}
+    </div>
+  );
+}
 
 // Authenticator-app (TOTP) two-factor. Uses Supabase's native MFA: enrolling
 // creates a factor + QR the user scans with Google Authenticator / Authy / 1Password;
@@ -86,18 +135,22 @@ export default function SecuritySettings() {
 
   if (DEMO_MODE) {
     return (
-      <div className="panel" style={{ maxWidth: 560 }}>
-        <div className="panel-head"><strong>Security · Two-factor authentication</strong></div>
-        <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
-          Two-factor sign-in with an authenticator app is available on a real account — it isn’t part of the demo.
-        </p>
-      </div>
+      <>
+        <div className="panel" style={{ maxWidth: 560 }}>
+          <div className="panel-head"><strong>Security · Two-factor authentication</strong></div>
+          <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
+            Two-factor sign-in with an authenticator app is available on a real account — it isn’t part of the demo.
+          </p>
+        </div>
+        <AutoSignOutCard />
+      </>
     );
   }
 
   const enabled = !!factor;
 
   return (
+    <>
     <div className="panel" style={{ maxWidth: 560 }}>
       <div className="panel-head"><strong>Security · Two-factor authentication</strong></div>
       <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
@@ -175,5 +228,7 @@ export default function SecuritySettings() {
 
       {msg && <p className="muted" style={{ marginTop: 12 }}>{msg}</p>}
     </div>
+    <AutoSignOutCard />
+    </>
   );
 }

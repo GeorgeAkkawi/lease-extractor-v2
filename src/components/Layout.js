@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
+import AutoLogout from './AutoLogout';
 import { DEMO_MODE } from '../lib/supabaseClient';
 import { promptDueRenewalDecisions, applyDueEscalations, localDateIso } from '../lib/api';
 
@@ -57,6 +58,7 @@ export default function Layout({ children }) {
         )}
         <div className="content">{children}</div>
       </div>
+      <AutoLogout />
     </div>
   );
 }
