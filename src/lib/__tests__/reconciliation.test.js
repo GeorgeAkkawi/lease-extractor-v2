@@ -135,6 +135,14 @@ describe('reconcileCamTax — landlord owes (Northwind, refund flow)', () => {
     expect(letter.subject).toContain('CAM & Tax Reconciliation');
     expect(letter.to).toBe('accounts@northwindbooks.example');
     expect(letter.body).toContain('refund of $2,000.00');
+    // Invoice-style statement document ahead of the explanation letter: the
+    // billed/actual/difference table with aligned rows and the REFUND DUE row.
+    expect(letter.body).toContain('RECONCILIATION STATEMENT');
+    expect(letter.body).toContain('BILLED (EST.)');
+    expect(letter.body).toMatch(/REFUND DUE TO TENANT\s+\$2,000\.00/);
+    const rows = letter.body.split('\n').filter((l) => /^(CHARGE|CAM|Property tax|TOTAL)\s+\S/.test(l));
+    expect(rows.length).toBe(4);
+    expect(new Set(rows.map((l) => l.length)).size).toBe(1); // columns line up
   });
 
   it('mark refunded settles the record', async () => {
@@ -157,6 +165,16 @@ describe('invoice template — estimated labels', () => {
     expect(text).toContain(`Property tax (${Y - 1} est.)`);
     expect(text).toContain(`Roof (${Y} est.)`);
     expect(text).toContain('reconciled');
+  });
+
+  it('keeps every charge row aligned even with the longer est. labels', () => {
+    // "Property tax (2025 est.)" outgrows the old fixed label column — the label
+    // width must stretch so all four numeric columns still line up.
+    const text = buildInvoice({ ...facts, estimated: { cam: true, tax: true, roof: true } });
+    const rows = text.split('\n').filter((l) => /^(Base rent|CAM \(|Roof \(|Property tax \(|AMOUNT DUE)/.test(l));
+    expect(rows.length).toBe(5);
+    const widths = new Set(rows.map((l) => l.length));
+    expect(widths.size).toBe(1); // identical width ⇒ identical column positions
   });
 
   it('renders exactly as before when nothing is estimated', () => {

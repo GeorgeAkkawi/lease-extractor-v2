@@ -75,6 +75,44 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-12** — **Follow-up on the CAM/tax estimates: $/SF entry, invoice alignment fix, invoice-style
+  reconciliation statement** (George, same day: "the landlord should enter the prices in dollars per square
+  foot … show the total number and the number per square foot like the actual column. the invoice format
+  it a bit off. for reconcile i want it to be email format … similar to the invoice that explains the
+  situation based on the numbers to the tenant"). Deployed: frontend Cloudflare version `81667426`.
+  **Frontend-only — no DB migration, no edge function, $0, no tenant emails** (the statement still opens in
+  the compose modal; nothing auto-sends). Tests **257/257** (was 255 — +1 invoice-alignment regression,
+  +1 $/SF save round-trip).
+  - **1) Estimates are now entered in $/SF (stored annualized — the `est_*_annual` lease columns and the
+    whole billing spine are untouched).** The Finances inline editor's inputs became **CAM/Tax/Roof
+    $/SF/yr** rates (prefilled from the saved annual ÷ the tenant's SF; placeholders = the actual $/SF)
+    with a live "× 2,000 SF = $18,000.00/yr" preview; Save multiplies back to the annual figure. The
+    lease-page fields and the new-lease form got the same treatment (labels flip to "$/SF/yr"; the
+    lease-page hint shows the computed "= $X/yr"). A lease with **no square footage on file falls back to
+    plain $/yr entry** everywhere — the one edge case. Display: the Estimated column now shows the billed
+    total **plus a $/SF sub-line** ("$8.25/SF · + roof $1,500.00"), matching the actual columns.
+  - **2) Invoice alignment bug fixed** (`invoiceTemplate.js`): the new "Property tax (2025 est.)" label is
+    24 chars vs the fixed 22-char label column, so that row's four dollar columns shifted right ("Rent
+    abatement (credit)" at 23 chars had the same latent off-by-one). The label column is now sized
+    dynamically to the longest label; ui-verified every row at identical width with identical $-column
+    end positions [39, 52, 65, 78].
+  - **3) Reconciliation statement rebuilt as an invoice-style document** (`buildCamReconciliationEmail`):
+    business letterhead → right-aligned `REC-{year}-{TEN}` statement number → statement date/period →
+    BILL TO block → an aligned **CHARGE / BILLED (EST.) / ACTUAL / DIFFERENCE** table (signed per-line
+    diffs) → TOTAL row → **BALANCE DUE** (or **REFUND DUE TO TENANT**) — followed by the "Dear {tenant}"
+    letter explaining the outcome from those numbers (remit within 30 days / we will refund / settled
+    even). Same `{subject, body, to}` contract, so the ✉ Statement button and `draftCamReconciliationEmail`
+    needed no changes.
+  - **Files:** `TenantShareTable.js` (EstimateCell $/SF editor + preview + $/SF sub-line),
+    `LeaseDetailPage.js` + `LeaseForm.js` ($/SF entry with annual fallback), `invoiceTemplate.js` (dynamic
+    label width), `emailTemplates.js` (statement document), `App.css` (`.est-preview`), both test files.
+  - **Verified:** unit **257/257** (`vitest run`); **real-browser click-through 6/6** (ui-verifier, demo
+    dev server): $16,500.00 est. + $8.25/SF sub-line; editor prefilled 3.25/5/0.75 with the ×SF preview;
+    CAM 3.5 → $17,000.00/$8.50/SF live and back; invoice rows all 78 chars, columns aligned; Reconcile →
+    "Owed $700.00 — invoiced" → statement modal shows the aligned 56-char table + "BALANCE DUE … $700.00"
+    + the Dear-paragraph — zero console errors (it also caught a "SF SF" double-unit in the preview,
+    fixed before deploy). Live site 200s. Committed only this task's files.
+
 - **2026-07-12** — **Estimated CAM & tax billing + year-end reconciliation** (George approved the plan —
   `~/.claude/plans/need-to-add-a-jazzy-creek.md`; his picks: estimates typed **per tenant**, ONE combined
   Leases-page column with the in-depth detail on Finances, overpayments settled by **refund**, roof gets

@@ -290,30 +290,47 @@ function DifferenceCell({ fig }) {
 }
 
 // The Estimated column: shows the billed figure (typed estimate, else the actual it
-// falls back to) and opens a tiny inline form to type the estimates — saved onto the
-// lease, so every billing surface (invoice, monthly tracker, Leases page) follows.
+// falls back to) with its $/SF — like the actual columns — and opens a tiny inline
+// form where the landlord types the estimates in $/SF of the tenant's space (per
+// George: prices are quoted per square foot). Stored annualized on the lease, so
+// every billing surface (invoice, monthly tracker, Leases page) follows. A lease
+// with no square footage on file falls back to plain $/yr entry.
 function EstimateCell({ share, billed, editing, onEdit, onCancel, onSave, saving }) {
-  const [cam, setCam] = useState(share.est_cam_annual ?? '');
-  const [tax, setTax] = useState(share.est_tax_annual ?? '');
-  const [roof, setRoof] = useState(share.est_roof_annual ?? '');
+  const sfNum = Number(share.square_footage) || 0;
+  const perSf = sfNum > 0;
+  const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+  const toInput = (annual) => (annual == null ? '' : String(perSf ? round2(annual / sfNum) : annual));
+  const [cam, setCam] = useState(toInput(share.est_cam_annual));
+  const [tax, setTax] = useState(toInput(share.est_tax_annual));
+  const [roof, setRoof] = useState(toInput(share.est_roof_annual));
 
   if (editing) {
-    const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
+    // What the landlord types (a $/SF rate when the SF is known) → the annual $ saved.
+    const annualOf = (v) => (v === '' || v == null ? null : perSf ? round2(Number(v) * sfNum) : Number(v));
+    const unit = perSf ? '$/SF/yr' : '$/yr';
+    const ph = (actualAnnual) => (perSf ? (Number(actualAnnual || 0) / sfNum).toFixed(2) : String(Math.round(actualAnnual || 0)));
+    const preview =
+      (annualOf(cam) ?? Number(share.cam_amount || 0)) +
+      (annualOf(tax) ?? Number(share.tax_amount || 0)) +
+      (share.roof_responsible ? (annualOf(roof) ?? Number(share.roof_amt || 0)) : 0);
     return (
       <td className="num grp-start est-edit">
         <label>
-          <span>CAM $/yr</span>
-          <input className="text-input num" type="number" step="any" min="0" value={cam} onChange={(e) => setCam(e.target.value)} placeholder={String(Math.round(share.cam_amount || 0))} />
+          <span>CAM {unit}</span>
+          <input className="text-input num" type="number" step="any" min="0" value={cam} onChange={(e) => setCam(e.target.value)} placeholder={ph(share.cam_amount)} />
         </label>
         <label>
-          <span>Tax $/yr</span>
-          <input className="text-input num" type="number" step="any" min="0" value={tax} onChange={(e) => setTax(e.target.value)} placeholder={String(Math.round(share.tax_amount || 0))} />
+          <span>Tax {unit}</span>
+          <input className="text-input num" type="number" step="any" min="0" value={tax} onChange={(e) => setTax(e.target.value)} placeholder={ph(share.tax_amount)} />
         </label>
         {share.roof_responsible && (
           <label>
-            <span>Roof $/yr</span>
-            <input className="text-input num" type="number" step="any" min="0" value={roof} onChange={(e) => setRoof(e.target.value)} placeholder={String(Math.round(share.roof_amt || 0))} />
+            <span>Roof {unit}</span>
+            <input className="text-input num" type="number" step="any" min="0" value={roof} onChange={(e) => setRoof(e.target.value)} placeholder={ph(share.roof_amt)} />
           </label>
+        )}
+        {perSf && (
+          <div className="est-preview">× {sf(sfNum)} = {money(round2(preview))}/yr</div>
         )}
         <div className="est-edit-actions">
           <button
@@ -321,9 +338,9 @@ function EstimateCell({ share, billed, editing, onEdit, onCancel, onSave, saving
             disabled={saving}
             onClick={() =>
               onSave({
-                est_cam_annual: numOrNull(cam),
-                est_tax_annual: numOrNull(tax),
-                est_roof_annual: share.roof_responsible ? numOrNull(roof) : null,
+                est_cam_annual: annualOf(cam),
+                est_tax_annual: annualOf(tax),
+                est_roof_annual: share.roof_responsible ? annualOf(roof) : null,
               })
             }
           >
@@ -336,21 +353,23 @@ function EstimateCell({ share, billed, editing, onEdit, onCancel, onSave, saving
   }
 
   const estCamTax = billed.cam + billed.tax;
+  const psfSub = perSf ? `${psf2(estCamTax / sfNum)}/SF` : '';
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
+  const sub = [psfSub, roofSub].filter(Boolean).join(' · ');
   return (
     <td className="num grp-start">
       <button
         type="button"
         className="est-cell-btn"
         onClick={onEdit}
-        title="Click to set what this tenant pays as estimated CAM / tax (and roof, when responsible) during the year"
+        title="Click to set what this tenant pays as estimated CAM / tax (and roof, when responsible) during the year — entered in $ per square foot"
       >
         <div className="cell-main">
           {billed.anyEstimate
             ? <>{money(estCamTax)}<span className="est-tag"> est.</span></>
             : <span className="muted">＋ set estimate</span>}
         </div>
-        <div className="cell-sub">{billed.anyEstimate ? (roofSub || NBSP) : 'billing actuals'}</div>
+        <div className="cell-sub">{billed.anyEstimate ? (sub || NBSP) : 'billing actuals'}</div>
       </button>
     </td>
   );

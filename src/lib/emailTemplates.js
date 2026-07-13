@@ -235,40 +235,79 @@ export function buildEscalationEmail({ business, tenant_name, contact_name, tena
 }
 
 // Year-end CAM & tax reconciliation statement: the tenant paid ESTIMATED additional
-// rent (CAM / property tax / roof where applicable) during the year; this letter
-// shows the estimate-vs-actual breakdown and either bills the shortfall or promises
-// the refund. `lines` = [{ label, est, actual }] (roof included only when it was in
-// play); `diff` = actual − estimate (signed); `direction` = tenant_owes |
-// landlord_owes | even. Like every letter, nothing auto-sends.
+// rent (CAM / property tax / roof where applicable) during the year; this email
+// carries an invoice-style STATEMENT document (letterhead, aligned billed-vs-actual
+// table, BALANCE DUE / REFUND DUE row) followed by a short letter explaining the
+// outcome from those numbers. `lines` = [{ label, est, actual }] (roof included only
+// when it was in play); `diff` = actual − estimate (signed); `direction` =
+// tenant_owes | landlord_owes | even. Like every letter, nothing auto-sends.
 export function buildCamReconciliationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, lines, diff, direction }) {
   const amount = money(Math.abs(Number(diff) || 0));
-  // Plain-text breakdown table (same monospace-friendly shape as the invoice).
   const rows = (lines || []).map((l) => {
-    const d = (Number(l.actual) || 0) - (Number(l.est) || 0);
-    const sign = d > 0 ? '+' : d < 0 ? '−' : '';
-    return `  ${String(l.label).padEnd(14)} estimated ${money(l.est).padStart(12)}   actual ${money(l.actual).padStart(12)}   difference ${(sign + money(Math.abs(d))).padStart(12)}`;
+    const est = Number(l.est) || 0;
+    const actual = Number(l.actual) || 0;
+    return { label: String(l.label), est, actual, d: Math.round((actual - est) * 100) / 100 };
   });
-  const table = ['  Charge         Billed (estimated)     Actual share        Difference', ...rows].join('\n');
+  const estTotal = rows.reduce((s, r) => s + r.est, 0);
+  const actualTotal = rows.reduce((s, r) => s + r.actual, 0);
+  const signed = (d) => (d > 0 ? `+${money(d)}` : d < 0 ? `−${money(Math.abs(d))}` : money(0));
+
+  // Same table conventions as the invoice: label column sized to the longest label,
+  // right-aligned numeric columns, full-width dividers.
+  const CW = 14;
+  const lw = Math.max(14, ...rows.map((r) => r.label.length + 2));
+  const cell = (s) => String(s).padStart(CW);
+  const row = (label, a, b, c) => label.padEnd(lw) + cell(a) + cell(b) + cell(c);
+  const divider = '-'.repeat(lw + CW * 3);
+  const W = divider.length;
+  const stmtNo = `REC-${year}-${(tenant_name || 'TEN').replace(/\W+/g, '').slice(0, 4).toUpperCase()}`;
+  const contact = [business?.contact_email, business?.contact_phone].filter(Boolean).join(' · ');
+
+  const doc = [];
+  [business?.company_name, business?.address, contact].filter(Boolean).forEach((l) => doc.push(l));
+  if (doc.length) doc.push(divider);
+  doc.push('RECONCILIATION STATEMENT'.padEnd(Math.max(25, W - stmtNo.length)) + stmtNo);
+  doc.push('Statement date:'.padEnd(17) + today());
+  doc.push('Period:'.padEnd(17) + `Calendar year ${year}`);
+  doc.push('');
+  doc.push('BILL TO');
+  doc.push([contact_name, tenant_name].filter(Boolean).join(' — ') || 'Tenant');
+  if (tenant_email) doc.push(tenant_email);
+  if (propertyName) doc.push(`Premises: ${propertyName}`);
+  doc.push(divider);
+  doc.push(row('CHARGE', 'BILLED (EST.)', 'ACTUAL', 'DIFFERENCE'));
+  doc.push(divider);
+  rows.forEach((r) => doc.push(row(r.label, money(r.est), money(r.actual), signed(r.d))));
+  doc.push(divider);
+  doc.push(row('TOTAL', money(estTotal), money(actualTotal), signed(Number(diff) || 0)));
+  doc.push(divider);
+  const dueLabel = direction === 'landlord_owes' ? 'REFUND DUE TO TENANT' : 'BALANCE DUE';
+  const dueAmount = direction === 'even' ? money(0) : amount;
+  doc.push(dueLabel.padEnd(W - dueAmount.length) + dueAmount);
 
   const settle =
     direction === 'tenant_owes'
-      ? `The actual expenses came in above the estimates you were billed, leaving a balance of ${amount} due. Please remit this amount within 30 days of the date of this letter. A reconciliation invoice for the balance accompanies this statement in our records.`
+      ? `As the statement shows, the actual expenses came in ${amount} above the estimates you were billed, leaving a balance of ${amount} due. Please remit this amount within 30 days of the date of this statement.`
       : direction === 'landlord_owes'
-        ? `The actual expenses came in below the estimates you were billed, so a refund of ${amount} is due to you. We will issue the refund promptly — no action is needed on your part.`
-        : `The actual expenses matched the estimates you were billed, so no balance is due in either direction and your account is settled for the year.`;
+        ? `As the statement shows, the actual expenses came in below the estimates you were billed, so a refund of ${amount} is due to you. We will issue the refund promptly — no action is needed on your part.`
+        : `As the statement shows, the actual expenses matched the estimates you were billed, so no balance is due in either direction and your account is settled for the year.`;
 
+  const chargeNames = rows.map((r) => (r.label === 'CAM' ? 'CAM' : r.label.toLowerCase())).join(', ');
   const subject = `CAM & Tax Reconciliation — ${propertyName || 'your premises'} (${year})`;
-  const body = letter({
-    business,
-    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
-    reLine: `RE: ${year} reconciliation of estimated CAM & tax charges at ${propertyName || 'the premises'}`,
-    paragraphs: [
-      `Dear ${contact_name || tenant_name || 'Tenant'},`,
-      `As provided under your lease at ${propertyName || 'the premises'}, the additional rent you paid during ${year} was based on estimated operating expenses. Now that the year's actual figures are final, we have completed the annual reconciliation of those charges against your proportionate share:`,
-      table,
-      settle,
-      `Supporting detail for the year's expenses is available on request. If you have any questions about this reconciliation, please contact our office and we will be glad to walk through the figures with you.`,
-    ],
-  });
+  const body = [
+    ...doc,
+    '',
+    `Dear ${contact_name || tenant_name || 'Tenant'},`,
+    '',
+    `As provided under your lease at ${propertyName || 'the premises'}, the additional rent you paid during ${year} (${chargeNames}) was billed from estimated figures. Now that the year's actual expenses are final, we have reconciled those estimates against your proportionate share — the statement above shows each charge side by side, with the difference on the right.`,
+    '',
+    settle,
+    '',
+    `Supporting detail for the year's expenses is available on request. If you have any questions about this reconciliation, please contact our office and we will be glad to walk through the figures with you.`,
+    '',
+    'Sincerely,',
+    business?.company_name || 'Property Management',
+    ...(contact ? [contact] : []),
+  ].join('\n');
   return { subject, body, to: tenant_email || '' };
 }

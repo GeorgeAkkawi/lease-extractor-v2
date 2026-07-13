@@ -313,6 +313,7 @@ td.est-edit{min-width:150px}
 td.est-edit label{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:5px}
 td.est-edit label span{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
 td.est-edit .text-input{width:92px;padding:4px 7px;font-size:12px}
+.est-preview{font-size:10.5px;color:var(--muted);text-align:right;margin:1px 0 5px;font-variant-numeric:tabular-nums}
 .est-edit-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:2px}
 .pos-owed{color:var(--gold);font-weight:600}
 .neg-owed{color:var(--danger);font-weight:600}

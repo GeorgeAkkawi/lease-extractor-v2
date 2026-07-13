@@ -18,7 +18,7 @@ import { fmtDate } from './format';
 // }
 const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const LW = 22; // label column width
+const LW_MIN = 22; // minimum label column width (grows to fit the longest label)
 const CW = 13; // numeric column width
 
 export function buildInvoice(facts) {
@@ -53,9 +53,12 @@ export function buildInvoice(facts) {
   const totalAnnual = items.reduce((s, it) => s + it.v.a, 0);
   const total = per(totalAnnual);
 
+  // Label column sized to the longest label (+2 gap) so a long line — e.g.
+  // "Property tax (2025 est.)" — never pushes its numbers out of alignment.
+  const lw = Math.max(LW_MIN, ...items.map((it) => it.label.length + 2));
   const cell = (s) => String(s).padStart(CW);
-  const line = (label, v) => label.padEnd(LW) + cell(usd(v.m)) + cell(usd(v.a)) + cell(usd(v.pm)) + cell(usd(v.py));
-  const divider = '-'.repeat(LW + CW * 4);
+  const line = (label, v) => label.padEnd(lw) + cell(usd(v.m)) + cell(usd(v.a)) + cell(usd(v.pm)) + cell(usd(v.py));
+  const divider = '-'.repeat(lw + CW * 4);
 
   const biz = facts.business || {};
   const invNo = `INV-${facts.year}-${(facts.tenant || 'TEN').replace(/\W+/g, '').slice(0, 4).toUpperCase()}`;
@@ -86,7 +89,7 @@ export function buildInvoice(facts) {
   L.push(divider);
 
   // Itemized charges — kept at full detail (monthly / annual / $ per SF).
-  L.push('CHARGE'.padEnd(LW) + cell('MONTHLY') + cell('ANNUAL') + cell('$/SF/MO') + cell('$/SF/YR'));
+  L.push('CHARGE'.padEnd(lw) + cell('MONTHLY') + cell('ANNUAL') + cell('$/SF/MO') + cell('$/SF/YR'));
   L.push(divider);
   items.forEach((it) => L.push(line(it.label, it.v)));
   L.push(divider);

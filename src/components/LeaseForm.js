@@ -62,9 +62,18 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
       lease_termination_date: form.lease_termination_date || null,
       lease_terms: form.lease_terms || null,
       share_override_pct: form.share_override_pct === '' ? null : Number(form.share_override_pct) / 100,
-      est_cam_annual: numOrNull(form.est_cam_annual),
-      est_tax_annual: numOrNull(form.est_tax_annual),
+      est_cam_annual: estAnnual(form.est_cam_annual),
+      est_tax_annual: estAnnual(form.est_tax_annual),
     });
+  }
+
+  // Estimates are quoted in $/SF of the space above (per George); stored annualized.
+  // With no square footage typed, the figure is taken as the annual $ directly.
+  function estAnnual(v) {
+    const n = numOrNull(v);
+    if (n == null) return null;
+    const sqft = numOrNull(form.square_footage);
+    return sqft > 0 ? Math.round(n * sqft * 100) / 100 : n;
   }
 
   return (
@@ -98,10 +107,10 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
         <Field label="Tax/CAM share override (%)" field="share_override_pct" extracted={extracted} hint="Blank = pro-rata by SF">
           <input className="text-input num" type="number" step="any" placeholder="auto (pro-rata)" value={form.share_override_pct} onChange={set('share_override_pct')} />
         </Field>
-        <Field label="Est. CAM (annual $)" field="est_cam_annual" extracted={extracted} hint="What the tenant pays during the year — reconciled against actuals at year end. Blank = bill actuals.">
+        <Field label="Est. CAM ($/SF/yr)" field="est_cam_annual" extracted={extracted} hint="What the tenant pays during the year, per SF of the space above (saved × SF as the annual estimate) — reconciled against actuals at year end. Blank = bill actuals.">
           <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_cam_annual} onChange={set('est_cam_annual')} />
         </Field>
-        <Field label="Est. taxes (annual $)" field="est_tax_annual" extracted={extracted} hint="Blank = bill the known tax figure">
+        <Field label="Est. taxes ($/SF/yr)" field="est_tax_annual" extracted={extracted} hint="Per SF of the space above. Blank = bill the known tax figure">
           <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_tax_annual} onChange={set('est_tax_annual')} />
         </Field>
       </div>
