@@ -1,6 +1,7 @@
 import { fmtDate, money } from './format';
 import { occupancyStart } from './escalations';
 import { monthsBehindForInvoice } from './arStatus';
+import { owedByMonthForInvoice } from './leaseSchedule';
 
 const DAY = 86400000;
 
@@ -81,6 +82,8 @@ export function buildAlerts(
   (escalations || []).forEach((e) => { (escByLease[e.lease_id] ||= []).push(e); });
   const renByLease = {};
   (renewals || []).forEach((r) => { (renByLease[r.lease_id] ||= []).push(r); });
+  const abByLease = {};
+  (abatements || []).forEach((a) => { (abByLease[a.lease_id] ||= []).push(a); });
 
   const out = [];
   (leases || []).forEach((l) => {
@@ -224,13 +227,25 @@ export function buildAlerts(
   // Always shown until cleared (money on the table); silenced with the Outstanding
   // (receivables) display toggle. Both use focus:'invoice' so the dashboard routes/emails
   // them the same way.
+  const curYear = now.getFullYear();
   (arOn ? invoices || [] : []).forEach((inv) => {
     if ((Number(inv.balance) || 0) <= 0) return;
     const lease = leaseById[inv.lease_id];
     // Occupancy start = min(lease_start, earliest applied step) — so a July-start tenant is
     // only "behind" on the months they actually owe (Jul–Dec), never Jan–Jun.
     const occ = lease ? occupancyStart({ lease_start: lease.lease_start }, escByLease[inv.lease_id] || []) : null;
-    const status = monthsBehindForInvoice(inv, { occupancyStartIso: occ }, now);
+    const ctx = { occupancyStartIso: occ };
+    // For the in-progress fiscal year, judge "behind" against the tenant's REAL schedule
+    // (free months, mid-year rate steps) instead of a flat total/12 — matching the rent
+    // roll on the Finances page. A past year is already exact under the even-split.
+    if (Number(inv.year) === curYear && (inv.kind ?? 'annual') === 'annual') {
+      ctx.owedByMonth = owedByMonthForInvoice(inv, {
+        leaseStart: lease?.lease_start,
+        escalations: escByLease[inv.lease_id] || [],
+        abatements: abByLease[inv.lease_id] || [],
+      });
+    }
+    const status = monthsBehindForInvoice(inv, ctx, now);
     if (!status.behind) return;
     const corpId = propMap[inv.property_id]?.corporation_id;
     if (status.isReconciliation) {

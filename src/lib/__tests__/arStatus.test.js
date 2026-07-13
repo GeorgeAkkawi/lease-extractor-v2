@@ -198,3 +198,66 @@ describe('monthsBehindForInvoice', () => {
     expect(r.behind).toBe(false);
   });
 });
+
+describe('monthsBehindForInvoice — schedule-aware (owedByMonth)', () => {
+  const today = new Date('2026-07-07T12:00:00'); // 7 months have come due in 2026
+  // Jan–Mar free, then $1,000/mo Apr–Dec → the rent roll bills $9,000 over 9 owed months.
+  const freeFirstQuarter = [0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000];
+
+  it('the free-month blind spot: a current tenant is NOT behind — where the even-split says 3', () => {
+    // Mid-April: Jan–Apr have "come due", but Jan–Mar owe $0 (free). The tenant paid April's
+    // $1,000 → fully current. The old flat total/12 (=$750/mo) would read them $2,000 / 3 months
+    // behind. This is the exact bug the schedule-aware path fixes.
+    const inv = { kind: 'annual', year: 2026, total_amount: 9000, amount_paid: 1000, balance: 8000 };
+    const midApril = new Date('2026-04-15T12:00:00');
+
+    const smart = monthsBehindForInvoice(inv, { owedByMonth: freeFirstQuarter }, midApril);
+    expect(smart.behind).toBe(false);
+    expect(smart.monthsBehind).toBe(0);
+    expect(smart.amountBehind).toBe(0);
+
+    // Same inputs, no schedule → the old even-split wrongly flags them behind.
+    const dumb = monthsBehindForInvoice(inv, {}, midApril);
+    expect(dumb.behind).toBe(true);
+    expect(dumb.monthsBehind).toBe(3);
+  });
+
+  it('genuinely behind with a leading free window: free months never count as arrears', () => {
+    // Mid-June, nothing paid. Only Apr/May/Jun are actual rent months that have come due
+    // (Jan–Mar free) → 3 months / $3,000 behind, not 6.
+    const r = monthsBehindForInvoice(
+      { kind: 'annual', year: 2026, total_amount: 9000, amount_paid: 0, balance: 9000 },
+      { owedByMonth: freeFirstQuarter }, new Date('2026-06-15T12:00:00'));
+    expect(r.behind).toBe(true);
+    expect(r.monthsBehind).toBe(3);
+    expect(r.amountBehind).toBe(3000);
+  });
+
+  it('mid-year rent step: the amount behind uses the NEW rate, not a flat average', () => {
+    // $1,000/mo Jan–Jun, raised to $1,200/mo Jul–Dec. Paid Jan–Jun ($6,000); mid-July the
+    // one unpaid due month is July at the NEW $1,200 rate.
+    const owed = [1000, 1000, 1000, 1000, 1000, 1000, 1200, 1200, 1200, 1200, 1200, 1200];
+    const r = monthsBehindForInvoice(
+      { kind: 'annual', year: 2026, total_amount: 13200, amount_paid: 6000, balance: 7200 },
+      { owedByMonth: owed }, new Date('2026-07-15T12:00:00'));
+    expect(r.monthsBehind).toBe(1);
+    expect(r.amountBehind).toBe(1200); // the July rate, not (13200/12)=1100
+  });
+
+  it('a malformed / wrong-length owedByMonth falls back to the even-split (parity)', () => {
+    const inv = { kind: 'annual', year: 2026, total_amount: 12000, amount_paid: 6000, balance: 6000 };
+    const fallback = monthsBehindForInvoice(inv, { owedByMonth: [1, 2, 3] }, today); // not length 12
+    const plain = monthsBehindForInvoice(inv, {}, today);
+    expect(fallback).toEqual(plain);
+  });
+
+  it('a fully-caught-up tenant with future owed months is not behind', () => {
+    // Level $1,000/mo, mid-July (7 due). Paid exactly the 7 due months; Aug–Dec not yet due.
+    const owed = Array(12).fill(1000);
+    const r = monthsBehindForInvoice(
+      { kind: 'annual', year: 2026, total_amount: 12000, amount_paid: 7000, balance: 5000 },
+      { owedByMonth: owed }, today);
+    expect(r.behind).toBe(false);
+    expect(r.monthsDue).toBe(7);
+  });
+});

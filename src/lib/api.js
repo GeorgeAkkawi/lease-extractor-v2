@@ -6,10 +6,11 @@ import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildPaymentReminderEmail, buildCamReconciliationEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
-import { priorRentBefore, computeEscalatedRent, occupancyStart, monthlyBases } from './escalations';
+import { priorRentBefore, computeEscalatedRent, occupancyStart } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
-import { monthlyScheduleForYear, abatementEnd, leadingFreeMonths } from './abatement';
+import { abatementEnd, leadingFreeMonths } from './abatement';
 import { monthsBehindForInvoice } from './arStatus';
+import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import { contractCoversYear, contractAnnualCost } from './contracts';
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
@@ -1465,41 +1466,9 @@ export async function upsertYearInvoice({ lease_id, property_id, year, issue_dat
   }
 }
 
-// Build the term-aware monthly schedule for one lease-year. The SHAPE — which months are
-// owed vs "—" (before occupancy start), which are "Free" (abated), and a mid-year rate
-// change — comes from the gross tenant-share + escalation ledger + abatement windows. The
-// TOTAL comes from the year's invoice when one exists (so the 12 marked months settle it to
-// the cent — the 0055 penny invariant), else the share's own net annual (a live preview
-// before the first month is marked). When a frozen invoice's total differs from the share's
-// own sum (an estimate edited after billing, or a legacy full-year invoice on a mid-year
-// lease), the per-month owed is scaled so it sums exactly to the invoice — a uniform lease
-// scales to a flat total/owed-months, free/out-of-term months stay $0. Returns
-// { schedule, annual, owedMonths, occupancyStartIso }.
-function buildLeaseSchedule({ year, grossBase, otherAnnual, abatements, escalations, leaseStart, invoiceTotal }) {
-  const occ = occupancyStart({ lease_start: leaseStart }, escalations);
-  const bases = monthlyBases(escalations, grossBase, year);
-  const schedule = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual, abatements, occupancyStartIso: occ, monthlyBases: bases });
-  const shareAnnual = round2(Object.values(schedule).reduce((s, c) => s + c.owed, 0));
-  if (invoiceTotal != null && shareAnnual > 0 && Math.abs(round2(invoiceTotal) - shareAnnual) > 0.05) {
-    const factor = Number(invoiceTotal) / shareAnnual;
-    for (let m = 1; m <= 12; m++) {
-      const c = schedule[m];
-      if (c.outsideTerm) continue;
-      c.owed = round2(c.owed * factor);
-      if (!c.abated) c.full = c.owed;
-    }
-    // Penny-fold so the scaled months sum EXACTLY to the invoice total.
-    const diff = round2(Number(invoiceTotal) - round2(Object.values(schedule).reduce((s, c) => s + c.owed, 0)));
-    if (diff !== 0) {
-      for (let m = 12; m >= 1; m--) {
-        if (!schedule[m].outsideTerm && schedule[m].owed > 0) { schedule[m].owed = round2(schedule[m].owed + diff); if (!schedule[m].abated) schedule[m].full = schedule[m].owed; break; }
-      }
-    }
-  }
-  const annual = Object.values(schedule).reduce((s, c) => s + c.owed, 0);
-  const owedMonths = Object.values(schedule).filter((c) => !c.outsideTerm && c.owed > 0).length;
-  return { schedule, annual, owedMonths, occupancyStartIso: occ };
-}
+// buildLeaseSchedule (the term-aware monthly schedule builder) now lives in
+// ./leaseSchedule so summarizeAR + the dashboard bell can reuse the exact same per-month
+// owed shape. Imported at the top of this file.
 
 // Everything the monthly grid needs for one lease + year in one call: the year's
 // invoice (or null), the expected annual/monthly amount, and which months are paid
@@ -1689,32 +1658,57 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
   });
 }
 
-// Occupancy start per lease for a set of invoices, so summarizeAR knows which months
-// each tenant actually owes (a July-start tenant isn't "behind" on Jan–Jun). One batched
-// query for lease starts + one for applied escalations. Returns { [leaseId]: { occupancyStartIso } }.
-async function occInfoForInvoices(invoices) {
+// Per-lease context summarizeAR needs to read each invoice the way its tenant is actually
+// billed: the occupancy start (so a July-start tenant isn't "behind" on Jan–Jun), the
+// tenant name (so the panel can list WHO is behind), and — for the current fiscal year's
+// annual invoice — a schedule-aware owed-per-month array (so free months and mid-year rent
+// steps don't read as arrears). Batched: one query for lease starts/names, one for applied
+// escalations, one for abatement windows. Returns
+// { [leaseId]: { occupancyStartIso, tenant_name, currentYearOwedByMonth? } }.
+async function occInfoForInvoices(invoices, today = new Date()) {
   const leaseIds = [...new Set((invoices || []).map((i) => i.lease_id).filter(Boolean))];
   if (!leaseIds.length) return {};
-  const [leaseRows, escByLease] = await Promise.all([
-    rows(supabase.from('leases').select('id,lease_start').in('id', leaseIds)),
+  const [leaseRows, escByLease, abByLease] = await Promise.all([
+    rows(supabase.from('leases').select('id,lease_start,tenant_name,base_rent').in('id', leaseIds)),
     listEscalationsByLeases(leaseIds),
+    listAbatementsForLeases(leaseIds),
   ]);
-  const startById = Object.fromEntries((leaseRows || []).map((l) => [l.id, l.lease_start]));
+  const leaseById = Object.fromEntries((leaseRows || []).map((l) => [l.id, l]));
+  const curYear = (today instanceof Date ? today : new Date(today)).getFullYear();
+  // The only fiscal year where the even-split and the true schedule can disagree is the
+  // in-progress one (some months not yet due, free months, mid-year steps). A PAST year has
+  // all in-term months due → the even-split already sums to the total → skip the extra work.
+  const curInvByLease = {};
+  for (const inv of invoices || []) {
+    if (Number(inv.year) === curYear && (inv.kind ?? 'annual') === 'annual' && inv.display_status !== 'void') {
+      curInvByLease[inv.lease_id] = inv;
+    }
+  }
   const out = {};
-  for (const id of leaseIds) out[id] = { occupancyStartIso: occupancyStart({ lease_start: startById[id] }, escByLease[id] || []) };
+  for (const id of leaseIds) {
+    const l = leaseById[id] || {};
+    const esc = escByLease[id] || [];
+    const info = {
+      occupancyStartIso: occupancyStart({ lease_start: l.lease_start }, esc),
+      tenant_name: l.tenant_name || null,
+    };
+    const inv = curInvByLease[id];
+    if (inv) info.currentYearOwedByMonth = owedByMonthForInvoice(inv, { leaseStart: l.lease_start, escalations: esc, abatements: abByLease[id] || [] });
+    out[id] = info;
+  }
   return out;
 }
 
 // Outstanding AR for a property, summarized by how far behind each tenant is.
 export async function getPropertyAR(propertyId, today = new Date()) {
   const invoices = await listInvoicesForProperty(propertyId);
-  return summarizeAR(invoices, today, await occInfoForInvoices(invoices));
+  return summarizeAR(invoices, today, await occInfoForInvoices(invoices, today));
 }
 
 // Portfolio-wide AR (all of the owner's invoices) — powers the dashboard.
 export async function getPortfolioAR(today = new Date()) {
   const invoices = await rows(supabase.from('v_invoice_balances').select('*'));
-  return summarizeAR(invoices, today, await occInfoForInvoices(invoices));
+  return summarizeAR(invoices, today, await occInfoForInvoices(invoices, today));
 }
 
 // Summarize receivables the way a landlord actually reads them: not 30/60/90 aging off a
@@ -1722,17 +1716,41 @@ export async function getPortfolioAR(today = new Date()) {
 // tenants are BEHIND on rent, and by how much" — months that have come due and remain
 // unpaid (arStatus.js). A reconciliation invoice keeps the plain past-due test. Pure code
 // so the money-path tests can exercise it directly. `leaseInfoById` maps lease_id →
-// { occupancyStartIso }; omit it and every lease is treated as full-year (safe default).
+// { occupancyStartIso, tenant_name?, currentYearOwedByMonth? }; omit it and every lease is
+// treated as full-year even-split (safe default). Returns the aggregates the cards read PLUS
+// a `detail` list (one row per owing invoice, most-behind first) so the panel can name WHICH
+// tenants are behind and link to each lease.
 export function summarizeAR(invoices, today = new Date(), leaseInfoById = {}) {
   const owing = (invoices || []).filter((i) => i.display_status !== 'void' && i.display_status !== 'draft' && Number(i.balance) > 0);
+  const curYear = (today instanceof Date ? today : new Date(today)).getFullYear();
   let outstanding = 0;
   let amountBehind = 0;
   const behindTenants = new Set();
   const byMonthsBehind = { m1: 0, m2plus: 0 }; // count of behind invoices by severity
+  const detail = [];
   for (const i of owing) {
     outstanding += Number(i.balance) || 0;
-    const occ = leaseInfoById[i.lease_id]?.occupancyStartIso ?? null;
-    const status = monthsBehindForInvoice(i, { occupancyStartIso: occ }, today);
+    const info = leaseInfoById[i.lease_id] || {};
+    const ctx = { occupancyStartIso: info.occupancyStartIso ?? null };
+    // Schedule-aware owed-per-month, but only for the current-year annual invoice we
+    // precomputed it for — a past year is already exact under the even-split fallback.
+    if (info.currentYearOwedByMonth && (i.kind ?? 'annual') === 'annual' && Number(i.year) === curYear) {
+      ctx.owedByMonth = info.currentYearOwedByMonth;
+    }
+    const status = monthsBehindForInvoice(i, ctx, today);
+    detail.push({
+      invoice_id: i.id ?? null,
+      lease_id: i.lease_id,
+      tenant_name: info.tenant_name || null,
+      year: Number(i.year),
+      kind: i.kind ?? 'annual',
+      balance: round2(Number(i.balance) || 0),
+      behind: status.behind,
+      isReconciliation: status.isReconciliation,
+      monthsBehind: status.monthsBehind,
+      amountBehind: status.amountBehind,
+      due_date: i.due_date || null,
+    });
     if (!status.behind) continue;
     amountBehind += status.amountBehind;
     behindTenants.add(i.lease_id);
@@ -1740,7 +1758,14 @@ export function summarizeAR(invoices, today = new Date(), leaseInfoById = {}) {
     if (status.isReconciliation || status.monthsBehind >= 2) byMonthsBehind.m2plus += 1;
     else byMonthsBehind.m1 += 1;
   }
-  return { outstanding, count: owing.length, tenantsBehind: behindTenants.size, amountBehind, byMonthsBehind };
+  // Most-behind first (behind before current; then more months / larger amount / balance),
+  // so the panel's named list leads with who needs following up.
+  detail.sort((a, b) =>
+    (a.behind === b.behind ? 0 : a.behind ? -1 : 1) ||
+    (b.monthsBehind - a.monthsBehind) ||
+    (b.amountBehind - a.amountBehind) ||
+    (b.balance - a.balance));
+  return { outstanding, count: owing.length, tenantsBehind: behindTenants.size, amountBehind, byMonthsBehind, detail };
 }
 
 // ---- CAM & tax reconciliation (0060) -----------------------------------------
@@ -1892,7 +1917,7 @@ export async function draftCamReconciliationEmail(recon) {
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
 export async function fetchAlertData() {
   const [leasesR, escR, renR, propR, insR, conR, invR, abaR, insReqR, corpR, arR] = await Promise.all([
-    supabase.from('leases').select('id,tenant_name,property_id,lease_start,lease_termination_date,no_renewal_option,is_active'),
+    supabase.from('leases').select('id,tenant_name,property_id,lease_start,lease_termination_date,no_renewal_option,is_active,base_rent'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status,new_base_rent'),
     supabase.from('renewal_options').select('id,lease_id,notice_by_date,status'),
     supabase.from('properties').select('id,name,corporation_id'),
@@ -1902,8 +1927,10 @@ export async function fetchAlertData() {
     supabase.from('service_contracts').select('id,name,vendor,vendor_email,end_date,property_id'),
     // Behind-on-rent alerts read from the balance view: anything still owed (the view
     // nets payments). buildAlerts computes months-behind for annual invoices (kind +
-    // total_amount + amount_paid) and keeps the due-date test for reconciliations.
-    supabase.from('v_invoice_balances').select('lease_id,property_id,year,due_date,balance,kind,total_amount,amount_paid').gt('balance', 0),
+    // total_amount + amount_paid) and keeps the due-date test for reconciliations. The
+    // gross components (base/cam/tax/roof_annual) let it build the SAME schedule-aware
+    // owed-per-month the rent roll uses for the current fiscal year.
+    supabase.from('v_invoice_balances').select('lease_id,property_id,year,due_date,balance,kind,total_amount,amount_paid,base_rent_annual,cam_annual,tax_annual,roof_annual').gt('balance', 0),
     // Free-rent-ending alerts: abatement windows about to close.
     supabase.from('rent_abatements').select('lease_id,start_date,end_date,kind,value'),
     // Insurance chase-up: when each tenant was last asked for a certificate.

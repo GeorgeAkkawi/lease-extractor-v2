@@ -140,13 +140,40 @@ describe('AR summary (summarizeAR) — months behind, not 30/60/90 aging', () =>
       { lease_id: 'E', display_status: 'paid', kind: 'annual', year: Y, total_amount: 12000, amount_paid: 12000, balance: 0, due_date: `${Y}-01-01` }, // settled
     ];
     // amountBehind: A = round2(98500/12 × 7) = 57458.33; C = 1000; D = 700 → 59158.33.
-    expect(summarizeAR(rows, today)).toEqual({
+    // toMatchObject tolerates the new `detail` list while pinning the aggregates unchanged.
+    expect(summarizeAR(rows, today)).toMatchObject({
       outstanding: 115200, // 98500 + 10000 + 6000 + 700 (every owing balance, behind or not)
       count: 4,
       tenantsBehind: 3, // A, C, D (B is caught up)
       amountBehind: 59158.33,
       byMonthsBehind: { m1: 1, m2plus: 2 }, // C is 1 month; A (7 mo) + D (recon) are severe
     });
+  });
+
+  it('the detail list names each owing tenant, carries its FY + kind, and leads with the most behind', () => {
+    const today = new Date(`${Y}-07-07T12:00:00`);
+    const rows = [
+      { id: 'i-B', lease_id: 'B', display_status: 'partial', kind: 'annual', year: Y, total_amount: 24000, amount_paid: 14000, balance: 10000, due_date: `${Y}-08-01` }, // caught up
+      { id: 'i-C', lease_id: 'C', display_status: 'partial', kind: 'annual', year: Y, total_amount: 12000, amount_paid: 6000, balance: 6000, due_date: `${Y}-08-01` },  // 1 month behind
+      { id: 'i-A', lease_id: 'A', display_status: 'sent', kind: 'annual', year: Y, total_amount: 98500, amount_paid: 0, balance: 98500, due_date: `${Y}-08-01` },         // 7 months behind
+      { id: 'i-D', lease_id: 'D', display_status: 'overdue', kind: 'reconciliation', year: Y, total_amount: 700, amount_paid: 0, balance: 700, due_date: `${Y}-01-31` },   // recon overdue
+    ];
+    const info = {
+      A: { tenant_name: 'Alpha Co', occupancyStartIso: null },
+      B: { tenant_name: 'Bravo LLC', occupancyStartIso: null },
+      C: { tenant_name: 'Charlie Inc', occupancyStartIso: null },
+      D: { tenant_name: 'Delta PC', occupancyStartIso: null },
+    };
+    const { detail } = summarizeAR(rows, today, info);
+    expect(detail).toHaveLength(4);
+    // Sorted most-behind first: A (7 mo) → D (recon, 1) / C (1 mo) → B (not behind, last).
+    expect(detail[0]).toMatchObject({ lease_id: 'A', tenant_name: 'Alpha Co', year: Y, kind: 'annual', behind: true, monthsBehind: 7 });
+    expect(detail[detail.length - 1]).toMatchObject({ lease_id: 'B', tenant_name: 'Bravo LLC', behind: false });
+    const recon = detail.find((d) => d.lease_id === 'D');
+    expect(recon).toMatchObject({ isReconciliation: true, kind: 'reconciliation', behind: true, amountBehind: 700 });
+    // Every owing invoice appears with its tenant name + FY tag.
+    expect(detail.map((d) => d.tenant_name).sort()).toEqual(['Alpha Co', 'Bravo LLC', 'Charlie Inc', 'Delta PC']);
+    expect(detail.every((d) => d.year === Y)).toBe(true);
   });
 });
 

@@ -44,7 +44,14 @@ export function monthsDueByNow(year, occupancyStartIso, today = new Date()) {
 
 // The behind status of ONE invoice-balance row.
 //   invRow: { year, kind, total_amount, amount_paid, balance, due_date }
-//   ctx:    { occupancyStartIso }  (null → full-year occupancy)
+//   ctx:    { occupancyStartIso, owedByMonth? }  (null occupancy → full-year)
+//     • owedByMonth (optional): a length-12 array [Jan..Dec] of the rent OWED each month,
+//       the way the tenant is actually billed — free months $0, months before the tenancy
+//       $0, mid-year rate steps blended, scaled to the invoice total (leaseSchedule.js's
+//       owedByMonthForInvoice). When present, "behind" is judged against this real schedule
+//       instead of a flat total ÷ in-term-months, so a tenant who's paid every DUE month is
+//       never wrongly flagged just because free/not-yet-due months exist. When absent, the
+//       even-split fallback below runs — byte-identical to the prior behavior.
 // Returns { isReconciliation, monthsDue, monthsBehind, amountBehind, behind }.
 export function monthsBehindForInvoice(invRow, ctx = {}, today = new Date()) {
   const balance = Number(invRow?.balance) || 0;
@@ -60,6 +67,35 @@ export function monthsBehindForInvoice(invRow, ctx = {}, today = new Date()) {
   const year = Number(invRow?.year);
   const total = Number(invRow?.total_amount) || 0;
   const paid = invRow?.amount_paid != null ? Number(invRow.amount_paid) : round2(total - balance);
+
+  // Schedule-aware path: walk the tenant's own owed-per-month, counting only months that
+  // have COME DUE (their 1st is on/before today). A payment covers the earliest due months
+  // first; the months whose cumulative owed runs past what's been paid are the arrears.
+  const owed = Array.isArray(ctx.owedByMonth) && ctx.owedByMonth.length === 12 ? ctx.owedByMonth : null;
+  if (owed) {
+    let expectedByNow = 0;
+    let cumulative = 0;
+    let monthsBehind = 0;
+    let monthsDue = 0;
+    const paidR = round2(paid);
+    for (let m = 1; m <= 12; m++) {
+      if (monthStart(year, m) > today) continue;    // month hasn't started → not yet due
+      const owe = Number(owed[m - 1]) || 0;
+      if (owe <= 0) continue;                        // free / out-of-term → not a rent month
+      monthsDue += 1;
+      expectedByNow = round2(expectedByNow + owe);
+      cumulative = round2(cumulative + owe);
+      if (cumulative > paidR + 0.05) monthsBehind += 1; // this due month isn't covered by the payment
+    }
+    const amountBehind = round2(Math.max(0, expectedByNow - paid));
+    if (amountBehind <= 0.05) {
+      return { isReconciliation: false, monthsDue, monthsBehind: 0, amountBehind: 0, behind: false };
+    }
+    return { isReconciliation: false, monthsDue, monthsBehind: Math.max(1, monthsBehind), amountBehind, behind: true };
+  }
+
+  // Even-split fallback (no schedule supplied): total ÷ in-term months, applied to the
+  // months that have come due. Unchanged behavior for callers that don't pass owedByMonth.
   const nInTerm = inTermMonths(year, ctx.occupancyStartIso);
   const perMonth = nInTerm > 0 ? total / nInTerm : 0;
   const due = monthsDueByNow(year, ctx.occupancyStartIso, today);
