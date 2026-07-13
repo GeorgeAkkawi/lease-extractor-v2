@@ -164,8 +164,11 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .corp-fin{display:flex;gap:16px 26px;flex-wrap:wrap}
 .corp-card.fin .corp-fin{justify-content:space-between;border-top:1px solid var(--border);padding-top:14px;width:100%}
 .corp-row.fin .corp-fin{margin-left:auto}
-.corp-head{display:flex;align-items:center;gap:16px;width:100%}
-.corp-head .corp-info{flex:1;min-width:0}
+.corp-head{display:flex;align-items:center;gap:16px;width:100%;flex-wrap:wrap}
+.corp-head .corp-info{flex:1;min-width:150px}
+/* On fin/history cards the name gets its own line rather than truncating — the
+   two action pills wrap below it when the grid cell is narrow. */
+.corp-head .corp-info strong{white-space:normal;overflow:visible}
 .corp-row.fin{flex-wrap:wrap}
 .corp-row.fin .corp-head{flex:1;min-width:230px}
 .corp-fin>div{display:flex;flex-direction:column;gap:3px}

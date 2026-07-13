@@ -75,6 +75,37 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Corporation cards fit + page heading matches the tab on Financials & History** (George:
+  "fix corporations tab formatting on the financials page as well as the history page" — he confirmed the two
+  symptoms: the corp NAME was cut off / cards cramped, and the page TITLE said "Corporations"). Deployed:
+  frontend Cloudflare version `071fbc53`. **Frontend-only — layout/CSS + one heading line + a test; zero
+  logic/math changes, no DB migration, no edge function, $0, no tenant emails.** Tests **306/306** (was 303 —
+  +3 heading).
+  - **Two symptoms, one shared component.** The Financials + History corp grids are the SAME
+    `CorporationsPage.js` rendered with `mode="financials"`/`"history"`. (1) Each fin card's header
+    (`.corp-head`) packed the badge + corp name + **two action pills** ("Business profile" + "Annual report")
+    onto one non-wrapping row; in the narrow grid cells the pills won the space and the name hard-truncated to
+    an ellipsis (`.corp-info strong` had `white-space:nowrap;text-overflow:ellipsis`, and the fin card
+    overrode the name column to `min-width:0`). (2) The `<h1>` was hard-coded to "Corporations" for all three
+    modes, so Financials/History both read "Corporations".
+  - **Fix.** (1) `CorporationsPage.js` — `<h1>{TITLES[mode]}</h1>` (the per-mode map already existed:
+    Financials→"Financials", History→"History"; **intended side effect** — the Portfolio/leases tab heading
+    now reads "Portfolio", finally matching its sidebar label). (2) `App.css`, **scoped to `.corp-head` which
+    is used ONLY by the fin cards** (grepped — `.corp-row` is unused dead CSS, Portfolio cards untouched):
+    `.corp-head` gains `flex-wrap:wrap` (pills drop to their own row when the cell is narrow),
+    `.corp-head .corp-info` `min-width:0`→`150px` (reserves a readable name column so wrapping triggers before
+    the name is crushed), + a new `.corp-head .corp-info strong{white-space:normal;overflow:visible}` (the
+    name wraps instead of ellipsis-ing on these cards; the base ellipsis rule still governs the Portfolio
+    cards). On a wide card everything stays on one line (unchanged look).
+  - **Files:** `src/pages/CorporationsPage.js`, `src/App.css`, `src/pages/__tests__/corporationsHeading.test.js`
+    (new — asserts the h1 per mode).
+  - **Verified:** unit **306/306** (`vitest run`); `vite build` compiles. **Real-browser check** (system
+    Chrome headless via playwright-core against the demo dev server — the shared MCP browser was held by a
+    concurrent session): at **1280px AND 360px**, both tabs — heading reads "Financials"/"History", every fin
+    card's corp name renders untruncated (`whiteSpace:normal`, `.corp-head` `flex-wrap:wrap`), both pills
+    present, and Portfolio reads "Portfolio" — **zero console errors**. Live sites 200 (amlakre.com + www +
+    workers.dev). Committed only this task's files.
+
 - **2026-07-13** — **Ask Amlak: Clear-answers button + a LOT more facts in the summary (roof, lease terms,
   billed CAM/tax, next rent step, free rent, additional-insured, occupancy, annual-report dates) + a
   "📄 read my leases" fallback when the facts fall short + a configurable auto sign-out** (George approved

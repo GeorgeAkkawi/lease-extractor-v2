@@ -55,7 +55,7 @@ export default function CorporationsPage({ mode }) {
     <div>
       <div className="page-head">
         <div>
-          <h1>Corporations</h1>
+          <h1>{TITLES[mode]}</h1>
           <div className="muted">{SUBS[mode]}</div>
         </div>
         <div className="head-actions">
