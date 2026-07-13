@@ -75,6 +75,36 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Bugfix: the auto sign-out feature was locking returning users out the instant they
+  signed in** (George: "i cant sign into my fakkawi email account"). Deployed: frontend Cloudflare version
+  `27b462c9`. **Frontend-only — $0, no DB migration, no edge function, no tenant emails, no destructive data.**
+  Tests **317/317** (was 312 — +5 `initialActivityStamp`).
+  - **Diagnosis (read-only live DB, `supabase db query --linked`):** the beta account `fakkawi3@gmail.com`
+    (`2efba6de-…`) was healthy — email confirmed, **not banned, NO 2FA factor enrolled** — and its
+    `last_sign_in_at` had just updated to today (so the **password worked**), yet `auth.sessions` held **no
+    live session**. Classic "auth succeeds but the session never sticks" → a client-side sign-out firing
+    immediately after login.
+  - **Root cause — the auto sign-out (0062) inherited a stale activity stamp.** `AutoLogout.js` tracks
+    idleness via `localStorage['amlak:lastActivity']`, which **survives sign-out**. A returning user whose
+    previous stamp is older than their idle window (default 30 min) hit this: the seed line only wrote a fresh
+    stamp when the key was **absent** (`if (!localStorage.getItem(ACTIVITY_KEY)) …`), so a *stale* leftover key
+    was kept, and the very first idle poll (runs on mount) read it as long-expired → `doSignOut()` instantly.
+    Signing in / loading the page is itself activity, so the stamp should have been reset, not inherited.
+  - **Fix.** New pure **`initialActivityStamp(storedMs, nowMs, minutes)`** in `idleLogout.js` — **keep** a
+    RECENT stored stamp (so genuine cross-tab activity still counts) but fall back to **now** when it's
+    missing, unparseable, in the future, or already past the idle window. `AutoLogout.js` reconciles the stamp
+    through it on (re)start (replacing the absent-only seed), and the effect now depends on `minutes` too, so a
+    preference that loads AFTER mount (e.g. a tighter 15-min window than the 30-min default) re-reconciles
+    before the poll can act on the old value. Net: a sign-in / reload always starts the idle clock fresh;
+    walk-away-and-leave-it-open still signs out as designed.
+  - **Files:** `src/lib/idleLogout.js`, `src/components/AutoLogout.js`, `src/lib/__tests__/idleLogout.test.js`
+    (+5: the stale-stamp lockout → reset; recent kept; missing/invalid/future → now; the tighter-window
+    pref-loads-late edge; null-default vs off).
+  - **Verified:** unit **317/317** (`vitest run`); `vite build` compiles; live sites 200 (amlakre.com + www +
+    workers.dev). **George: try signing in again** (a hard refresh — Cmd+Shift+R — helps the new bundle load).
+    If it still bounces, open a private/incognito window once (no leftover stamp) to get in immediately; the
+    fix means it won't recur.
+
 - **2026-07-13** — **Receivables panel on the Finances page: name WHO's behind (+ link to each lease), define
   "Outstanding", and judge "behind" against each tenant's real rent schedule** (George's three asks: the
   "behind on rent / 1 month behind" boxes "dont make sense if i dont know which tenants its applied to"; "what
