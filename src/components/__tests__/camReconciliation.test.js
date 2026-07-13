@@ -91,7 +91,8 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     expect(screen.getByText('billing actuals')).toBeTruthy();
     expect(screen.queryByText('⚖ Reconcile')).toBeNull(); // nothing to true up
     // Totals "Estimated" + "Difference" read — (an em dash), never a summed fallback.
-    const totalsRow = screen.getByText('Totals').closest('tr');
+    // (The totals live in the ledger's closing band since the no-sideways-scroll redesign.)
+    const totalsRow = screen.getByText('Totals').closest('.ledger-totals');
     expect(within(totalsRow).getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 

@@ -19,25 +19,34 @@ import MutationError from './MutationError';
 const psf2 = (n) => (n == null || isNaN(n) ? '—' : `$${Number(n).toFixed(2)}`);
 const NBSP = ' ';
 
-// A numeric cell with a main figure and an optional smaller sub-line. The sub
-// element is always rendered (blank = NBSP) so every column shares the same
-// height and the main figures line up across the row.
-function NumCell({ main, sub, className = '', title }) {
+// One aligned figure in a ledger entry: a right-aligned main figure over an
+// optional sub-line ($/SF etc. — blank renders as NBSP so mains line up across
+// rows). The label is read by screen readers everywhere and becomes the visible
+// eyebrow on narrow screens, where the shared header band is hidden.
+function Stat({ label, main, sub, className = '' }) {
   return (
-    <td className={`num ${className}`.trim()} title={title}>
+    <div className={`ledger-stat ${className}`.trim()}>
+      <span className="stat-label">{label}</span>
       <div className="cell-main">{main}</div>
       <div className="cell-sub">{sub || NBSP}</div>
-    </td>
+    </div>
   );
 }
 
-// Per-tenant breakdown + the estimated-vs-actual reconciliation view (0060).
-// Tenants pay the lease's typed ESTIMATE during the year (the true CAM is only
-// known at year end); this table shows, per tenant: the estimate being billed
-// (click to edit — saved on the lease), the ACTUAL share as expenses fill in,
-// and the live Difference between them. The Reconcile action settles a finished
-// year: a shortfall becomes a reconciliation invoice in receivables; an
-// overpayment becomes a refund you mark paid once you've paid the tenant back.
+// Per-tenant breakdown + the estimated-vs-actual reconciliation view (0060),
+// laid out as a LEDGER — one entry per tenant — instead of a 13-column table,
+// so the whole page fits the viewport with no sideways scrolling. The header
+// band, every entry, and the totals band share one grid template, keeping the
+// figures aligned down the page; each figure's $/SF rides its sub-line and the
+// per-tenant actions live under the tenant's name.
+//
+// The content is unchanged: tenants pay the lease's typed ESTIMATE during the
+// year (the true CAM is only known at year end); each entry shows the estimate
+// being billed (click to edit — saved on the lease), the ACTUAL share as
+// expenses fill in, and the live Difference between them. The Reconcile action
+// settles a finished year: a shortfall becomes a reconciliation invoice in
+// receivables; an overpayment becomes a refund you mark paid once you've paid
+// the tenant back.
 export default function TenantShareTable({ propertyId, year }) {
   const qc = useQueryClient();
   const { data: shares = [], isLoading } = useQuery({
@@ -118,6 +127,7 @@ export default function TenantShareTable({ propertyId, year }) {
   const tot = rowsData.reduce(
     (a, { share: s, fig, billed }) => ({
       sf: a.sf + (Number(s.square_footage) || 0),
+      base: a.base + (Number(s.base_rent) || 0),
       est: a.est + (billed.anyEstimate ? fig.estTotal : 0),
       tax: a.tax + (Number(s.tax_amount) || 0),
       cam: a.cam + (Number(s.cam_amount) || 0),
@@ -125,7 +135,7 @@ export default function TenantShareTable({ propertyId, year }) {
       diff: a.diff + (billed.anyEstimate ? fig.diff : 0),
       anyEst: a.anyEst || billed.anyEstimate,
     }),
-    { sf: 0, est: 0, tax: 0, cam: 0, roof: 0, diff: 0, anyEst: false }
+    { sf: 0, base: 0, est: 0, tax: 0, cam: 0, roof: 0, diff: 0, anyEst: false }
   );
 
   async function openStatement(recon) {
@@ -146,7 +156,7 @@ export default function TenantShareTable({ propertyId, year }) {
   }
 
   return (
-    <div className="table-wrap">
+    <div className="table-wrap share-ledger">
       {noBuildingSf && (
         <div className="note-msg warn" style={{ margin: '10px 12px' }}>
           Building size not set — CAM &amp; taxes are currently split over the leased space only.
@@ -155,95 +165,79 @@ export default function TenantShareTable({ propertyId, year }) {
         </div>
       )}
       <MutationError of={[saveEst, reconcile, refund]} />
-      <table className="grouped">
-        <thead>
-          <tr>
-            <th rowSpan={2}>Tenant</th>
-            <th rowSpan={2} className="num">SF</th>
-            <th rowSpan={2} className="num">Base rent</th>
-            <th rowSpan={2} className="num">Share</th>
-            <th rowSpan={2} className="num grp-start">Estimated<br /><span className="sub-cap">billed to tenant</span></th>
-            <th colSpan={2} className="num grp">Property taxes · actual</th>
-            <th colSpan={2} className="num grp">CAM · actual</th>
-            <th rowSpan={2} className="num grp-start">Roof · actual</th>
-            <th rowSpan={2} className="num grp-start">Difference<br /><span className="sub-cap">actual − estimated</span></th>
-            <th rowSpan={2}></th>
-          </tr>
-          <tr>
-            <th className="num grp-start sub">$</th>
-            <th className="num sub">$/SF</th>
-            <th className="num grp-start sub">$</th>
-            <th className="num sub">$/SF</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rowsData.map((row) => {
-            const s = row.share;
-            const taxPsf = s.square_footage > 0 ? s.tax_amount / s.square_footage : null;
-            const camPsf = s.square_footage > 0 ? s.cam_amount / s.square_footage : null;
-            const roofPsf = s.square_footage > 0 ? s.roof_amt / s.square_footage : null;
-            const roofBilled = s.roof_responsible && s.roof_amt > 0;
-            return (
-              <tr key={s.lease_id}>
-                <td>{s.tenant_name}</td>
-                <NumCell main={sf(s.square_footage)} />
-                <NumCell main={money(s.base_rent)} sub={s.square_footage > 0 ? psf2(s.base_rent / s.square_footage) + '/SF' : ''} />
-                <NumCell main={pct(s.share_pct)} />
-                <EstimateCell
-                  key={`${s.lease_id}:${s.est_cam_annual}:${s.est_tax_annual}:${s.est_roof_annual}`}
-                  share={s}
-                  billed={row.billed}
-                  editing={editingId === s.lease_id}
-                  onEdit={() => setEditingId(s.lease_id)}
-                  onCancel={() => setEditingId(null)}
-                  onSave={(patch) => saveEst.mutate({ leaseId: s.lease_id, patch })}
-                  saving={saveEst.isPending && editingId === s.lease_id}
+      {/* The band labels duplicate each figure's own (screen-reader) label, so this is
+          presentation-only; on narrow screens it hides and the per-figure labels show. */}
+      <div className="ledger-grid ledger-head" aria-hidden="true">
+        <div>Tenant</div>
+        <div className="lg-num">Base rent</div>
+        <div className="lg-num">Estimated<span className="sub-cap">billed to tenant</span></div>
+        <div className="lg-num">Property taxes<span className="sub-cap">actual</span></div>
+        <div className="lg-num">CAM<span className="sub-cap">actual</span></div>
+        <div className="lg-num">Roof<span className="sub-cap">actual</span></div>
+        <div className="lg-num">Difference<span className="sub-cap">actual − estimated</span></div>
+      </div>
+      {rowsData.map((row) => {
+        const s = row.share;
+        const hasSf = Number(s.square_footage) > 0;
+        const taxPsf = hasSf ? s.tax_amount / s.square_footage : null;
+        const camPsf = hasSf ? s.cam_amount / s.square_footage : null;
+        const roofPsf = hasSf ? s.roof_amt / s.square_footage : null;
+        const roofBilled = s.roof_responsible && s.roof_amt > 0;
+        return (
+          <div className="ledger-grid ledger-row" key={s.lease_id}>
+            <div className="ledger-id">
+              <div className="ledger-name">{s.tenant_name}</div>
+              <div className="ledger-meta">{sf(s.square_footage)} · {pct(s.share_pct)} share</div>
+              <div className="ledger-actions">
+                <InvoiceButton share={s} />
+                <ReconcileAction
+                  row={row}
+                  invById={invById}
+                  onReconcile={() => confirmReconcile(row)}
+                  onStatement={() => openStatement(row.recon)}
+                  onRefunded={() => refund.mutate(row.recon.id)}
+                  busy={reconcile.isPending || refund.isPending}
                 />
-                <NumCell className="grp-start" main={money(s.tax_amount)} />
-                <NumCell main={psf2(taxPsf)} />
-                <NumCell className="grp-start" main={money(s.cam_amount)} />
-                <NumCell main={psf2(camPsf)} />
-                <NumCell className="grp-start" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled ? psf2(roofPsf) + '/SF' : ''} />
-                <DifferenceCell fig={row.fig} show={row.billed.anyEstimate} />
-                <td className="num">
-                  <div className="cell-actions">
-                    <InvoiceButton share={s} />
-                    <ReconcileAction
-                      row={row}
-                      invById={invById}
-                      onReconcile={() => confirmReconcile(row)}
-                      onStatement={() => openStatement(row.recon)}
-                      onRefunded={() => refund.mutate(row.recon.id)}
-                      busy={reconcile.isPending || refund.isPending}
-                    />
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-          <tr className="total-row">
-            <td>Totals</td>
-            <td className="num">
-              <div className="cell-main">{sf(tot.sf)}</div>
-              {buildingSf > 0 && (
-                <div className="cell-sub">of {sf(buildingSf)} building</div>
-              )}
-            </td>
-            <td className="num"></td>
-            <td className="num"></td>
-            <td className="num grp-start">{tot.anyEst ? money(tot.est) : <span className="muted">—</span>}</td>
-            <td className="num grp-start">{money(tot.tax)}</td>
-            <td className="num"></td>
-            <td className="num grp-start">{money(tot.cam)}</td>
-            <td className="num"></td>
-            <td className="num grp-start">{money(tot.roof)}</td>
-            <td className="num grp-start">
-              {tot.anyEst ? <DiffFigure diff={tot.diff} /> : <span className="muted">—</span>}
-            </td>
-            <td></td>
-          </tr>
-        </tbody>
-      </table>
+              </div>
+            </div>
+            <Stat label="Base rent" main={money(s.base_rent)} sub={hasSf ? psf2(s.base_rent / s.square_footage) + '/SF' : ''} />
+            <EstimateStat
+              share={s}
+              billed={row.billed}
+              editing={editingId === s.lease_id}
+              onToggle={() => setEditingId(editingId === s.lease_id ? null : s.lease_id)}
+            />
+            <Stat label="Property taxes · actual" main={money(s.tax_amount)} sub={hasSf ? psf2(taxPsf) + '/SF' : ''} />
+            <Stat label="CAM · actual" main={money(s.cam_amount)} sub={hasSf ? psf2(camPsf) + '/SF' : ''} />
+            <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? psf2(roofPsf) + '/SF' : ''} />
+            <DiffStat fig={row.fig} show={row.billed.anyEstimate} />
+            {editingId === s.lease_id && (
+              <EstimateEditor
+                share={s}
+                saving={saveEst.isPending}
+                onCancel={() => setEditingId(null)}
+                onSave={(patch) => saveEst.mutate({ leaseId: s.lease_id, patch })}
+              />
+            )}
+          </div>
+        );
+      })}
+      <div className="ledger-grid ledger-row ledger-totals">
+        <div className="ledger-id">
+          <div className="ledger-name">Totals</div>
+          <div className="ledger-meta">{sf(tot.sf)} leased{buildingSf > 0 ? ` of ${sf(buildingSf)} building` : ''}</div>
+        </div>
+        <Stat label="Base rent" main={money(tot.base)} />
+        <Stat label="Estimated · billed" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
+        <Stat label="Property taxes · actual" main={money(tot.tax)} />
+        <Stat label="CAM · actual" main={money(tot.cam)} />
+        <Stat label="Roof · actual" main={money(tot.roof)} />
+        <Stat
+          label="Difference · actual − estimated"
+          className="ledger-diff"
+          main={tot.anyEst ? <DiffFigure diff={tot.diff} /> : <span className="muted">—</span>}
+        />
+      </div>
       <div className="table-note muted">
         <strong>Estimated</strong> is what the tenant actually pays during the year (click a figure to set it — the
         true CAM is only known once the year closes); it falls back to the actual share until you enter one.
@@ -280,33 +274,53 @@ function DiffFigure({ diff }) {
     : <span className="neg-owed" title="Actuals are running below the estimate — you'll owe the tenant the difference at year end">−{money(Math.abs(d))}</span>;
 }
 
-function DifferenceCell({ fig, show }) {
-  // No estimate set → nothing to compare against, so the column stays dormant.
+// The entry's closing balance. No estimate set → nothing to compare against, so it
+// stays dormant (—).
+function DiffStat({ fig, show }) {
   if (!show) {
-    return (
-      <td className="num grp-start">
-        <div className="cell-main muted">—</div>
-        <div className="cell-sub">{NBSP}</div>
-      </td>
-    );
+    return <Stat label="Difference · actual − estimated" className="ledger-diff" main={<span className="muted">—</span>} />;
   }
   const d = Number(fig.diff) || 0;
   const sub = Math.abs(d) <= RECON_DUST ? '' : d > 0 ? 'tenant owes' : 'you owe tenant';
+  return <Stat label="Difference · actual − estimated" className="ledger-diff" main={<DiffFigure diff={d} />} sub={sub} />;
+}
+
+// The Estimated figure: the billed amount (typed estimate, else the actual it falls
+// back to) with its $/SF sub-line, as a click target that opens/closes the editor.
+function EstimateStat({ share, billed, editing, onToggle }) {
+  const sfNum = Number(share.square_footage) || 0;
+  const estCamTax = billed.cam + billed.tax;
+  const psfSub = sfNum > 0 ? `${psf2(estCamTax / sfNum)}/SF` : '';
+  const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
   return (
-    <td className="num grp-start">
-      <div className="cell-main"><DiffFigure diff={d} /></div>
-      <div className="cell-sub">{sub || NBSP}</div>
-    </td>
+    <div className="ledger-stat">
+      <span className="stat-label">Estimated · billed to tenant</span>
+      <button
+        type="button"
+        className={`est-cell-btn${editing ? ' editing' : ''}`}
+        onClick={onToggle}
+        title="Click to set what this tenant pays as estimated CAM / tax (and roof, when responsible) during the year — entered in $ per square foot"
+      >
+        <div className="cell-main">
+          {billed.anyEstimate
+            ? <>{money(estCamTax)}<span className="est-tag"> est.</span></>
+            : <span className="muted">＋ set estimate</span>}
+        </div>
+        {/* The roof rider gets its own sub-line so a long combo never bleeds into
+            the neighboring column. */}
+        <div className="cell-sub">{billed.anyEstimate ? (psfSub || NBSP) : 'billing actuals'}</div>
+        {billed.anyEstimate && roofSub && <div className="cell-sub">{roofSub}</div>}
+      </button>
+    </div>
   );
 }
 
-// The Estimated column: shows the billed figure (typed estimate, else the actual it
-// falls back to) with its $/SF — like the actual columns — and opens a tiny inline
-// form where the landlord types the estimates in $/SF of the tenant's space (per
-// George: prices are quoted per square foot). Stored annualized on the lease, so
-// every billing surface (invoice, monthly tracker, Leases page) follows. A lease
-// with no square footage on file falls back to plain $/yr entry.
-function EstimateCell({ share, billed, editing, onEdit, onCancel, onSave, saving }) {
+// The inline estimate editor, opened by clicking the Estimated figure — a roomy
+// band spanning the whole entry. The landlord types $/SF rates of the tenant's
+// space (per George: prices are quoted per square foot), stored annualized on the
+// lease so every billing surface (invoice, monthly tracker, Leases page) follows.
+// A lease with no square footage on file falls back to plain $/yr entry.
+function EstimateEditor({ share, onSave, onCancel, saving }) {
   const sfNum = Number(share.square_footage) || 0;
   const perSf = sfNum > 0;
   const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -315,74 +329,51 @@ function EstimateCell({ share, billed, editing, onEdit, onCancel, onSave, saving
   const [tax, setTax] = useState(toInput(share.est_tax_annual));
   const [roof, setRoof] = useState(toInput(share.est_roof_annual));
 
-  if (editing) {
-    // What the landlord types (a $/SF rate when the SF is known) → the annual $ saved.
-    const annualOf = (v) => (v === '' || v == null ? null : perSf ? round2(Number(v) * sfNum) : Number(v));
-    const unit = perSf ? '$/SF/yr' : '$/yr';
-    const ph = (actualAnnual) => (perSf ? (Number(actualAnnual || 0) / sfNum).toFixed(2) : String(Math.round(actualAnnual || 0)));
-    const preview =
-      (annualOf(cam) ?? Number(share.cam_amount || 0)) +
-      (annualOf(tax) ?? Number(share.tax_amount || 0)) +
-      (share.roof_responsible ? (annualOf(roof) ?? Number(share.roof_amt || 0)) : 0);
-    return (
-      <td className="num grp-start est-edit">
-        <label>
-          <span>CAM {unit}</span>
-          <input className="text-input num" type="number" step="any" min="0" value={cam} onChange={(e) => setCam(e.target.value)} placeholder={ph(share.cam_amount)} />
-        </label>
-        <label>
-          <span>Tax {unit}</span>
-          <input className="text-input num" type="number" step="any" min="0" value={tax} onChange={(e) => setTax(e.target.value)} placeholder={ph(share.tax_amount)} />
-        </label>
-        {share.roof_responsible && (
-          <label>
-            <span>Roof {unit}</span>
-            <input className="text-input num" type="number" step="any" min="0" value={roof} onChange={(e) => setRoof(e.target.value)} placeholder={ph(share.roof_amt)} />
-          </label>
-        )}
-        {perSf && (
-          <div className="est-preview">× {sf(sfNum)} = {money(round2(preview))}/yr</div>
-        )}
-        <div className="est-edit-actions">
-          <button
-            className="btn-sm"
-            disabled={saving}
-            onClick={() =>
-              onSave({
-                est_cam_annual: annualOf(cam),
-                est_tax_annual: annualOf(tax),
-                est_roof_annual: share.roof_responsible ? annualOf(roof) : null,
-              })
-            }
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button className="secondary btn-sm" onClick={onCancel} disabled={saving}>Cancel</button>
-        </div>
-      </td>
-    );
-  }
+  // What the landlord types (a $/SF rate when the SF is known) → the annual $ saved.
+  const annualOf = (v) => (v === '' || v == null ? null : perSf ? round2(Number(v) * sfNum) : Number(v));
+  const unit = perSf ? '$/SF/yr' : '$/yr';
+  const ph = (actualAnnual) => (perSf ? (Number(actualAnnual || 0) / sfNum).toFixed(2) : String(Math.round(actualAnnual || 0)));
+  const preview =
+    (annualOf(cam) ?? Number(share.cam_amount || 0)) +
+    (annualOf(tax) ?? Number(share.tax_amount || 0)) +
+    (share.roof_responsible ? (annualOf(roof) ?? Number(share.roof_amt || 0)) : 0);
 
-  const estCamTax = billed.cam + billed.tax;
-  const psfSub = perSf ? `${psf2(estCamTax / sfNum)}/SF` : '';
-  const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
-  const sub = [psfSub, roofSub].filter(Boolean).join(' · ');
   return (
-    <td className="num grp-start">
-      <button
-        type="button"
-        className="est-cell-btn"
-        onClick={onEdit}
-        title="Click to set what this tenant pays as estimated CAM / tax (and roof, when responsible) during the year — entered in $ per square foot"
-      >
-        <div className="cell-main">
-          {billed.anyEstimate
-            ? <>{money(estCamTax)}<span className="est-tag"> est.</span></>
-            : <span className="muted">＋ set estimate</span>}
-        </div>
-        <div className="cell-sub">{billed.anyEstimate ? (sub || NBSP) : 'billing actuals'}</div>
-      </button>
-    </td>
+    <div className="ledger-edit">
+      <label>
+        <span>CAM {unit}</span>
+        <input className="text-input num" type="number" step="any" min="0" value={cam} onChange={(e) => setCam(e.target.value)} placeholder={ph(share.cam_amount)} />
+      </label>
+      <label>
+        <span>Tax {unit}</span>
+        <input className="text-input num" type="number" step="any" min="0" value={tax} onChange={(e) => setTax(e.target.value)} placeholder={ph(share.tax_amount)} />
+      </label>
+      {share.roof_responsible && (
+        <label>
+          <span>Roof {unit}</span>
+          <input className="text-input num" type="number" step="any" min="0" value={roof} onChange={(e) => setRoof(e.target.value)} placeholder={ph(share.roof_amt)} />
+        </label>
+      )}
+      {perSf && (
+        <div className="est-preview">× {sf(sfNum)} = {money(round2(preview))}/yr</div>
+      )}
+      <div className="est-edit-actions">
+        <button
+          className="btn-sm"
+          disabled={saving}
+          onClick={() =>
+            onSave({
+              est_cam_annual: annualOf(cam),
+              est_tax_annual: annualOf(tax),
+              est_roof_annual: share.roof_responsible ? annualOf(roof) : null,
+            })
+          }
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button className="secondary btn-sm" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+    </div>
   );
 }
 

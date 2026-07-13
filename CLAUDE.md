@@ -75,6 +75,38 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Finances page fits the screen — no more scrolling right** (George: "can you make it so
+  that i dont have to scroll right to get to the end of that page? use that design skill and make it look
+  nice"). Deployed: frontend Cloudflare version `39e5dfbe`. **Frontend-only — layout/CSS, zero logic or math
+  changes; no DB migration, no edge function, $0, no tenant emails.** Tests **265/265** (unchanged count —
+  the component test's totals-row selector updated to the new DOM).
+  - **1) Per-tenant breakdown rebuilt as a LEDGER, not a 13-column spreadsheet** (`TenantShareTable.js` +
+    the `.ledger-*` CSS replacing the `table.grouped` rules in `App.css`, designed with the frontend-design
+    skill inside the app's existing paper/serif language). One entry per tenant: identity on the left
+    (name, "2,000 SF · 40.0% share", and the Invoice / ⚖ Reconcile / ✉ Statement actions moved UNDER the
+    name — killing the widest column), six figure columns on the right (Base rent · Estimated · Taxes ·
+    CAM · Roof · Difference) whose $/SF rides each figure's existing sub-line (the roof rider gets its own
+    sub-line so long combos can't bleed into a neighbor). Header band, every entry, and the totals band
+    share ONE grid template, so figures still align down the page — ~800px natural width vs ~1,300px
+    before. The **Difference** column is styled as the entry's closing balance (display serif, signed
+    gold/red, behind a hairline rule) — the one emphasized element. **Responsive for real:** below 880px
+    the header band hides, each figure self-labels (labels are screen-reader-only on desktop), and figures
+    wrap 3-across (2-across under 520px) — no sideways scroll at ANY width. The estimate editor now opens
+    as a roomy full-width band under the row (same $/SF inputs + × SF preview) instead of the cramped
+    150px cell. Two leaks caught in the browser pass and fixed: the global `button` uppercase/letter-spacing
+    bled into the estimate click-target ("＋ SET ESTIMATE"), and the long est sub-line overflowed its column.
+    Totals band also gained the Base rent sum (was an empty cell). All figures/logic/actions byte-identical.
+  - **2) Monthly rent roll fits too** — the page's other wide panel. Its 12 month columns carried the
+    generic 16px cell padding; a scoped `.rent-roll` rule tightens the month columns to 5px (tenant/last
+    columns keep 16px), so Jan–Dec + Paid fit the panel at laptop width with no inner scrollbar.
+  - **Files:** `TenantShareTable.js`, `App.css`, `camReconciliation.test.js` (totals selector `tr` →
+    `.ledger-totals`).
+  - **Verified:** unit **265/265** (`vitest run`); `vite build` compiles; **real-browser check at 1280px
+    and 800px** (playwright vs the demo dev server): page + both panels report zero horizontal overflow
+    (`scrollWidth == clientWidth`), estimate editor opens/saves, narrow reflow self-labels, **zero console
+    errors** — screenshots reviewed at each pass. Live site 200s (amlakre.com + www + workers.dev).
+    Committed only this task's files.
+
 - **2026-07-13** — **Extractor reads estimated CAM/tax from the lease + the invoice/statement emails no
   longer break in Gmail** (George: "sometimes certain leases will have an estimated cam and tax can you make
   the AI extractor also look for that? also when i click the invoice button or statement button it formats

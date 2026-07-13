@@ -67,8 +67,11 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .month-cell.paid{background:var(--forest-soft);border-color:var(--forest)}
 .month-cell.paid .month-label,.month-cell.paid .month-amt{color:var(--forest);font-weight:700}
 @media (max-width:680px){.month-grid{grid-template-columns:repeat(3,1fr)}}
-.rent-roll th,.rent-roll td{text-align:center;vertical-align:middle}
-.rent-roll th:first-child,.rent-roll td:first-child{text-align:left}
+/* Tight horizontal padding on the 12 month columns so the whole year fits the
+   panel without sideways scrolling; the tenant column keeps normal padding. */
+.rent-roll th,.rent-roll td{text-align:center;vertical-align:middle;padding-left:5px;padding-right:5px}
+.rent-roll th:first-child,.rent-roll td:first-child{text-align:left;padding-left:16px}
+.rent-roll th:last-child,.rent-roll td:last-child{padding-right:16px}
 .rr-mhead{display:flex;flex-direction:column;align-items:center;gap:3px}
 .rr-all{padding:1px 6px;font-size:10px;line-height:1.5;text-transform:none;letter-spacing:0}
 .rr-cell{width:30px;height:26px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-2);cursor:pointer;color:var(--faint);font-weight:700;font-family:var(--ui)}
@@ -300,26 +303,56 @@ tbody tr:last-child td{border-bottom:none}
 .total-row td{background:var(--panel-2);border-top:1px solid var(--line);font-family:var(--display);font-size:16px}
 .hl-row td{background:var(--accent-soft)}
 .table-note{font-size:11.5px;padding:12px 16px;background:var(--panel-2);border-top:1px solid var(--hair)}
-table.grouped th{vertical-align:bottom}
-table.grouped th.grp{text-align:center;border-left:1px solid var(--border);border-bottom:1px solid var(--hair);padding-bottom:8px;color:var(--ink);letter-spacing:.1em}
-table.grouped th.sub{font-size:9px;padding-top:8px;color:var(--faint)}
-table.grouped .grp-start{border-left:1px solid var(--border)}
-table.grouped{min-width:880px}
-/* ---- Estimated CAM/tax + reconciliation (finances per-tenant table) ---- */
-table.grouped th .sub-cap{display:block;font-size:8.5px;font-weight:500;color:var(--faint);letter-spacing:.06em;text-transform:none;margin-top:2px}
-.est-cell-btn{display:block;width:100%;background:none;border:0;padding:0;text-align:right;cursor:pointer;font:inherit;color:inherit}
-.est-cell-btn:hover .cell-main{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
-td.est-edit{min-width:150px}
-td.est-edit label{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:5px}
-td.est-edit label span{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
-td.est-edit .text-input{width:92px;padding:4px 7px;font-size:12px}
-.est-preview{font-size:10.5px;color:var(--muted);text-align:right;margin:1px 0 5px;font-variant-numeric:tabular-nums}
-.est-edit-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:2px}
+/* ---- per-tenant ledger — Estimated CAM/tax + reconciliation (Finances page).
+   One entry per tenant instead of a 13-column table, so the page never scrolls
+   sideways. The header band, every entry, and the totals band share ONE grid
+   template, keeping the figures aligned down the page like a ledger; $/SF rides
+   each figure's sub-line and the actions sit under the tenant's name. ---- */
+.ledger-grid{display:grid;grid-template-columns:minmax(168px,1.5fr) repeat(6,minmax(72px,.9fr));gap:2px 16px;align-items:stretch;padding:15px 20px}
+.ledger-head{padding:11px 20px 9px;background:var(--panel-2);border-bottom:1px solid var(--line);color:var(--muted);font-weight:700;font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;align-items:end}
+.ledger-head .lg-num{text-align:right}
+.ledger-head .sub-cap{display:block;font-size:8.5px;font-weight:500;color:var(--faint);letter-spacing:.06em;text-transform:none;margin-top:2px}
+.ledger-row{border-bottom:1px solid var(--hair)}
+.ledger-name{font-weight:600;line-height:1.25}
+.ledger-meta{font-size:11.5px;color:var(--muted);margin-top:3px;font-variant-numeric:tabular-nums}
+.ledger-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:9px}
+.ledger-stat{position:relative;text-align:right;min-width:0}
+.stat-label{display:block;font-size:9px;font-weight:700;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
+@media (min-width:881px){
+  /* Desktop: the shared header band carries the column labels; each figure's own
+     label stays for screen readers only. */
+  .stat-label{position:absolute;width:1px;height:1px;margin:0;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+}
+/* The Difference column is the entry's closing balance — set in the display serif
+   (the totals voice) behind a hairline rule; everything else stays quiet. */
+.ledger-diff{border-left:1px solid var(--hair);padding-left:14px}
+.ledger-diff .cell-main{font-family:var(--display);font-size:17px;line-height:1.15}
+.ledger-totals{background:var(--panel-2);border-top:1px solid var(--line);border-bottom:none}
+.ledger-totals .ledger-name,.ledger-totals .cell-main{font-family:var(--display);font-size:16px;font-weight:500}
+.est-cell-btn{display:block;width:100%;background:none;border:0;padding:0;text-align:inherit;cursor:pointer;font:inherit;color:inherit;text-transform:none;letter-spacing:normal}
+.est-cell-btn:hover .cell-main,.est-cell-btn.editing .cell-main{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
+.ledger-edit{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin-top:10px;padding:11px 14px;background:var(--panel-2);border:1px solid var(--hair);border-radius:var(--radius)}
+.ledger-edit label{display:flex;align-items:center;gap:7px}
+.ledger-edit label span{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+.ledger-edit .text-input{width:92px;padding:4px 7px;font-size:12px}
+.est-preview{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.est-edit-actions{display:flex;gap:6px;margin-left:auto}
 .pos-owed{color:var(--gold);font-weight:600}
 .neg-owed{color:var(--danger);font-weight:600}
-.recon-state{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
-.cell-actions{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.recon-state{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .cell-sub{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:2px;font-weight:400}
+@media (max-width:880px){
+  /* Narrow: the header band hides, each figure self-labels, and the figures wrap
+     3-across under a full-width identity line — still no sideways scroll. */
+  .ledger-head{display:none}
+  .ledger-grid{grid-template-columns:repeat(3,1fr);gap:14px 16px;padding:14px 16px}
+  .ledger-id{grid-column:1/-1}
+  .ledger-stat{text-align:left}
+  .ledger-diff{border-left:none;padding-left:0}
+}
+@media (max-width:520px){
+  .ledger-grid{grid-template-columns:repeat(2,1fr)}
+}
 
 /* ---- tabs / stacked ---- */
 .tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:26px}
@@ -423,9 +456,8 @@ td.est-edit .text-input{width:92px;padding:4px 7px;font-size:12px}
 .side-alert-t{flex:1;min-width:0}
 .side-alert-d{margin-left:auto;padding-left:8px;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
 
-/* every numeric cell in the per-tenant table renders main+sub (sub may be blank)
-   so the main figures line up exactly even when only some have a $/SF sub-line */
-table.grouped td{vertical-align:middle}
+/* every main+sub figure cell (per-tenant ledger, renewal table, history) keeps
+   its lines from wrapping so the main figures line up exactly */
 .cell-main{font-variant-numeric:tabular-nums;line-height:1.2;white-space:nowrap}
 .cell-sub{white-space:nowrap}
 
