@@ -75,6 +75,48 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Reconciliation math fix: the estimated/difference view now ties out and stays dormant
+  until an estimate is typed** (George: "the current math doesnt look right to me … how is it getting an
+  estimate of about 101 thousand if there are no estimates set?"). Deployed: frontend Cloudflare version
+  `58a1ba99`. **Frontend-only — no DB migration, no edge function, $0, no tenant emails, no effect on any
+  bill.** Tests **258/258** (was 257 — +1 "no-estimate → dormant totals" regression).
+  - **The two symptoms George caught, one root cause each.**
+    - **Phantom ~$101k "Estimated" total.** The Finances per-tenant table's **Totals** row summed every
+      tenant's `fig.estTotal`, and for a tenant with NO estimate typed `reconcileFigures` fell back to that
+      tenant's ACTUAL share (or its annual invoice's billed CAM+tax+roof) — so the Totals "Estimated (billed
+      to tenant)" cell added up real actuals and printed them as an *estimate* (~$101k on George's live data),
+      even though every individual row correctly read "＋ set estimate". No bills were affected — purely a
+      misleading total.
+    - **Difference didn't equal Estimated − Actual on screen.** The **Estimated column** displayed the current
+      typed estimate (`billedComponents`), but the **Difference column** (and the Reconcile settlement)
+      compared against the year invoice's frozen **snapshot** (0060's "snapshot-wins"). When the two differed
+      (e.g. the demo seed, or George's case where his tenants' pre-feature invoices billed actuals), the
+      on-screen subtraction didn't tie out — 18,800 actual − 18,000 shown estimate looked like +$800 but read
+      +$700 because it was secretly using the $18,100 snapshot.
+  - **Fix — one estimate basis everywhere + gate the view on an estimate being set.**
+    - `reconciliation.js` `reconcileFigures({ share })` — dropped the invoice-snapshot preference; the estimate
+      side is now **always the tenant's current typed estimate** (`billedComponents`, the exact figure the
+      Estimated column shows), so `Estimated − Actual = Difference` always holds on screen, and the Reconcile
+      settlement matches what the landlord sees. (Trade-off, flagged: reconciliation is no longer "immune to a
+      later estimate edit" — editing the estimate now re-bases the true-up; for George that's the intuitive
+      behavior, and the invoice PDF still records what was actually billed.)
+    - `api.js` `reconcileCamTax` — settles against `reconcileFigures({ share })` (same basis; removed the now-
+      unused `getYearInvoice` fetch), so the confirm dialog, the Difference column, and the created recon
+      invoice are one number.
+    - `TenantShareTable.js` — the Estimated total, the Difference column, and the **⚖ Reconcile** button now
+      **only engage when an estimate is actually set** (`billed.anyEstimate`): a no-estimate tenant shows "＋
+      set estimate", a dormant "—" Difference, and no Reconcile; the Totals "Estimated"/"Difference" cells read
+      **—** when no tenant on the property has an estimate (killing the phantom $101k). Removed the dead
+      `annualInvByLease`/`isAnnualInvoice` snapshot plumbing.
+  - **Files:** `reconciliation.js`, `api.js` (reconcileCamTax), `TenantShareTable.js`, `reconciliation.test.js`
+    (snapshot-basis test repurposed to assert the estimate basis; demo diff 700→800), `camReconciliation.test.js`
+    (700→800 + new dormant-totals regression).
+  - **Verified:** unit **258/258** (`vitest run`) incl. the component test mounting the real TenantShareTable —
+    Bright Coffee shows Estimated $16,500 (+roof $1,500) and a Difference of **+$800** that now ties to
+    18,800 − 18,000; City Dental / Northwind (no estimate) show "＋ set estimate", a "—" Difference, no
+    Reconcile, and a "—" Totals estimate. `vite build` compiles; live site 200s (amlakre.com + www +
+    workers.dev). Committed only this task's files.
+
 - **2026-07-12** — **Follow-up on the CAM/tax estimates: $/SF entry, invoice alignment fix, invoice-style
   reconciliation statement** (George, same day: "the landlord should enter the prices in dollars per square
   foot … show the total number and the number per square foot like the actual column. the invoice format

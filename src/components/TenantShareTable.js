@@ -9,7 +9,6 @@ import {
   reconcileCamTax,
   markReconciliationRefunded,
   draftCamReconciliationEmail,
-  isAnnualInvoice,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
 import { money, sf, pct } from '../lib/format';
@@ -100,30 +99,33 @@ export default function TenantShareTable({ propertyId, year }) {
   if (shares.length === 0) return <p className="muted">No tenants/leases for this property yet.</p>;
 
   const reconByLease = Object.fromEntries(recons.map((r) => [r.lease_id, r]));
-  const annualInvByLease = {};
-  for (const inv of invoices) {
-    if (Number(inv.year) === Number(year) && inv.status !== 'void' && isAnnualInvoice(inv)) annualInvByLease[inv.lease_id] = inv;
-  }
   const invById = Object.fromEntries(invoices.map((i) => [i.id, i]));
 
-  // Per-row figures the cells below share. The estimate side prefers the year
-  // invoice's billed snapshot (what was truly billed), else the typed estimates.
+  // Per-row figures the cells below share. The estimate side is the tenant's current
+  // typed estimate (billedComponents) — the same figure the Estimated column shows —
+  // so Estimated − Actual on screen always equals the Difference. `anyEstimate` gates
+  // the whole estimated/difference/reconcile view: with no estimate typed it stays
+  // dormant (the tenant simply bills its actual share, exactly as before).
   const rowsData = shares.map((s) => {
-    const fig = reconcileFigures({ share: s, invoice: annualInvByLease[s.lease_id] || null });
+    const fig = reconcileFigures({ share: s });
     const billed = billedComponents(s);
     return { share: s, fig, billed, recon: reconByLease[s.lease_id] || null };
   });
 
+  // Estimated + Difference totals only count tenants who actually have an estimate
+  // set — otherwise the fallback (a tenant's plain actual share) would masquerade as
+  // an "estimate" and inflate the total. `anyEst` = at least one tenant has one.
   const tot = rowsData.reduce(
-    (a, { share: s, fig }) => ({
+    (a, { share: s, fig, billed }) => ({
       sf: a.sf + (Number(s.square_footage) || 0),
-      est: a.est + fig.estTotal,
+      est: a.est + (billed.anyEstimate ? fig.estTotal : 0),
       tax: a.tax + (Number(s.tax_amount) || 0),
       cam: a.cam + (Number(s.cam_amount) || 0),
       roof: a.roof + (Number(s.roof_amt) || 0),
-      diff: a.diff + fig.diff,
+      diff: a.diff + (billed.anyEstimate ? fig.diff : 0),
+      anyEst: a.anyEst || billed.anyEstimate,
     }),
-    { sf: 0, est: 0, tax: 0, cam: 0, roof: 0, diff: 0 }
+    { sf: 0, est: 0, tax: 0, cam: 0, roof: 0, diff: 0, anyEst: false }
   );
 
   async function openStatement(recon) {
@@ -202,7 +204,7 @@ export default function TenantShareTable({ propertyId, year }) {
                 <NumCell className="grp-start" main={money(s.cam_amount)} />
                 <NumCell main={psf2(camPsf)} />
                 <NumCell className="grp-start" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled ? psf2(roofPsf) + '/SF' : ''} />
-                <DifferenceCell fig={row.fig} />
+                <DifferenceCell fig={row.fig} show={row.billed.anyEstimate} />
                 <td className="num">
                   <div className="cell-actions">
                     <InvoiceButton share={s} />
@@ -229,14 +231,14 @@ export default function TenantShareTable({ propertyId, year }) {
             </td>
             <td className="num"></td>
             <td className="num"></td>
-            <td className="num grp-start">{money(tot.est)}</td>
+            <td className="num grp-start">{tot.anyEst ? money(tot.est) : <span className="muted">—</span>}</td>
             <td className="num grp-start">{money(tot.tax)}</td>
             <td className="num"></td>
             <td className="num grp-start">{money(tot.cam)}</td>
             <td className="num"></td>
             <td className="num grp-start">{money(tot.roof)}</td>
             <td className="num grp-start">
-              <DiffFigure diff={tot.diff} />
+              {tot.anyEst ? <DiffFigure diff={tot.diff} /> : <span className="muted">—</span>}
             </td>
             <td></td>
           </tr>
@@ -278,7 +280,16 @@ function DiffFigure({ diff }) {
     : <span className="neg-owed" title="Actuals are running below the estimate — you'll owe the tenant the difference at year end">−{money(Math.abs(d))}</span>;
 }
 
-function DifferenceCell({ fig }) {
+function DifferenceCell({ fig, show }) {
+  // No estimate set → nothing to compare against, so the column stays dormant.
+  if (!show) {
+    return (
+      <td className="num grp-start">
+        <div className="cell-main muted">—</div>
+        <div className="cell-sub">{NBSP}</div>
+      </td>
+    );
+  }
   const d = Number(fig.diff) || 0;
   const sub = Math.abs(d) <= RECON_DUST ? '' : d > 0 ? 'tenant owes' : 'you owe tenant';
   return (
@@ -381,6 +392,9 @@ function EstimateCell({ share, billed, editing, onEdit, onCancel, onSave, saving
 function ReconcileAction({ row, invById, onReconcile, onStatement, onRefunded, busy }) {
   const { recon } = row;
   if (!recon) {
+    // Reconciliation only applies once an estimate is set — with none, the tenant is
+    // simply billed its actual share and there's nothing to true up.
+    if (!row.billed.anyEstimate) return null;
     return (
       <button className="secondary btn-sm" onClick={onReconcile} disabled={busy} title={`Settle ${row.share.tenant_name}'s estimated-vs-actual CAM & tax for the year`}>
         ⚖ Reconcile

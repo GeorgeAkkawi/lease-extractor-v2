@@ -4,10 +4,10 @@
 //
 // Demo seed (store.js), year Y = the current year, Maple Plaza building 5,000 SF:
 //   lease-1 Bright Coffee — 2,000 SF (40%), roof-responsible, typed estimates
-//     cam 6,500 / tax 10,000 / roof 1,500; actual share cam 7,200 / tax 10,000 /
-//     roof 1,600. Its ANNUAL invoice inv-1 is already saved with the OLD snapshot
-//     cam 9,000 / tax 7,500 / roof 1,600 → reconciliation runs off that snapshot:
-//     actual 18,800 − billed 18,100 = +700 (tenant owes).
+//     cam 6,500 / tax 10,000 / roof 1,500 (= 18,000); actual share cam 7,200 /
+//     tax 10,000 / roof 1,600 (= 18,800) → reconciliation compares the CURRENT
+//     estimate to the actual: 18,800 − 18,000 = +800 (tenant owes). (Its ANNUAL
+//     invoice inv-1 still bills/monthly-tracks the year; it isn't the recon basis.)
 //   lease-2 City Dental — no estimates (bills actuals).
 //   lease-3 Northwind (prop-2) — no invoice; 40% override share of taxes 40,000 /
 //     cam 30,000, not roof-responsible → actual tax 16,000 / cam 12,000.
@@ -79,26 +79,28 @@ describe('reconcileFigures — estimate vs actual', () => {
     expect(fig.direction).toBe('even');
   });
 
-  it('the year invoice snapshot beats the current estimate fields (what was truly billed)', () => {
-    const invoice = { cam_annual: 9000, tax_annual: 7500, roof_annual: 1600 };
-    const fig = reconcileFigures({ share: brightCoffeeShare, invoice });
-    expect(fig.estTotal).toBe(18100);
-    expect(fig.diff).toBe(700); // 18,800 actual − 18,100 billed
+  it('reconciles against the current estimate fields (what the Finances column shows)', () => {
+    // The live view + settlement compare the tenant's CURRENT estimate to the
+    // actual, so on screen Estimated − Actual always equals the Difference — no
+    // hidden invoice snapshot that could disagree with what the landlord sees.
+    const fig = reconcileFigures({ share: brightCoffeeShare });
+    expect(fig.estTotal).toBe(18000); // 6,500 + 10,000 + 1,500 (the typed estimate)
+    expect(fig.diff).toBe(800); // 18,800 actual − 18,000 estimate
     expect(fig.direction).toBe('tenant_owes');
   });
 });
 
-describe('reconcileCamTax — tenant owes (Bright Coffee, invoice snapshot)', () => {
+describe('reconcileCamTax — tenant owes (Bright Coffee, estimate vs actual)', () => {
   it('creates ONE reconciliation invoice for the shortfall, never mistaken for the year invoice', async () => {
     const { recon, created } = await reconcileCamTax('lease-1', 'prop-1', Y);
     expect(created).toBe(true);
     expect(recon.direction).toBe('tenant_owes');
-    expect(recon.diff).toBe(700);
+    expect(recon.diff).toBe(800);
     expect(recon.invoice_id).toBeTruthy();
 
     const invoices = await listInvoices('lease-1');
     const reconInv = invoices.find((i) => i.kind === 'reconciliation');
-    expect(reconInv.total_amount).toBe(700);
+    expect(reconInv.total_amount).toBe(800);
     expect(reconInv.year).toBe(Y);
 
     // The ÷12 gotcha: the ANNUAL invoice is still "the year invoice" — the monthly
@@ -106,7 +108,7 @@ describe('reconcileCamTax — tenant owes (Bright Coffee, invoice snapshot)', ()
     const yearInv = await getYearInvoice('lease-1', Y);
     expect(yearInv.id).toBe('inv-1');
     const monthly = await getMonthlyRent('lease-1', Y);
-    expect(Math.round(monthly.annual)).toBe(78100); // inv-1's figures, not 78,100 + 700
+    expect(Math.round(monthly.annual)).toBe(78100); // inv-1's figures, not 78,100 + 800
   });
 
   it('is idempotent — reconciling the same year again returns the existing record', async () => {

@@ -1601,16 +1601,14 @@ export async function reconcileCamTax(leaseId, propertyId, year) {
   const existing = await getReconciliation(leaseId, year);
   if (existing) return { recon: existing, created: false };
 
-  const [shares, invoice] = await Promise.all([
-    getTenantShares(propertyId, year),
-    getYearInvoice(leaseId, year),
-  ]);
+  const shares = await getTenantShares(propertyId, year);
   const share = (shares || []).find((s) => s.lease_id === leaseId);
   if (!share) throw new Error('No financial data for this tenant/year.');
 
-  // Estimate side = the year invoice's billed snapshot when one exists (what was
-  // truly billed, immune to later estimate edits), else the current estimate fields.
-  const fig = reconcileFigures({ share, invoice });
+  // Settle against the tenant's current estimate — the same figure the Finances
+  // "Estimated" column and live Difference show — so the reconciliation the landlord
+  // confirms is exactly the one on screen.
+  const fig = reconcileFigures({ share });
 
   // Shortfall → its own reconciliation invoice. Per-component diffs can be negative
   // individually (CAM under, tax over) and the invoice check constraints require

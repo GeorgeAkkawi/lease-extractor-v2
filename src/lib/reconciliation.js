@@ -46,22 +46,19 @@ export function actualComponents(share) {
 }
 
 // Estimate-vs-actual for one tenant-year.
-//   share   — the v_tenant_shares row (actuals + current estimate fields)
-//   invoice — the year's ANNUAL invoice, or null. When one exists its figures are
-//             the estimate side (what was truly billed — a snapshot that stays
-//             right even if the landlord later retypes the estimate for next year);
-//             with no invoice yet, the current billed-components stand in.
+//   share — the v_tenant_shares row (actuals + current estimate fields)
+// The estimate side is the tenant's CURRENT typed estimate (billedComponents — the
+// exact figure the Finances "Estimated" column shows and that draft-invoice bills),
+// so on screen Estimated − Actual always equals the Difference, and the Reconcile
+// settlement matches what the landlord sees. Reconciliation is only meaningful once
+// an estimate is typed; with none, est == actual (its plain actual share) → nothing
+// owed, and the UI keeps the whole estimated/difference view dormant.
 // Returns { est, actual, estTotal, actualTotal, diff, direction, lines } where
 // diff = actual − estimate (> 0 ⇒ the tenant owes the shortfall; < 0 ⇒ the
 // landlord owes the tenant a refund; within ±5¢ ⇒ even).
-export function reconcileFigures({ share, invoice }) {
-  const est = invoice
-    ? {
-        cam: round2(invoice.cam_annual || 0),
-        tax: round2(invoice.tax_annual || 0),
-        roof: round2(invoice.roof_annual || 0),
-      }
-    : (({ cam, tax, roof }) => ({ cam, tax, roof }))(billedComponents(share));
+export function reconcileFigures({ share }) {
+  const { cam, tax, roof } = billedComponents(share);
+  const est = { cam, tax, roof };
   const actual = actualComponents(share);
 
   const lines = [

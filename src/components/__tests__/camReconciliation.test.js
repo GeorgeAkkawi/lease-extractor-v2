@@ -7,7 +7,7 @@
 // billed snapshot 18,100) vs an actual share of 18,800 → live "+$700 / tenant owes".
 // City Dental has no estimates → "＋ set estimate" / billing actuals.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TenantShareTable from '../TenantShareTable';
 import { listInvoices, getReconciliation, getLease } from '../../lib/api';
@@ -35,12 +35,13 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     expect(screen.getByText('$16,500.00')).toBeTruthy();
     expect(screen.getByText(/\$8\.25\/SF/)).toBeTruthy();
     expect(screen.getAllByText(/est\./).length).toBeGreaterThan(0);
-    // Live difference off the inv-1 billed snapshot: 18,800 actual − 18,100 = +700.
-    // (City Dental's row also reads "tenant owes" — its seeded invoice under-bills
-    // the actual share — so match all.)
-    expect(screen.getByText('+$700.00')).toBeTruthy();
+    // Live difference off the CURRENT estimate: 18,800 actual − 18,000 estimate = +800
+    // (shown on Bright Coffee's row and, since it's the only tenant with an estimate,
+    // mirrored in the Totals row).
+    expect(screen.getAllByText('+$800.00').length).toBeGreaterThan(0);
     expect(screen.getAllByText('tenant owes').length).toBeGreaterThan(0);
-    // City Dental (no estimates) invites entry and shows it's billing actuals.
+    // City Dental (no estimates) invites entry, shows it's billing actuals, and its
+    // Difference stays dormant (—) — no phantom estimate/difference without one set.
     expect(screen.getByText('＋ set estimate')).toBeTruthy();
     expect(screen.getByText('billing actuals')).toBeTruthy();
   });
@@ -65,14 +66,33 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
     const buttons = screen.getAllByText('⚖ Reconcile');
     fireEvent.click(buttons[0]); // rows render in seed order — Bright Coffee first
-    await waitFor(() => expect(screen.getByText(/Owed \$700\.00/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Owed \$800\.00/)).toBeTruthy());
     // The statement button appears with the outcome; the shortfall is a real invoice.
     expect(screen.getByText('✉ Statement')).toBeTruthy();
     const recon = await getReconciliation('lease-1', Y);
     expect(recon.direction).toBe('tenant_owes');
     const invoices = await listInvoices('lease-1');
-    expect(invoices.find((i) => i.kind === 'reconciliation')?.total_amount).toBe(700);
+    expect(invoices.find((i) => i.kind === 'reconciliation')?.total_amount).toBe(800);
     vi.restoreAllMocks();
+  });
+
+  it('with no estimates set, the Estimated total + Difference stay dormant (no phantom total)', async () => {
+    // prop-2 / Northwind has no typed estimate — the exact situation that used to
+    // sum each tenant's actual-share fallback under "Estimated" and print a large
+    // phantom total. It must now read — and offer no reconcile.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <TenantShareTable propertyId="prop-2" year={Y} />
+      </QueryClientProvider>
+    );
+    await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
+    expect(screen.getByText('＋ set estimate')).toBeTruthy();
+    expect(screen.getByText('billing actuals')).toBeTruthy();
+    expect(screen.queryByText('⚖ Reconcile')).toBeNull(); // nothing to true up
+    // Totals "Estimated" + "Difference" read — (an em dash), never a summed fallback.
+    const totalsRow = screen.getByText('Totals').closest('tr');
+    expect(within(totalsRow).getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
   it('saving a $/SF rate stores the annualized estimate on the lease', async () => {
