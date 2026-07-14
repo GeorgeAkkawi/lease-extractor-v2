@@ -75,6 +75,55 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-13** — **Removed the monthly rent tracker, receivables, and monthly rent roll** (George: "i want
+  to remove the following from this platform: monthly rent tracker, receivables, and monthly rent role"). He
+  chose the **"Keep invoicing"** scope via an AskUserQuestion — remove the money-*tracking* UI + its dead
+  plumbing, but KEEP the **Invoices & payments** panel and the Invoice / Statement / year-end CAM-reconciliation
+  tools. Deployed: frontend Cloudflare version `6490e831`, `send-reminders` edge fn redeployed (Supabase
+  `awgrjmbcghdjgnqeiqkt`). **Frontend + one edge-fn redeploy — $0, no DB migration (invoices/payments/
+  cam_reconciliations tables kept, non-destructive), no AI, no tenant emails, no destructive data.** Tests
+  **274/274** (was 317 — −43 from the removed monthly-tracker/roll/AR test files).
+  - **What was removed:** the **monthly rent tracker** (the 12 month-boxes on each lease page), the **monthly
+    rent roll** (the per-month "mark all tenants paid" grid on each property's Financials page), and
+    **receivables tracking** — the Overview **"Outstanding (AR)"** card, the Financials **"Receivables ·
+    outstanding"** section, the **"Behind on rent"** dashboard alerts, and the **overdue-rent reminder emails**.
+  - **What stayed (the "Keep invoicing" scope):** the **Invoices & payments** panel on each lease + its
+    `lease_receivables` Display toggle; **Invoice / Statement / ⚖ Reconcile** generation (`TenantShareTable`,
+    `InvoiceButton`, all CAM-reconciliation code); the Overview **"Annual rent roll"** card + **"⬇ Download rent
+    roll (Excel)"** export; and the invoices/payments/`cam_reconciliations` DB tables + `draft-invoice` edge fn.
+  - **Code:** deleted `MonthlyRentTracker.js` + `PropertyRentRoll.js` (components) and `arStatus.js` +
+    `leaseSchedule.js` (fully-dead libs). `LeaseDetailPage.js` dropped the Monthly-rent panel + the fiscal-year
+    selector (Invoices & payments doesn't follow it). `PropertyFinancialsPage.js` dropped the `ARSummary` section
+    + the monthly roll (per-tenant breakdown + expense entry untouched). `DashboardPage.js` dropped the
+    Outstanding-AR card + its `portfolioAR` query + the dead `focus==='invoice'` email branch.
+    `api.js` removed getMonthlyRent/markMonthPaid/unmarkMonthPaid/getPropertyMonthlyRoll/markMonthPaidAllTenants/
+    occInfoForInvoices/getPropertyAR/getPortfolioAR/summarizeAR + their imports, the behind-on-rent invoice fetch
+    from `fetchAlertData`, and the invoice branch in `draftAlertEmail`. `alerts.js` removed the behind-on-rent +
+    overdue-reconciliation block; **the free-rent-ending alert stays and is no longer gated by the receivables
+    display pref** (it's a lease/abatement signal). `dashboardWidgets.js` dropped the `ar` /
+    `lease_monthly_rent` / `property_rent_roll` toggles (kept `rent_roll` + `lease_receivables`). `prefetch.js`
+    dropped the portfolioAR prefetch. `emailTemplates.js` dropped `buildPaymentReminderEmail`. Dead query-key
+    invalidations (`propertyAR`/`portfolioAR`/`monthlyRent`/`propertyRentRoll`) cleaned out of the KEPT
+    components (`TenantShareTable`, `InvoicesPanel`, `InvoiceButton`, `AbatementEditor`, `BuildingSizeEditor`).
+  - **Edge fn (`send-reminders`):** removed the overdue-reconciliation email sweep + its `overdueBucket`/
+    `widgetOn` helpers and the `overdue` field from the JSON result (insurance/contract/annual-report sweeps
+    untouched). Redeployed clean.
+  - **Tests:** deleted `arStatus.test.js`, `midYearRent.test.js`, `holdoverRoll.test.js`,
+    `rentRollHoldover.test.js`; pruned `moneyCollection.test.js` (kept penny-true schedule + invoice-dedupe +
+    invoice-template; dropped monthly/mark-all/summarizeAR/payment-reminder), `reconciliation.test.js` (dropped
+    the getMonthlyRent ÷12 case, kept the year-vs-recon distinction via getYearInvoice + all CAM cases),
+    `notificationGating.test.js` + `sixMonthAlerts.test.js` (dropped the behind-on-rent + `ar`-gate assertions;
+    added a "free-rent not gated by receivables prefs" case).
+  - **Verified:** unit **274/274** (`vitest run`); `vite build` compiles (788 modules). **Real-browser check**
+    (system playwright vs the demo dev server, run inline): Overview has **no** Outstanding-AR card (3 cards:
+    Annual rent roll · Occupancy · Expiring; Download-rent-roll button present); property Financials has **no**
+    Receivables section and **no** monthly roll (Per-tenant breakdown + Expense entry present); the lease page
+    has **no** Monthly-rent panel and **no** FY selector (Invoices & payments present); Settings → Display no
+    longer lists the three removed toggles (Invoices & payments + Annual rent roll toggles remain) — **zero
+    console errors** (a one-off dev-server 500 on SecuritySettings.js was a warm-up transform hiccup; the
+    production build transformed all 788 modules clean and a reload rendered it fine). Live sites 200
+    (amlakre.com + www + workers.dev). Committed only this task's files.
+
 - **2026-07-13** — **Bugfix: the auto sign-out feature was locking returning users out the instant they
   signed in** (George: "i cant sign into my fakkawi email account"). Deployed: frontend Cloudflare version
   `27b462c9`. **Frontend-only — $0, no DB migration, no edge function, no tenant emails, no destructive data.**
