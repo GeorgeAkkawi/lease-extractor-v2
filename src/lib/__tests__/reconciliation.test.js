@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 import { billedComponents, actualComponents, reconcileFigures } from '../reconciliation';
 import {
   reconcileCamTax, getReconciliation, markReconciliationRefunded,
-  draftCamReconciliationEmail, getYearInvoice, getMonthlyRent,
+  draftCamReconciliationEmail, getYearInvoice,
   listInvoices, updateLease,
 } from '../api';
 import { buildInvoice } from '../invoiceTemplate';
@@ -103,12 +103,10 @@ describe('reconcileCamTax — tenant owes (Bright Coffee, estimate vs actual)', 
     expect(reconInv.total_amount).toBe(800);
     expect(reconInv.year).toBe(Y);
 
-    // The ÷12 gotcha: the ANNUAL invoice is still "the year invoice" — the monthly
-    // tracker must never divide the true-up by 12.
+    // The reconciliation true-up must never be mistaken for the year invoice: the
+    // ANNUAL invoice inv-1 stays "the year invoice", distinct from the recon invoice.
     const yearInv = await getYearInvoice('lease-1', Y);
     expect(yearInv.id).toBe('inv-1');
-    const monthly = await getMonthlyRent('lease-1', Y);
-    expect(Math.round(monthly.annual)).toBe(78100); // inv-1's figures, not 78,100 + 800
   });
 
   it('is idempotent — reconciling the same year again returns the existing record', async () => {

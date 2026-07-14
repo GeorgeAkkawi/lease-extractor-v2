@@ -57,34 +57,6 @@ describe('buildAlerts', () => {
     expect(pTerm.title).not.toMatch(/no renewal/i);
   });
 
-  test('a tenant behind on rent raises a "Behind on rent" alert; a paid or not-yet-due one does not', () => {
-    const lease = { id: 'L1', tenant_name: 'Owing Tenant', property_id: 'p1', is_active: true };
-    const base = {
-      leases: [lease], escalations: [], renewals: [], insurance: [], contracts: [],
-      properties: [{ id: 'p1', corporation_id: 'corp1' }],
-    };
-    const out = buildAlerts({
-      ...base,
-      invoices: [
-        // A closed-year annual bill, nothing paid → all 12 months came due → behind.
-        { lease_id: 'L1', property_id: 'p1', year: 2025, kind: 'annual', due_date: '2025-08-01', total_amount: 18000, amount_paid: 0, balance: 18000 },
-        // A closed-year bill that's fully paid → no balance → no alert.
-        { lease_id: 'L1', property_id: 'p1', year: 2025, kind: 'annual', due_date: '2025-08-01', total_amount: 12000, amount_paid: 12000, balance: 0 },
-        // A FUTURE fiscal year — no month has come due yet → not behind → no alert.
-        { lease_id: 'L1', property_id: 'p1', year: 2027, kind: 'annual', due_date: '2027-08-01', total_amount: 12000, amount_paid: 0, balance: 12000 },
-      ],
-    }, undefined, NOW);
-    const inv = out.filter((a) => a.focus === 'invoice');
-    expect(inv).toHaveLength(1);
-    expect(inv[0].tone).toBe('danger'); // 2+ months behind
-    expect(inv[0].bucketLabel).toMatch(/behind/);
-    expect(inv[0].title).toMatch(/Behind on rent — Owing Tenant/);
-    expect(inv[0].months_behind).toBe(12);
-    expect(inv[0].detail).toMatch(/\$18,000/);
-    expect(inv[0].corporation_id).toBe('corp1');
-    expect(alertKey(inv[0])).toBe('invoice:L1:2025-08-01');
-  });
-
   test('escalation steps dated on/after the committed term end are gated out of alerts', () => {
     const lease = { id: 'L1', tenant_name: 'Tenant', property_id: 'p1', lease_termination_date: '2026-03-01', is_active: true };
     const out = buildAlerts({

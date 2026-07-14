@@ -18,12 +18,6 @@ export default function InvoicesPanel({ leaseId }) {
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['invoices', leaseId] });
-    qc.invalidateQueries({ queryKey: ['portfolioAR'] });
-    invoices.forEach((i) => qc.invalidateQueries({ queryKey: ['propertyAR', i.property_id] }));
-    // Removing/recording a payment here can change which MONTHS read as paid —
-    // refresh the monthly tracker + property rent roll so they never show stale checks.
-    qc.invalidateQueries({ queryKey: ['monthlyRent', leaseId] });
-    qc.invalidateQueries({ queryKey: ['propertyRentRoll'] });
   };
 
   // "Remove invoice" = void (kept, not destroyed) so a mistaken invoice stops counting

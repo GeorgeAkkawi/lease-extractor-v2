@@ -1,7 +1,7 @@
 // Token-free tests for the Settings-synced notification gating and the new
 // expiry-focused alerts/letters:
-//   • buildAlerts silences insurance / contract / receivables categories when the
-//     matching Settings toggle is off, and never gates core lease dates.
+//   • buildAlerts silences insurance / contract categories when the matching
+//     Settings toggle is off, and never gates core lease dates.
 //   • the free-rent-ending + holdover + insurance-chase-up alerts.
 //   • the "please send the renewed certificate" letter wording.
 //   • the Ask-Amlak snapshot omits a hidden module's facts + folds the feature set
@@ -25,8 +25,6 @@ function fullData() {
       { party: 'landlord', property_id: 'p1', insurer: 'Granite', expiry_date: '2026-02-20' },
     ],
     contracts: [{ id: 'c1', name: 'Landscaping', vendor: 'GreenCo', vendor_email: 'g@x.com', end_date: '2026-03-01', property_id: 'p1' }],
-    // A closed-year (2025) annual bill, nothing paid → behind on rent (all 12 months came due).
-    invoices: [{ lease_id: 'L1', property_id: 'p1', year: 2025, kind: 'annual', due_date: '2025-12-01', total_amount: 1500, amount_paid: 0, balance: 1500 }],
     abatements: [{ lease_id: 'L1', start_date: '2025-11-01', end_date: '2026-02-01', kind: 'free' }],
     insuranceRequests: [],
   };
@@ -40,7 +38,6 @@ describe('buildAlerts — Settings gating', () => {
     expect(f).toContain('escalation');
     expect(f).toContain('insurance');
     expect(f).toContain('contract');
-    expect(f).toContain('invoice');
     expect(f).toContain('abatement');
   });
 
@@ -49,7 +46,6 @@ describe('buildAlerts — Settings gating', () => {
     const f = focuses(out);
     expect(f).not.toContain('insurance');
     expect(f).toContain('contract');   // still on
-    expect(f).toContain('invoice');    // ar not hidden
     expect(f).toContain('escalation'); // core — never gated
   });
 
@@ -61,12 +57,13 @@ describe('buildAlerts — Settings gating', () => {
     expect(f).toContain('escalation');
   });
 
-  test('receivables (ar) hidden silences overdue-invoice AND free-rent alerts', () => {
+  test('free-rent alerts are not gated by receivables display prefs', () => {
+    // The free-rent-ending heads-up is a lease/abatement signal, not receivables —
+    // hiding an Overview widget must not silence it.
     const out = buildAlerts(fullData(), undefined, NOW, { features: null, hiddenWidgets: ['ar'] });
     const f = focuses(out);
-    expect(f).not.toContain('invoice');
-    expect(f).not.toContain('abatement');
-    expect(f).toContain('insurance'); // features null → still on
+    expect(f).toContain('abatement');
+    expect(f).toContain('insurance');
     expect(f).toContain('contract');
     expect(f).toContain('escalation');
   });

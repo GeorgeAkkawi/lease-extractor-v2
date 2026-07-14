@@ -13,7 +13,6 @@ import RenewalOptionsEditor from '../components/RenewalOptionsEditor';
 import AbatementEditor from '../components/AbatementEditor';
 import AddendumEditor from '../components/AddendumEditor';
 import InvoicesPanel from '../components/InvoicesPanel';
-import MonthlyRentTracker from '../components/MonthlyRentTracker';
 import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
 import InsuranceVault from '../components/InsuranceVault';
@@ -71,14 +70,13 @@ export default function LeaseDetailPage() {
   // Per-account Display settings — which lease/property panels the landlord hid.
   const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   const showPanel = (k) => !hiddenWidgets.includes(k);
-  // Show the shared fiscal-year selector only when the monthly rent tracker (which
-  // follows it) is visible — hiding the tracker removes the year picker's only use here.
+  // No fiscal-year selector on this page — the Invoices & payments panel doesn't follow it.
   usePageChrome([
     { label: 'Portfolio', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
     { label: prop?.name || '…', to: `/leases/${corpId}/${propId}` },
     { label: lease?.tenant_name || '…' },
-  ], !hiddenWidgets.includes('lease_monthly_rent'));
+  ], false);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['lease', leaseId] });
@@ -391,8 +389,7 @@ export default function LeaseDetailPage() {
         </div>
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           A rent abatement is a period of <strong>free or reduced base rent</strong> (e.g. "first 8 months free"). The base
-          rent up top stays the same — those months are simply credited on the invoice, the receivables, and the monthly
-          tracker. CAM &amp; taxes still apply.
+          rent up top stays the same — those months are simply credited on the invoice. CAM &amp; taxes still apply.
         </p>
         <AbatementEditor lease={lease} />
       </div>
@@ -434,16 +431,6 @@ export default function LeaseDetailPage() {
         </p>
         <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} squareFootage={lease.square_footage} />
       </div>
-
-      {showPanel('lease_monthly_rent') && (
-        <div className="panel">
-          <div className="panel-head">
-            <strong>Monthly rent</strong>
-            <span className="muted">Check off each month as it's paid — follows the fiscal-year selector</span>
-          </div>
-          <MonthlyRentTracker lease={lease} />
-        </div>
-      )}
 
       {showPanel('lease_receivables') && (
         <div className="panel">

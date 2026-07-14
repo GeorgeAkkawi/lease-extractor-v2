@@ -83,19 +83,18 @@ Deno.serve(async (req) => {
 
     // Per-owner Settings gates: a reminder email is suppressed when the owner turned its
     // module off (same rule as the dashboard alerts). enabled_features null = everything
-    // on (never chosen); the 'ar' hidden widget silences overdue-rent emails. Loaded once.
-    const prefsByOwner = new Map<string, { enabled: string[] | null; hidden: string[] }>();
+    // on (never chosen). Loaded once and used by the insurance/contract sweeps below.
+    const prefsByOwner = new Map<string, { enabled: string[] | null }>();
     const { data: prefs } = await supabase
       .from('user_preferences')
-      .select('user_id, enabled_features, hidden_widgets');
+      .select('user_id, enabled_features');
     for (const pr of (prefs ?? []) as any[]) {
-      prefsByOwner.set(pr.user_id, { enabled: pr.enabled_features ?? null, hidden: pr.hidden_widgets ?? [] });
+      prefsByOwner.set(pr.user_id, { enabled: pr.enabled_features ?? null });
     }
     const featureOn = (owner: string, key: string) => {
       const en = prefsByOwner.get(owner)?.enabled ?? null;
       return en == null ? true : en.includes(key);
     };
-    const widgetOn = (owner: string, key: string) => !(prefsByOwner.get(owner)?.hidden ?? []).includes(key);
 
     for (const r of due as any[]) {
       const kd = r.key_dates;
@@ -212,53 +211,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // --- Overdue reconciliation reminders (email the owner) -----------------
-    // ONLY year-end CAM/tax reconciliation invoices email the owner — they're a genuine
-    // one-off lump bill with a real due date. A regular ANNUAL rent invoice comes due once
-    // for the whole year, so emailing "$3X,XXX overdue" from ~Aug 1 was misleading; monthly
-    // lateness is now surfaced in-app only (the "Behind on rent" dashboard alert). Emailed
-    // at 1 day / 1 week / 1 month late, once per threshold via invoices.overdue_notice_bucket.
-    // No reset needed: a paid invoice drops out of the balance view. Gated by the
-    // Outstanding (receivables) display toggle.
-    let overdueProcessed = 0;
-    // Embedding leases(tenant_name) through a VIEW is unreliable in PostgREST, so read the
-    // balances plainly and resolve tenant names with one lookup by lease_id.
-    const { data: balances, error: balErr } = await supabase
-      .from('v_invoice_balances')
-      .select('id, owner_id, lease_id, year, due_date, balance, overdue_notice_bucket, kind')
-      .eq('kind', 'reconciliation')
-      .gt('balance', 0)
-      .not('due_date', 'is', null);
-    if (balErr) {
-      await logEvent('api_error', 'invoice balances query failed', ip);
-    } else {
-      const now = new Date();
-      const leaseIds = [...new Set((balances ?? []).map((b: any) => b.lease_id).filter(Boolean))];
-      const nameByLease = new Map<string, string>();
-      if (leaseIds.length) {
-        const { data: lz } = await supabase.from('leases').select('id, tenant_name').in('id', leaseIds);
-        for (const l of (lz ?? []) as any[]) nameByLease.set(l.id, l.tenant_name);
-      }
-      for (const b of (balances ?? []) as any[]) {
-        const ob = overdueBucket(b.due_date, now);
-        if (!ob || ob === b.overdue_notice_bucket) continue; // not yet due, or already sent for it
-        if (!widgetOn(b.owner_id, 'ar')) continue; // receivables hidden in Settings → stay quiet
-        if (!RESEND_API_KEY) { await logEvent('reminder_skipped', `invoice ${b.id} not emailed — RESEND_API_KEY unset`, ip); continue; }
-        const email = await resolveEmail(b.owner_id, emailCache);
-        if (!email) { await logEvent('reminder_skipped', `invoice ${b.id} not emailed — no owner address`, ip); continue; }
-
-        const who = nameByLease.get(b.lease_id) || 'a tenant';
-        const amount = `$${Number(b.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const subject = `Reconciliation overdue — ${who}${b.year ? ` (${b.year})` : ''}`;
-        const text = `${who} has an overdue balance of ${amount}${b.year ? ` on the ${b.year} reconciliation statement` : ''}, which was due on ${b.due_date}. Consider following up with a payment reminder.`;
-
-        const delivered = await sendEmail(email, subject, text);
-        if (!delivered) { await logEvent('reminder_failed', `Resend send failed for invoice ${b.id}`, ip); continue; }
-        await supabase.from('invoices').update({ overdue_notice_bucket: ob }).eq('id', b.id);
-        overdueProcessed++;
-      }
-    }
-
     // --- Annual-report filing reminders (email the owner) ------------------
     // One email ~1 month before each corporation's annual-report deadline (George's
     // choice: a single 1-month heads-up, not the 2w/1w escalation). Dedupe via
@@ -292,7 +244,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ processed, insurance: insuranceProcessed, contracts: contractProcessed, overdue: overdueProcessed, annual: annualProcessed });
+    return json({ processed, insurance: insuranceProcessed, contracts: contractProcessed, annual: annualProcessed });
   } catch (e) {
     console.error('[send-reminders] unhandled error:', e);
     await logEvent('api_error', String((e as any)?.message ?? e), ip);
@@ -334,17 +286,6 @@ function expiryBucket(expiry: string, now: Date): string | null {
   if (days <= 7) return '1w';
   if (days <= 14) return '2w';
   if (days <= 31) return '1m';
-  return null;
-}
-
-// Bucket an overdue invoice by days PAST its due date: 1 day / 1 week / 1 month late.
-// Monotonic (an invoice only moves up the scale), so an equality check against the
-// stored bucket sends each threshold at most once. Null until it's actually past due.
-function overdueBucket(dueDate: string, now: Date): string | null {
-  const days = Math.round((now.getTime() - new Date(dueDate + 'T12:00:00').getTime()) / 86400000);
-  if (days >= 30) return '1m_late';
-  if (days >= 7) return '1w_late';
-  if (days >= 1) return '1d_late';
   return null;
 }
 

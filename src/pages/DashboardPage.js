@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, getPortfolioAR, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest } from '../lib/api';
+import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
 import { useFeatures } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
@@ -11,8 +11,8 @@ import { PageSkeleton } from '../components/Skeleton';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 
 // Portfolio overview — the landlord's one-glance home: rent roll, occupancy,
-// receivables outstanding, leases expiring soon, and today's alerts. All assembled
-// from data the app already exposes (search index + AR rollup + alerts).
+// leases expiring soon, and today's alerts. All assembled from data the app
+// already exposes (search index + property totals + alerts).
 export default function DashboardPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -44,8 +44,6 @@ export default function DashboardPage() {
     queryFn: () => listPropertyTotalsByYear(propIds, year),
     enabled: !!index,
   });
-  // Skip the receivables fetch entirely when that card is hidden.
-  const { data: ar } = useQuery({ queryKey: ['portfolioAR'], queryFn: () => getPortfolioAR(), enabled: show('ar') });
   const { data: alerts = [] } = useQuery({
     // Feature/widget prefs are part of the key so toggling a module re-filters the feed.
     queryKey: ['alerts', enabledFeatures, hidden],
@@ -96,7 +94,6 @@ export default function DashboardPage() {
     if (a.focus === 'contract') return true;
     if (a.focus === 'renewal') return !!a.renewal_id;
     if (a.focus === 'insurance') return !!a.lease_id; // tenant policy only
-    if (a.focus === 'invoice') return true; // overdue invoice → payment reminder
     return a.focus === 'termination' || a.focus === 'escalation';
   };
   // Draft the reminder's ready-to-send email and open the send modal. Sending it does NOT
@@ -136,13 +133,9 @@ export default function DashboardPage() {
     .filter((l) => l.days != null && l.days >= 0 && l.days <= 183)
     .sort((a, b) => a.days - b.days);
 
-  // Receivables reframed around "who's behind on rent" (arStatus.js) instead of 30/60/90 aging.
-  const behindTenants = ar?.tenantsBehind || 0;
-  const behindAmt = ar?.amountBehind || 0;
-
   // Which blocks to render, per the landlord's Display settings. The two panels
   // share a 2-column grid — if only one shows, it goes full-width.
-  const showCards = ['rent_roll', 'ar', 'occupancy', 'expiring'].some(show);
+  const showCards = ['rent_roll', 'occupancy', 'expiring'].some(show);
   const showExpirations = show('expirations');
   const showAlerts = show('alerts');
   const twoPanels = showExpirations && showAlerts;
@@ -169,7 +162,6 @@ export default function DashboardPage() {
       <div className="metric-group">
         <div className="metrics">
           {show('rent_roll') && <Card label="Annual rent roll" main={money(rentRoll)} foot={leasedSf ? `${psf(rentRoll / leasedSf)} blended` : null} onClick={() => navigate('/financials')} />}
-          {show('ar') && <Card label="Outstanding (AR)" main={money(ar?.outstanding || 0)} foot={ar ? (behindTenants > 0 ? `${behindTenants} tenant${behindTenants === 1 ? '' : 's'} behind · ${money(behindAmt)}` : `${ar.count} open · all current`) : null} tone={behindTenants > 0 ? 'danger' : undefined} />}
           {show('occupancy') && <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={hasBuildingSizes ? `${sf(vacantSf)} vacant` : 'add building sizes'} />}
           {show('expiring') && <Card label="Expiring ≤ 6 months" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />}
         </div>

@@ -1,7 +1,4 @@
-import { fmtDate, money } from './format';
-import { occupancyStart } from './escalations';
-import { monthsBehindForInvoice } from './arStatus';
-import { owedByMonthForInvoice } from './leaseSchedule';
+import { fmtDate } from './format';
 
 const DAY = 86400000;
 
@@ -63,18 +60,16 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 // with the module it belongs to (and returns when re-enabled):
 //   • features      — the enabled_features array (null = all on). Gates Insurance
 //                     (expiry + chase-up) and Service-contract alerts.
-//   • hiddenWidgets — the hidden_widgets array. The 'ar' (receivables) key gates the
-//                     overdue-invoice and free-rent-ending alerts.
+//   • hiddenWidgets — the hidden_widgets array (reserved; no widget currently gates an alert).
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, invoices, abatements, insuranceRequests, annualReports, corporations },
+  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
-  { features = null, hiddenWidgets = [] } = {},
+  { features = null, hiddenWidgets = [] } = {}, // eslint-disable-line no-unused-vars
 ) {
   const insuranceOn = featureOn(features, 'insurance');
   const contractsOn = featureOn(features, 'contracts');
-  const arOn = !(hiddenWidgets || []).includes('ar');
 
   const propMap = Object.fromEntries((properties || []).map((p) => [p.id, p]));
   const leaseById = Object.fromEntries((leases || []).map((l) => [l.id, l]));
@@ -82,8 +77,6 @@ export function buildAlerts(
   (escalations || []).forEach((e) => { (escByLease[e.lease_id] ||= []).push(e); });
   const renByLease = {};
   (renewals || []).forEach((r) => { (renByLease[r.lease_id] ||= []).push(r); });
-  const abByLease = {};
-  (abatements || []).forEach((a) => { (abByLease[a.lease_id] ||= []).push(a); });
 
   const out = [];
   (leases || []).forEach((l) => {
@@ -217,67 +210,9 @@ export function buildAlerts(
     });
   }
 
-  // Behind on rent (+ overdue reconciliations). The old model flagged an annual invoice
-  // the moment its single due date passed — turning every tenant red from ~Aug 1, because a
-  // whole-year bill comes due once even though rent is really paid monthly. Now an ANNUAL
-  // invoice raises an alert only for the months that have come DUE and remain unpaid (see
-  // arStatus.js: months due = in-term months whose 1st ≤ today, minus what's been paid),
-  // so a mid-year tenant and a new-August lease aren't wrongly red. A RECONCILIATION
-  // invoice is a one-off year-end true-up, so it keeps the plain past-the-due-date test.
-  // Always shown until cleared (money on the table); silenced with the Outstanding
-  // (receivables) display toggle. Both use focus:'invoice' so the dashboard routes/emails
-  // them the same way.
-  const curYear = now.getFullYear();
-  (arOn ? invoices || [] : []).forEach((inv) => {
-    if ((Number(inv.balance) || 0) <= 0) return;
-    const lease = leaseById[inv.lease_id];
-    // Occupancy start = min(lease_start, earliest applied step) — so a July-start tenant is
-    // only "behind" on the months they actually owe (Jul–Dec), never Jan–Jun.
-    const occ = lease ? occupancyStart({ lease_start: lease.lease_start }, escByLease[inv.lease_id] || []) : null;
-    const ctx = { occupancyStartIso: occ };
-    // For the in-progress fiscal year, judge "behind" against the tenant's REAL schedule
-    // (free months, mid-year rate steps) instead of a flat total/12 — matching the rent
-    // roll on the Finances page. A past year is already exact under the even-split.
-    if (Number(inv.year) === curYear && (inv.kind ?? 'annual') === 'annual') {
-      ctx.owedByMonth = owedByMonthForInvoice(inv, {
-        leaseStart: lease?.lease_start,
-        escalations: escByLease[inv.lease_id] || [],
-        abatements: abByLease[inv.lease_id] || [],
-      });
-    }
-    const status = monthsBehindForInvoice(inv, ctx, now);
-    if (!status.behind) return;
-    const corpId = propMap[inv.property_id]?.corporation_id;
-    if (status.isReconciliation) {
-      out.push({
-        lease_id: inv.lease_id, property_id: inv.property_id, corporation_id: corpId,
-        focus: 'invoice', tone: 'danger', bucketLabel: 'Overdue', reconciliation: true,
-        date: inv.due_date, days: inv.due_date ? daysUntil(inv.due_date, now) : 0,
-        balance: Number(inv.balance) || 0, invoice_year: inv.year ?? null,
-        title: `Reconciliation overdue — ${lease?.tenant_name || 'tenant'}`,
-        detail: `${money(status.amountBehind)} unpaid · was due ${fmtDate(inv.due_date)}`,
-      });
-      return;
-    }
-    const n = status.monthsBehind;
-    out.push({
-      lease_id: inv.lease_id, property_id: inv.property_id, corporation_id: corpId,
-      focus: 'invoice', tone: n >= 2 ? 'danger' : 'warn',
-      bucketLabel: n >= 2 ? `${n} months behind` : '1 month behind',
-      // Sort by the annual invoice's (past) due date so behind tenants surface near the top.
-      date: inv.due_date || `${inv.year}-01-01`, days: inv.due_date ? daysUntil(inv.due_date, now) : 0,
-      // Carried so the ✉ payment-reminder email can state the exact figures.
-      balance: Number(inv.balance) || 0, invoice_year: inv.year ?? null,
-      months_behind: n, amount_behind: status.amountBehind,
-      title: `Behind on rent — ${lease?.tenant_name || 'tenant'}`,
-      detail: `${n} month${n === 1 ? '' : 's'} behind · ${money(status.amountBehind)} · FY ${inv.year}`,
-    });
-  });
-
   // Free-rent period ending — a rent abatement window closing within a month, so the
-  // landlord knows full billing is about to resume. Owner heads-up only (no tenant
-  // email). Gated with the receivables display toggle (it's a billing signal).
-  (arOn ? abatements || [] : []).forEach((a) => {
+  // landlord knows full billing is about to resume. Owner heads-up only (no tenant email).
+  (abatements || []).forEach((a) => {
     if (!a.end_date) return;
     const lease = leaseById[a.lease_id];
     if (!lease || lease.is_active === false) return;

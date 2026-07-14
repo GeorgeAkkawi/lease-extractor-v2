@@ -5,7 +5,6 @@
 // block must match a key here.
 export const DASHBOARD_WIDGETS = [
   { key: 'rent_roll',   label: 'Annual rent roll',          hint: 'Total yearly rent across all your active leases.' },
-  { key: 'ar',          label: 'Outstanding (receivables)', hint: 'What tenants still owe you, and who is behind on rent. Hides both the Overview card and the receivables section on each property’s Financials page. Turning this off also silences the “behind on rent” dashboard alerts; the only receivables emails are for overdue year-end reconciliations, and those stop too.' },
   { key: 'occupancy',   label: 'Occupancy',                 hint: 'How much of your space is leased versus vacant.' },
   { key: 'expiring',    label: 'Expiring ≤ 90 days',        hint: 'A count of leases ending within the next 90 days.' },
   { key: 'expirations', label: 'Lease expirations table',   hint: 'The list of leases ending in the next 90 days.' },
@@ -17,7 +16,5 @@ export const DASHBOARD_WIDGETS = [
 // gates a panel via `!hidden.includes(key)`. Keep keys in sync with the render blocks
 // in LeaseDetailPage.js and PropertyFinancialsPage.js.
 export const PAGE_PANELS = [
-  { key: 'lease_monthly_rent', label: 'Monthly rent tracker (lease page)', hint: 'The 12 month boxes for checking off each month as it’s paid.' },
-  { key: 'lease_receivables',  label: 'Receivables (lease page)',          hint: 'The invoices & payments panel on each tenant’s lease page.' },
-  { key: 'property_rent_roll', label: 'Monthly rent roll (property page)', hint: 'The per-month “mark all tenants paid” grid on the property Financials page.' },
+  { key: 'lease_receivables',  label: 'Invoices & payments (lease page)',  hint: 'The invoices & payments panel on each tenant’s lease page.' },
 ];

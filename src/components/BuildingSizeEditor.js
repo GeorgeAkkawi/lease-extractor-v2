@@ -13,14 +13,12 @@ export default function BuildingSizeEditor({ propId, buildingSf }) {
     mutationFn: () => updateProperty(propId, { building_sf: val === '' ? null : Number(val) }),
     onSuccess: () => {
       // The building size is the tax/CAM/roof divisor, so re-divide every downstream
-      // figure the moment it's saved: rate cards, per-tenant breakdown, invoices, rent roll.
+      // figure the moment it's saved: rate cards, per-tenant breakdown, invoices.
       qc.invalidateQueries({ queryKey: ['property', propId] });
       qc.invalidateQueries({ queryKey: ['propertyTotals', propId] });
       qc.invalidateQueries({ queryKey: ['properties'] });
       qc.invalidateQueries({ queryKey: ['leases', propId] }); // vacancy on the leases page
       qc.invalidateQueries({ queryKey: ['tenantShares', propId] }); // per-tenant breakdown + invoices
-      qc.invalidateQueries({ queryKey: ['propertyRentRoll', propId] });
-      qc.invalidateQueries({ queryKey: ['monthlyRent'] });
     },
   });
 

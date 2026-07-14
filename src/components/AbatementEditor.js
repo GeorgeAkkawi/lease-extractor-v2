@@ -21,7 +21,7 @@ export default function AbatementEditor({ lease }) {
   const [note, setNote] = useState('');
 
   const refresh = () => {
-    ['abatements', 'lease', 'monthlyRent', 'invoices', 'payments', 'portfolioAR', 'propertyAR', 'propertyRentRoll', 'tenantShares']
+    ['abatements', 'lease', 'invoices', 'payments', 'tenantShares']
       .forEach((key) => qc.invalidateQueries({ queryKey: [key] }));
   };
 

@@ -54,8 +54,6 @@ export default function InvoiceButton({ share }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['invoices', share.lease_id] });
       qc.invalidateQueries({ queryKey: ['invoicesForProperty', share.property_id] });
-      qc.invalidateQueries({ queryKey: ['propertyAR', share.property_id] });
-      qc.invalidateQueries({ queryKey: ['portfolioAR'] });
     },
   });
 

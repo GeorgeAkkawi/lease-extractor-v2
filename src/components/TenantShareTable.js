@@ -72,8 +72,6 @@ export default function TenantShareTable({ propertyId, year }) {
     qc.invalidateQueries({ queryKey: ['tenantShares', propertyId] });
     qc.invalidateQueries({ queryKey: ['leases', propertyId] });
     qc.invalidateQueries({ queryKey: ['lease'] });
-    qc.invalidateQueries({ queryKey: ['propertyRentRoll', propertyId] });
-    qc.invalidateQueries({ queryKey: ['monthlyRent'] });
   };
 
   const saveEst = useMutation({
@@ -90,8 +88,6 @@ export default function TenantShareTable({ propertyId, year }) {
       qc.invalidateQueries({ queryKey: ['reconciliations', propertyId, year] });
       qc.invalidateQueries({ queryKey: ['invoicesForProperty', propertyId] });
       qc.invalidateQueries({ queryKey: ['invoices'] });
-      qc.invalidateQueries({ queryKey: ['propertyAR', propertyId] });
-      qc.invalidateQueries({ queryKey: ['portfolioAR'] });
       qc.invalidateQueries({ queryKey: ['historyEvents', propertyId] });
     },
   });

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   getCorporation,
@@ -7,14 +7,11 @@ import {
   getPropertyTotals,
   getExpenseRecord,
   upsertExpenseRecord,
-  getPropertyAR,
-  getHiddenWidgets,
 } from '../lib/api';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
-import PropertyRentRoll from '../components/PropertyRentRoll';
 import { money, psf, sf } from '../lib/format';
 
 // whole-dollar money (no cents) for the compact roof billed/absorbed line
@@ -29,7 +26,6 @@ export default function PropertyFinancialsPage() {
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: totals } = useQuery({ queryKey: ['propertyTotals', propId, year], queryFn: () => getPropertyTotals(propId, year), placeholderData: keepPreviousData });
   const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year), placeholderData: keepPreviousData });
-  const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   usePageChrome([
     { label: 'Financials', to: '/financials' },
     { label: corp?.name || '…', to: `/financials/${corpId}` },
@@ -114,91 +110,8 @@ export default function PropertyFinancialsPage() {
         </div>
       </div>
 
-      {!hiddenWidgets.includes('ar') && <ARSummary propId={propId} corpId={corpId} />}
-
-      {!hiddenWidgets.includes('property_rent_roll') && <PropertyRentRoll propertyId={propId} year={year} vacantSf={totals?.vacant_sf} />}
-
       <h3 className="section-title">Per-tenant breakdown</h3>
       <TenantShareTable propertyId={propId} year={year} />
-    </div>
-  );
-}
-
-// Receivables roll-up for the property: total outstanding + a NAMED list of who's behind
-// (each row links to that lease) + an expandable breakdown of every outstanding invoice.
-function ARSummary({ propId, corpId }) {
-  const { data: ar } = useQuery({ queryKey: ['propertyAR', propId], queryFn: () => getPropertyAR(propId) });
-  const [showAll, setShowAll] = useState(false);
-  if (!ar) return null;
-
-  const detail = ar.detail || [];
-  const behindItems = detail.filter((d) => d.behind);
-  // Group behind items by tenant — a tenant can be behind on this year's rent AND have an
-  // overdue reconciliation, so a name can carry more than one tag.
-  const groups = [];
-  const byLease = {};
-  for (const d of behindItems) {
-    let g = byLease[d.lease_id];
-    if (!g) { g = { lease_id: d.lease_id, tenant_name: d.tenant_name, items: [] }; byLease[d.lease_id] = g; groups.push(g); }
-    g.items.push(d);
-  }
-  const tenantsBehind = ar.tenantsBehind || 0;
-  const leaseLink = (leaseId) => `/leases/${corpId}/${propId}/${leaseId}`;
-  const behindLabel = (it) =>
-    it.isReconciliation
-      ? `Reconciliation overdue · ${money(it.amountBehind)}`
-      : `${it.monthsBehind} month${it.monthsBehind === 1 ? '' : 's'} behind · ${money(it.amountBehind)}`;
-
-  return (
-    <div className="metric-group">
-      <div className="fin-subhead">Receivables · outstanding</div>
-      <div className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 12 }}>
-        “Outstanding” is every unpaid invoice saved for this property, across all fiscal years (paid, void, and drafts excluded). A tenant is “behind” only on the months of rent that have already come due and aren’t paid — free months and months before their lease started don’t count.
-      </div>
-      <div className="metrics">
-        <StatCard label="Outstanding" main={money(ar.outstanding)} footValue={`${ar.count} invoice${ar.count === 1 ? '' : 's'} · all years`} footCap="still owed" />
-        <StatCard label="Behind on rent" main={money(ar.amountBehind || 0)} footValue={`${tenantsBehind} tenant${tenantsBehind === 1 ? '' : 's'}`} footCap={tenantsBehind > 0 ? 'follow up' : 'all current'} />
-      </div>
-
-      {tenantsBehind === 0 ? (
-        <div className="ar-empty">All tenants are current — nothing overdue right now.</div>
-      ) : (
-        <div className="ar-list">
-          {groups.map((g) => (
-            <Link key={g.lease_id} to={leaseLink(g.lease_id)} className="ar-row">
-              <span className="ar-name">{g.tenant_name || 'Tenant'}</span>
-              <span className="ar-tags">
-                {g.items.map((it) => (
-                  <span key={`${it.year}-${it.kind}`} className={`ar-tag ${it.isReconciliation || it.monthsBehind >= 2 ? 'danger' : 'warn'}`}>
-                    {behindLabel(it)}
-                    <span className="ar-fy">FY {it.year}</span>
-                  </span>
-                ))}
-              </span>
-            </Link>
-          ))}
-        </div>
-      )}
-
-      {ar.count > 0 && (
-        <div className="ar-breakdown">
-          <button type="button" className="ar-toggle" onClick={() => setShowAll((v) => !v)}>
-            {showAll ? 'Hide invoice breakdown' : `Show the ${ar.count} outstanding invoice${ar.count === 1 ? '' : 's'}`}
-          </button>
-          {showAll && (
-            <div className="ar-invoices">
-              {detail.map((d) => (
-                <Link key={`${d.lease_id}-${d.year}-${d.kind}`} to={leaseLink(d.lease_id)} className="ar-invrow">
-                  <span className="ar-name">{d.tenant_name || 'Tenant'}</span>
-                  <span className="ar-fy">FY {d.year}</span>
-                  {d.isReconciliation && <span className="ar-tag danger">Reconciliation</span>}
-                  <span className="ar-bal">{money(d.balance)}</span>
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

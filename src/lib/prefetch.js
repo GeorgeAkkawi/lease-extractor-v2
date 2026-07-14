@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   listCorporations, getCorporation, listProperties, getProperty,
   listLeases, getLease, listRenewals, listSnapshots, listExpiredLeases,
-  getPropertyTotals, getExpenseRecord, fetchSearchIndex, getPortfolioAR,
+  getPropertyTotals, getExpenseRecord, fetchSearchIndex,
   listCorpCounts, listCorpRollups,
   listLeasesByProperties, listEscalationsByLeases, listPropertyTotalsByYear,
 } from './api';
@@ -61,7 +61,6 @@ export function usePrefetchers() {
   return {
     dashboard() {
       pf({ queryKey: ['searchIndex'], queryFn: fetchSearchIndex });
-      pf({ queryKey: ['portfolioAR'], queryFn: () => getPortfolioAR() });
     },
     corporations() {
       pf({ queryKey: ['corporations'], queryFn: listCorporations });
