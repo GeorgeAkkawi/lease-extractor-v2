@@ -29,16 +29,25 @@ const brightCoffeeShare = {
   est_cam_annual: 6500, est_tax_annual: 10000, est_roof_annual: 1500,
 };
 
-describe('billedComponents — estimate-preferred per component', () => {
-  it('uses each typed estimate and falls back to the actual per component', () => {
-    // Only the CAM estimate typed — the known tax + roof bill from actuals.
+describe('billedComponents — estimate-preferred, CAM & tax combined', () => {
+  it('exposes camTax = cam + tax, falling back to the actual per component', () => {
+    // Only the CAM estimate typed — the known tax + roof bill from actuals; the
+    // combined CAM & tax figure the tenant sees is cam + tax = 16,500.
     const b = billedComponents({ ...brightCoffeeShare, est_tax_annual: null, est_roof_annual: null });
-    expect(b).toEqual({ cam: 6500, tax: 10000, roof: 1600, anyEstimate: true });
+    expect(b).toEqual({ cam: 6500, tax: 10000, camTax: 16500, roof: 1600, anyEstimate: true });
+  });
+
+  it('reads a combined estimate stored as est_cam with est_tax = 0', () => {
+    // How the merged editor now saves: the whole CAM & tax figure in est_cam_annual,
+    // est_tax_annual zeroed — so cam + tax reads back as exactly what was entered.
+    const b = billedComponents({ ...brightCoffeeShare, est_cam_annual: 16500, est_tax_annual: 0 });
+    expect(b.camTax).toBe(16500);
+    expect(b.anyEstimate).toBe(true);
   });
 
   it('with no estimates it bills the actuals exactly as before', () => {
     const b = billedComponents({ ...brightCoffeeShare, est_cam_annual: null, est_tax_annual: null, est_roof_annual: null });
-    expect(b).toEqual({ cam: 7200, tax: 10000, roof: 1600, anyEstimate: false });
+    expect(b).toEqual({ cam: 7200, tax: 10000, camTax: 17200, roof: 1600, anyEstimate: false });
   });
 
   it('never bills roof to a non-roof-responsible tenant, estimate or not', () => {
@@ -49,13 +58,17 @@ describe('billedComponents — estimate-preferred per component', () => {
 });
 
 describe('reconcileFigures — estimate vs actual', () => {
-  it('tenant owes when actuals run above the estimate (roof its own line)', () => {
+  it('tenant owes when actuals run above the estimate (CAM & tax one line, roof its own)', () => {
     const fig = reconcileFigures({ share: brightCoffeeShare, invoice: null });
     expect(fig.estTotal).toBe(18000);
     expect(fig.actualTotal).toBe(18800);
     expect(fig.diff).toBe(800);
     expect(fig.direction).toBe('tenant_owes');
-    expect(fig.lines.map((l) => l.key)).toEqual(['cam', 'tax', 'roof']);
+    // CAM (6,500 est / 7,200 actual) + tax (10,000 / 10,000) reconcile as one line.
+    expect(fig.lines.map((l) => l.key)).toEqual(['camtax', 'roof']);
+    const camtax = fig.lines.find((l) => l.key === 'camtax');
+    expect(camtax.est).toBe(16500);
+    expect(camtax.actual).toBe(17200);
     expect(fig.lines.find((l) => l.key === 'roof').diff).toBe(100);
   });
 
@@ -64,7 +77,7 @@ describe('reconcileFigures — estimate vs actual', () => {
     const fig = reconcileFigures({ share, invoice: null });
     expect(fig.diff).toBe(-1200);
     expect(fig.direction).toBe('landlord_owes');
-    expect(fig.lines.map((l) => l.key)).toEqual(['cam', 'tax']); // no roof line
+    expect(fig.lines.map((l) => l.key)).toEqual(['camtax']); // one combined line, no roof
   });
 
   it('within ±5¢ is even, not money owed (0055 dust convention)', () => {
@@ -140,8 +153,11 @@ describe('reconcileCamTax — landlord owes (Northwind, refund flow)', () => {
     expect(letter.body).toContain('RECONCILIATION STATEMENT');
     expect(letter.body).toContain('BILLED (EST.)');
     expect(letter.body).toContain('REFUND DUE TO TENANT: $2,000.00');
-    const rows = letter.body.split('\n').filter((l) => /^(• CAM|• Property tax|TOTAL)/.test(l));
-    expect(rows.length).toBe(3); // CAM + tax rows + the TOTAL line (no roof for Northwind)
+    // CAM & tax reconcile as ONE combined line (30,000 est vs 28,000 actual), so the
+    // statement has the combined charge row + the TOTAL line (no roof for Northwind).
+    const rows = letter.body.split('\n').filter((l) => /^(• CAM|TOTAL)/.test(l));
+    expect(rows.length).toBe(2);
+    expect(letter.body).toContain('• CAM & tax — billed $30,000.00 · actual $28,000.00');
     rows.forEach((l) => expect(l).toMatch(/billed \$[\d,.]+ · actual \$[\d,.]+ · difference/));
     // Gmail-proof: the document never relies on space-padded columns (proportional
     // fonts collapse them) — no run of two spaces anywhere in the email.
@@ -163,9 +179,11 @@ describe('invoice template — estimated labels', () => {
     roof_annual: 1500, today: `${Y}-01-01`, due: `${Y}-01-31`,
   };
 
-  it('tags estimated lines and adds the reconciliation note', () => {
+  it('bills CAM & property tax as one combined line and adds the reconciliation note', () => {
     const text = buildInvoice({ ...facts, estimated: { cam: true, tax: true, roof: true } });
-    expect(text).toContain(`Property tax (${Y - 1} est.)`);
+    // CAM (6,500) and property tax (10,000) are one combined charge; no separate tax line.
+    expect(text).toContain(`CAM & property tax (${Y} est.)`);
+    expect(text).not.toContain('Property tax (');
     expect(text).toContain(`Roof (${Y} est.)`);
     expect(text).toContain('reconciled');
   });
@@ -176,16 +194,17 @@ describe('invoice template — estimated labels', () => {
     // line carrying all four unit-labeled figures, with no alignment to break.
     const text = buildInvoice({ ...facts, estimated: { cam: true, tax: true, roof: true } });
     const rows = text.split('\n').filter((l) => l.startsWith('• '));
-    expect(rows.length).toBe(4); // base rent, CAM, roof, property tax
+    expect(rows.length).toBe(3); // base rent, CAM & property tax, roof
     rows.forEach((l) => expect(l).toMatch(/\$[\d,.]+\/mo · \$[\d,.]+\/yr · \$[\d,.]+\/SF\/mo · \$[\d,.]+\/SF\/yr$/));
+    // Total unchanged — the combined CAM & tax line carries both figures (6,500 + 10,000).
     expect(text).toContain('AMOUNT DUE: $78,000.00/yr ($6,500.00/mo)');
     expect(text).not.toMatch(/ {2}/); // never relies on space-padding
   });
 
-  it('renders exactly as before when nothing is estimated', () => {
+  it('still combines CAM & property tax into one line when nothing is a typed estimate', () => {
     const text = buildInvoice(facts);
-    expect(text).toContain(`Property tax (${Y - 1})`);
-    expect(text).not.toContain(`Property tax (${Y - 1} est.)`);
-    expect(text).not.toContain('reconciled');
+    expect(text).toContain(`CAM & property tax (${Y} est.)`);
+    expect(text).not.toContain('Property tax (');
+    expect(text).not.toContain('reconciled'); // note only when a typed estimate is set
   });
 });

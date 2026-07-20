@@ -269,7 +269,9 @@ export function buildCamReconciliationEmail({ business, tenant_name, contact_nam
         ? `As the statement shows, the actual expenses came in below the estimates you were billed, so a refund of ${amount} is due to you. We will issue the refund promptly — no action is needed on your part.`
         : `As the statement shows, the actual expenses matched the estimates you were billed, so no balance is due in either direction and your account is settled for the year.`;
 
-  const chargeNames = rows.map((r) => (r.label === 'CAM' ? 'CAM' : r.label.toLowerCase())).join(', ');
+  const chargeNames = rows
+    .map((r) => (r.label === 'CAM' || r.label === 'CAM & tax' ? r.label.replace(' & ', ' and ') : r.label.toLowerCase()))
+    .join(', ');
   const subject = `CAM & Tax Reconciliation — ${propertyName || 'your premises'} (${year})`;
   const body = [
     ...doc,

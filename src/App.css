@@ -326,7 +326,7 @@ tbody tr:last-child td{border-bottom:none}
    sideways. The header band, every entry, and the totals band share ONE grid
    template, keeping the figures aligned down the page like a ledger; $/SF rides
    each figure's sub-line and the actions sit under the tenant's name. ---- */
-.ledger-grid{display:grid;grid-template-columns:minmax(168px,1.5fr) repeat(6,minmax(72px,.9fr));gap:2px 16px;align-items:stretch;padding:15px 20px}
+.ledger-grid{display:grid;grid-template-columns:minmax(168px,1.5fr) repeat(5,minmax(84px,1fr));gap:2px 16px;align-items:stretch;padding:15px 20px}
 .ledger-head{padding:11px 20px 9px;background:var(--panel-2);border-bottom:1px solid var(--line);color:var(--muted);font-weight:700;font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;align-items:end}
 .ledger-head .lg-num{text-align:right}
 .ledger-head .sub-cap{display:block;font-size:8.5px;font-weight:500;color:var(--faint);letter-spacing:.06em;text-transform:none;margin-top:2px}

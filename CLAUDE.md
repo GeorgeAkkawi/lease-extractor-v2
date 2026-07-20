@@ -75,6 +75,43 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-20** — **Financials per-tenant breakdown: CAM & tax merged into ONE combined figure** (George:
+  "estimated cam and tax for the leases on the financials page should be one number" → via AskUserQuestion he
+  scoped it: "merge the estimate entry into one cam and tax number PSF that the user inputs — i also want the
+  actuals columns which pulls from the expense entries (the actual) to be merged into one CAM and tax line as
+  well"). Deployed: frontend Cloudflare version `41667b7f`. **Frontend + `src/lib` only — $0, no DB migration,
+  no edge-function redeploy, no tenant emails, no destructive data.** Tests **275/275** (was 274 — +1
+  combined-estimate `billedComponents` case).
+  - **What changed on the Finances → Per-tenant breakdown (`TenantShareTable`):** the two separate **actual**
+    columns "Property taxes" + "CAM" are now ONE **"CAM & tax"** actual column (= `cam_amount + tax_amount`,
+    with a combined $/SF sub-line); the inline **estimate editor** is now ONE **"CAM & tax $/SF/yr"** input
+    (was separate CAM and Tax fields); the Totals row merges the two actual totals; the Estimated column was
+    already combined (unchanged). **Roof stays its own separate line throughout.** Reconciliation follows
+    automatically — CAM & tax true up as a single line (Difference is unchanged, still actual − estimate incl.
+    roof in the total).
+  - **Storage (no migration):** the merged editor saves the whole combined figure into `est_cam_annual` with
+    `est_tax_annual = 0`, so `cam + tax` always reads back as the single number entered. Older leases that had
+    CAM and tax typed separately still sum correctly (the editor prefills from their sum). New pure
+    `billedComponents().camTax` (= `cam + tax`) is the one combined figure the display/editor use.
+  - **Reconciliation + statement:** `reconcileFigures` now emits one `camtax` line (label "CAM & tax") + roof;
+    `draftCamReconciliationEmail` (api.js) builds one combined "CAM & tax" statement line (sums the stored
+    est/actual cam+tax); the letter's charge-names phrasing renders "CAM and tax" cleanly.
+  - **Tenant invoice (necessary consequence):** `invoiceTemplate.js` bills CAM + property tax as ONE
+    **"CAM & property tax (YYYY est.)"** line (= `cam_annual + tax_annual`) instead of two lines — the total is
+    unchanged, and this avoids a mislabeled/`$0` tax line once the estimate is stored combined. `draft-invoice`
+    edge fn NOT touched (it already returns `cam_annual`/`tax_annual`; the template sums them) — so **no
+    Supabase redeploy**. NOTE for George: this drops the separate "Property tax (prior-year est.)" line on the
+    invoice — say the word if you'd rather invoices keep CAM and tax itemized while the Finances page shows them
+    merged.
+  - **Files:** `src/lib/reconciliation.js`, `src/components/TenantShareTable.js`, `src/lib/api.js`,
+    `src/lib/emailTemplates.js`, `src/lib/invoiceTemplate.js`, `src/App.css` (ledger grid 6→5 numeric columns),
+    `src/lib/__tests__/reconciliation.test.js`, `src/components/__tests__/camReconciliation.test.js`. Demo mock
+    needed no change (its draft-invoice path already returns cam/tax the template sums; the seed's split
+    estimates display merged).
+  - **Verified:** unit **275/275** (`vitest run`); `vite build` compiles (788 modules). Per George, the
+    real-browser drive-through was skipped this round. Live sites 200 (amlakre.com + www + workers.dev).
+    Committed only this task's files.
+
 - **2026-07-13** — **Removed the monthly rent tracker, receivables, and monthly rent roll** (George: "i want
   to remove the following from this platform: monthly rent tracker, receivables, and monthly rent role"). He
   chose the **"Keep invoicing"** scope via an AskUserQuestion — remove the money-*tracking* UI + its dead

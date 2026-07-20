@@ -20,9 +20,13 @@ const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 // The figures the tenant is billed for `share`'s year: each component uses the
 // lease's estimate when one is typed, else the actual share (so a lease with no
-// estimates bills exactly as before — and the landlord can enter only the CAM
-// estimate while the known tax figure bills from actuals). Roof only ever bills
-// to a roof-responsible tenant, estimate or not.
+// estimates bills exactly as before). CAM and property tax are billed together as
+// one combined "CAM & tax" estimate — `camTax` is that single figure the landlord
+// enters and the tenant is billed. (Storage keeps the two columns: a combined
+// estimate is saved as est_cam_annual = the whole figure with est_tax_annual = 0,
+// so `cam + tax` is always the combined amount; older leases with the two entered
+// separately still sum correctly.) Roof stays its own separate line and only ever
+// bills to a roof-responsible tenant, estimate or not.
 export function billedComponents(share) {
   const cam = share.est_cam_annual != null ? Number(share.est_cam_annual) : Number(share.cam_amount || 0);
   const tax = share.est_tax_annual != null ? Number(share.est_tax_annual) : Number(share.tax_amount || 0);
@@ -33,7 +37,7 @@ export function billedComponents(share) {
     share.est_cam_annual != null ||
     share.est_tax_annual != null ||
     (!!share.roof_responsible && share.est_roof_annual != null);
-  return { cam: round2(cam), tax: round2(tax), roof: round2(roof), anyEstimate };
+  return { cam: round2(cam), tax: round2(tax), camTax: round2(cam + tax), roof: round2(roof), anyEstimate };
 }
 
 // The tenant's ACTUAL share of the year's expenses (what reconciliation trues up to).
@@ -61,9 +65,12 @@ export function reconcileFigures({ share }) {
   const est = { cam, tax, roof };
   const actual = actualComponents(share);
 
+  // CAM and property tax reconcile together as ONE combined "CAM & tax" line — the
+  // landlord bills a single combined estimate, so they true up as a single figure.
+  const estCamTax = round2(est.cam + est.tax);
+  const actualCamTax = round2(actual.cam + actual.tax);
   const lines = [
-    { key: 'cam', label: 'CAM', est: est.cam, actual: actual.cam, diff: round2(actual.cam - est.cam) },
-    { key: 'tax', label: 'Property tax', est: est.tax, actual: actual.tax, diff: round2(actual.tax - est.tax) },
+    { key: 'camtax', label: 'CAM & tax', est: estCamTax, actual: actualCamTax, diff: round2(actualCamTax - estCamTax) },
   ];
   // Roof rides the same treatment but stays its own separate line — and only for
   // a roof-responsible tenant (or when a roof figure was actually billed).

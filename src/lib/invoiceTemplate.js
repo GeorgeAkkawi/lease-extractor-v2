@@ -44,8 +44,9 @@ export function buildInvoice(facts) {
   };
 
   const base = per(facts.base_rent_annual);
-  const cam = per(facts.cam_annual);
-  const tax = per(facts.tax_annual);
+  // CAM and property tax are billed together as one combined "CAM & property tax"
+  // charge (the landlord sets a single estimate; reconciled against actuals at year end).
+  const camTax = per((Number(facts.cam_annual) || 0) + (Number(facts.tax_annual) || 0));
   const roof = Number(facts.roof_annual) > 0 ? per(facts.roof_annual) : null;
   // Free/reduced base rent shows as a negative credit line so the tenant sees why the
   // total is lower — the base rent above stays at its full contractual figure.
@@ -57,10 +58,9 @@ export function buildInvoice(facts) {
   const est = facts.estimated || {};
   const items = [
     { label: 'Base rent', v: base },
-    { label: `CAM (${facts.year} est.)`, v: cam },
+    { label: `CAM & property tax (${facts.year} est.)`, v: camTax },
   ];
   if (roof) items.push({ label: `Roof (${facts.year}${est.roof ? ' est.' : ''})`, v: roof });
-  items.push({ label: `Property tax (${facts.tax_year}${est.tax ? ' est.' : ''})`, v: tax });
   if (abatement) items.push({ label: 'Rent abatement (credit)', v: abatement });
 
   const totalAnnual = items.reduce((s, it) => s + it.v.a, 0);

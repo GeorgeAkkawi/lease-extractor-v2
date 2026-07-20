@@ -167,16 +167,15 @@ export default function TenantShareTable({ propertyId, year }) {
         <div>Tenant</div>
         <div className="lg-num">Base rent</div>
         <div className="lg-num">Estimated<span className="sub-cap">billed to tenant</span></div>
-        <div className="lg-num">Property taxes<span className="sub-cap">actual</span></div>
-        <div className="lg-num">CAM<span className="sub-cap">actual</span></div>
+        <div className="lg-num">CAM &amp; tax<span className="sub-cap">actual</span></div>
         <div className="lg-num">Roof<span className="sub-cap">actual</span></div>
         <div className="lg-num">Difference<span className="sub-cap">actual − estimated</span></div>
       </div>
       {rowsData.map((row) => {
         const s = row.share;
         const hasSf = Number(s.square_footage) > 0;
-        const taxPsf = hasSf ? s.tax_amount / s.square_footage : null;
-        const camPsf = hasSf ? s.cam_amount / s.square_footage : null;
+        const camTaxActual = Number(s.cam_amount || 0) + Number(s.tax_amount || 0);
+        const camTaxPsf = hasSf ? camTaxActual / s.square_footage : null;
         const roofPsf = hasSf ? s.roof_amt / s.square_footage : null;
         const roofBilled = s.roof_responsible && s.roof_amt > 0;
         return (
@@ -203,8 +202,7 @@ export default function TenantShareTable({ propertyId, year }) {
               editing={editingId === s.lease_id}
               onToggle={() => setEditingId(editingId === s.lease_id ? null : s.lease_id)}
             />
-            <Stat label="Property taxes · actual" main={money(s.tax_amount)} sub={hasSf ? psf2(taxPsf) + '/SF' : ''} />
-            <Stat label="CAM · actual" main={money(s.cam_amount)} sub={hasSf ? psf2(camPsf) + '/SF' : ''} />
+            <Stat label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? psf2(camTaxPsf) + '/SF' : ''} />
             <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? psf2(roofPsf) + '/SF' : ''} />
             <DiffStat fig={row.fig} show={row.billed.anyEstimate} />
             {editingId === s.lease_id && (
@@ -225,8 +223,7 @@ export default function TenantShareTable({ propertyId, year }) {
         </div>
         <Stat label="Base rent" main={money(tot.base)} />
         <Stat label="Estimated · billed" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
-        <Stat label="Property taxes · actual" main={money(tot.tax)} />
-        <Stat label="CAM · actual" main={money(tot.cam)} />
+        <Stat label="CAM & tax · actual" main={money(tot.cam + tot.tax)} />
         <Stat label="Roof · actual" main={money(tot.roof)} />
         <Stat
           label="Difference · actual − estimated"
@@ -239,8 +236,9 @@ export default function TenantShareTable({ propertyId, year }) {
         true CAM is only known once the year closes); it falls back to the actual share until you enter one.
         <strong> Difference</strong> updates live as expenses are entered: positive = the tenant will owe more at
         year end, negative = you'll owe the tenant back. <strong>Reconcile</strong> settles a finished year — a
-        shortfall becomes an invoice in receivables, an overpayment a refund to the tenant. Tax &amp; CAM are
-        allocated per square foot of the {noBuildingSf ? 'leased space' : 'whole building'} (or a per-lease
+        shortfall becomes an invoice in receivables, an overpayment a refund to the tenant. <strong>CAM &amp; tax</strong>
+        are billed and reconciled together as one combined charge, allocated per square foot of the
+        {noBuildingSf ? ' leased space' : ' whole building'} (or a per-lease
         override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}; roof is billed by PSF only
         to roof-responsible tenants and stays its own separate line, estimate and reconciliation included.
         {buildingSf > 0 && tot.sf !== buildingSf && (
@@ -285,7 +283,7 @@ function DiffStat({ fig, show }) {
 // back to) with its $/SF sub-line, as a click target that opens/closes the editor.
 function EstimateStat({ share, billed, editing, onToggle }) {
   const sfNum = Number(share.square_footage) || 0;
-  const estCamTax = billed.cam + billed.tax;
+  const estCamTax = billed.camTax;
   const psfSub = sfNum > 0 ? `${psf2(estCamTax / sfNum)}/SF` : '';
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
   return (
@@ -295,7 +293,7 @@ function EstimateStat({ share, billed, editing, onToggle }) {
         type="button"
         className={`est-cell-btn${editing ? ' editing' : ''}`}
         onClick={onToggle}
-        title="Click to set what this tenant pays as estimated CAM / tax (and roof, when responsible) during the year — entered in $ per square foot"
+        title="Click to set what this tenant pays as one estimated CAM & tax figure (and roof, when responsible) during the year — entered in $ per square foot"
       >
         <div className="cell-main">
           {billed.anyEstimate
@@ -312,37 +310,40 @@ function EstimateStat({ share, billed, editing, onToggle }) {
 }
 
 // The inline estimate editor, opened by clicking the Estimated figure — a roomy
-// band spanning the whole entry. The landlord types $/SF rates of the tenant's
-// space (per George: prices are quoted per square foot), stored annualized on the
-// lease so every billing surface (invoice, monthly tracker, Leases page) follows.
-// A lease with no square footage on file falls back to plain $/yr entry.
+// band spanning the whole entry. The landlord types ONE combined CAM & tax $/SF
+// rate of the tenant's space (per George: prices are quoted per square foot), plus
+// a separate roof rate when the tenant is roof-responsible. It's stored annualized
+// on the lease (the whole figure in est_cam_annual, est_tax_annual = 0) so every
+// billing surface — invoice, monthly tracker, Leases page, reconciliation — follows.
+// A lease with no square footage on file falls back to plain $/yr entry. An older
+// lease with CAM and tax typed separately is prefilled from their sum.
 function EstimateEditor({ share, onSave, onCancel, saving }) {
   const sfNum = Number(share.square_footage) || 0;
   const perSf = sfNum > 0;
   const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
   const toInput = (annual) => (annual == null ? '' : String(perSf ? round2(annual / sfNum) : annual));
-  const [cam, setCam] = useState(toInput(share.est_cam_annual));
-  const [tax, setTax] = useState(toInput(share.est_tax_annual));
+  const camTaxAnnual =
+    share.est_cam_annual != null || share.est_tax_annual != null
+      ? Number(share.est_cam_annual || 0) + Number(share.est_tax_annual || 0)
+      : null;
+  const [camTax, setCamTax] = useState(toInput(camTaxAnnual));
   const [roof, setRoof] = useState(toInput(share.est_roof_annual));
 
   // What the landlord types (a $/SF rate when the SF is known) → the annual $ saved.
   const annualOf = (v) => (v === '' || v == null ? null : perSf ? round2(Number(v) * sfNum) : Number(v));
   const unit = perSf ? '$/SF/yr' : '$/yr';
   const ph = (actualAnnual) => (perSf ? (Number(actualAnnual || 0) / sfNum).toFixed(2) : String(Math.round(actualAnnual || 0)));
+  const actualCamTax = Number(share.cam_amount || 0) + Number(share.tax_amount || 0);
   const preview =
-    (annualOf(cam) ?? Number(share.cam_amount || 0)) +
-    (annualOf(tax) ?? Number(share.tax_amount || 0)) +
+    (annualOf(camTax) ?? actualCamTax) +
     (share.roof_responsible ? (annualOf(roof) ?? Number(share.roof_amt || 0)) : 0);
+  const camTaxAnnualOut = annualOf(camTax);
 
   return (
     <div className="ledger-edit">
       <label>
-        <span>CAM {unit}</span>
-        <input className="text-input num" type="number" step="any" min="0" value={cam} onChange={(e) => setCam(e.target.value)} placeholder={ph(share.cam_amount)} />
-      </label>
-      <label>
-        <span>Tax {unit}</span>
-        <input className="text-input num" type="number" step="any" min="0" value={tax} onChange={(e) => setTax(e.target.value)} placeholder={ph(share.tax_amount)} />
+        <span>CAM &amp; tax {unit}</span>
+        <input className="text-input num" type="number" step="any" min="0" value={camTax} onChange={(e) => setCamTax(e.target.value)} placeholder={ph(actualCamTax)} />
       </label>
       {share.roof_responsible && (
         <label>
@@ -359,8 +360,10 @@ function EstimateEditor({ share, onSave, onCancel, saving }) {
           disabled={saving}
           onClick={() =>
             onSave({
-              est_cam_annual: annualOf(cam),
-              est_tax_annual: annualOf(tax),
+              // The combined CAM & tax estimate lives in est_cam_annual; est_tax_annual
+              // is zeroed so `cam + tax` reads back as the single figure entered.
+              est_cam_annual: camTaxAnnualOut,
+              est_tax_annual: camTaxAnnualOut == null ? null : 0,
               est_roof_annual: share.roof_responsible ? annualOf(roof) : null,
             })
           }

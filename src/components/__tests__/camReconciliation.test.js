@@ -46,16 +46,16 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     expect(screen.getByText('billing actuals')).toBeTruthy();
   });
 
-  it('clicking the estimate opens the inline editor — $/SF inputs with the annual preview', async () => {
+  it('clicking the estimate opens the inline editor — one combined CAM & tax $/SF input', async () => {
     renderTable();
     await waitFor(() => expect(screen.getByText('$16,500.00')).toBeTruthy());
     fireEvent.click(screen.getByText('$16,500.00'));
-    expect(screen.getByText('CAM $/SF/yr')).toBeTruthy();
-    expect(screen.getByText('Tax $/SF/yr')).toBeTruthy();
+    expect(screen.getByText('CAM & tax $/SF/yr')).toBeTruthy();
+    expect(screen.queryByText('Tax $/SF/yr')).toBeNull(); // merged into the single CAM & tax field
     expect(screen.getByText('Roof $/SF/yr')).toBeTruthy(); // Bright Coffee is roof-responsible
-    // Inputs carry the current estimates as rates (6,500 / 2,000 SF = 3.25) and the
-    // preview shows the annual total they multiply back to (incl. roof 1,500 = 18,000).
-    expect(screen.getByLabelText('CAM $/SF/yr').value).toBe('3.25');
+    // The one CAM & tax input carries the combined estimate as a rate:
+    // (6,500 + 10,000) / 2,000 SF = 8.25; the preview shows 18,000 incl. roof 1,500.
+    expect(screen.getByLabelText('CAM & tax $/SF/yr').value).toBe('8.25');
     expect(screen.getByText(/= \$18,000\.00\/yr/)).toBeTruthy();
     expect(screen.getByText('Save')).toBeTruthy();
   });
@@ -97,14 +97,16 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     expect(within(totalsRow).getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
-  it('saving a $/SF rate stores the annualized estimate on the lease', async () => {
+  it('saving a combined $/SF rate stores it as est_cam with est_tax zeroed', async () => {
     renderTable();
     await waitFor(() => expect(screen.getByText('$16,500.00')).toBeTruthy());
     fireEvent.click(screen.getByText('$16,500.00'));
-    // 3.50 $/SF × 2,000 SF = $7,000/yr CAM (tax stays 10,000) → cell reads $17,000.
-    fireEvent.change(screen.getByLabelText('CAM $/SF/yr'), { target: { value: '3.5' } });
+    // 8.50 $/SF × 2,000 SF = $17,000/yr combined CAM & tax → the Estimated cell reads $17,000.
+    fireEvent.change(screen.getByLabelText('CAM & tax $/SF/yr'), { target: { value: '8.5' } });
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(screen.getByText('$17,000.00')).toBeTruthy());
-    expect((await getLease('lease-1')).est_cam_annual).toBe(7000);
+    const lease = await getLease('lease-1');
+    expect(lease.est_cam_annual).toBe(17000); // whole combined figure
+    expect(lease.est_tax_annual).toBe(0); // tax portion zeroed so cam + tax = the entry
   });
 });

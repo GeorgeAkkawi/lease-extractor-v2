@@ -1590,9 +1590,14 @@ export async function draftCamReconciliationEmail(recon) {
   const lease = await getLease(recon.lease_id);
   const prop = await getProperty(recon.property_id);
   const corp = prop?.corporation_id ? await getCorporation(prop.corporation_id) : null;
+  // CAM and property tax reconcile together as one combined "CAM & tax" line; roof
+  // stays its own separate line (older records may store the two split — sum them).
   const lines = [
-    { label: 'CAM', est: Number(recon.est_cam) || 0, actual: Number(recon.actual_cam) || 0 },
-    { label: 'Property tax', est: Number(recon.est_tax) || 0, actual: Number(recon.actual_tax) || 0 },
+    {
+      label: 'CAM & tax',
+      est: (Number(recon.est_cam) || 0) + (Number(recon.est_tax) || 0),
+      actual: (Number(recon.actual_cam) || 0) + (Number(recon.actual_tax) || 0),
+    },
   ];
   if (Number(recon.est_roof) > 0 || Number(recon.actual_roof) > 0) {
     lines.push({ label: 'Roof', est: Number(recon.est_roof) || 0, actual: Number(recon.actual_roof) || 0 });
