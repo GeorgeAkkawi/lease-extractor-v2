@@ -75,6 +75,17 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Demo sandbox refreshed to current `main`** (George: "open the demo … make sure the fields
+  in financials are present so i can show how they work specifically the per tenant breakdown and expenses").
+  The `amlak-demo` worker was running a pre-7/11 build (old "Leases" nav, Outstanding-AR card, un-merged
+  CAM/tax columns). Rebuilt (`npx vite build --config vite.demo.config.js --outDir build-demo`) + redeployed
+  (`npx wrangler deploy -c wrangler.demo.jsonc`) → demo Cloudflare version `d3d7123a`. **No code change, no
+  commit needed, $0, no live-app touch** (bundle verified free of the live Supabase ref). Browser-verified on
+  https://amlak-demo.akkawigeo-5.workers.dev — Maple Plaza Financials shows the current per-tenant breakdown
+  (merged CAM & tax est/actual columns, +$800 Difference, estimate editor with the single CAM & tax $/SF/yr
+  input, Invoice/⚖ Reconcile) and the full Expense entry section (building size, taxes & roof, itemized CAM);
+  corp cards one-line Rev/Exp/NOI; zero console errors.
+
 - **2026-07-21** — **Financials per-tenant breakdown: the Estimated column now reads "CAM & tax / estimated"
   to mirror the actual "CAM & tax / actual" column** (George: "Estimated on the financials page should follow
   the cam and tax format of the actual in the top column. it should say CAM and tax … make sure the base rent
