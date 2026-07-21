@@ -104,6 +104,14 @@ button.rr-cell.abated{cursor:pointer}
 .rr-tenant:hover{color:var(--accent)}
 .rr-behind{color:var(--gold)}
 .rent-roll tr.rr-totals td{border-top:1px solid var(--border);padding-top:8px}
+/* Statement-import review (full-page, not a modal). */
+.stmt-propline{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:6px 0 10px}
+.stmt-group{margin-top:14px}
+.stmt-table th,.stmt-table td{vertical-align:middle}
+.stmt-table td.stmt-desc{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stmt-table select.text-input{font-size:12.5px;padding:4px 6px;max-width:230px}
+tr.stmt-off td{opacity:.55}
+.stmt-footer{margin-top:16px;border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:8px}
 
 /* ---- layout ---- */
 .app{display:flex;height:100vh;overflow:hidden}

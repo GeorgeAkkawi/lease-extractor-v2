@@ -75,6 +75,66 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Rent Ledger Stage 2 of 3: bank-statement import — drop a statement on the Ledger tab,
+  the app recognizes every line in/out, and one Save books tenant payments + expenses with a full ↩ Undo**
+  (same approved plan as Stage 1; the partners' headline ask — "drop a bank statement in; the app recognizes
+  money in/out and classifies each payment", replacing their manual Excel deposits/rent-receipts tabs).
+  Deployed: DB migration `0063` (Supabase `awgrjmbcghdjgnqeiqkt`, pre-reviewed APPROVE by the
+  migration-reviewer agent), NEW `extract-bank-statement` edge fn, frontend Cloudflare version `6ad7832e`.
+  **A CSV statement imports through pure client-side code — $0, NO AI; only a PDF statement uses one Haiku
+  transcription read (~5–15¢, rate-limited 10/min). Classification/matching is ALWAYS deterministic code.
+  No tenant emails; 0063 is additive-only (two new owner tables + nullable provenance columns).** Tests
+  **381/381** (was 337 — +12 statementParse, +22 statementMatch, +9 statementImport apply/undo, +1 LedgerPage
+  import round-trip render).
+  - **Two lanes, one pipeline:** CSV read in the browser (`statementParse.js` — delimiter/header/junk-preamble
+    detection, BOM, quoted commas, $-and-comma amounts, parentheses negatives, signed-amount OR Debit/Credit
+    pairs) · PDF via the new transcribe-ONLY edge fn (verbatim lines, never computes/classifies). BOTH lanes
+    pass the same `normalizeStatementRows` validation gate + the **running-balance self-check** (a mis-signed
+    line flags "check" instead of silently booking; works newest-first or oldest-first) and the honest
+    "N lines parsed · M skipped (with reasons)" header.
+  - **Matching (`statementMatch.js`, pure, suggest-only):** each line's fiscal year comes from ITS OWN date
+    (a Dec/Jan statement books each line into the right year; closed-FY lines get an amber chip but import
+    normally — verified closeYear only snapshots). Duplicate guard = line-hash vs LIVE `payments.import_hash`
+    (hand-deleted payments become importable again; "import anyway" override supported — NO unique index).
+    **Rules = the payee memory**: tick "always" on a garbled payee once (pattern auto-derived as the longest
+    digit-free run, so CHECK 1044/1045 both match) → every future import auto-books it; rules pin to lease_id
+    and re-apply to the rest of the SAME file live. Deposits: tenant-name token fuzzy (LLC/INC noise dropped)
+    across **ALL properties** (one bank account serves the portfolio — a Pershing check imported on Maple
+    still posts to Pershing), corroborated by amount (billed month / gap / k-months / invoice total / an open
+    **reconciliation true-up**, which books against THAT invoice with no month tag and never touches monthly
+    coverage). Hand-entry collision guard un-checks a deposit whose months are already covered ("possibly
+    already recorded by hand"). Withdrawals: keyword table (tax/roof/CAM-with-label; MORTGAGE/LOAN/TRANSFER/
+    DRAW → ignore with the reason shown); **unknown money-out is never auto-booked**.
+  - **Which statement is which property — 3 layers:** the review header states "**Expenses will be recorded
+    on: {property}**" with a dropdown (deposits self-route regardless); a **majority vote** over matched
+    deposits raises "N of M deposits match {other property} — record expenses there instead? [Switch]"; and
+    the masked **account hint** (••4821, captured from the CSV preamble/filename) remembers each account's
+    property ("Account ••4821 — last imported into …") and shows in the register.
+  - **Review & save (`StatementReview.js`, full-page):** Money in · Money out · Duplicates (collapsed) ·
+    Skipped (collapsed); per-row match dropdown (suggested + all tenants + expense kinds + ignore), month
+    picker (— = lump → the Stage-1 FIFO pool absorbs it), confidence chip, "always" tick; **✓ Accept all
+    confident**; footer confirm-summary BEFORE anything writes + warnings (reconciled tenants on the target
+    FY / closed-year lines). `applyStatementImport` books deposits via ensureInvoice+recordPayment (identical
+    row shape to hand entry — every downstream surface updates automatically), CAM → line items with an
+    import badge **that keep their ✕**, taxes/roof → **accumulate** onto the FY record; every write recorded
+    in `applied`. **Undo** (results strip + per-import in the register) reverses exactly the import's delta:
+    payments delete-if-exists, CAM items removed + re-synced, taxes/roof decremented **clamped ≥0** (a manual
+    edit up survives), hashes leave the dedupe universe — apply→undo→re-apply lands the same figures once
+    (test-locked). History logs `statement_imported`/`statement_import_undone`.
+  - **Demo:** "Try a sample statement" on the Ledger tab runs canned lines through the REAL gate + matcher +
+    apply — the whole partner pitch with zero AI and zero files.
+  - **Files:** `supabase/migrations/0063_statement_imports.sql` (new), `supabase/functions/
+    extract-bank-statement/index.ts` (new), `src/lib/{statementParse (new),statementMatch (new),api,
+    demo/store,demo/mockClient}.js`, `src/components/StatementReview.js` (new), `src/pages/{LedgerPage,
+    HistoryPage}.js`, `src/App.css`, tests (`statementParse/statementMatch/statementImport.test.js` new,
+    `ledgerPage.test.js` +1).
+  - **Verified:** unit **381/381**; `vite build` compiles; live DB (read-only): both tables present with
+    owner_all + require_aal2, `payments.import_id/import_hash` + `cam_line_items.import_id` present; edge fn
+    deployed clean. Browser check skipped per George's standing preference — the jsdom round-trip test drives
+    sample → review → save → strip → undo against the demo mock. Live 200s. **George: open a property's
+    Financials → Ledger tab → ⬆ Import statement and drop your bank's CSV export** (free, instant); a PDF
+    statement works too (~5–15¢).
+
 - **2026-07-21** — **Rent Ledger Stage 1 of 3: a per-property projected-vs-actual collections grid (new
   Ledger tab), month-tagged payments, and a Collected/Owes column on Financials** (George approved the plan
   `~/.claude/plans/is-there-a-way-melodic-lemur.md` — built from his partners' voice-memo asks: live

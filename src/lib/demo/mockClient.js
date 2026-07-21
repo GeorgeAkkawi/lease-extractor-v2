@@ -210,6 +210,14 @@ class QB {
           return { data: null, error: { code: '23505', message: `duplicate key value violates unique constraint "invoices_one_live_${(items[0]?.kind ?? 'annual') === 'reconciliation' ? 'recon' : 'annual'}_per_lease_year"` } };
         }
       }
+      // Mirror the 0063 unique index: one import rule per (owner, property, pattern).
+      if (this.table === 'import_rules') {
+        const dup = items.find((it) =>
+          list.some((r) => r.property_id === it.property_id && String(r.pattern).toLowerCase() === String(it.pattern).toLowerCase()));
+        if (dup) {
+          return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "import_rules_pattern_idx"' } };
+        }
+      }
       // Mirror the 0060 unique index: one CAM/tax reconciliation per (lease_id, year).
       if (this.table === 'cam_reconciliations') {
         const dup = items.find((it) => list.some((r) => r.lease_id === it.lease_id && Number(r.year) === Number(it.year)));
@@ -348,6 +356,23 @@ const functions = {
     if (name === 'send-tenant-email') {
       // The demo sandbox never emails anyone — pretend it went out.
       return ok({ id: 'demo-email' });
+    }
+    if (name === 'extract-bank-statement') {
+      // Canned PDF-lane transcription over the seeded tenants: clean deposits, a
+      // garbled payee (the "always match" rule demo), tax/CAM withdrawals, and a
+      // mortgage line the matcher auto-ignores. Amounts follow the seed's figures.
+      const y = new Date().getFullYear();
+      return ok({
+        transactions: [
+          { date: `03/03/${y}`, description: 'CHECK 1044 CITY DENTAL PC', amount: '4,208.33', direction: 'in', balance: '' },
+          { date: `03/05/${y}`, description: 'ACH DEPOSIT BRIGHT COFFEE CO', amount: '6,508.33', direction: 'in', balance: '' },
+          { date: `03/09/${y}`, description: 'MOBILE DEPOSIT J PAK 2211', amount: '10,416.67', direction: 'in', balance: '' },
+          { date: `03/12/${y}`, description: 'COOK COUNTY TREASURER PROP TAX', amount: '3,100.00', direction: 'out', balance: '' },
+          { date: `03/15/${y}`, description: 'GREENLEAF LANDSCAPING INV 2288', amount: '450.00', direction: 'out', balance: '' },
+          { date: `03/28/${y}`, description: 'CHASE MORTGAGE PMT 0099', amount: '5,200.00', direction: 'out', balance: '' },
+        ],
+        lines_read: 6,
+      });
     }
     if (name === 'trends-narrative') {
       return ok({ narrative: 'Revenue held steady year over year while taxes rose ~14% and CAM ~12%, lifting the tax PSF from $4.40 to $5.00 and CAM PSF from $3.20 to $3.60. The new roof expense this year is tracked separately and excluded from PSF.' });

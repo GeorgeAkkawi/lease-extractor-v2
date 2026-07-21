@@ -24,6 +24,8 @@ const EVENT_LABEL = {
   cam_refunded: 'CAM & tax refund paid',
   cam_reconcile_undone: 'CAM & tax reconcile undone',
   cam_refund_reopened: 'CAM & tax refund reopened',
+  statement_imported: 'Bank statement imported',
+  statement_import_undone: 'Statement import undone',
 };
 const EVENT_BADGE = {
   tenant_assigned: 'info',
@@ -36,6 +38,8 @@ const EVENT_BADGE = {
   cam_refunded: 'good',
   cam_reconcile_undone: 'warn',
   cam_refund_reopened: 'warn',
+  statement_imported: 'info',
+  statement_import_undone: 'warn',
 };
 
 const num = (v) => (v == null ? 0 : Number(v));

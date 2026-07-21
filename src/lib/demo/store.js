@@ -169,6 +169,10 @@ export function seed() {
     ],
     // Starts empty — the landlord records riders/amendments per lease.
     lease_addendums: [],
+    // Bank-statement import (0063): the register + the "always match" rules both
+    // start empty; the demo Import button offers a bundled sample CSV instead.
+    statement_imports: [],
+    import_rules: [],
     // Receivables: one fully-paid invoice + one overdue, so AR has something to show.
     invoices: [
       { id: 'inv-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 60000, cam_annual: 9000, tax_annual: 7500, roof_annual: 1600, total_amount: 78100, notes: null, created_at: iso(Y, 1, 1) },

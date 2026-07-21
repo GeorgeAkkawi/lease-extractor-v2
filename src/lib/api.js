@@ -1267,11 +1267,11 @@ async function syncCamTotal(propertyId, year) {
   return camSum;
 }
 
-export async function addCamLineItem({ property_id, year, label, amount }) {
+export async function addCamLineItem({ property_id, year, label, amount, import_id = null }) {
   const item = await one(
     supabase
       .from('cam_line_items')
-      .insert({ property_id, year, label, amount, owner_id: await ownerId() })
+      .insert({ property_id, year, label, amount, ...(import_id ? { import_id } : {}), owner_id: await ownerId() })
       .select()
       .single()
   );
@@ -2722,3 +2722,227 @@ export async function closeYear(propertyId, year) {
 // frozen in History. The live financials for that year are untouched.
 export const reopenYear = (propertyId, year) =>
   rows(supabase.from('financial_snapshots').delete().eq('property_id', propertyId).eq('year', year));
+
+// ---- Bank-statement import (0063) ------------------------------------------
+// The CSV lane is parsed client-side ($0, statementParse.js); a PDF statement goes
+// through the extract-bank-statement edge fn (transcribe-only). Both lanes feed the
+// pure matcher (statementMatch.js) whose suggestions the review screen confirms;
+// only applyStatementImport ever writes. Money math never runs in a model.
+
+export const listImportRules = () =>
+  rows(supabase.from('import_rules').select('*').order('created_at'));
+
+// Save the "always match {pattern} → …" memory. The (owner, property, pattern)
+// unique index makes re-saving a pattern update the existing rule instead of
+// stacking duplicates.
+export async function saveImportRule({ property_id, pattern, target_kind, lease_id = null, cam_label = null }) {
+  const clean = String(pattern || '').trim();
+  if (clean.length < 3) throw new Error('A rule pattern needs at least 3 characters.');
+  try {
+    return await one(
+      supabase.from('import_rules')
+        .insert({ property_id, pattern: clean, target_kind, lease_id, cam_label, owner_id: await ownerId() })
+        .select().single()
+    );
+  } catch (e) {
+    if (e?.code === '23505') {
+      const existing = (await listImportRules()).find(
+        (r) => r.property_id === property_id && r.pattern.toLowerCase() === clean.toLowerCase()
+      );
+      if (existing) {
+        return one(
+          supabase.from('import_rules')
+            .update({ target_kind, lease_id, cam_label })
+            .eq('id', existing.id).select().single()
+        );
+      }
+    }
+    throw e;
+  }
+}
+
+export const deleteImportRule = (id) => rows(supabase.from('import_rules').delete().eq('id', id));
+
+// The import register, newest first (sorted here — portable across live + mock).
+export async function listStatementImports(propertyId) {
+  const list = await rows(supabase.from('statement_imports').select('*').eq('property_id', propertyId));
+  return [...(list || [])].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+}
+
+// Everything the matcher needs, assembled once per import: every property's
+// tenants with their year schedule + coverage (so deposits cross-match the WHOLE
+// portfolio), open reconciliation balances, the saved rules, the live import-hash
+// set (the duplicate guard), and the account→property memory.
+export async function getStatementMatchContext(propertyId, year) {
+  const [properties, rules, allImports, hashRows, reconRows] = await Promise.all([
+    rows(supabase.from('properties').select('id,name')),
+    listImportRules(),
+    rows(supabase.from('statement_imports').select('*')),
+    rows(supabase.from('payments').select('import_hash').not('import_hash')),
+    rows(supabase.from('v_invoice_balances').select('*').eq('kind', 'reconciliation')),
+  ]);
+  const nameOf = Object.fromEntries((properties || []).map((p) => [p.id, p.name]));
+
+  const rolls = await Promise.all(
+    (properties || []).map(async (p) => ({ p, roll: await getPropertyMonthlyRoll(p.id, year) }))
+  );
+  const openReconByLease = {};
+  for (const inv of reconRows || []) {
+    if (inv.status !== 'void' && Number(inv.balance) > 0.05) {
+      openReconByLease[inv.lease_id] = { id: inv.id, balance: Number(inv.balance), year: Number(inv.year) };
+    }
+  }
+  const tenants = [];
+  for (const { p, roll } of rolls) {
+    for (const r of roll) {
+      const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
+      const recon = openReconByLease[r.lease_id] || null;
+      tenants.push({
+        lease_id: r.lease_id,
+        property_id: p.id,
+        property_name: p.name,
+        tenant_name: r.tenant_name,
+        monthly: r.monthly,
+        owed: alloc.owed,
+        coverage: alloc.coverage,
+        invoiceTotal: r.annual,
+        invoiceBalance: r.balance != null ? Number(r.balance) : null,
+        reconInvoiceId: recon?.id || null,
+        reconBalance: recon?.balance || 0,
+      });
+    }
+  }
+
+  // The duplicate guard: LIVE payment hashes (a hand-deleted payment's line becomes
+  // importable again automatically) + expense hashes from the imports' applied records.
+  const existingHashes = new Set((hashRows || []).map((h) => h.import_hash).filter(Boolean));
+  for (const imp of allImports || []) {
+    for (const a of imp.applied || []) {
+      if (a.kind !== 'payment' && a.hash) existingHashes.add(a.hash);
+    }
+  }
+
+  // "Account ••4821 — last imported into {property}".
+  let accountMemory = {};
+  for (const imp of [...(allImports || [])].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))) {
+    if (imp.account_hint) accountMemory[imp.account_hint] = { property_id: imp.property_id, property_name: nameOf[imp.property_id] || null };
+  }
+
+  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory };
+}
+
+// Write everything the user confirmed on the review screen — exactly once, and
+// record every write in `applied` so undo can reverse precisely the import's
+// delta. Entries (already resolved by the review UI):
+//   { type:'payment', lease_id, property_id, year, amount, date, description,
+//     period_month|null, reconInvoiceId|null, hash }
+//   { type:'cam', property_id, year, amount, label, hash }
+//   { type:'tax'|'roof', property_id, year, amount, hash }
+// The duplicate hash guard is advisory and lives in MATCHING — apply never
+// re-runs it, so an "import anyway" override writes like any other row.
+export async function applyStatementImport({ propertyId, year, fileName, accountHint = null, entries = [] }) {
+  const imp = await one(
+    supabase.from('statement_imports')
+      .insert({ property_id: propertyId, year: Number(year) || null, file_name: fileName || null, account_hint: accountHint, applied: [], owner_id: await ownerId() })
+      .select().single()
+  );
+  const applied = [];
+  let paymentsCount = 0, paymentsTotal = 0, expensesCount = 0, expensesTotal = 0;
+  const crossProperty = {};
+
+  for (const e of entries) {
+    if (e.type === 'payment') {
+      let invoiceId = e.reconInvoiceId;
+      if (!invoiceId) invoiceId = (await ensureInvoice(e.lease_id, e.property_id, e.year)).id;
+      const pay = await recordPayment({
+        invoice_id: invoiceId,
+        lease_id: e.lease_id,
+        amount: Number(e.amount),
+        paid_date: e.date,
+        method: 'other',
+        note: e.description ? String(e.description).slice(0, 200) : null,
+        period_month: e.period_month || null,
+        import_id: imp.id,
+        import_hash: e.hash,
+      });
+      applied.push({ kind: 'payment', payment_id: pay.id, invoice_id: invoiceId, lease_id: e.lease_id, property_id: e.property_id, year: e.year, amount: Number(e.amount), hash: e.hash });
+      paymentsCount++; paymentsTotal += Number(e.amount);
+      if (e.property_id !== propertyId) {
+        crossProperty[e.property_id] = (crossProperty[e.property_id] || 0) + 1;
+      }
+    } else if (e.type === 'cam') {
+      const item = await addCamLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Imported expense', amount: Number(e.amount), import_id: imp.id });
+      applied.push({ kind: 'cam', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: e.label || 'Imported expense', hash: e.hash });
+      expensesCount++; expensesTotal += Number(e.amount);
+    } else if (e.type === 'tax' || e.type === 'roof') {
+      const cur = await getExpenseRecord(e.property_id, e.year);
+      const field = e.type === 'tax' ? 'taxes_total' : 'roof_total';
+      const prev = Number(cur?.[field]) || 0;
+      await upsertExpenseRecord({
+        property_id: e.property_id,
+        year: e.year,
+        taxes_total: e.type === 'tax' ? prev + Number(e.amount) : (Number(cur?.taxes_total) || 0),
+        cam_total: Number(cur?.cam_total) || 0,
+        roof_total: e.type === 'roof' ? prev + Number(e.amount) : (Number(cur?.roof_total) || 0),
+      });
+      applied.push({ kind: e.type, property_id: e.property_id, year: e.year, amount: Number(e.amount), hash: e.hash });
+      expensesCount++; expensesTotal += Number(e.amount);
+    }
+  }
+
+  const updated = await one(
+    supabase.from('statement_imports').update({ applied }).eq('id', imp.id).select().single()
+  );
+  await logHistoryEvent({
+    property_id: propertyId,
+    type: 'statement_imported',
+    description: `Imported ${fileName || 'a bank statement'} — ${paymentsCount} payment${paymentsCount === 1 ? '' : 's'} ($${paymentsTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })} in) · ${expensesCount} expense${expensesCount === 1 ? '' : 's'} ($${expensesTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })} out)`,
+  });
+  return {
+    import: updated,
+    summary: { paymentsCount, paymentsTotal, expensesCount, expensesTotal, crossProperty },
+  };
+}
+
+// Reverse exactly what an import wrote — its delta, never George's later edits:
+// payments delete by id (delete-if-exists — a hand-deleted line doesn't break it),
+// CAM items delete + re-sync, taxes/roof decrement by the recorded amount CLAMPED
+// at ≥ 0 (a manual edit UP survives; an edit DOWN below the imported delta clamps
+// instead of going negative). The import row goes last, taking its hashes out of
+// the dedupe universe so a fully-undone statement is cleanly re-importable.
+export async function undoStatementImport(imp) {
+  const notes = [];
+  for (const a of imp.applied || []) {
+    if (a.kind === 'payment') {
+      await deletePayment(a.payment_id);
+    } else if (a.kind === 'cam') {
+      await deleteCamLineItem(a.item_id, a.property_id, a.year);
+    } else if (a.kind === 'tax' || a.kind === 'roof') {
+      const cur = await getExpenseRecord(a.property_id, a.year);
+      const field = a.kind === 'tax' ? 'taxes_total' : 'roof_total';
+      const current = Number(cur?.[field]) || 0;
+      const next = Math.max(0, Math.round((current - Number(a.amount)) * 100) / 100);
+      if (current - Number(a.amount) < -0.005) notes.push(`${a.kind === 'tax' ? 'Taxes' : 'Roof'} FY${a.year} was below the imported amount — clamped at $0.`);
+      await upsertExpenseRecord({
+        property_id: a.property_id,
+        year: a.year,
+        taxes_total: a.kind === 'tax' ? next : (Number(cur?.taxes_total) || 0),
+        cam_total: Number(cur?.cam_total) || 0,
+        roof_total: a.kind === 'roof' ? next : (Number(cur?.roof_total) || 0),
+      });
+    }
+  }
+  await rows(supabase.from('statement_imports').delete().eq('id', imp.id));
+  await logHistoryEvent({
+    property_id: imp.property_id,
+    type: 'statement_import_undone',
+    description: `Undid the import of ${imp.file_name || 'a bank statement'} — its payments and expense additions were reversed.`,
+  });
+  return { notes };
+}
+
+// The PDF lane: one Haiku transcription read (~5–15¢) that ONLY transcribes lines
+// verbatim; every returned row still passes normalizeStatementRows before matching.
+export async function extractBankStatement({ path }) {
+  return invokeFunction('extract-bank-statement', { path });
+}

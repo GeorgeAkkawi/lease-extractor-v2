@@ -5,7 +5,7 @@
 // City Dental's tagged Jan/Feb + untagged partial (◐ March), open months, the
 // holdover badge, and the Collected/Owes column.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
@@ -60,6 +60,30 @@ describe('LedgerPage — the rent ledger grid', () => {
     await waitFor(() => expect(screen.getByText('City Dental')).toBeTruthy());
     expect(screen.getByText(/Expired — held over · needs extension/)).toBeTruthy();
     await updateLease('lease-2', { is_active: true });
+  });
+
+  it('statement import round-trip: sample → review screen → save → results strip + register', async () => {
+    renderLedger();
+    await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
+    // The demo sandbox offers the bundled sample statement.
+    fireEvent.click(screen.getByText('Try a sample statement'));
+    await waitFor(() => expect(screen.getByText(/Review statement/)).toBeTruthy());
+    // Both groups render, the expense property is stated, and lines parsed honestly.
+    expect(screen.getByText(/Money in · 3/)).toBeTruthy();
+    expect(screen.getByText(/Money out · 3/)).toBeTruthy();
+    expect(screen.getByText(/Expenses will be recorded on:/)).toBeTruthy();
+    expect(screen.getByText(/6 lines parsed · 0 skipped/)).toBeTruthy();
+    expect(screen.getByText('✓ Accept all confident')).toBeTruthy();
+    // The mortgage line auto-suggests ignore with its reason shown.
+    expect(screen.getByText(/mortgage payment is not a recoverable CAM expense/)).toBeTruthy();
+    // Save whatever the matcher pre-checked (the clean deposits + tax + CAM lines).
+    fireEvent.click(screen.getByText('Save to ledger'));
+    await waitFor(() => expect(screen.getByText(/saved · Imported sample-statement.pdf/)).toBeTruthy());
+    // The register lists the import with an Undo.
+    expect(screen.getByText(/Imported statements \(1\)/)).toBeTruthy();
+    // Undo from the results strip cleans everything back out.
+    fireEvent.click(screen.getAllByText('↩ Undo')[0]);
+    await waitFor(() => expect(screen.queryByText(/saved · Imported/)).toBeNull());
   });
 
   it('renders a Vacant space row when the building has unleased SF', async () => {
