@@ -75,6 +75,28 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Financials corporation cards: Revenue / Expenses / NOI now always on ONE line, so every
+  card is formatted identically** (George: "nasa vs gena property on financials page looks different in terms
+  of formatting the cards. rev expenses and noi should be one line"). Deployed: frontend Cloudflare version
+  `6aca3315`. **Frontend-only — CSS in `src/App.css`, zero logic/math changes; no DB migration, no edge
+  function, $0, no tenant emails.** Tests **275/275** (unchanged — CSS-only).
+  - **Root cause:** the three fin figures (`.corp-fin`) were a **wrapping flex row** with
+    `justify-content:space-between`, so their line layout depended on each figure's width. Beta account
+    fakkawi3's GENA card (Revenue $203,759.52 · Expenses **$0.00** · NOI $203,759.52 — one short "$0.00") and
+    NASA card (three wide 6-figure values: $302,537.36 / $146,200.00 / $156,337.36) wrapped **differently** in
+    the same-width grid cell — one showed the trio on a single line, the other broke it across two. That's the
+    "looks different" George saw.
+  - **Fix:** `.corp-fin` is now a fixed **3-column grid** (`repeat(3,minmax(0,1fr))`), so Revenue/Expenses/NOI
+    always occupy exactly one row of three equal columns — identical on every card regardless of figure width.
+    Dropped `flex-wrap`/`justify-content:space-between`. To guarantee even NASA's three 6-figure values fit one
+    line at the grid's narrowest 320px cell, the figure font now **scales with card width** via a container
+    query: `.corp-card.fin{container-type:inline-size}` + `.corp-fin b{font-size:clamp(13px,4.5cqw,20px)}`
+    (full 20px on wide cards, shrinking only when a cell gets tight), plus `white-space:nowrap` and `min-width:0`
+    on the cells so a figure never wraps or overlaps its neighbor.
+  - **Files:** `src/App.css` only (the `.corp-card.fin`, `.corp-fin`, `.corp-fin>div`, `.corp-fin b` rules).
+  - **Verified:** unit **275/275** (`vitest run`); `vite build` compiles. Per George's standing preference the
+    real-browser check was skipped (CSS-only tweak). Live sites 200 (amlakre.com + www + workers.dev).
+
 - **2026-07-20** — **Financials per-tenant breakdown: CAM & tax merged into ONE combined figure** (George:
   "estimated cam and tax for the leases on the financials page should be one number" → via AskUserQuestion he
   scoped it: "merge the estimate entry into one cam and tax number PSF that the user inputs — i also want the

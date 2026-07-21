@@ -152,7 +152,7 @@ button.danger-solid:hover{filter:brightness(1.07)}
    profile" pill wraps below instead of overlapping the corp name in a narrow grid cell. */
 .corp-card>.corp-info{min-width:150px}
 .corp-card:hover{border-color:var(--accent);filter:none}
-.corp-card.fin{align-items:stretch;flex-wrap:wrap}
+.corp-card.fin{align-items:stretch;flex-wrap:wrap;container-type:inline-size}
 .corp-list{display:flex;flex-direction:column;gap:10px}
 .corp-row{display:flex;align-items:center;gap:16px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;text-align:left;color:var(--ink);font-weight:400;text-transform:none;letter-spacing:0;text-decoration:none;cursor:pointer;width:100%}
 .corp-row:hover{border-color:var(--accent);filter:none}
@@ -161,8 +161,10 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .corp-info strong{font-family:var(--display);font-size:23px;font-weight:600;letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .corp-info .muted{font-size:11px;text-transform:uppercase;letter-spacing:.1em}
 .chevron{color:var(--faint);font-size:22px;flex-shrink:0;font-family:var(--display)}
-.corp-fin{display:flex;gap:16px 26px;flex-wrap:wrap}
-.corp-card.fin .corp-fin{justify-content:space-between;border-top:1px solid var(--border);padding-top:14px;width:100%}
+/* Revenue / Expenses / NOI always sit on ONE line in three equal columns, so every
+   fin card lines up identically regardless of how wide each figure is. */
+.corp-fin{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 8px}
+.corp-card.fin .corp-fin{border-top:1px solid var(--border);padding-top:14px;width:100%}
 .corp-row.fin .corp-fin{margin-left:auto}
 .corp-head{display:flex;align-items:center;gap:16px;width:100%;flex-wrap:wrap}
 .corp-head .corp-info{flex:1;min-width:150px}
@@ -171,9 +173,11 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .corp-head .corp-info strong{white-space:normal;overflow:visible}
 .corp-row.fin{flex-wrap:wrap}
 .corp-row.fin .corp-head{flex:1;min-width:230px}
-.corp-fin>div{display:flex;flex-direction:column;gap:3px}
+.corp-fin>div{display:flex;flex-direction:column;gap:3px;min-width:0}
 .corp-fin .muted{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em}
-.corp-fin b{font-family:var(--display);font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+/* Figure scales with card width (cqw) so all three fit one line even on the
+   narrowest 320px grid cell, staying full-size on wider cards. */
+.corp-fin b{font-family:var(--display);font-size:clamp(13px,4.5cqw,20px);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .corp-card.fin .chevron{display:none}
 
 /* ---- property cards ---- */
