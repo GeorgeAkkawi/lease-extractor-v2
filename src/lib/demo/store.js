@@ -175,7 +175,13 @@ export function seed() {
       { id: 'inv-2', owner_id: DEMO_USER.id, lease_id: 'lease-2', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 84000, cam_annual: 8000, tax_annual: 6500, roof_annual: 0, total_amount: 98500, notes: null, created_at: iso(Y, 1, 1) },
     ],
     payments: [
+      // Bright Coffee: one untagged lump — the Ledger's FIFO showcase (fills Jan→Dec).
       { id: 'pay-1', owner_id: DEMO_USER.id, invoice_id: 'inv-1', lease_id: 'lease-1', amount: 78100, paid_date: iso(Y, 2, 1), method: 'check', note: 'Paid in full', created_at: iso(Y, 2, 1) },
+      // City Dental: month-tagged checks + an untagged partial, so the demo grid shows
+      // mixed states (Jan ✓ · Feb ✓ · Mar ◐ · rest open) and a live Owes figure.
+      { id: 'pay-2', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 8208.33, paid_date: iso(Y, 1, 5), method: 'check', note: null, period_month: 1, created_at: iso(Y, 1, 5) },
+      { id: 'pay-3', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 8208.33, paid_date: iso(Y, 2, 4), method: 'ach', note: null, period_month: 2, created_at: iso(Y, 2, 4) },
+      { id: 'pay-4', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 4000, paid_date: iso(Y, 3, 10), method: 'check', note: 'Partial', created_at: iso(Y, 3, 10) },
     ],
     lease_files: [],
     // Starts empty; the auto-renewal engine populates this on load (e.g. City

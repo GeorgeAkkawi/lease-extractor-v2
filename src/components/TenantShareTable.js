@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getTenantShares,
   getProperty,
+  getPropertyMonthlyRoll,
   listReconciliations,
   listInvoicesForProperty,
   updateLease,
@@ -13,6 +15,8 @@ import {
   draftCamReconciliationEmail,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
+import { allocatePayments, ledgerRowSummary } from '../lib/ledger';
+import { useFeatures } from '../lib/features';
 import { money, sf, pct } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
@@ -51,9 +55,19 @@ function Stat({ label, main, sub, className = '' }) {
 // the tenant back.
 export default function TenantShareTable({ propertyId, year }) {
   const qc = useQueryClient();
+  const { corpId } = useParams();
+  const { isOn } = useFeatures();
+  const ledgerOn = isOn('ledger');
   const { data: shares = [], isLoading } = useQuery({
     queryKey: ['tenantShares', propertyId, year],
     queryFn: () => getTenantShares(propertyId, year),
+  });
+  // The Rent Ledger's collections, per lease — same query key/data the Ledger tab
+  // uses, so React Query dedupes and the two views can never disagree.
+  const { data: roll = [] } = useQuery({
+    queryKey: ['propertyRentRoll', propertyId, year],
+    queryFn: () => getPropertyMonthlyRoll(propertyId, year),
+    enabled: ledgerOn,
   });
   const { data: property } = useQuery({ queryKey: ['property', propertyId], queryFn: () => getProperty(propertyId) });
   const { data: recons = [] } = useQuery({
@@ -141,6 +155,15 @@ export default function TenantShareTable({ propertyId, year }) {
 
   const reconByLease = Object.fromEntries(recons.map((r) => [r.lease_id, r]));
   const invById = Object.fromEntries(invoices.map((i) => [i.id, i]));
+  // Collected/owes per lease from the SAME allocation the Ledger grid paints from.
+  const collectedByLease = {};
+  if (ledgerOn) {
+    for (const r of roll) {
+      const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
+      collectedByLease[r.lease_id] = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc });
+    }
+  }
+  const ledgerTo = `/financials/${corpId}/${propertyId}/ledger`;
 
   // Per-row figures the cells below share. The estimate side is the tenant's current
   // typed estimate (billedComponents) — the same figure the Estimated column shows —
@@ -176,7 +199,7 @@ export default function TenantShareTable({ propertyId, year }) {
   }
 
   return (
-    <div className="table-wrap share-ledger">
+    <div className={`table-wrap share-ledger${ledgerOn ? ' with-ledger' : ''}`}>
       {noBuildingSf && (
         <div className="note-msg warn" style={{ margin: '10px 12px' }}>
           Building size not set — CAM &amp; taxes are currently split over the leased space only.
@@ -194,6 +217,7 @@ export default function TenantShareTable({ propertyId, year }) {
         <div className="lg-num">CAM &amp; tax<span className="sub-cap">actual</span></div>
         <div className="lg-num">Roof<span className="sub-cap">actual</span></div>
         <div className="lg-num">Difference<span className="sub-cap">actual − estimated</span></div>
+        {ledgerOn && <div className="lg-num">Collected<span className="sub-cap">this year · ledger</span></div>}
       </div>
       {rowsData.map((row) => {
         const s = row.share;
@@ -241,6 +265,7 @@ export default function TenantShareTable({ propertyId, year }) {
             <Stat label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? psf2(camTaxPsf) + '/SF' : ''} />
             <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? psf2(roofPsf) + '/SF' : ''} />
             <DiffStat fig={row.fig} show={row.billed.anyEstimate} />
+            {ledgerOn && <CollectedStat summary={collectedByLease[s.lease_id]} to={ledgerTo} />}
             {editingId === s.lease_id && (
               <EstimateEditor
                 share={s}
@@ -277,6 +302,13 @@ export default function TenantShareTable({ propertyId, year }) {
           className="ledger-diff"
           main={tot.anyEst ? <DiffFigure diff={tot.diff} /> : <span className="muted">—</span>}
         />
+        {ledgerOn && (
+          <Stat
+            label="Collected this year"
+            main={money(Object.values(collectedByLease).reduce((s, c) => s + (c?.collected || 0), 0))}
+            sub={(() => { const o = Object.values(collectedByLease).reduce((s, c) => s + (c?.owesToDate || 0), 0); return o > 0.05 ? `owed ${money(o)}` : 'all collected'; })()}
+          />
+        )}
       </div>
       <div className="table-note muted">
         The <strong>estimated CAM &amp; tax</strong> is what the tenant actually pays during the year (click a figure
@@ -303,6 +335,27 @@ export default function TenantShareTable({ propertyId, year }) {
           onClose={() => setEmailDraft(null)}
         />
       )}
+    </div>
+  );
+}
+
+// The Rent Ledger's per-tenant collections, compact: what's been collected this
+// year over what's still owed to date (or paid ✓ / a credit). Clicks through to
+// the Ledger tab, where the month-by-month picture lives.
+function CollectedStat({ summary, to }) {
+  if (!summary) {
+    return <Stat label="Collected this year" main={<span className="muted">—</span>} />;
+  }
+  const sub =
+    summary.credit > 0.05 ? `credit ${money(summary.credit)}` :
+    summary.owesToDate > 0.05 ? `owes ${money(summary.owesToDate)}` : 'paid ✓';
+  return (
+    <div className="ledger-stat">
+      <span className="stat-label">Collected this year</span>
+      <Link to={to} className="collected-cell" title="Open the Rent Ledger — month-by-month collections">
+        <div className="cell-main">{money(summary.collected)}</div>
+        <div className={`cell-sub${summary.owesToDate > 0.05 ? ' owes' : ''}`}>{sub}</div>
+      </Link>
     </div>
   );
 }

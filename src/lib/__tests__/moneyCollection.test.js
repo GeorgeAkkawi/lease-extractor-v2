@@ -6,11 +6,14 @@
 //
 // Demo seed (store.js), year Y = the current year:
 //   lease-1 (Bright Coffee, prop-1): inv-1 $78,100 — PAID IN FULL by one untagged payment.
-//   lease-2 (City Dental,  prop-1): inv-2 $98,500 — unpaid.
+//   lease-2 (City Dental,  prop-1): inv-2 $98,500 — Jan+Feb tagged ($8,208.33 each)
+//     plus a $4,000 UNTAGGED partial (pools onto March), $78,083.34 still owed.
 //   lease-3 (Northwind,   prop-2): no invoice yet (draft-invoice creates it on demand).
 import { describe, it, expect } from 'vitest';
 import {
   ensureInvoice, upsertYearInvoice, listInvoices, createInvoice,
+  markMonthPaid, unmarkMonthPaid, markMonthPaidAllTenants,
+  getMonthlyRent, getYearInvoice, listPayments,
 } from '../api';
 import { monthlyScheduleForYear } from '../abatement';
 import { buildInvoice } from '../invoiceTemplate';
@@ -68,6 +71,61 @@ describe('one live invoice per lease + year (0055 unique index)', () => {
     const invoices = await listInvoices('lease-3');
     expect(invoices.length).toBe(1);
     expect(Number(invoices[0].total_amount)).toBe(125000);
+  });
+});
+
+describe('marking months paid (the ledger write path)', () => {
+  it('bulk mark-all pays only tenants who still owe — lump-settled and tagged months are skipped', async () => {
+    // lease-1 is settled by ONE untagged lump — the bulk action must not bill it 12
+    // more months. lease-2's May is genuinely uncovered (its $4,000 partial already
+    // pooled onto March), so only City Dental collects.
+    const res = await markMonthPaidAllTenants('prop-1', Y, 5);
+    expect(res).toEqual({ paid: 1, skipped: 1, total: 2 });
+    expect((await listPayments('inv-1')).length).toBe(1); // untouched
+    // Re-running the same month pays no one twice.
+    const again = await markMonthPaidAllTenants('prop-1', Y, 5);
+    expect(again.paid).toBe(0);
+  });
+
+  it('marking the same month twice records exactly one payment', async () => {
+    await markMonthPaid('lease-2', 'prop-1', Y, 5); // May was just paid by the bulk action
+    const may = (await listPayments('inv-2')).filter((p) => Number(p.period_month) === 5);
+    expect(may.length).toBe(1);
+  });
+
+  it('a pool-partial month is topped up by its GAP, and the year settles EXACTLY — no phantom cents', async () => {
+    // March is partially covered by the untagged $4,000 — the bulk action records
+    // only the $4,208.33 gap, then the remaining open months collect in full
+    // (December carries the year's fold-cents). Every dollar lands once.
+    for (const m of [3, 4, 6, 7, 8, 9, 10, 11, 12]) await markMonthPaidAllTenants('prop-1', Y, m);
+    const payments = await listPayments('inv-2');
+    const mar = payments.filter((p) => Number(p.period_month) === 3);
+    expect(mar.length).toBe(1);
+    expect(Number(mar[0].amount)).toBe(4208.33); // the gap, not the full month
+    const total = round2(payments.reduce((s, p) => s + Number(p.amount), 0));
+    expect(total).toBe(98500);
+    const inv = await getYearInvoice('lease-2', Y);
+    expect(Number(inv.balance)).toBe(0);
+    expect(inv.display_status).toBe('paid');
+  });
+
+  it('un-marking a month re-opens exactly that share', async () => {
+    await unmarkMonthPaid('lease-2', Y, 12);
+    const inv = await getYearInvoice('lease-2', Y);
+    expect(round2(Number(inv.balance))).toBe(8208.37);
+    expect(inv.display_status).toBe('partial');
+    // …and the bulk action sees the gap and collects it again.
+    const res = await markMonthPaidAllTenants('prop-1', Y, 12);
+    expect(res.paid).toBe(1);
+    expect(Number((await getYearInvoice('lease-2', Y)).balance)).toBe(0);
+  });
+
+  it("getMonthlyRent's annual equals the invoice total and returns the raw payments", async () => {
+    const data = await getMonthlyRent('lease-2', Y);
+    expect(round2(data.annual)).toBe(98500);
+    expect(Object.keys(data.byMonth).length).toBe(12);
+    expect(Array.isArray(data.payments)).toBe(true);
+    expect(data.payments.length).toBeGreaterThan(12); // 12 tagged + the untagged partial
   });
 });
 

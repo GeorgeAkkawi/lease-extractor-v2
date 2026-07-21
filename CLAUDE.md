@@ -75,6 +75,57 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Rent Ledger Stage 1 of 3: a per-property projected-vs-actual collections grid (new
+  Ledger tab), month-tagged payments, and a Collected/Owes column on Financials** (George approved the plan
+  `~/.claude/plans/is-there-a-way-melodic-lemur.md` — built from his partners' voice-memo asks: live
+  per-tenant "tenant owes $X / is owed $X", resets yearly, history for trends, Yardi as the model; his 4
+  scoping picks: new tab + compact breakdown column · projected shows base and est CAM & tax separately ·
+  import handles money in AND out (Stage 2) · manual entry stays). Deployed: frontend Cloudflare version
+  `14749008`. **Frontend + `src/lib` only — $0, NO DB migration, no edge functions, no tenant emails**
+  (`payments.period_month` from 0037 already existed). Tests **337/337** (was 280 — +17 ledger unit, +24
+  resurrected arStatus, +4 midYearRent, +3 holdoverRoll, +5 money-collection marking, +4 LedgerPage render).
+  - **Resurrected the 7/13-deleted schedule math as the foundation** (byte-identical from `cfe506f^`):
+    `src/lib/leaseSchedule.js` (buildLeaseSchedule — now also returns `factor`, the invoice-scaling ratio —
+    + owedByMonthForInvoice), `src/lib/arStatus.js`, and api.js's getMonthlyRent / getPropertyMonthlyRoll /
+    markMonthPaid / unmarkMonthPaid / markMonthPaidAllTenants (both roll readers now also return each row's
+    raw `payments` array).
+  - **New pure `src/lib/ledger.js` — the ONE money derivation everything renders from.**
+    `allocatePayments`: month-tagged payments cover their own month (same-month payments sum), untagged
+    money pools and fills months 1→12 FIFO (a lump that runs out mid-June reads Jan–May ✓ · Jun ◐ · rest
+    open), a tagged month's excess rolls forward as prepayment, leftover past December = credit (owed to the
+    tenant, ≈ the invoice's negative balance). `componentizeSchedule`: base | CAM&tax | roof per month with
+    the binding invariant components-sum-to-owed — a FREE month forces base $0 and CAM&tax absorbs the
+    penny-fold cents (both folds can land on a free December, whose owed stays >0 because CAM/tax never
+    abate). `ledgerRowSummary`: Collected / Owes-to-date / months-behind / credit — all from the SAME
+    allocation, so the grid and the figures can never disagree (a test documents the tag-divergence case
+    where arStatus's tag-blind FIFO names different months; arStatus stays as legacy fallback + a no-tags
+    parity cross-check).
+  - **New Ledger tab** (`src/pages/LedgerPage.js`, route `/financials/:corpId/:propId/ledger`; new
+    `FinancialsTabs` seg strip Financials | Ledger on both pages): tenants × 12 months, ✓/◐/open/Free/—
+    cells (tooltips carry each month's owed + base·CAM&tax·roof split), holdover badge, vacant-space row,
+    per-tenant "$X/mo = $B base · $C CAM&tax" sub-line, Collected + Owes columns with an all-tenants totals
+    row, ✓-all per month + "mark everyone paid through {month}" catch-up. Click semantics honor the
+    allocation: an open month records in full, a pool-partial month records only its GAP (never
+    double-collects), a pool-covered month isn't a toggle (manage the lump on the lease's payments panel),
+    a tagged month click-undoes. `markMonthPaidAllTenants` rewritten gap-based for the same reason.
+  - **Financials per-tenant breakdown** gains a 7th **Collected** column (linked to the Ledger; grid
+    template switches via `.with-ledger` so the layout is byte-identical when the module's off) · **Invoices
+    & payments** payment form gains an optional **"For month"** tag (annual invoices only; shown in the
+    payments table) · new optional feature key `ledger` (Settings → Display picks it up automatically;
+    ships ON — null = on) · demo seeds City Dental with Jan/Feb tagged checks + a $4,000 untagged partial
+    so the demo grid shows every state at once.
+  - **Files:** `src/lib/{leaseSchedule (new),arStatus (new),ledger (new),api,features,demo/store}.js`,
+    `src/pages/{LedgerPage (new),PropertyFinancialsPage}.js`, `src/components/{FinancialsTabs (new),
+    TenantShareTable,InvoicesPanel}.js`, `src/App.js`, `src/App.css`, tests (`ledger.test.js`,
+    `ledgerPage.test.js` new; `arStatus`, `midYearRent`, `holdoverRoll` resurrected; `moneyCollection`
+    re-expanded; `camReconciliation` wrapped in MemoryRouter for the new link).
+  - **Verified:** unit **337/337** (`vitest run`) incl. the audit-derived cases (free-December fold-cents
+    componentization, tag-on-free-month → pool, gap-based bulk settle to exactly $98,500, no-tags parity
+    vs arStatus); `vite build` compiles. Browser check skipped per George's standing preference (jsdom
+    render smokes mount the real LedgerPage + TenantShareTable against the demo mock). Live 200s
+    (amlakre.com + www + workers.dev). **Stages 2 (bank-statement import, migration 0063 + edge fn) and 3
+    (year-close collection history) follow in this same task.**
+
 - **2026-07-21** — **Financials friction removed: quiet reconcile outcome + ↩ Undo on every action + the
   Invoice button dropped from the per-tenant rows** (George: "i just dont like … 'owed - xxx - invoiced' …
   i also need an undo button for each section on the financials page if i want to go back and change the fact

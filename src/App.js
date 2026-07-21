@@ -16,6 +16,7 @@ import LeaseNewPage from './pages/LeaseNewPage';
 import ContractsPage from './pages/ContractsPage';
 import FinancialsPropertiesPage from './pages/FinancialsPropertiesPage';
 import PropertyFinancialsPage from './pages/PropertyFinancialsPage';
+import LedgerPage from './pages/LedgerPage';
 import HistoryPage from './pages/HistoryPage';
 import './App.css';
 
@@ -45,6 +46,7 @@ export default function App() {
         <Route path="/financials" element={<CorporationsPage mode="financials" />} />
         <Route path="/financials/:corpId" element={<FinancialsPropertiesPage mode="financials" />} />
         <Route path="/financials/:corpId/:propId" element={<PropertyFinancialsPage />} />
+        <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
 
         {/* History workspace */}
         <Route path="/history" element={<CorporationsPage mode="history" />} />

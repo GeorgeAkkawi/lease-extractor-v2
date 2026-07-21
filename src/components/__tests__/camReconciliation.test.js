@@ -10,6 +10,7 @@
 // City Dental has no estimates → "＋ set estimate" / billing actuals.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TenantShareTable from '../TenantShareTable';
 import { listInvoices, getReconciliation, getLease } from '../../lib/api';
@@ -19,10 +20,13 @@ const Y = currentYear();
 
 function renderTable() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // MemoryRouter: the table's Collected column links to the Rent Ledger route.
   return render(
-    <QueryClientProvider client={qc}>
-      <TenantShareTable propertyId="prop-1" year={Y} />
-    </QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={qc}>
+        <TenantShareTable propertyId="prop-1" year={Y} />
+      </QueryClientProvider>
+    </MemoryRouter>
   );
 }
 
@@ -110,9 +114,11 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     // phantom total. It must now read — and offer no reconcile.
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={qc}>
-        <TenantShareTable propertyId="prop-2" year={Y} />
-      </QueryClientProvider>
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>
+          <TenantShareTable propertyId="prop-2" year={Y} />
+        </QueryClientProvider>
+      </MemoryRouter>
     );
     await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
     // prop-2 has two estimate-free tenants (Northwind + the mid-year Sunrise Yoga seed).

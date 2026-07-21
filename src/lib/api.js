@@ -5,7 +5,9 @@ import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
-import { reconcileFigures } from './reconciliation';
+import { reconcileFigures, billedComponents } from './reconciliation';
+import { buildLeaseSchedule } from './leaseSchedule';
+import { allocatePayments } from './ledger';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
@@ -1463,6 +1465,203 @@ export async function upsertYearInvoice({ lease_id, property_id, year, issue_dat
     }
     throw e;
   }
+}
+
+// buildLeaseSchedule (the term-aware monthly schedule builder) lives in
+// ./leaseSchedule so the ledger math (ledger.js) can reuse the exact same
+// per-month owed shape. Imported at the top of this file.
+
+// Everything the ledger grid needs for one lease + year in one call: the year's
+// invoice (or null), the expected annual/monthly amount, which months are paid
+// (period_month -> { amount, ids, paid_date, method }), and the raw payments so
+// the coverage allocator can pool untagged (lump/partial) money too.
+export async function getMonthlyRent(leaseId, year) {
+  const [invoice, abatements, share, escalations] = await Promise.all([
+    getYearInvoice(leaseId, year),
+    listAbatements(leaseId),
+    getTenantShare(leaseId, year),
+    listEscalations(leaseId),
+  ]);
+  // GROSS full-year base + other charges give the schedule its SHAPE; the invoice total
+  // (when one exists) is what the months settle against. The tenant-share view is the source
+  // of truth for the gross figures.
+  let grossBase = 0;
+  let billed = { cam: 0, tax: 0, roof: 0 };
+  if (share) {
+    grossBase = Number(share.base_rent || 0);
+    billed = billedComponents(share);
+  } else if (invoice) {
+    grossBase = Number(invoice.base_rent_annual || 0);
+    billed = { cam: Number(invoice.cam_annual || 0), tax: Number(invoice.tax_annual || 0), roof: Number(invoice.roof_annual || 0) };
+  }
+  const other = billed.cam + billed.tax + billed.roof;
+  const { schedule, annual, owedMonths, occupancyStartIso: occ, factor } = buildLeaseSchedule({
+    year, grossBase, otherAnnual: other, abatements, escalations,
+    leaseStart: share?.lease_start, invoiceTotal: invoice ? Number(invoice.total_amount || 0) : null,
+  });
+
+  const payments = invoice ? await listPayments(invoice.id) : [];
+  const byMonth = {};
+  for (const p of payments) {
+    const m = Number(p.period_month);
+    if (!m) continue; // skip untagged (annual/partial) payments
+    const b = (byMonth[m] ||= { amount: 0, ids: [], paid_date: p.paid_date, method: p.method });
+    b.amount += Number(p.amount) || 0;
+    b.ids.push(p.id);
+  }
+  return { invoice, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, occupancyStartIso: occ, hasAbatement: (abatements || []).length > 0 };
+}
+
+// Mark month (1-12) paid: ensure the year's invoice exists, then record a payment
+// tagged with that month. amount defaults to the monthly share (invoice total / 12).
+export async function markMonthPaid(leaseId, propertyId, year, month, opts = {}) {
+  const invoice = await ensureInvoice(leaseId, propertyId, year);
+  const m = Number(month);
+  // Already marked — from this screen, the property ledger, or another device.
+  // Recording again would double-count the month, so this is an idempotent no-op.
+  const existingPayments = await listPayments(invoice.id);
+  if (existingPayments.some((p) => Number(p.period_month) === m)) return invoice;
+  let amount;
+  if (opts.amount != null && opts.amount !== '') {
+    amount = Number(opts.amount);
+  } else {
+    // Default to that month's expected owed from the TERM-AWARE schedule (built off the gross
+    // full-year share, prorated for a mid-year start + blended for mid-year steps + net of any
+    // base-rent abatement, then scaled to settle THIS invoice) — NOT a flat total/12, which
+    // over-bills free months and mis-bills a partial-year lease.
+    const [abatements, share, escalations] = await Promise.all([
+      listAbatements(leaseId), getTenantShare(leaseId, year), listEscalations(leaseId),
+    ]);
+    const grossBase = share ? Number(share.base_rent || 0) : Number(invoice.base_rent_annual || 0);
+    const billed = share ? billedComponents(share) : { cam: Number(invoice.cam_annual || 0), tax: Number(invoice.tax_annual || 0), roof: Number(invoice.roof_annual || 0) };
+    const { schedule: sched } = buildLeaseSchedule({
+      year, grossBase, otherAnnual: billed.cam + billed.tax + billed.roof, abatements, escalations,
+      leaseStart: share?.lease_start, invoiceTotal: Number(invoice.total_amount || 0),
+    });
+    amount = sched[m]?.owed ?? (Number(invoice.total_amount || 0) / 12);
+  }
+  // Nothing due this month (before the tenancy began, or a fully-free base with no other
+  // charges) — don't record a $0 payment; the month shows "—" or "Free". An explicit
+  // amount override still records.
+  if (!(amount > 0) && (opts.amount == null || opts.amount === '')) return invoice;
+  await recordPayment({
+    invoice_id: invoice.id,
+    lease_id: leaseId,
+    amount,
+    paid_date: opts.paid_date || paymentIsoToday(),
+    method: opts.method || 'check',
+    note: opts.note || null,
+    period_month: m,
+  });
+  return invoice;
+}
+
+// Undo a month: delete every payment tagged with that month on the year's invoice.
+export async function unmarkMonthPaid(leaseId, year, month) {
+  const invoice = await getYearInvoice(leaseId, year);
+  if (!invoice) return;
+  const payments = await listPayments(invoice.id);
+  for (const p of payments.filter((x) => Number(x.period_month) === Number(month))) {
+    await deletePayment(p.id);
+  }
+}
+
+// Bulk: mark `month` paid for every tenant in a property that hasn't paid it yet
+// (for `year`). Idempotent — tenants already marked for that month, or with nothing
+// owed (a fully-free abated month), are skipped. Returns { paid, skipped, total }.
+//
+// Fast path: one batched read (getPropertyMonthlyRoll) tells us exactly who's unpaid
+// and what each owes; invoices that don't exist yet are drafted in PARALLEL; then all
+// the month's payments are written in ONE insert — instead of a per-tenant serial loop.
+export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}) {
+  const m = Number(month);
+  const roll = await getPropertyMonthlyRoll(propertyId, year);
+  // Owe this month (net of abatement), not already marked paid for it, and not already
+  // COVERED by pooled untagged money — a tenant who paid a lump (no month tags) must not
+  // be billed the month again; a partially-covered month is only topped up by its gap.
+  const targets = roll
+    .map((r) => {
+      if (r.byMonth[m] || !((Number(r.schedule?.[m]?.owed) || 0) > 0)) return null;
+      const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
+      const gap = Math.round((alloc.owed[m - 1] - alloc.coverage[m - 1]) * 100) / 100;
+      if (!(gap > 0.05)) return null;
+      return { r, amount: gap };
+    })
+    .filter(Boolean);
+  const skipped = roll.length - targets.length;
+  if (targets.length === 0) return { paid: 0, skipped, total: roll.length };
+
+  // Draft any missing year-invoices concurrently (the only per-tenant remote cost left).
+  const withInvoice = await Promise.all(
+    targets.map(async (t) => ({
+      ...t,
+      invoiceId: t.r.invoice_id || (await ensureInvoice(t.r.lease_id, propertyId, year)).id,
+    }))
+  );
+
+  const owner = await ownerId();
+  const paidDate = opts.paid_date || paymentIsoToday();
+  const payRows = withInvoice.map(({ r, amount, invoiceId }) => ({
+    invoice_id: invoiceId,
+    lease_id: r.lease_id,
+    amount,
+    paid_date: paidDate,
+    method: opts.method || 'check',
+    note: opts.note || null,
+    period_month: m,
+    owner_id: owner,
+  }));
+  await rows(supabase.from('payments').insert(payRows));
+  return { paid: payRows.length, skipped, total: roll.length };
+}
+
+// Property ledger roll: one row per tenant for `year` with their monthly amount,
+// which months are paid, and the raw payments — powers the Ledger grid + "mark all
+// paid". Uses the year's invoice total when an invoice exists, else an estimate from
+// the tenant-share figures (exact once the first month is marked and the invoice is born).
+export async function getPropertyMonthlyRoll(propertyId, year) {
+  const [shares, invoices] = await Promise.all([
+    getTenantShares(propertyId, year),
+    listInvoicesForProperty(propertyId),
+  ]);
+  const leaseIds = shares.map((s) => s.lease_id);
+  const [abByLease, escByLease] = await Promise.all([
+    listAbatementsForLeases(leaseIds),
+    listEscalationsByLeases(leaseIds),
+  ]);
+  const invByLease = {};
+  for (const inv of invoices) {
+    // Annual invoices only — a kind='reconciliation' invoice is a one-off true-up,
+    // not the year's rent (it would corrupt the monthly math).
+    if (Number(inv.year) === Number(year) && inv.status !== 'void' && isAnnualInvoice(inv)) invByLease[inv.lease_id] = inv;
+  }
+  const paymentsByInvoice = {};
+  await Promise.all(
+    Object.values(invByLease).map(async (inv) => { paymentsByInvoice[inv.id] = await listPayments(inv.id); })
+  );
+  return shares.map((s) => {
+    const inv = invByLease[s.lease_id] || null;
+    // GROSS full-year base + est-else-actual charges give the schedule its shape; the invoice
+    // total (when one exists) is what the months settle against. Always read the gross from the
+    // tenant-share row so a preview (no invoice yet) matches what the invoice will bill.
+    const grossBase = Number(s.base_rent || 0);
+    const billed = billedComponents(s);
+    const other = billed.cam + billed.tax + billed.roof;
+    const abatements = abByLease[s.lease_id] || [];
+    const escalations = escByLease[s.lease_id] || [];
+    const { schedule, annual, owedMonths, occupancyStartIso: occ, factor } = buildLeaseSchedule({
+      year, grossBase, otherAnnual: other, abatements, escalations,
+      leaseStart: s.lease_start, invoiceTotal: inv ? Number(inv.total_amount || 0) : null,
+    });
+    const payments = inv ? (paymentsByInvoice[inv.id] || []) : [];
+    const byMonth = {};
+    for (const p of payments) {
+      const m = Number(p.period_month);
+      if (!m) continue;
+      (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
+    }
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage };
+  });
 }
 
 // ---- CAM & tax reconciliation (0060) -----------------------------------------

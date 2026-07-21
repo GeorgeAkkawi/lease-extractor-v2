@@ -107,21 +107,32 @@ function Row({ inv, open, onToggle, onRefresh, onRemove }) {
   );
 }
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
 function PaymentBlock({ inv, onRefresh, onRemove }) {
   const qc = useQueryClient();
   const { data: payments = [] } = useQuery({ queryKey: ['payments', inv.id], queryFn: () => listPayments(inv.id) });
-  const [form, setForm] = useState({ amount: Number(inv.balance) > 0 ? String(inv.balance) : '', paid_date: '', method: 'check', note: '' });
+  const [form, setForm] = useState({ amount: Number(inv.balance) > 0 ? String(inv.balance) : '', paid_date: '', method: 'check', note: '', period_month: '' });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  // Month tags only make sense on the year's ANNUAL invoice — a reconciliation
+  // true-up is a one-off bill, not part of the monthly stream.
+  const monthTaggable = (inv.kind ?? 'annual') === 'annual';
 
-  const refreshAll = () => { qc.invalidateQueries({ queryKey: ['payments', inv.id] }); onRefresh(); };
+  const refreshAll = () => {
+    qc.invalidateQueries({ queryKey: ['payments', inv.id] });
+    qc.invalidateQueries({ queryKey: ['propertyRentRoll'] }); // the Ledger grid reads these payments
+    qc.invalidateQueries({ queryKey: ['monthlyRent'] });
+    onRefresh();
+  };
 
   const add = useMutation({
     mutationFn: () => recordPayment({
       invoice_id: inv.id, lease_id: inv.lease_id,
       amount: Number(form.amount), paid_date: form.paid_date || undefined,
       method: form.method || null, note: form.note || null,
+      period_month: monthTaggable && form.period_month !== '' ? Number(form.period_month) : null,
     }),
-    onSuccess: () => { setForm({ amount: '', paid_date: '', method: 'check', note: '' }); refreshAll(); },
+    onSuccess: () => { setForm({ amount: '', paid_date: '', method: 'check', note: '', period_month: '' }); refreshAll(); },
   });
   const remove = useMutation({ mutationFn: (id) => deletePayment(id), onSuccess: refreshAll });
 
@@ -130,12 +141,13 @@ function PaymentBlock({ inv, onRefresh, onRemove }) {
       <MutationError of={[add, remove]} />
       {payments.length > 0 ? (
         <table style={{ minWidth: 0, marginBottom: 12 }}>
-          <thead><tr><th>Paid</th><th className="num">Amount</th><th>Method</th><th>Note</th><th></th></tr></thead>
+          <thead><tr><th>Paid</th><th className="num">Amount</th><th>For month</th><th>Method</th><th>Note</th><th></th></tr></thead>
           <tbody>
             {payments.map((p) => (
               <tr key={p.id}>
                 <td>{fmtDate(p.paid_date)}</td>
                 <td className="num">{money(p.amount)}</td>
+                <td>{p.period_month ? MONTH_NAMES[Number(p.period_month) - 1]?.slice(0, 3) : '—'}</td>
                 <td>{p.method || '—'}</td>
                 <td>{p.note || '—'}</td>
                 <td className="num">
@@ -154,6 +166,15 @@ function PaymentBlock({ inv, onRefresh, onRemove }) {
         <form className="row" onSubmit={(e) => { e.preventDefault(); if (form.amount !== '') add.mutate(); }} style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <label className="form-field" style={{ marginBottom: 0, maxWidth: 140 }}><span>Amount</span><input className="text-input num" type="number" step="any" value={form.amount} onChange={set('amount')} /></label>
           <label className="form-field" style={{ marginBottom: 0, maxWidth: 160 }}><span>Paid on</span><input className="text-input" type="date" value={form.paid_date} onChange={set('paid_date')} /></label>
+          {monthTaggable && (
+            <label className="form-field" style={{ marginBottom: 0, maxWidth: 150 }} title="Optional — which month's rent this payment is for. Leave blank for a lump/partial payment; the Ledger fills the earliest months first.">
+              <span>For month</span>
+              <select className="text-input" value={form.period_month} onChange={set('period_month')}>
+                <option value="">— (lump)</option>
+                {MONTH_NAMES.map((name, i) => <option key={name} value={i + 1}>{name}</option>)}
+              </select>
+            </label>
+          )}
           <label className="form-field" style={{ marginBottom: 0, maxWidth: 130 }}><span>Method</span>
             <select className="text-input" value={form.method} onChange={set('method')}>
               <option value="check">Check</option><option value="ach">ACH</option><option value="wire">Wire</option>

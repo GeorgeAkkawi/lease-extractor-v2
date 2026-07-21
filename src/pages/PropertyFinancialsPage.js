@@ -9,6 +9,7 @@ import {
   upsertExpenseRecord,
 } from '../lib/api';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
+import FinancialsTabs from '../components/FinancialsTabs';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
@@ -59,6 +60,8 @@ export default function PropertyFinancialsPage() {
           </div>
         </div>
       </div>
+
+      <FinancialsTabs corpId={corpId} propId={propId} />
 
       <div className="metric-group">
         <div className="fin-subhead">Performance · FY {year}</div>

@@ -90,6 +90,20 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .rr-cell.vacant,.rr-cell.outside{cursor:default;background:transparent;border-style:dashed}
 .rent-roll th.rr-current{box-shadow:inset 0 -2px 0 var(--accent)}
 .rent-roll tr.rr-vacant td{opacity:.72}
+/* Ledger additions: partial (◐) coverage, pool-covered (untagged money — not a
+   toggle), the Collected/Owes columns, and the tenant sub-line. A span .rr-cell
+   (pool/outside/vacant/abated) isn't a button, so it needs the button's box. */
+span.rr-cell{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}
+.rr-cell.partial{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
+.rr-cell.pool{cursor:default}
+.rr-cell.abated{cursor:default}
+button.rr-cell.abated{cursor:pointer}
+.rent-roll th.rr-owes,.rent-roll td.rr-owes{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.rr-split{color:var(--faint);font-size:11px;margin-top:2px;white-space:nowrap}
+.rr-tenant{color:inherit;text-decoration:none}
+.rr-tenant:hover{color:var(--accent)}
+.rr-behind{color:var(--gold)}
+.rent-roll tr.rr-totals td{border-top:1px solid var(--border);padding-top:8px}
 
 /* ---- layout ---- */
 .app{display:flex;height:100vh;overflow:hidden}
@@ -331,6 +345,11 @@ tbody tr:last-child td{border-bottom:none}
    template, keeping the figures aligned down the page like a ledger; $/SF rides
    each figure's sub-line and the actions sit under the tenant's name. ---- */
 .ledger-grid{display:grid;grid-template-columns:minmax(168px,1.5fr) repeat(5,minmax(84px,1fr));gap:2px 16px;align-items:stretch;padding:15px 20px}
+/* With the Rent Ledger module on, a 7th "Collected" column joins the band. */
+.share-ledger.with-ledger .ledger-grid{grid-template-columns:minmax(160px,1.5fr) repeat(6,minmax(78px,1fr))}
+.collected-cell{display:block;text-align:right;color:inherit;text-decoration:none;border-radius:var(--radius)}
+.collected-cell:hover .cell-main{color:var(--accent)}
+.collected-cell .cell-sub.owes{color:var(--gold)}
 .ledger-head{padding:11px 20px 9px;background:var(--panel-2);border-bottom:1px solid var(--line);color:var(--muted);font-weight:700;font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;align-items:end}
 .ledger-head .lg-num{text-align:right}
 .ledger-head .sub-cap{display:block;font-size:8.5px;font-weight:500;color:var(--faint);letter-spacing:.06em;text-transform:none;margin-top:2px}

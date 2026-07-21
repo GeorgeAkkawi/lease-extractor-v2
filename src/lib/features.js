@@ -11,6 +11,7 @@ import { getEnabledFeatures } from './api';
 export const FEATURES = [
   { key: 'insurance', label: 'Insurance vault',    hint: 'Store landlord and tenant policies, track expiry, and request certificates. Turning this off also silences its dashboard reminders and emails.' },
   { key: 'contracts', label: 'Service contracts',  hint: 'Landscaping, snow removal, security and other standing service agreements. Turning this off also silences its dashboard reminders and emails.' },
+  { key: 'ledger',    label: 'Rent ledger',        hint: 'Per-tenant monthly collections: projected vs actually collected, month by month, with bank-statement import. Turning this off hides the Ledger tab and the collected/owes column on Financials.' },
 ];
 
 export const FEATURE_KEYS = FEATURES.map((f) => f.key);
