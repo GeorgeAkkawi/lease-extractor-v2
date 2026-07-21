@@ -11,12 +11,13 @@ import {
   markMonthPaidAllTenants,
   listStatementImports,
   undoStatementImport,
+  listSnapshots,
   uploadDoc,
   extractBankStatement,
   localDateIso,
 } from '../lib/api';
 import { DEMO_MODE } from '../lib/supabaseClient';
-import { allocatePayments, componentizeSchedule, ledgerRowSummary } from '../lib/ledger';
+import { allocatePayments, componentizeSchedule, ledgerRowSummary, snapshotCollectionSummary } from '../lib/ledger';
 import { parseBankStatementCsv, normalizeStatementRows, applyBalanceCheck } from '../lib/statementParse';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
@@ -68,6 +69,14 @@ export default function LedgerPage() {
     queryFn: () => listStatementImports(propId),
     enabled: isOn('ledger'),
   });
+  // Prior-year collection rate (from the year-close snapshot) — the quiet trend chip.
+  const { data: snaps = [] } = useQuery({
+    queryKey: ['snapshots', propId],
+    queryFn: () => listSnapshots(propId),
+    enabled: isOn('ledger'),
+  });
+  const prevSnap = (snaps || []).find((s) => Number(s.year) === year - 1);
+  const prevCollection = prevSnap ? snapshotCollectionSummary(prevSnap) : null;
 
   // Scoped invalidation after a write settles — this property's roll + the lease-page
   // invoices/payments panels; deliberately not a blanket sweep.
@@ -310,6 +319,9 @@ export default function LedgerPage() {
         <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 12 }}>
           <strong>✓</strong> collected · <strong>◐</strong> partly collected · amber months have come due and aren't covered · <strong>—</strong> before the tenant moved in · <strong>Free</strong> abated.
           Click a box to record that month (or undo). A lump payment with no month recorded fills the earliest months first.
+          {prevCollection?.rate != null && (
+            <> · <Link to={`/history/${corpId}/${propId}`} className="rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link></>
+          )}
         </div>
         {note && <p className="badge good" style={{ marginBottom: 10 }}>{note}</p>}
         {isLoading ? <p className="muted">Loading…</p> : (!rows.length && vacant <= 0) ? (

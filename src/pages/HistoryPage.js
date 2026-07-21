@@ -5,6 +5,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
 } from 'recharts';
 import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents, clearPropertyHistory } from '../lib/api';
+import { snapshotCollectionSummary } from '../lib/ledger';
 import { invokeFunction } from '../lib/supabaseClient';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { money, psf, sf, fmtDate } from '../lib/format';
@@ -105,7 +106,16 @@ export default function HistoryPage() {
     try {
       const { narrative } = await invokeFunction('trends-narrative', {
         property_name: prop?.name,
-        series: sorted.map((s) => ({ year: s.year, total_revenue: num(s.total_revenue), taxes_total: num(s.taxes_total), cam_total: num(s.cam_total), roof_total: num(s.roof_total), total_expenses: expenses(s), noi: noi(s) })),
+        // Collection figures ride along when the snapshot has them (the fn
+        // stringifies the whole series into its prompt — extra keys just work).
+        series: sorted.map((s) => {
+          const col = snapshotCollectionSummary(s);
+          return {
+            year: s.year, total_revenue: num(s.total_revenue), taxes_total: num(s.taxes_total),
+            cam_total: num(s.cam_total), roof_total: num(s.roof_total), total_expenses: expenses(s), noi: noi(s),
+            ...(col ? { rent_collected: col.collected, collection_rate: col.rate != null ? Math.round(col.rate * 100) / 100 : null } : {}),
+          };
+        }),
       });
       setNarrative(narrative);
     } catch (e) { setNarrative('Could not generate summary: ' + (e.message || e)); } finally { setBusy(false); }
@@ -155,6 +165,15 @@ export default function HistoryPage() {
               <DeltaCard label="Revenue" cur={num(cur.total_revenue)} prev={prev ? num(prev.total_revenue) : null} prevYear={prev?.year} favorable="up" />
               <DeltaCard label="Total expenses" cur={expenses(cur)} prev={prev ? expenses(prev) : null} prevYear={prev?.year} favorable="down" />
               <DeltaCard label="NOI" cur={noi(cur)} prev={prev ? noi(prev) : null} prevYear={prev?.year} favorable="up" />
+              {snapshotCollectionSummary(cur) && (
+                <DeltaCard
+                  label="Collected"
+                  cur={snapshotCollectionSummary(cur).collected}
+                  prev={snapshotCollectionSummary(prev)?.collected ?? null}
+                  prevYear={prev?.year}
+                  favorable="up"
+                />
+              )}
             </div>
           )}
 
@@ -184,12 +203,13 @@ export default function HistoryPage() {
           <div className="table-wrap" style={{ marginBottom: 24 }}>
             <table>
               <thead>
-                <tr><th>Year</th><th className="num">Revenue</th><th className="num">Taxes</th><th className="num">CAM</th><th className="num">Roof</th><th className="num">Total exp.</th><th className="num">NOI</th><th className="num">NOI Δ</th></tr>
+                <tr><th>Year</th><th className="num">Revenue</th><th className="num">Taxes</th><th className="num">CAM</th><th className="num">Roof</th><th className="num">Total exp.</th><th className="num">NOI</th><th className="num">NOI Δ</th><th className="num">Collected</th><th className="num">Rate</th></tr>
               </thead>
               <tbody>
                 {sorted.map((s, i) => {
                   const prevNoi = i > 0 ? noi(sorted[i - 1]) : null;
                   const d = prevNoi ? ((noi(s) - prevNoi) / Math.abs(prevNoi)) * 100 : null;
+                  const col = snapshotCollectionSummary(s);
                   return (
                     <tr key={s.id} className={s.year === year ? 'hl-row' : ''}>
                       <td>{s.year}{s.year === year ? ' · viewing' : ''}</td>
@@ -200,6 +220,8 @@ export default function HistoryPage() {
                       <td className="num">{money(expenses(s))}</td>
                       <td className="num">{money(noi(s))}</td>
                       <td className="num">{d == null ? '—' : <span className={d >= 0 ? 'pos' : 'neg'}>{d >= 0 ? '▲' : '▼'} {Math.abs(d).toFixed(1)}%</span>}</td>
+                      <td className="num">{col ? money(col.collected) : '—'}</td>
+                      <td className="num">{col?.rate != null ? `${Math.round(col.rate * 100)}%` : '—'}</td>
                     </tr>
                   );
                 })}

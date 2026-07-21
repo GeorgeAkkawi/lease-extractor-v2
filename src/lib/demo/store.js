@@ -141,9 +141,18 @@ export function seed() {
       { id: 'cam-3', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Security', amount: 6000, created_at: iso(Y, 1, 4) },
     ],
     financial_snapshots: [
+      // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"
+      // for it; snap-1/snap-2 carry the frozen collection picture so the demo shows
+      // a collection trend (94% → 96%).
       { id: 'snap-0', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y - 2, total_revenue: 138000, taxes_total: 20000, cam_total: 15000, roof_total: 0, total_sf: 5000, tax_psf: 4.0, cam_psf: 3.0, breakdown: [], snapshot_at: iso(Y - 2, 12, 31) },
-      { id: 'snap-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y - 1, total_revenue: 144000, taxes_total: 22000, cam_total: 16000, roof_total: 0, total_sf: 5000, tax_psf: 4.4, cam_psf: 3.2, breakdown: [], snapshot_at: iso(Y - 1, 12, 31) },
-      { id: 'snap-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, total_revenue: 144000, taxes_total: 25000, cam_total: 18000, roof_total: 4000, total_sf: 5000, tax_psf: 5.0, cam_psf: 3.6, breakdown: [], snapshot_at: iso(Y, 12, 31) },
+      { id: 'snap-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y - 1, total_revenue: 144000, taxes_total: 22000, cam_total: 16000, roof_total: 0, total_sf: 5000, tax_psf: 4.4, cam_psf: 3.2, breakdown: [
+        { tenant: 'Bright Coffee Co.', square_footage: 2000, base_rent: 60000, share_pct: 0.4, tax_amount: 8800, cam_amount: 6400, projected: 75200, collected: 75200, collection_rate: 1, collected_by_month: Array(12).fill(6266.67) },
+        { tenant: 'City Dental', square_footage: 3000, base_rent: 84000, share_pct: 0.6, tax_amount: 13200, cam_amount: 9600, projected: 106800, collected: 95000, collection_rate: 0.89, collected_by_month: Array(12).fill(7916.67) },
+      ], snapshot_at: iso(Y - 1, 12, 31) },
+      { id: 'snap-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, total_revenue: 144000, taxes_total: 25000, cam_total: 18000, roof_total: 4000, total_sf: 5000, tax_psf: 5.0, cam_psf: 3.6, breakdown: [
+        { tenant: 'Bright Coffee Co.', square_footage: 2000, base_rent: 60000, share_pct: 0.4, tax_amount: 10000, cam_amount: 7200, projected: 78100, collected: 78100, collection_rate: 1, collected_by_month: Array(12).fill(6508.33) },
+        { tenant: 'City Dental', square_footage: 3000, base_rent: 84000, share_pct: 0.6, tax_amount: 15000, cam_amount: 10800, projected: 98500, collected: 91500, collection_rate: 0.929, collected_by_month: Array(12).fill(7625) },
+      ], snapshot_at: iso(Y, 12, 31) },
     ],
     expired_leases: [
       { id: 'exp-1', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'Riverside Tailors', sf: 1500, base_rent: 42000, lease_start: iso(Y - 6, 1, 1), lease_end: iso(Y - 1, 12, 31), status: 'Vacated', note: 'Did not renew; space re-leased to City Dental.', lease_text: ['COMMERCIAL LEASE AGREEMENT', 'Tenant: Riverside Tailors. Premises: Suite 110, approximately 1,500 rentable square feet at Maple Plaza.', 'Base Rent: $42,000.00 per annum, payable monthly.', `Term: Commencing ${fmtDate(iso(Y - 6, 1, 1))} and expiring ${fmtDate(iso(Y - 1, 12, 31))}.`, 'Lease Type: Modified gross.', 'Renewal: One (1) three-year option; tenant elected not to renew.'].join('\n') },

@@ -2676,13 +2676,32 @@ export const clearPropertyHistory = (propertyId) =>
   rows(supabase.from('history_events').delete().eq('property_id', propertyId));
 
 // Freeze a year: compute current totals + per-tenant breakdown and store an
-// immutable snapshot so History never recomputes against later edits.
+// immutable snapshot so History never recomputes against later edits. Since the
+// Rent Ledger, the breakdown also freezes each tenant's COLLECTION picture —
+// projected (the year's billed total), collected, collection_rate, and the
+// 12-month collected array — so History can chart collection trends year over
+// year. Older snapshots simply lack the keys; every consumer renders "—" then.
 export async function closeYear(propertyId, year) {
-  const [totals, shares] = await Promise.all([
+  const [totals, shares, roll] = await Promise.all([
     getPropertyTotals(propertyId, year),
     getTenantShares(propertyId, year),
+    getPropertyMonthlyRoll(propertyId, year).catch(() => []),
   ]);
   if (!totals) throw new Error('Enter expenses for this year before closing it.');
+
+  const collectionByLease = {};
+  for (const r of roll || []) {
+    const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
+    const projected = Math.round(((Number(r.annual) || 0) + Number.EPSILON) * 100) / 100;
+    // Raw collected — an overpaid tenant can read a rate > 100% (truthful, unclamped).
+    const collected = alloc.totalPaid;
+    collectionByLease[r.lease_id] = {
+      projected,
+      collected,
+      collection_rate: projected > 0 ? Math.round((collected / projected) * 1000) / 1000 : null,
+      collected_by_month: alloc.coverage,
+    };
+  }
 
   const breakdown = shares.map((s) => ({
     tenant: s.tenant_name,
@@ -2691,6 +2710,7 @@ export async function closeYear(propertyId, year) {
     share_pct: s.share_pct,
     tax_amount: s.tax_amount,
     cam_amount: s.cam_amount,
+    ...(collectionByLease[s.lease_id] || {}),
   }));
 
   return one(

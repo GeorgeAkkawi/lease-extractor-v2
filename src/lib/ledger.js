@@ -136,6 +136,39 @@ export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, r
 //                  on/before today) — free/out-of-term months owe nothing by construction
 //   monthsBehind — how many of those due months are uncovered beyond dust
 //   credit       — the allocation's leftover (overpayment, owed to the tenant)
+// ---- Year-close collection history (Stage 3) --------------------------------
+// closeYear (api.js) freezes each tenant's projected / collected /
+// collection_rate / collected_by_month into the snapshot breakdown. These pure
+// selectors read them back for History. Snapshots from before the Rent Ledger
+// simply lack the keys → null, and every consumer renders "—" (no NaN).
+
+// Property-level totals for ONE snapshot, or null when its breakdown carries no
+// collection data (a pre-ledger snapshot).
+export function snapshotCollectionSummary(snap) {
+  const rows = (snap?.breakdown || []).filter((b) => b && b.projected != null);
+  if (!rows.length) return null;
+  const projected = round2(rows.reduce((s, b) => s + (Number(b.projected) || 0), 0));
+  const collected = round2(rows.reduce((s, b) => s + (Number(b.collected) || 0), 0));
+  return {
+    projected,
+    collected,
+    // Raw, unclamped — an overpaid year truthfully reads > 100%.
+    rate: projected > 0 ? collected / projected : null,
+  };
+}
+
+// The YoY series for the History chart/table: [{ year, projected, collected,
+// rate }], oldest first, skipping snapshots with no collection data.
+export function collectionSeries(snaps) {
+  return (snaps || [])
+    .map((s) => {
+      const sum = snapshotCollectionSummary(s);
+      return sum ? { year: Number(s.year), ...sum } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.year - b.year);
+}
+
 export function ledgerRowSummary({ year, owedByMonth, allocation, today = new Date(), dust = 0.05 } = {}) {
   const owed = owedArray(owedByMonth);
   const alloc = allocation || allocatePayments({ owedByMonth: owed, payments: [] });

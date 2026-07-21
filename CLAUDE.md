@@ -75,6 +75,34 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Rent Ledger Stage 3 of 3: closing a year now freezes each tenant's COLLECTION picture,
+  and History charts the collection trend year over year** (same approved plan; the partners' "resets yearly
+  and saves history for trends" ask). Deployed: frontend Cloudflare version `f7fc6a15`. **Frontend +
+  `src/lib` only — $0, NO DB migration** (the figures ride the existing `financial_snapshots.breakdown`
+  jsonb), no edge-function redeploy (`trends-narrative` stringifies its whole series into the prompt, so the
+  new keys flow in as-is), no tenant emails. Tests **383/383** (was 381 — +2 collectionSnapshot).
+  - **`closeYear` (api.js)** now also builds the ledger roll and freezes per tenant: `projected` (the year's
+    billed total), `collected`, `collection_rate` (raw/unclamped — an overpaid tenant truthfully reads
+    >100%), and `collected_by_month` (the 12-array from the same allocatePayments derivation the grid
+    paints from). Old snapshots simply lack the keys — every consumer renders "—", never NaN.
+  - **Pure selectors in `ledger.js`:** `snapshotCollectionSummary(snap)` (property totals, null on a
+    pre-ledger snapshot) + `collectionSeries(snaps)` (the YoY series, key-less years skipped, oldest first).
+  - **History page:** a **Collected** DeltaCard joins the YoY strip (only when the snapshot has the data)
+    and the YoY table gains **Collected** + **Rate** columns; the AI trends summary's series now carries
+    `rent_collected`/`collection_rate` for years that have them. **Ledger tab:** a quiet "FY {N−1}
+    collection rate: 96%" chip (from the closed year's snapshot) links to History. (The 12-month collected
+    bar strip stays v2 — `collected_by_month` is stored from day one, so it's render-only later.)
+  - **Demo:** snap-1/snap-2 breakdowns enriched with collection figures (snap-0 left key-less to demo the
+    "—" fallback), so the demo History shows the trend and the demo Ledger shows the prior-year chip.
+  - **Files:** `src/lib/{api,ledger,demo/store}.js`, `src/pages/{HistoryPage,LedgerPage}.js`,
+    `src/lib/__tests__/collectionSnapshot.test.js` (new).
+  - **Verified:** unit **383/383** (`vitest run`) incl. closeYear freezing the lump payer at rate 1.0 +
+    penny-exact by-month sum, the null-summary/series-skip guarantees; `vite build` compiles. Browser check
+    skipped per George's standing preference. Live 200s (amlakre.com + www + workers.dev). **All three Rent
+    Ledger stages are now live** — George: Financials → **Ledger** tab per property (grid + import), the
+    **Collected** column on the per-tenant breakdown, and collection trends on **History** once you close a
+    year.
+
 - **2026-07-21** — **Rent Ledger Stage 2 of 3: bank-statement import — drop a statement on the Ledger tab,
   the app recognizes every line in/out, and one Save books tenant payments + expenses with a full ↩ Undo**
   (same approved plan as Stage 1; the partners' headline ask — "drop a bank statement in; the app recognizes
