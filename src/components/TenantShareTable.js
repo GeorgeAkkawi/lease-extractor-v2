@@ -166,7 +166,7 @@ export default function TenantShareTable({ propertyId, year }) {
       <div className="ledger-grid ledger-head" aria-hidden="true">
         <div>Tenant</div>
         <div className="lg-num">Base rent</div>
-        <div className="lg-num">Estimated<span className="sub-cap">billed to tenant</span></div>
+        <div className="lg-num">CAM &amp; tax<span className="sub-cap">estimated · billed to tenant</span></div>
         <div className="lg-num">CAM &amp; tax<span className="sub-cap">actual</span></div>
         <div className="lg-num">Roof<span className="sub-cap">actual</span></div>
         <div className="lg-num">Difference<span className="sub-cap">actual − estimated</span></div>
@@ -222,7 +222,7 @@ export default function TenantShareTable({ propertyId, year }) {
           <div className="ledger-meta">{sf(tot.sf)} leased{buildingSf > 0 ? ` of ${sf(buildingSf)} building` : ''}</div>
         </div>
         <Stat label="Base rent" main={money(tot.base)} />
-        <Stat label="Estimated · billed" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
+        <Stat label="CAM & tax · estimated" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
         <Stat label="CAM & tax · actual" main={money(tot.cam + tot.tax)} />
         <Stat label="Roof · actual" main={money(tot.roof)} />
         <Stat
@@ -232,8 +232,8 @@ export default function TenantShareTable({ propertyId, year }) {
         />
       </div>
       <div className="table-note muted">
-        <strong>Estimated</strong> is what the tenant actually pays during the year (click a figure to set it — the
-        true CAM is only known once the year closes); it falls back to the actual share until you enter one.
+        The <strong>estimated CAM &amp; tax</strong> is what the tenant actually pays during the year (click a figure
+        to set it — the true CAM is only known once the year closes); it falls back to the actual share until you enter one.
         <strong> Difference</strong> updates live as expenses are entered: positive = the tenant will owe more at
         year end, negative = you'll owe the tenant back. <strong>Reconcile</strong> settles a finished year — a
         shortfall becomes an invoice in receivables, an overpayment a refund to the tenant. <strong>CAM &amp; tax</strong>
@@ -288,7 +288,7 @@ function EstimateStat({ share, billed, editing, onToggle }) {
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
   return (
     <div className="ledger-stat">
-      <span className="stat-label">Estimated · billed to tenant</span>
+      <span className="stat-label">CAM & tax · estimated · billed to tenant</span>
       <button
         type="button"
         className={`est-cell-btn${editing ? ' editing' : ''}`}

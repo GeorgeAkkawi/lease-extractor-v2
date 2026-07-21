@@ -75,6 +75,24 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Financials per-tenant breakdown: the Estimated column now reads "CAM & tax / estimated"
+  to mirror the actual "CAM & tax / actual" column** (George: "Estimated on the financials page should follow
+  the cam and tax format of the actual in the top column. it should say CAM and tax … make sure the base rent
+  line item is also visually in line with those"). Deployed: frontend Cloudflare version `42e68154`.
+  **Frontend-only — label/wording in `TenantShareTable.js`, zero logic/math changes; no DB migration, no edge
+  function, $0, no tenant emails.** Tests **275/275**.
+  - The two CAM & tax figures now read as an obvious pair: header col 3 = **"CAM & tax"** / sub-cap
+    "estimated · billed to tenant", col 4 = **"CAM & tax"** / sub-cap "actual". The estimated figure already
+    used the identical format as the actual (amount + $/SF sub-line); only the header/labels changed. Updated
+    the screen-reader stat label ("CAM & tax · estimated · billed to tenant"), the Totals label ("CAM & tax ·
+    estimated"), and the footnote wording ("The estimated CAM & tax is what the tenant actually pays…"). Base
+    rent stays the leftmost numeric column in the same shared 5-column grid, so it lines up with both CAM & tax
+    columns unchanged.
+  - **Files:** `src/components/TenantShareTable.js` only.
+  - **Verified:** unit **275/275** (`vitest run`) incl. the camReconciliation + reconciliation suites (no test
+    asserted the old "Estimated" header, and the duplicated "CAM & tax" header text doesn't collide with any
+    getByText); `vite build` compiles. Browser check skipped per George's standing preference. Live 200s.
+
 - **2026-07-21** — **Financials corporation cards: Revenue / Expenses / NOI now always on ONE line, so every
   card is formatted identically** (George: "nasa vs gena property on financials page looks different in terms
   of formatting the cards. rev expenses and noi should be one line"). Deployed: frontend Cloudflare version
