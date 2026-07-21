@@ -15,8 +15,9 @@ import { describe, it, expect } from 'vitest';
 import { billedComponents, actualComponents, reconcileFigures } from '../reconciliation';
 import {
   reconcileCamTax, getReconciliation, markReconciliationRefunded,
+  undoReconciliation, undoReconciliationRefund,
   draftCamReconciliationEmail, getYearInvoice,
-  listInvoices, updateLease,
+  listInvoices, updateLease, listHistoryEvents,
 } from '../api';
 import { buildInvoice } from '../invoiceTemplate';
 import { currentYear } from '../format';
@@ -169,6 +170,51 @@ describe('reconcileCamTax — landlord owes (Northwind, refund flow)', () => {
     const settled = await markReconciliationRefunded(open.id);
     expect(settled.status).toBe('settled');
     expect(settled.settled_at).toBeTruthy();
+  });
+});
+
+describe('undoReconciliation — un-reconcile reopens the year', () => {
+  it('tenant owes: deletes the record, VOIDS its invoice, leaves the annual invoice alone', async () => {
+    // lease-1 was reconciled above (recon + $800 reconciliation invoice on file).
+    const recon = await getReconciliation('lease-1', Y);
+    expect(recon).toBeTruthy();
+    await undoReconciliation(recon);
+
+    // The year is reopened…
+    expect(await getReconciliation('lease-1', Y)).toBeNull();
+    // …its invoice is voided (kept, not destroyed — payments would stay attached)…
+    const invoices = await listInvoices('lease-1');
+    const reconInvs = invoices.filter((i) => i.kind === 'reconciliation');
+    expect(reconInvs).toHaveLength(1);
+    expect(reconInvs[0].display_status).toBe('void');
+    // …and the ANNUAL year invoice is untouched.
+    expect((await getYearInvoice('lease-1', Y)).id).toBe('inv-1');
+    // The trail records the undo.
+    const events = await listHistoryEvents('prop-1');
+    expect(events.some((e) => e.type === 'cam_reconcile_undone')).toBe(true);
+  });
+
+  it('re-reconciling after an undo works cleanly (void frees the unique slot)', async () => {
+    const { recon, created } = await reconcileCamTax('lease-1', 'prop-1', Y);
+    expect(created).toBe(true);
+    expect(recon.diff).toBe(800);
+    // Exactly one LIVE reconciliation invoice; the voided one stays as history.
+    const reconInvs = (await listInvoices('lease-1')).filter((i) => i.kind === 'reconciliation');
+    expect(reconInvs.filter((i) => i.display_status !== 'void')).toHaveLength(1);
+    expect(reconInvs.filter((i) => i.display_status === 'void')).toHaveLength(1);
+  });
+
+  it('refunded landlord-owes: refund undo reopens it, then full undo removes it (no invoice involved)', async () => {
+    // lease-3 was marked refunded (settled) above.
+    const settled = await getReconciliation('lease-3', Y);
+    expect(settled.status).toBe('settled');
+    const reopened = await undoReconciliationRefund(settled.id);
+    expect(reopened.status).toBe('open');
+    expect(reopened.settled_at).toBeNull();
+
+    await undoReconciliation(reopened);
+    expect(await getReconciliation('lease-3', Y)).toBeNull();
+    expect((await listInvoices('lease-3')).filter((i) => i.kind === 'reconciliation')).toHaveLength(0);
   });
 });
 

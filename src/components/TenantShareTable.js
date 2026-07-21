@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getTenantShares,
@@ -8,13 +8,15 @@ import {
   updateLease,
   reconcileCamTax,
   markReconciliationRefunded,
+  undoReconciliation,
+  undoReconciliationRefund,
   draftCamReconciliationEmail,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
 import { money, sf, pct } from '../lib/format';
-import InvoiceButton from './InvoiceButton';
 import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
+import UndoStrip from './UndoStrip';
 
 const psf2 = (n) => (n == null || isNaN(n) ? '—' : `$${Number(n).toFixed(2)}`);
 const NBSP = ' ';
@@ -67,34 +69,68 @@ export default function TenantShareTable({ propertyId, year }) {
 
   const [editingId, setEditingId] = useState(null); // lease being estimate-edited
   const [emailDraft, setEmailDraft] = useState(null); // reconciliation statement
+  // The one transient post-save undo for the table: { leaseId, label, undo, after }.
+  // undo is a closure over the previous values; after re-fetches what it touched.
+  const [pendingUndo, setPendingUndo] = useState(null);
+  useEffect(() => setPendingUndo(null), [year]); // never show a strip under another year's figures
 
   const invalidateBilling = () => {
     qc.invalidateQueries({ queryKey: ['tenantShares', propertyId] });
     qc.invalidateQueries({ queryKey: ['leases', propertyId] });
     qc.invalidateQueries({ queryKey: ['lease'] });
   };
+  const invalidateRecon = () => {
+    qc.invalidateQueries({ queryKey: ['reconciliations', propertyId, year] });
+    qc.invalidateQueries({ queryKey: ['invoicesForProperty', propertyId] });
+    qc.invalidateQueries({ queryKey: ['invoices'] });
+    qc.invalidateQueries({ queryKey: ['historyEvents', propertyId] });
+  };
 
   const saveEst = useMutation({
     mutationFn: ({ leaseId, patch }) => updateLease(leaseId, patch),
-    onSuccess: () => {
+    onSuccess: (_data, { leaseId, prev }) => {
       setEditingId(null);
       invalidateBilling();
+      setPendingUndo({
+        leaseId,
+        label: 'estimate saved',
+        undo: () => updateLease(leaseId, prev),
+        after: invalidateBilling,
+      });
     },
   });
 
   const reconcile = useMutation({
     mutationFn: (share) => reconcileCamTax(share.lease_id, propertyId, year),
+    onSuccess: invalidateRecon,
+  });
+
+  // Un-reconcile: removes the record and voids its invoice (the persistent ↩ Undo).
+  const unreconcile = useMutation({
+    mutationFn: (recon) => undoReconciliation(recon),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['reconciliations', propertyId, year] });
-      qc.invalidateQueries({ queryKey: ['invoicesForProperty', propertyId] });
-      qc.invalidateQueries({ queryKey: ['invoices'] });
-      qc.invalidateQueries({ queryKey: ['historyEvents', propertyId] });
+      setPendingUndo(null); // a live strip may reference the record that just went away
+      invalidateRecon();
     },
   });
 
   const refund = useMutation({
-    mutationFn: (id) => markReconciliationRefunded(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['reconciliations', propertyId, year] }),
+    mutationFn: (recon) => markReconciliationRefunded(recon.id),
+    onSuccess: (_data, recon) => {
+      qc.invalidateQueries({ queryKey: ['reconciliations', propertyId, year] });
+      setPendingUndo({
+        leaseId: recon.lease_id,
+        label: 'marked refunded',
+        undo: () => undoReconciliationRefund(recon.id),
+        after: () => qc.invalidateQueries({ queryKey: ['reconciliations', propertyId, year] }),
+      });
+    },
+  });
+
+  // Runs whatever undo closure the strip carries, then its own refresh.
+  const undoMut = useMutation({
+    mutationFn: (p) => p.undo(),
+    onSuccess: (_data, p) => p.after?.(),
   });
 
   const buildingSf = Number(property?.building_sf) || 0;
@@ -139,18 +175,6 @@ export default function TenantShareTable({ propertyId, year }) {
     setEmailDraft({ ...draft, year: recon.year });
   }
 
-  function confirmReconcile(row) {
-    const { share, fig } = row;
-    const head = `Reconcile ${share.tenant_name}'s CAM & tax for ${year}?\n\nBilled (estimated): ${money(fig.estTotal)}\nActual share: ${money(fig.actualTotal)}\n\n`;
-    const tail =
-      fig.direction === 'tenant_owes'
-        ? `The tenant owes ${money(fig.diff)} more. A reconciliation invoice for the balance will be added to receivables — you can email the statement after.`
-        : fig.direction === 'landlord_owes'
-          ? `You owe the tenant ${money(Math.abs(fig.diff))} back. This records the refund as owed — mark it refunded once you've paid the tenant.`
-          : 'Estimate and actual came out even — this simply records the year as reconciled.';
-    if (window.confirm(head + tail)) reconcile.mutate(share);
-  }
-
   return (
     <div className="table-wrap share-ledger">
       {noBuildingSf && (
@@ -160,7 +184,7 @@ export default function TenantShareTable({ propertyId, year }) {
           per-SF of the whole building, leaving the vacant share with you.
         </div>
       )}
-      <MutationError of={[saveEst, reconcile, refund]} />
+      <MutationError of={[saveEst, reconcile, refund, unreconcile, undoMut]} />
       {/* The band labels duplicate each figure's own (screen-reader) label, so this is
           presentation-only; on narrow screens it hides and the per-figure labels show. */}
       <div className="ledger-grid ledger-head" aria-hidden="true">
@@ -184,15 +208,27 @@ export default function TenantShareTable({ propertyId, year }) {
               <div className="ledger-name">{s.tenant_name}</div>
               <div className="ledger-meta">{sf(s.square_footage)} · {pct(s.share_pct)} share</div>
               <div className="ledger-actions">
-                <InvoiceButton share={s} />
                 <ReconcileAction
                   row={row}
                   invById={invById}
-                  onReconcile={() => confirmReconcile(row)}
+                  onReconcile={() => reconcile.mutate(s)}
                   onStatement={() => openStatement(row.recon)}
-                  onRefunded={() => refund.mutate(row.recon.id)}
-                  busy={reconcile.isPending || refund.isPending}
+                  onRefunded={() => refund.mutate(row.recon)}
+                  onUndo={() => unreconcile.mutate(row.recon)}
+                  busy={reconcile.isPending || refund.isPending || unreconcile.isPending}
                 />
+                {pendingUndo?.leaseId === s.lease_id && (
+                  <UndoStrip
+                    label={pendingUndo.label}
+                    busy={undoMut.isPending}
+                    onUndo={() => {
+                      const p = pendingUndo;
+                      setPendingUndo(null); // optimistic dismiss, like the dashboard's undo banner
+                      undoMut.mutate(p);
+                    }}
+                    onDismiss={() => setPendingUndo(null)}
+                  />
+                )}
               </div>
             </div>
             <Stat label="Base rent" main={money(s.base_rent)} sub={hasSf ? psf2(s.base_rent / s.square_footage) + '/SF' : ''} />
@@ -210,7 +246,18 @@ export default function TenantShareTable({ propertyId, year }) {
                 share={s}
                 saving={saveEst.isPending}
                 onCancel={() => setEditingId(null)}
-                onSave={(patch) => saveEst.mutate({ leaseId: s.lease_id, patch })}
+                onSave={(patch) =>
+                  saveEst.mutate({
+                    leaseId: s.lease_id,
+                    patch,
+                    // Captured for the post-save ↩ Undo: exactly what was stored before.
+                    prev: {
+                      est_cam_annual: s.est_cam_annual ?? null,
+                      est_tax_annual: s.est_tax_annual ?? null,
+                      est_roof_annual: s.est_roof_annual ?? null,
+                    },
+                  })
+                }
               />
             )}
           </div>
@@ -236,7 +283,8 @@ export default function TenantShareTable({ propertyId, year }) {
         to set it — the true CAM is only known once the year closes); it falls back to the actual share until you enter one.
         <strong> Difference</strong> updates live as expenses are entered: positive = the tenant will owe more at
         year end, negative = you'll owe the tenant back. <strong>Reconcile</strong> settles a finished year — a
-        shortfall becomes an invoice in receivables, an overpayment a refund to the tenant. <strong>CAM &amp; tax</strong>
+        shortfall becomes an invoice in receivables, an overpayment a refund to the tenant — and <strong>↩ Undo</strong> reverses
+        it any time (the record is removed and its invoice voided). <strong>CAM &amp; tax</strong>
         are billed and reconciled together as one combined charge, allocated per square foot of the
         {noBuildingSf ? ' leased space' : ' whole building'} (or a per-lease
         override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}; roof is billed by PSF only
@@ -376,53 +424,56 @@ function EstimateEditor({ share, onSave, onCancel, saving }) {
   );
 }
 
-// The per-row reconcile state: the button before a year is reconciled, then the
-// outcome — the linked invoice's live status (tenant owed), the refund open/settled
-// state (you owed), or a quiet "even". Statement letter available either way.
-function ReconcileAction({ row, invById, onReconcile, onStatement, onRefunded, busy }) {
+// The per-row reconcile state: the button before a year is reconciled (instant —
+// no confirm popup; the persistent ↩ Undo is the safety net), then the outcome as
+// one quiet muted line: the linked invoice's live status (tenant owed), the refund
+// open/settled state (you owed), or "even". ✉ Statement rides along, and ↩ Undo
+// always fully un-reconciles — removes the record, voids its invoice — so the year
+// can be reopened and reconciled again any time.
+function ReconcileAction({ row, invById, onReconcile, onStatement, onRefunded, onUndo, busy }) {
   const { recon } = row;
   if (!recon) {
     // Reconciliation only applies once an estimate is set — with none, the tenant is
     // simply billed its actual share and there's nothing to true up.
     if (!row.billed.anyEstimate) return null;
     return (
-      <button className="secondary btn-sm" onClick={onReconcile} disabled={busy} title={`Settle ${row.share.tenant_name}'s estimated-vs-actual CAM & tax for the year`}>
+      <button className="secondary btn-sm" onClick={onReconcile} disabled={busy} title={`Settle ${row.share.tenant_name}'s estimated-vs-actual CAM & tax for the year — ↩ Undo can reverse it any time`}>
         ⚖ Reconcile
       </button>
     );
   }
+  const owed = money(Math.abs(Number(recon.diff)));
+  const inv = recon.invoice_id ? invById[recon.invoice_id] : null;
+  let note;
   if (recon.direction === 'even') {
-    return <span className="badge good" title="Estimate and actual came out even">Reconciled ✓</span>;
-  }
-  if (recon.direction === 'tenant_owes') {
-    const inv = recon.invoice_id ? invById[recon.invoice_id] : null;
+    note = 'reconciled — even';
+  } else if (recon.direction === 'tenant_owes') {
     const status = inv?.display_status;
     const label =
       status === 'paid' ? 'collected ✓' : status === 'overdue' ? 'overdue' : status === 'partial' ? 'partly paid' : 'invoiced';
-    return (
-      <span className="recon-state">
-        <span className={`badge ${status === 'paid' ? 'good' : status === 'overdue' ? 'danger' : 'info'}`}>
-          Owed {money(recon.diff)} — {label}
-        </span>
-        <button className="secondary btn-sm" onClick={onStatement}>✉ Statement</button>
-      </span>
-    );
+    note = `reconciled — owed ${money(recon.diff)} · ${label}`;
+  } else {
+    note = recon.status === 'settled' ? `reconciled — refunded ${owed} ✓` : `reconciled — you owe ${owed}`;
   }
-  // landlord_owes
-  const owed = money(Math.abs(Number(recon.diff)));
-  if (recon.status === 'settled') {
-    return (
-      <span className="recon-state">
-        <span className="badge good">Refunded {owed} ✓</span>
-        <button className="secondary btn-sm" onClick={onStatement}>✉ Statement</button>
-      </span>
-    );
-  }
+  const collected = Number(inv?.amount_paid) > 0;
   return (
     <span className="recon-state">
-      <span className="badge warn">You owe {owed}</span>
-      <button className="secondary btn-sm" onClick={onRefunded} disabled={busy} title="Mark once you've paid the tenant back (outside the app)">✓ Mark refunded</button>
-      <button className="secondary btn-sm" onClick={onStatement}>✉ Statement</button>
+      <span className="recon-note">{note}</span>
+      {recon.direction !== 'even' && <button className="secondary btn-sm" onClick={onStatement}>✉ Statement</button>}
+      {recon.direction === 'landlord_owes' && recon.status !== 'settled' && (
+        <button className="secondary btn-sm" onClick={onRefunded} disabled={busy} title="Mark once you've paid the tenant back (outside the app)">✓ Mark refunded</button>
+      )}
+      <button
+        className="ghost btn-sm"
+        onClick={onUndo}
+        disabled={busy}
+        title={
+          'Un-reconcile this year — removes the reconciliation and voids its invoice; you can reconcile again any time.' +
+          (collected ? ` The ${money(inv.amount_paid)} already collected stays on the removed invoice.` : '')
+        }
+      >
+        ↩ Undo
+      </button>
     </span>
   );
 }

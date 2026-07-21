@@ -1266,14 +1266,15 @@ async function syncCamTotal(propertyId, year) {
 }
 
 export async function addCamLineItem({ property_id, year, label, amount }) {
-  await one(
+  const item = await one(
     supabase
       .from('cam_line_items')
       .insert({ property_id, year, label, amount, owner_id: await ownerId() })
       .select()
       .single()
   );
-  return syncCamTotal(property_id, year);
+  await syncCamTotal(property_id, year);
+  return item;
 }
 
 export async function deleteCamLineItem(id, propertyId, year) {
@@ -1579,6 +1580,48 @@ export async function markReconciliationRefunded(id) {
     lease_id: recon.lease_id,
     type: 'cam_refunded',
     description: `CAM & tax refund of ${money(Math.abs(Number(recon.diff)))} for ${recon.year} marked paid to tenant`,
+    event_date: paymentIsoToday(),
+    meta: { year: recon.year, diff: recon.diff },
+  });
+  return recon;
+}
+
+// Un-reconcile a year: removes the reconciliation and voids its invoice, so the
+// live Difference resumes and ⚖ Reconcile is available again. Void FIRST — if this
+// is interrupted mid-flight, a second Undo click completes cleanly, whereas
+// deleting the record first would strand a live reconciliation invoice that blocks
+// re-reconciling (the kind-scoped unique index only ignores void rows).
+export async function undoReconciliation(recon) {
+  if (recon.invoice_id) {
+    // Void, never delete: any recorded payments stay attached and the invoice is
+    // recoverable under the lease page's "removed" list.
+    await updateInvoice(recon.invoice_id, { status: 'void' });
+  }
+  // The cam_reconciliations unique index has no status scoping, so only a hard
+  // delete reopens the (lease, year) slot.
+  await rows(supabase.from('cam_reconciliations').delete().eq('id', recon.id));
+  await logHistoryEvent({
+    property_id: recon.property_id,
+    lease_id: recon.lease_id,
+    type: 'cam_reconcile_undone',
+    description:
+      `CAM & tax reconciliation for ${recon.year} undone — year reopened` +
+      (recon.invoice_id ? '; its invoice was voided (recoverable under removed)' : ''),
+    event_date: paymentIsoToday(),
+    meta: { year: recon.year, diff: recon.diff, direction: recon.direction, invoice_id: recon.invoice_id || null },
+  });
+}
+
+// Reopen a refund that was marked paid by mistake (reverses markReconciliationRefunded).
+export async function undoReconciliationRefund(id) {
+  const recon = await one(
+    supabase.from('cam_reconciliations').update({ status: 'open', settled_at: null }).eq('id', id).select().single()
+  );
+  await logHistoryEvent({
+    property_id: recon.property_id,
+    lease_id: recon.lease_id,
+    type: 'cam_refund_reopened',
+    description: `CAM & tax refund of ${money(Math.abs(Number(recon.diff)))} for ${recon.year} reopened (undo)`,
     event_date: paymentIsoToday(),
     meta: { year: recon.year, diff: recon.diff },
   });

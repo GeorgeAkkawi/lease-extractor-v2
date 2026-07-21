@@ -22,6 +22,8 @@ const EVENT_LABEL = {
   insurance_requested: 'Insurance requested',
   cam_reconciled: 'CAM & tax reconciled',
   cam_refunded: 'CAM & tax refund paid',
+  cam_reconcile_undone: 'CAM & tax reconcile undone',
+  cam_refund_reopened: 'CAM & tax refund reopened',
 };
 const EVENT_BADGE = {
   tenant_assigned: 'info',
@@ -32,6 +34,8 @@ const EVENT_BADGE = {
   insurance_requested: 'info',
   cam_reconciled: 'info',
   cam_refunded: 'good',
+  cam_reconcile_undone: 'warn',
+  cam_refund_reopened: 'warn',
 };
 
 const num = (v) => (v == null ? 0 : Number(v));

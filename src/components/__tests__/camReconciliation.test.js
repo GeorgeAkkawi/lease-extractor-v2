@@ -1,12 +1,14 @@
 // Render smoke test for the finances per-tenant table's estimated-vs-actual view
 // (0060): the Estimated column with its inline editor, the live Difference, and the
-// Reconcile action. Mounts the REAL TenantShareTable against the demo mock (DEMO
-// mode forced by the test env) so a render crash or missing field surfaces here.
+// Reconcile action — instant (no confirm popup), quiet muted outcome line, and the
+// ↩ Undo that fully un-reconciles. Mounts the REAL TenantShareTable against the
+// demo mock (DEMO mode forced by the test env) so a render crash or missing field
+// surfaces here.
 //
-// Demo seed: Bright Coffee has typed estimates and a saved ANNUAL invoice (inv-1,
-// billed snapshot 18,100) vs an actual share of 18,800 → live "+$700 / tenant owes".
+// Demo seed: Bright Coffee has typed estimates and a saved ANNUAL invoice (inv-1)
+// vs an actual share of 18,800 → live "+$800 / tenant owes".
 // City Dental has no estimates → "＋ set estimate" / billing actuals.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TenantShareTable from '../TenantShareTable';
@@ -44,6 +46,9 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     // Difference stays dormant (—) — no phantom estimate/difference without one set.
     expect(screen.getByText('＋ set estimate')).toBeTruthy();
     expect(screen.getByText('billing actuals')).toBeTruthy();
+    // The Invoice button is gone from the ledger rows (George: the reconcile is what
+    // matters at year end) — exact match, so lowercase "invoice" copy doesn't collide.
+    expect(screen.queryByText('Invoice')).toBeNull();
   });
 
   it('clicking the estimate opens the inline editor — one combined CAM & tax $/SF input', async () => {
@@ -60,20 +65,43 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     expect(screen.getByText('Save')).toBeTruthy();
   });
 
-  it('Reconcile settles the year: recon invoice lands in receivables, row shows the outcome', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('Reconcile settles the year instantly (no confirm popup): quiet outcome line + Undo', async () => {
     renderTable();
     await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
     const buttons = screen.getAllByText('⚖ Reconcile');
     fireEvent.click(buttons[0]); // rows render in seed order — Bright Coffee first
-    await waitFor(() => expect(screen.getByText(/Owed \$800\.00/)).toBeTruthy());
-    // The statement button appears with the outcome; the shortfall is a real invoice.
+    // The outcome is a quiet muted line, not a colored badge — and no window.confirm
+    // stood in the way (nothing mocked here; a popup would throw in jsdom).
+    await waitFor(() => expect(screen.getByText('reconciled — owed $800.00 · invoiced')).toBeTruthy());
+    // Statement + the persistent Undo appear with the outcome; the shortfall is a real invoice.
     expect(screen.getByText('✉ Statement')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '↩ Undo' })).toBeTruthy();
     const recon = await getReconciliation('lease-1', Y);
     expect(recon.direction).toBe('tenant_owes');
     const invoices = await listInvoices('lease-1');
     expect(invoices.find((i) => i.kind === 'reconciliation')?.total_amount).toBe(800);
-    vi.restoreAllMocks();
+  });
+
+  it('↩ Undo un-reconciles: record removed, invoice voided, and the year can be redone', async () => {
+    // lease-1 is reconciled from the previous test — the row shows the quiet outcome.
+    renderTable();
+    await waitFor(() => expect(screen.getByText('reconciled — owed $800.00 · invoiced')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '↩ Undo' }));
+    // The year reopens: ⚖ Reconcile returns, the record is gone, the invoice is void.
+    await waitFor(() => expect(screen.getAllByText('⚖ Reconcile').length).toBeGreaterThan(0));
+    expect(await getReconciliation('lease-1', Y)).toBeNull();
+    let reconInvs = (await listInvoices('lease-1')).filter((i) => i.kind === 'reconciliation');
+    expect(reconInvs).toHaveLength(1);
+    expect(reconInvs[0].display_status).toBe('void');
+    // Re-reconciling works cleanly (the void freed the unique slot) — then undo once
+    // more so later tests see an un-reconciled row.
+    fireEvent.click(screen.getAllByText('⚖ Reconcile')[0]);
+    await waitFor(() => expect(screen.getByText('reconciled — owed $800.00 · invoiced')).toBeTruthy());
+    reconInvs = (await listInvoices('lease-1')).filter((i) => i.kind === 'reconciliation');
+    expect(reconInvs.filter((i) => i.display_status !== 'void')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '↩ Undo' }));
+    await waitFor(() => expect(screen.getAllByText('⚖ Reconcile').length).toBeGreaterThan(0));
+    expect(await getReconciliation('lease-1', Y)).toBeNull();
   });
 
   it('with no estimates set, the Estimated total + Difference stay dormant (no phantom total)', async () => {
@@ -97,7 +125,7 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     expect(within(totalsRow).getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
-  it('saving a combined $/SF rate stores it as est_cam with est_tax zeroed', async () => {
+  it('saving a combined $/SF rate stores it as est_cam with est_tax zeroed — and Undo restores the old values', async () => {
     renderTable();
     await waitFor(() => expect(screen.getByText('$16,500.00')).toBeTruthy());
     fireEvent.click(screen.getByText('$16,500.00'));
@@ -105,8 +133,16 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     fireEvent.change(screen.getByLabelText('CAM & tax $/SF/yr'), { target: { value: '8.5' } });
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(screen.getByText('$17,000.00')).toBeTruthy());
-    const lease = await getLease('lease-1');
+    let lease = await getLease('lease-1');
     expect(lease.est_cam_annual).toBe(17000); // whole combined figure
     expect(lease.est_tax_annual).toBe(0); // tax portion zeroed so cam + tax = the entry
+    // The quiet post-save strip offers one-click Undo — it restores what was stored
+    // before the save (the seed's split 6,500 / 10,000), not a merged re-entry.
+    expect(screen.getByText('estimate saved')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '↩ Undo' }));
+    await waitFor(() => expect(screen.getByText('$16,500.00')).toBeTruthy());
+    lease = await getLease('lease-1');
+    expect(lease.est_cam_annual).toBe(6500);
+    expect(lease.est_tax_annual).toBe(10000);
   });
 });

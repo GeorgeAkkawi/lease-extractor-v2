@@ -6,8 +6,9 @@ import MutationError from './MutationError';
 
 // Per-lease invoices & payments: each invoice with its derived balance + status, a
 // "record payment" form (partial payments supported), and the payment history. Invoices
-// are created automatically the first time a month is marked paid on the tracker above,
-// or saved from the Financials → Invoice modal.
+// land here when a year is reconciled on the property's Financials page — ⚖ Reconcile
+// turns a shortfall into its own reconciliation invoice (an undone reconcile shows
+// under "removed").
 const STATUS_TONE = { paid: 'good', partial: 'warn', overdue: 'danger', sent: 'info', void: 'info' };
 
 export default function InvoicesPanel({ leaseId }) {
@@ -29,7 +30,8 @@ export default function InvoicesPanel({ leaseId }) {
   if (invoices.length === 0) {
     return (
       <p className="empty-line muted">
-        Invoices appear here automatically when you mark months paid above — or save one from <strong>Financials → Invoice</strong>.
+        Invoices appear here when you reconcile a year on the property's <strong>Financials</strong> page —
+        a shortfall becomes a reconciliation invoice in receivables.
       </p>
     );
   }

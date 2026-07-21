@@ -362,6 +362,12 @@ tbody tr:last-child td{border-bottom:none}
 .pos-owed{color:var(--gold);font-weight:600}
 .neg-owed{color:var(--danger);font-weight:600}
 .recon-state{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+/* Quiet post-reconcile outcome: small gray lowercase text, no colored box (the
+   loud uppercase .badge read as an alarm; the outcome is just a fact). */
+.recon-note{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+/* Inline post-save strip: "saved · ↩ Undo · ✕" shown right after an action. */
+.undo-strip{display:inline-flex;align-items:center;gap:6px}
+.undo-strip .undo-note{font-size:11.5px;color:var(--muted)}
 .cell-sub{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:2px;font-weight:400}
 @media (max-width:880px){
   /* Narrow: the header band hides, each figure self-labels, and the figures wrap

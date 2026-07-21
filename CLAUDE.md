@@ -75,6 +75,54 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Financials friction removed: quiet reconcile outcome + ↩ Undo on every action + the
+  Invoice button dropped from the per-tenant rows** (George: "i just dont like … 'owed - xxx - invoiced' …
+  i also need an undo button for each section on the financials page if i want to go back and change the fact
+  that i clicked reconcile … i just want to eliminate user friction"; via AskUserQuestion he picked: Undo on
+  EVERY action · outcome as quiet muted text · remove the ⚖ Reconcile confirm popup, adding "i also think
+  that invoice is not necessary all we need is the reconcile button which is what really matters at the end
+  of the year"). Deployed: frontend Cloudflare version `974e4bcc`. **Frontend + `src/lib` only — $0, NO DB
+  migration** (history_events.type is free text; owner_all RLS covers the delete; the 0060 kind-scoped
+  `where status<>'void'` unique index makes void-then-recreate legal), **zero demo-mock changes** (undo rides
+  the mock's generic delete/update handlers), no edge functions, no tenant emails. Tests **280/280** (was
+  275 — +3 undo unit, +1 undo-flow render, +1 CamSection-undo render).
+  - **Quiet outcome (`TenantShareTable.js` + `.recon-note` in App.css):** the loud uppercase colored badge
+    ("OWED $985.04 — INVOICED") is now one small muted lowercase line — `reconciled — owed $X · invoiced|
+    overdue|partly paid|collected ✓`, `reconciled — you owe $X`, `reconciled — refunded $X ✓`, `reconciled —
+    even` — with ✉ Statement / ✓ Mark refunded as small secondary buttons beside it.
+  - **⚖ Reconcile is instant** — the `window.confirm` popup is gone; the persistent **↩ Undo** is the safety
+    net (Gmail-style act-then-undo).
+  - **↩ Undo everywhere.** (1) **Un-reconcile** (persistent, on every outcome state, any time later): new
+    `undoReconciliation(recon)` in api.js — **voids** the linked reconciliation invoice FIRST (never deletes —
+    payments stay attached, recoverable under the lease page's "removed"; void-first means an interrupted undo
+    completes cleanly on a second click), hard-deletes the `cam_reconciliations` row (its unique index isn't
+    status-scoped, so only deletion reopens the year), logs a `cam_reconcile_undone` history event. Undo's
+    tooltip warns when money was already collected on the invoice. (2) **Transient strips** (new shared
+    `UndoStrip.js`, the Dashboard undo-banner pattern shrunk inline — quiet "saved · ↩ Undo · ✕", component
+    state, latest-wins, cleared on fiscal-year switch): estimate save (restores the exact prior `est_*`
+    values), Mark refunded (new `undoReconciliationRefund` reverts to open + logs `cam_refund_reopened`),
+    taxes/roof save (restores prior figures; a first-ever save undoes to zeros — the undo re-reads the record
+    at undo time so a CAM total synced meanwhile is never clobbered), building size save, CAM line add (undo
+    deletes it; `addCamLineItem` now returns the created row) and remove (undo re-adds label+amount), flat
+    CAM save.
+  - **Invoice button removed from the Financials rows** (UI-only): `InvoiceButton` un-wired from
+    `TenantShareTable` — it was its ONLY usage, so annual-invoice generation has no UI now; the component/
+    template/api plumbing stays dormant in the codebase (George reversed course on invoicing once before).
+    Reconciliation invoices are still created by ⚖ Reconcile. `InvoicesPanel` empty-state copy updated to
+    point at Reconcile instead of the removed Invoice modal.
+  - **Files:** `src/lib/api.js` (undoReconciliation, undoReconciliationRefund, addCamLineItem returns the
+    row), `src/components/{TenantShareTable,UndoStrip (new),BuildingSizeEditor,CamSection,InvoicesPanel}.js`,
+    `src/pages/{PropertyFinancialsPage,HistoryPage}.js` (labels for the 2 new event types), `src/App.css`
+    (`.recon-note`, `.undo-strip`), tests (`reconciliation.test.js`, `camReconciliation.test.js`,
+    `camSectionUndo.test.js` new).
+  - **Verified:** unit **280/280** (`vitest run`) incl. the full undo round-trips (un-reconcile → invoice
+    void + record gone + re-reconcile clean; estimate save→undo restores the seed's split 6,500/10,000; CAM
+    remove→undo re-adds + re-syncs the 18,000 total); `vite build` compiles. Browser check skipped per
+    George's standing preference. Live 200s (amlakre.com + www + workers.dev).
+  - **George — your Ricki's-Lyons row on fakkawi3:** it now reads the quiet `reconciled — owed $985.04 ·
+    invoiced` line; if you never wanted that true-up, click **↩ Undo** on the row — one click removes it and
+    voids the $985.04 invoice (hard-refresh first: Cmd/Ctrl+Shift+R).
+
 - **2026-07-21** — **Demo sandbox refreshed to current `main`** (George: "open the demo … make sure the fields
   in financials are present so i can show how they work specifically the per tenant breakdown and expenses").
   The `amlak-demo` worker was running a pre-7/11 build (old "Leases" nav, Outstanding-AR card, un-merged

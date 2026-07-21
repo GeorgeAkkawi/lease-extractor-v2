@@ -12,6 +12,8 @@ import { useChrome, usePageChrome } from '../context/ChromeContext';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
+import MutationError from '../components/MutationError';
+import UndoStrip from '../components/UndoStrip';
 import { money, psf, sf } from '../lib/format';
 
 // whole-dollar money (no cents) for the compact roof billed/absorbed line
@@ -135,13 +137,24 @@ function StatCard({ label, main, footValue, footCap, note }) {
 function ExpenseForm({ propId, year, expense, qc }) {
   const [taxes, setTaxes] = useState('');
   const [roof, setRoof] = useState('');
+  // The post-save ↩ Undo: { label, undo } where undo restores the pre-save figures.
+  const [saved, setSaved] = useState(null);
   useEffect(() => {
     setTaxes(expense?.taxes_total ?? '');
     setRoof(expense?.roof_total ?? '');
   }, [expense, year]);
+  useEffect(() => setSaved(null), [year]); // never show a strip under another year's figures
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
+    qc.invalidateQueries({ queryKey: ['propertyTotals', propId, year] });
+    qc.invalidateQueries({ queryKey: ['tenantShares', propId, year] });
+    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // expenses feed the corp roll-up
+  };
 
   const save = useMutation({
-    mutationFn: () =>
+    // `prev` (the pre-save figures, or null on a first-ever save) rides along for the undo.
+    mutationFn: (_prev) =>
       upsertExpenseRecord({
         property_id: propId,
         year,
@@ -149,26 +162,54 @@ function ExpenseForm({ propId, year, expense, qc }) {
         cam_total: expense?.cam_total ?? 0, // preserved; maintained by CAM section
         roof_total: Number(roof) || 0,
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
-      qc.invalidateQueries({ queryKey: ['propertyTotals', propId, year] });
-      qc.invalidateQueries({ queryKey: ['tenantShares', propId, year] });
-      qc.invalidateQueries({ queryKey: ['corpRollups'] }); // expenses feed the corp roll-up
+    onSuccess: (_data, prev) => {
+      invalidate();
+      setSaved({
+        label: 'taxes & roof saved',
+        // Undo restores the previous taxes/roof (zeros on a first-ever save) but
+        // re-reads the record at undo time so a CAM total the line-items section
+        // synced meanwhile is never clobbered.
+        undo: async () => {
+          const cur = await getExpenseRecord(propId, year);
+          await upsertExpenseRecord({
+            property_id: propId,
+            year,
+            taxes_total: prev ? prev.taxes : 0,
+            cam_total: Number(cur?.cam_total) || 0,
+            roof_total: prev ? prev.roof : 0,
+          });
+        },
+      });
     },
   });
 
+  const undoMut = useMutation({ mutationFn: (p) => p.undo(), onSuccess: invalidate });
+
   return (
-    <form className="row" onSubmit={(e) => { e.preventDefault(); save.mutate(); }} style={{ alignItems: 'flex-end' }}>
-      <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
-        <span>Property taxes ($)</span>
-        <input className="text-input num" type="number" step="any" value={taxes} onChange={(e) => setTaxes(e.target.value)} />
-      </label>
-      <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
-        <span>Roof ($) — separate</span>
-        <input className="text-input num" type="number" step="any" value={roof} onChange={(e) => setRoof(e.target.value)} />
-      </label>
-      <button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save taxes & roof'}</button>
-      {save.isSuccess && <span className="badge good">Saved</span>}
-    </form>
+    <>
+      <form className="row" onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate(expense ? { taxes: Number(expense.taxes_total) || 0, roof: Number(expense.roof_total) || 0 } : null);
+      }} style={{ alignItems: 'flex-end' }}>
+        <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
+          <span>Property taxes ($)</span>
+          <input className="text-input num" type="number" step="any" value={taxes} onChange={(e) => setTaxes(e.target.value)} />
+        </label>
+        <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
+          <span>Roof ($) — separate</span>
+          <input className="text-input num" type="number" step="any" value={roof} onChange={(e) => setRoof(e.target.value)} />
+        </label>
+        <button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save taxes & roof'}</button>
+        {saved && (
+          <UndoStrip
+            label={saved.label}
+            busy={undoMut.isPending}
+            onUndo={() => { const p = saved; setSaved(null); undoMut.mutate(p); }}
+            onDismiss={() => setSaved(null)}
+          />
+        )}
+      </form>
+      <MutationError of={[save, undoMut]} />
+    </>
   );
 }

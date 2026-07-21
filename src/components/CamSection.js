@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listCamLineItems, addCamLineItem, deleteCamLineItem, upsertExpenseRecord, syncContractCamItems } from '../lib/api';
+import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems } from '../lib/api';
 import { money } from '../lib/format';
 import MutationError from './MutationError';
+import UndoStrip from './UndoStrip';
 
 // CAM is comprised of many sub-expenses. List them; the app sums them into the
 // CAM total used everywhere. A flat entry is still available when there are none.
@@ -18,6 +19,9 @@ export default function CamSection({ propId, year, expense }) {
   const [label, setLabel] = useState('');
   const [amount, setAmount] = useState('');
   const [flat, setFlat] = useState('');
+  // The post-action ↩ Undo: { label, undo } — one slot, latest action wins.
+  const [saved, setSaved] = useState(null);
+  useEffect(() => setSaved(null), [propId, year]); // never show a strip under another year's list
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['camLineItems', propId, year] });
@@ -29,13 +33,41 @@ export default function CamSection({ propId, year, expense }) {
 
   const add = useMutation({
     mutationFn: () => addCamLineItem({ property_id: propId, year, label: label.trim(), amount: Number(amount) || 0 }),
-    onSuccess: () => { setLabel(''); setAmount(''); invalidate(); },
+    onSuccess: (item) => {
+      setLabel(''); setAmount(''); invalidate();
+      setSaved({ label: `added ${item.label}`, undo: () => deleteCamLineItem(item.id, propId, year) });
+    },
   });
-  const remove = useMutation({ mutationFn: (id) => deleteCamLineItem(id, propId, year), onSuccess: invalidate });
+  const remove = useMutation({
+    mutationFn: (it) => deleteCamLineItem(it.id, propId, year),
+    onSuccess: (_data, it) => {
+      invalidate();
+      // Undo re-adds the same label/amount (a fresh row — it lands at the list's end).
+      setSaved({ label: `removed ${it.label}`, undo: () => addCamLineItem({ property_id: propId, year, label: it.label, amount: it.amount }) });
+    },
+  });
   const saveFlat = useMutation({
-    mutationFn: () => upsertExpenseRecord({ property_id: propId, year, taxes_total: expense?.taxes_total ?? 0, cam_total: Number(flat) || 0, roof_total: expense?.roof_total ?? 0 }),
-    onSuccess: invalidate,
+    // `prevCam` (the pre-save flat total, or null) rides along for the undo.
+    mutationFn: (_prevCam) => upsertExpenseRecord({ property_id: propId, year, taxes_total: expense?.taxes_total ?? 0, cam_total: Number(flat) || 0, roof_total: expense?.roof_total ?? 0 }),
+    onSuccess: (_data, prevCam) => {
+      invalidate();
+      setSaved({
+        label: 'flat CAM saved',
+        // Re-read the record at undo time so taxes/roof saved meanwhile survive.
+        undo: async () => {
+          const cur = await getExpenseRecord(propId, year);
+          await upsertExpenseRecord({
+            property_id: propId,
+            year,
+            taxes_total: Number(cur?.taxes_total) || 0,
+            cam_total: Number(prevCam) || 0,
+            roof_total: Number(cur?.roof_total) || 0,
+          });
+        },
+      });
+    },
   });
+  const undoMut = useMutation({ mutationFn: (p) => p.undo(), onSuccess: invalidate });
 
   const total = items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
 
@@ -58,12 +90,22 @@ export default function CamSection({ propId, year, expense }) {
             <div className="num"></div>
             {it.contract_id
               ? <span className="muted" title="Managed by the service contract — edit it in Contracts" style={{ fontSize: 11 }}>auto</span>
-              : <button className="icon-btn danger-btn" onClick={() => remove.mutate(it.id)}>✕</button>}
+              : <button className="icon-btn danger-btn" onClick={() => remove.mutate(it)}>✕</button>}
           </div>
         ))
       )}
 
-      <MutationError of={[add, remove, saveFlat]} />
+      <MutationError of={[add, remove, saveFlat, undoMut]} />
+      {saved && (
+        <div style={{ marginTop: 8 }}>
+          <UndoStrip
+            label={saved.label}
+            busy={undoMut.isPending}
+            onUndo={() => { const p = saved; setSaved(null); undoMut.mutate(p); }}
+            onDismiss={() => setSaved(null)}
+          />
+        </div>
+      )}
 
       {items.length > 0 && (
         <div className="cam-row cam-total">
