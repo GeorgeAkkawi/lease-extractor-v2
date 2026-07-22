@@ -12,7 +12,7 @@ import { callClaude, transcribeDocument, uploadFile, deleteFile, MAX_VISION_BYTE
 import { extractPdfText, splitPdfIntoChunks } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
-import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom } from '../_shared/rentSchedule.js';
+import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom, annualizeOptionSchedule } from '../_shared/rentSchedule.js';
 import { parseAnalystVerdicts, extractionMismatches } from '../_shared/analystVerdicts.js';
 
 const MODEL = 'claude-haiku-4-5';
@@ -79,13 +79,29 @@ const SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['option_label', 'notice_by_date', 'term_months', 'new_rent', 'annual_escalation_pct', 'notes'],
+        required: ['option_label', 'notice_by_date', 'term_months', 'new_rent', 'annual_escalation_pct', 'rent_schedule', 'notes'],
         properties: {
           option_label: { type: ['string', 'null'] },
           notice_by_date: { type: ['string', 'null'], description: 'written-notice deadline to exercise — a specific calendar date YYYY-MM-DD ONLY; if stated relative to another event (e.g. "180 days prior to expiration"), use null and put the wording in notes' },
           term_months: { type: ['integer', 'null'] },
           new_rent: { type: ['number', 'null'], description: 'a flat ANNUAL rent for the option term if explicitly stated (else null)' },
           annual_escalation_pct: { type: ['number', 'null'], description: 'the percent if the option rent increases by X% per year during the term (e.g. "5% annual increase" → 5); else null' },
+          // A year-by-year OPTION rent table (e.g. Exhibit D: five monthly installments over
+          // a 5-year option). All-required single-typed items → ZERO cost against the 16-union
+          // structured-output ceiling (the expense_estimates precedent); WE annualize in code.
+          rent_schedule: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['months_from_option_start', 'amount', 'period'],
+              properties: {
+                months_from_option_start: { type: 'integer' },
+                amount: { type: 'number' },
+                period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
+              },
+            },
+          },
           notes: { type: ['string', 'null'] },
         },
       },
@@ -132,6 +148,15 @@ const SYSTEM_FIELDS =
   'rent increases by a percent each year (e.g. "5% annual increase in base rent"), set ' +
   'annual_escalation_pct to that number (5) and leave new_rent null unless a specific ' +
   'starting amount is also given. If it states a flat new rent, set new_rent (annual). ' +
+  'When the option instead PRICES its term with a year-by-year rent table (e.g. an ' +
+  '"Extension Term" / "Option Period" schedule listing a different amount for each option ' +
+  'year, often in an exhibit), fill rent_schedule with ONE entry per period: ' +
+  'months_from_option_start = the offset from the OPTION\'s start (option Year 1 → 0, ' +
+  'Year 2 → 12, Year 3 → 24 …, NOT from the lease start), amount = the figure EXACTLY as ' +
+  'printed, and period = its basis. NEVER multiply — "$35,238.17 per month" is amount ' +
+  '35238.17, period per_month (we do all math in code). Leave new_rent null unless a flat ' +
+  'annual figure is also printed. Use an EMPTY rent_schedule array for a flat-rent, ' +
+  'percent-formula, or unpriced ("to be negotiated") option. ' +
   'notice_by_date MUST be a specific calendar date in YYYY-MM-DD form. If the deadline is ' +
   'stated only relative to another event (e.g. "180 days prior to the expiration of the ' +
   'Original Term"), you CANNOT compute a real date — set notice_by_date to null and put ' +
@@ -702,6 +727,29 @@ Deno.serve(async (req) => {
             source_quote: estAnnuals.quotes[charge] ?? '',
             page: null,
           };
+        }
+      }
+    }
+
+    // Renewal/extension OPTION rent tables: when an option prices its term year-by-year
+    // (e.g. Busey's Exhibit D — five monthly installments stepping up over a 5-year option),
+    // the model returned RAW figures in rent_schedule and WE annualize here — the same
+    // never-let-the-model-multiply rule as the base schedule (the model's prose annualizations
+    // in `notes` have been wrong by hundreds of dollars). Runs whether or not the supplement
+    // call succeeded. Fills new_rent from the option's FIRST year when it wasn't a flat figure,
+    // and keeps the normalized rows on the option (persisted in extraction_raw; the save path
+    // reads them to lay dated "pending renewal" steps past the committed term).
+    {
+      const optSqft = (Number((parsed as any)?.square_footage?.value) || 0) ||
+                      (Number((supp as any)?.square_footage?.value) || 0);
+      const options = (parsed as any)?.renewal_options;
+      if (Array.isArray(options)) {
+        for (const opt of options) {
+          if (!opt || typeof opt !== 'object') continue;
+          const sched = annualizeOptionSchedule(opt.rent_schedule, optSqft);
+          if (!sched) continue;
+          opt.rent_schedule = sched.rows; // normalized: offset-zeroed, deduped, +annual
+          if (opt.new_rent == null) opt.new_rent = sched.firstYearAnnual;
         }
       }
     }

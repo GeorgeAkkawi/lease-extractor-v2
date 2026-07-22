@@ -54,6 +54,48 @@ export function estimateAnnualsFrom(estimates, sqft) {
   return out;
 }
 
+// A renewal/EXTENSION option that prices its term with a year-by-year rent table (e.g.
+// Busey's Exhibit D: five monthly installments stepping up over the 5-year option). The
+// model reads each period's RAW figure + basis (same never-let-the-model-multiply rule as
+// the base schedule); we annualize here to the cent. Offsets are months from the OPTION
+// start (Year 1 → 0, Year 2 → 12 …). Returns
+//   { rows: [{ months_from_option_start, amount, period, annual }], firstYearAnnual }
+// sorted by offset, or null when nothing is usable (empty/flat/percent/unpriced option, or
+// only $/SF rows with no square footage). Pure — shared by the edge fn and its unit test.
+export function annualizeOptionSchedule(rentSchedule, sqft) {
+  const asOffset = (v) => (v == null || v === '' || !isFinite(Number(v)) ? 0 : Math.trunc(Number(v)));
+  const raw = (Array.isArray(rentSchedule) ? rentSchedule : []).map((r) => ({
+    months: asOffset(r?.months_from_option_start),
+    period: r?.period,
+    amount: r?.amount,
+    annual: annualRentFrom(r?.amount, r?.period, sqft),
+  }));
+  // Same period stated two ways (a $/SF rate AND a plain dollar) → ONE period, not a step.
+  // Keep the most reliable row: resolvable over unresolvable, plain-dollar over $/SF.
+  const rank = (r) => {
+    if (r.annual == null) return 2;
+    return r.period === 'per_sqft_year' || r.period === 'per_sqft_month' ? 1 : 0;
+  };
+  const bestByOffset = new Map();
+  for (const r of raw) {
+    const cur = bestByOffset.get(r.months);
+    if (!cur || rank(r) < rank(cur)) bestByOffset.set(r.months, r);
+  }
+  const usable = [...bestByOffset.values()].filter((r) => r.annual != null);
+  if (!usable.length) return null;
+  usable.sort((a, b) => a.months - b.months);
+  // Normalize offsets so the earliest period is 0 — defends against a model that measured
+  // from the LEASE start (e.g. 120/132/…) instead of the option start.
+  const minOff = usable[0].months;
+  const rows = usable.map((r) => ({
+    months_from_option_start: r.months - minOff,
+    amount: r.amount,
+    period: r.period,
+    annual: r.annual,
+  }));
+  return { rows, firstYearAnnual: rows[0].annual };
+}
+
 // A prose rent-escalation FORMULA ("base rent increases 2% annually") with no printed
 // period-by-period table. The model reads only the PERCENT and where the formula stops;
 // we synthesize one relative step per lease year here — same compound, round-each-step

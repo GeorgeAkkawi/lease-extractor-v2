@@ -32,9 +32,22 @@ const termLabel = (m) => {
 // "+X%/yr" on a small sub-line so the numeric column stays clean. When the lease
 // states no rent for the option, we say so and prompt for it at renewal. The base is
 // the rent projected to the term end (estimateBase) — what a renewal steps up from —
-// falling back to today's base rent.
-function renewalRent(r, base) {
-  if (r.new_rent != null) return { main: money0(r.new_rent), sub: null };
+// falling back to today's base rent. `pendingSteps` are the option-period rent steps
+// sitting past the committed term end (the muted "pending renewal" group): when this
+// option's flat rent OPENS a multi-year climb, show where it steps up to.
+function renewalRent(r, base, pendingSteps) {
+  if (r.new_rent != null) {
+    const main = money0(r.new_rent);
+    if (Array.isArray(pendingSteps) && pendingSteps.length >= 2) {
+      const first = Number(pendingSteps[0]?.new_base_rent) || 0;
+      const startsHere = Math.abs(first - Number(r.new_rent)) <= Math.max(5, Number(r.new_rent) * 0.0025);
+      if (startsHere) {
+        const top = Math.max(...pendingSteps.map((s) => Number(s.new_base_rent) || 0));
+        if (top > Number(r.new_rent)) return { main, sub: `steps to ${money0(top)}` };
+      }
+    }
+    return { main, sub: null };
+  }
   const pct = Number(r.annual_escalation_pct) || 0;
   if (pct > 0) {
     const b = Number(base) || 0;
@@ -44,7 +57,7 @@ function renewalRent(r, base) {
   return { main: 'Not listed', sub: 'enter at renewal' };
 }
 
-export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
+export default function RenewalOptionsEditor({ leaseId, lease, escalations = [], estimateBase }) {
   const base = estimateBase != null ? estimateBase : Number(lease?.base_rent) || 0;
   const qc = useQueryClient();
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
@@ -59,6 +72,13 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
   const termEnd = lease?.lease_termination_date || null;
   const isLapsed = (r) => r.status === 'pending' && termEnd && termEnd < todayIso;
   const lapsedExists = renewals.some(isLapsed);
+
+  // Rent steps sitting PAST the committed term end are the option-period "pending renewal"
+  // schedule (an option priced year-by-year). Sorted earliest-first, they let an option's
+  // flat first-year rent show where it climbs to over the option term.
+  const pendingSteps = (escalations || [])
+    .filter((e) => e.effective_date && termEnd && String(e.effective_date) > String(termEnd))
+    .sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)));
 
   const [form, setForm] = useState({ option_label: '', notice_by_date: '', term_months: '', new_rent: '', annual_escalation_pct: '', notes: '' });
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -151,7 +171,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, estimateBase }) {
           <table style={{ minWidth: 0 }}>
             <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => { const lapsed = isLapsed(r); const badge = statusBadge(r.status, lapsed); const rent = renewalRent(r, base); return (
+              {renewals.map((r) => { const lapsed = isLapsed(r); const badge = statusBadge(r.status, lapsed); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); return (
                 <Fragment key={r.id}>
                 <tr>
                   <td>{r.option_label || '—'}</td>

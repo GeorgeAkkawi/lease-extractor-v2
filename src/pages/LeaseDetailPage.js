@@ -414,7 +414,7 @@ export default function LeaseDetailPage() {
           A renewal option is the tenant's <strong>right</strong> to extend — it never changes your term until you confirm
           the tenant is exercising it.
         </p>
-        <RenewalOptionsEditor leaseId={leaseId} lease={lease} estimateBase={rentAtTermEnd} />
+        <RenewalOptionsEditor leaseId={leaseId} lease={lease} escalations={escalations} estimateBase={rentAtTermEnd} />
 
         <div className="no-ren">
           {lease.no_renewal_option ? (

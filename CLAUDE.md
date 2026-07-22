@@ -75,6 +75,75 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-22** — **A renewal option priced YEAR BY YEAR now shows its projected rent (was "Not listed"): the
+  extractor reads the option's own rent table, CODE annualizes it, the option's new_rent auto-fills, and the
+  stepped rents show as a muted "pending renewal" group** (George, after re-uploading the Busey Bank scan post
+  whole-document-caching fix: "the cashed lease contains the lease renewal option and also the rent escalation
+  terms for that renewal option. But for some reason, the renewal options tab for that lease doesn't show the
+  new projected rent for that renewal option. Can you find out why its not extracting correctly?"). Deployed:
+  `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `9da555ab`, plus a
+  one-time live repair of the existing Busey lease. **$0 recurring** (same paid per-lease read, one extra field —
+  no new model call), **NO DB migration** (the option schedule rides existing rent_escalations + the option's
+  own new_rent; renewal_options has no schedule column and needs none), no tenant emails. Tests **409/409** (was
+  394 — +15 renewalOptionSchedule).
+  - **Root cause (live-verified, NOT a reading failure).** The whole-document caching fix worked — the Busey
+    lease cached in full (53,325 chars incl. the page-32 renewal option AND the Exhibit E rules & regs), and the
+    AI DID read the option. But the option's rent is a **year-by-year schedule** (Exhibit D: five monthly
+    installments, $35,238.17/mo in 2031-32 stepping to $38,896.34/mo in 2035-36), which fits neither of the two
+    shapes the extraction schema offered per option — `new_rent` (one flat annual) or `annual_escalation_pct`
+    (a percent/yr) — so the model nulled both and dumped the schedule as prose in `notes`. `renewalRent()` needs
+    one of them non-null → "Not listed — enter at renewal". And `reconcileRenewalOptions` couldn't self-heal:
+    zero `rent_escalations` steps existed past the committed term (option rents are correctly kept out of the
+    committed schedule). **Bonus proof of the never-let-the-model-multiply rule:** the model's own prose
+    annualizations in `notes` were WRONG on 3 of the 5 years (year 5: it wrote $467,357.08; the printed
+    $38,896.34 × 12 = $466,756.08 — $601 off).
+  - **Fix — give the option schedule a structured home; CODE does the math; reuse the existing renewal
+    machinery.** (1) **Schema + prompt** (`extract-lease/index.ts`): a new per-option `rent_schedule` array —
+    items `{months_from_option_start:int, amount:number, period:enum}`, all-REQUIRED single-typed → **ZERO cost
+    against the 16-union structured-output ceiling** (the `expense_estimates` precedent; the MAIN SCHEMA sits at
+    exactly 16/16, so this was the only safe shape). Prompt: one entry per option year, offset from the OPTION
+    start, amount EXACTLY as printed, never multiplied; empty array for flat/percent/unpriced options. (2)
+    **Annualize in code** (`_shared/rentSchedule.js` new `annualizeOptionSchedule`): `annualRentFrom` per row,
+    drop unusable ($/SF w/o sqft, unknown basis), dedupe same-offset rows (plain-dollar wins), sort, normalize
+    offsets to 0. (3) **Edge merge** (`extract-lease/index.ts`, runs even if the supplement call failed): fills
+    each option's `new_rent` from its first option year when null, keeps the normalized rows on the option
+    (persisted in `extraction_raw`). (4) **Save path** (`api.js` new `buildRenewalScheduleSteps`, wired into
+    `LeaseNewPage.createFromAi`): lays DATED `scheduled` rent_escalations for the option years — option 1's
+    window starts at **termEnd + 1 day** (load-bearing: `portfolio.js` gates un-exercised option rent with
+    `d > end` while every other gate uses `>=`, so a step ON the term end would leak into Ask-AI facts), chained
+    per option, **past-window guard** (an already-begun window synthesizes nothing — imported clause-rents must
+    never read as "exercised"), ±45-day dedupe vs printed steps. These steps are gated everywhere (applyDueEsc
+    skips them, ledger/rent-roll/`currentPhase` ignore them) until the option is confirmed, which extends the
+    term and releases them. **No changes needed** to `rollLeaseIntoRenewal` or `reconcileRenewalOptions` (the
+    ±45d dedupe + evidence gate already cover the Busey shape — verified by a Plan agent + tests).
+  - **Small extras:** notice-parser now handles "twelve (12) months prior" (months, digits-in-parens) not just
+    "180 days prior" (`reconcileRenewalOptions`); a "steps to $X" sub-line on the option row when its flat rent
+    opens a multi-year climb (`RenewalOptionsEditor` + `LeaseDetailPage` passes escalations); a review-screen
+    line noting the captured option rent (`LeaseNewPage` SchedulePreview).
+  - **Files:** `supabase/functions/extract-lease/index.ts` (schema + prompt + edge merge),
+    `supabase/functions/_shared/rentSchedule.js` (`annualizeOptionSchedule`), `src/lib/api.js`
+    (`buildRenewalScheduleSteps` + notice-months regex), `src/pages/LeaseNewPage.js` (createFromAi wiring +
+    preview), `src/components/RenewalOptionsEditor.js` + `src/pages/LeaseDetailPage.js` (steps-to sub-line),
+    `src/lib/__tests__/renewalOptionSchedule.test.js` (new — 15 tests: cent-exact Busey annuals, $/SF, offset
+    normalization, dedupe, window chaining + past-window guard + ±45d + null-termEnd, full DEMO import replay,
+    future/past confirm).
+  - **Live repair (existing Busey lease `212c46fa`):** set the option's `new_rent = 422858.04` + `notice_by_date
+    = 2030-08-31` (12 months before 2031-08-31), and inserted 5 gated `scheduled` steps from the PRINTED
+    monthlies ×12 (NOT the model's wrong prose figures): 2031-09-01 → 422,858.04 · 2032 → 433,429.44 · 2033 →
+    444,265.20 · 2034 → 455,371.80 · 2035 → 466,756.08, each behind a not-exists ±45d guard. The lease itself is
+    untouched (base_rent 364,629.12, term end 2031-08-31, active).
+  - **Verified:** unit **409/409** (`vitest run`); `vite build` compiles (795 modules); `extract-lease` deployed
+    clean, union count unchanged (16/16 — the new array adds zero), unauth POST → **401** (RLS-gated, not a
+    schema 500); frontend live (amlakre.com + www + workers.dev all 200); live DB read-back shows the option +
+    5 gated steps, and the property's 2026 `v_property_totals` revenue is UNCHANGED ($364,629.12 — the future
+    option rent does not leak into money surfaces). **George: hard-refresh (Cmd+Shift+R) → open the Busey lease →
+    Renewal options now reads "$422,858 · steps to $466,756", and the Rent escalations list shows the five
+    2031–2035 steps under the muted "Pending renewal — if renewed" group.** Re-uploading a lease that prices its
+    option year-by-year now captures the projected rent automatically (the definitive schema smoke-test).
+  - **Flag for George (separate from this fix):** the PRIMARY-term 2028-09-01 rent step reads **$382,664.68** —
+    LOWER than 2027's $383,088.48 (2029 is $392,665.68). Likely a 382↔392 scan misread, but the primary rent
+    table isn't in the cached transcript to verify. Eyeball the printed table; one-line data fix if it's wrong.
+
 - **2026-07-21** — **A big scanned lease now caches its ENTIRE text, not just the first ~15 pages: the scan
   transcription is split into page-range chunks read in PARALLEL** (George, after the first-15-pages fix below:
   "what if there's important information on the other pages? … I just reuploaded it in the renewal option, which

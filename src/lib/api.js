@@ -498,6 +498,68 @@ export function buildRenewals(renewals) {
   });
 }
 
+// Turn AI-extracted renewal OPTION rent schedules into DATED, scheduled rent_escalations
+// that sit PAST the committed term end — so an option priced YEAR BY YEAR (e.g. Busey's
+// Exhibit D, five stepped installments over a 5-year option) shows its projected rent under
+// the lease page's muted "Pending renewal — if renewed" group instead of "Not listed". These
+// steps are gated everywhere by the committed term end (applyDueEscalations skips them, the
+// ledger / rent-roll / currentPhase ignore them, Ask-AI facts exclude them) until the option
+// is actually confirmed — confirmRenewal extends the term, which releases them onto the
+// schedule on their own dates. buildRenewals deliberately does NOT store these on the
+// renewal_options row (no schedule column → no migration); the option's own new_rent (filled
+// by the edge fn from the first option year) is what the Renewal Options tab reads.
+//
+//   renewalOptions — the extraction's renewal_options; an option may carry a normalized
+//                    rent_schedule [{ months_from_option_start, annual }] (edge-annualized)
+//   termEnd        — the lease's committed termination date (YYYY-MM-DD) or null
+//   existingSteps  — escalation rows already built for this lease (buildEscalations output),
+//                    so a boundary a printed table already covers is never double-booked
+//   today          — for the past-window guard
+// Returns rent_escalations-insert rows { effective_date, escalation_type:'manual',
+// escalation_value:null, new_base_rent }, or [] when there's nothing to add.
+export function buildRenewalScheduleSteps(renewalOptions, termEnd, existingSteps = [], today = new Date()) {
+  const end = isoDateOrNull(termEnd);
+  if (!end) return []; // no committed term end → can't place option windows (option still shows its new_rent)
+  const options = (Array.isArray(renewalOptions) ? renewalOptions : []).filter(
+    (o) => o && Array.isArray(o.rent_schedule) && o.rent_schedule.length
+  );
+  if (!options.length) return [];
+
+  // Option 1's window begins the day AFTER the committed term ends. The +1 day is load-
+  // bearing: portfolio.js gates un-exercised option rent with `d > end` while every other
+  // gate uses `>=`, so a step dated exactly ON the term end would leak into Ask-AI facts.
+  const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return localDateIso(d); };
+  const daysApart = (a, b) => Math.round(Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+  const todayIso = localDateIso(today);
+  const dated = (Array.isArray(existingSteps) ? existingSteps : []).filter((e) => e && e.effective_date);
+  const hasStepNear = (iso) => dated.some((e) => daysApart(String(e.effective_date), iso) <= 45);
+
+  const ordered = [...options].sort(cmpRenewal);
+  const out = [];
+  const emitted = []; // dates already emitted this batch (dedupe chained options too)
+  let windowStart = addDays(end, 1);
+  for (const opt of ordered) {
+    // Past-window guard: if this option's window has already begun, imported clause-rents
+    // must NOT read as evidence the tenant exercised it — bail (matches
+    // reconcileRenewalOptions' applied-marking semantics; a past option is caught up via
+    // rollLeaseIntoRenewal, not synthesized here).
+    if (windowStart <= todayIso) break;
+    const scheduleRows = opt.rent_schedule
+      .map((r) => ({ off: Math.trunc(Number(r?.months_from_option_start) || 0), annual: Number(r?.annual) }))
+      .filter((r) => isFinite(r.annual) && r.annual > 0)
+      .sort((a, b) => a.off - b.off);
+    for (const r of scheduleRows) {
+      const d = addMonths(windowStart, r.off);
+      if (!d) continue;
+      if (hasStepNear(d) || emitted.some((s) => daysApart(s, d) <= 45)) continue;
+      out.push({ effective_date: d, escalation_type: 'manual', escalation_value: null, new_base_rent: r.annual });
+      emitted.push(d);
+    }
+    windowStart = addMonths(windowStart, Number(opt.term_months) || 12); // chain the next option's window
+  }
+  return out;
+}
+
 // ---- Rent abatements (free / reduced base-rent windows) ---------------------
 // A lease or addendum can grant free or reduced BASE rent for a period. The window
 // math lives in src/lib/abatement.js, mirrored by abatement_credit() in SQL; CAM /
@@ -2543,8 +2605,13 @@ export async function reconcileRenewalOptions(lease, today = new Date()) {
     const patch = {};
     if (opt.new_rent == null && evidenceRent != null) patch.new_rent = evidenceRent;
     if (opt.notice_by_date == null) {
-      const m = /(\d+)\s*days?\s*prior/i.exec(opt.notes || '');
-      if (m && termEnd) patch.notice_by_date = addDays(termEnd, -Number(m[1])); // N days before the term then in effect
+      // "180 days prior" OR "twelve (12) months prior" (digits may sit inside parens) →
+      // N days/months before the term then in effect.
+      const m = /(\d+)\s*\)?\s*(day|month)s?\s*prior/i.exec(opt.notes || '');
+      if (m && termEnd) {
+        const n = Number(m[1]);
+        patch.notice_by_date = /month/i.test(m[2]) ? addMonths(termEnd, -n) : addDays(termEnd, -n);
+      }
     }
     if (Object.keys(patch).length) await updateRenewal(opt.id, patch);
     break;
