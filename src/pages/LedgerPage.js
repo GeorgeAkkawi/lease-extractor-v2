@@ -9,6 +9,7 @@ import {
   markMonthPaid,
   unmarkMonthPaid,
   markMonthPaidAllTenants,
+  markMonthsPaidAllTenants,
   listStatementImports,
   undoStatementImport,
   listSnapshots,
@@ -95,6 +96,11 @@ export default function LedgerPage() {
     },
   });
 
+  // Per-cell pending set (`${leaseId}:${m}`) so ONE click disables only its own box —
+  // the whole grid stays clickable (parallel marks work), which is the speed fix.
+  const [pendingCells, setPendingCells] = useState(() => new Set());
+  const cellKey = (leaseId, m) => `${leaseId}:${m}`;
+
   // Optimistic paint: adjust the row's raw payments (what the allocation derives from)
   // so the click repaints instantly while the write settles.
   const paint = (old, leaseId, month, action, amount) =>
@@ -112,18 +118,24 @@ export default function LedgerPage() {
     });
 
   const cellMut = useMutation({
+    // Every write carries a real amount (open→full owed, gap→the residual) so markMonthPaid
+    // skips the schedule rebuild AND the optimistic paint moves a real figure, not undefined.
     mutationFn: ({ leaseId, month, action, amount }) =>
       action === 'unmark'
         ? unmarkMonthPaid(leaseId, year, month)
-        : markMonthPaid(leaseId, propId, year, month, action === 'gap' ? { amount } : {}),
+        : markMonthPaid(leaseId, propId, year, month, { amount }),
     onMutate: async ({ leaseId, month, action, amount }) => {
+      setPendingCells((s) => new Set(s).add(cellKey(leaseId, month)));
       await qc.cancelQueries({ queryKey: rollKey });
       const prev = qc.getQueryData(rollKey);
       qc.setQueryData(rollKey, (old) => paint(old, leaseId, month, action, amount));
       return { prev };
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(rollKey, ctx.prev); setNote('Could not save that change — please try again.'); },
-    onSettled: settle,
+    onSettled: (_d, _e, vars) => {
+      setPendingCells((s) => { const n = new Set(s); n.delete(cellKey(vars.leaseId, vars.month)); return n; });
+      settle();
+    },
   });
   const allMut = useMutation({
     mutationFn: (month) => markMonthPaidAllTenants(propId, year, month),
@@ -134,16 +146,13 @@ export default function LedgerPage() {
     onSettled: settle,
   });
   const catchUpAll = useMutation({
-    mutationFn: async (months) => {
-      let paid = 0;
-      for (const m of months) { const res = await markMonthPaidAllTenants(propId, year, m); paid += res.paid; }
-      return paid;
-    },
-    onSuccess: (paid) => setNote(paid ? `Recorded ${paid} tenant-month${paid === 1 ? '' : 's'} of rent.` : 'Everyone was already caught up.'),
+    // One round-trip for every due month × every tenant (the plural bulk), not a serial loop.
+    mutationFn: (months) => markMonthsPaidAllTenants(propId, year, months),
+    onSuccess: (res) => setNote(res.paid ? `Recorded ${res.paid} tenant-month${res.paid === 1 ? '' : 's'} of rent.` : 'Everyone was already caught up.'),
     onError: () => setNote('Could not catch up the ledger — please try again.'),
     onSettled: settle,
   });
-  const busy = cellMut.isPending || allMut.isPending || catchUpAll.isPending;
+  const bulkBusy = allMut.isPending || catchUpAll.isPending;
 
   // Module switched off → back to the property's Financials page.
   if (!featuresLoading && !isOn('ledger')) {
@@ -184,7 +193,9 @@ export default function LedgerPage() {
   };
   const behindTotal = derived.reduce((acc, { summary }) => acc + summary.monthsBehind, 0);
   const totalCollected = derived.reduce((s, { summary }) => s + summary.collected, 0);
-  const totalOwes = derived.reduce((s, { summary }) => s + summary.owesToDate, 0);
+  const totalProjected = derived.reduce((s, { summary }) => s + summary.projected, 0);
+  const totalCredit = derived.reduce((s, { summary }) => s + (summary.credit > 0.05 ? summary.credit : 0), 0);
+  const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : null);
 
   if (importDoc) {
     return (
@@ -232,7 +243,7 @@ export default function LedgerPage() {
           <strong>Ledger · FY {year}</strong>
           <span className="row" style={{ gap: 8 }}>
             {throughM > 0 && behindTotal > 0 && (
-              <button type="button" className="ghost" disabled={busy} onClick={catchUp} title={`Record every unpaid month that has come due, for all tenants, through ${MONTHS[throughM - 1]}`}>
+              <button type="button" className="ghost" disabled={bulkBusy} onClick={catchUp} title={`Record every unpaid month that has come due, for all tenants, through ${MONTHS[throughM - 1]}`}>
                 {catchUpAll.isPending ? 'Recording…' : `✓ Mark everyone paid through ${MONTHS[throughM - 1]}`}
               </button>
             )}
@@ -240,7 +251,7 @@ export default function LedgerPage() {
           </span>
         </div>
         <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 12 }}>
-          <strong>✓</strong> collected · <strong>◐</strong> partly collected · amber months have come due and aren't covered · <strong>—</strong> before the tenant moved in · <strong>Free</strong> abated.
+          <strong>✓</strong> paid — recording a payment marks the month paid whatever the amount; any gap vs the projection shows up in <em>Collected</em> and the year-end reconcile · dashed <strong>✓</strong> covered by a lump payment · <strong>◐</strong> partly covered by a lump · amber months have come due and aren't paid · <strong>—</strong> before the tenant moved in · <strong>Free</strong> abated.
           Click a box to record that month (or undo). A lump payment with no month recorded fills the earliest months first.
           {prevCollection?.rate != null && (
             <> · <Link to={`/history/${corpId}/${propId}`} className="rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link></>
@@ -259,17 +270,19 @@ export default function LedgerPage() {
                   <th key={ml} className={isCurrentFy && i + 1 === curM ? 'rr-current' : undefined}>
                     <div className="rr-mhead">
                       <span>{ml}</span>
-                      <button type="button" className="ghost rr-all" disabled={busy} onClick={() => markAll(i + 1)} title={`Mark ${ml} paid for all tenants`}>✓ all</button>
+                      {i + 1 <= throughM && (
+                        <button type="button" className="ghost rr-all" disabled={bulkBusy} onClick={() => markAll(i + 1)} title={`Mark ${ml} paid for all tenants`}>✓ all</button>
+                      )}
                     </div>
                   </th>
                 ))}
                 <th className="rr-owes">Collected</th>
-                <th className="rr-owes">Owes</th>
               </tr>
             </thead>
             <tbody>
               {derived.map(({ r, alloc, comp, summary }) => {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
+                const rate = pct(summary.collected, summary.projected);
                 // Representative month for the identity sub-line: the current month when
                 // it's a normal billed month, else the first owed non-free month.
                 let repM = isCurrentFy && (alloc.owed[curM - 1] || 0) > 0 && !r.schedule?.[curM]?.abated ? curM : 0;
@@ -297,7 +310,9 @@ export default function LedgerPage() {
                       const owedM = alloc.owed[i];
                       const state = alloc.states[i];
                       const covered = alloc.coverage[i];
-                      const tagged = !!r.byMonth[m];
+                      const settledM = alloc.settled[i];
+                      const receivedM = alloc.received[i];
+                      const pending = pendingCells.has(cellKey(r.lease_id, m));
                       if (s?.outsideTerm) {
                         return <td key={m}><span className="rr-cell outside" title={`${ml}: before this lease began`}>—</span></td>;
                       }
@@ -308,58 +323,56 @@ export default function LedgerPage() {
                       const monthLine = `${ml}: ${money(owedM)} owed (${parts})${s?.abated ? ' — base rent abated' : ''}`;
                       const started = year < curY || (isCurrentFy && m <= curM);
                       if (state === 'covered') {
-                        if (tagged) {
+                        // A TAGGED month is settled — "paid = paid". It reads ✓ whatever the amount;
+                        // when what came in differs from the projection, show that received figure.
+                        if (settledM) {
+                          const off = Math.abs(receivedM - owedM) > 0.05;
                           return (
                             <td key={m}>
-                              <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}`} disabled={busy}
+                              <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}`} disabled={pending}
                                 onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
-                                title={`${monthLine} — collected · click to undo`}>✓</button>
+                                title={`${ml} paid — received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} · click to undo`}>
+                                ✓{off && <span className="rr-amt">{money(receivedM)}</span>}
+                              </button>
                             </td>
                           );
                         }
+                        // Covered by an untagged lump — inert (managed on the lease's payments panel).
                         return (
                           <td key={m}>
-                            <span className="rr-cell paid pool" title={`${monthLine} — covered by an untagged payment · manage it on the lease's Invoices & payments`}>✓</span>
+                            <span className="rr-cell paid pool" title={`${monthLine} — covered by a lump payment · manage it on the lease's Invoices & payments`}>✓</span>
                           </td>
                         );
                       }
                       if (state === 'partial') {
+                        // Only a pooled lump produces a partial now (a tag always settles). One glyph,
+                        // one action: click records the gap so the month reads paid.
                         const gap = round2(owedM - covered);
-                        if (tagged) {
-                          return (
-                            <td key={m}>
-                              <button type="button" className="rr-cell partial" disabled={busy}
-                                onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
-                                title={`${monthLine} — ${money(covered)} collected, ${money(gap)} open · click to remove the recorded payment(s)`}>◐</button>
-                            </td>
-                          );
-                        }
                         return (
                           <td key={m}>
-                            <button type="button" className="rr-cell partial" disabled={busy}
+                            <button type="button" className="rr-cell partial" disabled={pending}
                               onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'gap', amount: gap })}
-                              title={`${monthLine} — ${money(covered)} covered by an untagged payment · click to record the remaining ${money(gap)}`}>◐</button>
+                              title={`${monthLine} — ${money(covered)} covered by a lump payment · click to record the remaining ${money(gap)}`}>◐</button>
                           </td>
                         );
                       }
                       const late = started;
                       return (
                         <td key={m}>
-                          <button type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}`} disabled={busy}
-                            onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'mark' })}
+                          <button type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}`} disabled={pending}
+                            onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'mark', amount: round2(owedM) })}
                             title={`${late ? 'Overdue — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—</button>
                         </td>
                       );
                     })}
-                    <td className="rr-owes"><strong>{money(summary.collected)}</strong></td>
                     <td className="rr-owes">
-                      {summary.credit > 0.05 ? (
-                        <span className="badge warn" title="Collected more than the year bills — owed back to the tenant">credit {money(summary.credit)}</span>
-                      ) : summary.owesToDate > 0.05 ? (
-                        <strong className="rr-behind" title={`${summary.monthsBehind} month${summary.monthsBehind === 1 ? '' : 's'} behind`}>{money(summary.owesToDate)}</strong>
-                      ) : (
-                        <span className="pos">paid ✓</span>
-                      )}
+                      <div className="rr-collected"><strong>{money(summary.collected)}</strong> <span className="muted">of {money(summary.projected)}</span></div>
+                      <div className="rr-progress"><span style={{ width: `${Math.min(100, rate ?? 0)}%` }} /></div>
+                      <div className="rr-collected-sub">
+                        <span className="muted">{rate != null ? `${rate}%` : '—'}</span>
+                        {summary.credit > 0.05 && <span className="rr-credit" title="Collected more than projected — owed back to the tenant">credit {money(summary.credit)}</span>}
+                        {summary.monthsBehind > 0 && <span className="rr-behind" title="Due months with nothing collected yet">{summary.monthsBehind} mo behind</span>}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -374,15 +387,21 @@ export default function LedgerPage() {
                     <td key={ml}><span className="rr-cell vacant" title={`${ml}: unleased space — no rent`}>—</span></td>
                   ))}
                   <td className="rr-owes muted">—</td>
-                  <td className="rr-owes muted">—</td>
                 </tr>
               )}
               {derived.length > 1 && (
                 <tr className="rr-totals">
                   <td className="muted">All tenants</td>
                   <td colSpan={12} />
-                  <td className="rr-owes"><strong>{money(totalCollected)}</strong></td>
-                  <td className="rr-owes">{totalOwes > 0.05 ? <strong className="rr-behind">{money(totalOwes)}</strong> : <span className="pos">paid ✓</span>}</td>
+                  <td className="rr-owes">
+                    <div className="rr-collected"><strong>{money(totalCollected)}</strong> <span className="muted">of {money(totalProjected)}</span></div>
+                    <div className="rr-progress"><span style={{ width: `${Math.min(100, pct(totalCollected, totalProjected) ?? 0)}%` }} /></div>
+                    <div className="rr-collected-sub">
+                      <span className="muted">{pct(totalCollected, totalProjected) != null ? `${pct(totalCollected, totalProjected)}%` : '—'}</span>
+                      {totalCredit > 0.05 && <span className="rr-credit">credit {money(totalCredit)}</span>}
+                      {behindTotal > 0 && <span className="rr-behind">{behindTotal} mo behind</span>}
+                    </div>
+                  </td>
                 </tr>
               )}
             </tbody>

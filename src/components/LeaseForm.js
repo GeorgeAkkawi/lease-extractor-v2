@@ -71,7 +71,8 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
   // With no square footage typed, the figure is taken as the annual $ directly.
   function estAnnual(v) {
     const n = numOrNull(v);
-    if (n == null) return null;
+    // Blank OR zero/negative → no estimate (bill actuals); never store a 0.
+    if (!(n > 0)) return null;
     const sqft = numOrNull(form.square_footage);
     return sqft > 0 ? Math.round(n * sqft * 100) / 100 : n;
   }

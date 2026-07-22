@@ -31,20 +31,24 @@ function renderLedger(propId = 'prop-1') {
 beforeEach(() => cleanup());
 
 describe('LedgerPage — the rent ledger grid', () => {
-  it('renders the grid with mixed coverage states and the Collected/Owes columns', async () => {
+  it('renders the grid with mixed coverage states and the Collected-of-projected column', async () => {
     renderLedger();
     await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
     expect(screen.getByText('City Dental')).toBeTruthy();
-    // Column headers.
-    expect(screen.getByText('Collected')).toBeTruthy();
-    expect(screen.getByText('Owes')).toBeTruthy();
-    // Bright Coffee's untagged $78,000 lump settles its whole year → paid ✓.
-    expect(screen.getAllByText('paid ✓').length).toBeGreaterThan(0);
+    // Single Collected column now — the Owes column is gone.
+    expect(screen.getByRole('columnheader', { name: 'Collected' })).toBeTruthy();
+    expect(screen.queryByRole('columnheader', { name: 'Owes' })).toBeNull();
+    // Bright Coffee's untagged $78,000 lump settles its whole year → ✓ cells.
+    expect(screen.getAllByText('✓').length).toBeGreaterThan(0);
+    // Collected reads "$X of $Y": Bright $78,000.00 of $78,000.00 → 100%.
     expect(screen.getByText('$78,000.00')).toBeTruthy();
-    // City Dental: Jan + Feb tagged (full 9,150 months), $4,000 untagged partial → a ◐ cell exists.
+    expect(screen.getByText('of $78,000.00')).toBeTruthy();
+    expect(screen.getByText('100%')).toBeTruthy();
+    // City Dental: Jan + Feb tagged (full months), $4,000 untagged partial → a ◐ cell,
+    // and collected $22,300.00 of the $109,800.00 projected.
     expect(screen.getAllByText('◐').length).toBeGreaterThan(0);
-    // Its collected-so-far figure: 9,150 + 9,150 + 4,000.
     expect(screen.getByText('$22,300.00')).toBeTruthy();
+    expect(screen.getByText('of $109,800.00')).toBeTruthy();
   });
 
   it('shows the base | CAM&tax component sub-line on each tenant', async () => {

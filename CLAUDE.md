@@ -75,6 +75,84 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-22** — **Rent Ledger made intuitive: "paid = paid" checkmarks, a Collected-of-total column with a
+  red "N months behind" badge (the Owes column is gone), forward-only estimates, faster clicks, and self-
+  explanatory wording** (George, voice memo on fakkawi3's account: the ledger seemed to "auto-calculate partial
+  rent by what the tenant owes from their common tax", it's "super slow when I press the buttons", "a couple
+  checkboxes that don't match", "the collected part is a bit weird … I don't know what the total amount is", "the
+  Owes column just doesn't really make sense", and "explain … where are these numbers coming from". Via
+  AskUserQuestion he picked all four recommended options: **Paid = paid · Forward-only estimates · Collected-of-
+  total column · clear Ricki's $0 estimate**). Deployed: frontend Cloudflare version `8d4f941a`, demo worker
+  `1cbae978`. **Frontend + `src/lib` only — $0, NO DB migration, no edge functions, no tenant emails; the planned
+  live data repair turned out MOOT (see below).** Tests **415/415** (was 409 — +6: settled-month model +
+  bulk-skip).
+  - **What George saw + the diagnosis (all confirmed on live data + code).** (1) **Surprise ◐ partials:** every
+    Pershing tenant's Jan–Jul payments are tagged at the OLD billed monthly (D&D $3,953, Michuacana $4,794.83…)
+    while the grid re-priced each month from the CURRENT lease + estimate (D&D $6,109 — his mid-year $25,872
+    estimate re-priced the whole year retroactively), so 6 of 9 genuinely-paid months read ◐. (2) **Phantom ✓
+    ("checkboxes that don't match"):** a lease with `est_cam_annual=0 AND est_tax_annual=0` stored (the estimate
+    editor saved a 0, not null, on an empty/zero input) → projected base-only vs the higher payments → the tagged
+    **EXCESS rolled into the pool** and painted ✓ on future months never marked. (3) **Owes column** literally
+    duplicated the per-tenant breakdown's "owes $X" sub-line, and "owes" there (unpaid rent) collided with the
+    Difference column's "tenant owes" (year-end CAM true-up) — one word, two meanings. (4) **No denominator:** the
+    Collected figure had nothing to be relative to. (5) **Slow:** the optimistic paint was a no-op for the common
+    open→mark click (it pushed `{amount: undefined}`), one pending click disabled the WHOLE grid, and catch-up was
+    a serial loop of full-roll reads.
+  - **The model change (the core) — `src/lib/ledger.js` "settled month".** `allocatePayments` now: a tag
+    **SETTLES** its month at the received amount (`settled = tagged > 0`), reads ✓ whatever the amount, and its
+    EXCESS **no longer rolls into the pool** (that rollover WAS the phantom-✓, and killing it is what makes a
+    mid-year estimate forward-only). Untagged money still pools and tops up each month's **residual** need (so a
+    partial completes and the bulk "mark through Dec" still settles the year to the cent — a subtlety caught in
+    TDD: skipping settled months entirely orphaned an untagged partial and broke the total). New
+    `coverage = settled ? owed : min(owed, poolDraw)` (bill-shaped → a settled month reads satisfied for
+    owes/bulk/statement-matching), new `received = tagged + poolDraw` (real dollars, for the cells + closeYear;
+    invariant `Σ received + credit = totalPaid`). `ledgerRowSummary` gains **`projected` = Σ (settled ? received :
+    owed)** — the forward-only Y, so a fully-settled year reads exactly 100% (not stuck at D&D's 65%) with zero new
+    storage — plus `rate`; `monthsBehind` now counts only due months with NOTHING received (a settled-short or
+    pool-partial month feeds the running figure, not the red badge).
+  - **UI — `src/pages/LedgerPage.js` + `.rr-*` in `App.css`.** A tagged ✓ shows a small received sub-amount when
+    it differs from the projection; a lump-covered ✓ is an inert dashed/faded cell (managed on the lease's
+    payments panel); a pooled ◐ is one glyph/one action (records the gap). The two Collected/Owes columns collapse
+    into ONE **"Collected"** — `$X of $Y`, a slim progress bar, `Z%`, a green `credit` chip, and a **red "N mo
+    behind"** badge only when genuinely behind (Owes removed). **Speed:** every write now carries a real amount
+    (open→owed, gap→residual) so `markMonthPaid` skips the schedule rebuild and the paint moves instantly; a
+    per-cell `pendingCells` Set replaces the grid-wide disable (parallel clicks work); "✓ all" renders only on
+    months that have come due; catch-up is ONE `markMonthsPaidAllTenants(propId, year, months)` round-trip.
+  - **`src/lib/api.js`:** `closeYear` freezes `projected` = the forward-only Y + `collected_by_month` = the
+    received dollars; `markMonthPaid` runs `ensureInvoice` concurrently with the schedule fetch and skips the
+    rebuild when an amount is passed; `unmarkMonthPaid` deletes in parallel; new
+    **`markMonthsPaidAllTenants(propertyId, year, months, opts)`** (one roll read, deduped parallel `ensureInvoice`,
+    ONE batched insert) with the single-month `markMonthPaidAllTenants` now a thin wrapper.
+  - **Wording George asked to have explained — `src/components/TenantShareTable.js`.** The breakdown's Collected
+    column now reads **`$X of $Y`** with a **`behind $X`** sub-line (the word "owes" leaves this column, ending the
+    collision), the Totals sub reads `behind $X` / `all collected`, and the footnote gains: "**Collected** is money
+    in — payments received this year against the projected year total … separate from **Difference**, which
+    compares the year's actual expenses to the estimate you billed." (So: the breakdown's "owed/paid" is money-in
+    vs the projected rent+estimate total; the **Difference** column is actual expenses vs the estimate billed —
+    George's guess for the Difference column was right.)
+  - **The 0/0 root cause fixed at every save path** (`TenantShareTable` EstimateEditor, `LeaseDetailPage` commit,
+    `LeaseForm`): a blank OR zero/negative estimate now saves as **NULL**, never a stored 0 — so the phantom-✓ can't
+    recur.
+  - **Live repair — MOOT (verified read-only).** The plan was to clear Ricki's $0/$0 estimate, but by deploy time
+    Ricki's already carried a real combined estimate (`est_cam_annual=9440`), and a DB-wide scan found **zero**
+    leases with the `est_cam_annual=0 AND est_tax_annual=0` signature (and zero `est_roof_annual=0`) — so nothing
+    needed changing; the code guard prevents recurrence.
+  - **Files:** `src/lib/{ledger,api}.js`, `src/pages/{LedgerPage,LeaseDetailPage}.js`,
+    `src/components/{TenantShareTable,LeaseForm}.js`, `src/App.css`, tests (`ledger.test.js` +5 settled-model,
+    `moneyCollection.test.js` +1 bulk-skip, `ledgerPage.test.js` updated for the new column). No `store.js` seed
+    change — every state (Bright's lump-✓ 100%, City Dental's ✓✓/pool-◐/behind badge/"$22,300 of $109,800") still
+    demos on the existing seed.
+  - **Verified:** unit **415/415** (`vitest run`) incl. the TDD guard that a settled-short month is skipped by the
+    bulk action and the year still settles EXACTLY to $109,800; `vite build` compiles; live 200s (amlakre.com +
+    www + workers.dev); demo redeployed (`1cbae978`, bundle free of the live ref). Browser drive-through skipped
+    per George's standing preference (the jsdom LedgerPage test mounts the real grid). **George: hard-refresh
+    (Cmd+Shift+R) → Financials → Ledger. A recorded payment now reads ✓ no matter the amount (the difference shows
+    in Collected + the year-end reconcile), the Collected column reads "$X of $Y · Z%" with a red "N mo behind"
+    badge only when a due month has nothing on it, and the buttons respond instantly.** Flags (no action needed):
+    a settled-short tenant reads "no months behind" while its invoice still shows a balance — that gap IS the
+    running collected-vs-projected figure, settled at year-end ⚖ Reconcile; and tagged overpayments no longer
+    prepay future months (untagged lumps still do).
+
 - **2026-07-22** — **A renewal option priced YEAR BY YEAR now shows its projected rent (was "Not listed"): the
   extractor reads the option's own rent table, CODE annualizes it, the option's new_rent auto-fills, and the
   stepped rents show as a muted "pending renewal" group** (George, after re-uploading the Busey Bank scan post

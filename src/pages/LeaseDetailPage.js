@@ -158,7 +158,9 @@ export default function LeaseDetailPage() {
     if (field === 'est_cam_annual' || field === 'est_tax_annual' || field === 'est_roof_annual') {
       const n = raw == null || raw === '' ? null : Number(raw);
       const sqft = Number(lease.square_footage) || 0;
-      value = n == null ? null : sqft > 0 ? Math.round(n * sqft * 100) / 100 : n;
+      // Blank OR zero/negative → clear the estimate (bill actuals) — never store a 0,
+      // which billed base-only rent and produced the phantom-✓ ledger.
+      value = !(n > 0) ? null : sqft > 0 ? Math.round(n * sqft * 100) / 100 : n;
     }
     saveField.mutate({ field, value });
   };

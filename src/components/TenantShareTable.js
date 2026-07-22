@@ -347,12 +347,21 @@ export default function TenantShareTable({ propertyId, year }) {
         {ledgerOn && (
           <Stat
             label="Collected this year"
-            main={money(Object.values(collectedByLease).reduce((s, c) => s + (c?.collected || 0), 0))}
-            sub={(() => { const o = Object.values(collectedByLease).reduce((s, c) => s + (c?.owesToDate || 0), 0); return o > 0.05 ? `owed ${money(o)}` : 'all collected'; })()}
+            main={(() => {
+              const col = Object.values(collectedByLease).reduce((s, c) => s + (c?.collected || 0), 0);
+              const proj = Object.values(collectedByLease).reduce((s, c) => s + (c?.projected || 0), 0);
+              return <>{money(col)} <span className="muted">of {money(proj)}</span></>;
+            })()}
+            sub={(() => { const o = Object.values(collectedByLease).reduce((s, c) => s + (c?.owesToDate || 0), 0); return o > 0.05 ? `behind ${money(o)}` : 'all collected'; })()}
           />
         )}
       </div>
       <div className="table-note muted">
+        {ledgerOn && (
+          <><strong>Collected</strong> is money in — the payments received this year against the projected year total
+          (open the Ledger for the month-by-month picture). It's separate from <strong>Difference</strong>, which
+          compares the year's actual expenses to the estimate you billed. </>
+        )}
         The <strong>estimated CAM &amp; tax</strong> is what the tenant actually pays during the year (click a figure
         to set it — the true CAM is only known once the year closes); it falls back to the actual share until you enter one.
         <strong> Difference</strong> updates live as expenses are entered: positive = the tenant will owe more at
@@ -383,22 +392,24 @@ export default function TenantShareTable({ propertyId, year }) {
   );
 }
 
-// The Rent Ledger's per-tenant collections, compact: what's been collected this
-// year over what's still owed to date (or paid ✓ / a credit). Clicks through to
-// the Ledger tab, where the month-by-month picture lives.
+// The Rent Ledger's per-tenant collections, compact: money collected this year OF the
+// projected year total (with "behind $X" for unpaid due rent, or a credit / paid ✓).
+// "Behind" is unpaid RENT — deliberately not "owes", which on the Difference column
+// means the year-end CAM true-up. Clicks through to the month-by-month Ledger tab.
 function CollectedStat({ summary, to }) {
   if (!summary) {
     return <Stat label="Collected this year" main={<span className="muted">—</span>} />;
   }
+  const behind = summary.owesToDate;
   const sub =
     summary.credit > 0.05 ? `credit ${money(summary.credit)}` :
-    summary.owesToDate > 0.05 ? `owes ${money(summary.owesToDate)}` : 'paid ✓';
+    behind > 0.05 ? `behind ${money(behind)}` : 'paid ✓';
   return (
     <div className="ledger-stat">
       <span className="stat-label">Collected this year</span>
       <Link to={to} className="collected-cell" title="Open the Rent Ledger — month-by-month collections">
-        <div className="cell-main">{money(summary.collected)}</div>
-        <div className={`cell-sub${summary.owesToDate > 0.05 ? ' owes' : ''}`}>{sub}</div>
+        <div className="cell-main">{money(summary.collected)} <span className="muted">of {money(summary.projected)}</span></div>
+        <div className={`cell-sub${behind > 0.05 ? ' owes' : ''}`}>{sub}</div>
       </Link>
     </div>
   );
@@ -492,7 +503,14 @@ function EstimateEditor({ share, onSave, onCancel, saving }) {
   }, [statedPrefilled, stated]);
 
   // What the landlord types (a $/SF rate when the SF is known) → the annual $ saved.
-  const annualOf = (v) => (v === '' || v == null ? null : perSf ? round2(Number(v) * sfNum) : Number(v));
+  // A blank OR a zero/negative entry means "no estimate — bill actuals", so it saves
+  // as NULL, never a stored 0 (a stored 0 billed base-only rent and produced the
+  // phantom-✓ ledger George caught).
+  const annualOf = (v) => {
+    if (v === '' || v == null) return null;
+    const out = perSf ? round2(Number(v) * sfNum) : Number(v);
+    return out > 0 ? out : null;
+  };
   const unit = perSf ? '$/SF/yr' : '$/yr';
   const ph = (actualAnnual) => (perSf ? (Number(actualAnnual || 0) / sfNum).toFixed(2) : String(Math.round(actualAnnual || 0)));
   const actualCamTax = Number(share.cam_amount || 0) + Number(share.tax_amount || 0);

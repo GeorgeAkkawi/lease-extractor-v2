@@ -7,7 +7,7 @@ import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule } from './leaseSchedule';
-import { allocatePayments } from './ledger';
+import { allocatePayments, ledgerRowSummary } from './ledger';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
@@ -1581,23 +1581,31 @@ export async function getMonthlyRent(leaseId, year) {
 // Mark month (1-12) paid: ensure the year's invoice exists, then record a payment
 // tagged with that month. amount defaults to the monthly share (invoice total / 12).
 export async function markMonthPaid(leaseId, propertyId, year, month, opts = {}) {
-  const invoice = await ensureInvoice(leaseId, propertyId, year);
   const m = Number(month);
+  const hasAmount = opts.amount != null && opts.amount !== '';
+  // When no explicit amount is given we must rebuild the term-aware schedule to find the
+  // month's owed — start that in PARALLEL with ensuring the invoice. The Ledger grid passes
+  // an amount for the common open→mark click, so that schedule fetch is skipped entirely there.
+  const [invoice, schedInputs] = await Promise.all([
+    ensureInvoice(leaseId, propertyId, year),
+    hasAmount
+      ? Promise.resolve(null)
+      : Promise.all([listAbatements(leaseId), getTenantShare(leaseId, year), listEscalations(leaseId)]),
+  ]);
+  const m1 = m;
   // Already marked — from this screen, the property ledger, or another device.
   // Recording again would double-count the month, so this is an idempotent no-op.
   const existingPayments = await listPayments(invoice.id);
-  if (existingPayments.some((p) => Number(p.period_month) === m)) return invoice;
+  if (existingPayments.some((p) => Number(p.period_month) === m1)) return invoice;
   let amount;
-  if (opts.amount != null && opts.amount !== '') {
+  if (hasAmount) {
     amount = Number(opts.amount);
   } else {
     // Default to that month's expected owed from the TERM-AWARE schedule, built UP from the data:
     // the gross lease base (prorated for a mid-year start + blended for mid-year steps + net of any
     // base-rent abatement) + estimated-else-actual CAM/tax/roof — NOT scaled to the invoice, and
     // NOT a flat total/12 (which over-bills free months and mis-bills a partial-year lease).
-    const [abatements, share, escalations] = await Promise.all([
-      listAbatements(leaseId), getTenantShare(leaseId, year), listEscalations(leaseId),
-    ]);
+    const [abatements, share, escalations] = schedInputs;
     const grossBase = share ? Number(share.base_rent || 0) : Number(invoice.base_rent_annual || 0);
     const billed = share ? billedComponents(share) : { cam: Number(invoice.cam_annual || 0), tax: Number(invoice.tax_annual || 0), roof: Number(invoice.roof_annual || 0) };
     const { schedule: sched } = buildLeaseSchedule({
@@ -1609,7 +1617,7 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
   // Nothing due this month (before the tenancy began, or a fully-free base with no other
   // charges) — don't record a $0 payment; the month shows "—" or "Free". An explicit
   // amount override still records.
-  if (!(amount > 0) && (opts.amount == null || opts.amount === '')) return invoice;
+  if (!(amount > 0) && !hasAmount) return invoice;
   await recordPayment({
     invoice_id: invoice.id,
     lease_id: leaseId,
@@ -1627,48 +1635,52 @@ export async function unmarkMonthPaid(leaseId, year, month) {
   const invoice = await getYearInvoice(leaseId, year);
   if (!invoice) return;
   const payments = await listPayments(invoice.id);
-  for (const p of payments.filter((x) => Number(x.period_month) === Number(month))) {
-    await deletePayment(p.id);
-  }
+  await Promise.all(
+    payments.filter((x) => Number(x.period_month) === Number(month)).map((p) => deletePayment(p.id))
+  );
 }
 
-// Bulk: mark `month` paid for every tenant in a property that hasn't paid it yet
-// (for `year`). Idempotent — tenants already marked for that month, or with nothing
-// owed (a fully-free abated month), are skipped. Returns { paid, skipped, total }.
+// Bulk across MONTHS: mark every listed month paid for every tenant that still owes it,
+// for `year`. Powers the Ledger's "mark everyone paid through {month}" catch-up (and the
+// single-month "✓ all" via markMonthPaidAllTenants below) in ONE round-trip instead of a
+// serial loop of full-roll reads. Skips a (tenant, month) that's already tagged or that a
+// pooled lump already covers; a partial month is topped up by its gap only. Returns
+// { paid: rows written, tenants: distinct leases touched, total: tenants on the property }.
 //
-// Fast path: one batched read (getPropertyMonthlyRoll) tells us exactly who's unpaid
-// and what each owes; invoices that don't exist yet are drafted in PARALLEL; then all
-// the month's payments are written in ONE insert — instead of a per-tenant serial loop.
-export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}) {
-  const m = Number(month);
+// Fast path: one batched read (getPropertyMonthlyRoll); each tenant's ONE allocation
+// decides every month (the gaps are computed against the SAME allocation, so an untagged
+// partial completes exactly one month and the year still settles to the cent); invoices
+// that don't exist yet are drafted ONCE per lease in PARALLEL; then all payments land in
+// ONE insert.
+export async function markMonthsPaidAllTenants(propertyId, year, months, opts = {}) {
+  const monthList = (Array.isArray(months) ? months : [months]).map(Number).filter((m) => m >= 1 && m <= 12);
   const roll = await getPropertyMonthlyRoll(propertyId, year);
-  // Owe this month (net of abatement), not already marked paid for it, and not already
-  // COVERED by pooled untagged money — a tenant who paid a lump (no month tags) must not
-  // be billed the month again; a partially-covered month is only topped up by its gap.
-  const targets = roll
-    .map((r) => {
-      if (r.byMonth[m] || !((Number(r.schedule?.[m]?.owed) || 0) > 0)) return null;
-      const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
+  const targets = [];
+  const leasesTouched = new Set();
+  for (const r of roll) {
+    const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
+    for (const m of monthList) {
+      if (r.byMonth[m] || !((Number(r.schedule?.[m]?.owed) || 0) > 0)) continue;
       const gap = Math.round((alloc.owed[m - 1] - alloc.coverage[m - 1]) * 100) / 100;
-      if (!(gap > 0.05)) return null;
-      return { r, amount: gap };
-    })
-    .filter(Boolean);
-  const skipped = roll.length - targets.length;
-  if (targets.length === 0) return { paid: 0, skipped, total: roll.length };
+      if (!(gap > 0.05)) continue;
+      targets.push({ r, m, amount: gap });
+      leasesTouched.add(r.lease_id);
+    }
+  }
+  if (targets.length === 0) return { paid: 0, tenants: 0, total: roll.length };
 
-  // Draft any missing year-invoices concurrently (the only per-tenant remote cost left).
-  const withInvoice = await Promise.all(
-    targets.map(async (t) => ({
-      ...t,
-      invoiceId: t.r.invoice_id || (await ensureInvoice(t.r.lease_id, propertyId, year)).id,
-    }))
-  );
+  // Draft any missing year-invoices ONCE per lease, concurrently (the only per-tenant remote cost).
+  const invoiceByLease = {};
+  for (const r of roll) if (r.invoice_id) invoiceByLease[r.lease_id] = r.invoice_id;
+  const needInvoice = [...leasesTouched].filter((id) => !invoiceByLease[id]);
+  await Promise.all(needInvoice.map(async (id) => {
+    invoiceByLease[id] = (await ensureInvoice(id, propertyId, year)).id;
+  }));
 
   const owner = await ownerId();
   const paidDate = opts.paid_date || paymentIsoToday();
-  const payRows = withInvoice.map(({ r, amount, invoiceId }) => ({
-    invoice_id: invoiceId,
+  const payRows = targets.map(({ r, m, amount }) => ({
+    invoice_id: invoiceByLease[r.lease_id],
     lease_id: r.lease_id,
     amount,
     paid_date: paidDate,
@@ -1678,7 +1690,14 @@ export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}
     owner_id: owner,
   }));
   await rows(supabase.from('payments').insert(payRows));
-  return { paid: payRows.length, skipped, total: roll.length };
+  return { paid: payRows.length, tenants: leasesTouched.size, total: roll.length };
+}
+
+// Single-month "✓ all" — thin wrapper over the plural bulk. Keeps the historical
+// { paid, skipped, total } shape (paid = tenants collected this month).
+export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}) {
+  const res = await markMonthsPaidAllTenants(propertyId, year, [month], opts);
+  return { paid: res.paid, skipped: res.total - res.tenants, total: res.total };
 }
 
 // Property ledger roll: one row per tenant for `year` with their monthly amount,
@@ -2765,14 +2784,20 @@ export async function closeYear(propertyId, year) {
   const collectionByLease = {};
   for (const r of roll || []) {
     const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
-    const projected = Math.round(((Number(r.annual) || 0) + Number.EPSILON) * 100) / 100;
+    // Projected is the FORWARD-ONLY year total (settled months frozen at what was received,
+    // open months at the current owed) — the same Y the live Ledger measures collected
+    // against, so a fully-settled year freezes at exactly 100% and a later estimate edit
+    // never re-prices a month already paid.
+    const projected = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc }).projected;
     // Raw collected — an overpaid tenant can read a rate > 100% (truthful, unclamped).
     const collected = alloc.totalPaid;
     collectionByLease[r.lease_id] = {
       projected,
       collected,
       collection_rate: projected > 0 ? Math.round((collected / projected) * 1000) / 1000 : null,
-      collected_by_month: alloc.coverage,
+      // Real dollars received per month (a settled month = the tagged amount, a pooled
+      // month = its FIFO draw) — the by-month collection history the chart reads back.
+      collected_by_month: alloc.received,
     };
   }
 

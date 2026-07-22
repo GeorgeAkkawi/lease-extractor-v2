@@ -62,17 +62,83 @@ describe('allocatePayments', () => {
     expect(a.states[2]).toBe('covered'); // the pooled money lands on the first real month
   });
 
-  it("a tagged month's excess rolls forward to the next open charges (prepayment), only then credit", () => {
+  it("a tagged month settles at the received amount — excess does NOT roll forward (only untagged lumps prepay)", () => {
     const a = allocatePayments({ owedByMonth: flat(1000), payments: [pay(3000, { month: 1 })] });
-    expect(a.coverage[0]).toBe(1000); // never above the month's owed
-    expect(a.states.slice(0, 3)).toEqual(['covered', 'covered', 'covered']);
-    expect(a.credit).toBe(0);
+    expect(a.settled[0]).toBe(true);
+    expect(a.received[0]).toBe(3000); // the real dollars received that month
+    expect(a.coverage[0]).toBe(1000); // coverage is bill-shaped (= owed) so gap math reads 0
+    expect(a.states[0]).toBe('covered');
+    expect(a.states.slice(1, 3)).toEqual(['open', 'open']); // no rollover — Feb/Mar stay open
+    expect(a.credit).toBe(0); // and the excess is NOT parked as credit either
   });
 
   it('accepts a buildLeaseSchedule map as owedByMonth', () => {
     const sched = {};
     for (let m = 1; m <= 12; m++) sched[m] = { owed: 500, outsideTerm: false };
     expect(owedArray(sched)).toEqual(flat(500));
+  });
+});
+
+describe('the "paid = paid" settled-month model', () => {
+  it('a tagged SHORT payment still settles its month (covered), and the shortfall never hits the badge', () => {
+    // Owed 1,000; the tenant tagged only 700 to March. "Paid = paid": March reads covered,
+    // 700 is the received dollars, and March is NOT counted as a month-behind (money came in).
+    const a = allocatePayments({ owedByMonth: flat(1000), payments: [pay(700, { month: 3 })] });
+    expect(a.settled[2]).toBe(true);
+    expect(a.states[2]).toBe('covered');
+    expect(a.received[2]).toBe(700);
+    expect(a.coverage[2]).toBe(1000); // bill-shaped → gap 0
+    const today = new Date(2026, 5, 15, 12); // Jan–Jun due
+    const row = ledgerRowSummary({ year: 2026, owedByMonth: flat(1000), allocation: a, today });
+    expect(row.owesToDate).toBe(5000); // Jan,Feb,Apr,May,Jun open (March settled → 0)
+    // March had money → not "behind"; the five zero-received due months are.
+    expect(row.monthsBehind).toBe(5);
+  });
+
+  it('the untagged pool skips a settled month entirely', () => {
+    // Feb is settled by a tag; a 2,000 lump must fill Jan + Mar (NOT top up Feb).
+    const a = allocatePayments({
+      owedByMonth: flat(1000),
+      payments: [pay(1000, { month: 2 }), pay(2000, { paid_date: '2026-01-02' })],
+    });
+    expect(a.settled[1]).toBe(true);
+    expect(a.poolDraw[1]).toBe(0);
+    expect(a.states.slice(0, 3)).toEqual(['covered', 'covered', 'covered']);
+    expect(a.states[3]).toBe('open'); // the lump ran out after Jan+Mar
+  });
+
+  it('Σ received + credit === totalPaid (the money invariant)', () => {
+    const a = allocatePayments({
+      owedByMonth: flat(1000),
+      payments: [pay(1500, { month: 1 }), pay(3000, { paid_date: '2026-02-01' })],
+    });
+    const sumReceived = a.received.reduce((s, n) => s + n, 0);
+    expect(Math.round((sumReceived + a.credit) * 100) / 100).toBe(a.totalPaid);
+    expect(a.totalPaid).toBe(4500);
+  });
+
+  it('projected is FORWARD-ONLY: a settled month is frozen at what was received when owed later changes', () => {
+    // Jan settled at 1,000. Now the estimate rises so every unsettled month owes 1,200.
+    // Jan stays frozen at 1,000; the projected year total moves only on the 11 open months.
+    const owed = [1000, ...Array(11).fill(1200)];
+    const a = allocatePayments({ owedByMonth: owed, payments: [pay(1000, { month: 1 })] });
+    const row = ledgerRowSummary({ year: 2026, owedByMonth: owed, allocation: a, today: new Date(2026, 11, 31, 12) });
+    expect(row.projected).toBe(1000 + 1200 * 11); // 14,200 — Jan frozen, not re-priced to 1,200
+    expect(row.collected).toBe(1000);
+  });
+
+  it('a fully settled year reads exactly 100% even if the tags were short of the current estimate', () => {
+    // Every month tagged (settled) at 900 while the current owed is 1,000. Paid = paid →
+    // projected freezes to the received 900s, so the rate is 1.0, not 0.9.
+    const pays = [];
+    for (let m = 1; m <= 12; m++) pays.push(pay(900, { month: m, paid_date: `2026-${String(m).padStart(2, '0')}-05` }));
+    const a = allocatePayments({ owedByMonth: flat(1000), payments: pays });
+    const row = ledgerRowSummary({ year: 2026, owedByMonth: flat(1000), allocation: a, today: new Date(2026, 11, 31, 12) });
+    expect(a.states.every((s) => s === 'covered')).toBe(true);
+    expect(row.projected).toBe(10800); // 12 × 900 received
+    expect(row.collected).toBe(10800);
+    expect(row.rate).toBe(1);
+    expect(row.monthsBehind).toBe(0);
   });
 });
 
@@ -185,7 +251,9 @@ describe('ledgerRowSummary vs arStatus — the single-derivation rule', () => {
     );
     expect(row.owesToDate).toBe(ar.amountBehind); // 1,500 both ways
     expect(row.owesToDate).toBe(1500);
-    expect(row.monthsBehind).toBe(2); // May partial + June open
+    // Only June is genuinely behind (nothing received); May got a $500 partial → it feeds
+    // owesToDate but not the "months behind" badge.
+    expect(row.monthsBehind).toBe(1);
     expect(row.collected).toBe(4500);
   });
 

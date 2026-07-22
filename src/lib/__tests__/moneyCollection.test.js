@@ -128,6 +128,19 @@ describe('marking months paid (the ledger write path)', () => {
     expect(Array.isArray(data.payments)).toBe(true);
     expect(data.payments.length).toBeGreaterThan(12); // 12 tagged + the untagged partial
   });
+
+  it('the bulk action SKIPS a settled-short month — "paid = paid" is never auto-topped-up', async () => {
+    // Re-open June, then record only PART of it (a short tagged payment). Under paid=paid
+    // June now reads settled, so the bulk "✓ all" must leave it exactly as recorded — never
+    // silently top a month the landlord already marked, whatever the amount.
+    await unmarkMonthPaid('lease-2', Y, 6);
+    await markMonthPaid('lease-2', 'prop-1', Y, 6, { amount: 5000 });
+    const res = await markMonthPaidAllTenants('prop-1', Y, 6);
+    expect(res.paid).toBe(0); // Dental settled-short (skipped) + Bright long-settled (skipped)
+    const june = (await listPayments('inv-2')).filter((p) => Number(p.period_month) === 6);
+    expect(june).toHaveLength(1);
+    expect(Number(june[0].amount)).toBe(5000); // not topped up to 9,150
+  });
 });
 
 describe('invoice template', () => {

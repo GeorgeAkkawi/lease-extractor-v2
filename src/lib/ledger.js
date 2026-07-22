@@ -5,9 +5,9 @@
 //     ✓ / ◐ / open states), honoring month tags and pooling untagged money FIFO.
 //   • componentizeSchedule — split each month's owed into base | CAM&tax | roof for the
 //     cell sub-line, without ever breaking "components sum to the month's owed".
-//   • ledgerRowSummary  — the row's Collected / Owes / months-behind / credit figures,
-//     derived from the SAME allocation the grid paints from, so the number and the
-//     cells can never disagree.
+//   • ledgerRowSummary  — the row's Collected-of-projected / months-behind / credit
+//     figures, derived from the SAME allocation the grid paints from, so the number and
+//     the cells can never disagree.
 //
 // Why not reuse arStatus.monthsBehindForInvoice for the row figures? That walk is
 // paid-SCALAR FIFO — it ignores month tags entirely. If a tenant tags a December
@@ -34,23 +34,29 @@ export function owedArray(owedByMonth) {
   return a;
 }
 
-// Which months this tenant's payments cover. The exact derivation:
+// Which months this tenant's payments cover — the "paid = paid" model.
 //   1. Every payment tagged period_month (1-12) adds to that month's tagged sum —
 //      several payments tagged the same month SUM (check + Zelle in one month works).
 //      A tag pointing at a month that owes nothing (before the tenancy, or a $0 month)
 //      falls back to the untagged pool — the tag can't invent a charge to cover.
-//   2. Untagged money pools in paid-date order; the pool fills each month's residual
-//      need (owed − tagged), months 1→12 FIFO — a lump that runs out mid-June reads
-//      Jan–May ✓, Jun ◐, Jul–Dec open.
-//   3. A tagged month's EXCESS (paid more than that month owes) rolls into the pool
-//      too — the standard prepayment treatment: excess money covers the next open
-//      charges first and only counts as credit when nothing is left to cover. This is
-//      also what keeps the ledger's dollar total consistent with the invoice balance.
-//   4. coverage_m = min(owed_m, tagged_m + poolDraw_m) — never negative, never above
-//      the month's owed. Whatever the pool has left after month 12 is `credit`
-//      (overpayment — owed to the tenant; ≈ the invoice's negative balance).
-// States by coverage: 'covered' (≥ owed − dust), 'partial' (> 0), 'open' (0);
-// months owing nothing get state null (the caller renders "—"/"Free" from the schedule).
+//   2. A tag SETTLES its month (settled_m = tagged_m > 0). A settled month reads "paid"
+//      whatever the amount — short or over — because the landlord recorded a payment for
+//      it. The gap between what was received and what was projected is NOT hidden in the
+//      checkbox; it flows to the running collected-vs-projected figure (ledgerRowSummary)
+//      and the year-end reconciliation. There is NO partial (◐) state for a tagged month,
+//      and tagged EXCESS does not roll forward to prepay later months (only an untagged
+//      lump does) — this is what makes a mid-year estimate change forward-only.
+//   3. Untagged money pools in paid-date order and fills each month's RESIDUAL need
+//      (owed − tagged), months 1→12 FIFO — so a lump completes a partially-tagged month
+//      (or an untagged one) and, when it runs out mid-June, reads Jan–May ✓, Jun ◐,
+//      Jul–Dec open. Whatever is left after month 12 is `credit` (owed to the tenant).
+//   4. coverage_m = settled_m ? owed_m : min(owed_m, poolDraw_m) — bill-satisfaction-
+//      shaped, so a settled month reads satisfied (gap 0) for the owes / bulk-mark /
+//      statement-matching logic no matter the amount tagged. received_m = tagged_m +
+//      poolDraw_m — the real dollars on that month, for the cells and closeYear.
+//      Invariant: Σ received + credit = totalPaid.
+// States: null (owed ≤ 0) · 'covered' (settled, or pool ≥ owed − dust) · 'partial'
+// (pool > 0) · 'open' (0); the caller renders "—"/"Free" for a null month.
 export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {}) {
   const owed = owedArray(owedByMonth);
   const tagged = Array(12).fill(0);
@@ -65,13 +71,10 @@ export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {
     if (m >= 1 && m <= 12 && owed[m - 1] > 0) tagged[m - 1] = round2(tagged[m - 1] + amt);
     else pool = round2(pool + amt);
   }
-  // Tagged excess rolls into the pool (step 3).
-  for (let i = 0; i < 12; i++) {
-    if (tagged[i] > owed[i]) {
-      pool = round2(pool + round2(tagged[i] - owed[i]));
-      tagged[i] = owed[i];
-    }
-  }
+  // A tag settles its month at the received amount — no cap, and (the fix) NO excess
+  // rollover into the pool. Untagged money still pools and tops up each month's
+  // residual need, so a partial month can be completed by a later lump.
+  const settled = tagged.map((t) => t > 0);
   const poolDraw = Array(12).fill(0);
   for (let i = 0; i < 12 && pool > 0; i++) {
     const need = round2(owed[i] - tagged[i]);
@@ -81,16 +84,18 @@ export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {
     pool = round2(pool - draw);
   }
   const coverage = [];
+  const received = [];
   const states = [];
   for (let i = 0; i < 12; i++) {
-    const c = round2(Math.min(owed[i], tagged[i] + poolDraw[i]));
+    received.push(round2(tagged[i] + poolDraw[i]));
+    const c = settled[i] ? owed[i] : round2(Math.min(owed[i], poolDraw[i]));
     coverage.push(c);
     if (!(owed[i] > 0)) states.push(null);
-    else if (c >= owed[i] - dust) states.push('covered');
+    else if (settled[i] || c >= owed[i] - dust) states.push('covered');
     else if (c > 0) states.push('partial');
     else states.push('open');
   }
-  return { owed, coverage, tagged, poolDraw, states, credit: round2(pool), totalPaid };
+  return { owed, coverage, tagged, poolDraw, received, settled, states, credit: round2(pool), totalPaid };
 }
 
 // Split each month's owed into base | CAM&tax | roof for the cell sub-line.
@@ -131,10 +136,14 @@ export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, r
 
 // The row's headline figures — every one derived from the SAME allocation the grid
 // paints from (see the header note for why arStatus can't be the source here).
-//   collected    — every dollar recorded against the year invoice
+//   collected    — every dollar recorded against the year invoice (Σ received + credit)
+//   projected    — the year total the "collected" is measured against: Σ over months of
+//                  (settled ? received : owed) — forward-only, so a fully settled year
+//                  reads 100% and a mid-year estimate change moves only unsettled months
+//   rate         — collected / projected (null when projected 0; unclamped, may exceed 1)
 //   owesToDate   — Σ (owed − coverage) over months that have COME DUE (their 1st is
-//                  on/before today) — free/out-of-term months owe nothing by construction
-//   monthsBehind — how many of those due months are uncovered beyond dust
+//                  on/before today) — settled/free/out-of-term months owe nothing here
+//   monthsBehind — due months with owed > dust and NOTHING received (the red badge)
 //   credit       — the allocation's leftover (overpayment, owed to the tenant)
 // ---- Year-close collection history (Stage 3) --------------------------------
 // closeYear (api.js) freezes each tenant's projected / collected /
@@ -172,15 +181,29 @@ export function collectionSeries(snaps) {
 export function ledgerRowSummary({ year, owedByMonth, allocation, today = new Date(), dust = 0.05 } = {}) {
   const owed = owedArray(owedByMonth);
   const alloc = allocation || allocatePayments({ owedByMonth: owed, payments: [] });
+  const settled = alloc.settled || Array(12).fill(false);
+  const received = alloc.received || Array(12).fill(0);
   let owes = 0;
   let monthsBehind = 0;
+  let projected = 0;
   for (let m = 1; m <= 12; m++) {
+    const i = m - 1;
+    // Forward-only projection: a settled month is frozen at what was received, an
+    // unsettled month reflects the CURRENT owed. So a mid-year estimate change moves
+    // only the months still open, and a fully settled year reads exactly 100%.
+    projected = round2(projected + (settled[i] ? (received[i] || 0) : owed[i]));
     if (monthStart(Number(year), m) > today) continue; // not yet due
-    const gap = round2(owed[m - 1] - (alloc.coverage[m - 1] || 0));
-    if (gap > dust) { owes = round2(owes + gap); monthsBehind += 1; }
+    const gap = round2(owed[i] - (alloc.coverage[i] || 0));
+    if (gap > dust) owes = round2(owes + gap);
+    // Genuinely behind = a due month with NO payment recorded against it at all
+    // (a settled-short or pool-partial month has money on it → feeds owes, not the badge).
+    if (owed[i] > dust && !(received[i] > dust)) monthsBehind += 1;
   }
+  const collected = round2(alloc.totalPaid || 0);
   return {
-    collected: round2(alloc.totalPaid || 0),
+    collected,
+    projected,
+    rate: projected > 0 ? collected / projected : null,
     owesToDate: owes,
     monthsBehind,
     credit: round2(alloc.credit || 0),
