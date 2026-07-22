@@ -75,6 +75,33 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Per-tenant breakdown: a muted "Vacant space" line makes the unbilled slice of
+  taxes+CAM visible, reconciling the tenant shares back to the Expense entry total** (George asked why the
+  CAM & tax actuals didn't "sync" with the Expense entry; live-verified it was the 0042 building-SF design —
+  Pershing FY2026: $146,200 entered × 12,868/13,750 leased = $136,821.93 across tenants, the $9,378.07 gap
+  being the vacant 882 SF's share — and he confirmed "we could add the vacancy as a visual help for the user
+  to see whats missing"). Deployed: frontend Cloudflare version `09f7e78c`. **Frontend-only — $0, no DB
+  migration, no edge functions, no tenant emails; display-only, zero billing-math changes.** Tests **392/392**
+  (was 391 — +1 vacancy-row render).
+  - **`TenantShareTable.js`:** a muted italic **Vacant space** ledger entry above the Totals band — "{sf} ·
+    {pct}% of the building — billed to no one" with the vacant slice of taxes+CAM
+    (`(taxes_total+cam_total) × vacantSf / buildingSf`) and its $/SF (= every pro-rata tenant's rate); the
+    Totals "CAM & tax · actual" gains the sub-line `+ $X vacant = $Y entered` (the "= entered" part only
+    when the figures genuinely tie within 5¢ — a share override can bill off pro-rata); footnote updated to
+    point at the row. Expense totals read via the SAME `['expenseRecord', propId, year]` query key the
+    Financials page already uses → React Query dedupes, zero extra network. Hidden when no building size is
+    set (fallback splits over leased SF — nothing missing, e.g. Harlem ties out exactly), fully leased, or
+    no expenses entered — so the demo (fully leased) is unchanged and no demo redeploy was needed.
+  - **Files:** `src/components/TenantShareTable.js`, `src/App.css` (`.ledger-vacant`),
+    `src/components/__tests__/camReconciliation.test.js` (+1: shrink Bright Coffee 2,000→1,500 SF → 500 SF
+    vacant row, $4,300.00 at $8.60/SF, totals sub "+ $4,300.00 vacant = $43,000.00 entered"; fully-leased →
+    no row; seed restored).
+  - **Verified:** unit **392/392** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+    workers.dev). Browser check skipped per George's standing preference (the jsdom test mounts the real
+    table against the demo mock). **George: hard-refresh (Cmd+Shift+R) → Pershing's Financials now shows
+    "Vacant space · 882 SF — billed to no one · $9,378.07" and the totals line reconciles to the $146,200
+    entered.**
+
 - **2026-07-21** — **Rent Ledger round 2: named expense BUCKETS (incl. a "not billed to tenants" kind),
   statement import from the Expense entry, a click-gated 🤖 bucket-suggest, estimates pulled from the
   lease, and the demo refreshed for George's walkthrough** (George after reviewing Stages 1–3: statements

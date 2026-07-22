@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getTenantShares,
   getProperty,
+  getExpenseRecord,
   getPropertyMonthlyRoll,
   listReconciliations,
   listInvoicesForProperty,
@@ -71,6 +72,12 @@ export default function TenantShareTable({ propertyId, year }) {
     enabled: ledgerOn,
   });
   const { data: property } = useQuery({ queryKey: ['property', propertyId], queryFn: () => getProperty(propertyId) });
+  // Same key as the Financials page's own expense query, so React Query dedupes it.
+  // Feeds the Vacant-space line: the slice of taxes+CAM no tenant is billed for.
+  const { data: expense } = useQuery({
+    queryKey: ['expenseRecord', propertyId, year],
+    queryFn: () => getExpenseRecord(propertyId, year),
+  });
   const { data: recons = [] } = useQuery({
     queryKey: ['reconciliations', propertyId, year],
     queryFn: () => listReconciliations(propertyId, year),
@@ -194,6 +201,18 @@ export default function TenantShareTable({ propertyId, year }) {
     { sf: 0, base: 0, est: 0, tax: 0, cam: 0, roof: 0, diff: 0, anyEst: false }
   );
 
+  // The vacant space's slice of taxes + CAM. Shares are billed per SF of the WHOLE
+  // building (0042), so the unleased SF's share is charged to no one — it stays with
+  // the landlord. This makes that missing piece visible so the tenant shares + this
+  // line reconcile back to the Expense entry total.
+  const vacantSf = buildingSf > 0 ? Math.max(0, buildingSf - tot.sf) : 0;
+  const camTaxEntered = Number(expense?.taxes_total || 0) + Number(expense?.cam_total || 0);
+  const vacantCamTax = vacantSf > 0 && camTaxEntered > 0 ? (camTaxEntered * vacantSf) / buildingSf : 0;
+  const showVacant = vacantCamTax > 0.005;
+  // Only claim the three figures tie out when they actually do (a per-lease share
+  // override can bill off pro-rata, in which case the sub-line stays additive only).
+  const vacantReconciles = showVacant && Math.abs(tot.cam + tot.tax + vacantCamTax - camTaxEntered) <= 0.05;
+
   async function openStatement(recon) {
     const draft = await draftCamReconciliationEmail(recon);
     setEmailDraft({ ...draft, year: recon.year });
@@ -289,6 +308,24 @@ export default function TenantShareTable({ propertyId, year }) {
           </div>
         );
       })}
+      {showVacant && (
+        <div className="ledger-grid ledger-row ledger-vacant">
+          <div className="ledger-id">
+            <div className="ledger-name">Vacant space</div>
+            <div className="ledger-meta">{sf(vacantSf)} · {pct(vacantSf / buildingSf)} of the building — billed to no one</div>
+          </div>
+          <Stat label="Base rent" main={<span className="muted">—</span>} />
+          <Stat label="CAM & tax · estimated" main={<span className="muted">—</span>} />
+          <Stat
+            label="CAM & tax · vacant share, stays with you"
+            main={money(vacantCamTax)}
+            sub={psf2(camTaxEntered / buildingSf) + '/SF'}
+          />
+          <Stat label="Roof" main={<span className="muted">—</span>} />
+          <Stat label="Difference" main={<span className="muted">—</span>} />
+          {ledgerOn && <Stat label="Collected" main={<span className="muted">—</span>} />}
+        </div>
+      )}
       <div className="ledger-grid ledger-row ledger-totals">
         <div className="ledger-id">
           <div className="ledger-name">Totals</div>
@@ -296,7 +333,11 @@ export default function TenantShareTable({ propertyId, year }) {
         </div>
         <Stat label="Base rent" main={money(tot.base)} />
         <Stat label="CAM & tax · estimated" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
-        <Stat label="CAM & tax · actual" main={money(tot.cam + tot.tax)} />
+        <Stat
+          label="CAM & tax · actual"
+          main={money(tot.cam + tot.tax)}
+          sub={showVacant ? `+ ${money(vacantCamTax)} vacant${vacantReconciles ? ` = ${money(camTaxEntered)} entered` : ''}` : ''}
+        />
         <Stat label="Roof · actual" main={money(tot.roof)} />
         <Stat
           label="Difference · actual − estimated"
@@ -324,7 +365,9 @@ export default function TenantShareTable({ propertyId, year }) {
         to roof-responsible tenants and stays its own separate line, estimate and reconciliation included.
         {buildingSf > 0 && tot.sf !== buildingSf && (
           <> The leased total ({sf(tot.sf)}) differs from the building size ({sf(buildingSf)}) by {sf(Math.abs(buildingSf - tot.sf))} of
-          {buildingSf > tot.sf ? ' vacant' : ' over-allocated'} space — yours to reconcile.</>
+          {buildingSf > tot.sf ? ' vacant' : ' over-allocated'} space{showVacant
+            ? ' — its slice of the expenses is the Vacant space line above, which no tenant is billed for'
+            : ' — yours to reconcile'}.</>
         )}
       </div>
       {emailDraft && (

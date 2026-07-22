@@ -13,7 +13,7 @@ import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-li
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TenantShareTable from '../TenantShareTable';
-import { listInvoices, getReconciliation, getLease } from '../../lib/api';
+import { listInvoices, getReconciliation, getLease, updateLease } from '../../lib/api';
 import { currentYear } from '../../lib/format';
 
 const Y = currentYear();
@@ -150,5 +150,25 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     lease = await getLease('lease-1');
     expect(lease.est_cam_annual).toBe(6500);
     expect(lease.est_tax_annual).toBe(10000);
+  });
+
+  it('shows the vacant space\'s unbilled CAM & tax share, reconciling to the entry total', async () => {
+    // The demo building is fully leased (5,000 of 5,000 SF) → no vacancy row.
+    renderTable();
+    await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
+    expect(screen.queryByText('Vacant space')).toBeNull();
+    cleanup();
+    // Shrink Bright Coffee to 1,500 SF → 500 SF vacant. Taxes 25,000 + CAM 18,000
+    // = 43,000 entered; the vacant slice = 43,000 × 500/5,000 = 4,300 at $8.60/SF,
+    // and tenants (12,900 + 25,800) + 4,300 tie back to the 43,000 entered.
+    await updateLease('lease-1', { square_footage: 1500 });
+    renderTable();
+    await waitFor(() => expect(screen.getByText('Vacant space')).toBeTruthy());
+    expect(screen.getByText(/500 SF · 10\.0% of the building — billed to no one/)).toBeTruthy();
+    expect(screen.getByText('$4,300.00')).toBeTruthy();
+    // The vacant row's $/SF equals every pro-rata tenant's rate (that's the point).
+    expect(screen.getAllByText(/\$8\.60\/SF/).length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText('+ $4,300.00 vacant = $43,000.00 entered')).toBeTruthy();
+    await updateLease('lease-1', { square_footage: 2000 });
   });
 });
