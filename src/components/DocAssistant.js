@@ -9,14 +9,17 @@ import { useMutation } from '@tanstack/react-query';
 export default function DocAssistant({ docText, suggested = [], canSave = false, onSave, ask, label = 'document' }) {
   const [openDoc, setOpenDoc] = useState(false);
   const [q, setQ] = useState('');
-  const [log, setLog] = useState([]); // [{ q, a, pending }]
+  // Only the CURRENT question is shown — asking a new one replaces the previous Q&A
+  // (George: "questions should just disappear after another one is asked"). Kept as a
+  // one-element array so the render/onSuccess logic stays unchanged.
+  const [log, setLog] = useState([]); // [{ q, a, pending }] — at most one entry
   const [draftText, setDraftText] = useState('');
 
   const hasDoc = !!(docText && docText.trim());
 
   const askM = useMutation({
     mutationFn: (question) => ask(question),
-    onMutate: (question) => setLog((l) => [...l, { q: question, a: null, pending: true }]),
+    onMutate: (question) => setLog([{ q: question, a: null, pending: true }]),
     onSuccess: (answer) =>
       setLog((l) => l.map((it, i) => (i === l.length - 1 ? { ...it, a: answer, pending: false } : it))),
     onError: (err) =>

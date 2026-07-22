@@ -75,6 +75,52 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Follow-up to the Files-API 546 fix: a big scanned lease now CACHES its text (was "read but
+  didn't cache"), + the lease/insurance/contract assistant Q&A now shows only the CURRENT question** (George, on
+  Khaled's account, re-uploaded his 22.9 MB "Busey Bank Fully Executed Lease.pdf": after the 546 fix the main
+  terms filled but "the lease didnt cache in the lease document," and separately "the questions arent going away
+  in the lease document and assistant … questions should just disappear after another one is asked"). Deployed:
+  `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`) + frontend Cloudflare version `0c8f1d8d`. **$0, NO DB
+  migration, no tenant emails.** Tests **394/394**, `vite build` compiles.
+  - **Root cause (issue #1, confirmed on live data).** The Busey upload is a **22.9 MB scan** (no text layer → the
+    vision path). On the vision path the app runs a Sonnet **analyst** read (60s box), the Haiku **form-fill** (40s
+    box), and a Haiku **full-text transcription** (was a 90s box, 16k-token cap) — the transcription is what
+    populates `lease_text` for the assistant / lease search. Verified against the DB: the created lease
+    `1f56e064` had **`lease_text_len = 0`** and its `lease_files.extraction_raw` had **no `analysis_brief`** — i.e.
+    on this big scan BOTH the 60s analyst and the 90s transcription **timed out** (returned null), while only the
+    fast 40s form-fill finished (which is why the main terms filled but nothing cached). The transcription's
+    binding cost is OUTPUT-generation time (writing ~16k tokens runs past 100s), not input — the form-fill proves
+    all pages render inside 40s.
+  - **Fix #1 (`extract-lease/index.ts` + `_shared/anthropic.ts`), inside the ~150s edge budget.** (a) Transcription
+    box **90s → 115s** — it runs CONCURRENTLY with the ~100s analyst→form chain, so it's the long pole: wall ≈
+    upload + 115s, comfortably under 150s for a cloud-to-cloud upload. (b) Transcript **max_tokens 16k → 12k** so
+    the generation reliably STOPS *inside* the box → a **guaranteed non-null** transcript (a timeout discards the
+    output → null; a clean max_tokens stop keeps it). A short lease still transcribes in full and finishes early;
+    a long scan now caches its **first ~15 pages** — where the main terms live and enough for most assistant
+    questions — instead of nothing. (c) `transcribeDocument(model, docBlock, opts)` gained `{timeoutMs, maxTokens}`
+    (default 16k / 90s, so insurance/contract/addendum are unchanged); `callClaude`'s per-attempt abort is now
+    threaded to match the box. (d) `deleteFile`'s best-effort cleanup abort **15s → 5s** — it runs in the request's
+    `finally` (on the wall clock), so a hung cleanup must never push a completed extraction past 150s; this buys
+    back ~10s, so the net wall-clock increase over the current *working* run is only ~+5s worst case.
+  - **Honest limit (unchanged, flagged):** a truly enormous scan (30–40+ pages) can't be transcribed **verbatim**
+    in a single 150s edge call at all — physics of token-generation speed. Such a scan now caches its **first ~15
+    pages** (partial, non-null) rather than nothing; the fields still fill regardless. The way to get a FULL
+    searchable copy of a long lease is a **digital/text PDF** (text layer → full text cached for free), not a scan.
+  - **Fix #2 (`src/components/DocAssistant.js`).** The shared doc-assistant kept every Q&A in an accumulating
+    `log` array (`onMutate` appended). Now `onMutate` **replaces** the log with the single new entry, so only the
+    current question+answer shows and the previous one disappears the moment a new one is asked — exactly George's
+    ask. One-line behavior change; applies consistently to the lease, insurance-policy, and contract assistants
+    (all render through `DocAssistant`). Suggested-question chips still show before the first ask (unchanged).
+  - **Files:** `supabase/functions/extract-lease/index.ts` (box + max_tokens + threaded timeout),
+    `supabase/functions/_shared/anthropic.ts` (`transcribeDocument` opts, shorter `deleteFile` abort),
+    `src/components/DocAssistant.js` (replace-not-append). No new tests (edge timing isn't in the Vitest suite; the
+    DocAssistant change is a UI-state tweak with no test asserting the old accumulating behavior).
+  - **Verified:** unit **394/394** (`vitest run`); `vite build` compiles; `extract-lease` deployed clean
+    (server-side bundle + type-check pass); frontend live (amlakre.com + www + workers.dev all 200). **The real
+    proof is George re-uploading the Busey scan** — the main terms should fill AND the lease text should now cache
+    (fully if it's ≲15 pages, first ~15 pages if larger), and the lease-page assistant should replace the prior
+    Q&A on each new question.
+
 - **2026-07-21** — **Big-scan AI reads no longer time out (HTTP 546): every extractor now uploads the document
   to Anthropic's Files API ONCE and references it by `file_id` across all reads, instead of re-sending the whole
   ~34 MB base64 payload 3–4 times** (George hit "The document took too long to read" right after the 25 MB bump

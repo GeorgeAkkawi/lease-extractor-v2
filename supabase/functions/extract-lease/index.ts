@@ -436,15 +436,26 @@ async function extractSupplement(content: Block[]): Promise<Record<string, any> 
   }
 }
 
-// The scan transcription's 16k-token output is the single slowest read on a large
-// multi-page scan and can alone approach the edge time limit. It's already best-effort
-// (only powers later Q&A, which degrades gracefully to the summary fields), so cap it:
-// whichever finishes first, the transcript or the timer (→ null), wins. This guarantees
-// the whole function returns well under the 150s wall-clock even on a worst-case scan.
-const TRANSCRIBE_TIMEOUT_MS = 90_000;
+// The scan transcription is the single slowest read on a large multi-page scan — its
+// binding cost is OUTPUT-generation time, not input (the form-fill proves all the pages
+// render inside a 40s box; it's writing ~16k tokens of text that runs long). At 90s it
+// timed out and returned null on a real ~23 MB scan, so the lease "read" but its text
+// never cached (George: "the lease didn't cache in the lease document"). Two changes fix
+// that within the ~150s edge budget:
+//   • Box 90s → 115s. It runs CONCURRENTLY with the analyst→form chain (~100s), so it is
+//     the long pole: wall ≈ upload + 115s (+ a few s of DB write / best-effort cleanup),
+//     comfortably under 150s for any realistic cloud-to-cloud upload.
+//   • Cap the transcript at 12k tokens (not 16k) so the generation reliably STOPS inside
+//     the box → a guaranteed non-null transcript. A short lease still transcribes in full
+//     (and finishes early); a long scan caches its first ~15 pages instead of nothing —
+//     which is where a lease's main terms live and covers most assistant questions. (A
+//     truly enormous scan can't be transcribed verbatim in one 150s call at all — a
+//     digital/text PDF caches fully for free; a scan caches its first pages.)
+const TRANSCRIBE_TIMEOUT_MS = 115_000;
+const TRANSCRIBE_MAX_TOKENS = 12_000;
 function transcribeWithTimeout(model: string, docBlock: Block, ms: number): Promise<string | null> {
   return Promise.race([
-    transcribeDocument(model, docBlock),
+    transcribeDocument(model, docBlock, { timeoutMs: ms, maxTokens: TRANSCRIBE_MAX_TOKENS }),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
   ]);
 }
