@@ -1253,9 +1253,12 @@ export const listCamLineItems = (propertyId, year) =>
 
 // Re-sum the line items and write the total into expense_records.cam_total,
 // preserving taxes/roof. This is the "adds everything up" step — pure code.
+// Only BILLABLE items count (billable !== false — a missing key reads billable,
+// matching the DB default): "not billed to tenants" buckets are itemized for the
+// landlord's records but never roll into the CAM billed back through shares.
 async function syncCamTotal(propertyId, year) {
   const items = await listCamLineItems(propertyId, year);
-  const camSum = items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
+  const camSum = items.filter((it) => it.billable !== false).reduce((s, it) => s + (Number(it.amount) || 0), 0);
   const existing = await getExpenseRecord(propertyId, year);
   await upsertExpenseRecord({
     property_id: propertyId,
@@ -1267,11 +1270,11 @@ async function syncCamTotal(propertyId, year) {
   return camSum;
 }
 
-export async function addCamLineItem({ property_id, year, label, amount, import_id = null }) {
+export async function addCamLineItem({ property_id, year, label, amount, import_id = null, billable = true }) {
   const item = await one(
     supabase
       .from('cam_line_items')
-      .insert({ property_id, year, label, amount, ...(import_id ? { import_id } : {}), owner_id: await ownerId() })
+      .insert({ property_id, year, label, amount, billable: billable !== false, ...(import_id ? { import_id } : {}), owner_id: await ownerId() })
       .select()
       .single()
   );
@@ -2794,12 +2797,13 @@ export async function listStatementImports(propertyId) {
 // portfolio), open reconciliation balances, the saved rules, the live import-hash
 // set (the duplicate guard), and the account→property memory.
 export async function getStatementMatchContext(propertyId, year) {
-  const [properties, rules, allImports, hashRows, reconRows] = await Promise.all([
+  const [properties, rules, allImports, hashRows, reconRows, camItems] = await Promise.all([
     rows(supabase.from('properties').select('id,name')),
     listImportRules(),
     rows(supabase.from('statement_imports').select('*')),
     rows(supabase.from('payments').select('import_hash').not('import_hash')),
     rows(supabase.from('v_invoice_balances').select('*').eq('kind', 'reconciliation')),
+    rows(supabase.from('cam_line_items').select('label,billable')),
   ]);
   const nameOf = Object.fromEntries((properties || []).map((p) => [p.id, p.name]));
 
@@ -2848,7 +2852,24 @@ export async function getStatementMatchContext(propertyId, year) {
     if (imp.account_hint) accountMemory[imp.account_hint] = { property_id: imp.property_id, property_name: nameOf[imp.property_id] || null };
   }
 
-  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory };
+  // The owner's expense BUCKETS — every distinct label already itemized (across
+  // all properties, so a bucket named once is offered everywhere) plus the labels
+  // saved on rules. billable=false labels form the "not billed to tenants" family.
+  // The review screen merges these with the keyword table's built-in labels.
+  const bucketMap = new Map();
+  for (const it of camItems || []) {
+    const label = String(it.label || '').trim();
+    if (label) bucketMap.set(label.toLowerCase(), { label, billable: it.billable !== false });
+  }
+  for (const r of rules || []) {
+    const label = String(r.cam_label || '').trim();
+    if (!label || bucketMap.has(label.toLowerCase())) continue;
+    if (r.target_kind === 'expense_cam') bucketMap.set(label.toLowerCase(), { label, billable: true });
+    else if (r.target_kind === 'expense_other') bucketMap.set(label.toLowerCase(), { label, billable: false });
+  }
+  const buckets = [...bucketMap.values()].sort((a, b) => a.label.localeCompare(b.label));
+
+  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory, buckets };
 }
 
 // Write everything the user confirmed on the review screen — exactly once, and
@@ -2891,8 +2912,8 @@ export async function applyStatementImport({ propertyId, year, fileName, account
         crossProperty[e.property_id] = (crossProperty[e.property_id] || 0) + 1;
       }
     } else if (e.type === 'cam') {
-      const item = await addCamLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Imported expense', amount: Number(e.amount), import_id: imp.id });
-      applied.push({ kind: 'cam', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: e.label || 'Imported expense', hash: e.hash });
+      const item = await addCamLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Imported expense', amount: Number(e.amount), import_id: imp.id, billable: e.billable !== false });
+      applied.push({ kind: 'cam', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: e.label || 'Imported expense', billable: e.billable !== false, hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
     } else if (e.type === 'tax' || e.type === 'roof') {
       const cur = await getExpenseRecord(e.property_id, e.year);
@@ -2965,4 +2986,35 @@ export async function undoStatementImport(imp) {
 // verbatim; every returned row still passes normalizeStatementRows before matching.
 export async function extractBankStatement({ path }) {
   return invokeFunction('extract-bank-statement', { path });
+}
+
+// The click-gated 🤖 helper (~1–2¢ per click): given the UNRECOGNIZED money-out
+// lines and the owner's known bucket names, one small Haiku call suggests a bucket
+// per line. Naming only — never amounts, never auto-booking: the review screen
+// shows each suggestion unchecked and nothing writes without the user's say-so.
+export async function suggestExpenseBuckets({ lines, buckets }) {
+  return invokeFunction('suggest-buckets', { lines, buckets });
+}
+
+// The lease-stated estimated CAM & tax, read from the cached AI extraction on the
+// lease's linked file (the 7/13 `expense_estimates` supplement stores it there as
+// field-shaped { value, source_quote }). Used to PRE-FILL the estimate editor for
+// a lease imported before estimates existed — the figure only starts billing when
+// the landlord saves it. Returns { camTaxAnnual, roofAnnual, quote } or null.
+export async function getLeaseStatedEstimate(leaseId) {
+  const lease = await one(supabase.from('leases').select('lease_file_id').eq('id', leaseId).single());
+  if (!lease?.lease_file_id) return null;
+  const { data } = await supabase.from('lease_files').select('extraction_raw').eq('id', lease.lease_file_id).limit(1);
+  const raw = data?.[0]?.extraction_raw;
+  if (!raw) return null;
+  const num = (f) => (f && f.value != null && Number(f.value) > 0 ? Number(f.value) : null);
+  const cam = num(raw.est_cam_annual);
+  const tax = num(raw.est_tax_annual);
+  const roof = num(raw.est_roof_annual);
+  if (cam == null && tax == null && roof == null) return null;
+  return {
+    camTaxAnnual: cam != null || tax != null ? (cam || 0) + (tax || 0) : null,
+    roofAnnual: roof,
+    quote: raw.est_cam_annual?.source_quote || raw.est_tax_annual?.source_quote || raw.est_roof_annual?.source_quote || null,
+  };
 }

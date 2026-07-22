@@ -167,7 +167,18 @@ export default function LeaseDetailPage() {
   // no SF is on file); the stored value is always the annual figure.
   const estPerSf = Number(lease.square_footage) > 0;
   const estValue = (annual) => (annual == null ? '' : estPerSf ? Math.round((annual / lease.square_footage) * 100) / 100 : annual);
-  const estHint = (annual) => (annual != null && estPerSf ? `= ${money(annual)}/yr — ` : '');
+  // When no estimate is saved but the cached AI read found one STATED in the lease,
+  // say so in the hint — the figure only starts billing once typed + saved here (or
+  // adopted in the Financials estimate editor, which pre-fills it).
+  const statedEst = (f) => {
+    const v = extractionRaw?.[f]?.value;
+    return v != null && Number(v) > 0 ? Number(v) : null;
+  };
+  const estHint = (annual, field) => {
+    if (annual != null) return estPerSf ? `= ${money(annual)}/yr — ` : '';
+    const v = field ? statedEst(field) : null;
+    return v != null ? `the lease states ${money(v)}/yr — enter it to start billing it; ` : '';
+  };
   // Where the lease stands TODAY — drives the "Currently in" header (label, the current
   // rent period's window, the rent in effect, and the next scheduled step).
   const phase = currentPhase({ lease, escalations, renewals, addendums, abatements });
@@ -352,8 +363,8 @@ export default function LeaseDetailPage() {
           <EditField label="Lease start" type="date" value={lease.lease_start || ''} onCommit={(raw) => anchorStart.mutate(raw)} conf={conf('lease_start')} hint="dates the rent schedule" />
           <EditField label="Lease termination" type="date" value={lease.lease_termination_date || ''} onCommit={commit('lease_termination_date')} conf={conf('lease_termination_date')} />
           <EditField label="Tax/CAM share override (%)" type="number" value={lease.share_override_pct != null ? Math.round(lease.share_override_pct * 1000) / 10 : ''} onCommit={commit('share_override_pct')} hint="blank = pro-rata by SF" />
-          <EditField label={estPerSf ? 'Est. CAM ($/SF/yr)' : 'Est. CAM (annual)'} type="number" prefix="$" value={estValue(lease.est_cam_annual)} onCommit={commit('est_cam_annual')} hint={`${estHint(lease.est_cam_annual)}what the tenant pays during the year — reconciled at year end; blank = bill actuals`} />
-          <EditField label={estPerSf ? 'Est. taxes ($/SF/yr)' : 'Est. taxes (annual)'} type="number" prefix="$" value={estValue(lease.est_tax_annual)} onCommit={commit('est_tax_annual')} hint={`${estHint(lease.est_tax_annual)}blank = bill the known tax figure`} />
+          <EditField label={estPerSf ? 'Est. CAM ($/SF/yr)' : 'Est. CAM (annual)'} type="number" prefix="$" value={estValue(lease.est_cam_annual)} onCommit={commit('est_cam_annual')} hint={`${estHint(lease.est_cam_annual, 'est_cam_annual')}what the tenant pays during the year — reconciled at year end; blank = bill actuals`} />
+          <EditField label={estPerSf ? 'Est. taxes ($/SF/yr)' : 'Est. taxes (annual)'} type="number" prefix="$" value={estValue(lease.est_tax_annual)} onCommit={commit('est_tax_annual')} hint={`${estHint(lease.est_tax_annual, 'est_tax_annual')}blank = bill the known tax figure`} />
           {lease.roof_responsible && (
             <EditField label={estPerSf ? 'Est. roof ($/SF/yr)' : 'Est. roof (annual)'} type="number" prefix="$" value={estValue(lease.est_roof_annual)} onCommit={commit('est_roof_annual')} hint={`${estHint(lease.est_roof_annual)}roof is billed separately — same estimate → reconcile treatment`} />
           )}

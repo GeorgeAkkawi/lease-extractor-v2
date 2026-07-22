@@ -70,12 +70,26 @@ describe('LedgerPage — the rent ledger grid', () => {
     await waitFor(() => expect(screen.getByText(/Review statement/)).toBeTruthy());
     // Both groups render, the expense property is stated, and lines parsed honestly.
     expect(screen.getByText(/Money in · 3/)).toBeTruthy();
-    expect(screen.getByText(/Money out · 3/)).toBeTruthy();
+    expect(screen.getByText(/Money out · 6/)).toBeTruthy();
     expect(screen.getByText(/Expenses will be recorded on:/)).toBeTruthy();
-    expect(screen.getByText(/6 lines parsed · 0 skipped/)).toBeTruthy();
+    expect(screen.getByText(/9 lines parsed · 0 skipped/)).toBeTruthy();
     expect(screen.getByText('✓ Accept all confident')).toBeTruthy();
     // The mortgage line auto-suggests ignore with its reason shown.
     expect(screen.getByText(/mortgage payment is not a recoverable CAM expense/)).toBeTruthy();
+    // The keyword hits land in named BUCKETS (0064): garbage → Waste removal,
+    // snow → Snow removal, each pre-picked in the bucket dropdown.
+    const pickValues = Array.from(document.querySelectorAll('.stmt-table select')).map((s) => s.value);
+    expect(pickValues).toContain('cam:Waste removal');
+    expect(pickValues).toContain('cam:Snow removal');
+    // The unrecognized Home Depot line surfaces the click-gated 🤖 button.
+    expect(screen.getByText(/🤖 Suggest buckets for 1 line/)).toBeTruthy();
+    // Clicking it sets a suggestion (canned in demo) with the AI chip — UNCHECKED.
+    fireEvent.click(screen.getByText(/🤖 Suggest buckets for 1 line/));
+    await waitFor(() => expect(screen.getAllByText('AI').length).toBeGreaterThan(0));
+    const aiPick = Array.from(document.querySelectorAll('.stmt-table select')).map((s) => s.value);
+    expect(aiPick).toContain('cam:Repairs & supplies');
+    const aiRow = screen.getByTitle('AI suggestion — tick the checkbox to accept it').closest('tr');
+    expect(aiRow.querySelector('input[type="checkbox"]').checked).toBe(false);
     // Save whatever the matcher pre-checked (the clean deposits + tax + CAM lines).
     fireEvent.click(screen.getByText('Save to ledger'));
     await waitFor(() => expect(screen.getByText(/saved · Imported sample-statement.pdf/)).toBeTruthy());

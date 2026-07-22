@@ -13,6 +13,7 @@ import {
   undoReconciliation,
   undoReconciliationRefund,
   draftCamReconciliationEmail,
+  getLeaseStatedEstimate,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
 import { allocatePayments, ledgerRowSummary } from '../lib/ledger';
@@ -429,6 +430,23 @@ function EstimateEditor({ share, onSave, onCancel, saving }) {
       : null;
   const [camTax, setCamTax] = useState(toInput(camTaxAnnual));
   const [roof, setRoof] = useState(toInput(share.est_roof_annual));
+  const [touched, setTouched] = useState(false);
+
+  // When NO estimate is saved yet, pull the figure the LEASE itself states (the
+  // cached AI read's expense_estimates, shipped 7/13) and pre-fill the input with
+  // it — one Save adopts it as the billed estimate. Editable as always; the lease's
+  // figure never starts billing on its own, only when saved here.
+  const { data: stated } = useQuery({
+    queryKey: ['leaseStatedEstimate', share.lease_id],
+    queryFn: () => getLeaseStatedEstimate(share.lease_id),
+    enabled: camTaxAnnual == null,
+    staleTime: 5 * 60 * 1000,
+  });
+  const statedPrefilled = camTaxAnnual == null && !touched && stated?.camTaxAnnual != null;
+  useEffect(() => {
+    if (statedPrefilled) setCamTax(toInput(stated.camTaxAnnual));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statedPrefilled, stated]);
 
   // What the landlord types (a $/SF rate when the SF is known) → the annual $ saved.
   const annualOf = (v) => (v === '' || v == null ? null : perSf ? round2(Number(v) * sfNum) : Number(v));
@@ -444,7 +462,12 @@ function EstimateEditor({ share, onSave, onCancel, saving }) {
     <div className="ledger-edit">
       <label>
         <span>CAM &amp; tax {unit}</span>
-        <input className="text-input num" type="number" step="any" min="0" value={camTax} onChange={(e) => setCamTax(e.target.value)} placeholder={ph(actualCamTax)} />
+        <input className="text-input num" type="number" step="any" min="0" value={camTax} onChange={(e) => { setTouched(true); setCamTax(e.target.value); }} placeholder={ph(actualCamTax)} />
+        {statedPrefilled && (
+          <span className="muted" style={{ fontSize: 11, display: 'block', marginTop: 3 }} title={stated.quote ? `The lease says: “${stated.quote}”` : 'Read from the lease document by the AI extractor'}>
+            from the lease{stated.quote ? `: “${String(stated.quote).slice(0, 70)}${String(stated.quote).length > 70 ? '…' : ''}”` : ''} — Save to start billing it
+          </span>
+        )}
       </label>
       {share.roof_responsible && (
         <label>

@@ -7,12 +7,15 @@ import {
   getPropertyTotals,
   getExpenseRecord,
   upsertExpenseRecord,
+  undoStatementImport,
 } from '../lib/api';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import FinancialsTabs from '../components/FinancialsTabs';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
+import StatementReview from '../components/StatementReview';
+import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
 import MutationError from '../components/MutationError';
 import UndoStrip from '../components/UndoStrip';
 import { money, psf, sf } from '../lib/format';
@@ -35,6 +38,16 @@ export default function PropertyFinancialsPage() {
     { label: prop?.name || '…' },
   ], true);
 
+  // Statement import from the Expense entry — the same pipeline as the Ledger tab
+  // (two doors, one flow): the review swaps in full-page, Save books everything,
+  // then the results strip with ↩ Undo shows here beside the expenses it created.
+  const [importDoc, setImportDoc] = useState(null);
+  const [imported, setImported] = useState(null);
+  const undoImport = useMutation({
+    mutationFn: (imp) => undoStatementImport(imp),
+    onSuccess: () => { setImported(null); settleStatementImport(qc); },
+  });
+
   const totalSf = totals?.total_sf ?? 0;
   const buildingSf = (totals?.building_sf ?? Number(prop?.building_sf)) || 0;
   const occupancy = totals?.occupancy != null ? Math.round(totals.occupancy * 100) : null;
@@ -47,6 +60,36 @@ export default function PropertyFinancialsPage() {
   const margin = revenue > 0 ? Math.round((noi / revenue) * 100) : null;
   const roofRecovered = totals?.roof_recovered ?? 0;
   const roofUnrecovered = totals?.roof_unrecovered ?? roof;
+
+  if (importDoc) {
+    return (
+      <div>
+        <div className="page-head">
+          <div>
+            <h1>{prop?.name || '…'}</h1>
+            <div className="muted">Expense entry · FY {year} — reviewing {importDoc.fileName}</div>
+          </div>
+        </div>
+        <FinancialsTabs corpId={corpId} propId={propId} />
+        <div className="panel">
+          <StatementReview
+            propertyId={propId}
+            year={year}
+            fileName={importDoc.fileName}
+            accountHint={importDoc.accountHint}
+            parsed={importDoc.parsed}
+            pdfLane={importDoc.pdfLane}
+            onCancel={() => setImportDoc(null)}
+            onSaved={(res) => {
+              setImportDoc(null);
+              setImported({ ...res, fileName: importDoc.fileName });
+              settleStatementImport(qc);
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -98,8 +141,18 @@ export default function PropertyFinancialsPage() {
       <div className="panel">
         <div className="panel-head">
           <strong>Expense entry · FY {year}</strong>
-          <span className="muted">Taxes & roof below; CAM is itemized. PSF recalculates instantly.</span>
+          <span className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <span className="muted">Taxes & roof below; CAM is itemized.</span>
+            <ImportStatementButton onReady={setImportDoc} />
+          </span>
         </div>
+        <ImportResultsStrip
+          imported={imported}
+          undoPending={undoImport.isPending}
+          onUndo={() => undoImport.mutate(imported.import)}
+          onDismiss={() => setImported(null)}
+        />
+        <MutationError of={[undoImport]} />
         <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} />
         <ExpenseForm propId={propId} year={year} expense={expense} qc={qc} />
         <div className="cam-block">

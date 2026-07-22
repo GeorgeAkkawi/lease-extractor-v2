@@ -109,7 +109,7 @@ export function seed() {
       // = 18,800) → a live "+$700 tenant owes", demoing the Reconcile flow. City Dental
       // stays estimate-free to demo the bill-actuals fallback.
       { id: 'lease-1', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'Bright Coffee Co.', tenant_email: 'sam@brightcoffee.example', tenant_contact_name: 'Sam Rivera', premises_address: '100 Maple St — Suite 120', square_footage: 2000, base_rent: 60000, lease_start: iso(Y - 2, 1, 1), lease_termination_date: iso(Y + 1, 12, 31), lease_terms: 'NNN lease, 5 year term.', share_override_pct: null, roof_responsible: true, no_renewal_option: false, est_cam_annual: 6500, est_tax_annual: 10000, est_roof_annual: 1500, lease_text: leaseText['lease-1'], source: 'manual', extraction_status: 'reviewed' },
-      { id: 'lease-2', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'City Dental', tenant_email: 'billing@citydental.example', tenant_email_2: 'dana.lee@citydental.example', tenant_contact_name: 'Dana Lee', premises_address: '100 Maple St — Suite 30', square_footage: 3000, base_rent: 84000, lease_start: iso(Y - 1, 6, 1), lease_termination_date: iso(2026, 5, 31), lease_terms: 'Includes one 5-year renewal option.', share_override_pct: null, roof_responsible: false, no_renewal_option: false, lease_text: leaseText['lease-2'], source: 'manual', extraction_status: 'reviewed' },
+      { id: 'lease-2', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'City Dental', tenant_email: 'billing@citydental.example', tenant_email_2: 'dana.lee@citydental.example', tenant_contact_name: 'Dana Lee', premises_address: '100 Maple St — Suite 30', square_footage: 3000, base_rent: 84000, lease_start: iso(Y - 1, 6, 1), lease_termination_date: iso(2026, 5, 31), lease_terms: 'Includes one 5-year renewal option.', share_override_pct: null, roof_responsible: false, no_renewal_option: false, lease_text: leaseText['lease-2'], source: 'manual', extraction_status: 'reviewed', lease_file_id: 'lf-1' },
       // Ends soon with no renewal option on file → demonstrates the "lease ending —
       // no renewal" reminder, and the manual no-renewal flag set to confirmed.
       { id: 'lease-3', owner_id: DEMO_USER.id, property_id: 'prop-2', tenant_name: 'Northwind Books', tenant_email: 'accounts@northwindbooks.example', tenant_contact_name: 'Jordan Pak', premises_address: '250 Oak Ave — Unit 2', square_footage: 5000, base_rent: 125000, lease_start: iso(Y - 3, 1, 1), lease_termination_date: soon, lease_terms: 'Tenant pays 40% of CAM by agreement.', share_override_pct: 0.4, roof_responsible: false, no_renewal_option: true, lease_text: leaseText['lease-3'], source: 'ai_extracted', extraction_status: 'reviewed', ai_confidence: { square_footage: 0.99, base_rent: 0.97, lease_termination_date: 0.72, lease_terms: 0.6 } },
@@ -136,9 +136,12 @@ export function seed() {
       { id: 'exp-4', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y - 1, taxes_total: 36000, cam_total: 27000, roof_total: 10000 },
     ],
     cam_line_items: [
-      { id: 'cam-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Landscaping', amount: 8000, created_at: iso(Y, 1, 2) },
-      { id: 'cam-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Snow removal', amount: 4000, created_at: iso(Y, 1, 3) },
-      { id: 'cam-3', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Security', amount: 6000, created_at: iso(Y, 1, 4) },
+      { id: 'cam-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Landscaping', amount: 8000, billable: true, created_at: iso(Y, 1, 2) },
+      { id: 'cam-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Snow removal', amount: 4000, billable: true, created_at: iso(Y, 1, 3) },
+      { id: 'cam-3', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Security', amount: 6000, billable: true, created_at: iso(Y, 1, 4) },
+      // A "not billed to tenants" bucket (0064): itemized for the landlord's own
+      // records, EXCLUDED from the CAM total — demos the second bucket family.
+      { id: 'cam-4', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Owner legal fees', amount: 1200, billable: false, created_at: iso(Y, 1, 5) },
     ],
     financial_snapshots: [
       // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"
@@ -196,7 +199,18 @@ export function seed() {
       { id: 'pay-3', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 8208.33, paid_date: iso(Y, 2, 4), method: 'ach', note: null, period_month: 2, created_at: iso(Y, 2, 4) },
       { id: 'pay-4', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 4000, paid_date: iso(Y, 3, 10), method: 'check', note: 'Partial', created_at: iso(Y, 3, 10) },
     ],
-    lease_files: [],
+    lease_files: [
+      // City Dental's cached AI read: the lease STATES an estimated CAM & tax figure
+      // but no estimate is saved on the lease — so the Financials estimate editor
+      // opens pre-filled "from the lease" ($12,000/yr = $4.00/SF over 3,000 SF).
+      {
+        id: 'lf-1', owner_id: DEMO_USER.id, lease_id: 'lease-2', file_name: 'city-dental-lease.pdf',
+        extraction_raw: {
+          est_cam_annual: { value: 12000, confidence: 0.88, source_quote: 'Tenant shall pay estimated CAM and tax charges of $4.00 per square foot per annum, reconciled annually', page: 4 },
+        },
+        created_at: iso(Y - 1, 5, 20),
+      },
+    ],
     // Starts empty; the auto-renewal engine populates this on load (e.g. City
     // Dental, whose term has passed and has a pending renewal option).
     notifications: [],

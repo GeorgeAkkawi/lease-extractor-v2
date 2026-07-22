@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useParams, Navigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
@@ -12,17 +12,14 @@ import {
   listStatementImports,
   undoStatementImport,
   listSnapshots,
-  uploadDoc,
-  extractBankStatement,
   localDateIso,
 } from '../lib/api';
-import { DEMO_MODE } from '../lib/supabaseClient';
 import { allocatePayments, componentizeSchedule, ledgerRowSummary, snapshotCollectionSummary } from '../lib/ledger';
-import { parseBankStatementCsv, normalizeStatementRows, applyBalanceCheck } from '../lib/statementParse';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
 import FinancialsTabs from '../components/FinancialsTabs';
 import StatementReview from '../components/StatementReview';
+import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
 import MutationError from '../components/MutationError';
 import { money, sf, fmtDate } from '../lib/format';
 
@@ -58,12 +55,9 @@ export default function LedgerPage() {
   const [note, setNote] = useState('');
   // Statement import: null | { fileName, accountHint, parsed, pdfLane } while reviewing.
   const [importDoc, setImportDoc] = useState(null);
-  const [importBusy, setImportBusy] = useState(false);
-  const [importErr, setImportErr] = useState('');
   // The post-save results strip: { summary, import, fileName }.
   const [imported, setImported] = useState(null);
   const [showRegister, setShowRegister] = useState(false);
-  const fileRef = useRef(null);
   const { data: register = [] } = useQuery({
     queryKey: ['statementImports', propId],
     queryFn: () => listStatementImports(propId),
@@ -88,70 +82,9 @@ export default function LedgerPage() {
   };
 
   // A statement import can touch OTHER properties' tenants (cross-property deposits)
-  // plus this property's expenses — refresh every surface that money moved.
-  const settleImport = () => {
-    qc.invalidateQueries({ queryKey: ['propertyRentRoll'] });
-    qc.invalidateQueries({ queryKey: ['monthlyRent'] });
-    qc.invalidateQueries({ queryKey: ['invoices'] });
-    qc.invalidateQueries({ queryKey: ['payments'] });
-    qc.invalidateQueries({ queryKey: ['invoicesForProperty'] });
-    qc.invalidateQueries({ queryKey: ['tenantShares'] });
-    qc.invalidateQueries({ queryKey: ['propertyTotals'] });
-    qc.invalidateQueries({ queryKey: ['expenseRecord'] });
-    qc.invalidateQueries({ queryKey: ['camLineItems'] });
-    qc.invalidateQueries({ queryKey: ['corpRollups'] });
-    qc.invalidateQueries({ queryKey: ['historyEvents'] });
-    qc.invalidateQueries({ queryKey: ['statementImports'] });
-    qc.invalidateQueries({ queryKey: ['statementContext'] });
-    qc.invalidateQueries({ queryKey: ['reconciliations'] });
-  };
-
-  async function openStatementFile(file) {
-    setImportErr('');
-    setImportBusy(true);
-    try {
-      if (/\.csv$/i.test(file.name)) {
-        // CSV lane — parsed right here, $0, never uploaded.
-        const parsed = parseBankStatementCsv(await file.text(), { fileName: file.name });
-        setImportDoc({ fileName: file.name, accountHint: parsed.accountHint, parsed, pdfLane: false });
-      } else {
-        // PDF lane — one transcription read (~5–15¢); the transcript still passes
-        // the same validation gate + balance check the CSV lane gets.
-        const path = await uploadDoc(file);
-        const res = await extractBankStatement({ path });
-        const gate = normalizeStatementRows(res?.transactions || []);
-        const checked = applyBalanceCheck(gate.transactions);
-        setImportDoc({
-          fileName: file.name,
-          accountHint: null,
-          parsed: { transactions: checked.transactions, skippedLines: gate.skippedLines, warnings: checked.warnings },
-          pdfLane: true,
-        });
-      }
-    } catch (e) {
-      setImportErr(e?.message || 'Could not read that statement.');
-    } finally {
-      setImportBusy(false);
-    }
-  }
-
-  async function openSampleStatement() {
-    // Demo: the canned transcription runs the REAL gate + matcher — no AI, no files.
-    setImportErr('');
-    setImportBusy(true);
-    try {
-      const res = await extractBankStatement({ path: 'demo-sample' });
-      const gate = normalizeStatementRows(res?.transactions || []);
-      setImportDoc({
-        fileName: 'sample-statement.pdf',
-        accountHint: '••4821',
-        parsed: { transactions: gate.transactions, skippedLines: gate.skippedLines, warnings: [] },
-        pdfLane: true,
-      });
-    } finally {
-      setImportBusy(false);
-    }
-  }
+  // plus this property's expenses — refresh every surface that money moved (shared
+  // helper, so the Financials-page host invalidates the identical set).
+  const settleImport = () => settleStatementImport(qc);
 
   const undoImport = useMutation({
     mutationFn: (imp) => undoStatementImport(imp),
@@ -303,19 +236,9 @@ export default function LedgerPage() {
                 {catchUpAll.isPending ? 'Recording…' : `✓ Mark everyone paid through ${MONTHS[throughM - 1]}`}
               </button>
             )}
-            {DEMO_MODE && (
-              <button type="button" className="secondary btn-sm" disabled={importBusy} onClick={openSampleStatement} title="Run the bundled sample statement through the real import flow — no files needed">
-                Try a sample statement
-              </button>
-            )}
-            <button type="button" className="secondary btn-sm" disabled={importBusy} onClick={() => fileRef.current?.click()} title="Import a bank statement — CSV reads instantly and free; a PDF uses one AI transcription read (~5–15¢)">
-              {importBusy ? 'Reading…' : '⬆ Import statement'}
-            </button>
-            <input ref={fileRef} type="file" accept=".csv,.pdf" style={{ display: 'none' }}
-              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) openStatementFile(f); }} />
+            <ImportStatementButton onReady={setImportDoc} />
           </span>
         </div>
-        {importErr && <p className="note-msg danger" style={{ marginBottom: 10 }}>{importErr}</p>}
         <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 12 }}>
           <strong>✓</strong> collected · <strong>◐</strong> partly collected · amber months have come due and aren't covered · <strong>—</strong> before the tenant moved in · <strong>Free</strong> abated.
           Click a box to record that month (or undo). A lump payment with no month recorded fills the earliest months first.
@@ -467,19 +390,12 @@ export default function LedgerPage() {
         </div>
         )}
 
-        {imported && (
-          <div className="undo-strip" style={{ marginTop: 12 }}>
-            <span>
-              saved · Imported {imported.fileName} — {imported.summary.paymentsCount} payment{imported.summary.paymentsCount === 1 ? '' : 's'} · {money(imported.summary.paymentsTotal)} in
-              {' · '}{imported.summary.expensesCount} expense{imported.summary.expensesCount === 1 ? '' : 's'} · {money(imported.summary.expensesTotal)} out
-              {Object.keys(imported.summary.crossProperty || {}).length > 0 && (
-                <> · {Object.values(imported.summary.crossProperty).reduce((s, n) => s + n, 0)} payment(s) posted to other properties' tenants — they show on those ledgers</>
-              )}
-            </span>
-            <button type="button" className="ghost btn-sm" disabled={undoImport.isPending} onClick={() => undoImport.mutate(imported.import)}>↩ Undo</button>
-            <button type="button" className="icon-btn" title="Dismiss" onClick={() => setImported(null)}>✕</button>
-          </div>
-        )}
+        <ImportResultsStrip
+          imported={imported}
+          undoPending={undoImport.isPending}
+          onUndo={() => undoImport.mutate(imported.import)}
+          onDismiss={() => setImported(null)}
+        />
         <MutationError of={[undoImport]} />
 
         {register.length > 0 && (

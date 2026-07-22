@@ -6,8 +6,10 @@ import {
   listSnapshots,
   applyStatementImport,
   saveImportRule,
+  suggestExpenseBuckets,
 } from '../lib/api';
-import { matchStatement, suggestRulePattern } from '../lib/statementMatch';
+import { matchStatement, suggestRulePattern, CAM_KEYWORD_LABELS } from '../lib/statementMatch';
+import { DEMO_MODE } from '../lib/supabaseClient';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
 
@@ -19,9 +21,9 @@ import MutationError from './MutationError';
 // top (deposits self-route to their tenant's own property regardless), with a
 // switch banner when the deposits vote for a different property.
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —' };
-const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info' };
-const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?' };
+const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —' };
+const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info', ai: 'info' };
+const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
 export default function StatementReview({ propertyId, year, fileName, accountHint, parsed, pdfLane = false, onCancel, onSaved }) {
   const { data: ctx } = useQuery({
@@ -44,10 +46,13 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   });
   const closedYears = useMemo(() => new Set((snapshots || []).map((s) => Number(s.year))), [snapshots]);
 
-  // Per-row user overrides, keyed by row index: { checked, pick, month, always }.
-  // `pick` = 'lease:{id}' | 'expense_tax' | 'expense_cam' | 'expense_roof' | 'ignore'.
+  // Per-row user overrides, keyed by row index: { checked, pick, month, always, ai }.
+  // `pick` = 'lease:{id}' | 'cam:{bucket}' | 'other:{bucket}' | 'expense_tax' |
+  // 'expense_cam' | 'expense_roof' | 'ignore'.
   const [overrides, setOverrides] = useState({});
   const setOv = (i, patch) => setOverrides((o) => ({ ...o, [i]: { ...o[i], ...patch } }));
+  // Buckets created in THIS review session ("＋ New bucket…") — offered to every row.
+  const [sessionBuckets, setSessionBuckets] = useState([]);
 
   // Draft rules from this session's "always" ticks re-apply to the OTHER lines of
   // this same import immediately (a garbled payee fixed once fixes the whole file).
@@ -59,7 +64,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       if (!txn) continue;
       const pattern = suggestRulePattern(txn.description);
       const resolved = resolvePick(ov.pick);
-      if (pattern && resolved) out.push({ pattern, target_kind: resolved.kind, lease_id: resolved.lease_id || null, cam_label: null, property_id: expenseProp });
+      if (pattern && resolved) out.push({ pattern, target_kind: resolved.kind, lease_id: resolved.lease_id || null, cam_label: resolved.label || null, property_id: expenseProp });
     }
     return out;
   }, [overrides, parsed.transactions, expenseProp]);
@@ -82,6 +87,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const ov = overrides[i] || {};
       const pick = ov.pick != null ? resolvePick(ov.pick) : null;
       const kind = pick ? pick.kind : row.kind === 'unmatched' ? 'ignore' : row.kind;
+      const label = pick ? pick.label || null : row.label || null;
       const leaseId = pick ? pick.lease_id : row.candidate?.lease_id || null;
       const tenant = leaseId ? ctx.tenants.find((t) => t.lease_id === leaseId) : null;
       // Recompute recon routing when the user re-picked the tenant by hand.
@@ -91,9 +97,61 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const checked = ov.checked !== undefined ? ov.checked : defaultChecked;
       // An ignored/unresolved line writes nothing, whatever the checkbox says.
       const writable = kind === 'tenant' ? !!(leaseId && tenant) : kind.startsWith('expense_');
-      return { row, i, kind, leaseId, tenant, toRecon, month: toRecon ? null : month, checked: writable && checked, always: !!ov.always };
+      return { row, i, kind, label, leaseId, tenant, toRecon, month: toRecon ? null : month, checked: writable && checked, always: !!ov.always, ai: !!ov.ai };
     });
   }, [matched, overrides, ctx]);
+
+  // Every bucket the dropdowns offer: the owner's saved buckets + the keyword
+  // table's built-ins + any created in this session. First writer wins per name.
+  const bucketOptions = useMemo(() => {
+    const map = new Map();
+    const add = (label, billable) => {
+      const clean = String(label || '').trim();
+      if (clean && !map.has(clean.toLowerCase())) map.set(clean.toLowerCase(), { label: clean, billable });
+    };
+    for (const b of sessionBuckets) add(b.label, b.billable);
+    for (const b of ctx?.buckets || []) add(b.label, b.billable !== false);
+    for (const l of CAM_KEYWORD_LABELS) add(l, true);
+    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [ctx, sessionBuckets]);
+  const addSessionBucket = (label, billable) =>
+    setSessionBuckets((s) => (s.some((b) => b.label.toLowerCase() === label.toLowerCase()) ? s : [...s, { label, billable }]));
+
+  // 🤖 Suggest buckets — click-gated (~1–2¢), only for the money-out lines nothing
+  // recognized. Suggestion-only: picks are set with an "AI" chip but stay UNCHECKED,
+  // so nothing books without the user's tick (same rule as unknown money-out).
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiErr, setAiErr] = useState('');
+  const unrecognized = useMemo(
+    () => resolved.filter((r) => r.row.txn.direction === 'out' && !r.row.duplicate && !overrides[r.i]?.pick && r.row.kind === 'ignore' && r.row.confidence === 'none'),
+    [resolved, overrides]
+  );
+  async function suggestBuckets() {
+    setAiErr('');
+    setAiBusy(true);
+    try {
+      const res = await suggestExpenseBuckets({
+        lines: unrecognized.map((r) => ({ index: r.i, description: r.row.txn.description, amount: r.row.txn.amount })),
+        buckets: bucketOptions.map((b) => b.label),
+      });
+      const adds = [];
+      const patch = {};
+      for (const s of res?.suggestions || []) {
+        const target = unrecognized.find((r) => r.i === Number(s.index));
+        const label = String(s.bucket || '').trim();
+        if (!target || !label) continue;
+        const billable = s.billable !== false;
+        if (!bucketOptions.some((b) => b.label.toLowerCase() === label.toLowerCase())) adds.push({ label, billable });
+        patch[target.i] = { ...overrides[target.i], pick: billable ? `cam:${label}` : `other:${label}`, ai: true };
+      }
+      if (adds.length) setSessionBuckets((s) => [...s, ...adds]);
+      setOverrides((o) => ({ ...o, ...patch }));
+    } catch (e) {
+      setAiErr(e?.message || 'Could not get suggestions — sort the lines by hand instead.');
+    } finally {
+      setAiBusy(false);
+    }
+  }
 
   const save = useMutation({
     mutationFn: async () => {
@@ -107,17 +165,26 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             period_month: r.month || null, reconInvoiceId: r.toRecon ? r.tenant.reconInvoiceId : null, hash: r.row.hash,
           });
         } else if (r.kind === 'expense_cam') {
-          entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: r.row.label || 'Imported expense', hash: r.row.hash });
+          entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: r.label || 'Imported expense', billable: true, hash: r.row.hash });
+        } else if (r.kind === 'expense_other') {
+          entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: r.label || 'Other', billable: false, hash: r.row.hash });
         } else if (r.kind === 'expense_tax') {
           entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
         } else if (r.kind === 'expense_roof') {
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
         }
       }
-      // Persist this session's "always match" rules (best-effort — a rule failure
-      // must not lose the import itself).
-      for (const dr of draftRules) {
-        try { await saveImportRule(dr); } catch { /* reviewed next time */ }
+      // Persist this session's "always match" rules from the FINAL decisions (so a
+      // tick on an untouched suggestion saves too, carrying its bucket label).
+      // Best-effort — a rule failure must not lose the import itself.
+      for (const r of resolved) {
+        if (!r.always) continue;
+        const pattern = suggestRulePattern(r.row.txn.description);
+        if (!pattern) continue;
+        let rule = null;
+        if (r.kind === 'tenant' && r.tenant) rule = { property_id: expenseProp, pattern, target_kind: 'tenant', lease_id: r.tenant.lease_id, cam_label: null };
+        else if (r.kind.startsWith('expense_')) rule = { property_id: expenseProp, pattern, target_kind: r.kind, lease_id: null, cam_label: r.kind === 'expense_cam' || r.kind === 'expense_other' ? r.label || null : null };
+        if (rule) { try { await saveImportRule(rule); } catch { /* reviewed next time */ } }
       }
       return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, entries });
     },
@@ -163,10 +230,22 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           {(parsed.warnings || []).map((w, i) => <div key={i} className="note-msg warn" style={{ marginTop: 6 }}>{w}</div>)}
         </div>
         <div className="row" style={{ gap: 8 }}>
+          {unrecognized.length > 0 && (
+            <button
+              type="button"
+              className="ghost"
+              disabled={aiBusy}
+              onClick={suggestBuckets}
+              title={`One small AI read suggests a bucket for each unrecognized expense line (~1–2¢${DEMO_MODE ? ' — free in the demo' : ''}). Suggestions only — every line still needs your tick before it saves.`}
+            >
+              {aiBusy ? 'Suggesting…' : `🤖 Suggest buckets for ${unrecognized.length} line${unrecognized.length === 1 ? '' : 's'}`}
+            </button>
+          )}
           <button type="button" className="ghost" onClick={acceptAllConfident}>✓ Accept all confident</button>
           <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
         </div>
       </div>
+      {aiErr && <div className="note-msg danger" style={{ margin: '8px 0' }}>{aiErr}</div>}
 
       <div className="stmt-propline">
         <label>
@@ -187,9 +266,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         </div>
       )}
 
-      <Group title={`Money in · ${moneyIn.length}`} rows={moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} />
-      <Group title={`Money out · ${moneyOut.length}`} rows={moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} />
-      {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} />}
+      <Group title={`Money in · ${moneyIn.length}`} rows={moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />
+      <Group title={`Money out · ${moneyOut.length}`} rows={moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />
+      {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />}
       {parsed.skippedLines.length > 0 && <SkippedGroup skipped={parsed.skippedLines} />}
 
       <div className="stmt-footer">
@@ -222,11 +301,13 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
 function resolvePick(pick) {
   if (!pick) return null;
   if (pick.startsWith('lease:')) return { kind: 'tenant', lease_id: pick.slice(6) };
+  if (pick.startsWith('cam:')) return { kind: 'expense_cam', label: pick.slice(4) };
+  if (pick.startsWith('other:')) return { kind: 'expense_other', label: pick.slice(6) };
   if (pick === 'expense_tax' || pick === 'expense_cam' || pick === 'expense_roof' || pick === 'ignore') return { kind: pick };
   return null;
 }
 
-function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv }) {
+function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket }) {
   if (!rows.length) return null;
   return (
     <div className="stmt-group">
@@ -237,7 +318,7 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv }) {
             <tr><th></th><th>Date</th><th>Description</th><th className="num">Amount</th><th>Record as</th><th>For month</th><th></th><th>Always</th></tr>
           </thead>
           <tbody>
-            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} />)}
+            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} />)}
           </tbody>
         </table>
       </div>
@@ -245,12 +326,35 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv }) {
   );
 }
 
-function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, dupe = false }) {
+function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = [], onNewBucket, dupe = false }) {
   const { row } = r;
   const txn = row.txn;
   const isIn = txn.direction === 'in';
-  const pickValue = r.kind === 'tenant' && r.leaseId ? `lease:${r.leaseId}` : r.kind === 'unmatched' ? '' : r.kind;
+  // The new-bucket mini-form, opened by picking "＋ New bucket…" in the dropdown.
+  const [addingBucket, setAddingBucket] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newBillable, setNewBillable] = useState(true);
+  const pickValue =
+    r.kind === 'tenant' && r.leaseId ? `lease:${r.leaseId}`
+      : r.kind === 'expense_cam' && r.label ? `cam:${r.label}`
+      : r.kind === 'expense_other' ? `other:${r.label || 'Other'}`
+      : r.kind === 'unmatched' ? '' : r.kind;
   const candidateIds = new Set((row.candidates || []).map((c) => c.lease_id));
+  // Make sure the row's CURRENT label always appears in its optgroup, even when
+  // it isn't (yet) one of the shared buckets.
+  const billableBuckets = [...buckets.filter((b) => b.billable)];
+  const otherBuckets = [...buckets.filter((b) => !b.billable)];
+  if (r.kind === 'expense_cam' && r.label && !billableBuckets.some((b) => b.label.toLowerCase() === r.label.toLowerCase())) billableBuckets.unshift({ label: r.label, billable: true });
+  if (r.kind === 'expense_other' && r.label && !otherBuckets.some((b) => b.label.toLowerCase() === r.label.toLowerCase())) otherBuckets.unshift({ label: r.label, billable: false });
+  const confirmNewBucket = () => {
+    const label = newName.trim();
+    if (!label) return;
+    onNewBucket?.(label, newBillable);
+    setOv(r.i, { pick: newBillable ? `cam:${label}` : `other:${label}` });
+    setAddingBucket(false);
+    setNewName('');
+    setNewBillable(true);
+  };
   return (
     <tr className={r.checked ? undefined : 'stmt-off'}>
       <td>
@@ -268,7 +372,14 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, dupe = false
       </td>
       <td className="num">{money(txn.amount)}</td>
       <td>
-        <select className="text-input" value={pickValue} onChange={(e) => setOv(r.i, { pick: e.target.value || 'ignore' })}>
+        <select
+          className="text-input"
+          value={pickValue}
+          onChange={(e) => {
+            if (e.target.value === '__new') { setAddingBucket(true); return; }
+            setOv(r.i, { pick: e.target.value || 'ignore' });
+          }}
+        >
           {isIn ? (
             <>
               <option value="">{KIND_LABEL.unmatched}</option>
@@ -291,13 +402,43 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, dupe = false
           ) : (
             <>
               <option value="expense_tax">Property taxes</option>
-              <option value="expense_cam">CAM expense{row.label ? ` — ${row.label}` : ''}</option>
               <option value="expense_roof">Roof expense</option>
+              <optgroup label="CAM buckets — billed to tenants">
+                {billableBuckets.map((b) => <option key={b.label} value={`cam:${b.label}`}>{b.label}</option>)}
+                <option value="expense_cam">CAM — general</option>
+              </optgroup>
+              <optgroup label="Not billed to tenants">
+                {otherBuckets.map((b) => <option key={b.label} value={`other:${b.label}`}>{b.label}</option>)}
+                {!otherBuckets.some((b) => b.label.toLowerCase() === 'other') && <option value="other:Other">Other — not billed</option>}
+              </optgroup>
+              <option value="__new">＋ New bucket…</option>
               <option value="ignore">Ignore</option>
             </>
           )}
         </select>
+        {addingBucket && (
+          <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              className="text-input"
+              style={{ maxWidth: 150 }}
+              placeholder="Bucket name (e.g. Garbage)"
+              value={newName}
+              autoFocus
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); confirmNewBucket(); } }}
+            />
+            <label className="muted" style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <input type="checkbox" checked={newBillable} onChange={(e) => setNewBillable(e.target.checked)} />
+              bill to tenants via CAM
+            </label>
+            <button type="button" className="btn-sm" onClick={confirmNewBucket} disabled={!newName.trim()}>Add</button>
+            <button type="button" className="ghost btn-sm" onClick={() => { setAddingBucket(false); setNewName(''); }}>Cancel</button>
+          </div>
+        )}
         {row.reason && <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{row.reason}</div>}
+        {r.kind === 'expense_other' && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>tracked for your records — not billed to tenants</div>
+        )}
         {r.row.collision && (
           <div className="note-msg warn" style={{ marginTop: 4 }}>possibly already recorded by hand — left unchecked</div>
         )}
@@ -315,7 +456,11 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, dupe = false
         )}
       </td>
       <td>
-        <span className={`badge ${CONF_TONE[row.confidence] || 'info'}`} title={`Match confidence: ${row.confidence}`}>{CONF_LABEL[row.confidence] || row.confidence}</span>
+        {r.ai ? (
+          <span className="badge info" title="AI suggestion — tick the checkbox to accept it">AI</span>
+        ) : (
+          <span className={`badge ${CONF_TONE[row.confidence] || 'info'}`} title={`Match confidence: ${row.confidence}`}>{CONF_LABEL[row.confidence] || row.confidence}</span>
+        )}
       </td>
       <td>
         {(r.kind === 'tenant' || r.kind.startsWith('expense_')) && (
@@ -331,7 +476,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, dupe = false
   );
 }
 
-function DupeGroup({ rows, ctx, year, closedYears, setOv }) {
+function DupeGroup({ rows, ctx, year, closedYears, setOv, buckets, onNewBucket }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="stmt-group">
@@ -343,7 +488,7 @@ function DupeGroup({ rows, ctx, year, closedYears, setOv }) {
           <table className="stmt-table">
             <thead><tr><th></th><th>Date</th><th>Description</th><th className="num">Amount</th><th>Record as</th><th>For month</th><th></th><th>Always</th></tr></thead>
             <tbody>
-              {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={null} setOv={setOv} dupe />)}
+              {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={null} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} dupe />)}
             </tbody>
           </table>
         </div>

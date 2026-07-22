@@ -359,8 +359,10 @@ const functions = {
     }
     if (name === 'extract-bank-statement') {
       // Canned PDF-lane transcription over the seeded tenants: clean deposits, a
-      // garbled payee (the "always match" rule demo), tax/CAM withdrawals, and a
-      // mortgage line the matcher auto-ignores. Amounts follow the seed's figures.
+      // garbled payee (the "always match" rule demo), tax/CAM withdrawals — two of
+      // which land in named BUCKETS (Waste removal / Snow removal) — a mortgage
+      // line the matcher auto-ignores, and an unrecognized Home Depot line that
+      // demos the 🤖 Suggest-buckets button. Amounts follow the seed's figures.
       const y = new Date().getFullYear();
       return ok({
         transactions: [
@@ -369,9 +371,25 @@ const functions = {
           { date: `03/09/${y}`, description: 'MOBILE DEPOSIT J PAK 2211', amount: '10,416.67', direction: 'in', balance: '' },
           { date: `03/12/${y}`, description: 'COOK COUNTY TREASURER PROP TAX', amount: '3,100.00', direction: 'out', balance: '' },
           { date: `03/15/${y}`, description: 'GREENLEAF LANDSCAPING INV 2288', amount: '450.00', direction: 'out', balance: '' },
+          { date: `03/17/${y}`, description: 'WASTE MGMT GARBAGE SVC 55021', amount: '380.00', direction: 'out', balance: '' },
+          { date: `03/19/${y}`, description: 'ARCTIC SNOW PLOWING FEB SVC', amount: '600.00', direction: 'out', balance: '' },
+          { date: `03/22/${y}`, description: 'HOME DEPOT PURCHASE 8841', amount: '212.48', direction: 'out', balance: '' },
           { date: `03/28/${y}`, description: 'CHASE MORTGAGE PMT 0099', amount: '5,200.00', direction: 'out', balance: '' },
         ],
-        lines_read: 6,
+        lines_read: 9,
+      });
+    }
+    if (name === 'suggest-buckets') {
+      // Canned 🤖 bucket suggestions ($0 in the demo): name each passed line from
+      // its description, echoing the caller's index — suggestion-only, unchecked.
+      const lines = Array.isArray(body?.lines) ? body.lines : [];
+      return ok({
+        suggestions: lines.map((l) => {
+          const d = String(l?.description || '').toUpperCase();
+          if (/DEPOT|HARDWARE|LUMBER|SUPPLY/.test(d)) return { index: l.index, bucket: 'Repairs & supplies', billable: true, confidence: 'medium' };
+          if (/LEGAL|ATTORNEY|CPA|ACCOUNT/.test(d)) return { index: l.index, bucket: 'Owner legal fees', billable: false, confidence: 'medium' };
+          return { index: l.index, bucket: 'Maintenance', billable: true, confidence: 'low' };
+        }),
       });
     }
     if (name === 'trends-narrative') {

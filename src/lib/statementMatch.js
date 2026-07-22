@@ -111,6 +111,10 @@ const IGNORE_KEYWORDS = [
   ['DRAW', 'owner draw'],
 ];
 
+// The built-in bucket names the review dropdown offers alongside the owner's own
+// buckets (every keyword hit is a billable CAM bucket).
+export const CAM_KEYWORD_LABELS = CAM_KEYWORDS.map(([, label]) => label);
+
 // Classify one money-OUT line. Returns { kind, label?, reason?, confidence }.
 // Unknown money-out → suggest ignore (never auto-booked).
 export function classifyWithdrawal(description, tenants = []) {

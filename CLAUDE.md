@@ -75,6 +75,67 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Rent Ledger round 2: named expense BUCKETS (incl. a "not billed to tenants" kind),
+  statement import from the Expense entry, a click-gated 🤖 bucket-suggest, estimates pulled from the
+  lease, and the demo refreshed for George's walkthrough** (George after reviewing Stages 1–3: statements
+  should be submittable "into the expense entry", AI sorts money in/out, "the user is able to create
+  buckets — expenses or cleaning or garbage or snow or HVAC or electricity", "most of it is gonna go in
+  the expense entry just so I have an itemized list of what I'm spending money on", "show me it in the
+  demo mode"; plus "estimated CAM and tax should be pulled from leases but of course still be editable".
+  His 2 AskUserQuestion picks: buckets = **both kinds** (billable CAM + one not-billed family) · AI =
+  **click-gated suggest button**). Deployed: DB migration `0064` (pre-reviewed APPROVE), NEW
+  `suggest-buckets` edge fn, frontend Cloudflare version `af27c300`, demo worker version `7233decc`.
+  **$0 everywhere except the optional 🤖 click (~1–2¢) and the existing PDF lane (unchanged); 0064 is
+  additive-only (one defaulted column + a widened CHECK); no tenant emails.** Tests **391/391** (was 383 —
+  +6 expenseBuckets, +2 bucketUi).
+  - **Buckets (migration `0064` + api.js + StatementReview + CamSection):** `cam_line_items.billable`
+    (default true) — the CAM re-sum counts ONLY billable rows, so "Other — not billed to tenants" items
+    are itemized for George's records but never touch `v_tenant_shares`/bills/reconciliation (stated in
+    the UI; folding them into NOI = v2). The review's money-out dropdown is now **Property taxes · Roof ·
+    optgroup "CAM buckets — billed to tenants" (the owner's saved labels + rules' labels + the keyword
+    table's built-ins) · optgroup "Not billed to tenants" · ＋ New bucket… (inline name + billable tick) ·
+    Ignore**; picks encode `cam:{label}`/`other:{label}` and save as labeled cam items with `billable`.
+    "Always" rules now persist from the FINAL row decisions (a tick on an untouched suggestion saves too)
+    and **carry `cam_label` + the new `expense_other` kind** (0064 widens the CHECK), so a bucket learned
+    once auto-sorts forever. The Expense entry groups items by bucket with per-bucket subtotals
+    ("Snow removal · 2 items · $4,600"), shows the not-billed group with its own total, adds an
+    "imported" badge on statement rows, and the add form gains a bucket datalist + "not billed" tick.
+  - **Import from the Expense entry:** the LedgerPage import machinery extracted into shared
+    `ImportStatementButton.js` (+ `ImportResultsStrip` + the one shared `settleStatementImport`
+    invalidation set) — the ⬆ Import statement / Try-a-sample buttons now ALSO sit on the Financials
+    page's "Expense entry · FY" header, with the same full-page review swap + results strip + ↩ Undo.
+    Two doors, one pipeline; the Ledger tab keeps its button.
+  - **🤖 Suggest buckets (new `suggest-buckets` edge fn, Haiku, rate-limited 10/min, naming-ONLY):** shows
+    on the review only when money-out lines are unrecognized; one click (~1–2¢) suggests a bucket +
+    billable flag per line, STRONGLY preferring existing bucket names. Suggestion-only: picks land with an
+    "AI" chip and stay UNCHECKED — unknown money-out still never books without George's tick. Verified
+    live: unauthenticated POST → 401.
+  - **Estimates pulled from the lease:** new `getLeaseStatedEstimate` reads the cached AI read
+    (`lease_files.extraction_raw`'s 7/13 `expense_estimates` fields, fetched on-demand). The Financials
+    estimate editor now OPENS PRE-FILLED with the lease-stated $/SF + a "from the lease: '…quote…' — Save
+    to start billing it" line for a tenant with no estimate set; the lease page's Est-CAM/taxes hints say
+    "the lease states $X/yr". Deliberate safety rule: nothing auto-applies — the figure only starts
+    billing when saved (new uploads keep pre-filling on the review form as since 7/13).
+  - **Demo (worker `amlak-demo` version `7233decc` — was on the pre-Ledger `d3d7123a`, so George couldn't
+    see any of Stages 1–3 there):** canned statement enriched 6→9 lines (garbage→Waste removal,
+    snow→Snow removal buckets + an unrecognized HOME DEPOT line that demos the 🤖 button via a canned
+    `suggest-buckets` route); seeded a not-billed "Owner legal fees $1,200" bucket; City Dental's lease
+    file seeded with a cached "$4.00/SF" estimate read so the editor demos the from-the-lease prefill.
+    Bundle verified free of the live Supabase ref.
+  - **Files:** `supabase/migrations/0064_expense_buckets.sql` (new), `supabase/functions/suggest-buckets/
+    index.ts` (new), `src/lib/{api,statementMatch}.js`, `src/components/{StatementReview,CamSection,
+    TenantShareTable,ImportStatementButton (new)}.js`, `src/pages/{PropertyFinancialsPage,LedgerPage,
+    LeaseDetailPage}.js`, `src/lib/demo/{store,mockClient}.js`, tests (`expenseBuckets.test.js` +
+    `bucketUi.test.js` new, `ledgerPage.test.js` extended).
+  - **Verified:** unit **391/391** (`vitest run`); `vite build` compiles; live DB (read-only): `billable`
+    default true + the widened `import_rules_target_kind_check` present; live 200s (amlakre.com + www +
+    workers.dev). **Full 12-step real-browser drive-through of the deployed demo — 12/12 pass, ZERO
+    console errors** (per-tenant est-vs-actual +$800 → estimate prefill "from the lease" → buckets in the
+    Expense entry → sample statement → 🤖 on Home Depot → J-PAK assigned cross-property with an "always"
+    rule → save books 2 payments/$14,625 + 5 expenses/$4,742.48 → CAM total $19,642.48 with imported
+    badges + subtotals → City Dental March ◐→✓ → undo restores $18,000.00 exactly). **George: the
+    walkthrough script for the demo is in the chat reply of this session.**
+
 - **2026-07-21** — **Rent Ledger Stage 3 of 3: closing a year now freezes each tenant's COLLECTION picture,
   and History charts the collection trend year over year** (same approved plan; the partners' "resets yearly
   and saves history for trends" ask). Deployed: frontend Cloudflare version `f7fc6a15`. **Frontend +
