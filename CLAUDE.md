@@ -75,6 +75,50 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **Big-scan AI reads no longer time out (HTTP 546): every extractor now uploads the document
+  to Anthropic's Files API ONCE and references it by `file_id` across all reads, instead of re-sending the whole
+  ~34 MB base64 payload 3–4 times** (George hit "The document took too long to read" right after the 25 MB bump
+  above — bigger scans now clear the size gate but a big multi-page scan's analyst + form + transcription passes
+  ran past the edge function's ~150s wall-clock / 256 MB budget. Via AskUserQuestion he chose the **long-term
+  fix**: "a full read so it can cache the lease and then fill out the main terms"). Deployed: all **6 extract edge
+  functions** redeployed (Supabase `awgrjmbcghdjgnqeiqkt`). **Edge-function only — NO frontend build, NO DB
+  migration, $0 (file upload/delete are free on the Files API; message input is priced identically to inline —
+  same tokens, just not re-uploaded), no tenant emails.**
+  - **Root cause:** the pipeline inlined the base64 bytes (≈1.37× the file) in EVERY model call — analyst (Sonnet),
+    the two Haiku form-fills, and the vision transcription. On a large scan that's ~34 MB × 3–4 concurrent
+    `JSON.stringify`s → memory pressure + repeated upload time → the platform kills the worker (546) before the
+    internal per-call timeouts can fire cleanly. The 25 MB bump made it reachable by letting bigger files through.
+  - **Fix (shared `_shared/anthropic.ts`):** new `uploadFile(bytes, filename, mediaType)` → POSTs multipart to
+    `https://api.anthropic.com/v1/files` with header `anthropic-beta: files-api-2025-04-14`, returns the `file_id`;
+    new best-effort `deleteFile(fileId)` (never throws). The `Block` type now accepts `source: {type:'file',
+    file_id}` for `document`/`image` blocks, and `callClaude` sends the files-api beta header on every Messages
+    request (harmless for non-file calls). A `safeFilename` helper strips the Files-API forbidden name chars.
+    Verified against the live Anthropic docs (upload shape, the `document/source/type:'file'` block, the beta
+    header, 500 MB/600-page limits) before writing — not from memory.
+  - **Every extractor's vision branch** now does `uploadedFileId = await uploadFile(...)` → builds the doc/image
+    block as a `file_id` reference (all reads in that function share the one upload — extract-addendum's THREE
+    reads too) → a `finally { if (uploadedFileId) await deleteFile(uploadedFileId) }` cleans it up after the reads
+    complete. Removed each function's now-dead local `base64()` helper. The PDF text-layer / paste-text paths are
+    unchanged (they never inlined a file). The 25 MB `MAX_VISION_BYTES` guard stays as a backstop (storage bucket
+    caps uploads at 25 MB anyway).
+  - **Why this fixes it:** one ~25 MB multipart upload instead of 3–4× ~34 MB inline JSON bodies → the per-read
+    Messages requests are tiny (just the id), so both the memory blowup and the repeated-upload wall-clock cost
+    are gone, AND the file is no longer bound by the 32 MB inline request cap (Files API reads PDFs up to ~600
+    pages on the 1M-context Sonnet analyst / ~100 pages on the 200K Haiku form calls). George keeps the FULL read
+    he asked for — analyst brief + cached transcription + main-terms fill — it just fits the budget now.
+  - **Honest limit (flagged):** a truly enormous scan (100+ pages, or very dense image-heavy pages) can still hit
+    Claude's per-request page/context ceiling even via the Files API — the `supabaseClient.js` 546 message
+    (split/downscale) stays as the last-resort net for those. For normal 20–25 MB leases this removes the timeout.
+  - **Files:** `supabase/functions/_shared/anthropic.ts` (uploadFile/deleteFile + file-source Block + beta header),
+    and the vision branch of all six `extract-*/index.ts` (`extract-lease`, `-insurance`, `-contract`,
+    `-annual-report`, `-addendum`, `-bank-statement`).
+  - **Verified:** all 6 deployed clean (server-side bundle + type-check pass); grep confirms zero dangling
+    `base64(` calls and zero leftover inline `type:'base64'` blocks, one `file_id: uploadedFileId` doc + image
+    block per function, uploadFile+deleteFile wired in each; all 6 live (unauth POST → 401). **The real proof is
+    George re-uploading his big scanned lease** — it should now complete the full read instead of "took too long."
+    No `src/` change, so no unit run / frontend deploy needed. (Edge functions aren't in the Vitest suite;
+    validation is the clean bundle + the verified Files API contract.)
+
 - **2026-07-21** — **AI file-size limit raised 20 MB → 25 MB, so a larger scanned lease / insurance / contract /
   bank statement can be read by the AI** (George: "increase lease download size for the ai to 25 megabites").
   Deployed: the 6 extract edge functions redeployed (Supabase `awgrjmbcghdjgnqeiqkt`) — `extract-lease`,
