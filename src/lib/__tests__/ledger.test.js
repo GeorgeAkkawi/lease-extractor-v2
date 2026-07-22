@@ -133,6 +133,42 @@ describe('componentizeSchedule', () => {
   });
 });
 
+describe('base builds UP from the lease, never backwards from a stale invoice (George, 2026-07-21)', () => {
+  // Infinite Mobile's real shape: base $28,745.04/yr, a mid-year July-1 start (6 owed months),
+  // and an $10,855 CAM&tax estimate. Its issued invoice ($18,280.99) is STALE — billed off the
+  // old actuals before the estimate was typed. The ledger must build from the lease + estimate
+  // (NO invoiceTotal), so the base reads the lease's real $2,395.42/mo, not a residual squeezed
+  // to fit the stale invoice (which produced the wrong $2,211.65 George caught).
+  const base = 28745.04;
+  const estCamTax = 10855;
+  const built = buildLeaseSchedule({
+    year: 2026, grossBase: base, otherAnnual: estCamTax, abatements: [], escalations: [],
+    leaseStart: '2026-07-01', // NO invoiceTotal — projection mode
+  });
+
+  it('factor stays 1 and the schedule totals the DATA gross, not the stale invoice', () => {
+    expect(built.factor).toBe(1);
+    expect(built.owedMonths).toBe(6); // Jul–Dec
+    // 6 months × (base/12 + estCamTax/12) = 6 × (2,395.42 + 904.58) = 19,800.02 — NOT 18,280.99.
+    expect(Math.round(built.annual * 100) / 100).toBeCloseTo(19800.02, 2);
+  });
+
+  it('the base line is the lease constant $2,395.42/mo — never the scaled $2,211.65', () => {
+    const comp = componentizeSchedule({ schedule: built.schedule, factor: built.factor, camTaxAnnual: estCamTax, roofAnnual: 0 });
+    // Jul–Nov hold at exactly the lease's per-month rent; December carries the year's ≤3¢
+    // rounding fold as base-remainder (2,395.44) — still the constant, never the scaled bug.
+    for (let m = 7; m <= 11; m++) {
+      expect(comp[m].base).toBe(2395.42);
+      expect(comp[m].camTax).toBe(904.58);
+    }
+    expect(comp[12].base).toBeGreaterThanOrEqual(2395.42);
+    expect(comp[12].base).toBeLessThanOrEqual(2395.45);
+    for (let m = 7; m <= 12; m++) expect(comp[m].base).not.toBe(2211.65); // the old scaled-residual bug
+    // A pre-tenancy month owes nothing.
+    expect(comp[1]).toEqual({ base: 0, camTax: 0, roof: 0 });
+  });
+});
+
 describe('ledgerRowSummary vs arStatus — the single-derivation rule', () => {
   const today = new Date(2026, 5, 15, 12); // June 15 → Jan–Jun due
   const invRow = { year: 2026, kind: 'annual', total_amount: 12000, balance: null, due_date: null };

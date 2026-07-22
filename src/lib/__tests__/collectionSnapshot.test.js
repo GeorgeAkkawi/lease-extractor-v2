@@ -18,15 +18,17 @@ describe('closeYear — the frozen collection picture', () => {
   it('writes projected/collected/rate/by-month per tenant; a lump payer reads rate 1.0', async () => {
     const snap = await closeYear('prop-1', Y);
     const coffee = snap.breakdown.find((b) => b.tenant === 'Bright Coffee Co.');
-    expect(coffee.projected).toBe(78100);
-    expect(coffee.collected).toBe(78100);
+    // Projected now builds from the data (base 60,000 + est CAM&tax 16,500 + roof 1,500 = 78,000),
+    // the same figure the invoice bills — the lump settles it exactly → rate 1.0.
+    expect(coffee.projected).toBe(78000);
+    expect(coffee.collected).toBe(78000);
     expect(coffee.collection_rate).toBe(1);
     expect(coffee.collected_by_month).toHaveLength(12);
-    expect(round2(coffee.collected_by_month.reduce((s, n) => s + n, 0))).toBe(78100);
+    expect(round2(coffee.collected_by_month.reduce((s, n) => s + n, 0))).toBe(78000);
     const dental = snap.breakdown.find((b) => b.tenant === 'City Dental');
-    expect(dental.projected).toBe(98500);
-    expect(dental.collected).toBe(20416.66);
-    expect(dental.collection_rate).toBeCloseTo(0.207, 3);
+    expect(dental.projected).toBe(109800); // 84,000 base + 25,800 actual CAM&tax share
+    expect(dental.collected).toBe(22300);  // 9,150 + 9,150 + 4,000
+    expect(dental.collection_rate).toBeCloseTo(0.203, 3);
     // The classic breakdown fields are still there untouched.
     expect(dental.square_footage).toBe(3000);
   });
@@ -34,9 +36,9 @@ describe('closeYear — the frozen collection picture', () => {
   it('the property summary + YoY series read back; key-less snapshots are skipped, never NaN', async () => {
     const snap = await closeYear('prop-1', Y);
     const sum = snapshotCollectionSummary(snap);
-    expect(sum.projected).toBe(176600); // 78,100 + 98,500
-    expect(sum.collected).toBe(98516.66);
-    expect(sum.rate).toBeCloseTo(0.558, 3);
+    expect(sum.projected).toBe(187800); // 78,000 + 109,800
+    expect(sum.collected).toBe(100300); // 78,000 + 22,300
+    expect(sum.rate).toBeCloseTo(0.534, 3);
     // A pre-ledger snapshot (no collection keys) → null summary.
     expect(snapshotCollectionSummary({ breakdown: [{ tenant: 'Old Co', base_rent: 1 }] })).toBe(null);
     expect(snapshotCollectionSummary(null)).toBe(null);

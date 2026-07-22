@@ -119,6 +119,60 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
     No `src/` change, so no unit run / frontend deploy needed. (Edge functions aren't in the Vitest suite;
     validation is the clean bundle + the verified Files API contract.)
 
+- **2026-07-21** — **Rent Ledger now builds UP from the lease + expense entries, not backwards from the invoice —
+  base rent shows the lease's real constant $/mo instead of a residual squeezed to a stale invoice** (George,
+  after asking why Infinite Mobile's ledger base read $2,211.65 when the lease says $2,395.42: "base rent always
+  stays the same … why are numbers getting pulled from the invoice?? everything should build from the leases and
+  expense entries and estimated cam and actual cam into the invoice not the opposite. am i wrong?" → I confirmed
+  he's right; he replied "yes do both and work upwards from the data not backwards from the invoice"). Deployed:
+  frontend Cloudflare version `6dc6c693`, demo worker `fc3e8bc1`, plus a live-data repair of the one stale
+  invoice. **Frontend + `src/lib` only — $0, NO DB migration, no edge functions, no tenant emails; the live
+  repair is one invoice UPDATE (no data lost).** Tests **394/394** (was 392 — +2 base-from-lease regression).
+  - **Root cause:** `getPropertyMonthlyRoll` / `getMonthlyRent` / `markMonthPaid` passed the year invoice's
+    total into `buildLeaseSchedule`, which **scaled** the whole term-aware schedule to settle that invoice to
+    the cent (the 0055 penny goal). `componentizeSchedule` then derived base as a **residual** (`owed − CAM&tax
+    − roof`). So when a stored invoice diverged from the current lease + estimate, the scale factor dragged the
+    base off its true value. Infinite Mobile (mid-year 6-month lease, base $28,745.04/yr, $10,855 CAM&tax est):
+    its 7/13 hand-repaired invoice ($18,280.99, CAM $213 — billed off the OLD actuals before the estimate was
+    typed) was lower than the data gross ($19,800.02), so factor 0.9233 shrank base $2,395.42 → **$2,211.65**.
+    (And the lone July payment $3,046.83 = exactly $18,280.99 ÷ 6 — a system default from the scaled schedule,
+    which is what George's "where did 3,046 come from?" was.)
+  - **Fix (the direction George endorsed — build UP from the data):** the three ledger builders now pass **no
+    `invoiceTotal`**, so `buildLeaseSchedule` builds purely from the lease's own base (constant, escalation-
+    aware, prorated for the term) + estimated-else-actual CAM/tax/roof (`billedComponents`), factor stays 1, and
+    base is the lease's real per-month rent — **never a residual, never reshaped by a stale invoice**. The
+    invoice is a downstream OUTPUT of the same data, not a source the ledger reads back. `buildLeaseSchedule`
+    keeps its scaling capability for the ONE path that legitimately reconciles to an *issued* bill —
+    `owedByMonthForInvoice` → the AR / "behind on rent" math — which still passes `invoiceTotal` (documented as
+    the two modes at the top of `leaseSchedule.js`). Infinite Mobile now reads base **$2,395.42/mo** ($3,300.00
+    total = base $2,395.42 + CAM&tax $904.58), exactly the lease figure.
+  - **Live-data repair (Part 2, confirmed):** regenerated Infinite Mobile's stale annual invoice
+    (`f1c9e13e…`) from the current lease + estimate — base $14,372.52 (6mo of $28,745.04), CAM $5,427.50 (6mo of
+    the $10,855 estimate), tax/roof $0, **total $19,800.02** (was $18,280.99). No payments deleted.
+  - **Blast radius + what's left for George (flagged, NOT changed — those are money actions):** removing the
+    scaling means every tenant's ledger now reflects the CURRENT lease + expense entries. For full-year tenants
+    whose entered expenses grew since their invoice was generated, the ledger now shows the higher current
+    figure (e.g. FIVE POINTS ~+$2,669, Michuacana ~+$2,455 — a consistent ~3-4% CAM drift; D&D Dental is a ~$23k
+    outlier worth a look). That gap is the year-end CAM true-up surfacing — exactly the "projected vs actual"
+    signal. I did **not** regenerate those invoices (changing billed amounts needs George's OK); George can
+    ⚖ Reconcile at year-end or ask me to regenerate them from current data. Also flagged: Infinite Mobile's
+    July payment stays recorded at **$3,046.83** (the old scaled default), so July shows ~$253 short of the new
+    $3,300 — if July was paid in full, click the July cell to top it up (or tell me the real deposit). And its
+    `est_cam_annual` $10,855 is a touch above pure pro-rata (~$8,878) — editable in the Financials estimate box.
+  - **Demo made consistent (so the walkthrough shows the fixed behavior):** the two prop-1 invoices were seeded
+    inconsistent with their lease+estimate (the scaling hid it). Rebuilt them FROM the data — inv-1 Bright Coffee
+    = base 60,000 + est 16,500 + roof 1,500 = **78,000** (lump 78,000 settles it, no phantom credit); inv-2 City
+    Dental = base 84,000 + actual share (0.6 × 25,000 tax + 0.6 × 18,000 CAM) = **109,800** (monthly **9,150**;
+    Jan/Feb full-month tagged checks = ✓, March $4,000 partial = ◐).
+  - **Files:** `src/lib/api.js` (3 call sites drop `invoiceTotal`), `src/lib/leaseSchedule.js` (two-mode doc),
+    `src/lib/demo/store.js` (inv-1/inv-2 + pay-1/2/3 rebuilt from data), tests (`ledger.test.js` +2
+    base-from-lease regression; `moneyCollection` / `collectionSnapshot` / `ledgerPage` / `statementImport`
+    figures updated to the data-derived values).
+  - **Verified:** unit **394/394** (`vitest run`); `vite build` compiles; live DB shows the regenerated invoice
+    (total $19,800.02, CAM $5,427.50); live 200s (amlakre.com + www + workers.dev); demo redeployed
+    (`fc3e8bc1`, bundle free of the live ref). **George: hard-refresh (Cmd+Shift+R) → Infinite Mobile's Ledger
+    now reads $2,395.42 base · $904.58 CAM&tax = $3,300.00/mo.**
+
 - **2026-07-21** — **AI file-size limit raised 20 MB → 25 MB, so a larger scanned lease / insurance / contract /
   bank statement can be read by the AI** (George: "increase lease download size for the ai to 25 megabites").
   Deployed: the 6 extract edge functions redeployed (Supabase `awgrjmbcghdjgnqeiqkt`) — `extract-lease`,

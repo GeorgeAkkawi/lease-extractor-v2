@@ -23,7 +23,7 @@ import { currentYear } from '../format';
 const Y = currentYear();
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
-const cityDentalCheck = { date: `${Y}-05-02`, description: 'CHECK 1044 CITY DENTAL PC', amount: 8208.33, direction: 'in', balance: null, line: 2 };
+const cityDentalCheck = { date: `${Y}-05-02`, description: 'CHECK 1044 CITY DENTAL PC', amount: 9150, direction: 'in', balance: null, line: 2 };
 const taxLine = { date: `${Y}-05-12`, description: 'COOK COUNTY TREASURER PROP TAX', amount: 3100, direction: 'out', balance: null, line: 3 };
 const camLine = { date: `${Y}-05-15`, description: 'GREENLEAF LANDSCAPING INV 88', amount: 450, direction: 'out', balance: null, line: 4 };
 
@@ -60,7 +60,7 @@ describe('statement import — apply / dedupe / override / undo', () => {
     expect(res.summary).toMatchObject({ paymentsCount: 1, expensesCount: 2 });
     const pays = await listPayments('inv-2');
     const imported = pays.find((p) => p.import_hash === lineHash(cityDentalCheck));
-    expect(imported).toMatchObject({ amount: 8208.33, period_month: 5 });
+    expect(imported).toMatchObject({ amount: 9150, period_month: 5 });
     const exp = await getExpenseRecord('prop-1', Y);
     expect(Number(exp.taxes_total)).toBe(28100); // 25,000 + 3,100 — accumulated, not overwritten
     expect(Number(exp.cam_total)).toBe(18450);   // item sum re-synced

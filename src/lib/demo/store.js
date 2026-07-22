@@ -186,17 +186,23 @@ export function seed() {
     statement_imports: [],
     import_rules: [],
     // Receivables: one fully-paid invoice + one overdue, so AR has something to show.
+    // Both invoices are BUILT FROM the lease + estimate/actual (the ledger and the invoice
+    // read the same data, so they reconcile with no scaling):
+    //   inv-1 Bright Coffee = base 60,000 + est CAM&tax 16,500 + est roof 1,500 = 78,000.
+    //   inv-2 City Dental   = base 84,000 + actual share (0.6 × 25,000 tax + 0.6 × 18,000 CAM)
+    //                       = 84,000 + 15,000 + 10,800 = 109,800  (monthly 9,150).
     invoices: [
-      { id: 'inv-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 60000, cam_annual: 9000, tax_annual: 7500, roof_annual: 1600, total_amount: 78100, notes: null, created_at: iso(Y, 1, 1) },
-      { id: 'inv-2', owner_id: DEMO_USER.id, lease_id: 'lease-2', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 84000, cam_annual: 8000, tax_annual: 6500, roof_annual: 0, total_amount: 98500, notes: null, created_at: iso(Y, 1, 1) },
+      { id: 'inv-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 60000, cam_annual: 6500, tax_annual: 10000, roof_annual: 1500, total_amount: 78000, notes: null, created_at: iso(Y, 1, 1) },
+      { id: 'inv-2', owner_id: DEMO_USER.id, lease_id: 'lease-2', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 84000, cam_annual: 10800, tax_annual: 15000, roof_annual: 0, total_amount: 109800, notes: null, created_at: iso(Y, 1, 1) },
     ],
     payments: [
-      // Bright Coffee: one untagged lump — the Ledger's FIFO showcase (fills Jan→Dec).
-      { id: 'pay-1', owner_id: DEMO_USER.id, invoice_id: 'inv-1', lease_id: 'lease-1', amount: 78100, paid_date: iso(Y, 2, 1), method: 'check', note: 'Paid in full', created_at: iso(Y, 2, 1) },
-      // City Dental: month-tagged checks + an untagged partial, so the demo grid shows
-      // mixed states (Jan ✓ · Feb ✓ · Mar ◐ · rest open) and a live Owes figure.
-      { id: 'pay-2', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 8208.33, paid_date: iso(Y, 1, 5), method: 'check', note: null, period_month: 1, created_at: iso(Y, 1, 5) },
-      { id: 'pay-3', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 8208.33, paid_date: iso(Y, 2, 4), method: 'ach', note: null, period_month: 2, created_at: iso(Y, 2, 4) },
+      // Bright Coffee: one untagged lump that settles the whole 78,000 year exactly — the
+      // Ledger's FIFO showcase (fills Jan→Dec, all ✓, no phantom credit).
+      { id: 'pay-1', owner_id: DEMO_USER.id, invoice_id: 'inv-1', lease_id: 'lease-1', amount: 78000, paid_date: iso(Y, 2, 1), method: 'check', note: 'Paid in full', created_at: iso(Y, 2, 1) },
+      // City Dental: two full month-tagged checks (9,150 = the real monthly) + an untagged
+      // partial, so the grid shows mixed states (Jan ✓ · Feb ✓ · Mar ◐ · rest open).
+      { id: 'pay-2', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 9150, paid_date: iso(Y, 1, 5), method: 'check', note: null, period_month: 1, created_at: iso(Y, 1, 5) },
+      { id: 'pay-3', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 9150, paid_date: iso(Y, 2, 4), method: 'ach', note: null, period_month: 2, created_at: iso(Y, 2, 4) },
       { id: 'pay-4', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 4000, paid_date: iso(Y, 3, 10), method: 'check', note: 'Partial', created_at: iso(Y, 3, 10) },
     ],
     lease_files: [

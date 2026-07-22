@@ -1485,9 +1485,11 @@ export async function getMonthlyRent(leaseId, year) {
     getTenantShare(leaseId, year),
     listEscalations(leaseId),
   ]);
-  // GROSS full-year base + other charges give the schedule its SHAPE; the invoice total
-  // (when one exists) is what the months settle against. The tenant-share view is the source
-  // of truth for the gross figures.
+  // The schedule builds UP from the data (George, 2026-07-21): base rent straight from the
+  // lease (constant, escalation-aware) + estimated-else-actual CAM/tax/roof. We deliberately do
+  // NOT scale to the invoice total — the invoice is a downstream OUTPUT of this same data, not a
+  // source the ledger reads back from. So base always shows the lease's real per-month rent, never
+  // a residual squeezed to fit a stale invoice. The tenant-share view is the source of truth.
   let grossBase = 0;
   let billed = { cam: 0, tax: 0, roof: 0 };
   if (share) {
@@ -1499,8 +1501,7 @@ export async function getMonthlyRent(leaseId, year) {
   }
   const other = billed.cam + billed.tax + billed.roof;
   const { schedule, annual, owedMonths, occupancyStartIso: occ, factor } = buildLeaseSchedule({
-    year, grossBase, otherAnnual: other, abatements, escalations,
-    leaseStart: share?.lease_start, invoiceTotal: invoice ? Number(invoice.total_amount || 0) : null,
+    year, grossBase, otherAnnual: other, abatements, escalations, leaseStart: share?.lease_start,
   });
 
   const payments = invoice ? await listPayments(invoice.id) : [];
@@ -1528,10 +1529,10 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
   if (opts.amount != null && opts.amount !== '') {
     amount = Number(opts.amount);
   } else {
-    // Default to that month's expected owed from the TERM-AWARE schedule (built off the gross
-    // full-year share, prorated for a mid-year start + blended for mid-year steps + net of any
-    // base-rent abatement, then scaled to settle THIS invoice) — NOT a flat total/12, which
-    // over-bills free months and mis-bills a partial-year lease.
+    // Default to that month's expected owed from the TERM-AWARE schedule, built UP from the data:
+    // the gross lease base (prorated for a mid-year start + blended for mid-year steps + net of any
+    // base-rent abatement) + estimated-else-actual CAM/tax/roof — NOT scaled to the invoice, and
+    // NOT a flat total/12 (which over-bills free months and mis-bills a partial-year lease).
     const [abatements, share, escalations] = await Promise.all([
       listAbatements(leaseId), getTenantShare(leaseId, year), listEscalations(leaseId),
     ]);
@@ -1539,7 +1540,7 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
     const billed = share ? billedComponents(share) : { cam: Number(invoice.cam_annual || 0), tax: Number(invoice.tax_annual || 0), roof: Number(invoice.roof_annual || 0) };
     const { schedule: sched } = buildLeaseSchedule({
       year, grossBase, otherAnnual: billed.cam + billed.tax + billed.roof, abatements, escalations,
-      leaseStart: share?.lease_start, invoiceTotal: Number(invoice.total_amount || 0),
+      leaseStart: share?.lease_start,
     });
     amount = sched[m]?.owed ?? (Number(invoice.total_amount || 0) / 12);
   }
@@ -1644,17 +1645,19 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
   );
   return shares.map((s) => {
     const inv = invByLease[s.lease_id] || null;
-    // GROSS full-year base + est-else-actual charges give the schedule its shape; the invoice
-    // total (when one exists) is what the months settle against. Always read the gross from the
-    // tenant-share row so a preview (no invoice yet) matches what the invoice will bill.
+    // The schedule builds UP from the data (George, 2026-07-21): base rent straight from the lease
+    // (constant, escalation-aware) + estimated-else-actual CAM/tax/roof. NOT scaled to the invoice
+    // total — the invoice is a downstream output of this same data, not a source. So the base line
+    // always reads the lease's real per-month rent (e.g. $2,395.42), never a residual squeezed to a
+    // stale invoice. Always read the gross from the tenant-share row so a preview (no invoice yet)
+    // matches what the invoice will bill.
     const grossBase = Number(s.base_rent || 0);
     const billed = billedComponents(s);
     const other = billed.cam + billed.tax + billed.roof;
     const abatements = abByLease[s.lease_id] || [];
     const escalations = escByLease[s.lease_id] || [];
     const { schedule, annual, owedMonths, occupancyStartIso: occ, factor } = buildLeaseSchedule({
-      year, grossBase, otherAnnual: other, abatements, escalations,
-      leaseStart: s.lease_start, invoiceTotal: inv ? Number(inv.total_amount || 0) : null,
+      year, grossBase, otherAnnual: other, abatements, escalations, leaseStart: s.lease_start,
     });
     const payments = inv ? (paymentsByInvoice[inv.id] || []) : [];
     const byMonth = {};

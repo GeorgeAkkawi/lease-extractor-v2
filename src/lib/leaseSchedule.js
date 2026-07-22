@@ -1,13 +1,22 @@
 // The term-aware monthly rent schedule for one lease-year — the ONE shared builder
-// behind the monthly rent tracker, the property rent roll, and (now) the "behind on
-// rent" math. Pure: it composes occupancyStart + monthlyBases (escalations.js) with
-// monthlyScheduleForYear (abatement.js), then scales the owed months to the year's
-// invoice total so the 12 figures reconcile to the cent (the 0055 penny invariant).
+// behind the monthly rent tracker, the property rent roll, the Rent Ledger, and the
+// "behind on rent" math. Pure: it composes occupancyStart + monthlyBases (escalations.js)
+// with monthlyScheduleForYear (abatement.js).
 //
-// Moved out of api.js so the AR summary (summarizeAR) and the dashboard bell alerts
-// (alerts.js) can build the SAME per-month owed shape a tenant is actually billed —
-// instead of an even total/12 split that over-charges free months and mis-charges a
-// mid-year start.
+// TWO modes, keyed by whether `invoiceTotal` is passed:
+//   • PROJECTION (the ledger / tracker / roll) — NO invoiceTotal. The schedule builds UP
+//     from the data: the lease's own base rent + estimated-else-actual CAM/tax/roof. The
+//     invoice is a downstream OUTPUT of this same data, so the ledger never reads it back
+//     to reshape the base (George, 2026-07-21: "build from the data, not backwards from
+//     the invoice"). factor stays 1; base shows the lease's real per-month rent.
+//   • RECONCILE-TO-A-BILL (owedByMonthForInvoice → summarizeAR / the dashboard alerts) —
+//     passes a specific issued invoice's total so the 12 due-month figures settle THAT bill
+//     to the cent (the 0055 penny invariant), for judging how many months are behind on
+//     what was actually billed. This is the only path that scales.
+//
+// Moved out of api.js so those AR/alert paths can build the SAME per-month owed shape a
+// tenant is actually billed — instead of an even total/12 split that over-charges free
+// months and mis-charges a mid-year start.
 import { occupancyStart, monthlyBases } from './escalations';
 import { monthlyScheduleForYear } from './abatement';
 

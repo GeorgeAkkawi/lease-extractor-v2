@@ -38,13 +38,13 @@ describe('LedgerPage — the rent ledger grid', () => {
     // Column headers.
     expect(screen.getByText('Collected')).toBeTruthy();
     expect(screen.getByText('Owes')).toBeTruthy();
-    // Bright Coffee's untagged $78,100 lump settles its whole year → paid ✓.
+    // Bright Coffee's untagged $78,000 lump settles its whole year → paid ✓.
     expect(screen.getAllByText('paid ✓').length).toBeGreaterThan(0);
-    expect(screen.getByText('$78,100.00')).toBeTruthy();
-    // City Dental: Jan + Feb tagged, $4,000 untagged partial → a ◐ cell exists.
+    expect(screen.getByText('$78,000.00')).toBeTruthy();
+    // City Dental: Jan + Feb tagged (full 9,150 months), $4,000 untagged partial → a ◐ cell exists.
     expect(screen.getAllByText('◐').length).toBeGreaterThan(0);
-    // Its collected-so-far figure: 8,208.33 + 8,208.33 + 4,000.
-    expect(screen.getByText('$20,416.66')).toBeTruthy();
+    // Its collected-so-far figure: 9,150 + 9,150 + 4,000.
+    expect(screen.getByText('$22,300.00')).toBeTruthy();
   });
 
   it('shows the base | CAM&tax component sub-line on each tenant', async () => {

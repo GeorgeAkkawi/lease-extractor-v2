@@ -94,16 +94,17 @@ describe('marking months paid (the ledger write path)', () => {
   });
 
   it('a pool-partial month is topped up by its GAP, and the year settles EXACTLY — no phantom cents', async () => {
-    // March is partially covered by the untagged $4,000 — the bulk action records
-    // only the $4,208.33 gap, then the remaining open months collect in full
-    // (December carries the year's fold-cents). Every dollar lands once.
+    // City Dental's monthly is now the data figure 9,150 (base 84,000 + actual share 25,800,
+    // over 12). March is partially covered by the untagged $4,000 — the bulk action records
+    // only the $5,150 gap, then the remaining open months collect the full 9,150. Every dollar
+    // lands once and the year settles to the 109,800 the lease + expenses build.
     for (const m of [3, 4, 6, 7, 8, 9, 10, 11, 12]) await markMonthPaidAllTenants('prop-1', Y, m);
     const payments = await listPayments('inv-2');
     const mar = payments.filter((p) => Number(p.period_month) === 3);
     expect(mar.length).toBe(1);
-    expect(Number(mar[0].amount)).toBe(4208.33); // the gap, not the full month
+    expect(Number(mar[0].amount)).toBe(5150); // the gap (9,150 − 4,000), not the full month
     const total = round2(payments.reduce((s, p) => s + Number(p.amount), 0));
-    expect(total).toBe(98500);
+    expect(total).toBe(109800);
     const inv = await getYearInvoice('lease-2', Y);
     expect(Number(inv.balance)).toBe(0);
     expect(inv.display_status).toBe('paid');
@@ -112,7 +113,7 @@ describe('marking months paid (the ledger write path)', () => {
   it('un-marking a month re-opens exactly that share', async () => {
     await unmarkMonthPaid('lease-2', Y, 12);
     const inv = await getYearInvoice('lease-2', Y);
-    expect(round2(Number(inv.balance))).toBe(8208.37);
+    expect(round2(Number(inv.balance))).toBe(9150);
     expect(inv.display_status).toBe('partial');
     // …and the bulk action sees the gap and collects it again.
     const res = await markMonthPaidAllTenants('prop-1', Y, 12);
@@ -120,9 +121,9 @@ describe('marking months paid (the ledger write path)', () => {
     expect(Number((await getYearInvoice('lease-2', Y)).balance)).toBe(0);
   });
 
-  it("getMonthlyRent's annual equals the invoice total and returns the raw payments", async () => {
+  it("getMonthlyRent's annual builds from the data (base + share) and reconciles to the invoice", async () => {
     const data = await getMonthlyRent('lease-2', Y);
-    expect(round2(data.annual)).toBe(98500);
+    expect(round2(data.annual)).toBe(109800); // 84,000 base + 25,800 actual CAM&tax share
     expect(Object.keys(data.byMonth).length).toBe(12);
     expect(Array.isArray(data.payments)).toBe(true);
     expect(data.payments.length).toBeGreaterThan(12); // 12 tagged + the untagged partial
