@@ -75,6 +75,51 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **A big scanned lease now caches its ENTIRE text, not just the first ~15 pages: the scan
+  transcription is split into page-range chunks read in PARALLEL** (George, after the first-15-pages fix below:
+  "what if there's important information on the other pages? … I just reuploaded it in the renewal option, which
+  is on page thirty two — did not get uploaded, as well as the rules and regulations that are down there. there
+  has to be some sort of fix for this"). Deployed: `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`).
+  **Edge-function only — NO frontend build, NO DB migration, $0** (same paid transcription lane, same total
+  tokens — just split across parallel calls instead of one serial call), no tenant emails. Tests **394/394**
+  (unchanged — edge fns aren't in the Vitest suite; no `src/` change).
+  - **Root cause (why the 15-page cap existed).** A SCAN has no text layer, so the AI must visually read and
+    RE-TYPE every page — its binding cost is OUTPUT-generation TIME (~600–700 tokens/page; the 40s form-fill
+    proves all pages RENDER fast, it's the writing that's slow). A SINGLE serial transcription call can only
+    generate ~12–15 pages before the edge function's ~150s wall clock, so the prior fix (box 90→115s, 12k-token
+    cap) guaranteed a NON-null cache but only of the first ~15 pages — losing Busey's page-32 renewal option and
+    the rules & regs after it. A DIGITAL/text PDF is unaffected: its text layer is pulled in full, instantly, free
+    (which is why George saw "the whole one works unless it's a … scan").
+  - **Fix — parallel page-range chunking** (`_shared/pdf.ts` new `splitPdfIntoChunks` + `extract-lease/index.ts`
+    new `transcribeScan`). For a multi-page PDF scan, `pdf-lib` splits the document into consecutive **15-page
+    sub-PDFs** (up to 6 → **90 pages**), each uploaded to the Files API + transcribed by its OWN Haiku call, all
+    **concurrently** (`Promise.all`), then stitched back in page order. Because the calls run in parallel the
+    wall-clock cost is ~ONE chunk (~80s), not the sum — so a 45-page scan now caches in about the time 15 pages
+    used to take, page 32 included. And because each chunk is a **physically small PDF**, the model transcribes it
+    in full and stops on its own — no page-counting to disobey, no mid-document truncation (the reliability win of
+    splitting the bytes vs. prompting "only pages X–Y"). `useObjectStreams:false` on save keeps the split cheap on
+    the edge's CPU budget (a scan's bulk is already-compressed images).
+  - **Safe by construction — never worse than before.** A single image, a small scan (≤15 pages), or ANY
+    `pdf-lib` failure (encrypted/malformed/OOM) falls back to the exact single-call path from the prior fix
+    (`splitPdfIntoChunks` returns null → one whole-doc transcription). If every chunk somehow fails, a last-ditch
+    single pass runs. Digital PDFs / pasted text skip transcription entirely, unchanged. The chunk pipeline runs
+    CONCURRENTLY with the ~100s analyst→form chain and is time-boxed (115s/chunk), so wall ≈ ~100–110s < 150s;
+    the sub-PDF uploads + deletes are parallel + best-effort (a leaked free file ages out).
+  - **Honest ceiling (flagged, unchanged in spirit):** up to **90 pages** are cached per upload; a scan beyond
+    that caches its first 90 pages with a one-line note pointing to the full-copy path. A truly enormous scan
+    still can't be transcribed verbatim in one 150s call — a **digital/text PDF** caches fully for free. For a
+    normal 30–60-page commercial lease (Busey included), the whole document now caches.
+  - **Files:** `supabase/functions/_shared/pdf.ts` (`splitPdfIntoChunks` via `pdf-lib`),
+    `supabase/functions/extract-lease/index.ts` (`transcribeScan` + chunk constants + wiring; the single-call
+    `transcribeWithTimeout` now takes a maxTokens arg). No `src/` change → no frontend deploy.
+  - **Verified:** `extract-lease` deployed clean (server-side bundle + type-check pass, incl. the `npm:pdf-lib`
+    dynamic import); unauthenticated POST → **401** (RLS-gated); Vitest **394/394** (no `src/` change). Evidence
+    the edge already parses a 23 MB scan within budget: `extractPdfText` (unpdf) runs on every PDF today — it
+    parsed the Busey scan (returned null, no text layer) before the transcription even started — so `pdf-lib`
+    load+split is within the same CPU headroom. **The real proof is George re-uploading the Busey scan** — the
+    page-32 renewal option and the rules & regulations should now be in the cached lease text and answerable by
+    the assistant.
+
 - **2026-07-21** — **Follow-up to the Files-API 546 fix: a big scanned lease now CACHES its text (was "read but
   didn't cache"), + the lease/insurance/contract assistant Q&A now shows only the CURRENT question** (George, on
   Khaled's account, re-uploaded his 22.9 MB "Busey Bank Fully Executed Lease.pdf": after the 546 fix the main
