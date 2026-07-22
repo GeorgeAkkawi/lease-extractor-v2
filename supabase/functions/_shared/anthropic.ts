@@ -119,10 +119,14 @@ export async function callClaude(opts: CallOpts): Promise<any> {
   return text;
 }
 
-// Largest raw file we'll send to the vision path. The Anthropic request cap is
-// ~32MB and base64 inflates bytes by ~1.37×, so ~20MB of source stays safely under
-// it. Callers return a friendly message past this instead of a cryptic 500.
-export const MAX_VISION_BYTES = 20 * 1024 * 1024;
+// Largest raw file we'll send to the vision path — 25 MiB, matching the storage
+// bucket (migration 0020) and the client upload guard (api.js MAX_UPLOAD_BYTES),
+// so any file that uploads can also be read. NOTE: the Anthropic request cap is
+// ~32MB and base64 inflates bytes by ~1.37×, so a source file near the very top
+// of this range (~24MB+) can still be rejected by the provider; nearly all scans
+// sit well below it. Callers return a friendly message past this instead of a
+// cryptic 500.
+export const MAX_VISION_BYTES = 25 * 1024 * 1024;
 
 // Best-effort plain-text transcription of a scanned/photographed document for later
 // Q&A. Runs as its OWN call (NO structured-output token cap), so a long transcript

@@ -526,7 +526,7 @@ Deno.serve(async (req) => {
         // transcription is done in a SEPARATE call below so a long transcript can never
         // truncate the structured fields (the bug that 500'd real multi-page scans).
         if (bytes.length > MAX_VISION_BYTES) {
-          return json({ error: 'This scan is too large for AI reading (about 20 MB max). Reduce its resolution or split it into smaller files.' }, 413);
+          return json({ error: 'This scan is too large for AI reading (about 25 MB max). Reduce its resolution or split it into smaller files.' }, 413);
         }
         const b64 = base64(bytes);
         const docBlock: Block =

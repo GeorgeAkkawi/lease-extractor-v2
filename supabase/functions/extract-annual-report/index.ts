@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
       if (error || !blob) return json({ error: 'could not download file' }, 404);
       const bytes = new Uint8Array(await blob.arrayBuffer());
       if (bytes.length > MAX_VISION_BYTES) {
-        return json({ error: 'This scan is too large for AI reading (about 20 MB max). Reduce its resolution or split it into smaller files.' }, 413);
+        return json({ error: 'This scan is too large for AI reading (about 25 MB max). Reduce its resolution or split it into smaller files.' }, 413);
       }
       const b64 = base64(bytes);
       const mediaType = mimeFor(storage_path);

@@ -75,6 +75,26 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-21** — **AI file-size limit raised 20 MB → 25 MB, so a larger scanned lease / insurance / contract /
+  bank statement can be read by the AI** (George: "increase lease download size for the ai to 25 megabites").
+  Deployed: the 6 extract edge functions redeployed (Supabase `awgrjmbcghdjgnqeiqkt`) — `extract-lease`,
+  `extract-insurance`, `extract-annual-report`, `extract-contract`, `extract-addendum`, `extract-bank-statement`.
+  **Edge-function only — NO frontend build, NO DB migration, $0 (no per-request cost change; the existing paid
+  AI lane just accepts bigger files), no tenant emails.**
+  - **One shared constant:** `MAX_VISION_BYTES` in `supabase/functions/_shared/anthropic.ts` bumped
+    `20 * 1024 * 1024` → `25 * 1024 * 1024` (25 MiB) — now matching the storage bucket (migration 0020) and the
+    client upload guard (`api.js` `MAX_UPLOAD_BYTES`), which were **already** 25 MiB. A 20–25 MB file previously
+    uploaded and stored fine but the AI reader rejected it as "about 20 MB max"; the six per-function guard
+    messages were updated to "about 25 MB max" to match.
+  - **Caveat (in the code comment + flagged to George):** the Anthropic request cap is ~32 MB and base64 inflates
+    a file ~1.37×, so a source file near the very top of the range (~24 MB+) can still be rejected by the
+    provider; nearly all scans sit well below it. CSV bank-statement imports are unaffected (they never touch the
+    vision path).
+  - **Files:** `supabase/functions/_shared/anthropic.ts` (the constant + comment) + the six `extract-*/index.ts`
+    guard-message strings.
+  - **Verified:** all 6 functions deployed clean; grep confirms the constant reads 25 MiB and zero "20 MB max"
+    strings remain. No unit run needed (no `src/` logic changed).
+
 - **2026-07-21** — **Per-tenant breakdown: a muted "Vacant space" line makes the unbilled slice of
   taxes+CAM visible, reconciling the tenant shares back to the Expense entry total** (George asked why the
   CAM & tax actuals didn't "sync" with the Expense entry; live-verified it was the 0042 building-SF design —

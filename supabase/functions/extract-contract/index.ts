@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
         // Scan/photo or no usable text layer → vision path. Fields under the
         // constrained schema; transcription in a separate best-effort call below.
         if (bytes.length > MAX_VISION_BYTES) {
-          return json({ error: 'This scan is too large for AI reading (about 20 MB max). Reduce its resolution or split it into smaller files.' }, 413);
+          return json({ error: 'This scan is too large for AI reading (about 25 MB max). Reduce its resolution or split it into smaller files.' }, 413);
         }
         const b64 = base64(bytes);
         const docBlock: Block =
