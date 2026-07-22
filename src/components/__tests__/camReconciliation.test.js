@@ -20,7 +20,7 @@ const Y = currentYear();
 
 function renderTable() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // MemoryRouter: the table's Collected column links to the Rent Ledger route.
+  // MemoryRouter: a harmless routing context for the table (it renders no links now).
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>

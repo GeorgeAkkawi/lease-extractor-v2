@@ -75,6 +75,29 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-22** — **Removed the "Collected" column from the Financials per-tenant breakdown — that live
+  collections figure now lives only on the Rent Ledger tab** (George, right after the Ledger UX round: "no
+  need to have collected on the per tenant breakdown since its on the ledger"). Deployed: frontend Cloudflare
+  version `64400f73`, demo worker `3722e314`. **Frontend + CSS only — $0, NO DB migration, no edge functions,
+  no tenant emails; pure column removal, zero billing-math change.** Tests **415/415** (unchanged — no test
+  asserted the breakdown's Collected column; the `camReconciliation` totals-row "—" count is Estimated +
+  Difference, still ≥2). `vite build` compiles.
+  - **`TenantShareTable.js`:** dropped the 7th **Collected** column end to end — the header cell, the per-row
+    `<CollectedStat>`, the vacant-row + Totals-row Collected stats, the footnote's Collected-vs-Difference
+    paragraph, and the `CollectedStat` component itself. With it went the `ledgerOn`-gated `getPropertyMonthlyRoll`
+    query + the `allocatePayments`/`ledgerRowSummary` derivation, the `.with-ledger` grid-switch (the table is
+    always the 6-column layout now), and the now-unused `Link`/`useParams`/`useFeatures` imports. The estimate /
+    actual / Difference / Reconcile view is byte-identical otherwise. The month-by-month collections picture is
+    unchanged on the **Ledger** tab (`LedgerPage`), which is where it belongs.
+  - **`App.css`:** removed the dead `.share-ledger.with-ledger .ledger-grid` 7-column rule and the
+    `.collected-cell` / `.cell-sub.owes` rules.
+  - **Files:** `src/components/TenantShareTable.js`, `src/App.css`,
+    `src/components/__tests__/camReconciliation.test.js` (stale router comment only).
+  - **Verified:** unit **415/415** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+    workers.dev); demo redeployed (`3722e314`, bundle free of the live ref). Browser drive-through skipped per
+    George's standing preference (the jsdom camReconciliation test mounts the real table). **George: hard-refresh
+    (Cmd+Shift+R) → Financials → the per-tenant breakdown no longer carries Collected; open the Ledger tab for it.**
+
 - **2026-07-22** — **Rent Ledger made intuitive: "paid = paid" checkmarks, a Collected-of-total column with a
   red "N months behind" badge (the Owes column is gone), forward-only estimates, faster clicks, and self-
   explanatory wording** (George, voice memo on fakkawi3's account: the ledger seemed to "auto-calculate partial
