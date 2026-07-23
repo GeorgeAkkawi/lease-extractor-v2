@@ -114,7 +114,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
       // by construction. Tolerance is amountMatches, so a "confident" row never flags.
       const mismatch = kind === 'tenant' && tenant && finalMonth ? depositProjectionDelta(row.txn.amount, tenant, finalMonth) : null;
-      return { row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth, checked: writable && checked, always: !!ov.always, ai: !!ov.ai, picked: ov.pick != null, mismatch };
+      return { row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth, checked: writable && checked, always: !!ov.always, ai: !!ov.ai, picked: ov.pick != null, monthPicked: ov.month !== undefined, mismatch };
     });
   }, [matched, overrides, ctx]);
 
@@ -137,7 +137,10 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   // 🤖 Suggest buckets — click-gated (~1–2¢), only for the money-out lines nothing
   // recognized. Suggestion-only: picks are set with an "AI" chip but stay UNCHECKED,
   // so nothing books without the user's tick (same rule as unknown money-out).
-  const [aiBusy, setAiBusy] = useState(false);
+  // aiOp names WHICH helper is running ('tenants' | 'buckets' | null) — a shared
+  // boolean made both buttons read "Suggesting…" at once, which looked like two
+  // things had started when only one had.
+  const [aiOp, setAiOp] = useState(null);
   const [aiErr, setAiErr] = useState('');
   const unrecognized = useMemo(
     () => resolved.filter((r) => r.row.txn.direction === 'out' && !r.row.duplicate && !overrides[r.i]?.pick && r.row.kind === 'ignore' && r.row.confidence === 'none'),
@@ -145,7 +148,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   );
   async function suggestBuckets() {
     setAiErr('');
-    setAiBusy(true);
+    setAiOp('buckets');
     try {
       const res = await suggestExpenseBuckets({
         lines: unrecognized.map((r) => ({ index: r.i, description: r.row.txn.description, amount: r.row.txn.amount })),
@@ -166,7 +169,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     } catch (e) {
       setAiErr(e?.message || 'Could not get suggestions — sort the lines by hand instead.');
     } finally {
-      setAiBusy(false);
+      setAiOp(null);
     }
   }
 
@@ -179,7 +182,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   );
   async function suggestTenants() {
     setAiErr('');
-    setAiBusy(true);
+    setAiOp('tenants');
     try {
       const res = await suggestTenantMatches({
         lines: unmatchedDeposits.map((r) => ({ index: r.i, description: r.row.txn.description, amount: r.row.txn.amount })),
@@ -197,7 +200,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     } catch (e) {
       setAiErr(e?.message || 'Could not suggest tenants — pick them by hand instead.');
     } finally {
-      setAiBusy(false);
+      setAiOp(null);
     }
   }
 
@@ -321,27 +324,34 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           {(parsed.warnings || []).map((w, i) => <div key={i} className="note-msg warn" style={{ marginTop: 6 }}>{w}</div>)}
         </div>
         <div className="row" style={{ gap: 8 }}>
-          {unmatchedDeposits.length > 0 && (
-            <button
-              type="button"
-              className="ghost"
-              disabled={aiBusy}
-              onClick={suggestTenants}
-              title={`One small AI read suggests which tenant each unrecognized deposit is from, by name (~1–2¢${DEMO_MODE ? ' — free in the demo' : ''}). Suggestions only — every line still needs your tick before it saves.`}
-            >
-              {aiBusy ? 'Suggesting…' : `🤖 Suggest tenants for ${unmatchedDeposits.length} deposit${unmatchedDeposits.length === 1 ? '' : 's'}`}
-            </button>
-          )}
-          {unrecognized.length > 0 && (
-            <button
-              type="button"
-              className="ghost"
-              disabled={aiBusy}
-              onClick={suggestBuckets}
-              title={`One small AI read suggests a bucket for each unrecognized expense line (~1–2¢${DEMO_MODE ? ' — free in the demo' : ''}). Suggestions only — every line still needs your tick before it saves.`}
-            >
-              {aiBusy ? 'Suggesting…' : `🤖 Suggest buckets for ${unrecognized.length} line${unrecognized.length === 1 ? '' : 's'}`}
-            </button>
+          {/* The two optional AI helpers sit together in their own quiet cluster —
+              they're assistance, not the controls that decide this import. Only the
+              one you clicked says "Suggesting…"; the other simply waits its turn. */}
+          {(unmatchedDeposits.length > 0 || unrecognized.length > 0) && (
+            <span className="stmt-ai-row">
+              {unmatchedDeposits.length > 0 && (
+                <button
+                  type="button"
+                  className="stmt-ai"
+                  disabled={!!aiOp}
+                  onClick={suggestTenants}
+                  title={`One small AI read suggests which tenant each unrecognized deposit is from, by name (~1–2¢${DEMO_MODE ? ' — free in the demo' : ''}). Suggestions only — every line still needs your tick before it saves.`}
+                >
+                  {aiOp === 'tenants' ? 'Suggesting…' : <>🤖 Suggest tenants <span className="stmt-ai-n">{unmatchedDeposits.length}</span></>}
+                </button>
+              )}
+              {unrecognized.length > 0 && (
+                <button
+                  type="button"
+                  className="stmt-ai"
+                  disabled={!!aiOp}
+                  onClick={suggestBuckets}
+                  title={`One small AI read suggests a bucket for each unrecognized expense line (~1–2¢${DEMO_MODE ? ' — free in the demo' : ''}). Suggestions only — every line still needs your tick before it saves.`}
+                >
+                  {aiOp === 'buckets' ? 'Suggesting…' : <>🤖 Suggest buckets <span className="stmt-ai-n">{unrecognized.length}</span></>}
+                </button>
+              )}
+            </span>
           )}
           <button type="button" className="ghost" onClick={acceptAllConfident}>✓ Accept all confident</button>
           <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
@@ -449,6 +459,27 @@ function MonthGroup({ g, defaultOpen, children }) {
   );
 }
 
+// Every column carries a name. The include tick and the confidence chip used to sit
+// under blank headers, which left "Always" looking like an empty column with its
+// checkbox stranded on the far left (George: "the always boxes arent there … there
+// are on the left side"). One shared header row so the two tables can't drift.
+function HeadRow() {
+  return (
+    <thead>
+      <tr>
+        <th title="Tick a line to include it — nothing is written until you press Save">Import</th>
+        <th>Date</th>
+        <th>Description</th>
+        <th className="num">Amount</th>
+        <th>Record as</th>
+        <th>For month</th>
+        <th title="How confident the match is">Match</th>
+        <th title="Remember this payee so future statements sort it the same way">Always</th>
+      </tr>
+    </thead>
+  );
+}
+
 function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket, onDraftLetter }) {
   if (!rows.length) return null;
   return (
@@ -456,9 +487,7 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, bucket
       <div className="fin-subhead">{title}</div>
       <div className="table-wrap">
         <table className="stmt-table">
-          <thead>
-            <tr><th></th><th>Date</th><th>Description</th><th className="num">Amount</th><th>Record as</th><th>For month</th><th></th><th>Always</th></tr>
-          </thead>
+          <HeadRow />
           <tbody>
             {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} onDraftLetter={onDraftLetter} />)}
           </tbody>
@@ -472,6 +501,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   const { row } = r;
   const txn = row.txn;
   const isIn = txn.direction === 'in';
+  const txnMonth = /^\d{4}-\d{2}-\d{2}$/.test(txn.date || '') ? Number(txn.date.slice(5, 7)) : null;
   // The new-bucket mini-form, opened by picking "＋ New bucket…" in the dropdown.
   const [addingBucket, setAddingBucket] = useState(false);
   const [newName, setNewName] = useState('');
@@ -482,6 +512,12 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
       : r.kind === 'expense_other' ? `other:${r.label || 'Other'}`
       : r.kind === 'unmatched' ? '' : r.kind;
   const candidateIds = new Set((row.candidates || []).map((c) => c.lease_id));
+  // Standing in Pershing Plaza, the list should BE Pershing Plaza's tenants — the rest
+  // of the portfolio drops to a secondary group rather than padding out one long list.
+  const homeName = expenseProp ? ctx.properties.find((p) => p.id === expenseProp)?.name || null : null;
+  const pickable = ctx.tenants.filter((t) => !candidateIds.has(t.lease_id));
+  const homeTenants = homeName ? pickable.filter((t) => t.property_id === expenseProp) : pickable;
+  const otherTenants = homeName ? pickable.filter((t) => t.property_id !== expenseProp) : [];
   // Make sure the row's CURRENT label always appears in its optgroup, even when
   // it isn't (yet) one of the shared buckets.
   const billableBuckets = [...buckets.filter((b) => b.billable)];
@@ -534,11 +570,21 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                   ))}
                 </optgroup>
               )}
-              <optgroup label="All tenants">
-                {ctx.tenants.filter((t) => !candidateIds.has(t.lease_id)).map((t) => (
-                  <option key={t.lease_id} value={`lease:${t.lease_id}`}>{t.tenant_name} — {t.property_name}</option>
+              <optgroup label={homeName ? `${homeName} tenants` : 'All tenants'}>
+                {homeTenants.map((t) => (
+                  <option key={t.lease_id} value={`lease:${t.lease_id}`}>{t.tenant_name}</option>
                 ))}
               </optgroup>
+              {/* One bank account serves the whole portfolio, so a deposit from another
+                  property's tenant can legitimately land on this statement — those stay
+                  reachable, just out of the way of the property you're standing in. */}
+              {otherTenants.length > 0 && (
+                <optgroup label="Other properties">
+                  {otherTenants.map((t) => (
+                    <option key={t.lease_id} value={`lease:${t.lease_id}`}>{t.tenant_name} — {t.property_name}</option>
+                  ))}
+                </optgroup>
+              )}
               <option value="ignore">Ignore</option>
             </>
           ) : (
@@ -591,10 +637,22 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             <span className="badge info" title="Matches this tenant's open reconciliation true-up — records against that invoice, no month">true-up</span>
           ) : (
             <>
-              <select className="text-input" value={r.month ?? ''} onChange={(e) => setOv(r.i, { month: e.target.value })}>
+              <select
+                className="text-input"
+                value={r.month ?? ''}
+                title="Which month's rent this deposit pays. Filled in with the earliest month this tenant still owes — not the date on the line — so a payment that arrives late lands on the month it settles. Change it whenever it's for a different month."
+                onChange={(e) => setOv(r.i, { month: e.target.value })}
+              >
                 <option value="">— (lump)</option>
                 {MONTH_NAMES.map((nm, mi) => <option key={nm} value={mi + 1}>{nm.slice(0, 3)}</option>)}
               </select>
+              {/* Say so when the month chosen isn't the month the deposit landed in —
+                  otherwise a May tag on a June deposit reads as a mistake. */}
+              {!r.monthPicked && r.month && txnMonth && r.month !== txnMonth && (
+                <div className="stmt-monthhint" title={`This deposit posted in ${MONTH_NAMES[txnMonth - 1]}, but ${MONTH_NAMES[r.month - 1]} is the earliest month this tenant still owes, so it settles that one first. Pick a different month if that's wrong.`}>
+                  earliest month still owed
+                </div>
+              )}
               {!dupe && r.mismatch && (
                 <div className="stmt-mismatch">
                   {r.mismatch.escalation ? (
@@ -625,10 +683,11 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
         )}
       </td>
       <td>
+        {/* A tenant deposit needs no tick — booking it teaches the payee by itself. Say
+            that in the column rather than leaving it blank, which read as a missing
+            checkbox. Money-out keeps the opt-in tick. */}
         {r.kind === 'tenant' ? (
-          r.checked && (
-            <span className="stmt-auto muted" title="Booked tenant deposits are remembered automatically — the next statement will auto-classify this payee with no questions">auto</span>
-          )
+          <span className="stmt-auto muted" title="No tick needed — saving this deposit remembers the payee automatically, so the next statement sorts it with no questions">auto</span>
         ) : r.kind.startsWith('expense_') ? (
           <input
             type="checkbox"
@@ -652,7 +711,7 @@ function DupeGroup({ rows, ctx, year, closedYears, setOv, buckets, onNewBucket }
       {open && (
         <div className="table-wrap" style={{ marginTop: 8 }}>
           <table className="stmt-table">
-            <thead><tr><th></th><th>Date</th><th>Description</th><th className="num">Amount</th><th>Record as</th><th>For month</th><th></th><th>Always</th></tr></thead>
+            <HeadRow />
             <tbody>
               {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={null} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} dupe />)}
             </tbody>

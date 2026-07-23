@@ -129,7 +129,11 @@ button.rr-cell.abated{cursor:pointer}
 .stmt-propline{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:6px 0 10px}
 .stmt-group{margin-top:14px}
 .stmt-table th,.stmt-table td{vertical-align:middle}
-.stmt-table td.stmt-desc{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A bank prints long descriptions ("Orig CO Name:Five Points Wing Orig ID:9200502235
+   Desc Date:…") and the payee is often at the END, so an ellipsis hid exactly the part
+   worth reading. The line wraps instead; the odd unbroken token breaks rather than
+   pushing the table sideways. */
+.stmt-table td.stmt-desc{min-width:200px;max-width:340px;white-space:normal;overflow-wrap:anywhere;line-height:1.4}
 .stmt-table select.text-input{font-size:12.5px;padding:4px 6px;max-width:230px}
 tr.stmt-off td{opacity:.55}
 .stmt-footer{margin-top:16px;border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:8px}
@@ -141,6 +145,15 @@ tr.stmt-off td{opacity:.55}
 /* "auto" — a checked tenant deposit is remembered automatically (money-in needs no
    explicit "Always" tick; money-out keeps opt-in). */
 .stmt-auto{font-size:10px;font-style:italic;letter-spacing:.02em}
+/* Why the tagged month isn't the month the deposit landed in. */
+.stmt-monthhint{color:var(--faint);font-size:10px;line-height:1.3;margin-top:2px}
+/* The optional AI helpers are assistance, not decisions — one tinted pair that reads
+   apart from the buttons that actually accept or cancel the import. The tint alone
+   does that work, so the cluster survives wrapping with no stray divider. */
+.stmt-ai-row{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+button.stmt-ai{background:var(--accent-soft);color:var(--accent);border:1px solid transparent;padding:5px 10px;font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:none;border-radius:var(--radius)}
+button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
+.stmt-ai-n{display:inline-block;margin-left:4px;background:var(--panel);border-radius:8px;padding:0 5px;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
 /* Each statement month is a collapsible section (all-matched months start collapsed),
    its Money in / Money out tables indented under a bold header with live counts. */
 .stmt-month{margin-top:18px}

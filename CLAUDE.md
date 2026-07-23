@@ -75,6 +75,63 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **Statement review made readable: full transaction descriptions, named columns (the "Always"
+  mystery solved), a tenant list scoped to the property you're standing in, a plain-English reason for the
+  auto-picked month, and one "Suggesting…" instead of two** (George, reading his real Chase import on screen for
+  the first time: "does it know how to read dates that correspond with the ledger … it seemd like it recognizes
+  the month on the side that auto mark on the for month collumn but obviously let the user change. the always
+  boxes arent there so i cant check those - actually there are on the left side they should be under always -
+  also i cant see the full line of the transaction description. if im in pershing plaza it should show only
+  pershing plaza tenants. when it says suggesting, two different suggesting... comes up and also the suggesting
+  stuff is a bit off design fix that"). Deployed: frontend Cloudflare version `2e103e76`, demo worker `2b2e8207`.
+  **Frontend + CSS + tests — $0, NO DB migration, NO edge functions, no tenant emails, zero matcher/money-math
+  change.** Tests **534/534** (was 530 — +4 `statementReviewUi`).
+  - **Answering his first question (no code needed — it already worked this way):** the "For month" pick is NOT
+    the month printed on the line; `corroborateAmount` tags the **earliest month the tenant still owes**, so a
+    deposit that lands in August settling a missed June reads June. That IS "if i entered for a previous month
+    it would know." What was missing was any way to *see* that, so a June tag on an August line looked like a
+    bug. Now the select carries a full explanation in its tooltip and, whenever the tagged month differs from
+    the line's own month, a muted **"earliest month still owed"** sits under it — which disappears the moment
+    the landlord picks a month by hand (his own choice is never second-guessed).
+  - **The "Always boxes" mystery — two unnamed columns.** The include tick (col 1) and the confidence chip
+    (col 7) sat under **blank** `<th>`s, and the Always column rendered *nothing* on a tenant row unless it was
+    checked. So the eye read: a stray checkbox on the far left, and an "Always" header over an empty column —
+    exactly George's "the always boxes arent there … there are on the left side". Fixed both ends: a new shared
+    `HeadRow` names every column (**Import · Date · Description · Amount · Record as · For month · Match ·
+    Always**, each with a tooltip) and can't drift between the two tables; and a tenant row now *always* shows
+    the muted **"auto"** with "No tick needed — saving this deposit remembers the payee automatically." Money-out
+    keeps its opt-in tick (include + Always), so `statementReviewMismatch`'s 2-checkbox assertion is untouched.
+  - **Full description lines.** `.stmt-desc` was `max-width:260px` + `text-overflow:ellipsis` + `nowrap` — and a
+    bank puts the payee at the END ("Orig CO Name:Five Points Wing Orig ID:9200502235 Desc Date:…"), so the
+    ellipsis hid the only part worth reading. Now wraps (`white-space:normal`, `overflow-wrap:anywhere`,
+    max 340px) so the odd unbroken token breaks instead of pushing the table sideways.
+  - **The tenant dropdown leads with your property.** The "All tenants" optgroup listed the entire portfolio.
+    Now the first group is **"{Property} tenants"** (names only, no property suffix) and everything else drops to
+    a secondary **"Other properties"** group. Deliberately kept reachable rather than removed: one bank account
+    serves the portfolio, so a Pershing check imported on Maple must still be postable — and an auto-matched
+    cross-property candidate needs its option to exist or the `<select>` would show a blank value. The Duplicates
+    table (no expense property) still shows one plain "All tenants" group.
+  - **One "Suggesting…".** Both 🤖 helpers shared a single `aiBusy` boolean, so clicking either flipped BOTH
+    labels — it read as two operations starting. Now `aiOp` names which one is running (`'tenants' | 'buckets' |
+    null`): only the clicked button says "Suggesting…", the other keeps its label and is merely disabled.
+  - **The 🤖 design.** Two long full-size `ghost` buttons ("🤖 Suggest buckets for 5 lines") sat in the header
+    beside Accept-all/Cancel, wrapping awkwardly and reading as primary controls. They're now one tinted pair
+    (`.stmt-ai` — accent-soft fill, small, sentence case, matching `--radius`) with the count in a small pill
+    (`.stmt-ai-n`), grouped in `.stmt-ai-row`. The tint alone does the separating, so the cluster survives
+    wrapping with no stray divider — assistance that reads as assistance, not as a decision.
+  - **Files:** `src/components/StatementReview.js` (`HeadRow`, `aiOp`, property-scoped optgroups, month tooltip +
+    hint, always-on "auto", `monthPicked` on the resolved row), `src/App.css` (`.stmt-desc` wrap, `.stmt-ai*`,
+    `.stmt-monthhint`), `src/components/__tests__/statementReviewUi.test.js` (new — 4 cases: scoped dropdown with
+    Northwind still reachable under "Other properties"; all 8 headers named on BOTH tables + auto/tick counts;
+    August deposit tagged June with the hint, which clears on a manual pick; exactly one "Suggesting…" while a
+    held-open 🤖 call is in flight), plus the two label matchers in `ledgerPage`/`statementReviewEscalation`
+    loosened to `/🤖 Suggest (tenants|buckets)/`. No matcher, api, edge-fn, migration or demo-seed changes.
+  - **Verified:** unit **534/534** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+    workers.dev + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (the jsdom tests mount the real StatementReview against the demo mock). **George: hard-refresh
+    (Cmd+Shift+R) and open the statement review again — full descriptions, named columns, only Pershing tenants
+    in the dropdown, and the month column explains itself.**
+
 - **2026-07-23** — **BUGFIX #2 (same import, next wall): every line of George's Chase statement was skipped "no valid
   date" — the bank prints "06/01" and states the year ONCE, in the period header** (George, right after re-importing
   post-fix #1: "this is what happened when i uploaded it nw: 0 lines parsed · 10 skipped … line 1: no valid date —

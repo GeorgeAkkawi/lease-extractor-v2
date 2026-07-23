@@ -91,9 +91,9 @@ describe('LedgerPage — the rent ledger grid', () => {
     expect(pickValues).toContain('cam:Waste removal');
     expect(pickValues).toContain('cam:Snow removal');
     // The unrecognized Home Depot line surfaces the click-gated 🤖 button.
-    expect(screen.getByText(/🤖 Suggest buckets for 1 line/)).toBeTruthy();
+    expect(screen.getByText(/🤖 Suggest buckets/)).toBeTruthy();
     // Clicking it sets a suggestion (canned in demo) with the AI chip — UNCHECKED.
-    fireEvent.click(screen.getByText(/🤖 Suggest buckets for 1 line/));
+    fireEvent.click(screen.getByText(/🤖 Suggest buckets/));
     await waitFor(() => expect(screen.getAllByText('AI').length).toBeGreaterThan(0));
     const aiPick = Array.from(document.querySelectorAll('.stmt-table select')).map((s) => s.value);
     expect(aiPick).toContain('cam:Repairs & supplies');

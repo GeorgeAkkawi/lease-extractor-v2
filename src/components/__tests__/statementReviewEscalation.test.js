@@ -79,7 +79,7 @@ describe('StatementReview — escalation-aware variance', () => {
     const depRow = screen.getByText('MOBILE DEPOSIT J PAK 2211').closest('tr');
     // Nothing recognized it → it's unchecked and the 🤖 Suggest tenants button shows.
     expect(depRow.querySelector('input[type=checkbox]').checked).toBe(false);
-    const btn = screen.getByText(/🤖 Suggest tenants for 1 deposit/);
+    const btn = screen.getByText(/🤖 Suggest tenants/);
 
     // One click → the demo's canned matcher resolves "J PAK" to Northwind Books (lease-3).
     fireEvent.click(btn);
