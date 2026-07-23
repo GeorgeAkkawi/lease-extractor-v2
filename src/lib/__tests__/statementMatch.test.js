@@ -6,10 +6,21 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeDesc, lineHash, tenantNameScore, amountMatches, suggestRulePattern,
   classifyWithdrawal, corroborateAmount, rankDepositCandidates, matchStatement,
-  findMatchingRule, depositProjectionDelta,
+  findMatchingRule, depositProjectionDelta, stepAtOrBefore,
 } from '../statementMatch';
 
 const flat = (n) => Array(12).fill(n);
+// A stepped tenant: Jan–May $4,106.08, Jun–Dec $4,160.20 (a June base step of $54.12) —
+// Sam Nails' real shape. `steps` is escalationStepMonths' output (base delta = 54.12).
+const stepped = (over = {}) => ({
+  lease_id: 'lease-8', property_id: 'prop-3', property_name: 'GENA',
+  tenant_name: 'Sam Nails', monthly: 4137.65,
+  owed: [4106.08, 4106.08, 4106.08, 4106.08, 4106.08, 4160.20, 4160.20, 4160.20, 4160.20, 4160.20, 4160.20, 4160.20],
+  coverage: flat(0),
+  steps: [{ month: 6, owed: 4160.20, base: 2160.20, prevBase: 2106.08 }],
+  invoiceTotal: 49475.80, invoiceBalance: 49475.80, reconInvoiceId: null, reconBalance: 0,
+  ...over,
+});
 const txn = (over = {}) => ({ date: '2026-05-02', description: 'CHECK 1044 CITY DENTAL PC', amount: 8208.33, direction: 'in', balance: null, line: 2, ...over });
 
 // A tenant context row the api layer will assemble from the ledger roll.
@@ -201,6 +212,98 @@ describe('findMatchingRule (extracted rule loop)', () => {
   it('returns null when nothing matches', () => {
     expect(findMatchingRule(rules, txn({ description: 'RANDOM DEPOSIT' }))).toBe(null);
   });
+});
+
+describe('findMatchingRule — account-hint two-pass', () => {
+  // Same payee pattern learned on two different accounts.
+  const rules = [
+    { pattern: 'DENTAL', target_kind: 'tenant', lease_id: 'A', account_hint: '••1111' },
+    { pattern: 'DENTAL', target_kind: 'tenant', lease_id: 'B', account_hint: '••4821' },
+  ];
+  it('a hint-matching rule wins even when listed later', () => {
+    expect(findMatchingRule(rules, txn(), '••4821')).toMatchObject({ lease_id: 'B' });
+  });
+  it('no hint → first-match fallback (unchanged 2-arg behavior)', () => {
+    expect(findMatchingRule(rules, txn())).toMatchObject({ lease_id: 'A' });
+    expect(findMatchingRule(rules, txn(), null)).toMatchObject({ lease_id: 'A' });
+  });
+  it('an unknown hint falls through to any pattern match', () => {
+    expect(findMatchingRule(rules, txn(), '••9999')).toMatchObject({ lease_id: 'A' });
+  });
+  it('a hint-less (null) rule still matches in pass 2 when a hint is given', () => {
+    const r = [{ pattern: 'DENTAL', target_kind: 'tenant', lease_id: 'C', account_hint: null }];
+    expect(findMatchingRule(r, txn(), '••4821')).toMatchObject({ lease_id: 'C' });
+  });
+});
+
+describe('escalation-aware corroboration & delta', () => {
+  it('stepAtOrBefore returns the latest step at/before a month, null otherwise', () => {
+    const steps = [{ month: 6, base: 2160.20, prevBase: 2106.08 }];
+    expect(stepAtOrBefore(steps, 5)).toBe(null);
+    expect(stepAtOrBefore(steps, 6)).toMatchObject({ month: 6 });
+    expect(stepAtOrBefore(steps, 9)).toMatchObject({ month: 6 });
+    expect(stepAtOrBefore([], 6)).toBe(null);
+    // Twice-stepped year → the most recent applicable step.
+    const two = [{ month: 4, base: 1, prevBase: 0 }, { month: 9, base: 2, prevBase: 1 }];
+    expect(stepAtOrBefore(two, 7)).toMatchObject({ month: 4 });
+    expect(stepAtOrBefore(two, 10)).toMatchObject({ month: 9 });
+  });
+
+  it('a deposit at the PRE-raise rate on a post-step open month → corroborated + escalated', () => {
+    // Jan–May paid; June (post-step) open. A $4,106.08 check (the old rate) is the raise
+    // not yet paid at the new amount — matched to June, flagged escalated (not "short").
+    const t = stepped({ coverage: [4106.08, 4106.08, 4106.08, 4106.08, 4106.08, 0, 0, 0, 0, 0, 0, 0] });
+    expect(corroborateAmount(4106.08, t)).toEqual({ corroborated: true, month: 6, toRecon: false, escalated: true });
+  });
+  it('a pre-step month still open → normal single-month match, no escalated flag', () => {
+    const c = corroborateAmount(4106.08, stepped()); // firstOpen = Jan, owed 4106.08
+    expect(c).toMatchObject({ corroborated: true, month: 1 });
+    expect(c.escalated).toBeUndefined();
+  });
+  it('a k-month gap-sum spanning the step boundary stays untagged (no false escalation)', () => {
+    // Jan+Feb = 4106.08 × 2; matched as a lump, month null, not escalated.
+    const c = corroborateAmount(round(4106.08 * 2), stepped());
+    expect(c).toMatchObject({ corroborated: true, month: null });
+    expect(c.escalated).toBeUndefined();
+  });
+  it('short for OTHER reasons on a post-step month → not corroborated', () => {
+    const t = stepped({ coverage: [4106.08, 4106.08, 4106.08, 4106.08, 4106.08, 0, 0, 0, 0, 0, 0, 0] });
+    expect(corroborateAmount(3000, t).corroborated).toBe(false); // neither new, gap, nor pre-step rate
+  });
+
+  it('depositProjectionDelta carries an escalation marker at the pre-raise rate', () => {
+    expect(depositProjectionDelta(4106.08, stepped(), 6)).toEqual({
+      projected: 4160.20, delta: -54.12, escalation: { stepMonth: 6, prevOwed: 4106.08 },
+    });
+  });
+  it('null-invariants still hold on a STEPPED tenant; a random short omits the escalation key', () => {
+    expect(depositProjectionDelta(4160.20, stepped(), 6)).toBe(null); // full new rate
+    const partial = stepped({ coverage: [0, 0, 0, 0, 0, 2160.20, 0, 0, 0, 0, 0, 0] });
+    expect(depositProjectionDelta(2000, partial, 6)).toBe(null);      // gap top-up
+    expect(depositProjectionDelta(4000, stepped(), 6)).toEqual({ projected: 4160.20, delta: -160.20 }); // no escalation key
+  });
+
+  it('matchStatement: a stepped tenant + pre-step deposit → high, checked, tagged to the step month', () => {
+    const t = stepped({ coverage: [4106.08, 4106.08, 4106.08, 4106.08, 4106.08, 0, 0, 0, 0, 0, 0, 0] });
+    const { rows } = matchStatement({
+      transactions: [txn({ description: 'ACH SAM NAILS 5521', amount: 4106.08 })],
+      propertyId: 'prop-3', tenants: [t],
+    });
+    expect(rows[0]).toMatchObject({ kind: 'tenant', confidence: 'high', checked: true, month: 6 });
+  });
+
+  it('matchStatement threads accountHint so a hinted rule wins', () => {
+    const rules = [
+      { pattern: 'DENTAL', target_kind: 'tenant', lease_id: 'A', account_hint: '••1111' },
+      { pattern: 'DENTAL', target_kind: 'tenant', lease_id: 'B', account_hint: '••4821' },
+    ];
+    const t = cityDental({ lease_id: 'B', tenant_name: 'City Dental' });
+    const { rows } = matchStatement({ transactions: [txn()], propertyId: 'prop-1', tenants: [t], rules, accountHint: '••4821' });
+    expect(rows[0].confidence).toBe('rule');
+    expect(rows[0].candidate.lease_id).toBe('B');
+  });
+
+  function round(n) { return Math.round(n * 100) / 100; }
 });
 
 describe('depositProjectionDelta (rent-mismatch at review)', () => {

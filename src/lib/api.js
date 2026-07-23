@@ -7,7 +7,7 @@ import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
-import { allocatePayments, ledgerRowSummary } from './ledger';
+import { allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths } from './ledger';
 import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
@@ -3082,13 +3082,13 @@ export const listImportRules = () =>
 // Save the "always match {pattern} → …" memory. The (owner, property, pattern)
 // unique index makes re-saving a pattern update the existing rule instead of
 // stacking duplicates.
-export async function saveImportRule({ property_id, pattern, target_kind, lease_id = null, cam_label = null }) {
+export async function saveImportRule({ property_id, pattern, target_kind, lease_id = null, cam_label = null, account_hint = null }) {
   const clean = String(pattern || '').trim();
   if (clean.length < 3) throw new Error('A rule pattern needs at least 3 characters.');
   try {
     return await one(
       supabase.from('import_rules')
-        .insert({ property_id, pattern: clean, target_kind, lease_id, cam_label, owner_id: await ownerId() })
+        .insert({ property_id, pattern: clean, target_kind, lease_id, cam_label, account_hint, owner_id: await ownerId() })
         .select().single()
     );
   } catch (e) {
@@ -3099,7 +3099,7 @@ export async function saveImportRule({ property_id, pattern, target_kind, lease_
       if (existing) {
         return one(
           supabase.from('import_rules')
-            .update({ target_kind, lease_id, cam_label })
+            .update({ target_kind, lease_id, cam_label, account_hint })
             .eq('id', existing.id).select().single()
         );
       }
@@ -3155,6 +3155,12 @@ export async function getStatementMatchContext(propertyId, year) {
       const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
       const recon = openReconByLease[r.lease_id] || null;
       const info = leaseInfo[r.lease_id] || {};
+      // Mid-year rent steps, derived from the SAME per-month components the Ledger
+      // boxes paint — so a deposit at the pre-raise rate for a post-step month reads
+      // as explained by the escalation, never as "short" (and the import screen can
+      // never disagree with the boxes).
+      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual });
+      const steps = escalationStepMonths({ schedule: r.schedule, comp });
       tenants.push({
         lease_id: r.lease_id,
         property_id: p.id,
@@ -3166,6 +3172,7 @@ export async function getStatementMatchContext(propertyId, year) {
         monthly: r.monthly,
         owed: alloc.owed,
         coverage: alloc.coverage,
+        steps,
         invoiceTotal: r.annual,
         invoiceBalance: r.balance != null ? Number(r.balance) : null,
         reconInvoiceId: recon?.id || null,
@@ -3279,13 +3286,24 @@ export async function applyStatementImport({ propertyId, year, fileName, account
         const prevRow = existingRules.find(
           (r) => r.property_id === e.property_id && String(r.pattern).toLowerCase() === String(e.pattern).toLowerCase()
         );
+        // The no-op test is on the TARGET fields only (preserves "re-learn the same
+        // target → nothing to undo"). The account hint is metadata, so a same-target
+        // re-learn from a NEW account just refreshes the hint (last-import-wins) with
+        // NO applied record — a hint-only change never touched a money line, so it's
+        // intentionally not reversed by undo.
         const same = prevRow
           && prevRow.target_kind === e.target_kind
           && (prevRow.lease_id || null) === (e.lease_id || null)
           && (prevRow.cam_label || null) === (e.cam_label || null);
-        if (same) continue; // already learned — nothing to change, nothing to undo
-        const prior = prevRow ? { target_kind: prevRow.target_kind, lease_id: prevRow.lease_id || null, cam_label: prevRow.cam_label || null } : null;
-        const rule = await saveImportRule({ property_id: e.property_id, pattern: e.pattern, target_kind: e.target_kind, lease_id: e.lease_id || null, cam_label: e.cam_label || null });
+        if (same) {
+          if (accountHint && (prevRow.account_hint || null) !== accountHint) {
+            const refreshed = await saveImportRule({ property_id: e.property_id, pattern: e.pattern, target_kind: e.target_kind, lease_id: e.lease_id || null, cam_label: e.cam_label || null, account_hint: accountHint });
+            existingRules = existingRules.filter((r) => r.id !== refreshed.id).concat([refreshed]);
+          }
+          continue;
+        }
+        const prior = prevRow ? { target_kind: prevRow.target_kind, lease_id: prevRow.lease_id || null, cam_label: prevRow.cam_label || null, account_hint: prevRow.account_hint || null } : null;
+        const rule = await saveImportRule({ property_id: e.property_id, pattern: e.pattern, target_kind: e.target_kind, lease_id: e.lease_id || null, cam_label: e.cam_label || null, account_hint: accountHint || null });
         applied.push({ kind: 'rule', rule_id: rule.id, pattern: e.pattern, property_id: e.property_id, lease_id: e.lease_id || null, prior });
         existingRules = existingRules.filter((r) => r.id !== rule.id).concat([rule]);
       } catch { /* learning is best-effort — the import still succeeds */ }
@@ -3336,7 +3354,7 @@ export async function undoStatementImport(imp) {
       // Reverse the learning: a rule that overwrote a prior target restores it; a
       // brand-new rule is deleted. Best-effort — never blocks the rest of the undo.
       try {
-        if (a.prior) await saveImportRule({ property_id: a.property_id, pattern: a.pattern, target_kind: a.prior.target_kind, lease_id: a.prior.lease_id, cam_label: a.prior.cam_label });
+        if (a.prior) await saveImportRule({ property_id: a.property_id, pattern: a.pattern, target_kind: a.prior.target_kind, lease_id: a.prior.lease_id, cam_label: a.prior.cam_label, account_hint: a.prior.account_hint ?? null });
         else if (a.rule_id) await deleteImportRule(a.rule_id);
       } catch { /* best-effort */ }
     }
@@ -3362,6 +3380,15 @@ export async function extractBankStatement({ path }) {
 // shows each suggestion unchecked and nothing writes without the user's say-so.
 export async function suggestExpenseBuckets({ lines, buckets }) {
   return invokeFunction('suggest-buckets', { lines, buckets });
+}
+
+// The click-gated 🤖 helper for DEPOSITS nothing recognized (~1–2¢ per click): given
+// the unmatched money-in lines and the owner's tenants, one small Haiku call suggests
+// a tenant per line by NAME only (never amounts, never an invented id). The review
+// screen lands each suggestion UNCHECKED with the AI chip — nothing books without the
+// user's confirmation. Returns { suggestions: [{ index, lease_id, confidence }] }.
+export async function suggestTenantMatches({ lines, tenants }) {
+  return invokeFunction('suggest-tenant-match', { lines, tenants });
 }
 
 // The lease-stated estimated CAM & tax, read from the cached AI extraction on the

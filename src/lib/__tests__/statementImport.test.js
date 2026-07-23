@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   getStatementMatchContext, applyStatementImport, undoStatementImport,
-  listStatementImports, saveImportRule, listImportRules,
+  listStatementImports, saveImportRule, listImportRules, deleteImportRule,
   getExpenseRecord, listCamLineItems, listPayments, deletePayment,
   createInvoice, listInvoices, getPropertyMonthlyRoll,
 } from '../api';
@@ -227,5 +227,53 @@ describe('statement import — auto-learned payee rules', () => {
     const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 'same.csv', entries: [ruleEntry({ pattern: 'ZZSAME', lease_id: 'lease-2' })] });
     expect(res.import.applied.filter((a) => a.kind === 'rule')).toHaveLength(0);
     await undoStatementImport(res.import);
+  });
+});
+
+// The account dimension: a learned rule remembers the statement's masked account hint,
+// so the same payee on two accounts resolves right and a rule survives a bank switch.
+describe('statement import — account-hinted rule learning', () => {
+  const hinted = (over = {}) => ({ type: 'rule', pattern: 'ZZHINT PAYEE', property_id: 'prop-1', target_kind: 'tenant', lease_id: 'lease-2', cam_label: null, ...over });
+
+  it('a learned rule records the statement account hint (create keeps prior:null)', async () => {
+    const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 'h1.csv', accountHint: '••4821', entries: [hinted()] });
+    const rec = res.import.applied.find((a) => a.kind === 'rule');
+    expect(rec.prior).toBe(null);
+    expect((await listImportRules()).find((r) => r.pattern === 'ZZHINT PAYEE').account_hint).toBe('••4821');
+    await undoStatementImport(res.import);
+    expect((await listImportRules()).some((r) => r.pattern === 'ZZHINT PAYEE')).toBe(false);
+  });
+
+  it('overwriting from a DIFFERENT account carries the old hint in prior — undo restores target + hint', async () => {
+    await saveImportRule({ property_id: 'prop-1', pattern: 'ZZHINT2', target_kind: 'tenant', lease_id: 'lease-2', account_hint: '••1111' });
+    const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 'h2.csv', accountHint: '••4821', entries: [hinted({ pattern: 'ZZHINT2', lease_id: 'lease-1' })] });
+    const rec = res.import.applied.find((a) => a.kind === 'rule');
+    expect(rec.prior).toMatchObject({ target_kind: 'tenant', lease_id: 'lease-2', account_hint: '••1111' });
+    const after = (await listImportRules()).find((r) => r.pattern === 'ZZHINT2');
+    expect(after.lease_id).toBe('lease-1');
+    expect(after.account_hint).toBe('••4821'); // overwritten to the new account
+    await undoStatementImport(res.import);
+    const restored = (await listImportRules()).find((r) => r.pattern === 'ZZHINT2');
+    expect(restored).toMatchObject({ lease_id: 'lease-2', account_hint: '••1111' }); // target + hint restored
+    await deleteImportRule(restored.id);
+  });
+
+  it('re-learning the SAME target from a new account refreshes the hint with NO applied record', async () => {
+    await saveImportRule({ property_id: 'prop-1', pattern: 'ZZHINT3', target_kind: 'tenant', lease_id: 'lease-2', account_hint: '••1111' });
+    const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 'h3.csv', accountHint: '••4821', entries: [hinted({ pattern: 'ZZHINT3', lease_id: 'lease-2' })] });
+    expect(res.import.applied.filter((a) => a.kind === 'rule')).toHaveLength(0); // target unchanged → nothing to undo
+    expect((await listImportRules()).find((r) => r.pattern === 'ZZHINT3').account_hint).toBe('••4821'); // but the hint was refreshed
+    await undoStatementImport(res.import);
+    const still = (await listImportRules()).find((r) => r.pattern === 'ZZHINT3');
+    expect(still).toBeTruthy(); // hint-only refresh is intentionally lossy on undo — the rule stays
+    await deleteImportRule(still.id);
+  });
+
+  it('saveImportRule 23505 path updates the hint in place', async () => {
+    const first = await saveImportRule({ property_id: 'prop-1', pattern: 'ZZHINT4', target_kind: 'tenant', lease_id: 'lease-2', account_hint: '••1111' });
+    const second = await saveImportRule({ property_id: 'prop-1', pattern: 'zzhint4', target_kind: 'tenant', lease_id: 'lease-2', account_hint: '••4821' });
+    expect(second.id).toBe(first.id);
+    expect((await listImportRules()).find((r) => r.id === first.id).account_hint).toBe('••4821');
+    await deleteImportRule(first.id);
   });
 });

@@ -6,6 +6,7 @@ import {
   listSnapshots,
   applyStatementImport,
   suggestExpenseBuckets,
+  suggestTenantMatches,
 } from '../lib/api';
 import { matchStatement, suggestRulePattern, depositProjectionDelta, CAM_KEYWORD_LABELS } from '../lib/statementMatch';
 import { buildPaymentShortfallEmail } from '../lib/emailTemplates';
@@ -68,10 +69,12 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       if (!txn) continue;
       const pattern = suggestRulePattern(txn.description);
       const resolved = resolvePick(ov.pick);
-      if (pattern && resolved) out.push({ pattern, target_kind: resolved.kind, lease_id: resolved.lease_id || null, cam_label: resolved.label || null, property_id: expenseProp });
+      // Stamp the statement's account hint so a same-session "always" fix outranks a
+      // saved rule from a different account in the matcher's hint-preferred pass.
+      if (pattern && resolved) out.push({ pattern, target_kind: resolved.kind, lease_id: resolved.lease_id || null, cam_label: resolved.label || null, property_id: expenseProp, account_hint: accountHint || null });
     }
     return out;
-  }, [overrides, parsed.transactions, expenseProp]);
+  }, [overrides, parsed.transactions, expenseProp, accountHint]);
 
   const matched = useMemo(() => {
     if (!ctx) return null;
@@ -81,8 +84,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       tenants: ctx.tenants,
       rules: [...draftRules, ...ctx.rules],
       existingHashes: ctx.existingHashes,
+      accountHint,
     });
-  }, [ctx, parsed.transactions, expenseProp, draftRules]);
+  }, [ctx, parsed.transactions, expenseProp, draftRules, accountHint]);
 
   // One resolved decision per row: what Save would actually write.
   const resolved = useMemo(() => {
@@ -157,6 +161,37 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       setOverrides((o) => ({ ...o, ...patch }));
     } catch (e) {
       setAiErr(e?.message || 'Could not get suggestions — sort the lines by hand instead.');
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  // 🤖 Suggest tenants — the deposit twin of Suggest buckets. Only for money-IN lines
+  // nothing recognized (a low-confidence row already shows candidates, so it's excluded).
+  // Name-matching only; suggestions land UNCHECKED with the AI chip.
+  const unmatchedDeposits = useMemo(
+    () => resolved.filter((r) => r.row.txn.direction === 'in' && !r.row.duplicate && !overrides[r.i]?.pick && r.row.kind === 'unmatched'),
+    [resolved, overrides]
+  );
+  async function suggestTenants() {
+    setAiErr('');
+    setAiBusy(true);
+    try {
+      const res = await suggestTenantMatches({
+        lines: unmatchedDeposits.map((r) => ({ index: r.i, description: r.row.txn.description, amount: r.row.txn.amount })),
+        tenants: ctx.tenants.map((t) => ({ lease_id: t.lease_id, tenant_name: t.tenant_name, property_name: t.property_name, monthly: t.monthly })),
+      });
+      const validIds = new Set(ctx.tenants.map((t) => t.lease_id));
+      const patch = {};
+      for (const s of res?.suggestions || []) {
+        const target = unmatchedDeposits.find((r) => r.i === Number(s.index));
+        const leaseId = String(s.lease_id || '');
+        if (!target || !leaseId || !validIds.has(leaseId)) continue; // guard hallucinated ids
+        patch[target.i] = { ...overrides[target.i], pick: `lease:${leaseId}`, ai: true }; // UNCHECKED — needs the user's tick
+      }
+      setOverrides((o) => ({ ...o, ...patch }));
+    } catch (e) {
+      setAiErr(e?.message || 'Could not suggest tenants — pick them by hand instead.');
     } finally {
       setAiBusy(false);
     }
@@ -238,7 +273,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   const payTotal = willPay.reduce((s, r) => s + r.row.txn.amount, 0);
   const expTotal = willExpense.reduce((s, r) => s + r.row.txn.amount, 0);
   const payTenants = new Set(willPay.map((r) => r.tenant.lease_id)).size;
-  const mismatchCount = willPay.filter((r) => r.mismatch).length;
+  const mismatchCount = willPay.filter((r) => r.mismatch && !r.mismatch.escalation).length;
   const ignored = rows.filter((r) => !r.checked).length;
   const reconciledCount = (recons || []).length;
   const closedYearLines = rows.filter((r) => r.checked && closedYears.has(r.row.year));
@@ -265,6 +300,17 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           {(parsed.warnings || []).map((w, i) => <div key={i} className="note-msg warn" style={{ marginTop: 6 }}>{w}</div>)}
         </div>
         <div className="row" style={{ gap: 8 }}>
+          {unmatchedDeposits.length > 0 && (
+            <button
+              type="button"
+              className="ghost"
+              disabled={aiBusy}
+              onClick={suggestTenants}
+              title={`One small AI read suggests which tenant each unrecognized deposit is from, by name (~1–2¢${DEMO_MODE ? ' — free in the demo' : ''}). Suggestions only — every line still needs your tick before it saves.`}
+            >
+              {aiBusy ? 'Suggesting…' : `🤖 Suggest tenants for ${unmatchedDeposits.length} deposit${unmatchedDeposits.length === 1 ? '' : 's'}`}
+            </button>
+          )}
           {unrecognized.length > 0 && (
             <button
               type="button"
@@ -501,9 +547,15 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
               </select>
               {!dupe && r.mismatch && (
                 <div className="stmt-mismatch">
-                  <span className="stmt-mismatch-chip" title={`The ledger projects ${money(r.mismatch.projected)} for this month; this deposit is ${r.mismatch.delta < 0 ? 'below' : 'above'} it.`}>
-                    ≠ projected {money(r.mismatch.projected)} — {r.mismatch.delta < 0 ? `short ${money(Math.abs(r.mismatch.delta))}` : `over ${money(r.mismatch.delta)}`}
-                  </span>
+                  {r.mismatch.escalation ? (
+                    <span className="badge info" title={`This tenant's rent stepped up to ${money(r.mismatch.projected)} in ${MONTH_NAMES[r.mismatch.escalation.stepMonth - 1]}. This deposit is at the earlier ${money(r.mismatch.escalation.prevOwed)} rate — the raise simply hasn't been paid at the new amount yet, not a shortfall.`}>
+                      ↗ matches the pre-raise rate — rent stepped to {money(r.mismatch.projected)} in {MONTH_NAMES[r.mismatch.escalation.stepMonth - 1]}
+                    </span>
+                  ) : (
+                    <span className="stmt-mismatch-chip" title={`The ledger projects ${money(r.mismatch.projected)} for this month; this deposit is ${r.mismatch.delta < 0 ? 'below' : 'above'} it.`}>
+                      ≠ projected {money(r.mismatch.projected)} — {r.mismatch.delta < 0 ? `short ${money(Math.abs(r.mismatch.delta))}` : `over ${money(r.mismatch.delta)}`}
+                    </span>
+                  )}
                   {r.mismatch.delta < 0 && onDraftLetter && (
                     <button type="button" className="ghost btn-sm" onClick={() => onDraftLetter(r)} title="Draft a letter letting the tenant know their payment came in short of the scheduled rent (often a rent adjustment) — nothing sends automatically">
                       ✉ Draft letter

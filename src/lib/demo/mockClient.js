@@ -394,6 +394,29 @@ const functions = {
         }),
       });
     }
+    if (name === 'suggest-tenant-match') {
+      // Canned 🤖 tenant suggestions ($0 in the demo): match each passed deposit line
+      // against the seeded tenants by NAME — the tenant's business name AND its
+      // contact/owner name from the demo seed — so "MOBILE DEPOSIT J PAK 2211"
+      // resolves to Northwind Books (run by Jordan Pak). Suggestion-only, unchecked.
+      const lines = Array.isArray(body?.lines) ? body.lines : [];
+      const tenants = Array.isArray(body?.tenants) ? body.tenants : [];
+      const norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const NOISE = new Set(['LLC', 'INC', 'CO', 'CORP', 'THE', 'OF', 'AND', 'GROUP', 'COMPANY', 'BOOKS', 'STUDIO', 'YOGA', 'COFFEE', 'DENTAL']);
+      const toks = (s) => norm(s).split(' ').filter((t) => t.length >= 3 && !NOISE.has(t));
+      return ok({
+        suggestions: lines.map((l) => {
+          const d = ` ${norm(l?.description)} `;
+          let best = '';
+          for (const t of tenants) {
+            const contact = db.leases.find((x) => x.id === t.lease_id)?.tenant_contact_name;
+            const names = [...toks(t.tenant_name), ...toks(contact)];
+            if (names.some((tok) => d.includes(` ${tok} `))) { best = t.lease_id; break; }
+          }
+          return { index: l?.index, lease_id: best, confidence: best ? 'medium' : 'low' };
+        }),
+      });
+    }
     if (name === 'trends-narrative') {
       return ok({ narrative: 'Revenue held steady year over year while taxes rose ~14% and CAM ~12%, lifting the tax PSF from $4.40 to $5.00 and CAM PSF from $3.20 to $3.60. The new roof expense this year is tracked separately and excluded from PSF.' });
     }

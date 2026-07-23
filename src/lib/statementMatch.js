@@ -142,9 +142,30 @@ export function classifyWithdrawal(description, tenants = []) {
 // ---- Deposit matching --------------------------------------------------------
 // tenants: [{ lease_id, property_id, property_name, tenant_name, owed (12-array),
 //             coverage (12-array), monthly, invoiceTotal, invoiceBalance,
-//             reconInvoiceId?, reconBalance? }]
+//             reconInvoiceId?, reconBalance?, steps? }]
+//   steps — escalationStepMonths' output [{ month, owed, base, prevBase }], each a
+//           mid-year BASE step-up. Present so a deposit still at the pre-raise rate
+//           for a post-step month reads as explained by the step, not "short".
+
+// The latest step in effect at (or before) month m — null when none. Handles a
+// twice-stepped year (returns the most recent applicable step).
+export function stepAtOrBefore(steps, m) {
+  if (!Array.isArray(steps) || !steps.length) return null;
+  let best = null;
+  for (const s of steps) {
+    if (s && Number(s.month) <= m && (!best || Number(s.month) > Number(best.month))) best = s;
+  }
+  return best;
+}
+
+// The month's owed BEFORE a step took effect: the month's own owed minus the base
+// delta the step added (CAM/tax/roof are unchanged by an escalation), so it holds
+// for any post-step month and never disturbs the non-base components.
+const preStepOwed = (owedM, s) => round2(owedM - round2(Number(s.base) - Number(s.prevBase)));
+
 // Amount corroboration against ONE tenant. Returns
-//   { corroborated, month (1-12|null), toRecon } — month null = untagged (FIFO).
+//   { corroborated, month (1-12|null), toRecon, escalated? } — month null = untagged
+//   (FIFO); escalated marks a match at the pre-raise rate on a post-step month.
 export function corroborateAmount(amount, t) {
   // An open reconciliation true-up: the check that settles it matches its balance.
   if (t.reconBalance > 0 && amountMatches(amount, t.reconBalance)) {
@@ -158,6 +179,14 @@ export function corroborateAmount(amount, t) {
   if (firstOpen !== -1) {
     if (amountMatches(amount, owed[firstOpen]) || amountMatches(amount, gaps[firstOpen])) {
       return { corroborated: true, month: firstOpen + 1, toRecon: false };
+    }
+    // A mid-year rent escalation explains a deposit still at the PRE-raise rate for a
+    // post-step month — it's not short, the raise just hasn't been paid at the new
+    // amount yet. Accept it and flag `escalated` so the review shows the quiet
+    // "matches the pre-raise rate" cue instead of the amber short chip.
+    const step = stepAtOrBefore(t.steps, firstOpen + 1);
+    if (step && amountMatches(amount, preStepOwed(owed[firstOpen], step))) {
+      return { corroborated: true, month: firstOpen + 1, toRecon: false, escalated: true };
     }
     // k consecutive uncovered months' gap-sum (2..12) → untagged; Stage 1's FIFO
     // pool spreads one payment row correctly, no fake splits.
@@ -188,20 +217,36 @@ export function depositProjectionDelta(amount, tenant, month) {
   const cov = round2(Number((tenant.coverage || [])[m - 1]) || 0);
   const gap = round2(Math.max(0, owed - cov));
   if (amountMatches(amount, owed) || (gap > DUST && amountMatches(amount, gap))) return null;
-  return { projected: owed, delta: round2(Number(amount) - owed) };
+  const delta = round2(Number(amount) - owed);
+  // A short deposit that lands EXACTLY on the pre-raise rate for a post-step month is
+  // explained by the escalation, not a real shortfall — carry an `escalation` marker
+  // so the review renders the quiet cue. The key is present ONLY in that case.
+  const step = stepAtOrBefore(tenant.steps, m);
+  if (step) {
+    const prevOwed = preStepOwed(owed, step);
+    if (amountMatches(amount, prevOwed)) return { projected: owed, delta, escalation: { stepMonth: step.month, prevOwed } };
+  }
+  return { projected: owed, delta };
 }
 
 // The first saved rule (the payee memory) that matches one line: pattern contained in
 // the normalized description AND direction-compatible with the target. Extracted from
 // matchStatement so the save path can reuse the exact same test.
-export function findMatchingRule(rules = [], txn) {
+//   accountHint — the statement's masked account (e.g. "••4821"). When set, a rule
+//   learned from THAT account is preferred (pass 1); otherwise any pattern match wins
+//   (pass 2) — the fallback still recognizes a tenant who switched banks. A 2-arg call
+//   (no hint) behaves exactly as before.
+export function findMatchingRule(rules = [], txn, accountHint = null) {
   const desc = normalizeDesc(txn.description);
-  for (const r of rules) {
+  const matches = (r) => {
     const pat = normalizeDesc(r.pattern);
-    if (pat.length < 3 || !desc.includes(pat)) continue;
-    const dirOk = r.target_kind === 'ignore' || (r.target_kind === 'tenant' ? txn.direction === 'in' : txn.direction === 'out');
-    if (dirOk) return r;
+    if (pat.length < 3 || !desc.includes(pat)) return false;
+    return r.target_kind === 'ignore' || (r.target_kind === 'tenant' ? txn.direction === 'in' : txn.direction === 'out');
+  };
+  if (accountHint) {
+    for (const r of rules) if (r.account_hint === accountHint && matches(r)) return r;
   }
+  for (const r of rules) if (matches(r)) return r;
   return null;
 }
 
@@ -251,7 +296,7 @@ const confidenceOf = (cand) => {
 //               reason, month, confidence, checked, collision }
 //   propertyVote = { propertyId, propertyName, count, total } when most matched
 //   deposits belong to a DIFFERENT property than the page's (the pre-save banner).
-export function matchStatement({ transactions = [], propertyId = null, tenants = [], rules = [], existingHashes = new Set() } = {}) {
+export function matchStatement({ transactions = [], propertyId = null, tenants = [], rules = [], existingHashes = new Set(), accountHint = null } = {}) {
   const hashes = existingHashes instanceof Set ? existingHashes : new Set(existingHashes || []);
   const rows = [];
   for (const txn of transactions) {
@@ -259,8 +304,8 @@ export function matchStatement({ transactions = [], propertyId = null, tenants =
     const year = Number(txn.date.slice(0, 4));
     const duplicate = hashes.has(hash);
 
-    // 2) Rules first — suggest-only auto-confirm.
-    const ruleHit = findMatchingRule(rules, txn);
+    // 2) Rules first — suggest-only auto-confirm (account-hinted when known).
+    const ruleHit = findMatchingRule(rules, txn, accountHint);
     if (ruleHit) {
       const t = ruleHit.target_kind === 'tenant' ? tenants.find((x) => x.lease_id === ruleHit.lease_id) : null;
       const corr = t ? corroborateAmount(txn.amount, t) : { month: null, toRecon: false };

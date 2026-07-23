@@ -75,6 +75,62 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **Statement import learns smarter: a mid-year rent escalation now EXPLAINS a deposit still at the
+  pre-raise rate (quiet cue, auto-matched — no more false "short"), learned payee rules remember which bank ACCOUNT
+  taught them, and a click-gated 🤖 "Suggest tenants" names the deposits nothing recognized** (George's spec: "Bank
+  Statement Pattern Learning & Auto-Matching" — learn tenant-payment patterns, auto-match future deposits, smart
+  escalation-aware variance; his two scoping picks via AskUserQuestion: storage = **"Extend import_rules"** (not a new
+  table), AI = **"Click-gated 🤖"** (not per-import)). Deployed: DB migration `0066` (Supabase `awgrjmbcghdjgnqeiqkt`,
+  migration-reviewer APPROVE), NEW `suggest-tenant-match` edge fn, frontend Cloudflare version `d7ca14b1`, demo worker
+  `62c4dbae`. **$0 recurring** (normal imports stay fully deterministic; only the explicit 🤖 click costs ~1–2¢),
+  **NO destructive data** (0066 is one additive nullable column), **no tenant emails** (the shortfall letter still
+  only opens in the compose modal). Tests **506/506** (was 487 — +14 statementMatch escalation/two-pass, +5
+  statementImport account-hint, +2 new statementReviewEscalation render).
+  - **Most of the spec already shipped** in the 7/21–7/22 statement rounds (pattern learning + reuse via
+    `import_rules` with auto-learn + prior-based undo, auto-matching with the "rule" chip, variance detection, dup/
+    collision guards, full undo, expense buckets). The three genuinely-NEW pieces this round adds:
+  - **1) Escalation-aware variance (the core, live on George's real data immediately).** Before, a deposit at the
+    PRE-raise rate for a post-step month (Sam Nails' June $4,106.08 after the step to $4,160.20) failed amount
+    corroboration AND flagged the amber "≠ projected — short $Y" chip — even though a mid-year escalation explains it
+    perfectly. Now the import screen reads the SAME per-month components the Ledger boxes paint from:
+    `getStatementMatchContext` (api.js) derives each tenant's `steps` via the ledger's own
+    `componentizeSchedule` + `escalationStepMonths` (so the import can never disagree with the boxes).
+    `statementMatch.js` gains `stepAtOrBefore(steps, m)` + a local `preStepOwed(owedM, s) = owedM − (base step)`;
+    `corroborateAmount` accepts the pre-step rate for the first open post-step month (`{corroborated, month,
+    escalated:true}` → auto-checked); `depositProjectionDelta` returns a **conditional** `escalation:{stepMonth,
+    prevOwed}` marker. The review renders a quiet olive **"↗ matches the pre-raise rate — rent stepped to $X in
+    {month}"** cue instead of the amber chip, the footer's mismatch count excludes it, and the ✉ Draft letter stays
+    (the tenant genuinely owes the difference).
+  - **2) Account dimension on learned rules (migration `0066`).** `import_rules.account_hint` (nullable, metadata not
+    identity — the `(owner, property, lower(pattern))` unique index is unchanged, so re-learning a pattern from a new
+    account UPDATES the one rule, last-import-wins). `findMatchingRule` is now two-pass: a rule learned from THIS
+    statement's masked account (••4821) wins (pass 1), else any pattern match (pass 2 — a tenant who switched banks
+    is still recognized). Threaded through `matchStatement`, `saveImportRule` (insert + 23505 update),
+    `applyStatementImport` (prior carries the hint; a same-target re-learn from a new account refreshes the hint with
+    NO applied record — intentionally lossy on undo), `undoStatementImport` (restores target + hint), and the session
+    draft rules (stamped so a same-session "always" fix still outranks a saved hinted rule).
+  - **3) 🤖 Suggest tenants (click-gated, ~1–2¢, the deposit twin of 🤖 Suggest buckets).** New `suggest-tenant-match`
+    edge fn (Haiku, `cors`/`enforceRateLimit`, closed all-required schema, name-matching ONLY — never computes
+    amounts, never invents an id; server-side filter drops any hallucinated lease_id). Shows only when unmatched
+    money-in remains; suggestions land UNCHECKED with the existing AI chip (nothing books without the user's tick).
+    `suggestTenantMatches` in api.js; `unmatchedDeposits` memo + handler in StatementReview (validates index +
+    lease_id client-side as a second guard). Demo mock's canned route resolves the seeded "MOBILE DEPOSIT J PAK 2211"
+    line → Northwind Books (contact Jordan Pak) with ZERO seed changes.
+  - **Demo seeds deliberately unchanged** (a visible escalation step would need TWO seeded escalations + ripple pinned
+    test figures — 7/23 precedent); the escalation path is unit/render-test-covered and live on George's real data.
+  - **Files:** `supabase/migrations/0066_import_rule_account_hint.sql` (new), `supabase/functions/suggest-tenant-match/
+    index.ts` (new), `src/lib/{statementMatch,api}.js`, `src/components/StatementReview.js`, `src/lib/demo/mockClient.js`,
+    tests (`statementMatch`/`statementImport` extended; `statementReviewEscalation.test.js` new — a sibling of the
+    pinned `statementReviewMismatch` so that file stays byte-identical). No data-layer/CSS/store changes.
+  - **Verified:** unit **506/506** (`vitest run`); `vite build` compiles; migration read-back shows
+    `import_rules.account_hint` (nullable); edge fn unauth POST → **401**; live 200s (amlakre.com + www + workers.dev
+    + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing preference (the
+    jsdom render test drives the real StatementReview → the escalation cue + the 🤖 flow against the demo mock).
+    **George: next month's statement — a Sam Nails/Ricki's/Vape Store deposit still at the old rate now auto-matches
+    with the quiet "matches the pre-raise rate — rent stepped to $X in {month}" cue instead of an amber short flag;
+    re-imports auto-recognize learned payees, now account-aware; and any deposit nothing recognized gets a 🤖 Suggest
+    tenants button.**
+
 - **2026-07-23** — **The Rent Ledger's per-tenant "$X/mo" sub-line now reads the CURRENT rent, not a year-average —
   so a stepped tenant's headline dollars tie its own base·CAM&tax breakdown AND that month's box** (George, after the
   step-cue round: "there's still a small discrepancy — Sam Nails says $4,137/mo but the ledger says $4,106 in the box
