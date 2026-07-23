@@ -49,10 +49,13 @@ describe('Sidebar hover fly-out', () => {
     expect(links).toContain('/leases/corp-2/prop-2');
     // History fly-out too.
     expect(links).toContain('/history/corp-1');
-    // Third level: each property's tenants nested under it, ALWAYS linking to the lease
-    // page (which lives only in the Portfolio workspace, so always /leases/...). Loads
-    // once the batched sidebarLeases query resolves.
+    // Third level: each property's tenants link straight to their lease page — but ONLY
+    // under the Portfolio fly-out. A lease page lives only in the Portfolio workspace, so
+    // the Financials/History fly-outs stop at the property (a lease link there would jump
+    // you out of the workspace you're in — George 2026-07-23). So although all three tabs
+    // render fly-outs, each lease link appears EXACTLY ONCE (Portfolio), never 3×.
     await waitFor(() => expect(hrefs()).toContain('/leases/corp-1/prop-1/lease-1'));
-    expect(hrefs()).toContain('/leases/corp-1/prop-1/lease-2');
+    expect(hrefs().filter((h) => h === '/leases/corp-1/prop-1/lease-1').length).toBe(1);
+    expect(hrefs().filter((h) => h === '/leases/corp-1/prop-1/lease-2').length).toBe(1);
   });
 });

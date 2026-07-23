@@ -1,10 +1,9 @@
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, listProperties, getPropertyTotals } from '../lib/api';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
-import { usePrefetchers, propertyTotalsByCorpQuery, leasesByPropertiesQuery } from '../lib/prefetch';
+import { usePrefetchers, propertyTotalsByCorpQuery } from '../lib/prefetch';
 import { CardGridSkeleton } from '../components/Skeleton';
-import PropLeaseFlyout from '../components/PropLeaseFlyout';
 import { money, psf } from '../lib/format';
 
 // Shared by Financials and History workspaces (mode = 'financials' | 'history').
@@ -22,12 +21,6 @@ export default function FinancialsPropertiesPage({ mode = 'financials' }) {
   // cache, so the cards render fully populated in one pass (no per-card waterfall).
   const { isPending: totalsPending } = useQuery({
     ...propertyTotalsByCorpQuery(qc, corpId, year, properties),
-    enabled: properties.length > 0,
-  });
-  // Seed each card's ['leases', propId] cache in one request so the hover-to-lease
-  // fly-out is populated without a per-card round-trip (cards render before it lands).
-  useQuery({
-    ...leasesByPropertiesQuery(qc, corpId, properties),
     enabled: properties.length > 0,
   });
   const base = mode === 'history' ? 'history' : 'financials';
@@ -53,7 +46,7 @@ export default function FinancialsPropertiesPage({ mode = 'financials' }) {
       ) : (
         <div className="prop-grid">
           {properties.map((p) => (
-            <FinPropCard key={p.id} property={p} year={year} mode={mode} corpId={corpId} to={`/${base}/${corpId}/${p.id}`} pf={pf} />
+            <FinPropCard key={p.id} property={p} year={year} mode={mode} to={`/${base}/${corpId}/${p.id}`} pf={pf} />
           ))}
         </div>
       )}
@@ -61,8 +54,7 @@ export default function FinancialsPropertiesPage({ mode = 'financials' }) {
   );
 }
 
-function FinPropCard({ property, year, mode, corpId, to, pf }) {
-  const navigate = useNavigate();
+function FinPropCard({ property, year, mode, to, pf }) {
   // Reads the cache seeded by the page's batched fetch — no own network round-trip.
   const { data: totals } = useQuery({
     queryKey: ['propertyTotals', property.id, year],
@@ -70,12 +62,12 @@ function FinPropCard({ property, year, mode, corpId, to, pf }) {
   });
   const expenses = totals ? Number(totals.taxes_total) + Number(totals.cam_total) + Number(totals.roof_total) : null;
   const warm = () => (mode === 'history' ? pf.propertyHistory(property.id) : pf.propertyFinancials(property.id, year));
-  const go = () => navigate(to);
-  const keyGo = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
 
-  // A div (not a button) so the hover-to-lease fly-out can hold real links.
+  // A plain navigational card — the Financials/History workspaces stop at the property
+  // (a lease page lives only in Portfolio, so a lease link here would yank you out of
+  // this workspace; George, 2026-07-23). Lease-level hover stays on the Portfolio cards.
   return (
-    <div className="prop-card has-flyout" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} onMouseEnter={warm} onFocus={warm}>
+    <Link className="prop-card" to={to} onMouseEnter={warm} onFocus={warm}>
       <div className="prop-card-head"><strong>{property.name}</strong></div>
       <div className="prop-addr muted">{property.address || 'No address'}</div>
       <div className="fin-mini">
@@ -84,7 +76,6 @@ function FinPropCard({ property, year, mode, corpId, to, pf }) {
         <div><span className="muted">Tax / SF</span><b>{psf(totals?.tax_psf)}</b></div>
         <div><span className="muted">CAM / SF</span><b>{psf(totals?.cam_psf)}</b></div>
       </div>
-      <PropLeaseFlyout corpId={corpId} propertyId={property.id} />
-    </div>
+    </Link>
   );
 }

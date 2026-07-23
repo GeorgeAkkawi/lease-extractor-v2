@@ -71,11 +71,12 @@ export default function Sidebar() {
   }
 
   // A workspace nav item (Portfolio / Financials / History) that reveals a fly-out on
-  // hover/focus: each corporation, its properties nested underneath, and each property's
-  // tenants nested under it — every one a direct link. The corp/property links go to the
-  // current workspace (/${mode}/…); a tenant link always goes to its lease page, which
-  // lives only in the Portfolio workspace (/leases/…). So a whole account — down to a
-  // single lease — is one hover away (works from the collapsed icon rail too).
+  // hover/focus: each corporation with its properties nested underneath — every one a
+  // direct link into the current workspace (/${mode}/…). The Portfolio fly-out adds a
+  // third level: each property's tenants, linking straight to their lease page. Lease
+  // pages live only in the Portfolio workspace, so the tenant level is shown there and
+  // NOT under Financials/History — a lease link there would jump you out of the
+  // workspace you're in (George, 2026-07-23). Works from the collapsed icon rail too.
   const NavFlyout = ({ to, mode, label, icon, extra }) => (
     <span className="side-item-wrap">
       <NavLink className={navClass} to={to} {...tip(label)} {...(extra || {})}>
@@ -89,7 +90,7 @@ export default function Sidebar() {
               {(corpProps[c.id] || []).map((p) => (
                 <div className="side-flyout-prop" key={p.id}>
                   <Link className="side-flyout-item" role="menuitem" to={`/${mode}/${c.id}/${p.id}`}>{p.name}</Link>
-                  {(leasesByProp[p.id] || []).map((l) => (
+                  {mode === 'leases' && (leasesByProp[p.id] || []).map((l) => (
                     <Link className="side-flyout-lease" role="menuitem" key={l.id} to={`/leases/${c.id}/${p.id}/${l.id}`}>{l.tenant_name}</Link>
                   ))}
                 </div>
