@@ -75,6 +75,46 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **The Rent Ledger's per-tenant "$X/mo" sub-line now reads the CURRENT rent, not a year-average —
+  so a stepped tenant's headline dollars tie its own base·CAM&tax breakdown AND that month's box** (George, after the
+  step-cue round: "there's still a small discrepancy — Sam Nails says $4,137/mo but the ledger says $4,106 in the box
+  … same for Ricki's Lyons and Hong Kong, and I'm seeing it in the vape store in GENA property too"). Deployed:
+  frontend Cloudflare version `9d15fbbe`, demo worker `ff6b3fb4`. **Frontend + one pure helper + unit tests — $0, NO
+  DB migration, NO edge functions, NO data-layer/roll/demo-mock/CSS changes, no tenant emails.** Tests **487/487**
+  (was 481 — +6 representativeMonth).
+  - **Root cause (live-verified, penny-exact — a DISPLAY bug, the data is all correct):** the identity sub-line under
+    each tenant (`LedgerPage.js`) led with `money(r.monthly)`, and `r.monthly = annual / owedMonths` (`api.js:1876`) is
+    the **blended year-average**. On a mid-year-stepped tenant that average equals NO box AND doesn't even match its
+    own base·CAM&tax breakdown right beside it (which already read `rep` = a single representative month's components,
+    via `componentizeSchedule`'s per-month split). Sam Nails 2026 (applied June step $32,472.96→$33,122.40): boxes
+    $4,106.08 Jan–May / $4,160.20 Jun–Dec, but the sub-line printed the average **$4,137.65** — the "$4,137 vs $4,106"
+    George saw. Same shape on **Ricki's-Lyons** (applied May step → $3,102.76 → $3,149.08) and the **Vape Store**
+    (GENA/Joliet, applied May step $35,109.12→$36,162.36 → $2,925.76 → $3,013.53). **Hong Kong is NOT a stepped
+    tenant** — no 2025/2026 escalation, flat $25,730.56/yr; every recorded month = $2,849.60 = the sub-line, fully
+    consistent (George grouped it in from his original question; verified its 2026 invoice + all seven paid months are
+    $2,849.60 to the penny — nothing to fix there).
+  - **The fix (pure helper, one line in the view):** new `representativeMonth({ owedByMonth, schedule, isCurrentFy,
+    curMonth })` in `src/lib/ledger.js` returns the month that represents what the tenant pays **right now** — the
+    current month in the current FY when it's a normal billed, non-abated month (so the sub-line tracks a mid-year
+    raise the day it lands), else the first billed non-abated month (past/future FY, or a mid-year lease whose current
+    month is out of term / free → its starting rate); 0 when nothing is billed. `LedgerPage.js` replaces the inline
+    repM logic with it and the sub-line lead becomes `money(round2(alloc.owed[repM-1]))`. Because
+    `componentizeSchedule`'s binding invariant is `base + camTax + roof === owed` per month, the headline now equals
+    its own breakdown AND that month's box, always. For a UNIFORM tenant the representative month's owed == the
+    average, so Hong Kong and every non-stepped tenant read exactly as before. Composes with the existing "↗ rent
+    raised to $X/mo in {month}" step note (7/23 earlier), which explains the lower earlier figure.
+  - **Files:** `src/lib/ledger.js` (`representativeMonth`), `src/pages/LedgerPage.js` (import + repM via the helper +
+    `repMonthly` lead), `src/lib/__tests__/ledger.test.js` (+6: Sam Nails current-month post-step ≠ the average;
+    headline ties the breakdown + the box; pre-step current month; non-current FY → first billed; mid-year lease skips
+    out-of-term months; abated current month + all-unbilled → 0). No demo-seed change (the demo has no mid-2026 step,
+    so the sub-line is byte-identical there and the existing `ledgerPage` render test still asserts the same figures).
+  - **Verified:** unit **487/487** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev
+    + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing preference (the pure
+    helper is unit-tested; the change is a single displayed figure). **George: hard-refresh (Cmd+Shift+R) → Financials
+    → Ledger. Sam Nails now reads "$4,160.20/mo" (its current rent) under the name, matching the box + the "↗ rent
+    raised to $4,160.20/mo in June" note; Ricki's and the Vape Store likewise; Hong Kong stays $2,849.60 (it was never
+    actually off).**
+
 - **2026-07-23** — **A mid-year rent escalation is now visible in the Rent Ledger: a stepped tenant's two different
   monthly box values read as the intended raise, not a mismatch** (George: "why do sam nails ricky lyons and hong
   kong all have slightly off values? did they go through a rent escalation … it should show in the boxes as well";
