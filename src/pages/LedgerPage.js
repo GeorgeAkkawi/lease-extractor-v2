@@ -15,7 +15,7 @@ import {
   listSnapshots,
   localDateIso,
 } from '../lib/api';
-import { allocatePayments, componentizeSchedule, escalationStepMonths, ledgerRowSummary, snapshotCollectionSummary } from '../lib/ledger';
+import { allocatePayments, componentizeSchedule, escalationStepMonths, ledgerRowSummary, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
 import FinancialsTabs from '../components/FinancialsTabs';
@@ -285,11 +285,13 @@ export default function LedgerPage() {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
                 const rate = pct(summary.collected, summary.projected);
                 const stepSet = new Set(steps.map((s) => s.month));
-                // Representative month for the identity sub-line: the current month when
-                // it's a normal billed month, else the first owed non-free month.
-                let repM = isCurrentFy && (alloc.owed[curM - 1] || 0) > 0 && !r.schedule?.[curM]?.abated ? curM : 0;
-                if (!repM) for (let m = 1; m <= 12; m++) if ((alloc.owed[m - 1] || 0) > 0 && !r.schedule?.[m]?.abated) { repM = m; break; }
+                // Identity sub-line: show the tenant's CURRENT monthly, not a year-average.
+                // On a stepped tenant the average (r.monthly = annual ÷ months) equals no box
+                // and doesn't match its own base·CAM&tax breakdown — so read the representative
+                // month's owed, which ties the headline, its breakdown, and that month's box.
+                const repM = representativeMonth({ owedByMonth: alloc.owed, schedule: r.schedule, isCurrentFy, curMonth: curM });
                 const rep = repM ? comp[repM] : null;
+                const repMonthly = rep ? round2(alloc.owed[repM - 1]) : r.monthly;
                 return (
                   <tr key={r.lease_id}>
                     <td>
@@ -302,7 +304,7 @@ export default function LedgerPage() {
                         </div>
                       )}
                       <div className="rr-split">
-                        {money(r.monthly)}/mo{rep ? ` = ${money(rep.base)} base · ${money(rep.camTax)} CAM&tax${rep.roof > 0 ? ` · ${money(rep.roof)} roof` : ''}` : ''}{r.owedMonths < 12 ? ` · ${r.owedMonths} mo` : ''}
+                        {money(repMonthly)}/mo{rep ? ` = ${money(rep.base)} base · ${money(rep.camTax)} CAM&tax${rep.roof > 0 ? ` · ${money(rep.roof)} roof` : ''}` : ''}{r.owedMonths < 12 ? ` · ${r.owedMonths} mo` : ''}
                       </div>
                       {steps.length > 0 && (
                         <div className="rr-step-note" title="This tenant's base rent stepped up mid-year on a scheduled escalation — the two different monthly amounts are both correct.">

@@ -163,6 +163,25 @@ export function escalationStepMonths({ schedule, comp } = {}) {
   return out;
 }
 
+// The month whose figure best represents "what this tenant pays right now" — used for
+// the identity sub-line under the tenant name. On a STEPPED tenant a year-average
+// (annual ÷ months) equals no single box and doesn't even match its own base·CAM&tax
+// breakdown, which reads a single month; this returns the representative month so the
+// sub-line's headline dollars, its breakdown, AND that month's box all agree.
+//   - the CURRENT month in the current fiscal year, when it's a normal billed,
+//     non-abated month (so the sub-line tracks a mid-year raise the day it lands),
+//   - else the first billed non-abated month (a past/future FY, or a mid-year lease
+//     whose current month is out of term / free → its starting rate).
+// Returns 1–12, or 0 when no month is billed (fully abated / vacant) — the caller then
+// falls back to whatever monthly it has.
+export function representativeMonth({ owedByMonth = [], schedule = {}, isCurrentFy = false, curMonth = 0 } = {}) {
+  const owed = (m) => Number(owedByMonth[m - 1]) || 0;
+  const abated = (m) => !!schedule?.[m]?.abated;
+  if (isCurrentFy && curMonth >= 1 && curMonth <= 12 && owed(curMonth) > 0 && !abated(curMonth)) return curMonth;
+  for (let m = 1; m <= 12; m++) if (owed(m) > 0 && !abated(m)) return m;
+  return 0;
+}
+
 // The row's headline figures — every one derived from the SAME allocation the grid
 // paints from (see the header note for why arStatus can't be the source here).
 //   collected    — every dollar recorded against the year invoice (Σ received + credit)

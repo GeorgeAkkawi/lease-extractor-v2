@@ -4,7 +4,7 @@
 // documented divergence when a tag parks money on a not-yet-due month (WHY the
 // allocation — not arStatus — is the single source for everything the page shows).
 import { describe, it, expect } from 'vitest';
-import { allocatePayments, componentizeSchedule, ledgerRowSummary, owedArray } from '../ledger';
+import { allocatePayments, componentizeSchedule, ledgerRowSummary, owedArray, representativeMonth } from '../ledger';
 import { buildLeaseSchedule } from '../leaseSchedule';
 import { monthsBehindForInvoice } from '../arStatus';
 
@@ -294,5 +294,65 @@ describe('ledgerRowSummary vs arStatus — the single-derivation rule', () => {
     expect(row.owesToDate).toBe(0);
     expect(row.credit).toBe(0);
     expect(row.settled).toBe(true);
+  });
+});
+
+describe('representativeMonth — the identity sub-line reads the CURRENT rent, not a year-average', () => {
+  // George, 2026-07-23: Sam Nails' sub-line read "$4,137/mo" (annual ÷ 12, a blend of the
+  // pre/post-step months) while the boxes read $4,106.08 then $4,160.20 — a headline that
+  // matches no box. The sub-line must track the representative month so it ties the boxes.
+  // Sam Nails 2026: Jan–May $4,106.08, Jun–Dec $4,160.20 (an applied June escalation).
+  const samNails = [...Array(5).fill(4106.08), ...Array(7).fill(4160.20)];
+  const yearAvg = samNails.reduce((a, b) => a + b, 0) / 12; // ≈ 4137.65
+
+  it('picks the current month in the current FY (post-step) — headline ≠ the misleading average', () => {
+    const m = representativeMonth({ owedByMonth: samNails, isCurrentFy: true, curMonth: 7 });
+    expect(m).toBe(7);
+    // The headline the sub-line now shows = that month's box, NOT the year-average.
+    expect(samNails[m - 1]).toBe(4160.20);
+    expect(Math.round(samNails[m - 1] * 100)).not.toBe(Math.round(yearAvg * 100));
+  });
+
+  it('the headline ties its own base·CAM&tax breakdown AND that month\'s box', () => {
+    // Build the schedule/comp the page derives from (owed = base + est CAM&tax, no roof).
+    const schedule = {};
+    for (let i = 0; i < 12; i++) schedule[i + 1] = { owed: samNails[i] };
+    // Sam Nails est CAM & tax = $16,800/yr → $1,400/mo; base steps underneath it.
+    const comp = componentizeSchedule({ schedule, camTaxAnnual: 16800 });
+    const repM = representativeMonth({ owedByMonth: samNails, schedule, isCurrentFy: true, curMonth: 7 });
+    const rep = comp[repM];
+    // base + camTax + roof === owed === the box (componentizeSchedule's binding invariant).
+    expect(rep.base + rep.camTax + rep.roof).toBeCloseTo(samNails[repM - 1], 2);
+    expect(rep.camTax).toBe(1400);
+    expect(rep.base).toBe(2760.20); // $33,122.40 ÷ 12 — the post-step base
+  });
+
+  it('shows the current rent BEFORE a mid-year step too (current month pre-step)', () => {
+    const m = representativeMonth({ owedByMonth: samNails, isCurrentFy: true, curMonth: 3 });
+    expect(m).toBe(3);
+    expect(samNails[m - 1]).toBe(4106.08); // the pre-step rate they pay right now
+  });
+
+  it('a non-current FY reads the first billed month (its starting rate)', () => {
+    expect(representativeMonth({ owedByMonth: samNails, isCurrentFy: false, curMonth: 7 })).toBe(1);
+  });
+
+  it('skips out-of-term months on a mid-year lease (first billed month, not a $0 box)', () => {
+    // Jul-start tenant: Jan–Jun out of term (owed 0), Jul–Dec billed.
+    const owed = [0, 0, 0, 0, 0, 0, ...Array(6).fill(3300)];
+    // Current month (June) is out of term → falls through to the first billed month (July).
+    expect(representativeMonth({ owedByMonth: owed, isCurrentFy: true, curMonth: 6 })).toBe(7);
+    // Once in term, the current month wins.
+    expect(representativeMonth({ owedByMonth: owed, isCurrentFy: true, curMonth: 9 })).toBe(9);
+  });
+
+  it('skips an abated current month, and returns 0 when nothing is billed', () => {
+    const owed = flat(2000);
+    const schedule = { 7: { owed: 2000, abated: true } };
+    // July is abated → first non-abated billed month.
+    expect(representativeMonth({ owedByMonth: owed, schedule, isCurrentFy: true, curMonth: 7 })).toBe(1);
+    // Fully unbilled (vacant / all-abated) → 0, so the caller falls back to its own monthly.
+    expect(representativeMonth({ owedByMonth: flat(0), isCurrentFy: true, curMonth: 7 })).toBe(0);
+    expect(representativeMonth({})).toBe(0);
   });
 });
