@@ -75,6 +75,79 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-22** — **UI-polish round + statement rent-mismatch handling: sidebar hover fly-out (jump straight
+  into a corp/property) · Settings › Notifications reformatted to the house style · the Financials per-tenant
+  "CAM & tax · actual" total no longer collides with the Roof column · bold $/SF rates + a much more noticeable
+  estimate-edit hover · AND a full "a deposit came in short of the ledger's projection" flow — warn at review,
+  a drafted tenant letter, a one-click ledger top-up, and auto-learned payees** (George: "hover format for the
+  side bar … fix the formatting of the notifications page … fix formatting of cam and tax actual total …
+  bold the square footage rates … make the hover effect of editing the estimated cam and tax more noticeable";
+  plus his two questions → an AskUserQuestion where he chose **corps + properties nested** for the fly-out and,
+  for the rent mismatch, the custom four-part answer: warn at review + a drafted "you didn't follow the rent
+  escalation" letter he can send + a go-back-and-update ledger top-up + auto-classify a payee once pinpointed —
+  plan `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed: frontend Cloudflare version `72157ca7`,
+  demo worker `507998d2`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no tenant emails**
+  (the shortfall letter opens in the compose modal; nothing auto-sends). Tests **464/464** (was 441 — +10
+  statementMatch, +5 statementImport, +1 moneyCollection, +4 paymentShortfallEmail, +1 sidebarFlyout, +2
+  statementReviewMismatch, +1 ledgerPage; camReconciliation updated for the new totals shape).
+  - **1) Sidebar hover fly-out (`Sidebar.js` + `.side-flyout` CSS).** The three workspace nav items (Portfolio /
+    Financials / History) each reveal a fly-out on hover/focus listing every corporation with its properties
+    nested, each a direct `<Link>` to `/${mode}/${corp}` or `/${mode}/${corp}/${prop}`. One shared
+    `useQuery(['corporations'])` + `useQuery(['corpProperties', ids])` — the exact keys the Corporations grid
+    warms, so it's usually a cache hit (zero extra round-trip). Opens rightward (`left:calc(100% + 16px)`, z-index
+    60 above the bell's 40) with a transparent `::before` bridge so crossing the gap never drops the hover; works
+    from the collapsed 72px rail too (reveal is on the item, not the label).
+  - **2) Notifications page (`NotificationSettings.js` + `.notify-*` CSS).** Dropped the bare inline-styled rows for
+    a real grid (label+hint | input+reading), grouped under two `.fin-subhead` sections ("How far ahead to notify" /
+    "Follow-ups & grace periods"), maxWidth 620→560 to match Display/Security, and the reading line reserves its
+    height so a row never jumps. Fixed two token bugs George's page inherited — the info card used `--panel-soft`
+    (undefined → cold #f6f8fa) and `--line` (near-black ink!) for its border → now `--panel-2` / `--hair`; the same
+    two fallbacks fixed in `DisplaySettings.js` (info card + the toggle-row borders) for consistency.
+  - **3) CAM & tax actual total (`TenantShareTable.js` + `.cell-sub.wrap`).** The totals band's
+    "+ $X vacant = $Y entered" sub was `white-space:nowrap` in a `minmax(74px,1fr)` track → it overflowed into the
+    Roof column. Now it stacks onto two wrapping lines (`+ $X vacant` / `= $Y entered`) via a `.cell-sub.wrap`
+    variant — reconciliation still visible, never overflowing.
+  - **4) $/SF bold + estimate hover (`TenantShareTable.js` + `.sf-rate`/`.est-cell-btn`).** New `<SfRate>` wraps
+    every $/SF figure (base/actual/roof/total/estimate/vacant) in a bold-ink `.sf-rate` (matches the bolder SF
+    treatment). The click-to-edit estimate cell now wears a faint dashed underline at rest and, on hover/focus,
+    lifts onto the ivory panel with a gold ring + a ✎ glyph (it sits inside the gold-tinted estimate column, so the
+    lift-out is what reads as "editable") + a `:focus-visible` outline (was missing).
+  - **5) Rent-mismatch at statement import — the four-part flow George scoped.**
+    - **Warn at review** (`statementMatch.js` new `depositProjectionDelta` + `StatementReview.js`): a deposit tagged
+      to a month whose amount doesn't match the ledger's projected owed (tolerance = `amountMatches` ±$1/1%, so a
+      "confident" match never flags; a legit gap top-up excluded) shows a small amber **"≠ projected $X — short $Y"**
+      chip under the month picker, and the footer counts "N ≠ projected".
+    - **Drafted letter** (`emailTemplates.js` new `buildPaymentShortfallEmail` + `getStatementMatchContext` widened
+      with tenant email/contact + per-property business identity via the existing `businessFromCorp`): a **short**
+      deposit gets a **✉ Draft letter** ghost button → the compose modal, prefilled with a professional
+      "your payment came in below the scheduled rent — most often a scheduled escalation" letter. Nothing auto-sends.
+    - **Ledger top-up** (`api.js markMonthPaid` gains `opts.additional`; `LedgerPage.js` settled-cell splits 3 ways):
+      a month settled SHORT (one payment) reads an amber **✓ + "short $X"** and one click records the remaining gap
+      as a second same-month payment (the allocation sums them); a month with >1 same-month payment goes inert
+      (manage on the lease's Invoices & payments — undo would delete both); a fully/over-settled single payment still
+      click-undoes. Register expense count now filters explicit expense kinds (the new 'rule' records aren't
+      expenses).
+    - **Auto-learn** (`StatementReview.js` save + `api.js applyStatementImport`/`undoStatementImport`): every CHECKED
+      tenant deposit is remembered automatically (a `type:'rule'` entry rides the import, on the tenant's OWN
+      property) so the next statement auto-classifies that payee with the existing 'rule' chip — no "Always" tick
+      needed (money-out keeps the explicit tick). Deduped by pattern; each rule record carries its `prior` target so
+      **undo reverses exactly what the import taught** (delete a new rule, restore an overwritten one). The rule
+      record carries NO `hash` (stays out of the duplicate-guard universe) and doesn't inflate the money counters.
+      Tenant rows show a muted "auto" hint.
+  - **Files:** `src/components/{Sidebar,StatementReview,TenantShareTable}.js`, `src/pages/{NotificationSettings,
+    DisplaySettings,LedgerPage}.js`, `src/lib/{statementMatch,emailTemplates,api}.js`, `src/App.css`, tests
+    (`paymentShortfallEmail`, `sidebarFlyout`, `statementReviewMismatch` new; `statementMatch`, `statementImport`,
+    `moneyCollection`, `ledgerPage`, `camReconciliation` extended). **No DB/edge/mock/store changes** (the widened
+    context rides the demo mock's generic handlers; verified 464/464 against it).
+  - **Verified:** unit **464/464** (`vitest run`); `vite build` compiles (797 modules); demo bundle free of the live
+    ref; live 200s (amlakre.com + www + workers.dev + demo). Browser drive-through skipped per George's standing
+    preference — the jsdom render tests mount the real Sidebar / StatementReview / LedgerPage / TenantShareTable
+    against the demo mock. **George: hard-refresh (Cmd+Shift+R) → hover Portfolio/Financials/History in the sidebar
+    for the corp+property jump menu · Settings › Notifications reads cleanly · the Financials actual total no longer
+    collides + $/SF is bold + the estimate cell is clearly clickable on hover · import a statement with an off rent
+    → the "≠ projected" chip + ✉ Draft letter, and on the Ledger a short month shows "short $X" (one click records
+    the rest); re-import next month → the payee auto-classifies.**
+
 - **2026-07-22** — **Eight-in-one batch: carried-over CAM/tax estimate note at fiscal-year close · custom
   "notify me N ahead" per notification type (Settings › Notifications) with a per-lease lease-ending
   override · ledger cells now show the dollar figure marked (was a bare ✓) · corp-card hover fly-out

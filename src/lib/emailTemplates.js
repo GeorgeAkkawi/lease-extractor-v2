@@ -194,6 +194,30 @@ export function buildContractRenewalEmail({ business, vendorName, vendorEmail, c
   return { subject, body, to: vendorEmail || '' };
 }
 
+// Sent when a rent payment came in SHORT of what the ledger projects for a month —
+// most often because a scheduled rent adjustment (escalation) took effect and the
+// tenant is still remitting the old amount. Names the month, what was received, the
+// scheduled figure, and the difference, and asks them to true it up. The projected
+// figure is already escalation-aware, so escalations are referenced generically (no
+// per-lease step math needed here). Landlord-initiated — nothing auto-sends.
+export function buildPaymentShortfallEmail({ business, tenant_name, contact_name, tenant_email, propertyName, monthLabel, scheduled, received, shortfall, paidDate }) {
+  const gap = money(Math.abs(Number(shortfall) || (Number(scheduled) || 0) - (Number(received) || 0)));
+  const forMonth = monthLabel ? ` for ${monthLabel}` : '';
+  const subject = `Rent Payment Short of the Scheduled Amount — ${propertyName || 'your premises'}${monthLabel ? ` (${monthLabel})` : ''}`;
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: Rent payment${forMonth} at ${propertyName || 'the premises'}`,
+    paragraphs: [
+      `Dear ${contact_name || tenant_name || 'Tenant'},`,
+      `Thank you for your recent rent payment${forMonth}${paidDate ? ` received on ${longDate(paidDate)}` : ''}. In reconciling it against your lease, we found that the amount came in below the scheduled rent${forMonth}.`,
+      `We received ${money(received)}, while the scheduled rent${forMonth} is ${money(scheduled)}, leaving a balance of ${gap}. This most often happens when a scheduled rent adjustment (an escalation provided for in your lease) has taken effect and the prior amount is still being remitted.`,
+      `Please arrange to remit the remaining ${gap} and update your records so future payments reflect the current scheduled rent. If you believe this is in error or would like us to walk through the figures, just reply to this email or contact our office — we're glad to help.`,
+    ],
+  });
+  return { subject, body, to: tenant_email || '' };
+}
+
 export function buildEscalationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, effectiveDate, priorRent, newRent, escalationType, escalationValue }) {
   const monthly = monthlyOf(newRent);
   const delta =

@@ -123,7 +123,9 @@ export default function LedgerPage() {
     mutationFn: ({ leaseId, month, action, amount }) =>
       action === 'unmark'
         ? unmarkMonthPaid(leaseId, year, month)
-        : markMonthPaid(leaseId, propId, year, month, { amount }),
+        // A 'topup' records a SECOND same-month payment (the tenant paid the shortfall
+        // later), so it must bypass markMonthPaid's already-tagged idempotence guard.
+        : markMonthPaid(leaseId, propId, year, month, { amount, additional: action === 'topup' }),
     onMutate: async ({ leaseId, month, action, amount }) => {
       setPendingCells((s) => new Set(s).add(cellKey(leaseId, month)));
       await qc.cancelQueries({ queryKey: rollKey });
@@ -251,7 +253,7 @@ export default function LedgerPage() {
           </span>
         </div>
         <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 12 }}>
-          <strong>✓</strong> paid — recording a payment marks the month paid whatever the amount; any gap vs the projection shows up in <em>Collected</em> and the year-end reconcile · dashed <strong>✓</strong> covered by a lump payment · <strong>◐</strong> partly covered by a lump · amber months have come due and aren't paid · <strong>—</strong> before the tenant moved in · <strong>Free</strong> abated.
+          <strong>✓</strong> paid — recording a payment marks the month paid whatever the amount; any gap vs the projection shows up in <em>Collected</em> and the year-end reconcile · amber <strong>✓</strong> with <em>short $X</em> = paid less than projected (often a rent adjustment not yet picked up) — click to record the rest once they pay it · dashed <strong>✓</strong> covered by a lump payment · <strong>◐</strong> partly covered by a lump · amber months have come due and aren't paid · <strong>—</strong> before the tenant moved in · <strong>Free</strong> abated.
           Click a box to record that month (or undo). A lump payment with no month recorded fills the earliest months first.
           {prevCollection?.rate != null && (
             <> · <Link to={`/history/${corpId}/${propId}`} className="rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link></>
@@ -326,7 +328,39 @@ export default function LedgerPage() {
                         // A TAGGED month is settled — "paid = paid". It reads ✓ whatever the amount;
                         // when what came in differs from the projection, show that received figure.
                         if (settledM) {
+                          const tagCount = (r.payments || []).filter((p) => Number(p.period_month) === m).length;
                           const off = Math.abs(receivedM - owedM) > 0.05;
+                          const short = receivedM < owedM - 0.05;
+                          const gap = round2(owedM - receivedM);
+                          // Recorded across MORE than one same-month payment (e.g. a shortfall
+                          // topped up later): undoing would delete them all, so it's inert here
+                          // and managed on the lease's Invoices & payments panel.
+                          if (tagCount > 1) {
+                            return (
+                              <td key={m}>
+                                <span className={`rr-cell paid${s?.abated ? ' abated' : ''}`}
+                                  title={`${ml}: received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} — recorded across ${tagCount} payments · manage on the lease's Invoices & payments`}>
+                                  ✓<span className="rr-amt">{money0(receivedM)}</span>
+                                </span>
+                              </td>
+                            );
+                          }
+                          // Settled SHORT of the projection (one payment) — most often a scheduled
+                          // rent adjustment the tenant hasn't picked up. Click records the rest once
+                          // they pay it (a top-up), which the allocation sums with the first.
+                          if (short) {
+                            return (
+                              <td key={m}>
+                                <button type="button" className="rr-cell paid short" disabled={pending}
+                                  onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'topup', amount: gap })}
+                                  title={`${ml}: received ${money(receivedM)} of ${money(owedM)} projected — short ${money(gap)}. Click to record the remaining ${money(gap)} once the tenant pays it.`}>
+                                  ✓<span className="rr-amt">{money0(receivedM)}</span>
+                                  <span className="rr-short">short {money0(gap)}</span>
+                                </button>
+                              </td>
+                            );
+                          }
+                          // Exact or over — one tagged payment, click to undo.
                           return (
                             <td key={m}>
                               <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}`} disabled={pending}
@@ -429,7 +463,9 @@ export default function LedgerPage() {
                   {register.map((imp) => {
                     const applied = imp.applied || [];
                     const pays = applied.filter((a) => a.kind === 'payment');
-                    const exps = applied.filter((a) => a.kind !== 'payment');
+                    // Explicit expense kinds only — 'rule' records (auto-learned payees) also
+                    // ride in `applied` but aren't expenses, so they mustn't be counted here.
+                    const exps = applied.filter((a) => a.kind === 'cam' || a.kind === 'tax' || a.kind === 'roof');
                     return (
                       <tr key={imp.id}>
                         <td>{imp.file_name || '—'}</td>

@@ -5,12 +5,13 @@
 // City Dental's tagged Jan/Feb + untagged partial (◐ March), open months, the
 // holdover badge, and the Collected/Owes column.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, within, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
 import LedgerPage from '../../pages/LedgerPage';
-import { updateLease } from '../../lib/api';
+import { updateLease, markMonthPaid, unmarkMonthPaid } from '../../lib/api';
+import { currentYear } from '../../lib/format';
 
 function renderLedger(propId = 'prop-1') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -116,5 +117,25 @@ describe('LedgerPage — the rent ledger grid', () => {
     await waitFor(() => expect(screen.getByText('Vacant space')).toBeTruthy());
     expect(screen.getByText(/nothing to collect/)).toBeTruthy();
     await updateLease('lease-4', { square_footage: 1000 });
+  });
+
+  it('a settled-SHORT month shows the shortfall, and one click tops it up (then goes inert)', async () => {
+    const Y = currentYear();
+    // Tag City Dental's April at only $5,000 of the $9,150 owed → settled short.
+    await markMonthPaid('lease-2', 'prop-1', Y, 4, { amount: 5000 });
+    renderLedger();
+    await waitFor(() => expect(screen.getByText('City Dental')).toBeTruthy());
+    // The short cell reads ✓ $5,000 with a "short $4,150" sub.
+    const shortCell = document.querySelector('.rr-cell.paid.short');
+    expect(shortCell).toBeTruthy();
+    expect(within(shortCell).getByText(/short \$4,150/)).toBeTruthy();
+    // Clicking records the remaining $4,150 (a top-up); the month settles at the full
+    // $9,150, so the cell is no longer short and goes inert (2 same-month payments →
+    // managed on the lease's Invoices & payments, not click-undone).
+    fireEvent.click(shortCell);
+    await waitFor(() => expect(document.querySelector('.rr-cell.paid.short')).toBeNull());
+    const inert = Array.from(document.querySelectorAll('.rr-cell.paid')).find((c) => (c.getAttribute('title') || '').includes('recorded across 2 payments'));
+    expect(inert).toBeTruthy();
+    await unmarkMonthPaid('lease-2', Y, 4); // clean up (deletes both April tags)
   });
 });

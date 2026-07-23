@@ -28,15 +28,19 @@ const NBSP = ' ';
 // optional sub-line ($/SF etc. — blank renders as NBSP so mains line up across
 // rows). The label is read by screen readers everywhere and becomes the visible
 // eyebrow on narrow screens, where the shared header band is hidden.
-function Stat({ label, main, sub, className = '' }) {
+function Stat({ label, main, sub, className = '', subClass = '' }) {
   return (
     <div className={`ledger-stat ${className}`.trim()}>
       <span className="stat-label">{label}</span>
       <div className="cell-main">{main}</div>
-      <div className="cell-sub">{sub || NBSP}</div>
+      <div className={`cell-sub ${subClass}`.trim()}>{sub || NBSP}</div>
     </div>
   );
 }
+
+// A $/SF rate, set bold + ink so it reads as a real figure (George), matching the
+// bolder square-footage treatment — used on every figure's sub-line.
+const SfRate = ({ psf }) => <span className="sf-rate">{psf}/SF</span>;
 
 // Per-tenant breakdown + the estimated-vs-actual reconciliation view (0060),
 // laid out as a LEDGER — one entry per tenant — instead of a 13-column table,
@@ -287,7 +291,7 @@ export default function TenantShareTable({ propertyId, year }) {
                 )}
               </div>
             </div>
-            <Stat label="Base rent" main={money(s.base_rent)} sub={hasSf ? psf2(s.base_rent / s.square_footage) + '/SF' : ''} />
+            <Stat label="Base rent" main={money(s.base_rent)} sub={hasSf ? <SfRate psf={psf2(s.base_rent / s.square_footage)} /> : ''} />
             <EstimateStat
               share={s}
               billed={row.billed}
@@ -296,9 +300,9 @@ export default function TenantShareTable({ propertyId, year }) {
               priorBilled={priorBilledByLease[s.lease_id]}
               onToggle={() => setEditingId(editingId === s.lease_id ? null : s.lease_id)}
             />
-            <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? psf2(camTaxPsf) + '/SF' : ''} />
-            <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? psf2(roofPsf) + '/SF' : ''} />
-            <Stat className="ledger-total" label="Total · base + CAM & tax + roof" main={money(rowTotal)} sub={hasSf ? psf2(rowTotal / s.square_footage) + '/SF' : ''} />
+            <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? <SfRate psf={psf2(camTaxPsf)} /> : ''} />
+            <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? <SfRate psf={psf2(roofPsf)} /> : ''} />
+            <Stat className="ledger-total" label="Total · base + CAM & tax + roof" main={money(rowTotal)} sub={hasSf ? <SfRate psf={psf2(rowTotal / s.square_footage)} /> : ''} />
             <DiffStat fig={row.fig} show={row.billed.anyEstimate} />
             {editingId === s.lease_id && (
               <EstimateEditor
@@ -339,7 +343,7 @@ export default function TenantShareTable({ propertyId, year }) {
             className="lg-actual"
             label="CAM & tax · vacant share, stays with you"
             main={money(vacantCamTax)}
-            sub={psf2(camTaxEntered / buildingSf) + '/SF'}
+            sub={<SfRate psf={psf2(camTaxEntered / buildingSf)} />}
           />
           <Stat label="Roof" main={<span className="muted">—</span>} />
           <Stat className="ledger-total" label="Total" main={<span className="muted">—</span>} />
@@ -357,7 +361,10 @@ export default function TenantShareTable({ propertyId, year }) {
           className="lg-actual"
           label="CAM & tax · actual"
           main={money(tot.cam + tot.tax)}
-          sub={showVacant ? `+ ${money(vacantCamTax)} vacant${vacantReconciles ? ` = ${money(camTaxEntered)} entered` : ''}` : ''}
+          subClass="wrap"
+          sub={showVacant
+            ? <>+ {money(vacantCamTax)} vacant{vacantReconciles && <><br />= {money(camTaxEntered)} entered</>}</>
+            : ''}
         />
         <Stat label="Roof · actual" main={money(tot.roof)} />
         <Stat className="ledger-total" label="Total" main={money(tot.total)} />
@@ -425,7 +432,7 @@ function DiffStat({ fig, show }) {
 function EstimateStat({ share, billed, editing, carried, priorBilled, onToggle }) {
   const sfNum = Number(share.square_footage) || 0;
   const estCamTax = billed.camTax;
-  const psfSub = sfNum > 0 ? `${psf2(estCamTax / sfNum)}/SF` : '';
+  const psfSub = sfNum > 0 ? <SfRate psf={psf2(estCamTax / sfNum)} /> : '';
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
   const lastYear = priorBilled != null && priorBilled > 0 ? priorBilled : estCamTax;
   return (
@@ -443,6 +450,8 @@ function EstimateStat({ share, billed, editing, carried, priorBilled, onToggle }
           {billed.anyEstimate
             ? <>{money(estCamTax)}<span className="est-tag"> est.</span></>
             : <span className="muted">＋ set estimate</span>}
+          {/* Appears on hover/focus so the figure clearly reads as editable. */}
+          <span className="est-edit-hint" aria-hidden>✎</span>
         </div>
         {/* The roof rider gets its own sub-line so a long combo never bleeds into
             the neighboring column. */}

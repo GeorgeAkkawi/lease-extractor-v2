@@ -166,9 +166,14 @@ describe('TenantShareTable — estimated vs actual + reconcile', () => {
     await waitFor(() => expect(screen.getByText('Vacant space')).toBeTruthy());
     expect(screen.getByText(/500 SF · 10\.0% of the building — billed to no one/)).toBeTruthy();
     expect(screen.getByText('$4,300.00')).toBeTruthy();
-    // The vacant row's $/SF equals every pro-rata tenant's rate (that's the point).
+    // The vacant row's $/SF equals every pro-rata tenant's rate (that's the point),
+    // now rendered bold (.sf-rate) — the text content is unchanged.
     expect(screen.getAllByText(/\$8\.60\/SF/).length).toBeGreaterThanOrEqual(3);
-    expect(screen.getByText('+ $4,300.00 vacant = $43,000.00 entered')).toBeTruthy();
+    expect(document.querySelectorAll('.sf-rate').length).toBeGreaterThanOrEqual(3);
+    // The totals actual sub now stacks the reconciliation on two lines (wraps instead
+    // of overflowing into the Roof column).
+    const totalsSub = screen.getByText(/\+ \$4,300\.00 vacant/);
+    expect(totalsSub.textContent).toContain('= $43,000.00 entered');
     await updateLease('lease-1', { square_footage: 2000 });
   });
 });

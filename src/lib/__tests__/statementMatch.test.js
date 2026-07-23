@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeDesc, lineHash, tenantNameScore, amountMatches, suggestRulePattern,
   classifyWithdrawal, corroborateAmount, rankDepositCandidates, matchStatement,
+  findMatchingRule, depositProjectionDelta,
 } from '../statementMatch';
 
 const flat = (n) => Array(12).fill(n);
@@ -179,5 +180,49 @@ describe('matchStatement — the driver', () => {
       propertyId: 'prop-1', tenants: [cityDental()],
     });
     expect(propertyVote).toBe(null);
+  });
+});
+
+describe('findMatchingRule (extracted rule loop)', () => {
+  const rules = [
+    { pattern: 'CITY DENTAL PC', target_kind: 'tenant', lease_id: 'lease-2' },
+    { pattern: 'HOME DEPOT', target_kind: 'expense_cam', cam_label: 'Repairs' },
+  ];
+  it('matches a contained pattern in the right direction', () => {
+    expect(findMatchingRule(rules, txn())).toMatchObject({ lease_id: 'lease-2' });
+    expect(findMatchingRule(rules, txn({ description: 'HOME DEPOT 55 SUPPLIES', direction: 'out', amount: 240 }))).toMatchObject({ target_kind: 'expense_cam' });
+  });
+  it('respects direction — a tenant rule never fires on money OUT', () => {
+    expect(findMatchingRule(rules, txn({ direction: 'out' }))).toBe(null);
+  });
+  it('a too-short pattern (<3 chars) never matches', () => {
+    expect(findMatchingRule([{ pattern: 'PC', target_kind: 'tenant', lease_id: 'x' }], txn())).toBe(null);
+  });
+  it('returns null when nothing matches', () => {
+    expect(findMatchingRule(rules, txn({ description: 'RANDOM DEPOSIT' }))).toBe(null);
+  });
+});
+
+describe('depositProjectionDelta (rent-mismatch at review)', () => {
+  const t = cityDental({ owed: flat(9150), coverage: flat(0), monthly: 9150 });
+  it('flags a short deposit against the month it is applied to', () => {
+    expect(depositProjectionDelta(8000, t, 3)).toEqual({ projected: 9150, delta: -1150 });
+  });
+  it('flags an over deposit (positive delta)', () => {
+    expect(depositProjectionDelta(9500, t, 3)).toEqual({ projected: 9150, delta: 350 });
+  });
+  it('within ±$1/1% of the projection → null (a "confident" match never flags)', () => {
+    expect(depositProjectionDelta(9155, t, 3)).toBe(null); // 55 < 1% of 9150 (91.5)
+    expect(depositProjectionDelta(9150, t, 3)).toBe(null);
+  });
+  it('matching the month\'s remaining GAP (a legitimate top-up) → null', () => {
+    const partial = cityDental({ owed: flat(9150), coverage: [9150, 9150, 4150, 0, 0, 0, 0, 0, 0, 0, 0, 0], monthly: 9150 });
+    expect(depositProjectionDelta(5000, partial, 3)).toBe(null); // gap = 9150 − 4150 = 5000
+  });
+  it('no month, or a month that bills nothing → null', () => {
+    expect(depositProjectionDelta(8000, t, null)).toBe(null);
+    expect(depositProjectionDelta(8000, t, 0)).toBe(null);
+    const midYear = cityDental({ owed: [0, 0, 0, 0, 0, 0, 3000, 3000, 3000, 3000, 3000, 3000] });
+    expect(depositProjectionDelta(8000, midYear, 1)).toBe(null); // January owes nothing
   });
 });

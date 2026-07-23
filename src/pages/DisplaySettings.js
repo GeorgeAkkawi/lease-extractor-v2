@@ -52,7 +52,7 @@ export default function DisplaySettings() {
       <label
         key={w.key}
         className="row"
-        style={{ gap: 12, alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--line, #eee)', cursor: 'pointer' }}
+        style={{ gap: 12, alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--hair)', cursor: 'pointer' }}
       >
         <input
           type="checkbox"
@@ -76,7 +76,7 @@ export default function DisplaySettings() {
       <label
         key={f.key}
         className="row"
-        style={{ gap: 12, alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--line, #eee)', cursor: 'pointer' }}
+        style={{ gap: 12, alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--hair)', cursor: 'pointer' }}
       >
         <input
           type="checkbox"
@@ -102,7 +102,7 @@ export default function DisplaySettings() {
         hides it — nothing is deleted.
       </p>
 
-      <div style={{ marginTop: 16, padding: '14px 16px', borderRadius: 10, background: 'var(--panel-soft, #f6f8fa)', border: '1px solid var(--line, #eee)' }}>
+      <div style={{ marginTop: 16, padding: '14px 16px', borderRadius: 10, background: 'var(--panel-2)', border: '1px solid var(--hair)' }}>
         <strong style={{ fontSize: 14 }}>🔔 Notifications &amp; emails</strong>
         <p className="muted" style={{ fontSize: 12.5, marginTop: 6, marginBottom: 0 }}>
           Choose how far ahead each notification fires in <strong>Settings › Notifications</strong>.

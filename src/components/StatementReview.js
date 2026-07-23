@@ -5,12 +5,13 @@ import {
   listReconciliations,
   listSnapshots,
   applyStatementImport,
-  saveImportRule,
   suggestExpenseBuckets,
 } from '../lib/api';
-import { matchStatement, suggestRulePattern, CAM_KEYWORD_LABELS } from '../lib/statementMatch';
+import { matchStatement, suggestRulePattern, depositProjectionDelta, CAM_KEYWORD_LABELS } from '../lib/statementMatch';
+import { buildPaymentShortfallEmail } from '../lib/emailTemplates';
 import { DEMO_MODE } from '../lib/supabaseClient';
 import { money, fmtDate } from '../lib/format';
+import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
 
 // The full-page statement review — a 40–100-line table doesn't belong in a modal.
@@ -53,6 +54,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   const setOv = (i, patch) => setOverrides((o) => ({ ...o, [i]: { ...o[i], ...patch } }));
   // Buckets created in THIS review session ("＋ New bucket…") — offered to every row.
   const [sessionBuckets, setSessionBuckets] = useState([]);
+  // A drafted "your payment came in short of the scheduled rent" letter, opened in the
+  // compose modal (nothing auto-sends — the landlord sends it, or closes it).
+  const [letterDraft, setLetterDraft] = useState(null);
 
   // Draft rules from this session's "always" ticks re-apply to the OTHER lines of
   // this same import immediately (a garbled payee fixed once fixes the whole file).
@@ -93,11 +97,16 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       // Recompute recon routing when the user re-picked the tenant by hand.
       const toRecon = !pick ? !!row.candidate?.toRecon : !!(tenant?.reconBalance > 0 && Math.abs(tenant.reconBalance - row.txn.amount) <= Math.max(1, 0.01 * tenant.reconBalance));
       const month = ov.month !== undefined ? (ov.month === '' ? null : Number(ov.month)) : row.month;
+      const finalMonth = toRecon ? null : month;
       const defaultChecked = row.checked && !row.txn.needsReview;
       const checked = ov.checked !== undefined ? ov.checked : defaultChecked;
       // An ignored/unresolved line writes nothing, whatever the checkbox says.
       const writable = kind === 'tenant' ? !!(leaseId && tenant) : kind.startsWith('expense_');
-      return { row, i, kind, label, leaseId, tenant, toRecon, month: toRecon ? null : month, checked: writable && checked, always: !!ov.always, ai: !!ov.ai };
+      // Does the deposit match what the ledger projects for the month it's applied to?
+      // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
+      // by construction. Tolerance is amountMatches, so a "confident" row never flags.
+      const mismatch = kind === 'tenant' && tenant && finalMonth ? depositProjectionDelta(row.txn.amount, tenant, finalMonth) : null;
+      return { row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth, checked: writable && checked, always: !!ov.always, ai: !!ov.ai, mismatch };
     });
   }, [matched, overrides, ctx]);
 
@@ -174,22 +183,47 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
         }
       }
-      // Persist this session's "always match" rules from the FINAL decisions (so a
-      // tick on an untouched suggestion saves too, carrying its bucket label).
-      // Best-effort — a rule failure must not lose the import itself.
+      // Learn payee → target rules so the NEXT statement auto-classifies without asking:
+      //  • every CHECKED tenant deposit is remembered automatically (on the tenant's OWN
+      //    property — deposits self-route across the portfolio);
+      //  • an expense line is remembered only when its "Always" box is ticked.
+      // Deduped by pattern (a repeat payee → one rule); each rides the import as a 'rule'
+      // entry so undo reverses exactly what the import taught.
+      const ruleByPattern = new Map();
       for (const r of resolved) {
-        if (!r.always) continue;
+        if (!r.checked) continue;
         const pattern = suggestRulePattern(r.row.txn.description);
         if (!pattern) continue;
-        let rule = null;
-        if (r.kind === 'tenant' && r.tenant) rule = { property_id: expenseProp, pattern, target_kind: 'tenant', lease_id: r.tenant.lease_id, cam_label: null };
-        else if (r.kind.startsWith('expense_')) rule = { property_id: expenseProp, pattern, target_kind: r.kind, lease_id: null, cam_label: r.kind === 'expense_cam' || r.kind === 'expense_other' ? r.label || null : null };
-        if (rule) { try { await saveImportRule(rule); } catch { /* reviewed next time */ } }
+        if (r.kind === 'tenant' && r.tenant) {
+          ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, property_id: r.tenant.property_id, target_kind: 'tenant', lease_id: r.tenant.lease_id, cam_label: null });
+        } else if (r.always && r.kind.startsWith('expense_')) {
+          ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, property_id: expenseProp, target_kind: r.kind, lease_id: null, cam_label: (r.kind === 'expense_cam' || r.kind === 'expense_other') ? (r.label || null) : null });
+        }
       }
-      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, entries });
+      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, entries: [...entries, ...ruleByPattern.values()] });
     },
     onSuccess: (res) => onSaved(res),
   });
+
+  // Draft the shortfall letter for a short-paid deposit row (from ctx — no fetch).
+  function draftShortfallLetter(r) {
+    const t = r.tenant;
+    if (!t || !r.mismatch) return;
+    const scheduled = r.mismatch.projected;
+    const received = r.row.txn.amount;
+    setLetterDraft(buildPaymentShortfallEmail({
+      business: ctx.businessByProperty?.[t.property_id] || null,
+      tenant_name: t.tenant_name,
+      contact_name: t.contact_name,
+      tenant_email: t.tenant_email,
+      propertyName: t.property_name,
+      monthLabel: r.month ? `${MONTH_NAMES[r.month - 1]} ${r.row.year}` : null,
+      scheduled,
+      received,
+      shortfall: scheduled - received,
+      paidDate: r.row.txn.date,
+    }));
+  }
 
   if (!ctx || !matched) return <p className="muted">Reading the statement…</p>;
 
@@ -204,6 +238,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   const payTotal = willPay.reduce((s, r) => s + r.row.txn.amount, 0);
   const expTotal = willExpense.reduce((s, r) => s + r.row.txn.amount, 0);
   const payTenants = new Set(willPay.map((r) => r.tenant.lease_id)).size;
+  const mismatchCount = willPay.filter((r) => r.mismatch).length;
   const ignored = rows.filter((r) => !r.checked).length;
   const reconciledCount = (recons || []).length;
   const closedYearLines = rows.filter((r) => r.checked && closedYears.has(r.row.year));
@@ -266,7 +301,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         </div>
       )}
 
-      <Group title={`Money in · ${moneyIn.length}`} rows={moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />
+      <Group title={`Money in · ${moneyIn.length}`} rows={moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} onDraftLetter={draftShortfallLetter} />
       <Group title={`Money out · ${moneyOut.length}`} rows={moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />
       {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />}
       {parsed.skippedLines.length > 0 && <SkippedGroup skipped={parsed.skippedLines} />}
@@ -286,6 +321,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <div className="muted">
             <strong>{willPay.length}</strong> payment{willPay.length === 1 ? '' : 's'} to <strong>{payTenants}</strong> tenant{payTenants === 1 ? '' : 's'} · {money(payTotal)} in
+            {mismatchCount > 0 && <> · <strong>{mismatchCount}</strong> ≠ projected</>}
             {' — '}<strong>{willExpense.length}</strong> expense{willExpense.length === 1 ? '' : 's'} · {money(expTotal)} out
             {' — '}<strong>{ignored}</strong> ignored
           </div>
@@ -294,6 +330,16 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           </button>
         </div>
       </div>
+
+      {letterDraft && (
+        <EmailComposeModal
+          title="Rent shortfall notice"
+          to={letterDraft.to}
+          subject={letterDraft.subject}
+          body={letterDraft.body}
+          onClose={() => setLetterDraft(null)}
+        />
+      )}
     </div>
   );
 }
@@ -307,7 +353,7 @@ function resolvePick(pick) {
   return null;
 }
 
-function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket }) {
+function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket, onDraftLetter }) {
   if (!rows.length) return null;
   return (
     <div className="stmt-group">
@@ -318,7 +364,7 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, bucket
             <tr><th></th><th>Date</th><th>Description</th><th className="num">Amount</th><th>Record as</th><th>For month</th><th></th><th>Always</th></tr>
           </thead>
           <tbody>
-            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} />)}
+            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} onDraftLetter={onDraftLetter} />)}
           </tbody>
         </table>
       </div>
@@ -326,7 +372,7 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, bucket
   );
 }
 
-function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = [], onNewBucket, dupe = false }) {
+function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = [], onNewBucket, onDraftLetter, dupe = false }) {
   const { row } = r;
   const txn = row.txn;
   const isIn = txn.direction === 'in';
@@ -448,10 +494,24 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
           r.toRecon ? (
             <span className="badge info" title="Matches this tenant's open reconciliation true-up — records against that invoice, no month">true-up</span>
           ) : (
-            <select className="text-input" value={r.month ?? ''} onChange={(e) => setOv(r.i, { month: e.target.value })}>
-              <option value="">— (lump)</option>
-              {MONTH_NAMES.map((nm, mi) => <option key={nm} value={mi + 1}>{nm.slice(0, 3)}</option>)}
-            </select>
+            <>
+              <select className="text-input" value={r.month ?? ''} onChange={(e) => setOv(r.i, { month: e.target.value })}>
+                <option value="">— (lump)</option>
+                {MONTH_NAMES.map((nm, mi) => <option key={nm} value={mi + 1}>{nm.slice(0, 3)}</option>)}
+              </select>
+              {!dupe && r.mismatch && (
+                <div className="stmt-mismatch">
+                  <span className="stmt-mismatch-chip" title={`The ledger projects ${money(r.mismatch.projected)} for this month; this deposit is ${r.mismatch.delta < 0 ? 'below' : 'above'} it.`}>
+                    ≠ projected {money(r.mismatch.projected)} — {r.mismatch.delta < 0 ? `short ${money(Math.abs(r.mismatch.delta))}` : `over ${money(r.mismatch.delta)}`}
+                  </span>
+                  {r.mismatch.delta < 0 && onDraftLetter && (
+                    <button type="button" className="ghost btn-sm" onClick={() => onDraftLetter(r)} title="Draft a letter letting the tenant know their payment came in short of the scheduled rent (often a rent adjustment) — nothing sends automatically">
+                      ✉ Draft letter
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
           )
         )}
       </td>
@@ -463,14 +523,18 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
         )}
       </td>
       <td>
-        {(r.kind === 'tenant' || r.kind.startsWith('expense_')) && (
+        {r.kind === 'tenant' ? (
+          r.checked && (
+            <span className="stmt-auto muted" title="Booked tenant deposits are remembered automatically — the next statement will auto-classify this payee with no questions">auto</span>
+          )
+        ) : r.kind.startsWith('expense_') ? (
           <input
             type="checkbox"
             checked={r.always}
             onChange={(e) => setOv(r.i, { always: e.target.checked })}
             title={`Always match "${suggestRulePattern(txn.description) || txn.description}" this way on future imports`}
           />
-        )}
+        ) : null}
       </td>
     </tr>
   );

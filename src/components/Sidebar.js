@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { NavLink, Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase, DEMO_MODE } from '../lib/supabaseClient';
+import { listCorporations, listPropertiesByCorps } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { useChrome } from '../context/ChromeContext';
 import { usePrefetchers } from '../lib/prefetch';
@@ -14,6 +15,16 @@ export default function Sidebar() {
   const { year } = useChrome();
   const pf = usePrefetchers();
   const queryClient = useQueryClient();
+  // Corporations + their properties, for the hover fly-out that jumps straight into
+  // one. Shares the exact ['corporations'] / ['corpProperties', ids] keys the
+  // Corporations grid warms, so this is usually a cache hit — no extra round-trip.
+  const { data: corps = [] } = useQuery({ queryKey: ['corporations'], queryFn: listCorporations, enabled: !!user });
+  const corpIds = corps.map((c) => c.id);
+  const { data: corpProps = {} } = useQuery({
+    queryKey: ['corpProperties', corpIds.join(',')],
+    queryFn: () => listPropertiesByCorps(corpIds),
+    enabled: corps.length > 0,
+  });
   // Collapsed = icon-only rail. Persisted so the preference survives reloads.
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
@@ -46,6 +57,30 @@ export default function Sidebar() {
     }
   }
 
+  // A workspace nav item (Portfolio / Financials / History) that reveals a fly-out on
+  // hover/focus: each corporation, its properties nested underneath, every one a direct
+  // link into that page for the corp/property — so a whole account is one hover away
+  // (works from the collapsed icon rail too, where it doubles as a menu).
+  const NavFlyout = ({ to, mode, label, icon, extra }) => (
+    <span className="side-item-wrap">
+      <NavLink className={navClass} to={to} {...tip(label)} {...(extra || {})}>
+        {icon} <span className="side-label">{label}</span>
+      </NavLink>
+      {corps.length > 0 && (
+        <div className="side-flyout" role="menu" aria-label={`Jump to a ${label.toLowerCase()} page`}>
+          {corps.map((c) => (
+            <div className="side-flyout-corp" key={c.id}>
+              <Link className="side-flyout-head" role="menuitem" to={`/${mode}/${c.id}`}>{c.name}</Link>
+              {(corpProps[c.id] || []).map((p) => (
+                <Link className="side-flyout-item" role="menuitem" key={p.id} to={`/${mode}/${c.id}/${p.id}`}>{p.name}</Link>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+
   return (
     <aside className={'sidebar' + (collapsed ? ' collapsed' : '')}>
       <div className="brand">
@@ -55,9 +90,9 @@ export default function Sidebar() {
       <nav className="side-nav">
         <NavLink end className={navClass} to="/" {...tip('Overview')} {...warm(pf.dashboard)}><GridIcon /> <span className="side-label">Overview</span></NavLink>
         <NavLink className={navClass} to="/ask" {...tip('Ask Amlak')}><SparkIcon /> <span className="side-label">Ask Amlak</span></NavLink>
-        <NavLink className={navClass} to="/leases" {...tip('Portfolio')} {...warm(pf.corporations)}><DocIcon /> <span className="side-label">Portfolio</span></NavLink>
-        <NavLink className={navClass} to="/financials" {...tip('Financials')} {...warm(() => pf.corporationsFinancials(year))}><ChartIcon /> <span className="side-label">Financials</span></NavLink>
-        <NavLink className={navClass} to="/history" {...tip('History')} {...warm(() => pf.corporationsFinancials(year))}><ClockIcon /> <span className="side-label">History</span></NavLink>
+        <NavFlyout to="/leases" mode="leases" label="Portfolio" icon={<DocIcon />} extra={warm(pf.corporations)} />
+        <NavFlyout to="/financials" mode="financials" label="Financials" icon={<ChartIcon />} extra={warm(() => pf.corporationsFinancials(year))} />
+        <NavFlyout to="/history" mode="history" label="History" icon={<ClockIcon />} extra={warm(() => pf.corporationsFinancials(year))} />
       </nav>
 
       <div className="side-foot">

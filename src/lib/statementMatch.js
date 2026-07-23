@@ -174,6 +174,37 @@ export function corroborateAmount(amount, t) {
   return { corroborated: false, month: null, toRecon: false };
 }
 
+// Does a deposit's amount line up with what the ledger PROJECTS for the month it's
+// being applied to? Returns null when there's nothing to flag — no month picked, the
+// month bills nothing, or the amount matches the full charge OR the month's remaining
+// gap (a legitimate top-up). Otherwise { projected, delta } where delta = amount −
+// owed (negative = short, positive = over). Tolerance is amountMatches (±$1/1%), so a
+// deposit the matcher already called "confident" can never also read as a mismatch.
+export function depositProjectionDelta(amount, tenant, month) {
+  const m = Number(month);
+  if (!tenant || !(m >= 1 && m <= 12)) return null;
+  const owed = round2(Number((tenant.owed || [])[m - 1]) || 0);
+  if (owed <= DUST) return null;
+  const cov = round2(Number((tenant.coverage || [])[m - 1]) || 0);
+  const gap = round2(Math.max(0, owed - cov));
+  if (amountMatches(amount, owed) || (gap > DUST && amountMatches(amount, gap))) return null;
+  return { projected: owed, delta: round2(Number(amount) - owed) };
+}
+
+// The first saved rule (the payee memory) that matches one line: pattern contained in
+// the normalized description AND direction-compatible with the target. Extracted from
+// matchStatement so the save path can reuse the exact same test.
+export function findMatchingRule(rules = [], txn) {
+  const desc = normalizeDesc(txn.description);
+  for (const r of rules) {
+    const pat = normalizeDesc(r.pattern);
+    if (pat.length < 3 || !desc.includes(pat)) continue;
+    const dirOk = r.target_kind === 'ignore' || (r.target_kind === 'tenant' ? txn.direction === 'in' : txn.direction === 'out');
+    if (dirOk) return r;
+  }
+  return null;
+}
+
 // Rank every tenant for one deposit. Returns candidates sorted best-first:
 //   { lease_id, property_id, property_name, tenant_name, score, corroborated,
 //     month, toRecon, collision }
@@ -227,18 +258,9 @@ export function matchStatement({ transactions = [], propertyId = null, tenants =
     const hash = lineHash(txn);
     const year = Number(txn.date.slice(0, 4));
     const duplicate = hashes.has(hash);
-    const desc = normalizeDesc(txn.description);
 
     // 2) Rules first — suggest-only auto-confirm.
-    let ruleHit = null;
-    for (const r of rules) {
-      const pat = normalizeDesc(r.pattern);
-      if (pat.length < 3 || !desc.includes(pat)) continue;
-      const dirOk = r.target_kind === 'ignore' || (r.target_kind === 'tenant' ? txn.direction === 'in' : txn.direction === 'out');
-      if (!dirOk) continue;
-      ruleHit = r;
-      break;
-    }
+    const ruleHit = findMatchingRule(rules, txn);
     if (ruleHit) {
       const t = ruleHit.target_kind === 'tenant' ? tenants.find((x) => x.lease_id === ruleHit.lease_id) : null;
       const corr = t ? corroborateAmount(txn.amount, t) : { month: null, toRecon: false };

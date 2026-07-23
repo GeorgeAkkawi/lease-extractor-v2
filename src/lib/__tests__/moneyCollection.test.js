@@ -13,8 +13,9 @@ import { describe, it, expect } from 'vitest';
 import {
   ensureInvoice, upsertYearInvoice, listInvoices, createInvoice,
   markMonthPaid, unmarkMonthPaid, markMonthPaidAllTenants,
-  getMonthlyRent, getYearInvoice, listPayments,
+  getMonthlyRent, getYearInvoice, listPayments, getPropertyMonthlyRoll,
 } from '../api';
+import { allocatePayments } from '../ledger';
 import { monthlyScheduleForYear } from '../abatement';
 import { buildInvoice } from '../invoiceTemplate';
 import { currentYear } from '../format';
@@ -140,6 +141,23 @@ describe('marking months paid (the ledger write path)', () => {
     const june = (await listPayments('inv-2')).filter((p) => Number(p.period_month) === 6);
     expect(june).toHaveLength(1);
     expect(Number(june[0].amount)).toBe(5000); // not topped up to 9,150
+  });
+
+  it('a top-up records a SECOND same-month payment; the allocation settles the month at the sum', async () => {
+    // June is settled-short at 5,000 (from the test above). The ledger top-up records the
+    // remaining 4,150 as an ADDITIONAL same-month payment — bypassing the idempotence guard.
+    await markMonthPaid('lease-2', 'prop-1', Y, 6, { amount: 4150, additional: true });
+    const june = (await listPayments('inv-2')).filter((p) => Number(p.period_month) === 6);
+    expect(june).toHaveLength(2);
+    expect(round2(june.reduce((s, p) => s + Number(p.amount), 0))).toBe(9150);
+    // The allocation sums the two same-month tags → June reads settled at the full 9,150.
+    const row = (await getPropertyMonthlyRoll('prop-1', Y)).find((r) => r.lease_id === 'lease-2');
+    const alloc = allocatePayments({ owedByMonth: row.schedule, payments: row.payments });
+    expect(alloc.settled[5]).toBe(true);
+    expect(round2(alloc.received[5])).toBe(9150);
+    // Without `additional`, a same-month mark stays an idempotent no-op (no 3rd payment).
+    await markMonthPaid('lease-2', 'prop-1', Y, 6, { amount: 9999 });
+    expect((await listPayments('inv-2')).filter((p) => Number(p.period_month) === 6)).toHaveLength(2);
   });
 });
 

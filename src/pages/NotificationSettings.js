@@ -55,8 +55,47 @@ export default function NotificationSettings() {
   });
   const dirty = Object.keys(patch).length > 0;
 
+  // One row: the type's label + hint on the left, the freeform lead input + its live
+  // "= N days" reading on the right. The reading line reserves its height so a row
+  // never jumps as you type.
+  const renderRow = (t) => {
+    const savedDays = leadDaysFor(prefs, t.key);
+    const raw = drafts[t.key];
+    const shown = raw === undefined ? formatLeadDays(savedDays) : raw;
+    const parsed = raw === undefined ? savedDays : parseLeadTime(raw);
+    const bad = raw !== undefined && raw.trim() !== '' && parsed == null;
+    const when = t.kind === 'after' ? 'after' : 'before';
+    return (
+      <div key={t.key} className="notify-row">
+        <div className="notify-copy">
+          <div className="notify-label">{t.label}</div>
+          <div className="notify-hint">{t.hint}</div>
+        </div>
+        <div className="notify-input">
+          <input
+            className="text-input"
+            value={shown}
+            onChange={(e) => setDrafts((d) => ({ ...d, [t.key]: e.target.value }))}
+            placeholder="e.g. 3 months"
+            aria-label={`${t.label} notify lead`}
+          />
+          <div className={`notify-reading${bad ? ' bad' : ''}`}>
+            {bad
+              ? 'couldn’t read that — try “3 months”'
+              : parsed != null
+                ? `= ${parsed} day${parsed === 1 ? '' : 's'} ${when} the date`
+                : ''}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const before = NOTIFY_TYPES.filter((t) => t.kind !== 'after');
+  const after = NOTIFY_TYPES.filter((t) => t.kind === 'after');
+
   return (
-    <div className="panel" style={{ maxWidth: 620 }}>
+    <div className="panel" style={{ maxWidth: 560 }}>
       <div className="panel-head"><strong>Notifications</strong></div>
       <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
         Choose how far ahead you want each reminder. Type a plain value like
@@ -64,7 +103,7 @@ export default function NotificationSettings() {
         each box. These apply to the dashboard alerts and the reminder emails alike.
       </p>
 
-      <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 10, background: 'var(--panel-soft, #f6f8fa)', border: '1px solid var(--line, #eee)' }}>
+      <div className="notify-info">
         <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>
           {DEMO_MODE
             ? 'This is demo mode — no emails are actually sent.'
@@ -76,43 +115,16 @@ export default function NotificationSettings() {
       {isLoading ? (
         <p className="muted" style={{ marginTop: 12 }}>Loading…</p>
       ) : (
-        <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {NOTIFY_TYPES.map((t) => {
-            const savedDays = leadDaysFor(prefs, t.key);
-            const raw = drafts[t.key];
-            const shown = raw === undefined ? formatLeadDays(savedDays) : raw;
-            const parsed = raw === undefined ? savedDays : parseLeadTime(raw);
-            const bad = raw !== undefined && raw.trim() !== '' && parsed == null;
-            const when = t.kind === 'after' ? 'after' : 'before';
-            return (
-              <div key={t.key} className="notify-row" style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: '10px 0', borderBottom: '1px solid var(--hair)' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13.5 }}>{t.label}</div>
-                  <div className="muted" style={{ fontSize: 11.5, marginTop: 2 }}>{t.hint}</div>
-                </div>
-                <div style={{ width: 150, flexShrink: 0 }}>
-                  <input
-                    className="text-input"
-                    value={shown}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [t.key]: e.target.value }))}
-                    placeholder="e.g. 3 months"
-                    aria-label={`${t.label} notify lead`}
-                  />
-                  <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>
-                    {bad
-                      ? <span style={{ color: 'var(--gold)' }}>couldn’t read that — try “3 months”</span>
-                      : parsed != null
-                        ? `= ${parsed} day${parsed === 1 ? '' : 's'} ${when} the date`
-                        : ''}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <>
+          <div className="fin-subhead" style={{ marginTop: 18 }}>How far ahead to notify</div>
+          <div className="notify-list">{before.map(renderRow)}</div>
+
+          <div className="fin-subhead" style={{ marginTop: 22 }}>Follow-ups &amp; grace periods</div>
+          <div className="notify-list">{after.map(renderRow)}</div>
+        </>
       )}
 
-      <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div className="notify-save">
         <button disabled={!dirty || save.isPending} onClick={() => save.mutate(patch)}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </button>

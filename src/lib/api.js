@@ -1608,9 +1608,12 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
   ]);
   const m1 = m;
   // Already marked — from this screen, the property ledger, or another device.
-  // Recording again would double-count the month, so this is an idempotent no-op.
+  // Recording again would double-count the month, so this is an idempotent no-op —
+  // UNLESS opts.additional is set (a deliberate top-up: the tenant later paid the
+  // difference on a month that settled short), which records a SECOND same-month
+  // payment that the allocation sums with the first.
   const existingPayments = await listPayments(invoice.id);
-  if (existingPayments.some((p) => Number(p.period_month) === m1)) return invoice;
+  if (!opts.additional && existingPayments.some((p) => Number(p.period_month) === m1)) return invoice;
   let amount;
   if (hasAmount) {
     amount = Number(opts.amount);
@@ -3009,15 +3012,24 @@ export async function listStatementImports(propertyId) {
 // portfolio), open reconciliation balances, the saved rules, the live import-hash
 // set (the duplicate guard), and the account→property memory.
 export async function getStatementMatchContext(propertyId, year) {
-  const [properties, rules, allImports, hashRows, reconRows, camItems] = await Promise.all([
-    rows(supabase.from('properties').select('id,name')),
+  const [properties, rules, allImports, hashRows, reconRows, camItems, corporations, leaseRows] = await Promise.all([
+    rows(supabase.from('properties').select('id,name,corporation_id')),
     listImportRules(),
     rows(supabase.from('statement_imports').select('*')),
     rows(supabase.from('payments').select('import_hash').not('import_hash')),
     rows(supabase.from('v_invoice_balances').select('*').eq('kind', 'reconciliation')),
     rows(supabase.from('cam_line_items').select('label,billable')),
+    rows(supabase.from('corporations').select('*')),
+    rows(supabase.from('leases').select('id,tenant_email,tenant_email_2,tenant_contact_name')),
   ]);
   const nameOf = Object.fromEntries((properties || []).map((p) => [p.id, p.name]));
+  // Tenant contact identity (for the "payment didn't follow the escalation" letter) and
+  // the sending business per property (its corporation's letterhead) — assembled here so
+  // the review screen can draft a letter with no extra fetch.
+  const leaseInfo = Object.fromEntries((leaseRows || []).map((l) => [l.id, l]));
+  const corpById = Object.fromEntries((corporations || []).map((c) => [c.id, c]));
+  const businessByProperty = {};
+  for (const p of properties || []) businessByProperty[p.id] = businessFromCorp(corpById[p.corporation_id]) || null;
 
   const rolls = await Promise.all(
     (properties || []).map(async (p) => ({ p, roll: await getPropertyMonthlyRoll(p.id, year) }))
@@ -3033,11 +3045,15 @@ export async function getStatementMatchContext(propertyId, year) {
     for (const r of roll) {
       const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
       const recon = openReconByLease[r.lease_id] || null;
+      const info = leaseInfo[r.lease_id] || {};
       tenants.push({
         lease_id: r.lease_id,
         property_id: p.id,
         property_name: p.name,
         tenant_name: r.tenant_name,
+        tenant_email: info.tenant_email || null,
+        tenant_email_2: info.tenant_email_2 || null,
+        contact_name: info.tenant_contact_name || null,
         monthly: r.monthly,
         owed: alloc.owed,
         coverage: alloc.coverage,
@@ -3081,7 +3097,7 @@ export async function getStatementMatchContext(propertyId, year) {
   }
   const buckets = [...bucketMap.values()].sort((a, b) => a.label.localeCompare(b.label));
 
-  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory, buckets };
+  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory, buckets, businessByProperty };
 }
 
 // Write everything the user confirmed on the review screen — exactly once, and
@@ -3102,6 +3118,11 @@ export async function applyStatementImport({ propertyId, year, fileName, account
   const applied = [];
   let paymentsCount = 0, paymentsTotal = 0, expensesCount = 0, expensesTotal = 0;
   const crossProperty = {};
+  // Auto-learn payee rules ride the import too (a checked tenant deposit is remembered
+  // automatically; an expense only when "Always" is ticked). Loaded once, lazily, so an
+  // import with no rule entries pays nothing; each rule's prior target is captured so
+  // undo can restore it (reassignment) or delete it (a brand-new rule).
+  let existingRules = null;
 
   for (const e of entries) {
     if (e.type === 'payment') {
@@ -3140,6 +3161,25 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       });
       applied.push({ kind: e.type, property_id: e.property_id, year: e.year, amount: Number(e.amount), hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
+    } else if (e.type === 'rule') {
+      // Learn (or overwrite) a payee → target rule. Best-effort: a failure here must
+      // never lose the import. NO hash on the applied record — a rule isn't a money
+      // line, so it stays out of the duplicate-guard universe.
+      try {
+        if (existingRules == null) existingRules = await listImportRules();
+        const prevRow = existingRules.find(
+          (r) => r.property_id === e.property_id && String(r.pattern).toLowerCase() === String(e.pattern).toLowerCase()
+        );
+        const same = prevRow
+          && prevRow.target_kind === e.target_kind
+          && (prevRow.lease_id || null) === (e.lease_id || null)
+          && (prevRow.cam_label || null) === (e.cam_label || null);
+        if (same) continue; // already learned — nothing to change, nothing to undo
+        const prior = prevRow ? { target_kind: prevRow.target_kind, lease_id: prevRow.lease_id || null, cam_label: prevRow.cam_label || null } : null;
+        const rule = await saveImportRule({ property_id: e.property_id, pattern: e.pattern, target_kind: e.target_kind, lease_id: e.lease_id || null, cam_label: e.cam_label || null });
+        applied.push({ kind: 'rule', rule_id: rule.id, pattern: e.pattern, property_id: e.property_id, lease_id: e.lease_id || null, prior });
+        existingRules = existingRules.filter((r) => r.id !== rule.id).concat([rule]);
+      } catch { /* learning is best-effort — the import still succeeds */ }
     }
   }
 
@@ -3183,6 +3223,13 @@ export async function undoStatementImport(imp) {
         cam_total: Number(cur?.cam_total) || 0,
         roof_total: a.kind === 'roof' ? next : (Number(cur?.roof_total) || 0),
       });
+    } else if (a.kind === 'rule') {
+      // Reverse the learning: a rule that overwrote a prior target restores it; a
+      // brand-new rule is deleted. Best-effort — never blocks the rest of the undo.
+      try {
+        if (a.prior) await saveImportRule({ property_id: a.property_id, pattern: a.pattern, target_kind: a.prior.target_kind, lease_id: a.prior.lease_id, cam_label: a.prior.cam_label });
+        else if (a.rule_id) await deleteImportRule(a.rule_id);
+      } catch { /* best-effort */ }
     }
   }
   await rows(supabase.from('statement_imports').delete().eq('id', imp.id));

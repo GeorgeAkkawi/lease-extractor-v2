@@ -174,3 +174,58 @@ describe('statement import — apply / dedupe / override / undo', () => {
     expect(rules.find((r) => r.id === first.id).lease_id).toBe('lease-1');
   });
 });
+
+// Auto-learned payee rules ride the import as `type:'rule'` entries so a checked tenant
+// deposit is remembered automatically and undo reverses exactly what was taught.
+describe('statement import — auto-learned payee rules', () => {
+  const ruleEntry = (over = {}) => ({ type: 'rule', pattern: 'ZZAUTO PAYEE', property_id: 'prop-1', target_kind: 'tenant', lease_id: 'lease-2', cam_label: null, ...over });
+
+  it('a rule entry creates a rule (prior:null, no hash) and never touches the money counters or dedupe universe', async () => {
+    const before = (await listImportRules()).length;
+    const res = await applyStatementImport({
+      propertyId: 'prop-1', year: Y, fileName: 'learn.csv',
+      entries: [paymentEntry(cityDentalCheck, { period_month: 7 }), ruleEntry()],
+    });
+    expect(res.summary).toMatchObject({ paymentsCount: 1, expensesCount: 0 }); // the rule isn't a money line
+    const rec = res.import.applied.find((a) => a.kind === 'rule');
+    expect(rec).toMatchObject({ pattern: 'ZZAUTO PAYEE', lease_id: 'lease-2', prior: null });
+    expect(rec.hash).toBeUndefined(); // stays out of the duplicate guard
+    expect((await listImportRules()).length).toBe(before + 1);
+    const ctx = await getStatementMatchContext('prop-1', Y);
+    expect([...ctx.existingHashes]).not.toContain(undefined);
+    await undoStatementImport(res.import);
+  });
+
+  it('undo deletes a brand-new learned rule', async () => {
+    const before = (await listImportRules()).length;
+    const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 'l2.csv', entries: [ruleEntry({ pattern: 'ZZUNDO PAYEE' })] });
+    expect((await listImportRules()).some((r) => r.pattern === 'ZZUNDO PAYEE')).toBe(true);
+    await undoStatementImport(res.import);
+    expect((await listImportRules()).some((r) => r.pattern === 'ZZUNDO PAYEE')).toBe(false);
+    expect((await listImportRules()).length).toBe(before);
+  });
+
+  it('a duplicate pattern within one import learns just one rule', async () => {
+    const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 'dup.csv', entries: [ruleEntry({ pattern: 'ZZDUP PAYEE' }), ruleEntry({ pattern: 'ZZDUP PAYEE' })] });
+    expect(res.import.applied.filter((a) => a.kind === 'rule')).toHaveLength(1);
+    expect((await listImportRules()).filter((r) => r.pattern === 'ZZDUP PAYEE')).toHaveLength(1);
+    await undoStatementImport(res.import);
+  });
+
+  it('overwriting an existing rule records the prior target — undo restores it', async () => {
+    await saveImportRule({ property_id: 'prop-1', pattern: 'ZZREASSIGN', target_kind: 'tenant', lease_id: 'lease-2' });
+    const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 're.csv', entries: [ruleEntry({ pattern: 'ZZREASSIGN', lease_id: 'lease-1' })] });
+    const rec = res.import.applied.find((a) => a.kind === 'rule');
+    expect(rec.prior).toMatchObject({ target_kind: 'tenant', lease_id: 'lease-2' });
+    expect((await listImportRules()).find((r) => r.pattern === 'ZZREASSIGN').lease_id).toBe('lease-1'); // overwritten
+    await undoStatementImport(res.import);
+    expect((await listImportRules()).find((r) => r.pattern === 'ZZREASSIGN').lease_id).toBe('lease-2'); // restored
+  });
+
+  it('re-learning the SAME target is a no-op (no applied record, nothing to undo)', async () => {
+    await saveImportRule({ property_id: 'prop-1', pattern: 'ZZSAME', target_kind: 'tenant', lease_id: 'lease-2' });
+    const res = await applyStatementImport({ propertyId: 'prop-1', year: Y, fileName: 'same.csv', entries: [ruleEntry({ pattern: 'ZZSAME', lease_id: 'lease-2' })] });
+    expect(res.import.applied.filter((a) => a.kind === 'rule')).toHaveLength(0);
+    await undoStatementImport(res.import);
+  });
+});
