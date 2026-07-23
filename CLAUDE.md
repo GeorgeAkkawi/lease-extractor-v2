@@ -119,6 +119,50 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
     $3,987.50 · Hiarcut $3,750) should match Pershing tenants; the $65,000 Vanguard transfer should land in Skipped
     as an investment transfer, NOT an expense — check that one before saving.**
 
+- **2026-07-23** — **A scanned lease no longer loses pages SILENTLY: a failed transcription chunk now leaves an
+  explicit gap marker (and gets one bounded retry) instead of vanishing — plus a live repair of Khaled's Busey Bank
+  lease, which had cached only pages 16–36** (George: "for khaled.akkawis account is there no way to cache the whole
+  lease it looks cut off"). Deployed: `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`) + a one-time
+  `leases.lease_text` repair. **Edge-function only — NO frontend build, NO DB migration, $0** (the repair was
+  transcribed by reading the stored scan directly, so no AI billing), no tenant emails, nothing deleted (the repair
+  PREPENDS; the previously-cached text is byte-identical). Tests **525/525** (unchanged — edge fns aren't in Vitest).
+  - **Diagnosis (definitive, live).** The lease cached **53,051 chars** and *ended* correctly (`Exhibit "E" Page 4 of
+    4`) — but **began mid-sentence**, inside an Article 11 subletting clause. Rendering the stored 36-page scan showed
+    that fragment is the **first line of page 16**. So the cache was missing **pages 1–15**: parties, premises, term,
+    Tenant's Share, contacts, Articles 1–11 — and the **entire base-rent table**. Nothing on screen said so, because
+    the text read as a complete document that merely started oddly.
+  - **Root cause (`transcribeScan`, extract-lease/index.ts).** The 7/21 parallel-chunk fix splits a scan into
+    page-range sub-PDFs transcribed concurrently, then stitched. The stitch did
+    `.map(p => (p.text||'').trim()).filter(t => t.length > 0)` — so a chunk that timed out was **silently discarded**
+    and the survivors joined seamlessly. `if (!ordered.length) return single()` only rescued the *all*-failed case; a
+    partial failure produced a plausible-looking lie. The "first N of M pages" note also couldn't fire (36 ≤ the
+    90-page ceiling, so `coveredPages === totalPages`). **This is also why the 7/21 log's claim that Busey "cached in
+    full" was wrong — it verified the page-32 renewal option and Exhibit E at the END and never checked the BEGINNING.**
+  - **Fix.** (a) **Never drop silently** — a failed chunk now emits `[Pages X-Y could not be read for search. Re-upload
+    this lease to try again.]` **in its own position**, so a hole is visible instead of invisible. (b) **One bounded
+    retry** via new `transcribeChunk()`: a whole-chunk budget (`CHUNK_BUDGET_MS` 110s) shared ACROSS attempts, so a
+    chunk that fails FAST (transient 429/5xx, upload hiccup — the case worth rescuing) retries with nearly the full
+    budget, while a chunk that fails by TIMEOUT gives up rather than pushing past the edge's ~150s wall. The uploaded
+    file id is registered before the call so the cleanup `finally` can't leak it, and is reused across attempts.
+    (c) **`CHUNK_PAGES` 15 → 10** (~7k tokens ≈ ~55s vs ~80s) so a chunk has real headroom inside its box and rarely
+    times out at all; `MAX_TRANSCRIBE_CHUNKS` 6 → 9 keeps the **90-page ceiling identical**.
+  - **Live repair (additive, idempotent).** Transcribed pages 1–15 verbatim from the stored scan and PREPENDED them:
+    **53,051 → 112,859 chars**. The seam is exact — p15 ends "…but upon ten (10) days prior notice", p16 begins "to
+    Landlord, to (a) sublet…". Guarded with `and left(lease_text,30) = 'to Landlord, to (a) sublet all'` so a re-run
+    can't double-prepend. Read-back confirms it opens `OFFICE LEASE / …executed this 7th day of May, 2020…`, still
+    ends at Exhibit E, and now contains 9,176 SF · Tenant's Share 64.44% · the full rent table · the notice addresses.
+  - **Files:** `supabase/functions/extract-lease/index.ts` (constants, new `transcribeChunk`, gap-marker stitch,
+    `type PdfChunk` import). No `src/` change → no frontend deploy.
+  - **Verified:** deployed clean (server-side bundle + type-check); unauth POST → **401**; Vitest **525/525**; live
+    read-back of the repaired text as above.
+  - **⚠️ FLAGGED FOR GEORGE — the rent ledger disagrees with the now-visible printed table, and I did NOT change it**
+    (money data needs your OK). Today's billing is CORRECT ($364,629.12 = the Sep 2025–Aug 2026 rate), and the next
+    step is off by only $3.44 — **but from Sept 2028 the schedule is shifted a year late and under-bills ~$10k/yr**:
+    2028 reads $382,664.68 (printed: **$392,665.68**), 2029 $391,465.68 (**$402,482.28**), 2030 $402,481.68
+    (**$412,544.40**), plus a **spurious 2031-09-01 step** ($412,542.40) past the Aug 31 2031 term end — the option
+    period is already covered by the pending $422,858.04 option. Two cents-level slips too (2023 $347,053.20 vs
+    $347,059.32; 2026 $373,741.48 vs $373,744.92). Say the word and I'll correct all six rows to the printed table.
+
 - **2026-07-23** — **Statement import v2: the review screen now GROUPS each statement by month (all-matched months
   collapsed, months needing a look open, live "N matched · M need review" counts in every header), and the Ledger tab
   gained a "Learned payees" manager to audit / retarget / remove the auto-learned payee rules** (George dropped a

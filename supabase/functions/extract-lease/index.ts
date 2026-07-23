@@ -9,7 +9,7 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { cors } from '../_shared/cors.ts';
 import { callClaude, transcribeDocument, uploadFile, deleteFile, MAX_VISION_BYTES, Block } from '../_shared/anthropic.ts';
-import { extractPdfText, splitPdfIntoChunks } from '../_shared/pdf.ts';
+import { extractPdfText, splitPdfIntoChunks, type PdfChunk } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom, annualizeOptionSchedule } from '../_shared/rentSchedule.js';
@@ -481,9 +481,11 @@ async function extractSupplement(content: Block[]): Promise<Record<string, any> 
 // transcribed verbatim in one 150s call at all — a digital/text PDF caches fully for free.
 const TRANSCRIBE_TIMEOUT_MS = 115_000; // per-transcription box; chunks run in parallel, so this bounds the WALL, not the sum
 const TRANSCRIBE_MAX_TOKENS = 12_000;  // single-call fallback: sized so generation reliably STOPS inside the box → non-null
-const CHUNK_PAGES = 15;                // pages per chunk (~10k tokens ≈ ~80s to transcribe — safely inside the box)
-const CHUNK_MAX_TOKENS = 16_000;       // backstop only; a physical 15-page sub-PDF stops naturally well under this
-const MAX_TRANSCRIBE_CHUNKS = 6;       // up to 90 pages fully cached per upload
+const CHUNK_PAGES = 10;                // pages per chunk (~7k tokens ≈ ~55s) — real headroom inside the budget, so a chunk rarely times out at all
+const CHUNK_MAX_TOKENS = 16_000;       // backstop only; a physical sub-PDF stops naturally well under this
+const MAX_TRANSCRIBE_CHUNKS = 9;       // still up to 90 pages fully cached per upload (9 × 10)
+const CHUNK_BUDGET_MS = 110_000;       // total per chunk ACROSS attempts, so a retry can never push past the edge's ~150s wall
+const CHUNK_MIN_RETRY_MS = 20_000;     // don't open a second attempt that couldn't plausibly finish
 
 function transcribeWithTimeout(model: string, docBlock: Block, ms: number, maxTokens = TRANSCRIBE_MAX_TOKENS): Promise<string | null> {
   return Promise.race([
@@ -505,24 +507,23 @@ async function transcribeScan(bytes: Uint8Array, mediaType: string, fullDocBlock
 
   const chunkIds: string[] = [];
   try {
-    const parts = await Promise.all(split.chunks.map(async (chunk) => {
-      let fid: string | null = null;
-      try {
-        fid = await uploadFile(chunk.bytes, `${filename}-p${chunk.startPage}-${chunk.endPage}`, 'application/pdf');
-        chunkIds.push(fid);
-        const block: Block = { type: 'document', source: { type: 'file', file_id: fid } };
-        const text = await transcribeWithTimeout(MODEL, block, TRANSCRIBE_TIMEOUT_MS, CHUNK_MAX_TOKENS);
-        return { startPage: chunk.startPage, text: text as string | null };
-      } catch {
-        return { startPage: chunk.startPage, text: null as string | null };
-      }
-    }));
-    const ordered = parts
-      .sort((a, b) => a.startPage - b.startPage)
-      .map((p) => (p.text || '').trim())
-      .filter((t) => t.length > 0);
-    if (!ordered.length) return single(); // every chunk failed → last-ditch single pass over the whole doc
-    let combined = ordered.join('\n\n');
+    const parts = await Promise.all(split.chunks.map(async (chunk) => ({
+      chunk,
+      text: await transcribeChunk(chunk, filename, chunkIds),
+    })));
+    parts.sort((a, b) => a.chunk.startPage - b.chunk.startPage);
+    if (!parts.some((p) => p.text)) return single(); // every chunk failed → last-ditch single pass over the whole doc
+
+    // A chunk that still failed leaves an EXPLICIT gap marker in its own position — never a
+    // silent drop. Filtering failures out (the previous behavior) made a partial transcript
+    // read as a complete document: Khaled's 36-page Busey scan lost pages 1-15 to one timed-out
+    // chunk and cached as though the lease began mid-clause on page 16 — parties, term and the
+    // whole base-rent table gone, with nothing on screen to say so. An honest hole is far
+    // better than a plausible-looking lie.
+    let combined = parts
+      .map((p) => p.text?.trim() ||
+        `[Pages ${p.chunk.startPage}-${p.chunk.endPage} could not be read for search. Re-upload this lease to try again.]`)
+      .join('\n\n');
     if (split.coveredPages < split.totalPages) {
       combined += `\n\n[Only the first ${split.coveredPages} of ${split.totalPages} pages were transcribed for search. Upload a digital/text PDF of this lease for a full searchable copy.]`;
     }
@@ -530,6 +531,31 @@ async function transcribeScan(bytes: Uint8Array, mediaType: string, fullDocBlock
   } finally {
     await Promise.all(chunkIds.map((id) => deleteFile(id))); // best-effort cleanup, in parallel
   }
+}
+
+// One chunk, with a bounded second attempt. A chunk that fails FAST (a transient 429/5xx, or an
+// upload hiccup) leaves nearly the whole budget for a retry — that's the case worth rescuing, and
+// it's the cheap one. A chunk that fails by TIMEOUT has already spent its budget, so it gives up
+// rather than pushing the function past the edge's wall clock. Either way the caller marks the gap.
+async function transcribeChunk(chunk: PdfChunk, filename: string, chunkIds: string[]): Promise<string | null> {
+  const deadline = Date.now() + CHUNK_BUDGET_MS;
+  let fid: string | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining < CHUNK_MIN_RETRY_MS) break;
+    try {
+      if (!fid) {
+        fid = await uploadFile(chunk.bytes, `${filename}-p${chunk.startPage}-${chunk.endPage}`, 'application/pdf');
+        chunkIds.push(fid); // registered immediately so the finally-block cleanup can't leak it
+      }
+      const block: Block = { type: 'document', source: { type: 'file', file_id: fid } };
+      const text = await transcribeWithTimeout(MODEL, block, remaining, CHUNK_MAX_TOKENS);
+      if (text && text.trim()) return text;
+    } catch {
+      // fall through to the retry, else to the caller's gap marker
+    }
+  }
+  return null;
 }
 
 Deno.serve(async (req) => {
