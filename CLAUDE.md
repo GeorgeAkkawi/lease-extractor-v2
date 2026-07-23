@@ -75,6 +75,52 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **BUGFIX #2 (same import, next wall): every line of George's Chase statement was skipped "no valid
+  date" — the bank prints "06/01" and states the year ONCE, in the period header** (George, right after re-importing
+  post-fix #1: "this is what happened when i uploaded it nw: 0 lines parsed · 10 skipped … line 1: no valid date —
+  {"date":"06/01",…"). Deployed: `extract-bank-statement` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `09db3650`, demo worker `af8d2e8d`. **Frontend + `src/lib` + one edge fn — $0 recurring (same
+  single Haiku read per PDF, no new call), NO DB migration, no tenant emails.** Tests **530/530** (was 525 — +5
+  year-resolution).
+  - **The AI was right again.** It transcribed all 10 lines correctly and, per its own instruction ("date = the
+    posting date as printed"), copied Chase's bare `06/01`. **`toIsoDate` required a year** — `^(\d{1,2})[/-](\d{1,2})
+    [/-](\d{2,4})$` — so every row failed the shared gate and the review screen read "0 lines parsed · 10 skipped".
+    The transcription, the matcher, the escalation cue and the learned payees were all fine and simply never reached.
+  - **Fix — the model transcribes, code does the date math (the house rule).** The edge fn's schema gains required
+    `period_start` / `period_end` (all-required single-typed → **zero** union-budget cost) and the prompt now says to
+    copy the bare `06/01` verbatim and NEVER invent a year. Client side, `toIsoDate(raw, yearCtx)` accepts a year-less
+    `MM/DD` **only when a year context is supplied** (with none it still returns null — that's what stops the CSV
+    lane's column inference reading a stray "1/2" as a date), and new pure `yearForMonthDay` picks the year that lands
+    the month/day **inside the statement period** — so a Dec→Jan statement splits 12/28 → 2025 and 01/03 → 2026
+    instead of stamping both. `normalizeStatementRows(rows, {periodStart, periodEnd})` threads it and adds a free
+    fallback: the year the fully-dated lines agree on (a statement that dates even ONE line in full tells us its year).
+  - **Second bug, fixed pre-emptively in the same prompt:** Chase describes an INCOMING rent payment as
+    "Online ACH **Debit** 9031473238 From Samsnails" — the word "debit" refers to the payer's account. The prompt now
+    pins direction to the statement's own section heading ("Deposits and Additions" → in; "Electronic Withdrawals" /
+    "Checks Paid" → out) and states explicitly that "debit"/"credit" inside a description never override it. Chase
+    prints no per-line running balance in those sections, so the balance self-check can't catch a mis-signed rent
+    deposit — the prompt is the guard.
+  - **Same mock-divergence lesson as fix #1, closed the same way.** The demo mock's canned statement dated every line
+    `03/05/2026` — tidy, and nothing a bank actually prints — so 525 tests passed over a lane that imported nothing.
+    The canned rows now print bare `03/05` / `03/09` with a `period_start`/`period_end` header, exactly like a real
+    statement. **Proved it:** disabling the year-resolution branch now fails **5** tests including the full
+    `ledgerPage` sample → review → save → undo round-trip (it used to pass silently).
+  - **Honesty fix on the same screen:** a skipped line now says what was wrong with THAT line — `the date "06/01" has
+    no year, and the statement period wasn't captured` — and shows the line as `06/01 · Orig CO Name:Five Points Wing
+    · 5,324.00` instead of a truncated JSON blob.
+  - **Files:** `src/lib/statementParse.js` (`yearForMonthDay`, `toIsoDate` ctx, gate + skip reasons),
+    `src/components/ImportStatementButton.js` (thread the period, both lanes),
+    `supabase/functions/extract-bank-statement/index.ts` (period fields + direction/date prompt),
+    `src/lib/demo/mockClient.js` (canned rows print like a real statement),
+    `src/lib/__tests__/statementParse.test.js` (+5). No DB/CSS/seed changes; `extract-lease/index.ts` in the tree is
+    another session's WIP and was deliberately left untouched and undeployed.
+  - **Verified:** unit **530/530** (`vitest run`); the reintroduce-the-bug proof (5 failures); `vite build` compiles;
+    edge fn deployed clean, unauth POST → **401**; live 200s (amlakre.com + www + workers.dev + demo, demo bundle free
+    of the live ref). **George: hard-refresh (Cmd+Shift+R) and re-import the Chase statement one more time (~5–15¢,
+    the normal PDF read). Expect 10 lines parsed, 0 skipped — the 9 June deposits matched to Pershing tenants and the
+    $65,000 Vanguard Buy in Skipped as an investment transfer. Check the direction on the deposits before saving:
+    they must read as money IN despite the "Online ACH Debit" wording.**
+
 - **2026-07-23** — **BUGFIX: statement import hung forever on "Reading the statement…" — a malformed database filter
   meant it had NEVER worked on live data (only in demo)** (George: "its taking a really long time to read the bank
   statements its been like 5 minutes and no response", with his real Chase statement attached). Deployed: frontend

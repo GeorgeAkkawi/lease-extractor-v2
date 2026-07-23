@@ -28,7 +28,13 @@ export default function ImportStatementButton({ onReady }) {
         // the same validation gate + balance check the CSV lane gets.
         const path = await uploadDoc(file);
         const res = await extractBankStatement({ path });
-        const gate = normalizeStatementRows(res?.transactions || []);
+        // Statement lines are frequently dated "06/01" with the year stated once in
+        // the period header — pass the period so the gate can resolve them instead
+        // of skipping every line for "no valid date".
+        const gate = normalizeStatementRows(res?.transactions || [], {
+          periodStart: res?.period_start || null,
+          periodEnd: res?.period_end || null,
+        });
         const checked = applyBalanceCheck(gate.transactions);
         onReady({
           fileName: file.name,
@@ -50,7 +56,10 @@ export default function ImportStatementButton({ onReady }) {
     setBusy(true);
     try {
       const res = await extractBankStatement({ path: 'demo-sample' });
-      const gate = normalizeStatementRows(res?.transactions || []);
+      const gate = normalizeStatementRows(res?.transactions || [], {
+        periodStart: res?.period_start || null,
+        periodEnd: res?.period_end || null,
+      });
       onReady({
         fileName: 'sample-statement.pdf',
         accountHint: '••4821',

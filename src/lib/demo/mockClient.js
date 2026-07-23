@@ -376,12 +376,17 @@ const functions = {
       // which land in named BUCKETS (Waste removal / Snow removal) — a mortgage
       // line the matcher auto-ignores, and an unrecognized Home Depot line that
       // demos the 🤖 Suggest-buckets button. Amounts follow the seed's figures.
+      // Real statements print most lines as a bare "03/09" and state the year once,
+      // in the period header — the canned rows mirror that (a tidy full-year date on
+      // every line is what hid the year-resolution bug from the whole suite).
       const y = new Date().getFullYear();
       return ok({
+        period_start: `03/01/${y}`,
+        period_end: `03/31/${y}`,
         transactions: [
           { date: `03/03/${y}`, description: 'CHECK 1044 CITY DENTAL PC', amount: '4,208.33', direction: 'in', balance: '' },
-          { date: `03/05/${y}`, description: 'ACH DEPOSIT BRIGHT COFFEE CO', amount: '6,508.33', direction: 'in', balance: '' },
-          { date: `03/09/${y}`, description: 'MOBILE DEPOSIT J PAK 2211', amount: '10,416.67', direction: 'in', balance: '' },
+          { date: '03/05', description: 'ACH DEPOSIT BRIGHT COFFEE CO', amount: '6,508.33', direction: 'in', balance: '' },
+          { date: '03/09', description: 'MOBILE DEPOSIT J PAK 2211', amount: '10,416.67', direction: 'in', balance: '' },
           { date: `03/12/${y}`, description: 'COOK COUNTY TREASURER PROP TAX', amount: '3,100.00', direction: 'out', balance: '' },
           { date: `03/15/${y}`, description: 'GREENLEAF LANDSCAPING INV 2288', amount: '450.00', direction: 'out', balance: '' },
           { date: `03/17/${y}`, description: 'WASTE MGMT GARBAGE SVC 55021', amount: '380.00', direction: 'out', balance: '' },

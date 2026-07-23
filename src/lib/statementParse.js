@@ -35,25 +35,67 @@ export function parseMoney(raw) {
   return negative ? -n : n;
 }
 
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// Plenty of statements (Chase among them) print each line as a bare "06/01" — the
+// year is stated ONCE, in the period header. Given that period, work out which
+// year a month/day belongs to: the one that lands inside it, so a statement
+// straddling New Year splits 12/28 and 01/03 into their right years instead of
+// stamping both with one.
+export function yearForMonthDay(m, d, { periodStart = null, periodEnd = null, fallbackYear = null } = {}) {
+  const start = periodStart ? toIsoDate(periodStart) : null;
+  const end = periodEnd ? toIsoDate(periodEnd) : null;
+  const cands = [];
+  for (const y of [start && +start.slice(0, 4), end && +end.slice(0, 4), fallbackYear && +fallbackYear]) {
+    if (y && y >= 1990 && y <= 2100 && !cands.includes(y)) cands.push(y);
+  }
+  if (!cands.length) return null;
+  if (start && end) {
+    for (const y of cands) {
+      const iso = `${y}-${pad2(m)}-${pad2(d)}`;
+      if (iso >= start && iso <= end) return y;
+    }
+  }
+  // Outside the stated period (a pending line posted after the close) or no period
+  // at all — the nearest candidate wins, so a January line on a December statement
+  // doesn't jump a year backwards.
+  const anchor = end || start;
+  if (!anchor) return cands[0];
+  const anchorMs = Date.parse(`${anchor}T12:00:00`);
+  let best = cands[0];
+  let bestGap = Infinity;
+  for (const y of cands) {
+    const gap = Math.abs(Date.parse(`${y}-${pad2(m)}-${pad2(d)}T12:00:00`) - anchorMs);
+    if (gap < bestGap) { bestGap = gap; best = y; }
+  }
+  return best;
+}
+
 // "MM/DD/YYYY", "M/D/YY", "YYYY-MM-DD" → "YYYY-MM-DD", or null. US month-first
-// (the bank-export norm here); ISO passes through.
-export function toIsoDate(raw) {
+// (the bank-export norm here); ISO passes through. A year-less "MM/DD" resolves
+// only when the caller passes a year context — with none we still return null
+// rather than guess, which is what keeps the CSV lane's column inference from
+// reading a stray "1/2" as a date.
+export function toIsoDate(raw, yearCtx = null) {
   if (raw == null) return null;
   const s = String(raw).trim();
   let y, m, d;
   let mt = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (mt) { y = +mt[1]; m = +mt[2]; d = +mt[3]; }
-  else {
-    mt = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
-    if (!mt) return null;
+  else if ((mt = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/))) {
     m = +mt[1]; d = +mt[2]; y = +mt[3];
     if (y < 100) y += 2000;
-  }
+  } else if ((mt = s.match(/^(\d{1,2})[/-](\d{1,2})$/))) {
+    if (!yearCtx) return null;
+    m = +mt[1]; d = +mt[2];
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    y = yearForMonthDay(m, d, yearCtx);
+    if (y == null) return null;
+  } else return null;
   if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1990 || y > 2100) return null;
   const dt = new Date(y, m - 1, d, 12);
   if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${y}-${pad(m)}-${pad(d)}`;
+  return `${y}-${pad2(m)}-${pad2(d)}`;
 }
 
 // Split one CSV line on `delim`, honoring double quotes ("" = an escaped quote).
@@ -257,17 +299,24 @@ export function applyBalanceCheck(transactions) {
 // The shared validation gate BOTH lanes pass through before the matcher. Accepts
 // loosely-shaped rows (the PDF lane's model output is strings) and returns only
 // structurally-sound transactions; everything else is skipped WITH its reason.
-export function normalizeStatementRows(rowsIn) {
+export function normalizeStatementRows(rowsIn, { periodStart = null, periodEnd = null } = {}) {
+  const rows = rowsIn || [];
+  // Year context for lines printed as a bare "06/01": the statement's own period
+  // when the read captured it, plus the year the fully-dated lines agree on (a
+  // statement that dates even one line in full tells us its year for free).
+  const yearCtx = { periodStart, periodEnd, fallbackYear: commonYearIn(rows) };
+  const hasCtx = Boolean(yearCtx.periodStart || yearCtx.periodEnd || yearCtx.fallbackYear);
   const transactions = [];
   const skippedLines = [];
-  (rowsIn || []).forEach((r, idx) => {
+  rows.forEach((r, idx) => {
     const line = r?.line ?? idx + 1;
-    const date = toIsoDate(r?.date);
-    if (!date) { skippedLines.push({ line, raw: JSON.stringify(r), reason: 'no valid date' }); return; }
+    const shown = describeRow(r);
+    const date = toIsoDate(r?.date, hasCtx ? yearCtx : null);
+    if (!date) { skippedLines.push({ line, raw: shown, reason: dateSkipReason(r?.date) }); return; }
     const amount = typeof r?.amount === 'number' ? r.amount : parseMoney(r?.amount);
-    if (amount == null || !(Math.abs(amount) > 0)) { skippedLines.push({ line, raw: JSON.stringify(r), reason: 'no amount' }); return; }
+    if (amount == null || !(Math.abs(amount) > 0)) { skippedLines.push({ line, raw: shown, reason: 'no amount' }); return; }
     const direction = r?.direction === 'in' || r?.direction === 'out' ? r.direction : amount < 0 ? 'out' : null;
-    if (!direction) { skippedLines.push({ line, raw: JSON.stringify(r), reason: 'no direction (in/out)' }); return; }
+    if (!direction) { skippedLines.push({ line, raw: shown, reason: 'no direction (in/out)' }); return; }
     const balance = r?.balance == null || r.balance === '' ? null : typeof r.balance === 'number' ? r.balance : parseMoney(r.balance);
     transactions.push({
       line,
@@ -280,4 +329,30 @@ export function normalizeStatementRows(rowsIn) {
     });
   });
   return { transactions, skippedLines };
+}
+
+// The year the fully-dated rows agree on — the free fallback when a statement
+// prints most lines bare but dates at least one in full. Most common wins.
+function commonYearIn(rows) {
+  const tally = new Map();
+  for (const r of rows) {
+    const iso = toIsoDate(r?.date);
+    if (iso) tally.set(iso.slice(0, 4), (tally.get(iso.slice(0, 4)) || 0) + 1);
+  }
+  let best = null;
+  let bestN = 0;
+  for (const [y, n] of tally) if (n > bestN) { bestN = n; best = +y; }
+  return best;
+}
+
+// A skipped line is only honest if it says what was wrong with THIS line — a
+// dumped JSON blob doesn't tell a landlord anything.
+function dateSkipReason(raw) {
+  const s = String(raw ?? '').trim();
+  if (s && /^\d{1,2}[/-]\d{1,2}$/.test(s)) return `the date "${s}" has no year, and the statement period wasn't captured`;
+  return s ? `no valid date ("${s}")` : 'no date';
+}
+
+function describeRow(r) {
+  return [r?.date, r?.description, r?.amount].map((v) => String(v ?? '').trim()).filter(Boolean).join(' · ');
 }

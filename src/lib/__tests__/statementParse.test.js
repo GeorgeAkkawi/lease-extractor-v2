@@ -131,7 +131,65 @@ describe('normalizeStatementRows — the shared gate both lanes pass', () => {
     ]);
     expect(transactions).toHaveLength(1);
     expect(transactions[0].description).toBe('OK');
-    expect(skippedLines.map((s) => s.reason)).toEqual(['no valid date', 'no amount', 'no direction (in/out)']);
+    // The reason names the offending value — a landlord reading the skipped list
+    // has to be able to tell WHY this line didn't come through.
+    expect(skippedLines.map((s) => s.reason)).toEqual([
+      'no valid date ("the fifth of January")', 'no amount', 'no direction (in/out)',
+    ]);
+  });
+
+  // Regression (2026-07-23): George's Chase statement prints every line as a bare
+  // "06/01" — the year is stated once, in the period header. toIsoDate required a
+  // year, so all 10 lines were skipped "no valid date" and the review screen showed
+  // "0 lines parsed · 10 skipped". The demo mock's canned rows all carried tidy
+  // full-year dates, so the whole suite passed while the real lane imported nothing.
+  it('resolves year-less "MM/DD" lines from the statement period (Chase shape)', () => {
+    const chase = [
+      { date: '06/01', description: 'Orig CO Name:Five Points Wing Orig ID:9200502235', amount: '5,324.00', direction: 'in', balance: '' },
+      { date: '06/01', description: 'Online ACH Debit 9031473238 From Samsnails', amount: '4,418.00', direction: 'in', balance: '' },
+      { date: '06/10', description: 'Orig CO Name:Vanguard Buy Orig ID:Vmc Pur', amount: '65,000.00', direction: 'out', balance: '' },
+      { date: '06/30', description: 'Online ACH Debit 9031881141 From Hiarcut', amount: '3,750.00', direction: 'in', balance: '' },
+    ];
+    const { transactions, skippedLines } = normalizeStatementRows(chase, {
+      periodStart: '05/30/2026', periodEnd: '06/30/2026',
+    });
+    expect(skippedLines).toHaveLength(0);
+    expect(transactions.map((t) => t.date)).toEqual(['2026-06-01', '2026-06-01', '2026-06-10', '2026-06-30']);
+    expect(transactions[0].amount).toBe(5324);
+    expect(transactions[2].direction).toBe('out');
+  });
+
+  it('a statement straddling New Year puts each month/day in its own year', () => {
+    const { transactions } = normalizeStatementRows([
+      { date: '12/28', description: 'DEC RENT', amount: '1000', direction: 'in' },
+      { date: '01/03', description: 'JAN RENT', amount: '1000', direction: 'in' },
+    ], { periodStart: '12/15/2025', periodEnd: '01/14/2026' });
+    expect(transactions.map((t) => t.date)).toEqual(['2025-12-28', '2026-01-03']);
+  });
+
+  it('falls back to the year the fully-dated lines agree on when no period was read', () => {
+    const { transactions, skippedLines } = normalizeStatementRows([
+      { date: '06/02/2026', description: 'A', amount: '100', direction: 'in' },
+      { date: '06/03', description: 'B', amount: '200', direction: 'in' },
+    ]);
+    expect(skippedLines).toHaveLength(0);
+    expect(transactions[1].date).toBe('2026-06-03');
+  });
+
+  it('with no year context at all the line is skipped, saying exactly why', () => {
+    const { transactions, skippedLines } = normalizeStatementRows([
+      { date: '06/01', description: 'A', amount: '100', direction: 'in' },
+    ]);
+    expect(transactions).toHaveLength(0);
+    expect(skippedLines[0].reason).toBe('the date "06/01" has no year, and the statement period wasn\'t captured');
+    // The skipped row reads as the statement line it came from, not a JSON blob.
+    expect(skippedLines[0].raw).toBe('06/01 · A · 100');
+  });
+
+  it('a bare "MM/DD" still never parses without context — CSV column inference relies on it', () => {
+    expect(toIsoDate('06/01')).toBe(null);
+    expect(toIsoDate('06/01', { fallbackYear: 2026 })).toBe('2026-06-01');
+    expect(toIsoDate('13/45', { fallbackYear: 2026 })).toBe(null);
   });
 
   it('applyBalanceCheck also runs on normalized PDF rows', () => {

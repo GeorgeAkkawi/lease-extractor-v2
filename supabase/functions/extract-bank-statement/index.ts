@@ -27,8 +27,13 @@ const BUCKET = 'lease-documents';
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['transactions'],
+  required: ['period_start', 'period_end', 'transactions'],
   properties: {
+    // The statement period as printed in the header. Transaction lines are often
+    // dated "06/01" with the year stated only here, so this is what lets the client
+    // resolve those — the model transcribes the period, code does the date math.
+    period_start: { type: 'string' }, // "" when the statement states no period
+    period_end: { type: 'string' },
     transactions: {
       type: 'array',
       items: {
@@ -50,9 +55,18 @@ const SCHEMA = {
 const SYSTEM =
   'You transcribe bank statements. Copy EVERY transaction line from the statement into ' +
   'the schema, verbatim and in order — one entry per line, none skipped, none merged, ' +
-  'none invented. date = the posting date as printed. description = the payee/memo text ' +
-  'as printed. amount = the positive dollar figure as printed. direction = "in" for ' +
-  'deposits/credits (money into the account), "out" for withdrawals/debits/checks paid. ' +
+  'none invented. period_start / period_end = the statement period printed in the header ' +
+  '("May 30, 2026 through June 30, 2026" -> "05/30/2026" and "06/30/2026"), or "" if the ' +
+  'statement states none. date = the posting date EXACTLY as printed on the line — many ' +
+  'statements print only month and day ("06/01") because the year is stated once in the ' +
+  'period header; copy the bare "06/01" and do NOT add a year, the app resolves it from ' +
+  'the period. description = the payee/memo text as printed. amount = the positive dollar ' +
+  'figure as printed. direction = "in" for money INTO this account, "out" for money out. ' +
+  'Decide direction from the section heading the line is printed under ("Deposits and ' +
+  'Additions" -> in; "Electronic Withdrawals", "Checks Paid", "Fees" -> out). The words ' +
+  '"debit" and "credit" inside a description describe the OTHER party\'s account — an ' +
+  'incoming rent payment often reads "Online ACH Debit ... From <payer>" — so they must ' +
+  'never override the section the line appears under. ' +
   'balance = the running-balance column for that line as printed, or "" when the ' +
   'statement has no balance column. NEVER compute, sum, classify, or interpret anything ' +
   '— transcription only. Skip non-transaction lines (headers, subtotals, "beginning ' +
@@ -99,7 +113,12 @@ Deno.serve(async (req) => {
     const transactions = Array.isArray(parsed?.transactions) ? parsed.transactions : [];
     // lines_read powers the review header's honesty note ("Transcribed from a PDF —
     // N lines read; check the count against your statement").
-    return json({ transactions, lines_read: transactions.length });
+    return json({
+      transactions,
+      period_start: typeof parsed?.period_start === 'string' ? parsed.period_start : '',
+      period_end: typeof parsed?.period_end === 'string' ? parsed.period_end : '',
+      lines_read: transactions.length,
+    });
   } catch (e) {
     return serverError(e, 'extract-bank-statement');
   } finally {
