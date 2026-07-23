@@ -7,6 +7,7 @@ import {
   listReconciliations,
   listInvoicesForProperty,
   updateLease,
+  resyncYearBillingToEstimate,
   reconcileCamTax,
   markReconciliationRefunded,
   undoReconciliation,
@@ -91,6 +92,13 @@ export default function TenantShareTable({ propertyId, year }) {
     qc.invalidateQueries({ queryKey: ['tenantShares', propertyId] });
     qc.invalidateQueries({ queryKey: ['leases', propertyId] });
     qc.invalidateQueries({ queryKey: ['lease'] });
+    // An estimate change resyncs the year invoice + system-marked paid months, so the
+    // Ledger boxes, the per-lease monthly tracker, and the invoices/payments panels
+    // must repaint from the new base + estimate owed.
+    qc.invalidateQueries({ queryKey: ['propertyRentRoll', propertyId] });
+    qc.invalidateQueries({ queryKey: ['monthlyRent'] });
+    qc.invalidateQueries({ queryKey: ['invoices'] });
+    qc.invalidateQueries({ queryKey: ['payments'] });
   };
   const invalidateRecon = () => {
     qc.invalidateQueries({ queryKey: ['reconciliations', propertyId, year] });
@@ -100,14 +108,26 @@ export default function TenantShareTable({ propertyId, year }) {
   };
 
   const saveEst = useMutation({
-    mutationFn: ({ leaseId, patch }) => updateLease(leaseId, patch),
+    // Save the estimate onto the lease, then resync the year's billing so the invoice
+    // and the system-marked paid months move to base + the new estimate (the actual
+    // only enters at year-end reconcile — George, 2026-07-23). Awaited before the
+    // invalidations so the refetch reads the resynced payments.
+    mutationFn: async ({ leaseId, patch }) => {
+      await updateLease(leaseId, patch);
+      await resyncYearBillingToEstimate(leaseId, propertyId, year);
+    },
     onSuccess: (_data, { leaseId, prev }) => {
       setEditingId(null);
       invalidateBilling();
       setPendingUndo({
         leaseId,
         label: 'estimate saved',
-        undo: () => updateLease(leaseId, prev),
+        // Undo restores the prior estimate AND resyncs, so the invoice + paid boxes
+        // move back to what they were before the edit.
+        undo: async () => {
+          await updateLease(leaseId, prev);
+          await resyncYearBillingToEstimate(leaseId, propertyId, year);
+        },
         after: invalidateBilling,
       });
     },

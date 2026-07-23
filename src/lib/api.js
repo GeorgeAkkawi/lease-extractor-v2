@@ -8,7 +8,7 @@ import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, 
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import { allocatePayments, ledgerRowSummary } from './ledger';
-import { priorRentBefore, computeEscalatedRent } from './escalations';
+import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
 import { contractCoversYear, contractAnnualCost } from './contracts';
@@ -1544,6 +1544,115 @@ export async function upsertYearInvoice({ lease_id, property_id, year, issue_dat
     }
     throw e;
   }
+}
+
+// When a tenant's CAM & tax estimate changes, the year's invoice AND any system-
+// recorded "mark paid" months move with it — the tenant pays base + estimate all
+// year; only the year-end ⚖ Reconcile uses actuals (George, 2026-07-23: "everything
+// up to reconciliation uses the estimate figure"). Without this, an invoice generated
+// BEFORE the estimate was typed keeps billing the old actual-based figure and the
+// ledger boxes stay stale (reading $4,795 while the left rail projects $5,300).
+//
+// Both sides are rebuilt from the SAME per-month owed the ledger paints (build-up from
+// the data: lease base + estimated-else-actual CAM/tax/roof), so a paid box equals the
+// left rail to the penny. No-op unless a live annual invoice already exists — a brand-
+// new lease has no invoice/payments yet, so estimate-save on creation does nothing here.
+//
+// Only re-records SYSTEM "mark-paid" payments (import_id == null && note == null): a
+// bank-imported deposit or a manually-noted payment is a real recorded amount and is
+// left untouched, so a genuine short/over payment still surfaces and trues up at
+// reconcile. Returns { invoice, monthsResynced }.
+export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
+  const existing = await getYearInvoice(leaseId, year);
+  if (!existing) return { invoice: null, monthsResynced: 0 };
+
+  const [share, abatements, escalations] = await Promise.all([
+    getTenantShare(leaseId, year),
+    listAbatements(leaseId),
+    listEscalations(leaseId),
+  ]);
+  if (!share) return { invoice: existing, monthsResynced: 0 };
+
+  const grossBase = Number(share.base_rent || 0);
+  const billed = billedComponents(share); // estimate-preferred per component
+  const { schedule } = buildLeaseSchedule({
+    year, grossBase, otherAnnual: billed.cam + billed.tax + billed.roof,
+    abatements, escalations, leaseStart: share.lease_start,
+  });
+
+  // Regenerate the year invoice in place with the SAME term-aware proration
+  // draft-invoice uses (a mid-year lease bills only the months it covers), so a
+  // resync'd invoice is identical to the manual flow AND its total equals the sum of
+  // the monthly boxes below. Preserve the existing issue/due dates + status so
+  // refreshing figures never wipes them. Full-year lease → ratio 1 → full figures.
+  const bases = monthlyBases(escalations, grossBase, year);
+  let inTerm = 0;
+  let proratedBaseGross = 0;
+  let proratedAbatement = 0;
+  for (let m = 1; m <= 12; m++) {
+    if (schedule[m]?.outsideTerm) continue;
+    inTerm += 1;
+    proratedBaseGross += (bases[m - 1] != null ? Number(bases[m - 1]) : grossBase) / 12;
+    proratedAbatement += Number(schedule[m]?.credit) || 0;
+  }
+  const ratio = inTerm / 12;
+  const invBase = round2(proratedBaseGross);
+  const invCam = round2(billed.cam * ratio);
+  const invTax = round2(billed.tax * ratio);
+  const invRoof = round2(billed.roof * ratio);
+  const invAbate = round2(proratedAbatement);
+  const total = Math.max(0, invBase + invCam + invTax + invRoof - invAbate);
+  const { invoice } = await upsertYearInvoice({
+    lease_id: leaseId,
+    property_id: propertyId,
+    year: Number(year),
+    issue_date: existing.issue_date || null,
+    due_date: existing.due_date || null,
+    base_rent_annual: invBase,
+    cam_annual: invCam,
+    tax_annual: invTax,
+    roof_annual: invRoof,
+    abatement_annual: invAbate,
+    total_amount: total,
+  });
+
+  // Re-stamp system "mark-paid" months at the new per-month owed. A month whose
+  // payments are ALL system marks and whose recorded total differs from the
+  // schedule's owed by > 1¢ is rebuilt: delete those rows, then (when owed > 0)
+  // record ONE payment at owed, keeping the earliest prior paid_date so the history
+  // isn't rewritten. (This also collapses any stray same-month top-ups into one clean
+  // payment.)
+  const payments = await listPayments(invoice.id);
+  const byMonth = {};
+  for (const p of payments) {
+    const m = Number(p.period_month);
+    if (!m) continue; // untagged (annual/lump) money is left to the pool allocator
+    (byMonth[m] ||= []).push(p);
+  }
+  let monthsResynced = 0;
+  for (const m of Object.keys(byMonth).map(Number)) {
+    const group = byMonth[m];
+    const allSystem = group.every((p) => p.import_id == null && (p.note == null || p.note === ''));
+    if (!allSystem) continue;
+    const owed = round2(Number(schedule[m]?.owed) || 0);
+    const recorded = round2(group.reduce((s, p) => s + (Number(p.amount) || 0), 0));
+    if (Math.abs(recorded - owed) <= 0.01) continue; // already at the estimate-based owed
+    const paidDate = group.map((p) => p.paid_date).filter(Boolean).sort()[0] || paymentIsoToday();
+    await Promise.all(group.map((p) => deletePayment(p.id)));
+    if (owed > 0) {
+      await recordPayment({
+        invoice_id: invoice.id,
+        lease_id: leaseId,
+        amount: owed,
+        paid_date: paidDate,
+        method: 'check',
+        note: null,
+        period_month: m,
+      });
+    }
+    monthsResynced += 1;
+  }
+  return { invoice, monthsResynced };
 }
 
 // buildLeaseSchedule (the term-aware monthly schedule builder) lives in

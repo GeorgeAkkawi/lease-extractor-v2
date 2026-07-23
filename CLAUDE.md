@@ -75,6 +75,57 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **The estimate is now the source of truth all year: changing a tenant's CAM & tax estimate re-syncs
+  its invoice AND its recorded "mark paid" months to base + estimate, and the ledger boxes stop reading the stale
+  actual** (George: "the box should show whatever number is in the left hand column … michuacana should show 5300 in
+  those boxes not 4795 because the tenants pay base + the CAM & tax ESTIMATE, not the actual. the actual is only used
+  at year-end reconciliation — everything up to that point uses the estimate. make sure that logic flows throughout";
+  his AskUserQuestion pick: **"all 9 + auto-sync"**). Deployed: frontend Cloudflare version `b2235c32`, demo worker
+  `727e3ff3`, plus a one-time live repair of the 9 Pershing Plaza tenants. **Frontend + `src/lib` only — $0, NO DB
+  migration, NO edge functions, no tenant emails.** Tests **472/472** (was 467 — +5 estimateResync).
+  - **Root cause (live-verified):** the ledger's LEFT rail already projects base + the estimate-preferred CAM&tax
+    (`getPropertyMonthlyRoll` → `buildLeaseSchedule`, projection mode — correct), but each tenant's 2026 invoice was
+    generated *before* the estimate was typed, so it billed the **actuals** at that moment and was never regenerated,
+    and every "mark paid" month was recorded at that stale monthly. New marks already used the estimate; the stale
+    invoice + already-recorded payments did not. Michuacana: left rail $63,601.44/yr = **$5,300.12/mo** (base
+    $39,451.44 + est $24,150) but its boxes read $4,794.84 (the old invoice $57,538.02 ÷ 12, billed off actuals).
+  - **Durable fix (`api.js` new `resyncYearBillingToEstimate(leaseId, propertyId, year)`):** reuses the SAME pure
+    builders the ledger paints from — `billedComponents` (estimate-preferred), `buildLeaseSchedule` (term-aware
+    per-month owed), and the exact `draft-invoice` proration (`monthlyBases` + in-term ratio) — so a resync'd invoice
+    is identical to the manual flow AND its total equals the sum of the monthly boxes to the penny (a mid-year lease
+    prorates: Infinite Mobile stays $19,800.02 / Jul–Dec only). It regenerates the year invoice in place
+    (`upsertYearInvoice`, preserving issue/due dates + status) and re-records each **system** "mark paid" month at the
+    new owed — ONLY where every payment is a system mark (`import_id == null && note == null`), so a real bank-imported
+    or manually-noted deposit is left untouched and still trues up at reconcile. No-op unless a live annual invoice
+    already exists (new-lease creation does nothing). Idempotent.
+  - **Auto-sync wiring (George's "auto-sync"):** the resync runs after every estimate save — the Financials inline
+    editor (`TenantShareTable.js` `saveEst`, and its ↩ Undo, so undoing the estimate re-syncs back) and the lease
+    page's combined CAM & tax field (`LeaseDetailPage.js` `saveEstCamTax`) — then invalidates the Ledger roll
+    (`['propertyRentRoll', …]`), the monthly tracker (`['monthlyRent']`), and the invoices/payments panels so every
+    surface repaints. So an estimate change can never go stale again.
+  - **Live repair — the 9 Pershing Plaza tenants** (all payments were system marks — zero bank imports — so this was a
+    clean 1:1 correction, not a distortion of real deposits): a scratchpad generator imported the SAME pure functions,
+    fed each lease's live data, and emitted a reviewed `BEGIN…COMMIT` transaction (9 invoice updates + 55 stale
+    system-marked months deleted & re-recorded at their estimate-based owed). Verified on read-back: every invoice now
+    totals base + est CAM&tax (Michuacana $63,601.44, D&D $73,308, Infinite Mobile $19,800.02 prorated); each month
+    reads the estimate-based owed (**Michuacana $5,300.12**, D&D $6,109, Infinite Mobile $3,300); the two mid-2026-step
+    leases show their unequal months (Ricki's $3,102.76 Jan–Apr → $3,149.08 May–Dec; Sam Nails $4,106.08 Jan–May →
+    $4,160.20 Jun–Dec); Hong Kong + Five Points correctly came DOWN. Michuacana's already-correct months 1–2 (prior
+    top-ups summing to $5,300.12) were left untouched.
+  - **Files:** `src/lib/api.js` (`resyncYearBillingToEstimate` + `monthlyBases` import), `src/components/TenantShareTable.js`
+    (saveEst + ledger-roll invalidations), `src/pages/LeaseDetailPage.js` (saveEstCamTax), `src/lib/__tests__/estimateResync.test.js`
+    (new — 5 cases against the demo mock: raise-estimate moves invoice + system months; idempotent; a bank-imported /
+    noted month is left untouched; mid-year proration ties invoice total to the sum of the unequal months; no-invoice
+    → no-op). No DB/edge/mock/store changes (resync rides the demo mock's generic handlers; the jsdom tests exercise
+    the real functions against it). Left the ledgerPage render test unchanged — the estimateResync unit test covers the
+    box values (`getMonthlyRent`'s per-month amounts) more directly.
+  - **Verified:** unit **472/472** (`vitest run`); `vite build` compiles; live DB read-back confirms all 9 invoices +
+    every marked month; live 200s (amlakre.com + www + workers.dev + demo, bundle free of the live ref). Browser
+    drive-through skipped per George's standing preference (the jsdom tests mount the real ledger math against the demo
+    mock). **George: hard-refresh (Cmd+Shift+R) → Financials → Ledger. Every paid box now reads the same $x,xxx/mo as
+    the left rail — Michuacana $5,300.12, D&D shows its full CAM&tax, the over-billed tenants came down. Changing an
+    estimate now flows straight through to the invoice + the paid boxes; the actual only appears at year-end ⚖ Reconcile.**
+
 - **2026-07-23** — **Financials/History hover fly-outs now stop at the property — the tenant/lease level is
   Portfolio-only** (George: "financials hover should only show the corporations and properties not leases because
   when i click a lease on it it goes to the portfolio leases"). Deployed: frontend Cloudflare version `a95e7070`,

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests } from '../lib/api';
 import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
 import { buildLeaseAskContext } from '../lib/leaseContext';
@@ -123,13 +123,25 @@ export default function LeaseDetailPage() {
   // ['tenantShares']). Stamps est_confirmed_year so the Financials carried-over note
   // clears. Roof stays its own field.
   const saveEstCamTax = useMutation({
-    mutationFn: (annual) =>
-      updateLease(leaseId, {
+    mutationFn: async (annual) => {
+      const year = new Date().getFullYear();
+      await updateLease(leaseId, {
         est_cam_annual: annual,
         est_tax_annual: annual == null ? null : 0,
-        est_confirmed_year: new Date().getFullYear(),
-      }),
-    onSuccess: invalidate,
+        est_confirmed_year: year,
+      });
+      // Move the current year's invoice + system-marked paid months to base + the new
+      // estimate (the actual only enters at year-end reconcile — George, 2026-07-23),
+      // so the Ledger boxes match this figure.
+      await resyncYearBillingToEstimate(leaseId, propId, year);
+    },
+    onSuccess: () => {
+      invalidate();
+      qc.invalidateQueries({ queryKey: ['propertyRentRoll', propId] });
+      qc.invalidateQueries({ queryKey: ['monthlyRent'] });
+      qc.invalidateQueries({ queryKey: ['invoices'] });
+      qc.invalidateQueries({ queryKey: ['payments'] });
+    },
   });
   // Manually confirm a lease has no renewal option (e.g. AI found none). This
   // makes the lease-ending reminder say "no renewal on file".
