@@ -75,6 +75,38 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **Financials/History hover fly-outs now stop at the property — the tenant/lease level is
+  Portfolio-only** (George: "financials hover should only show the corporations and properties not leases because
+  when i click a lease on it it goes to the portfolio leases"). Deployed: frontend Cloudflare version `a95e7070`,
+  demo worker `52e41dc5`. **Frontend-only — $0, NO DB migration, NO edge functions, no tenant emails.** Tests
+  **467/467** (was 466 — +financialsPropertiesNoLease; sidebarFlyout tightened to a per-tab count).
+  - **Root:** yesterday's hover-to-lease round added a tenant third level to the shared sidebar `NavFlyout` (all
+    three tabs) AND a `PropLeaseFlyout` to the shared `FinancialsPropertiesPage` cards (which serves BOTH Financials
+    and History, routes 48/54). But the lease **detail page lives only in the Portfolio workspace** (`/leases/:corp/
+    :prop/:lease` — `App.js:44`); Financials/History have no per-lease route, so every lease link targets
+    `/leases/…` and yanks you out of the workspace you're standing in. George only named Financials; History has the
+    identical jump, so I applied it to both (flagged).
+  - **Sidebar** (`Sidebar.js`): the fly-out's third level is now gated `{mode === 'leases' && …}` — Portfolio still
+    nests each property's tenants (linking to their lease page), Financials/History stop at the property. The
+    batched `['sidebarLeases', …]` query stays (Portfolio's fly-out + the property-card fly-outs still read the
+    `['leases', propId]` caches it warms).
+  - **Financials/History property cards** (`FinancialsPropertiesPage.js`): dropped `PropLeaseFlyout` + its
+    `leasesByPropertiesQuery` seed + the now-unused `corpId` prop; the card reverts from a `<div role="button">`
+    (needed only to hold links) to a plain `<Link className="prop-card" to={…}>` into the property's Financials/
+    History page. **Portfolio cards keep their hover-to-lease fly-out** (`PropertiesPage.js` unchanged).
+  - **Files:** `src/components/Sidebar.js`, `src/pages/FinancialsPropertiesPage.js`, tests
+    (`financialsPropertiesNoLease` new — Financials cards link to `/financials/corp-1/prop-1`, zero `/leases/…`
+    hrefs, no "Go to a lease" header; `sidebarFlyout` now asserts each lease link appears EXACTLY ONCE = Portfolio
+    only, not 3×).
+  - **Verified:** unit **467/467** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev
+    + demo, bundle free of the live ref). Browser drive-through skipped per George's standing preference (the jsdom
+    tests mount the real Sidebar + FinancialsPropertiesPage against the demo mock). **George: hard-refresh
+    (Cmd+Shift+R) → hovering a Financials or History tab (or a Financials/History property card) now stops at the
+    property; the tenant/lease jump stays in Portfolio.** Separately — see the chat reply — I traced your Michuacana
+    ledger question: nothing dropped; the left rail is the *projected* rent (base + your CAM&tax **estimate** =
+    $5,300/mo) and the boxes are what was actually *collected* (the invoice's $4,795/mo, billed off the old actuals
+    before the estimate was raised). No data changed pending your call on how to reconcile it.
+
 - **2026-07-22** — **Four follow-up fixes to yesterday's UI-polish round: ledger "everything went short" reverted to
   "paid = paid" · Notifications Save shows "Saved ✓" instead of silently greying · per-tenant breakdown figures
   re-aligned · sidebar fly-out no longer vanishes when you reach for it + hover straight into a specific lease
