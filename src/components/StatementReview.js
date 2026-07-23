@@ -29,7 +29,10 @@ const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', non
 const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
 export default function StatementReview({ propertyId, year, fileName, accountHint, parsed, pdfLane = false, onCancel, onSaved }) {
-  const { data: ctx } = useQuery({
+  // isError is read deliberately: without it a failed context load left the screen
+  // on "Reading the statement…" forever, which reads as a hung AI even though the
+  // transcript is already in hand. A failure must say so and offer a way out.
+  const { data: ctx, isError: ctxFailed, error: ctxError, refetch: retryCtx } = useQuery({
     queryKey: ['statementContext', propertyId, year],
     queryFn: () => getStatementMatchContext(propertyId, year),
   });
@@ -261,7 +264,24 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     }));
   }
 
-  if (!ctx || !matched) return <p className="muted">Reading the statement…</p>;
+  if (ctxFailed) {
+    return (
+      <div>
+        <p className="note-msg danger">
+          Your statement was read fine — {parsed.transactions.length} line{parsed.transactions.length === 1 ? '' : 's'} —
+          but the ledger it needs to match them against didn’t load, so there’s nothing to review yet.
+          Nothing was saved. {ctxError?.message ? `(${ctxError.message})` : ''}
+        </p>
+        <div className="btn-row">
+          <button type="button" onClick={() => retryCtx()}>Try again</button>
+          <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+  // The statement itself is already transcribed by this point — what's still loading
+  // is the ledger (each tenant's schedule + coverage), so say that, not "reading".
+  if (!ctx || !matched) return <p className="muted">Loading your ledger to match these lines…</p>;
 
   const rows = resolved;
   // One collapsible section per statement month (each line's own date decides its month).

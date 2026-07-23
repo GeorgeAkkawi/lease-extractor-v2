@@ -75,6 +75,50 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **BUGFIX: statement import hung forever on "Reading the statement…" — a malformed database filter
+  meant it had NEVER worked on live data (only in demo)** (George: "its taking a really long time to read the bank
+  statements its been like 5 minutes and no response", with his real Chase statement attached). Deployed: frontend
+  Cloudflare version `ddbcdb6b`, demo worker `a468649e`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge
+  functions, no tenant emails.** Tests **525/525** (was 524 — +1 named regression guard).
+  - **The AI was never the problem.** The edge log for George's upload reads `POST | 200 | extract-bank-statement,
+    execution_time_ms: 11389` — the 77 KB / 2-page PDF transcribed in **11.4 seconds** and returned fine. The hang
+    was entirely client-side, AFTER the transcript came back.
+  - **Root cause (`api.js:3132`, live-reproduced).** `getStatementMatchContext` called
+    `supabase.from('payments').select('import_hash').not('import_hash')` — but postgrest-js's signature is
+    **`not(column, operator, value)`**, so a single-arg call builds the query string
+    `import_hash=not.undefined.undefined`. Verified against live PostgREST: **HTTP 400 PGRST100** `"failed to parse
+    filter (not.undefined.undefined)"`. That threw → the whole `Promise.all` rejected → the `['statementContext']`
+    query failed → `ctx` stayed undefined. Fixed to `.not('import_hash', 'is', null)` (the intended "has an import
+    hash"), which returns 200. Swept the other 7 queries in that function against live PostgREST — **all 200**, this
+    was the only one.
+  - **Why it looked like a 5-minute AI read (the second bug).** `StatementReview` destructured only `data` from the
+    query — no `isError` — and line 264 read `if (!ctx || !matched) return <p>Reading the statement…</p>`. So a
+    failed context load showed a loading line **forever**, and one that blames the AI even though the statement was
+    already transcribed. Now the component reads `isError`/`error`/`refetch` and renders an honest panel — "Your
+    statement was read fine — N lines — but the ledger it needs to match them against didn't load … Nothing was
+    saved" + **Try again** / **Cancel** — and the loading text became "Loading your ledger to match these lines…".
+  - **Why 524 tests + a demo drive-through all passed (the divergence that hid it).** The demo mock's query builder
+    defined `not(field)` taking **one** argument and treating it as "is not null" — exactly what the api.js author
+    assumed the real client did. So the bug was invisible in demo and fatal on live. The mock's `not()` now mirrors
+    postgrest-js's real `(column, operator, value)` signature and **throws** on a malformed call, so this class of
+    live-only failure is catchable in the suite. **Proved it:** reintroducing the bug now fails 4 tests (it used to
+    pass silently); a named regression test (`getStatementMatchContext resolves — no malformed PostgREST filter`)
+    documents it.
+  - **Honest scope note:** statement import shipped 2026-07-21 (`f871b32`) with this line, so **every statement round
+    since — the matching, escalation cue, learned payees, month grouping — was validated against the demo mock only
+    and could never have run on George's real data.** All of that logic is unchanged and now actually reachable; it
+    gets its first real exercise on his next import.
+  - **Files:** `src/lib/api.js` (the filter), `src/components/StatementReview.js` (error state + honest loading
+    copy), `src/lib/demo/mockClient.js` (strict `not()` signature), `src/lib/__tests__/statementImport.test.js`
+    (+1 guard). No DB/edge/CSS/seed changes.
+  - **Verified:** unit **525/525** (`vitest run`); the reintroduce-the-bug test proving the suite now catches it;
+    live PostgREST 400→200 on the exact filter; `vite build` compiles; live 200s (amlakre.com + www + workers.dev +
+    demo, demo bundle free of the live ref). **George: hard-refresh (Cmd+Shift+R) and re-import that Chase statement
+    — it should reach the review screen in a few seconds. Your 9 June deposits (Five Points Wing $5,324 · Samsnails
+    $4,418 · Chinese $3,600 · Laredo $3,535.09 · Boost $2,716 · Dentaloffice $6,315 · Gustavo $5,300 · Lyonsvapez
+    $3,987.50 · Hiarcut $3,750) should match Pershing tenants; the $65,000 Vanguard transfer should land in Skipped
+    as an investment transfer, NOT an expense — check that one before saving.**
+
 - **2026-07-23** — **Statement import v2: the review screen now GROUPS each statement by month (all-matched months
   collapsed, months needing a look open, live "N matched · M need review" counts in every header), and the Ledger tab
   gained a "Learned payees" manager to audit / retarget / remove the auto-learned payee rules** (George dropped a

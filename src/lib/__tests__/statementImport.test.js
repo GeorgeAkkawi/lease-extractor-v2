@@ -33,6 +33,21 @@ const paymentEntry = (txn, over = {}) => ({
   period_month: null, reconInvoiceId: null, hash: lineHash(txn), ...over,
 });
 
+// Regression (2026-07-23): getStatementMatchContext shipped with a single-arg
+// .not('import_hash'), which postgrest-js turns into "import_hash=not.undefined
+// .undefined" — a PostgREST 400. The demo mock's not() took one arg and read it
+// as "is not null", so every test passed while live import hung forever on
+// "Reading the statement…". The mock now mirrors the real (column, operator,
+// value) signature and throws otherwise, so this assertion fails loudly if the
+// malformed filter (or any sibling) ever comes back.
+describe('statement import — context assembles with live-shaped filters', () => {
+  it('getStatementMatchContext resolves (no malformed PostgREST filter)', async () => {
+    const ctx = await getStatementMatchContext('prop-1', Y);
+    expect(ctx.tenants.length).toBeGreaterThan(0);
+    expect(ctx.existingHashes instanceof Set).toBe(true);
+  });
+});
+
 describe('statement import — apply / dedupe / override / undo', () => {
   it('context assembles the whole portfolio + matching books the check to its gap month', async () => {
     const ctx = await getStatementMatchContext('prop-1', Y);

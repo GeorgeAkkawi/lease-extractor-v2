@@ -152,7 +152,18 @@ class QB {
   lt(field, value) { this.filters.push({ field, op: 'lt', value }); return this; }
   lte(field, value) { this.filters.push({ field, op: 'lte', value }); return this; }
   is(field) { this.filters.push({ field, op: 'is' }); return this; }
-  not(field) { this.filters.push({ field, op: 'not_is_null' }); return this; }
+  // Mirror postgrest-js's real not(column, operator, value) signature. This used
+  // to accept a single arg and assume "is not null", so a caller writing
+  // .not('col') passed every test and then 400'd on live PostgREST (which builds
+  // "col=not.undefined.undefined"). Throwing on a malformed call keeps that class
+  // of live-only failure catchable in the suite.
+  not(field, op, value) {
+    if (op !== 'is' || value !== null) {
+      throw new Error(`mock not(): expected .not('${field}', 'is', null) — postgrest-js takes (column, operator, value)`);
+    }
+    this.filters.push({ field, op: 'not_is_null' });
+    return this;
+  }
   ilike(field, value) { this.filters.push({ field, op: 'ilike', value }); return this; }
   filter(field, op, value) { this.filters.push({ field, op, value }); return this; }
   order(field) { this._order = field; return this; }

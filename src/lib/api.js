@@ -3125,7 +3125,11 @@ export async function getStatementMatchContext(propertyId, year) {
     rows(supabase.from('properties').select('id,name,corporation_id')),
     listImportRules(),
     rows(supabase.from('statement_imports').select('*')),
-    rows(supabase.from('payments').select('import_hash').not('import_hash')),
+    // postgrest-js's signature is not(column, operator, value) — a single-arg
+    // .not('import_hash') builds "import_hash=not.undefined.undefined", which
+    // PostgREST rejects with a 400 (it read fine against the demo mock, whose
+    // not() took one arg — that divergence hid it). Spell the filter out.
+    rows(supabase.from('payments').select('import_hash').not('import_hash', 'is', null)),
     rows(supabase.from('v_invoice_balances').select('*').eq('kind', 'reconciliation')),
     rows(supabase.from('cam_line_items').select('label,billable')),
     rows(supabase.from('corporations').select('*')),
