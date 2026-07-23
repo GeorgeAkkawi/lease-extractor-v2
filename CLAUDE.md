@@ -75,6 +75,61 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-22** — **Four follow-up fixes to yesterday's UI-polish round: ledger "everything went short" reverted to
+  "paid = paid" · Notifications Save shows "Saved ✓" instead of silently greying · per-tenant breakdown figures
+  re-aligned · sidebar fly-out no longer vanishes when you reach for it + hover straight into a specific lease
+  (property cards AND a sidebar third level)** (George: "need hover for the properties page … when i hover and try
+  to click the box disappears … when i clicked save changes in the notifications tab it just went grey … why did
+  everything change to short? how do you know its short? … on the per tenant break down the numbers of the base
+  rent and cam and taxes arent aligned"; his two AskUserQuestion picks: ledger **"Remove it — paid = paid"** and
+  lease-hover in **"Both"** places — plan `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed: frontend
+  Cloudflare version `63798f45`, demo worker `e8ca8fcc`. **Frontend + CSS only — $0, NO DB migration, NO edge
+  functions, no tenant emails.** Tests **466/466** (was 464 — +propertiesFlyout, +notificationSaveCue; ledgerPage's
+  settled-short case rewritten to paid=paid; sidebarFlyout gained a lease-link assertion).
+  - **1) Ledger "short" removed (`LedgerPage.js` + `.rr-*` CSS).** The amber per-cell **"✓ short $X"** badge + its
+    one-click top-up compared each paid month's frozen dollars against the CURRENTLY re-priced owed
+    (`getPropertyMonthlyRoll` rebuilds `owed` from the live lease base + estimate on every render), so raising an
+    estimate/rent mid-year retroactively flipped every already-paid month to "short" — the exact retroactive-repricing
+    signal "paid = paid" was built to kill. Now a settled month reads **✓ for whatever was recorded**; the
+    received-vs-projected gap lives only in the **Collected** column (forward-only) + the year-end reconcile. Dropped
+    the `topup` cell action (markMonthPaid's `opts.additional` param stays dormant — its moneyCollection test is
+    green), the `.rr-cell.paid.short` / `.rr-short` rules, and the legend's short line.
+  - **2) Notifications "Saved ✓" (`NotificationSettings.js` + `.notify-save button.saved` CSS).** After a save there's
+    nothing left to save, so `disabled={!dirty || …}` correctly greys the button — but with no success cue it read as
+    broken (George: "it just went grey and i cant click it again"). New `saved = save.isSuccess && !dirty &&
+    !save.isPending` flips the label to a green **"Saved ✓"**; the next edit sets `dirty` and it returns to an enabled
+    **"Save changes"**. Behavior unchanged, just the affordance.
+  - **3) Per-tenant breakdown alignment (`App.css` `.ledger-*`).** The six numeric mains rode at 0 / 4 / 7px: plain
+    `.ledger-stat` (Base/Roof/Total/Diff) had no top padding, `.lg-actual` +4px, and `.lg-est`'s click-to-edit
+    `.est-cell-btn` added another +3px. Now every `.ledger-stat` gets a uniform `padding:4px 8px`, and the est button
+    carries `margin-top:-3px` to counteract its own pill padding — so all six figures land on one 4px baseline down
+    each row (and the vacant/totals rows' direct-Stat est cells align too, which the plan's simpler `.lg-est{2px}`
+    approach would have broken). Header cells gained a matching `padding-right:8px`.
+  - **4) Sidebar fly-out gap (`App.css` `.side-flyout`).** It opened 16px to the right (`left:calc(100% + 16px)`)
+    bridged by a `::before` pad — but `overflow-y:auto` forces `overflow-x:auto`, which CLIPPED that bridge, so the
+    panel vanished the instant you crossed the gap toward it. Now it opens **flush** (`left:calc(100% - 2px)`, a 2px
+    overlap → zero dead zone) and the dead `::before` bridge is gone; `overflow-y:auto` kept for long lists.
+  - **5) Hover into a specific lease — both places (George's "Both" pick).** New shared **`PropLeaseFlyout.js`** (reads
+    the already-seeded `['leases', propId]` cache): a downward **"Go to a lease"** fly-out on every property card,
+    wired into `PropertiesPage.js` (Portfolio) and `FinancialsPropertiesPage.js` (Financials/History — its card
+    changed from a `<button>` to a `<div role="button">` so it can hold links, + a batched `leasesByPropertiesQuery`
+    seed). And a **third level in the sidebar fly-out** (`Sidebar.js`): a batched `['sidebarLeases', …]` query nests
+    each property's tenants inline-indented under it (`.side-flyout-lease`), every tenant a `<Link>`. Corp/property
+    links keep `/${mode}/…`; a lease link is ALWAYS `/leases/${corp}/${prop}/${lease}` — the lease detail page lives
+    only in the Portfolio workspace.
+  - **Files:** `src/App.css`, `src/pages/{LedgerPage,NotificationSettings,PropertiesPage,FinancialsPropertiesPage}.js`,
+    `src/components/{Sidebar,PropLeaseFlyout (new)}.js`, tests (`propertiesFlyout`, `notificationSaveCue` new;
+    `ledgerPage`, `sidebarFlyout` updated). No DB/edge/mock/store changes.
+  - **Verified:** unit **466/466** (`vitest run` — the jsdom tests mount the real LedgerPage / Sidebar / PropertiesPage
+    / NotificationSettings against the demo mock: ledger settled-short → ✓ paid with no `.rr-cell.paid.short`; sidebar
+    + property-card lease links to `/leases/corp-1/prop-1/lease-1`; the "Saved ✓" → re-enable cycle); `vite build`
+    compiles (798 modules); live 200s (amlakre.com + www + workers.dev + demo, bundle free of the live ref). Browser
+    drive-through skipped per George's standing preference — the two remaining items are pixel alignment (all six
+    `.cell-main` tops resolve to 4px) and the CSS hover reveal. **George: hard-refresh (Cmd+Shift+R) → the Ledger no
+    longer says "short" everywhere · Notifications Save shows "Saved ✓" · the breakdown figures line up · hover a
+    sidebar tab OR a property card and jump straight into a specific lease (the box no longer disappears when you
+    reach for it).**
+
 - **2026-07-22** — **UI-polish round + statement rent-mismatch handling: sidebar hover fly-out (jump straight
   into a corp/property) · Settings › Notifications reformatted to the house style · the Financials per-tenant
   "CAM & tax · actual" total no longer collides with the Roof column · bold $/SF rates + a much more noticeable
