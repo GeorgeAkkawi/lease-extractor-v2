@@ -15,7 +15,7 @@ import {
   listSnapshots,
   localDateIso,
 } from '../lib/api';
-import { allocatePayments, componentizeSchedule, ledgerRowSummary, snapshotCollectionSummary } from '../lib/ledger';
+import { allocatePayments, componentizeSchedule, escalationStepMonths, ledgerRowSummary, snapshotCollectionSummary } from '../lib/ledger';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
 import FinancialsTabs from '../components/FinancialsTabs';
@@ -174,7 +174,8 @@ export default function LedgerPage() {
     const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
     const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual });
     const summary = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc, today });
-    return { r, alloc, comp, summary };
+    const steps = escalationStepMonths({ schedule: r.schedule, comp });
+    return { r, alloc, comp, summary, steps };
   });
 
   const markAll = (m) => {
@@ -280,9 +281,10 @@ export default function LedgerPage() {
               </tr>
             </thead>
             <tbody>
-              {derived.map(({ r, alloc, comp, summary }) => {
+              {derived.map(({ r, alloc, comp, summary, steps }) => {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
                 const rate = pct(summary.collected, summary.projected);
+                const stepSet = new Set(steps.map((s) => s.month));
                 // Representative month for the identity sub-line: the current month when
                 // it's a normal billed month, else the first owed non-free month.
                 let repM = isCurrentFy && (alloc.owed[curM - 1] || 0) > 0 && !r.schedule?.[curM]?.abated ? curM : 0;
@@ -302,6 +304,11 @@ export default function LedgerPage() {
                       <div className="rr-split">
                         {money(r.monthly)}/mo{rep ? ` = ${money(rep.base)} base · ${money(rep.camTax)} CAM&tax${rep.roof > 0 ? ` · ${money(rep.roof)} roof` : ''}` : ''}{r.owedMonths < 12 ? ` · ${r.owedMonths} mo` : ''}
                       </div>
+                      {steps.length > 0 && (
+                        <div className="rr-step-note" title="This tenant's base rent stepped up mid-year on a scheduled escalation — the two different monthly amounts are both correct.">
+                          ↗ rent raised to {money(steps[0].owed)}/mo in {MONTHS[steps[0].month - 1]}
+                        </div>
+                      )}
                     </td>
                     {MONTHS.map((ml, i) => {
                       const m = i + 1;
@@ -313,6 +320,12 @@ export default function LedgerPage() {
                       const settledM = alloc.settled[i];
                       const receivedM = alloc.received[i];
                       const pending = pendingCells.has(cellKey(r.lease_id, m));
+                      // A scheduled rent escalation lands ON this month (base stepped up vs
+                      // the prior month) — mark it so the higher amount from here reads as
+                      // the intended raise. outsideTerm/owed<=0 months can't be steps.
+                      const isStep = stepSet.has(m);
+                      const stepCls = isStep ? ' rr-step' : '';
+                      const stepTip = isStep ? '↗ Scheduled rent escalation — base rent stepped up this month; the higher amount from here on is the raise, not an error. ' : '';
                       if (s?.outsideTerm) {
                         return <td key={m}><span className="rr-cell outside" title={`${ml}: before this lease began`}>—</span></td>;
                       }
@@ -333,8 +346,8 @@ export default function LedgerPage() {
                           if (tagCount > 1) {
                             return (
                               <td key={m}>
-                                <span className={`rr-cell paid${s?.abated ? ' abated' : ''}`}
-                                  title={`${ml}: received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} — recorded across ${tagCount} payments · manage on the lease's Invoices & payments`}>
+                                <span className={`rr-cell paid${s?.abated ? ' abated' : ''}${stepCls}`}
+                                  title={`${stepTip}${ml}: received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} — recorded across ${tagCount} payments · manage on the lease's Invoices & payments`}>
                                   ✓<span className="rr-amt">{money0(receivedM)}</span>
                                 </span>
                               </td>
@@ -344,9 +357,9 @@ export default function LedgerPage() {
                           // Any received-vs-projected gap lives in the Collected column + reconcile.
                           return (
                             <td key={m}>
-                              <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}`} disabled={pending}
+                              <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
                                 onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
-                                title={`${ml} paid — received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} · click to undo`}>
+                                title={`${stepTip}${ml} paid — received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} · click to undo`}>
                                 ✓<span className="rr-amt">{money0(receivedM)}</span>
                               </button>
                             </td>
@@ -355,7 +368,7 @@ export default function LedgerPage() {
                         // Covered by an untagged lump — inert (managed on the lease's payments panel).
                         return (
                           <td key={m}>
-                            <span className="rr-cell paid pool" title={`${monthLine} — covered by a lump payment · manage it on the lease's Invoices & payments`}>✓</span>
+                            <span className={`rr-cell paid pool${stepCls}`} title={`${stepTip}${monthLine} — covered by a lump payment · manage it on the lease's Invoices & payments`}>✓</span>
                           </td>
                         );
                       }
@@ -365,18 +378,18 @@ export default function LedgerPage() {
                         const gap = round2(owedM - covered);
                         return (
                           <td key={m}>
-                            <button type="button" className="rr-cell partial" disabled={pending}
+                            <button type="button" className={`rr-cell partial${stepCls}`} disabled={pending}
                               onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'gap', amount: gap })}
-                              title={`${monthLine} — ${money(covered)} covered by a lump payment · click to record the remaining ${money(gap)}`}>◐</button>
+                              title={`${stepTip}${monthLine} — ${money(covered)} covered by a lump payment · click to record the remaining ${money(gap)}`}>◐</button>
                           </td>
                         );
                       }
                       const late = started;
                       return (
                         <td key={m}>
-                          <button type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}`} disabled={pending}
+                          <button type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
                             onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'mark', amount: round2(owedM) })}
-                            title={`${late ? 'Overdue — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—</button>
+                            title={`${stepTip}${late ? 'Overdue — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—</button>
                         </td>
                       );
                     })}

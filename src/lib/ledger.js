@@ -134,6 +134,35 @@ export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, r
   return out;
 }
 
+// Detect a mid-year BASE-RENT step-up — a scheduled rent escalation crossing a month
+// boundary — so the Ledger can flag it (a tenant's two different monthly box values then
+// read as the intended raise, not a mismatch). Derived purely from the SAME per-month
+// base the boxes are painted from (componentizeSchedule's `comp`) + the schedule's
+// term/abatement flags, so a cue from it can never disagree with the boxes.
+//   Returns [{ month, owed, base, prevBase }] for each month m (2–12) whose base steps
+//   UP vs m-1, guarded so only a genuine escalation qualifies:
+//     - skip if m or m-1 is outsideTerm (a mid-year lease START is not a raise — its
+//       prior month is out-of-term, base 0) or abated (an abatement ENDING shows base
+//       0 → X, also not a raise),
+//     - require prevBase > 0 and curBase > prevBase + 0.02 (increases only, cents-safe).
+//   Normally length 1 (escalations are annual); returns all when a lease steps twice.
+export function escalationStepMonths({ schedule, comp } = {}) {
+  if (!schedule || !comp) return [];
+  const out = [];
+  for (let m = 2; m <= 12; m++) {
+    const cur = schedule[m] || {};
+    const prev = schedule[m - 1] || {};
+    if (cur.outsideTerm || prev.outsideTerm) continue;
+    if (cur.abated || prev.abated) continue;
+    const curBase = round2(Number(comp[m]?.base) || 0);
+    const prevBase = round2(Number(comp[m - 1]?.base) || 0);
+    if (prevBase > 0 && curBase > prevBase + 0.02) {
+      out.push({ month: m, owed: round2(Number(cur.owed) || 0), base: curBase, prevBase });
+    }
+  }
+  return out;
+}
+
 // The row's headline figures — every one derived from the SAME allocation the grid
 // paints from (see the header note for why arStatus can't be the source here).
 //   collected    — every dollar recorded against the year invoice (Σ received + credit)

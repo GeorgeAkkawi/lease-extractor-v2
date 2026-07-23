@@ -88,6 +88,10 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .rr-cell:disabled{opacity:.55;cursor:default}
 .rr-cell.paid{background:var(--forest-soft);border-color:var(--forest);color:var(--forest)}
 .rr-cell.late{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
+/* A scheduled rent escalation lands on this month — a subtle olive left accent marks
+   where the base rent steps up (inset shadow: no box-model shift, distinct from the gold
+   late/partial cells, composes with the paid/late state classes). */
+.rr-cell.rr-step{box-shadow:inset 3px 0 0 var(--accent)}
 .rr-cell.vacant,.rr-cell.outside{cursor:default;background:transparent;border-style:dashed}
 .rent-roll th.rr-current{box-shadow:inset 0 -2px 0 var(--accent)}
 .rent-roll tr.rr-vacant td{opacity:.72}
@@ -108,6 +112,9 @@ button.rr-cell.abated{cursor:pointer}
 .rr-cell.paid{min-width:46px}
 .rent-roll th.rr-owes,.rent-roll td.rr-owes{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .rr-split{color:var(--faint);font-size:11px;margin-top:2px;white-space:nowrap}
+/* Plain-language cue next to a tenant whose base rent stepped up mid-year — so the two
+   different monthly box values read as the scheduled raise, not a mismatch. */
+.rr-step-note{color:var(--accent);font-size:11px;margin-top:2px;white-space:nowrap;font-weight:600}
 .rr-tenant{color:inherit;text-decoration:none}
 .rr-tenant:hover{color:var(--accent)}
 /* Collected-of-total column: "$X of $Y", a slim progress bar, then %/credit/behind. */
