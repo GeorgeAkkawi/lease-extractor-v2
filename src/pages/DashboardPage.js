@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest } from '../lib/api';
+import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
 import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
-import { useFeatures } from '../lib/features';
+import { resolveLeadDays } from '../lib/notifyPrefs';
+import { useFeatures, isFeatureOn } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
 import NotificationEmailModal from '../components/NotificationEmailModal';
@@ -44,12 +45,18 @@ export default function DashboardPage() {
     queryFn: () => listPropertyTotalsByYear(propIds, year),
     enabled: !!index,
   });
+  // The landlord's per-type notification lead times ("notify me N ahead"). Folded into
+  // the alerts key so changing a lead in Settings re-filters the feed immediately.
+  const { data: leadPrefs = {} } = useQuery({ queryKey: ['notifyLeadTimes'], queryFn: getNotifyLeadTimes });
   const { data: alerts = [] } = useQuery({
-    // Feature/widget prefs are part of the key so toggling a module re-filters the feed.
-    queryKey: ['alerts', enabledFeatures, hidden],
+    // Feature/widget prefs + lead times are part of the key so toggling a module or
+    // changing a lead re-filters the feed.
+    queryKey: ['alerts', enabledFeatures, hidden, leadPrefs],
     queryFn: async () => {
-      const [data, states] = await Promise.all([fetchAlertData(), listAlertStates()]);
-      return buildAlerts(data, toAlertStates(states), new Date(), { features: enabledFeatures, hiddenWidgets: hidden });
+      const leadDays = resolveLeadDays(leadPrefs);
+      const ledgerOn = isFeatureOn(enabledFeatures, 'ledger');
+      const [data, states] = await Promise.all([fetchAlertData({ leadDays, ledgerOn }), listAlertStates()]);
+      return buildAlerts(data, toAlertStates(states), new Date(), { features: enabledFeatures, hiddenWidgets: hidden, leadDays });
     },
     refetchInterval: 60_000,
   });
@@ -108,6 +115,15 @@ export default function DashboardPage() {
   // divs/rows below aren't real buttons, so without this they can be focused but not used.
   const keyActivate = (fn) => (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(e); } };
   // Dismiss / snooze persist server-side (alert_states) so they sync across devices.
+  // Where clicking an alert takes the landlord.
+  function goToAlert(a) {
+    if (a.focus === 'annual_report') navigate('/leases'); // corporations grid → Annual report button
+    else if (a.focus === 'unpaid_rent' && a.property_id) navigate(`/financials/${a.corporation_id}/${a.property_id}/ledger`);
+    else if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
+    else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
+    else navigate(`/leases/${a.corporation_id}`);
+  }
+
   async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
   async function snooze(a, ms) { await upsertAlertState({ alert_key: alertKey(a), snoozed_until: new Date(Date.now() + ms).toISOString() }); setSnoozeFor(null); qc.invalidateQueries({ queryKey: ['alerts'] }); }
 
@@ -286,18 +302,8 @@ export default function DashboardPage() {
               {alerts.map((a, i) => { const k = alertKey(a); return (
                 <div key={`${k}-${i}`} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start', borderLeftColor: a.tone === 'danger' ? 'var(--danger)' : a.tone === 'warn' ? 'var(--accent)' : 'var(--line)' }}>
                   <div role="button" tabIndex={0} style={{ flex: 1, cursor: 'pointer' }}
-                    onClick={() => {
-                      if (a.focus === 'annual_report') navigate('/leases'); // corporations grid → Annual report button
-                      else if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
-                      else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
-                      else navigate(`/leases/${a.corporation_id}`);
-                    }}
-                    onKeyDown={keyActivate(() => {
-                      if (a.focus === 'annual_report') navigate('/leases'); // corporations grid → Annual report button
-                      else if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
-                      else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
-                      else navigate(`/leases/${a.corporation_id}`);
-                    })}>
+                    onClick={() => goToAlert(a)}
+                    onKeyDown={keyActivate(() => goToAlert(a))}>
                     <div className="alert-title"><strong>{a.title}</strong></div>
                     <div className="muted" style={{ fontSize: 12.5 }}>{a.detail}</div>
                     <div className="muted" style={{ fontSize: 11.5 }}>{a.bucketLabel} · {fmtDate(a.date)}</div>

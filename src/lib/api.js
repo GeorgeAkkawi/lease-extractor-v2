@@ -6,7 +6,7 @@ import { money, fmtDate } from './format';
 import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
-import { buildLeaseSchedule } from './leaseSchedule';
+import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import { allocatePayments, ledgerRowSummary } from './ledger';
 import { priorRentBefore, computeEscalatedRent } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
@@ -194,6 +194,20 @@ export async function listCorpRollups(year) {
 // ---- Properties -------------------------------------------------------------
 export const listProperties = (corporationId) =>
   rows(supabase.from('properties').select('*').eq('corporation_id', corporationId).order('name'));
+
+// Batched: every property (id/name) grouped by corporation, in ONE query — for the
+// corporation-card hover fly-out that jumps straight to a property. Returns a map
+// { [corpId]: [{ id, name }] } sorted by name.
+export async function listPropertiesByCorps(corpIds) {
+  const ids = (corpIds || []).filter(Boolean);
+  if (!ids.length) return {};
+  const props = await rows(
+    supabase.from('properties').select('id,name,corporation_id').in('corporation_id', ids).order('name')
+  );
+  const map = {};
+  for (const p of props || []) (map[p.corporation_id] ||= []).push({ id: p.id, name: p.name });
+  return map;
+}
 
 export const getProperty = (id) =>
   one(supabase.from('properties').select('*').eq('id', id).single());
@@ -1945,9 +1959,9 @@ export async function draftCamReconciliationEmail(recon) {
 }
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
-export async function fetchAlertData() {
+export async function fetchAlertData({ leadDays = null, ledgerOn = true } = {}) {
   const [leasesR, escR, renR, propR, insR, conR, abaR, insReqR, corpR, arR] = await Promise.all([
-    supabase.from('leases').select('id,tenant_name,property_id,lease_start,lease_termination_date,no_renewal_option,is_active,base_rent'),
+    supabase.from('leases').select('id,tenant_name,property_id,lease_start,lease_termination_date,no_renewal_option,is_active,base_rent,notify_lease_end_days'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status,new_base_rent'),
     supabase.from('renewal_options').select('id,lease_id,notice_by_date,status'),
     supabase.from('properties').select('id,name,corporation_id'),
@@ -1963,18 +1977,80 @@ export async function fetchAlertData() {
     supabase.from('corporations').select('id,name'),
     supabase.from('annual_reports').select('corporation_id,due_date,last_filed_date'),
   ]);
+  const leases = leasesR.data || [];
+  const escalations = escR.data || [];
+  const abatements = abaR.data || [];
   return {
-    leases: leasesR.data || [],
-    escalations: escR.data || [],
+    leases,
+    escalations,
     renewals: renR.data || [],
     properties: propR.data || [],
     insurance: insR.data || [],
     contracts: conR.data || [],
-    abatements: abaR.data || [],
+    abatements,
     insuranceRequests: insReqR.data || [],
     corporations: corpR.data || [],
     annualReports: arR.data || [],
+    // Precomputed "tenant behind on rent" list for the unpaid_rent bell alert — built
+    // from the SAME ledger math the Rent Ledger grid paints, honoring the unpaid_rent
+    // grace lead. Only fetched when the Rent Ledger module is on (else the alert is
+    // hidden anyway). Skipped entirely on any error → no alert rather than a wrong one.
+    unpaidRent: ledgerOn ? await computeUnpaidRent(leases, escalations, abatements, leadDays) : [],
   };
+}
+
+// Which tenants are behind on the current year's rent, past the configured grace
+// period. Reuses owedByMonthForInvoice → allocatePayments → ledgerRowSummary so the
+// count/dollars match the Ledger tab exactly (never a flat total/12 that mis-reads a
+// free month or mid-year start). Returns [{ lease_id, property_id, tenant_name,
+// monthsBehind, amountBehind, year }] for leases at least one month behind.
+async function computeUnpaidRent(leases, escalations, abatements, leadDays) {
+  try {
+    const year = Number(localDateIso().slice(0, 4));
+    const graceDays = Number(leadDays?.unpaid_rent) > 0 ? Number(leadDays.unpaid_rent) : 7;
+    const invAll = await rows(
+      supabase.from('v_invoice_balances')
+        .select('id,lease_id,property_id,year,kind,base_rent_annual,cam_annual,tax_annual,roof_annual,total_amount')
+        .eq('year', year)
+    );
+    const invoices = (invAll || []).filter(isAnnualInvoice);
+    if (!invoices.length) return [];
+    const payRows = await rows(
+      supabase.from('payments').select('invoice_id,amount,paid_date,period_month').in('invoice_id', invoices.map((i) => i.id))
+    );
+    const payByInvoice = {};
+    (payRows || []).forEach((p) => { (payByInvoice[p.invoice_id] ||= []).push(p); });
+    const escByLease = {};
+    (escalations || []).forEach((e) => { (escByLease[e.lease_id] ||= []).push(e); });
+    const abaByLease = {};
+    (abatements || []).forEach((a) => { (abaByLease[a.lease_id] ||= []).push(a); });
+    const leaseById = Object.fromEntries((leases || []).map((l) => [l.id, l]));
+    // Grace: a month is only judged "due" this many days after its 1st, so a tenant
+    // isn't flagged the instant a month begins.
+    const asOf = new Date(Date.now() - graceDays * 86400000);
+    const out = [];
+    for (const inv of invoices) {
+      const lease = leaseById[inv.lease_id];
+      if (!lease || lease.is_active === false) continue;
+      const owedByMonth = owedByMonthForInvoice(inv, {
+        leaseStart: lease.lease_start,
+        escalations: escByLease[inv.lease_id] || [],
+        abatements: abaByLease[inv.lease_id] || [],
+      });
+      if (!owedByMonth) continue; // no gross breakdown → can't judge months; skip
+      const allocation = allocatePayments({ owedByMonth, payments: payByInvoice[inv.id] || [] });
+      const summary = ledgerRowSummary({ year, owedByMonth, allocation, today: asOf });
+      if (summary.monthsBehind >= 1) {
+        out.push({
+          lease_id: inv.lease_id, property_id: inv.property_id, tenant_name: lease.tenant_name,
+          monthsBehind: summary.monthsBehind, amountBehind: summary.owesToDate, year,
+        });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 // ---- Alert states (server-synced dismiss / snooze for computed alerts) ------
@@ -2129,6 +2205,47 @@ export const setLeaseSort = async (patch) => {
       .select()
       .single()
   );
+};
+
+// ---- Notification lead times (how far ahead each alert fires) ----------------
+// One per-user row (user_preferences.notify_lead_times jsonb, migration 0065),
+// { type_key: days }. Returns {} for a fresh account / any error → the app falls
+// back to the built-in defaults (notifyPrefs.js), which match today's behavior.
+export async function getNotifyLeadTimes() {
+  try {
+    const uid = await ownerId();
+    if (!uid) return {};
+    const { data } = await supabase
+      .from('user_preferences')
+      .select('notify_lead_times')
+      .eq('user_id', uid)
+      .maybeSingle();
+    return data?.notify_lead_times || {};
+  } catch {
+    return {};
+  }
+}
+
+// Merge a patch into the saved leads (so setting one type doesn't wipe the others),
+// then rebuild this owner's reminder rows so a changed lead takes effect immediately
+// (instead of at the next nightly cron). The reminder rebuild is best-effort — the
+// dashboard alerts already re-read the new lead on the next fetch regardless.
+export const setNotifyLeadTimes = async (patch) => {
+  const current = await getNotifyLeadTimes();
+  const next = { ...current, ...patch };
+  Object.keys(next).forEach((k) => { if (next[k] == null) delete next[k]; });
+  const saved = await one(
+    supabase
+      .from('user_preferences')
+      .upsert(
+        { user_id: await ownerId(), notify_lead_times: next, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
+      .select()
+      .single()
+  );
+  try { await supabase.rpc('regenerate_owner_reminders'); } catch { /* email reminders re-arm next cron */ }
+  return saved;
 };
 
 // ---- Notifications ----------------------------------------------------------

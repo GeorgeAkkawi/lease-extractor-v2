@@ -22,7 +22,7 @@ import FinancialsTabs from '../components/FinancialsTabs';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
 import MutationError from '../components/MutationError';
-import { money, sf, fmtDate } from '../lib/format';
+import { money, money0, sf, fmtDate } from '../lib/format';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -332,7 +332,7 @@ export default function LedgerPage() {
                               <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}`} disabled={pending}
                                 onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
                                 title={`${ml} paid — received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} · click to undo`}>
-                                ✓{off && <span className="rr-amt">{money(receivedM)}</span>}
+                                ✓<span className="rr-amt">{money0(receivedM)}</span>
                               </button>
                             </td>
                           );

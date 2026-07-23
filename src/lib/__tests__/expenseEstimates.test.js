@@ -47,25 +47,26 @@ describe('estimateAnnualsFrom — code does the math, to the cent', () => {
   });
 });
 
-describe('review-form prefill — est fields as $/SF rates that round-trip exactly', () => {
+describe('review-form prefill — ONE combined CAM & tax $/SF rate that round-trips exactly', () => {
   const field = (value) => ({ value, confidence: 0.9, source_quote: 'q', page: 1 });
 
-  it('divides the annual estimate to the rate the form multiplies back at save', () => {
+  it('sums CAM + tax annuals and divides to the rate the form multiplies back at save', () => {
+    // 9,000 + 10,000 = 19,000 over 2,000 SF = $9.50/SF.
     const init = initialFromExtraction({ square_footage: field(2000), est_cam_annual: field(9000), est_tax_annual: field(10000) });
-    expect(init.est_cam_annual).toBe(4.5);
-    expect(init.est_tax_annual).toBe(5);
+    expect(init.est_cam_tax).toBe(9.5);
   });
 
   it('an awkward quotient still round-trips to the stated figure to the cent', () => {
     // 10,000 / 1,077 SF has no clean 2-dp rate — the 6-dp prefill must multiply
     // back to the stated $10,000.00, not drift to $10,005.33.
     const init = initialFromExtraction({ square_footage: field(1077), est_tax_annual: field(10000) });
-    expect(Math.round(init.est_tax_annual * 1077 * 100) / 100).toBe(10000);
+    expect(Math.round(init.est_cam_tax * 1077 * 100) / 100).toBe(10000);
   });
 
-  it('with no square footage the annual prefills directly; no estimate stays blank', () => {
+  it('with no square footage the combined annual prefills directly; no estimate stays blank', () => {
     const init = initialFromExtraction({ est_cam_annual: field(6500) });
-    expect(init.est_cam_annual).toBe(6500);
-    expect(init.est_tax_annual).toBe('');
+    expect(init.est_cam_tax).toBe(6500);
+    const none = initialFromExtraction({ square_footage: field(2000) });
+    expect(none.est_cam_tax).toBe('');
   });
 });

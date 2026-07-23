@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { SlidersIcon, ShieldIcon } from '../components/icons';
+import { SlidersIcon, ShieldIcon, BellIcon } from '../components/icons';
 
 // Settings hub: a slim list of sections down the left, the chosen section's
 // content on the right (via <Outlet/>). "Display & features" is first and is the
@@ -15,6 +15,9 @@ export default function SettingsPage() {
       <nav className="settings-rail" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 210 }}>
         <NavLink className={sectionClass} to="/settings/display">
           <SlidersIcon /> <span>Display &amp; features</span>
+        </NavLink>
+        <NavLink className={sectionClass} to="/settings/notifications">
+          <BellIcon /> <span>Notifications</span>
         </NavLink>
         <NavLink className={sectionClass} to="/settings/security">
           <ShieldIcon /> <span>Security &amp; 2FA</span>

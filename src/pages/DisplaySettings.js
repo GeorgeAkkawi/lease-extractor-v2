@@ -3,8 +3,6 @@ import { getHiddenWidgets, setHiddenWidgets, getEnabledFeatures, setEnabledFeatu
 import { DASHBOARD_WIDGETS, PAGE_PANELS } from '../lib/dashboardWidgets';
 import { FEATURES, isFeatureOn, toggleFeature } from '../lib/features';
 import { usePageChrome } from '../context/ChromeContext';
-import { useAuth } from '../context/AuthContext';
-import { DEMO_MODE } from '../lib/supabaseClient';
 
 // The "Display & features" section of Settings: the single place to hide or bring
 // back anything. Two kinds of toggle share one row style:
@@ -16,7 +14,6 @@ import { DEMO_MODE } from '../lib/supabaseClient';
 export default function DisplaySettings() {
   usePageChrome([{ label: 'Settings', to: '/settings' }, { label: 'Display & features' }]);
   const qc = useQueryClient();
-  const { user } = useAuth(); // the address the reminder emails go to (your sign-in email)
   const { data: hidden = [], isLoading } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   const { data: enabled } = useQuery({ queryKey: ['enabledFeatures'], queryFn: getEnabledFeatures });
 
@@ -107,21 +104,10 @@ export default function DisplaySettings() {
 
       <div style={{ marginTop: 16, padding: '14px 16px', borderRadius: 10, background: 'var(--panel-soft, #f6f8fa)', border: '1px solid var(--line, #eee)' }}>
         <strong style={{ fontSize: 14 }}>🔔 Notifications &amp; emails</strong>
-        <p className="muted" style={{ fontSize: 12.5, marginTop: 6, marginBottom: 8 }}>
-          {DEMO_MODE
-            ? 'This is demo mode — no emails are actually sent.'
-            : <>Reminder emails go to <strong>{user?.email || 'your sign-in email'}</strong> — your sign-in email. Change it by updating your account email.</>}
-        </p>
-        <p className="muted" style={{ fontSize: 12.5, margin: '0 0 4px' }}>What you’re emailed about, and how far ahead:</p>
-        <ul className="muted" style={{ fontSize: 12.5, margin: '0 0 8px', paddingLeft: 18, lineHeight: 1.6 }}>
-          <li>Lease dates (renewals, escalations, term ends) — 30, 14, and 7 days ahead</li>
-          <li>Insurance expiry (your building &amp; each tenant) — 1 month, 2 weeks, 1 week, and at expiry</li>
-          <li>Service-contract endings — 1 month, 2 weeks, 1 week, and when they end</li>
-          <li>Overdue rent — 1 day, 1 week, and 1 month past due, with the exact balance</li>
-        </ul>
-        <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>
-          <strong>Anything you turn off below is silenced everywhere</strong> — the dashboard alerts and these
-          emails both go quiet, so you’ll never be emailed about something you’ve hidden. Tenants are never
+        <p className="muted" style={{ fontSize: 12.5, marginTop: 6, marginBottom: 0 }}>
+          Choose how far ahead each notification fires in <strong>Settings › Notifications</strong>.
+          {' '}<strong>Anything you turn off below is silenced everywhere</strong> — dashboard alerts and reminder
+          emails both go quiet, so you’ll never be notified about something you’ve hidden. Tenants are never
           emailed automatically; every tenant letter waits behind a ✉ button you click.
         </p>
       </div>

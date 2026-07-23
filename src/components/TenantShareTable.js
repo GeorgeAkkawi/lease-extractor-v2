@@ -13,9 +13,10 @@ import {
   undoReconciliationRefund,
   draftCamReconciliationEmail,
   getLeaseStatedEstimate,
+  isAnnualInvoice,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
-import { money, sf, pct } from '../lib/format';
+import { money, money0, sf, pct } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
@@ -150,6 +151,25 @@ export default function TenantShareTable({ propertyId, year }) {
   const reconByLease = Object.fromEntries(recons.map((r) => [r.lease_id, r]));
   const invById = Object.fromEntries(invoices.map((i) => [i.id, i]));
 
+  // Last year's billed CAM & tax per lease (the prior-year annual invoice's cam+tax),
+  // for the "carried over — last year you billed $X" hint. Falls back to the current
+  // estimate itself when no prior invoice exists.
+  const priorBilledByLease = {};
+  const priorYear = Number(year) - 1;
+  invoices.forEach((i) => {
+    if (Number(i.year) === priorYear && isAnnualInvoice(i)) {
+      priorBilledByLease[i.lease_id] = Number(i.cam_annual || 0) + Number(i.tax_annual || 0);
+    }
+  });
+  // A row's estimate is "carried over" when the lease has an estimate that hasn't been
+  // re-confirmed for the selected year — and only for the current year or later (never
+  // nag on a historical year). Re-saving the estimate (even the same number) stamps
+  // est_confirmed_year = year, clearing the note.
+  const nowYear = new Date().getFullYear();
+  const isCarried = (s, anyEstimate) =>
+    anyEstimate && Number(year) >= nowYear &&
+    (s.est_confirmed_year == null || Number(s.est_confirmed_year) < Number(year));
+
   // Per-row figures the cells below share. The estimate side is the tenant's current
   // typed estimate (billedComponents) — the same figure the Estimated column shows —
   // so Estimated − Actual on screen always equals the Difference. `anyEstimate` gates
@@ -172,10 +192,14 @@ export default function TenantShareTable({ propertyId, year }) {
       tax: a.tax + (Number(s.tax_amount) || 0),
       cam: a.cam + (Number(s.cam_amount) || 0),
       roof: a.roof + (Number(s.roof_amt) || 0),
+      // Total = base + billed CAM & tax (estimate-preferred) + roof — the figure the
+      // tenant is actually invoiced. Matches the Leases-page Total column.
+      total: a.total + (Number(s.base_rent) || 0) + billed.camTax + billed.roof,
       diff: a.diff + (billed.anyEstimate ? fig.diff : 0),
       anyEst: a.anyEst || billed.anyEstimate,
+      anyCarried: a.anyCarried || isCarried(s, billed.anyEstimate),
     }),
-    { sf: 0, base: 0, est: 0, tax: 0, cam: 0, roof: 0, diff: 0, anyEst: false }
+    { sf: 0, base: 0, est: 0, tax: 0, cam: 0, roof: 0, total: 0, diff: 0, anyEst: false, anyCarried: false }
   );
 
   // The vacant space's slice of taxes + CAM. Shares are billed per SF of the WHOLE
@@ -205,14 +229,24 @@ export default function TenantShareTable({ propertyId, year }) {
         </div>
       )}
       <MutationError of={[saveEst, reconcile, refund, unreconcile, undoMut]} />
+      {tot.anyCarried && (
+        <div className="note-msg info carried-banner" style={{ margin: '10px 12px' }}>
+          <strong>Estimates carried over from last year.</strong> The CAM &amp; tax estimates below were set in a
+          prior year and still bill as-is for FY {year}. Review each and re-save it to confirm this year’s figure —
+          the note clears once you do.
+        </div>
+      )}
       {/* The band labels duplicate each figure's own (screen-reader) label, so this is
-          presentation-only; on narrow screens it hides and the per-figure labels show. */}
+          presentation-only; on narrow screens it hides and the per-figure labels show.
+          The estimated and actual CAM & tax columns are visually distinguished (tinted
+          headers + cells) so the difference between them reads at a glance. */}
       <div className="ledger-grid ledger-head" aria-hidden="true">
         <div>Tenant</div>
         <div className="lg-num">Base rent</div>
-        <div className="lg-num">CAM &amp; tax<span className="sub-cap">estimated · billed to tenant</span></div>
-        <div className="lg-num">CAM &amp; tax<span className="sub-cap">actual</span></div>
+        <div className="lg-num lg-est">CAM &amp; tax<span className="sub-cap">estimated · billed</span></div>
+        <div className="lg-num lg-actual">CAM &amp; tax<span className="sub-cap">actual</span></div>
         <div className="lg-num">Roof<span className="sub-cap">actual</span></div>
+        <div className="lg-num">Total<span className="sub-cap">base + CAM &amp; tax + roof</span></div>
         <div className="lg-num">Difference<span className="sub-cap">actual − estimated</span></div>
       </div>
       {rowsData.map((row) => {
@@ -222,11 +256,13 @@ export default function TenantShareTable({ propertyId, year }) {
         const camTaxPsf = hasSf ? camTaxActual / s.square_footage : null;
         const roofPsf = hasSf ? s.roof_amt / s.square_footage : null;
         const roofBilled = s.roof_responsible && s.roof_amt > 0;
+        const rowTotal = Number(s.base_rent || 0) + row.billed.camTax + row.billed.roof;
+        const carried = isCarried(s, row.billed.anyEstimate);
         return (
           <div className="ledger-grid ledger-row" key={s.lease_id}>
             <div className="ledger-id">
               <div className="ledger-name">{s.tenant_name}</div>
-              <div className="ledger-meta">{sf(s.square_footage)} · {pct(s.share_pct)} share</div>
+              <div className="ledger-meta"><span className="ledger-sf">{sf(s.square_footage)}</span> · {pct(s.share_pct)} share</div>
               <div className="ledger-actions">
                 <ReconcileAction
                   row={row}
@@ -256,10 +292,13 @@ export default function TenantShareTable({ propertyId, year }) {
               share={s}
               billed={row.billed}
               editing={editingId === s.lease_id}
+              carried={carried}
+              priorBilled={priorBilledByLease[s.lease_id]}
               onToggle={() => setEditingId(editingId === s.lease_id ? null : s.lease_id)}
             />
-            <Stat label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? psf2(camTaxPsf) + '/SF' : ''} />
+            <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? psf2(camTaxPsf) + '/SF' : ''} />
             <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? psf2(roofPsf) + '/SF' : ''} />
+            <Stat className="ledger-total" label="Total · base + CAM & tax + roof" main={money(rowTotal)} sub={hasSf ? psf2(rowTotal / s.square_footage) + '/SF' : ''} />
             <DiffStat fig={row.fig} show={row.billed.anyEstimate} />
             {editingId === s.lease_id && (
               <EstimateEditor
@@ -269,12 +308,17 @@ export default function TenantShareTable({ propertyId, year }) {
                 onSave={(patch) =>
                   saveEst.mutate({
                     leaseId: s.lease_id,
-                    patch,
+                    // Stamp est_confirmed_year = the selected FY so this estimate reads as
+                    // confirmed for the year (clears the carried-over note). Re-saving even
+                    // the same figure confirms it — exactly George's "when you change the
+                    // number this message will go away".
+                    patch: { ...patch, est_confirmed_year: Number(year) },
                     // Captured for the post-save ↩ Undo: exactly what was stored before.
                     prev: {
                       est_cam_annual: s.est_cam_annual ?? null,
                       est_tax_annual: s.est_tax_annual ?? null,
                       est_roof_annual: s.est_roof_annual ?? null,
+                      est_confirmed_year: s.est_confirmed_year ?? null,
                     },
                   })
                 }
@@ -290,13 +334,15 @@ export default function TenantShareTable({ propertyId, year }) {
             <div className="ledger-meta">{sf(vacantSf)} · {pct(vacantSf / buildingSf)} of the building — billed to no one</div>
           </div>
           <Stat label="Base rent" main={<span className="muted">—</span>} />
-          <Stat label="CAM & tax · estimated" main={<span className="muted">—</span>} />
+          <Stat className="lg-est" label="CAM & tax · estimated" main={<span className="muted">—</span>} />
           <Stat
+            className="lg-actual"
             label="CAM & tax · vacant share, stays with you"
             main={money(vacantCamTax)}
             sub={psf2(camTaxEntered / buildingSf) + '/SF'}
           />
           <Stat label="Roof" main={<span className="muted">—</span>} />
+          <Stat className="ledger-total" label="Total" main={<span className="muted">—</span>} />
           <Stat label="Difference" main={<span className="muted">—</span>} />
         </div>
       )}
@@ -306,13 +352,15 @@ export default function TenantShareTable({ propertyId, year }) {
           <div className="ledger-meta">{sf(tot.sf)} leased{buildingSf > 0 ? ` of ${sf(buildingSf)} building` : ''}</div>
         </div>
         <Stat label="Base rent" main={money(tot.base)} />
-        <Stat label="CAM & tax · estimated" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
+        <Stat className="lg-est" label="CAM & tax · estimated" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
         <Stat
+          className="lg-actual"
           label="CAM & tax · actual"
           main={money(tot.cam + tot.tax)}
           sub={showVacant ? `+ ${money(vacantCamTax)} vacant${vacantReconciles ? ` = ${money(camTaxEntered)} entered` : ''}` : ''}
         />
         <Stat label="Roof · actual" main={money(tot.roof)} />
+        <Stat className="ledger-total" label="Total" main={money(tot.total)} />
         <Stat
           label="Difference · actual − estimated"
           className="ledger-diff"
@@ -372,19 +420,24 @@ function DiffStat({ fig, show }) {
 
 // The Estimated figure: the billed amount (typed estimate, else the actual it falls
 // back to) with its $/SF sub-line, as a click target that opens/closes the editor.
-function EstimateStat({ share, billed, editing, onToggle }) {
+// When the estimate is carried over from a prior year (est_confirmed_year is stale) a
+// quiet hint shows what was billed last year and invites a re-save to confirm it.
+function EstimateStat({ share, billed, editing, carried, priorBilled, onToggle }) {
   const sfNum = Number(share.square_footage) || 0;
   const estCamTax = billed.camTax;
   const psfSub = sfNum > 0 ? `${psf2(estCamTax / sfNum)}/SF` : '';
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
+  const lastYear = priorBilled != null && priorBilled > 0 ? priorBilled : estCamTax;
   return (
-    <div className="ledger-stat">
+    <div className="ledger-stat lg-est">
       <span className="stat-label">CAM & tax · estimated · billed to tenant</span>
       <button
         type="button"
-        className={`est-cell-btn${editing ? ' editing' : ''}`}
+        className={`est-cell-btn${editing ? ' editing' : ''}${carried ? ' carried' : ''}`}
         onClick={onToggle}
-        title="Click to set what this tenant pays as one estimated CAM & tax figure (and roof, when responsible) during the year — entered in $ per square foot"
+        title={carried
+          ? `Carried over from last year — last year you billed ${money(lastYear)}. Click to review and re-save it to confirm this year's estimate.`
+          : 'Click to set what this tenant pays as one estimated CAM & tax figure (and roof, when responsible) during the year — entered in $ per square foot'}
       >
         <div className="cell-main">
           {billed.anyEstimate
@@ -395,6 +448,7 @@ function EstimateStat({ share, billed, editing, onToggle }) {
             the neighboring column. */}
         <div className="cell-sub">{billed.anyEstimate ? (psfSub || NBSP) : 'billing actuals'}</div>
         {billed.anyEstimate && roofSub && <div className="cell-sub">{roofSub}</div>}
+        {carried && <div className="cell-sub carried-hint">carried over — last year {money0(lastYear)}</div>}
       </button>
     </div>
   );

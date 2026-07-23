@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { listCorporations, createCorporation, listCorpCounts, listCorpRollups } from '../lib/api';
+import { listCorporations, createCorporation, listCorpCounts, listCorpRollups, listPropertiesByCorps } from '../lib/api';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { usePrefetchers } from '../lib/prefetch';
 import { money } from '../lib/format';
@@ -37,6 +37,14 @@ export default function CorporationsPage({ mode }) {
     queryFn: () => listCorpRollups(year),
     enabled: fin,
     placeholderData: keepPreviousData, // keep last year's numbers visible while a new year loads
+  });
+  // Properties per corporation, for the hover fly-out that jumps straight to one. One
+  // batched query for the whole grid; keyed on the corp id set so it refetches on add/remove.
+  const corpIds = corps.map((c) => c.id);
+  const { data: corpProps = {} } = useQuery({
+    queryKey: ['corpProperties', corpIds.join(',')],
+    queryFn: () => listPropertiesByCorps(corpIds),
+    enabled: corps.length > 0,
   });
 
   const add = useMutation({
@@ -81,7 +89,7 @@ export default function CorporationsPage({ mode }) {
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} counts={counts[c.id]} rollup={rollups[c.id]} pf={pf} year={year} />
+            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} counts={counts[c.id]} rollup={rollups[c.id]} properties={corpProps[c.id] || []} pf={pf} year={year} />
           ))}
         </div>
       )}
@@ -92,7 +100,7 @@ export default function CorporationsPage({ mode }) {
   );
 }
 
-function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, pf, year }) {
+function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, properties = [], pf, year }) {
   const navigate = useNavigate();
   const fin = mode !== 'leases';
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
@@ -102,6 +110,27 @@ function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, pf, year }) {
   // Warm the next page on hover/focus so the click lands on already-cached data.
   const warm = fin ? () => pf.corpFinancials(corp.id, year) : () => pf.corpLeases(corp.id);
   const hover = { onMouseEnter: warm, onFocus: warm };
+
+  // Hover/focus fly-out: jump straight to any property under this corporation, skipping
+  // the corp landing page. Shown via CSS on :hover and :focus-within (keyboard: tab to
+  // the card → the panel appears → tab into the links). A link click stops propagation so
+  // it navigates to the property instead of the card's corp-level click.
+  const flyout = properties.length > 0 && (
+    <div className="corp-flyout" role="menu" aria-label={`Properties in ${corp.name}`}>
+      <div className="corp-flyout-head">Go to a property</div>
+      {properties.map((p) => (
+        <Link
+          key={p.id}
+          role="menuitem"
+          className="corp-flyout-item"
+          to={`/${mode}/${corp.id}/${p.id}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {p.name || 'Unnamed property'}
+        </Link>
+      ))}
+    </div>
+  );
   const editBtn = (
     <span className="corp-actions">
       <button
@@ -123,7 +152,7 @@ function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, pf, year }) {
 
   if (fin) {
     return (
-      <div className="corp-card fin" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} {...hover}>
+      <div className="corp-card fin has-flyout" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} {...hover}>
         <span className="corp-head">
           <span className="corp-badge">{initials}</span>
           <span className="corp-info"><strong>{corp.name}</strong><span className="muted">{sub}</span></span>
@@ -134,16 +163,18 @@ function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, pf, year }) {
           <div><span className="muted">Expenses</span><b className="neg">{money(rollup?.expenses ?? 0)}</b></div>
           <div><span className="muted">NOI</span><b>{money(rollup?.noi ?? 0)}</b></div>
         </span>
+        {flyout}
       </div>
     );
   }
 
   return (
-    <div className="corp-card" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} {...hover}>
+    <div className="corp-card has-flyout" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} {...hover}>
       <span className="corp-badge">{initials}</span>
       <span className="corp-info"><strong>{corp.name}</strong><span className="muted">{sub}</span></span>
       {editBtn}
       <span className="chevron">›</span>
+      {flyout}
     </div>
   );
 }

@@ -75,6 +75,85 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-22** — **Eight-in-one batch: carried-over CAM/tax estimate note at fiscal-year close · custom
+  "notify me N ahead" per notification type (Settings › Notifications) with a per-lease lease-ending
+  override · ledger cells now show the dollar figure marked (was a bare ✓) · corp-card hover fly-out
+  straight to a property · estimated-vs-actual CAM & tax columns visually distinct · ONE combined "Est.
+  CAM & tax" field on the lease side, synced both ways with Financials · a Total (base + CAM & tax + roof)
+  column · bigger SF + "actual so far" removed from the Leases page · plus a new "tenant behind on rent"
+  bell alert** (George: "Theres a lot of changes here make sure to address them all" — plan
+  `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`; his AskUserQuestion picks: per-notification-type
+  timing in Settings with a freeform months/days/years value, per-lease override ONLY for lease-ending,
+  Total = Base + CAM & tax + roof). Deployed: DB migration `0065` (Supabase `awgrjmbcghdjgnqeiqkt`,
+  migration-reviewer APPROVE after one fix), `send-reminders` edge fn redeployed, frontend Cloudflare
+  version `7cb7d8b7`, demo worker `e922e06d`. **$0, no tenant emails, no destructive data** (0065 is
+  additive: 3 nullable columns + a widened CHECK + a view rebuild + two behavior-neutral function refreshes
+  + one new RPC). Tests **441/441** (was 415 — +14 notifyPrefs, +12 custom-lead/unpaid-rent/Total/carried/
+  ledger-amount).
+  - **1) Fiscal-year close (confirmed George's mental model — the behavior already existed).** `closeYear`
+    only snapshots; actuals are naturally per-year (expense_records/cam_line_items keyed by year; contract
+    CAM self-heals via `syncContractCamItems` on year open), estimates carry over as single lease columns.
+    NEW: `leases.est_confirmed_year` (0065) stamped by every estimate-save surface (Financials editor +
+    the lease-page combined field + LeaseForm). The Financials breakdown shows a quiet **"Estimates carried
+    over from last year"** banner + a per-row "carried over — last year $X" hint (prior-year annual
+    invoice's cam+tax, else the estimate itself) when the lease has an estimate that hasn't been re-saved
+    for the selected FY and FY ≥ this year. Re-saving (even the same number) clears it.
+  - **2) Custom notification lead times.** New pure `src/lib/notifyPrefs.js` — `NOTIFY_TYPES` registry with
+    per-type DEFAULTS that EXACTLY match today's behavior (lease_end/renewal/escalation/insurance 183 ·
+    annual_report/abatement 31 · insurance_chase 21 · unpaid_rent 7), `parseLeadTime("3 months"/"90 days"/
+    "1 year"→days)`, `formatLeadDays`, `leadDaysFor`/`resolveLeadDays`. Stored in
+    `user_preferences.notify_lead_times jsonb`; `getNotifyLeadTimes`/`setNotifyLeadTimes` (the latter calls
+    the new `regenerate_owner_reminders()` RPC so email reminders re-arm immediately). New **Settings ›
+    Notifications** page (`NotificationSettings.js` + a NavLink + a nested route) with a freeform input per
+    type showing the interpreted "= N days" reading, one Save + an UndoStrip; the info card moved here from
+    Display & features (its stale overdue-rent-email line fixed). `alerts.js` `buildAlerts` now takes a
+    `leadDays` map and each block's horizon is the configured lead (new `bucketFor()` generalizes `bucket()`,
+    which now just delegates at 183d); the termination block honors the per-lease
+    `leases.notify_lease_end_days` override. DashboardPage folds the leads into the `['alerts']` query key.
+    Server side (0065 + the redeploy): `regenerate_lease_reminders` adds ONE optional earlier reminder when
+    a custom lead >30d is set (byte-identical to 0051 when unset), `apply_due_renewals` uses the owner's
+    renewal lead (default 183 ≈ the old 6 months), and `send-reminders`' insurance/contract/annual sweeps
+    gain a **'custom'** first-notice bucket that fires earlier without suppressing the built-in 1m/2w/1w.
+    **The migration-reviewer caught a hard blocker** — `'custom_lead'` violated the 0001
+    `reminders_interval_label_check` (which also fires from the leases/escalations/renewals triggers) — so
+    0065 widens that CHECK to include it (additive; verified live).
+  - **3) "Tenant behind on rent" bell alert (new).** In-app only (no email — matches the removed
+    behind-on-rent precedent), gated by the Rent Ledger module. `fetchAlertData` precomputes it from the
+    SAME ledger math the grid paints (`owedByMonthForInvoice` → `allocatePayments` → `ledgerRowSummary`),
+    honoring the `unpaid_rent` grace lead; warn at 1 month behind, danger at 2+, click → the property's
+    Ledger tab.
+  - **4) Ledger fix.** A settled month cell now ALWAYS renders its received dollar figure (`money0`) under
+    the ✓ (was gated on received≠projected, so a normal mark showed a bare ✓); `.rr-amt`/`.rr-cell.paid`
+    CSS widened to fit.
+  - **5) Corp-card hover fly-out.** New batched `listPropertiesByCorps`; `CorporationsPage` CorpCard (all
+    three modes — Financials/Portfolio/History) gets a `:hover`/`:focus-within` fly-out linking straight to
+    `/${mode}/${corp}/${prop}`.
+  - **6) Per-tenant breakdown.** 6→7-column grid: new **Total** = base + billed CAM & tax (estimate-
+    preferred) + roof, in each row + the totals band; the estimated (warm) and actual (green) CAM & tax
+    columns are tinted a distinct pair; the SF figure in `.ledger-meta` is bolder/bigger.
+  - **7) One combined estimate field.** LeaseDetailPage's two Est. CAM / Est. taxes EditFields → one **"Est.
+    CAM & tax ($/SF/yr)"** field saving the combined convention (`est_cam_annual = whole figure`,
+    `est_tax_annual = 0`) + stamping `est_confirmed_year`; same merge in `LeaseForm` and `LeaseNewPage`'s
+    `initialFromExtraction` prefill (extractor edge fn untouched — it already lands combined figures). The
+    lease page ↔ Financials sync George asked for holds via the existing `['tenantShares']`/`['leases']`/
+    `['lease']` invalidations.
+  - **8) Leases page.** Removed the "actual so far $X" sub-line.
+  - **Files:** `supabase/migrations/0065_notify_leads_and_est_confirm.sql` (new),
+    `supabase/functions/send-reminders/index.ts`, `src/lib/{notifyPrefs (new),alerts,api}.js`,
+    `src/pages/{NotificationSettings (new),SettingsPage,DisplaySettings,DashboardPage,CorporationsPage,
+    LedgerPage,LeaseDetailPage,LeaseNewPage,LeasesPage}.js`, `src/components/{TenantShareTable,LeaseForm}.js`,
+    `src/App.{js,css}`, `src/lib/demo/{store,mockClient}.js`, tests (`notifyPrefs`, `notifyLeadAlerts`,
+    `camBreakdownV2` new; `expenseEstimates`, `ledgerPage` updated).
+  - **Verified:** unit **441/441** (`vitest run`); `vite build` compiles (797 modules); live DB read-back
+    confirms the widened CHECK, the 3 new columns, and `v_tenant_shares.est_confirmed_year` (col 23);
+    `send-reminders` deployed clean; live 200s (amlakre.com + www + workers.dev); demo redeployed
+    (`e922e06d`, bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (jsdom tests mount the real TenantShareTable/LedgerPage/alerts against the demo mock).
+    **George: hard-refresh (Cmd+Shift+R) → Settings › Notifications to set your lead times · Financials
+    breakdown shows the tinted est/actual pair + Total + the carried-over note · the Ledger boxes now show
+    the amount · hover a corporation card for the property links · a lease page has one combined Est. CAM &
+    tax field.**
+
 - **2026-07-22** — **Removed the "Collected" column from the Financials per-tenant breakdown — that live
   collections figure now lives only on the Rent Ledger tab** (George, right after the Ledger UX round: "no
   need to have collected on the per tenant breakdown since its on the ledger"). Deployed: frontend Cloudflare

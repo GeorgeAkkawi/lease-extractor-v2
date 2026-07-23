@@ -5,6 +5,7 @@ import Login from './pages/Login';
 import TwoFactorChallenge from './pages/TwoFactorChallenge';
 import SecuritySettings from './pages/SecuritySettings';
 import DisplaySettings from './pages/DisplaySettings';
+import NotificationSettings from './pages/NotificationSettings';
 import SettingsPage from './pages/SettingsPage';
 import DashboardPage from './pages/DashboardPage';
 import AskPage from './pages/AskPage';
@@ -57,6 +58,7 @@ export default function App() {
         <Route path="/settings" element={<SettingsPage />}>
           <Route index element={<Navigate to="display" replace />} />
           <Route path="display" element={<DisplaySettings />} />
+          <Route path="notifications" element={<NotificationSettings />} />
           <Route path="security" element={<SecuritySettings />} />
         </Route>
         {/* Old standalone routes now live inside Settings — keep them working. */}

@@ -49,6 +49,10 @@ describe('LedgerPage — the rent ledger grid', () => {
     expect(screen.getAllByText('◐').length).toBeGreaterThan(0);
     expect(screen.getByText('$22,300.00')).toBeTruthy();
     expect(screen.getByText('of $109,800.00')).toBeTruthy();
+    // Each settled (tagged) month now shows its received dollar figure in the box, not
+    // just a bare ✓ (George: "the number doesnt show up"). City Dental's Jan + Feb are
+    // tagged at $9,150 each → two "$9,150" cell amounts.
+    expect(screen.getAllByText('$9,150').length).toBeGreaterThanOrEqual(2);
   });
 
   it('shows the base | CAM&tax component sub-line on each tenant', async () => {

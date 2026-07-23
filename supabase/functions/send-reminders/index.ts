@@ -84,16 +84,21 @@ Deno.serve(async (req) => {
     // Per-owner Settings gates: a reminder email is suppressed when the owner turned its
     // module off (same rule as the dashboard alerts). enabled_features null = everything
     // on (never chosen). Loaded once and used by the insurance/contract sweeps below.
-    const prefsByOwner = new Map<string, { enabled: string[] | null }>();
+    const prefsByOwner = new Map<string, { enabled: string[] | null; leads: Record<string, number> | null }>();
     const { data: prefs } = await supabase
       .from('user_preferences')
-      .select('user_id, enabled_features');
+      .select('user_id, enabled_features, notify_lead_times');
     for (const pr of (prefs ?? []) as any[]) {
-      prefsByOwner.set(pr.user_id, { enabled: pr.enabled_features ?? null });
+      prefsByOwner.set(pr.user_id, { enabled: pr.enabled_features ?? null, leads: pr.notify_lead_times ?? null });
     }
     const featureOn = (owner: string, key: string) => {
       const en = prefsByOwner.get(owner)?.enabled ?? null;
       return en == null ? true : en.includes(key);
+    };
+    // The owner's custom "notify me N days ahead" for a type, or null (use built-ins).
+    const leadFor = (owner: string, key: string): number | null => {
+      const v = prefsByOwner.get(owner)?.leads?.[key];
+      return typeof v === 'number' && v > 0 ? v : null;
     };
 
     for (const r of due as any[]) {
@@ -157,7 +162,7 @@ Deno.serve(async (req) => {
     } else {
       const now = new Date();
       for (const p of (policies ?? []) as any[]) {
-        const eb = expiryBucket(p.expiry_date, now);
+        const eb = expiryBucket(p.expiry_date, now, leadFor(p.owner_id, 'insurance'));
         if (!eb || eb === p.expiry_notice_bucket) continue; // outside a window, or already sent for it
         if (!featureOn(p.owner_id, 'insurance')) continue;  // Insurance module off in Settings → stay quiet
         if (!RESEND_API_KEY) { await logEvent('reminder_skipped', `insurance ${p.id} not emailed — RESEND_API_KEY unset`, ip); continue; }
@@ -191,7 +196,7 @@ Deno.serve(async (req) => {
     } else {
       const now = new Date();
       for (const c of (contracts ?? []) as any[]) {
-        const eb = expiryBucket(c.end_date, now);
+        const eb = expiryBucket(c.end_date, now, leadFor(c.owner_id, 'contract'));
         if (!eb || eb === c.end_notice_bucket) continue;
         if (!featureOn(c.owner_id, 'contracts')) continue; // Contracts module off → stay quiet
         if (!RESEND_API_KEY) { await logEvent('reminder_skipped', `contract ${c.id} not emailed — RESEND_API_KEY unset`, ip); continue; }
@@ -227,7 +232,7 @@ Deno.serve(async (req) => {
     } else {
       const now = new Date();
       for (const r of (reports ?? []) as any[]) {
-        const ab = annualBucket(r.due_date, now);
+        const ab = annualBucket(r.due_date, now, leadFor(r.owner_id, 'annual_report'));
         if (!ab || ab === r.due_notice_bucket) continue; // outside the window, or already sent
         if (!RESEND_API_KEY) { await logEvent('reminder_skipped', `annual report ${r.id} not emailed — RESEND_API_KEY unset`, ip); continue; }
         const email = await resolveEmail(r.owner_id, emailCache);
@@ -279,22 +284,29 @@ async function sendEmail(to: string, subject: string, text: string): Promise<boo
 }
 
 // Bucket a policy/contract by days-to-expiry, matching the dashboard alert thresholds.
-// Returns null when expiry is more than a month out (no email yet).
-function expiryBucket(expiry: string, now: Date): string | null {
+// The built-in schedule is 1m → 2w → 1w → expired. When the owner set a custom lead
+// LONGER than a month, one earlier 'custom' notice fires first (between the custom lead
+// and 1 month out); it never suppresses the later built-in notices because each is a
+// distinct bucket value stored for dedupe. Returns null when the date is farther out
+// than the effective window.
+function expiryBucket(expiry: string, now: Date, customDays: number | null = null): string | null {
   const days = Math.round((new Date(expiry + 'T12:00:00').getTime() - now.getTime()) / 86400000);
   if (days < 0) return 'expired';
   if (days <= 7) return '1w';
   if (days <= 14) return '2w';
   if (days <= 31) return '1m';
+  if (customDays && customDays > 31 && days <= customDays) return 'custom';
   return null;
 }
 
-// Annual-report deadline → a single '1m' bucket in the month before it's due. Past
-// due returns null (no email — the dashboard bell shows it red until filed).
-function annualBucket(due: string, now: Date): string | null {
+// Annual-report deadline → a single '1m' bucket in the month before it's due, plus an
+// optional earlier 'custom' notice when the owner set a longer lead. Past due returns
+// null (no email — the dashboard bell shows it red until filed).
+function annualBucket(due: string, now: Date, customDays: number | null = null): string | null {
   const days = Math.round((new Date(due + 'T12:00:00').getTime() - now.getTime()) / 86400000);
   if (days < 0) return null;
   if (days <= 31) return '1m';
+  if (customDays && customDays > 31 && days <= customDays) return 'custom';
   return null;
 }
 

@@ -56,6 +56,7 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .note-msg{display:block;border-radius:3px;padding:8px 11px;font-size:12px;font-weight:600;line-height:1.5;white-space:normal;overflow-wrap:anywhere}
 .note-msg.warn{background:var(--gold-soft);color:var(--gold)}
 .note-msg.danger{background:#F3E0DB;color:var(--danger)}
+.note-msg.info{background:var(--accent-soft);color:var(--accent)}
 
 /* ---- monthly rent tracker (12-box per-tenant grid + property rent roll) ---- */
 .month-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
@@ -100,8 +101,11 @@ span.rr-cell{display:inline-flex;align-items:center;justify-content:center;box-s
 .rr-cell.pool{cursor:default;border-style:dashed;opacity:.72}
 .rr-cell.abated{cursor:default}
 button.rr-cell.abated{cursor:pointer}
-/* The received-vs-projected sub-amount inside a settled cell (shown only when they differ). */
-.rr-amt{font-size:9px;font-weight:600;line-height:1;margin-top:1px;opacity:.85}
+/* The dollar figure recorded for a settled month — always shown under the ✓ so the
+   landlord can see exactly what came in for each box (George: "the number doesnt show
+   up"). Whole dollars, one line; the cell grows to fit, and full cents live in the title. */
+.rr-amt{font-size:9.5px;font-weight:700;line-height:1;margin-top:1px;opacity:.9;white-space:nowrap;font-variant-numeric:tabular-nums}
+.rr-cell.paid{min-width:46px}
 .rent-roll th.rr-owes,.rent-roll td.rr-owes{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .rr-split{color:var(--faint);font-size:11px;margin-top:2px;white-space:nowrap}
 .rr-tenant{color:inherit;text-decoration:none}
@@ -211,6 +215,21 @@ tr.stmt-off td{opacity:.55}
    narrowest 320px grid cell, staying full-size on wider cards. */
 .corp-fin b{font-family:var(--display);font-size:clamp(13px,4.5cqw,20px);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .corp-card.fin .chevron{display:none}
+
+/* ---- corporation hover fly-out (jump straight to a property) ---- */
+.corp-card.has-flyout{position:relative}
+.corp-flyout{position:absolute;top:calc(100% - 4px);left:0;right:0;z-index:30;
+  display:flex;flex-direction:column;gap:2px;
+  background:var(--panel);border:1px solid var(--accent);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:8px;margin-top:4px;
+  opacity:0;visibility:hidden;pointer-events:none;transform:translateY(-4px);
+  transition:opacity .12s ease,transform .12s ease}
+.corp-card.has-flyout:hover .corp-flyout,
+.corp-card.has-flyout:focus-within .corp-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none}
+.corp-flyout-head{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);padding:2px 8px 4px}
+.corp-flyout-item{display:block;padding:8px 10px;border-radius:6px;color:var(--ink);text-decoration:none;
+  font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.corp-flyout-item:hover,.corp-flyout-item:focus{background:var(--panel-2);color:var(--accent);outline:none}
 
 /* ---- property cards ---- */
 .prop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
@@ -362,13 +381,26 @@ tbody tr:last-child td{border-bottom:none}
    sideways. The header band, every entry, and the totals band share ONE grid
    template, keeping the figures aligned down the page like a ledger; $/SF rides
    each figure's sub-line and the actions sit under the tenant's name. ---- */
-.ledger-grid{display:grid;grid-template-columns:minmax(168px,1.5fr) repeat(5,minmax(84px,1fr));gap:2px 16px;align-items:stretch;padding:15px 20px}
+.ledger-grid{display:grid;grid-template-columns:minmax(158px,1.5fr) repeat(6,minmax(74px,1fr));gap:2px 12px;align-items:stretch;padding:15px 20px}
 .ledger-head{padding:11px 20px 9px;background:var(--panel-2);border-bottom:1px solid var(--line);color:var(--muted);font-weight:700;font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;align-items:end}
 .ledger-head .lg-num{text-align:right}
 .ledger-head .sub-cap{display:block;font-size:8.5px;font-weight:500;color:var(--faint);letter-spacing:.06em;text-transform:none;margin-top:2px}
 .ledger-row{border-bottom:1px solid var(--hair)}
 .ledger-name{font-weight:600;line-height:1.25}
 .ledger-meta{font-size:11.5px;color:var(--muted);margin-top:3px;font-variant-numeric:tabular-nums}
+/* SF made more noticeable (George) — the square footage reads as a real figure, not
+   fine print, so a tenant's size is easy to scan. */
+.ledger-sf{font-weight:700;color:var(--ink);font-size:12.5px}
+/* Estimated vs actual CAM & tax as a clearly distinct pair: the estimated column is
+   warm-tinted (what you bill during the year), the actual column green-tinted (the
+   real figures as expenses land) — so the two never blur together. */
+.ledger-head .lg-est,.ledger-stat.lg-est{background:var(--gold-soft);border-radius:5px}
+.ledger-head .lg-actual,.ledger-stat.lg-actual{background:var(--accent-soft);border-radius:5px}
+.ledger-stat.lg-est,.ledger-stat.lg-actual{padding:4px 8px}
+.ledger-head .lg-est,.ledger-head .lg-actual{padding:5px 8px 6px}
+/* Total column: the tenant's all-in billed figure — set a touch stronger so it reads
+   as the row's headline number. */
+.ledger-total .cell-main{font-weight:700}
 .ledger-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:9px}
 .ledger-stat{position:relative;text-align:right;min-width:0}
 .stat-label{display:block;font-size:9px;font-weight:700;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
@@ -389,6 +421,9 @@ tbody tr:last-child td{border-bottom:none}
 .ledger-totals .ledger-name,.ledger-totals .cell-main{font-family:var(--display);font-size:16px;font-weight:500}
 .est-cell-btn{display:block;width:100%;background:none;border:0;padding:0;text-align:inherit;cursor:pointer;font:inherit;color:inherit;text-transform:none;letter-spacing:normal}
 .est-cell-btn:hover .cell-main,.est-cell-btn.editing .cell-main{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
+/* A carried-over estimate: gold cue on the cell + a small "last year $X" hint. */
+.est-cell-btn.carried .cell-main{color:var(--gold)}
+.cell-sub.carried-hint{color:var(--gold);font-weight:600;font-size:10px;white-space:normal}
 .ledger-edit{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin-top:10px;padding:11px 14px;background:var(--panel-2);border:1px solid var(--hair);border-radius:var(--radius)}
 .ledger-edit label{display:flex;align-items:center;gap:7px}
 .ledger-edit label span{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}

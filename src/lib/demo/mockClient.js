@@ -98,6 +98,8 @@ function tenantShares(propertyId, year) {
       is_active: l.is_active !== false, lease_termination_date: l.lease_termination_date ?? null, premises_address: l.premises_address ?? null,
       // Estimated additional rent (0060) — mirrors the three columns appended to v_tenant_shares.
       est_cam_annual: l.est_cam_annual ?? null, est_tax_annual: l.est_tax_annual ?? null, est_roof_annual: l.est_roof_annual ?? null,
+      // est_confirmed_year appended by 0065 — drives the carried-over estimate note.
+      est_confirmed_year: l.est_confirmed_year ?? null,
     };
   });
 }
@@ -716,6 +718,9 @@ async function rpc(fn, args = {}) {
     });
     return ok(leaseId);
   }
+  // Rebuilding reminder rows is a live-DB concern (there are no reminders in demo) —
+  // no-op cleanly so setNotifyLeadTimes doesn't log a spurious "unknown function".
+  if (fn === 'regenerate_owner_reminders') return ok(null);
   return { data: null, error: { message: `mock rpc: unknown function ${fn}` } };
 }
 

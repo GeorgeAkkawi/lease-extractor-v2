@@ -12,8 +12,7 @@ const EMPTY = {
   lease_termination_date: '',
   lease_terms: '',
   share_override_pct: '',
-  est_cam_annual: '',
-  est_tax_annual: '',
+  est_cam_tax: '',
 };
 
 // Reusable lease form (create + edit). `extracted` is an optional map of
@@ -62,9 +61,20 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
       lease_termination_date: form.lease_termination_date || null,
       lease_terms: form.lease_terms || null,
       share_override_pct: form.share_override_pct === '' ? null : Number(form.share_override_pct) / 100,
-      est_cam_annual: estAnnual(form.est_cam_annual),
-      est_tax_annual: estAnnual(form.est_tax_annual),
+      // ONE combined CAM & tax estimate → the combined convention (whole figure in
+      // est_cam_annual, est_tax_annual = 0). Stamp est_confirmed_year so a brand-new
+      // lease's estimate reads as confirmed, not "carried over".
+      ...combinedEst(estAnnual(form.est_cam_tax)),
     });
+  }
+
+  // The combined-estimate payload for one entered annual figure (null = bill actuals).
+  function combinedEst(annual) {
+    return {
+      est_cam_annual: annual,
+      est_tax_annual: annual == null ? null : 0,
+      est_confirmed_year: annual == null ? null : new Date().getFullYear(),
+    };
   }
 
   // Estimates are quoted in $/SF of the space above (per George); stored annualized.
@@ -108,11 +118,8 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
         <Field label="Tax/CAM share override (%)" field="share_override_pct" extracted={extracted} hint="Blank = pro-rata by SF">
           <input className="text-input num" type="number" step="any" placeholder="auto (pro-rata)" value={form.share_override_pct} onChange={set('share_override_pct')} />
         </Field>
-        <Field label="Est. CAM ($/SF/yr)" field="est_cam_annual" extracted={extracted} hint="What the tenant pays during the year, per SF of the space above (saved × SF as the annual estimate) — reconciled against actuals at year end. Blank = bill actuals.">
-          <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_cam_annual} onChange={set('est_cam_annual')} />
-        </Field>
-        <Field label="Est. taxes ($/SF/yr)" field="est_tax_annual" extracted={extracted} hint="Per SF of the space above. Blank = bill the known tax figure">
-          <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_tax_annual} onChange={set('est_tax_annual')} />
+        <Field label="Est. CAM & tax ($/SF/yr)" field="est_cam_tax" extracted={extracted} hint="CAM + tax combined — what the tenant pays during the year, per SF of the space above (saved × SF as the annual estimate); reconciled against actuals at year end. Blank = bill actuals.">
+          <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_cam_tax} onChange={set('est_cam_tax')} />
         </Field>
       </div>
       <div className="form-field" style={{ maxWidth: '100%', marginTop: 16 }}>
@@ -157,8 +164,15 @@ function ConfidenceBadge({ meta }) {
 
 function stringify(obj) {
   if (!obj) return {};
+  // Accept a pre-combined est_cam_tax (from initialFromExtraction) or, for safety, sum
+  // legacy split est_cam/est_tax rates into the one combined field.
+  const combined =
+    obj.est_cam_tax != null && obj.est_cam_tax !== ''
+      ? obj.est_cam_tax
+      : (Number(obj.est_cam_annual) || 0) + (Number(obj.est_tax_annual) || 0) || '';
   return {
     ...obj,
+    est_cam_tax: combined === 0 ? '' : combined,
     share_override_pct: obj.share_override_pct == null || obj.share_override_pct === '' ? '' : Number(obj.share_override_pct) * 100,
   };
 }

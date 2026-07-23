@@ -149,11 +149,12 @@ export function initialFromExtraction(ex) {
   // quotient (6 dp, trimmed) to round-trip the stated figure to the cent. With no SF on
   // file the form treats the entry as plain $/yr, so the annual prefills directly.
   const sqftV = Number(val(ex.square_footage)) || 0;
-  const estRate = (f) => {
-    const annual = Number(val(f));
-    if (!annual || !isFinite(annual) || annual <= 0) return '';
-    return sqftV > 0 ? Number((annual / sqftV).toFixed(6)) : annual;
-  };
+  // ONE combined CAM & tax estimate: sum the AI's stated CAM + tax annuals, then take
+  // the $/SF quotient (6 dp) so the form round-trips it × SF back to the same figure.
+  const camTaxAnnual = (Number(val(ex.est_cam_annual)) || 0) + (Number(val(ex.est_tax_annual)) || 0);
+  const estCamTaxRate = !(camTaxAnnual > 0)
+    ? ''
+    : sqftV > 0 ? Number((camTaxAnnual / sqftV).toFixed(6)) : camTaxAnnual;
   return {
     tenant_name: val(ex.tenant_name),
     tenant_contact_name: val(ex.tenant_contact_name),
@@ -165,8 +166,7 @@ export function initialFromExtraction(ex) {
     lease_termination_date: end,
     lease_terms: val(ex.lease_terms),
     share_override_pct: '',
-    est_cam_annual: estRate(ex.est_cam_annual),
-    est_tax_annual: estRate(ex.est_tax_annual),
+    est_cam_tax: estCamTaxRate,
   };
 }
 function buildAiConfidence(ex) {

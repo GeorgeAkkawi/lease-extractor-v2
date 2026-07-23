@@ -48,12 +48,11 @@ export default function LeasesPage() {
   const vacant = buildingSf > 0 ? Math.max(0, buildingSf - leasedSf) : 0;
   const newLease = () => navigate(`/leases/${corpId}/${propId}/new`);
 
-  // lease_id -> { camTax, actualCamTax, roof, total, totalPsf, isEstimate }. Total =
-  // base + CAM + tax + roof, matching the real invoice — which since 0060 bills the
-  // lease's typed ESTIMATE per component when one exists (the true CAM is only known
-  // at year end), falling back to the actual share otherwise. The column shows the
-  // billed figure big with the actual-so-far as a sub-line; base uses the lease's own
-  // base_rent (what the Base rent column shows).
+  // lease_id -> { camTax, roof, total, totalPsf, isEstimate }. Total = base + CAM + tax
+  // + roof, matching the real invoice — which since 0060 bills the lease's typed
+  // ESTIMATE per component when one exists (the true CAM is only known at year end),
+  // falling back to the actual share otherwise. The column shows the billed figure;
+  // base uses the lease's own base_rent (what the Base rent column shows).
   const shareByLease = Object.fromEntries(shares.map((s) => [s.lease_id, s]));
   const totals = {};
   for (const l of leases) {
@@ -66,10 +65,9 @@ export default function LeasesPage() {
     };
     const billed = billedComponents(s);
     const camTax = billed.cam + billed.tax;
-    const actualCamTax = Number(s.cam_amount || 0) + Number(s.tax_amount || 0);
     const total = Number(l.base_rent || 0) + camTax + billed.roof;
     const sqft = Number(l.square_footage) || 0;
-    totals[l.id] = { camTax, actualCamTax, roof: billed.roof, total, totalPsf: sqft ? total / sqft : null, isEstimate: billed.anyEstimate };
+    totals[l.id] = { camTax, roof: billed.roof, total, totalPsf: sqft ? total / sqft : null, isEstimate: billed.anyEstimate };
   }
 
   const mode = leaseSort.mode || 'term_end';
@@ -267,9 +265,6 @@ function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, on
           {hasCamTax ? money(camTax) : '—'}
           {totals?.isEstimate && hasCamTax && <span className="est-tag"> est.</span>}
         </b>
-        {totals?.isEstimate && totals?.actualCamTax > 0 && (
-          <span className="psf-sub">actual so far {money(totals.actualCamTax)}</span>
-        )}
       </span>
       <span className="lease-col">
         <span className="muted">Total rent</span>

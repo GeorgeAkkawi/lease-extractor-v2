@@ -1,4 +1,5 @@
-import { fmtDate } from './format';
+import { fmtDate, money0 } from './format';
+import { DEFAULT_LEAD_DAYS } from './notifyPrefs';
 
 const DAY = 86400000;
 
@@ -32,20 +33,30 @@ export function daysUntil(iso, now = new Date()) {
   return Math.round((new Date(iso + 'T12:00:00') - now) / DAY);
 }
 
-// Bucket a date by proximity. The near buckets (≤1 month) keep the urgent tones that
-// match the reminder-email schedule; the two far buckets show items up to 6 months out
-// so nothing is a surprise, toned calm (info) rather than red so a far-off date reads
-// as "on the radar", not "act now".
-export function bucket(iso, now = new Date()) {
+// Bucket a date by proximity, showing it only within `horizonDays` (the owner's
+// configured "notify me N days ahead" for that type). The near buckets (≤1 month)
+// keep the urgent tones that match the reminder-email schedule; farther buckets are
+// toned calm (info) so a far-off date reads as "on the radar", not "act now". Overdue
+// always shows regardless of the horizon. Beyond 6 months (a lead the owner set long)
+// the label is computed ("Within N months").
+export function bucketFor(iso, now = new Date(), horizonDays = 183) {
   const d = daysUntil(iso, now);
   if (d == null) return null;
   if (d < 0) return { key: 'overdue', label: 'Overdue', tone: 'danger' };
+  if (d > horizonDays) return null; // farther out than the owner wants to be notified
   if (d <= 7) return { key: '1w', label: 'Within 1 week', tone: 'danger' };
   if (d <= 14) return { key: '2w', label: 'Within 2 weeks', tone: 'warn' };
   if (d <= 31) return { key: '1m', label: 'Within 1 month', tone: 'warn' };
   if (d <= 92) return { key: '3m', label: 'Within 3 months', tone: 'warn' };
   if (d <= 183) return { key: '6m', label: 'Within 6 months', tone: 'info' };
-  return null;
+  const months = Math.round(d / 30.44);
+  return { key: 'far', label: `Within ${months} months`, tone: 'info' };
+}
+
+// The default 6-month horizon, kept as `bucket()` so the two label-only callers
+// (abatement / annual-report, which gate on their own day counts) are unchanged.
+export function bucket(iso, now = new Date()) {
+  return bucketFor(iso, now, 183);
 }
 
 // null / undefined enabled set = "never chosen" = everything on. Mirrors
@@ -63,13 +74,18 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 //   • hiddenWidgets — the hidden_widgets array (reserved; no widget currently gates an alert).
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations },
+  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unpaidRent },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
-  { features = null, hiddenWidgets = [] } = {}, // eslint-disable-line no-unused-vars
+  { features = null, hiddenWidgets = [], leadDays = null } = {}, // eslint-disable-line no-unused-vars
 ) {
   const insuranceOn = featureOn(features, 'insurance');
   const contractsOn = featureOn(features, 'contracts');
+  const ledgerOn = featureOn(features, 'ledger');
+  // How far ahead each type notifies — the owner's saved lead, else the default. A null
+  // map (never configured) uses the defaults, which equal the prior hard-coded horizons,
+  // so an untouched account produces byte-identical alerts.
+  const lead = (key) => (leadDays?.[key] ?? DEFAULT_LEAD_DAYS[key]);
 
   const propMap = Object.fromEntries((properties || []).map((p) => [p.id, p]));
   const leaseById = Object.fromEntries((leases || []).map((l) => [l.id, l]));
@@ -88,11 +104,15 @@ export function buildAlerts(
       // A step dated on/after the committed term end belongs to an un-exercised renewal
       // option — don't alert on it until the renewal is confirmed (which extends the term).
       if (l.lease_termination_date && String(e.effective_date) >= String(l.lease_termination_date)) return;
-      const b = bucket(e.effective_date, now);
+      const b = bucketFor(e.effective_date, now, lead('escalation'));
       if (b) out.push({ ...ctx, focus: 'escalation', tone: b.tone, bucketLabel: b.label, date: e.effective_date, days: daysUntil(e.effective_date, now), title: `Rent escalation — ${l.tenant_name}`, detail: `Effective ${fmtDate(e.effective_date)}` });
     });
     if (l.lease_termination_date) {
-      const b = bucket(l.lease_termination_date, now);
+      // Lease ending has a per-lease override (notify_lease_end_days) for the landlord
+      // who wants a different heads-up on one lease; else the general lease_end lead.
+      const leaseEndLead = (typeof l.notify_lease_end_days === 'number' && l.notify_lease_end_days > 0)
+        ? l.notify_lease_end_days : lead('lease_end');
+      const b = bucketFor(l.lease_termination_date, now, leaseEndLead);
       if (b) {
         // A lease is "ending with no renewal" when there's no live renewal option
         // on file, or the landlord has explicitly confirmed there is none. A
@@ -128,7 +148,7 @@ export function buildAlerts(
     }
     (renByLease[l.id] || []).forEach((r) => {
       if (!r.notice_by_date || r.status === 'applied') return; // applied renewals are done — no reminder
-      const b = bucket(r.notice_by_date, now);
+      const b = bucketFor(r.notice_by_date, now, lead('renewal'));
       if (b) out.push({ ...ctx, focus: 'renewal', renewal_id: r.id, tone: b.tone, bucketLabel: b.label, date: r.notice_by_date, days: daysUntil(r.notice_by_date, now), title: `Renewal notice — ${l.tenant_name}`, detail: `Notice due ${fmtDate(r.notice_by_date)}` });
     });
   });
@@ -138,7 +158,7 @@ export function buildAlerts(
   // Silenced when the Service-contracts module is turned off in Settings.
   (contractsOn ? contracts || [] : []).forEach((c) => {
     if (!c.end_date) return;
-    const b = bucket(c.end_date, now);
+    const b = bucketFor(c.end_date, now, lead('contract'));
     if (!b) return;
     const prop = propMap[c.property_id];
     const label = c.name || c.vendor || 'service contract';
@@ -159,7 +179,7 @@ export function buildAlerts(
   // policy has no outside recipient, so no ✉.
   (insuranceOn ? insurance || [] : []).forEach((p) => {
     if (!p.expiry_date) return;
-    const b = bucket(p.expiry_date, now);
+    const b = bucketFor(p.expiry_date, now, lead('insurance'));
     if (!b) return;
     const isLandlord = p.party === 'landlord';
     const propertyId = isLandlord ? p.property_id : leaseById[p.lease_id]?.property_id;
@@ -193,7 +213,7 @@ export function buildAlerts(
     Object.entries(lastReqByLease).forEach(([leaseId, reqDate]) => {
       const lease = leaseById[leaseId];
       if (!lease || lease.is_active === false) return;
-      if (-daysUntil(reqDate, now) < 21) return; // requested less than 3 weeks ago — still waiting patiently
+      if (-daysUntil(reqDate, now) < lead('insurance_chase')) return; // requested too recently — still waiting patiently
       const pol = tenantPolByLease[leaseId];
       const polStamp = pol ? String(pol.updated_at || pol.created_at || '').slice(0, 10) : null;
       if (polStamp && polStamp >= reqDate) return; // a policy was saved/updated after the request → they responded
@@ -217,7 +237,7 @@ export function buildAlerts(
     const lease = leaseById[a.lease_id];
     if (!lease || lease.is_active === false) return;
     const d = daysUntil(a.end_date, now);
-    if (d == null || d < 0 || d > 31) return; // only as it approaches (within ~1 month)
+    if (d == null || d < 0 || d > lead('abatement')) return; // only as it approaches
     const corpId = propMap[lease.property_id]?.corporation_id;
     out.push({
       lease_id: a.lease_id, property_id: lease.property_id, corporation_id: corpId,
@@ -238,7 +258,7 @@ export function buildAlerts(
     if (!r.due_date) return;
     const d = daysUntil(r.due_date, now);
     if (d == null) return;
-    if (d > 31) return; // only within a month of the deadline
+    if (d > lead('annual_report')) return; // only within the configured window of the deadline
     const overdue = d < 0;
     const name = corpNameById[r.corporation_id] || 'corporation';
     out.push({
@@ -249,6 +269,28 @@ export function buildAlerts(
       date: r.due_date, days: d, overdue,
       title: overdue ? `Annual report overdue — ${name}` : `Annual report due — ${name}`,
       detail: `File by ${fmtDate(r.due_date)}`,
+    });
+  });
+
+  // Tenant behind on rent — a post-fact heads-up now that bank statements are imported.
+  // In-app only (no owner email — matches the removed behind-on-rent precedent), gated by
+  // the Rent Ledger module. `unpaidRent` is precomputed in fetchAlertData from the same
+  // ledger math the Ledger grid paints (owedByMonthForInvoice → allocatePayments →
+  // ledgerRowSummary), already honoring the unpaid_rent grace lead. Keyed by lease.
+  (ledgerOn ? unpaidRent || [] : []).forEach((u) => {
+    if (!(u.monthsBehind >= 1)) return;
+    const corpId = propMap[u.property_id]?.corporation_id;
+    out.push({
+      lease_id: u.lease_id, property_id: u.property_id, corporation_id: corpId,
+      focus: 'unpaid_rent',
+      tone: u.monthsBehind >= 2 ? 'danger' : 'warn',
+      bucketLabel: u.monthsBehind >= 2 ? `${u.monthsBehind} months behind` : '1 month behind',
+      // Anchor the dismiss key to the year (stable all year); no real due date, so sort
+      // it among the urgent items (more behind = higher up).
+      date: `${u.year}-12-31`, days: -1000 - u.monthsBehind,
+      monthsBehind: u.monthsBehind, amountBehind: u.amountBehind,
+      title: `Behind on rent — ${u.tenant_name || 'tenant'}`,
+      detail: `${u.monthsBehind} month${u.monthsBehind === 1 ? '' : 's'} behind${u.amountBehind > 0 ? ` · ${money0(u.amountBehind)}` : ''}`,
     });
   });
 
