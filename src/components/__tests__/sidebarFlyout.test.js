@@ -49,5 +49,10 @@ describe('Sidebar hover fly-out', () => {
     expect(links).toContain('/leases/corp-2/prop-2');
     // History fly-out too.
     expect(links).toContain('/history/corp-1');
+    // Third level: each property's tenants nested under it, ALWAYS linking to the lease
+    // page (which lives only in the Portfolio workspace, so always /leases/...). Loads
+    // once the batched sidebarLeases query resolves.
+    await waitFor(() => expect(hrefs()).toContain('/leases/corp-1/prop-1/lease-1'));
+    expect(hrefs()).toContain('/leases/corp-1/prop-1/lease-2');
   });
 });

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { NavLink, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase, DEMO_MODE } from '../lib/supabaseClient';
-import { listCorporations, listPropertiesByCorps } from '../lib/api';
+import { listCorporations, listPropertiesByCorps, listLeasesByProperties } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { useChrome } from '../context/ChromeContext';
 import { usePrefetchers } from '../lib/prefetch';
@@ -24,6 +24,19 @@ export default function Sidebar() {
     queryKey: ['corpProperties', corpIds.join(',')],
     queryFn: () => listPropertiesByCorps(corpIds),
     enabled: corps.length > 0,
+  });
+  // Every lease across all properties, for the fly-out's third level (a tenant → its
+  // lease). One batched query; also seeds each ['leases', propId] cache the property
+  // lists + the card fly-outs read, so this warms them rather than adding round-trips.
+  const allPropIds = Object.values(corpProps).flat().map((p) => p.id);
+  const { data: leasesByProp = {} } = useQuery({
+    queryKey: ['sidebarLeases', allPropIds.join(',')],
+    queryFn: async () => {
+      const byProp = await listLeasesByProperties(allPropIds);
+      allPropIds.forEach((id) => queryClient.setQueryData(['leases', id], byProp[id] || []));
+      return byProp;
+    },
+    enabled: allPropIds.length > 0,
   });
   // Collapsed = icon-only rail. Persisted so the preference survives reloads.
   const [collapsed, setCollapsed] = useState(() => {
@@ -58,9 +71,11 @@ export default function Sidebar() {
   }
 
   // A workspace nav item (Portfolio / Financials / History) that reveals a fly-out on
-  // hover/focus: each corporation, its properties nested underneath, every one a direct
-  // link into that page for the corp/property — so a whole account is one hover away
-  // (works from the collapsed icon rail too, where it doubles as a menu).
+  // hover/focus: each corporation, its properties nested underneath, and each property's
+  // tenants nested under it — every one a direct link. The corp/property links go to the
+  // current workspace (/${mode}/…); a tenant link always goes to its lease page, which
+  // lives only in the Portfolio workspace (/leases/…). So a whole account — down to a
+  // single lease — is one hover away (works from the collapsed icon rail too).
   const NavFlyout = ({ to, mode, label, icon, extra }) => (
     <span className="side-item-wrap">
       <NavLink className={navClass} to={to} {...tip(label)} {...(extra || {})}>
@@ -72,7 +87,12 @@ export default function Sidebar() {
             <div className="side-flyout-corp" key={c.id}>
               <Link className="side-flyout-head" role="menuitem" to={`/${mode}/${c.id}`}>{c.name}</Link>
               {(corpProps[c.id] || []).map((p) => (
-                <Link className="side-flyout-item" role="menuitem" key={p.id} to={`/${mode}/${c.id}/${p.id}`}>{p.name}</Link>
+                <div className="side-flyout-prop" key={p.id}>
+                  <Link className="side-flyout-item" role="menuitem" to={`/${mode}/${c.id}/${p.id}`}>{p.name}</Link>
+                  {(leasesByProp[p.id] || []).map((l) => (
+                    <Link className="side-flyout-lease" role="menuitem" key={l.id} to={`/leases/${c.id}/${p.id}/${l.id}`}>{l.tenant_name}</Link>
+                  ))}
+                </div>
               ))}
             </div>
           ))}

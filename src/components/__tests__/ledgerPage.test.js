@@ -119,23 +119,28 @@ describe('LedgerPage — the rent ledger grid', () => {
     await updateLease('lease-4', { square_footage: 1000 });
   });
 
-  it('a settled-SHORT month shows the shortfall, and one click tops it up (then goes inert)', async () => {
+  it('a settled-SHORT month reads ✓ paid (paid = paid) — no "short" badge, click undoes it', async () => {
     const Y = currentYear();
     // Tag City Dental's April at only $5,000 of the $9,150 owed → settled short.
     await markMonthPaid('lease-2', 'prop-1', Y, 4, { amount: 5000 });
     renderLedger();
     await waitFor(() => expect(screen.getByText('City Dental')).toBeTruthy());
-    // The short cell reads ✓ $5,000 with a "short $4,150" sub.
-    const shortCell = document.querySelector('.rr-cell.paid.short');
-    expect(shortCell).toBeTruthy();
-    expect(within(shortCell).getByText(/short \$4,150/)).toBeTruthy();
-    // Clicking records the remaining $4,150 (a top-up); the month settles at the full
-    // $9,150, so the cell is no longer short and goes inert (2 same-month payments →
-    // managed on the lease's Invoices & payments, not click-undone).
-    fireEvent.click(shortCell);
-    await waitFor(() => expect(document.querySelector('.rr-cell.paid.short')).toBeNull());
-    const inert = Array.from(document.querySelectorAll('.rr-cell.paid')).find((c) => (c.getAttribute('title') || '').includes('recorded across 2 payments'));
-    expect(inert).toBeTruthy();
-    await unmarkMonthPaid('lease-2', Y, 4); // clean up (deletes both April tags)
+    // "paid = paid": a recorded payment marks the month paid whatever the amount — there is
+    // NO amber "short" badge (its removal is this fix). The received-vs-projected gap lives
+    // only in the Collected column + the year-end reconcile.
+    expect(document.querySelector('.rr-cell.paid.short')).toBeNull();
+    // April's cell reads ✓ with the received figure ($5,000) and is a single-payment
+    // click-to-undo (not a top-up button).
+    const aprCell = Array.from(document.querySelectorAll('button.rr-cell.paid'))
+      .find((c) => (c.getAttribute('title') || '').includes('received $5,000'));
+    expect(aprCell).toBeTruthy();
+    expect(within(aprCell).getByText('$5,000')).toBeTruthy();
+    // Clicking undoes it — April re-opens (nothing is topped up).
+    fireEvent.click(aprCell);
+    await waitFor(() => expect(
+      Array.from(document.querySelectorAll('button.rr-cell.paid'))
+        .find((c) => (c.getAttribute('title') || '').includes('received $5,000'))
+    ).toBeUndefined());
+    await unmarkMonthPaid('lease-2', Y, 4); // clean up (no-op if already undone)
   });
 });

@@ -54,6 +54,10 @@ export default function NotificationSettings() {
     if (days !== leadDaysFor(prefs, t.key)) patch[t.key] = days;
   });
   const dirty = Object.keys(patch).length > 0;
+  // With nothing left to save, the button correctly greys — so it reads as "done", not
+  // broken, show a clear "Saved ✓" cue after a successful save. The next edit flips
+  // `dirty` true and the label returns to an enabled "Save changes".
+  const saved = save.isSuccess && !dirty && !save.isPending;
 
   // One row: the type's label + hint on the left, the freeform lead input + its live
   // "= N days" reading on the right. The reading line reserves its height so a row
@@ -125,8 +129,8 @@ export default function NotificationSettings() {
       )}
 
       <div className="notify-save">
-        <button disabled={!dirty || save.isPending} onClick={() => save.mutate(patch)}>
-          {save.isPending ? 'Saving…' : 'Save changes'}
+        <button className={saved ? 'saved' : undefined} disabled={!dirty || save.isPending} onClick={() => save.mutate(patch)}>
+          {save.isPending ? 'Saving…' : saved ? 'Saved ✓' : 'Save changes'}
         </button>
         {undo && (
           <UndoStrip

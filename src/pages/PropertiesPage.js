@@ -9,6 +9,7 @@ import { useFeatures } from '../lib/features';
 import { CardGridSkeleton } from '../components/Skeleton';
 import { ShieldIcon } from '../components/icons';
 import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
+import PropLeaseFlyout from '../components/PropLeaseFlyout';
 
 // Leases-mode property list. Financials/History have their own (FinancialsPropertiesPage).
 export default function PropertiesPage() {
@@ -101,7 +102,7 @@ function PropCard({ corpId, property, onInsurance, pf }) {
   const warm = () => pf.propertyLeases(property.id);
 
   return (
-    <div className="prop-card" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} onMouseEnter={warm} onFocus={warm}>
+    <div className="prop-card has-flyout" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} onMouseEnter={warm} onFocus={warm}>
       <div className="prop-card-head">
         <strong>{property.name}</strong>
         {isOn('insurance') && (
@@ -121,6 +122,7 @@ function PropCard({ corpId, property, onInsurance, pf }) {
         <div><span className="muted">Leased</span><b>{Math.round(occupancy * 100)}%</b></div>
         <div><span className="muted">Revenue</span><b>{money(revenue)}</b></div>
       </div>
+      <PropLeaseFlyout corpId={corpId} propertyId={property.id} />
     </div>
   );
 }

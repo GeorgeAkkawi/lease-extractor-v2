@@ -106,10 +106,6 @@ button.rr-cell.abated{cursor:pointer}
    up"). Whole dollars, one line; the cell grows to fit, and full cents live in the title. */
 .rr-amt{font-size:9.5px;font-weight:700;line-height:1;margin-top:1px;opacity:.9;white-space:nowrap;font-variant-numeric:tabular-nums}
 .rr-cell.paid{min-width:46px}
-/* A month settled for LESS than the projection (a rent adjustment not yet picked up):
-   amber ✓ with the shortfall under it; clicking records the rest once the tenant pays. */
-.rr-cell.paid.short{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
-.rr-short{font-size:8.5px;font-weight:700;line-height:1;margin-top:1px;color:var(--gold);white-space:nowrap;font-variant-numeric:tabular-nums}
 .rent-roll th.rr-owes,.rent-roll td.rr-owes{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .rr-split{color:var(--faint);font-size:11px;margin-top:2px;white-space:nowrap}
 .rr-tenant{color:inherit;text-decoration:none}
@@ -178,13 +174,16 @@ tr.stmt-off td{opacity:.55}
    drops the hover. z-index sits above the bell panel (40). Works from the collapsed
    72px rail too — the reveal is on the item, not its (hidden) label. */
 .side-item-wrap{position:relative;display:block}
-.side-flyout{position:absolute;top:-6px;left:calc(100% + 16px);z-index:60;
+/* Opens FLUSH against the nav item (a 2px overlap, no gap) so moving the mouse onto it
+   never crosses a dead zone. The old design left a 16px gap bridged by a ::before pad,
+   but `overflow-y:auto` forces overflow-x to auto too, which clipped that bridge — so the
+   panel vanished the instant you reached for it (George). No gap ⇒ no bridge needed. */
+.side-flyout{position:absolute;top:-6px;left:calc(100% - 2px);z-index:60;
   min-width:214px;max-width:264px;max-height:72vh;overflow-y:auto;
   background:var(--panel);border:1px solid var(--accent);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:8px;
-  opacity:0;visibility:hidden;pointer-events:none;transform:translateX(-6px);
+  opacity:0;visibility:hidden;pointer-events:none;transform:translateY(-3px);
   transition:opacity .12s ease,transform .12s ease}
-.side-flyout::before{content:'';position:absolute;top:0;bottom:0;left:-18px;width:18px}
 .side-item-wrap:hover .side-flyout,
 .side-item-wrap:focus-within .side-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none}
 .side-flyout-corp+.side-flyout-corp{border-top:1px solid var(--hair);margin-top:5px;padding-top:6px}
@@ -194,6 +193,11 @@ tr.stmt-off td{opacity:.55}
 .side-flyout-item{display:block;padding:5px 10px 5px 22px;border-radius:6px;color:var(--muted);text-decoration:none;
   font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-flyout-item:hover,.side-flyout-item:focus{background:var(--panel-2);color:var(--accent);outline:none}
+/* Third level: a tenant under its property. Indented further and lighter so the
+   corp › property › tenant hierarchy reads at a glance. */
+.side-flyout-lease{display:block;padding:4px 10px 4px 34px;border-radius:6px;color:var(--faint);text-decoration:none;
+  font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side-flyout-lease:hover,.side-flyout-lease:focus{background:var(--panel-2);color:var(--accent);outline:none}
 
 .main-col{flex:1;display:flex;flex-direction:column;min-width:0}
 .topbar{height:62px;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;padding:0 30px;gap:18px}
@@ -252,15 +256,17 @@ tr.stmt-off td{opacity:.55}
 .corp-card.fin .chevron{display:none}
 
 /* ---- corporation hover fly-out (jump straight to a property) ---- */
-.corp-card.has-flyout{position:relative}
+.corp-card.has-flyout,.prop-card.has-flyout{position:relative}
 .corp-flyout{position:absolute;top:calc(100% - 4px);left:0;right:0;z-index:30;
-  display:flex;flex-direction:column;gap:2px;
+  display:flex;flex-direction:column;gap:2px;max-height:60vh;overflow-y:auto;
   background:var(--panel);border:1px solid var(--accent);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:8px;margin-top:4px;
   opacity:0;visibility:hidden;pointer-events:none;transform:translateY(-4px);
   transition:opacity .12s ease,transform .12s ease}
 .corp-card.has-flyout:hover .corp-flyout,
-.corp-card.has-flyout:focus-within .corp-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none}
+.corp-card.has-flyout:focus-within .corp-flyout,
+.prop-card.has-flyout:hover .corp-flyout,
+.prop-card.has-flyout:focus-within .corp-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none}
 .corp-flyout-head{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);padding:2px 8px 4px}
 .corp-flyout-item{display:block;padding:8px 10px;border-radius:6px;color:var(--ink);text-decoration:none;
   font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
@@ -409,6 +415,9 @@ tr.stmt-off td{opacity:.55}
 .notify-reading{color:var(--muted);font-size:11px;margin-top:4px;min-height:15px;font-variant-numeric:tabular-nums}
 .notify-reading.bad{color:var(--gold)}
 .notify-save{margin-top:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+/* After a save there's nothing left to save, so the button correctly greys — the green
+   "Saved ✓" tint keeps that from reading as broken (George: "it just went grey"). */
+.notify-save button.saved,.notify-save button.saved:disabled{opacity:1;background:var(--forest-soft);border-color:var(--forest);color:var(--forest);cursor:default}
 @media (max-width:560px){.notify-row{grid-template-columns:1fr}}
 .metric.stat .stat-foot{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--hair)}
 .stat-psf{font-family:var(--display);font-size:21px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -432,7 +441,7 @@ tbody tr:last-child td{border-bottom:none}
    each figure's sub-line and the actions sit under the tenant's name. ---- */
 .ledger-grid{display:grid;grid-template-columns:minmax(158px,1.5fr) repeat(6,minmax(74px,1fr));gap:2px 12px;align-items:stretch;padding:15px 20px}
 .ledger-head{padding:11px 20px 9px;background:var(--panel-2);border-bottom:1px solid var(--line);color:var(--muted);font-weight:700;font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;align-items:end}
-.ledger-head .lg-num{text-align:right}
+.ledger-head .lg-num{text-align:right;padding-right:8px}
 .ledger-head .sub-cap{display:block;font-size:8.5px;font-weight:500;color:var(--faint);letter-spacing:.06em;text-transform:none;margin-top:2px}
 .ledger-row{border-bottom:1px solid var(--hair)}
 .ledger-name{font-weight:600;line-height:1.25}
@@ -445,13 +454,17 @@ tbody tr:last-child td{border-bottom:none}
    real figures as expenses land) — so the two never blur together. */
 .ledger-head .lg-est,.ledger-stat.lg-est{background:var(--gold-soft);border-radius:5px}
 .ledger-head .lg-actual,.ledger-stat.lg-actual{background:var(--accent-soft);border-radius:5px}
-.ledger-stat.lg-est,.ledger-stat.lg-actual{padding:4px 8px}
 .ledger-head .lg-est,.ledger-head .lg-actual{padding:5px 8px 6px}
 /* Total column: the tenant's all-in billed figure — set a touch stronger so it reads
    as the row's headline number. */
 .ledger-total .cell-main{font-weight:700}
 .ledger-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:9px}
-.ledger-stat{position:relative;text-align:right;min-width:0}
+/* Every numeric column shares one top offset (4px) and one right inset (8px) so the
+   Base rent / CAM & tax / Roof / Total / Difference figures line up down each row
+   (George: "the numbers ... arent aligned"). The est column's click-to-edit button
+   adds its own padding for the hover pill; a matching negative top margin pulls its
+   figure back onto the same 4px baseline as its neighbours. */
+.ledger-stat{position:relative;text-align:right;min-width:0;padding:4px 8px}
 .stat-label{display:block;font-size:9px;font-weight:700;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
 @media (min-width:881px){
   /* Desktop: the shared header band carries the column labels; each figure's own
@@ -473,7 +486,7 @@ tbody tr:last-child td{border-bottom:none}
    and on hover/focus it lifts onto the ivory panel with a gold ring + a ✎ glyph — a
    clear, noticeable affordance (George: "make the hover effect more noticeable").
    Constant padding so there's no layout jump when the hover state paints. */
-.est-cell-btn{display:block;width:100%;background:none;border:0;padding:3px 5px;border-radius:5px;text-align:inherit;cursor:pointer;font:inherit;color:inherit;text-transform:none;letter-spacing:normal;transition:background .12s ease,box-shadow .12s ease}
+.est-cell-btn{display:block;width:100%;background:none;border:0;margin-top:-3px;padding:3px 5px;border-radius:5px;text-align:inherit;cursor:pointer;font:inherit;color:inherit;text-transform:none;letter-spacing:normal;transition:background .12s ease,box-shadow .12s ease}
 .est-cell-btn .cell-main{text-decoration:underline;text-decoration-style:dashed;text-decoration-color:var(--faint);text-underline-offset:3px}
 .est-cell-btn:hover,.est-cell-btn.editing{background:var(--panel);box-shadow:0 0 0 1px var(--gold) inset}
 .est-cell-btn:hover .cell-main,.est-cell-btn.editing .cell-main{text-decoration-color:var(--gold)}
