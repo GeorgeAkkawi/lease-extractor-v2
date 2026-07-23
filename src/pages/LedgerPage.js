@@ -21,6 +21,7 @@ import { useFeatures } from '../lib/features';
 import FinancialsTabs from '../components/FinancialsTabs';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
+import LearnedPayeesPanel from '../components/LearnedPayeesPanel';
 import MutationError from '../components/MutationError';
 import { money, money0, sf, fmtDate } from '../lib/format';
 
@@ -483,6 +484,8 @@ export default function LedgerPage() {
             )}
           </div>
         )}
+
+        <LearnedPayeesPanel propId={propId} year={year} />
       </div>
     </div>
   );

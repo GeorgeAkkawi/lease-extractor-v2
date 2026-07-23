@@ -9,9 +9,10 @@ import {
   suggestTenantMatches,
 } from '../lib/api';
 import { matchStatement, suggestRulePattern, depositProjectionDelta, CAM_KEYWORD_LABELS } from '../lib/statementMatch';
+import { buildMonthGroups } from '../lib/statementMonths';
 import { buildPaymentShortfallEmail } from '../lib/emailTemplates';
 import { DEMO_MODE } from '../lib/supabaseClient';
-import { money, fmtDate } from '../lib/format';
+import { money, money0, fmtDate } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
 
@@ -110,7 +111,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
       // by construction. Tolerance is amountMatches, so a "confident" row never flags.
       const mismatch = kind === 'tenant' && tenant && finalMonth ? depositProjectionDelta(row.txn.amount, tenant, finalMonth) : null;
-      return { row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth, checked: writable && checked, always: !!ov.always, ai: !!ov.ai, mismatch };
+      return { row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth, checked: writable && checked, always: !!ov.always, ai: !!ov.ai, picked: ov.pick != null, mismatch };
     });
   }, [matched, overrides, ctx]);
 
@@ -263,8 +264,8 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   if (!ctx || !matched) return <p className="muted">Reading the statement…</p>;
 
   const rows = resolved;
-  const moneyIn = rows.filter((r) => !r.row.duplicate && r.row.txn.direction === 'in');
-  const moneyOut = rows.filter((r) => !r.row.duplicate && r.row.txn.direction === 'out');
+  // One collapsible section per statement month (each line's own date decides its month).
+  const monthGroups = buildMonthGroups(rows);
   const dupes = rows.filter((r) => r.row.duplicate);
 
   // Footer summary of exactly what Save writes.
@@ -347,8 +348,12 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         </div>
       )}
 
-      <Group title={`Money in · ${moneyIn.length}`} rows={moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} onDraftLetter={draftShortfallLetter} />
-      <Group title={`Money out · ${moneyOut.length}`} rows={moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />
+      {monthGroups.map((g) => (
+        <MonthGroup key={g.key} g={g} defaultOpen={monthGroups.length === 1 || g.needsReview > 0}>
+          <Group title={`Money in · ${g.moneyIn.length}`} rows={g.moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} onDraftLetter={draftShortfallLetter} />
+          <Group title={`Money out · ${g.moneyOut.length}`} rows={g.moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />
+        </MonthGroup>
+      ))}
       {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />}
       {parsed.skippedLines.length > 0 && <SkippedGroup skipped={parsed.skippedLines} />}
 
@@ -390,13 +395,38 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   );
 }
 
-function resolvePick(pick) {
+// The one pick → { kind, lease_id?, label? } decoder, shared by the review's overrides
+// and the Learned-payees manager's retarget dropdown (LearnedPayeesPanel.js).
+export function resolvePick(pick) {
   if (!pick) return null;
   if (pick.startsWith('lease:')) return { kind: 'tenant', lease_id: pick.slice(6) };
   if (pick.startsWith('cam:')) return { kind: 'expense_cam', label: pick.slice(4) };
   if (pick.startsWith('other:')) return { kind: 'expense_other', label: pick.slice(6) };
   if (pick === 'expense_tax' || pick === 'expense_cam' || pick === 'expense_roof' || pick === 'ignore') return { kind: pick };
   return null;
+}
+
+// One statement month, collapsible. The header carries live counts — total lines, money
+// in / out, and matched vs need-review — so a scan tells you which months want a look.
+// All-matched months start collapsed; a month with rows needing review, or a single-month
+// statement, starts open. `useState(defaultOpen)` pins openness lazily at mount, so ticking
+// a row never snaps its month shut mid-work while the header counts keep updating.
+function MonthGroup({ g, defaultOpen, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="stmt-month">
+      <button type="button" className="ghost stmt-month-head" onClick={() => setOpen((v) => !v)}>
+        {open ? '▾' : '▸'} {g.label}
+        <span className="muted">
+          {' — '}{g.count} line{g.count === 1 ? '' : 's'}
+          {g.moneyIn.length > 0 ? ` · ${money0(g.inTotal)} in` : ''}
+          {g.moneyOut.length > 0 ? ` · ${money0(g.outTotal)} out` : ''}
+          {' · '}{g.needsReview > 0 ? `${g.matched} matched · ${g.needsReview} need review` : 'all matched ✓'}
+        </span>
+      </button>
+      {open && <div className="stmt-month-body">{children}</div>}
+    </div>
+  );
 }
 
 function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket, onDraftLetter }) {

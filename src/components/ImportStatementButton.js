@@ -97,6 +97,8 @@ export function settleStatementImport(qc) {
   qc.invalidateQueries({ queryKey: ['statementImports'] });
   qc.invalidateQueries({ queryKey: ['statementContext'] });
   qc.invalidateQueries({ queryKey: ['reconciliations'] });
+  // An import auto-learns payee rules (and undo un-learns them) — refresh the manager.
+  qc.invalidateQueries({ queryKey: ['importRules'] });
 }
 
 // The post-save results strip: totals + cross-property note + ↩ Undo.

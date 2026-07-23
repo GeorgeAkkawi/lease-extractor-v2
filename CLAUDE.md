@@ -75,6 +75,57 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **Statement import v2: the review screen now GROUPS each statement by month (all-matched months
+  collapsed, months needing a look open, live "N matched · M need review" counts in every header), and the Ledger tab
+  gained a "Learned payees" manager to audit / retarget / remove the auto-learned payee rules** (George dropped a
+  "Bank Statement Import Feature — Complete Design Brief"; cross-referencing the deploy log showed **~90% already
+  shipped** in the 7/21–7/23 rounds — pattern learning via `import_rules` + account hints, escalation-aware variance,
+  🤖 Suggest tenants/buckets, dup guards, full undo, expense buckets — so this adds the two genuinely-NEW pieces he
+  scoped via AskUserQuestion: **month-grouped review** + **learned-payees manager**. His other picks: keep the review
+  **full-page** (not the brief's slide-in modal — a deliberate prior choice) · header format = **counts + $ + review
+  flag** · **skip** multi-statement upload + split payments). Deployed: frontend Cloudflare version `48436f96`, demo
+  worker `623f413a`. **Frontend + one pure helper + tests — $0, NO DB migration, NO edge functions, NO demo-seed
+  changes, no tenant emails.** Tests **524/524** (was 506 — +11 statementMonths, +4 statementReviewMonths, +3
+  learnedPayees; the three pinned statement/ledger suites stayed **byte-identical and green**).
+  - **1) Month-grouped review (`statementMonths.js` new + `StatementReview.js`).** A 40–100-line statement often
+    spans a Dec→Jan boundary or two pay periods; the flat "Money in · N / Money out · N" pair is now wrapped in one
+    collapsible section PER MONTH (each line's OWN date decides its month, string-sorted so a fiscal-year boundary
+    splits right). New pure `buildMonthGroups(resolved)` + `rowNeedsReview(r)` (consistent with the footer's mismatch
+    count — a duplicate never flags, a balance-check flag always does, a checked row is settled unless it's ≠ projected
+    with no escalation to explain it, an unchecked row is fine only when it's a resolved ignore). Each `MonthGroup`
+    header reads "**July 2026 — 12 lines · $48,500 in · $4,742 out · 10 matched · 2 need review**" (or "all matched ✓")
+    with a ▸/▾ disclosure; `defaultOpen = monthGroups.length === 1 || g.needsReview > 0` via **lazy `useState`**, so an
+    all-matched month starts collapsed, a month needing review starts open, and ticking a row never snaps its month
+    shut while the header counts stay live. The SAME `<Group>`/`ReviewRow` tables render inside each month (nothing
+    rewritten); Save still iterates `resolved`, so a **collapsed month's checked rows still write** (test-locked).
+    **Load-bearing:** a single-month statement ALWAYS starts open — which is what keeps the three pinned single-month
+    fixtures (mismatch=April, escalation=June/March, ledgerPage's all-March demo sample) green with zero edits.
+  - **2) Learned-payees manager (`LearnedPayeesPanel.js` new, mounted in `LedgerPage.js` after the import register).**
+    Every checked tenant deposit auto-teaches a "always match {payee} → {tenant}" rule (and an expense does on its
+    "Always" tick), so the panel is where the landlord audits that memory: a count-gated **▸ Learned payees (N)**
+    disclosure (mirrors the register's plain-table idiom — no new CSS) listing THIS property's rules with their target,
+    account hint (••4821), a family-constrained **retarget** dropdown, and a confirm-gated **✕ Remove**. A retarget
+    re-saves the SAME (property, pattern) key → hits `saveImportRule`'s 23505 update path which **preserves the rule id**,
+    so an import's `applied[].rule_id` stays valid and its ↩ Undo still works (`resolvePick` exported from StatementReview
+    for the shared pick vocabulary). `settleStatementImport` now also invalidates `['importRules']` (an import learns
+    rules, undo un-learns them — either must refresh the panel).
+  - **Flags (no action needed):** the matcher deliberately ignores `property_id`, so a foreign property's rule can still
+    classify this property's lines — the panel carries a one-line muted footnote saying so. And undoing an import whose
+    learned rule carried a `prior` will re-create/overwrite a rule you edited in the manager (undo restores the
+    pre-import world); deleting a rule an import references is safe (prior:null → best-effort delete).
+  - **Files:** `src/lib/statementMonths.js` (new), `src/components/LearnedPayeesPanel.js` (new),
+    `src/components/StatementReview.js` (month grouping + `picked` field + export `resolvePick`), `src/pages/LedgerPage.js`
+    (mount the panel), `src/components/ImportStatementButton.js` (one invalidation), `src/App.css` (4 `.stmt-month*`
+    rules), tests (`statementMonths`, `statementReviewMonths`, `learnedPayees` — all new; the pinned
+    `statementReviewMismatch`/`statementReviewEscalation`/`ledgerPage` suites untouched, `git diff --stat` confirmed).
+  - **Verified:** unit **524/524** (`vitest run`); `vite build` compiles (800 modules); live 200s (amlakre.com + www +
+    workers.dev + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (the jsdom render tests mount the real StatementReview → two-month collapse/expand + a single-month
+    always-open, and the real LedgerPage → the Learned-payees list/retarget-preserves-id/remove flow against the demo
+    mock). **George: import a statement that spans more than one month → each month is its own collapsible section,
+    all-matched months collapsed; open a property's Ledger tab → "Learned payees (N)" lists every payee you've taught,
+    where you can point one at a different tenant/bucket or drop it.**
+
 - **2026-07-23** — **Statement import learns smarter: a mid-year rent escalation now EXPLAINS a deposit still at the
   pre-raise rate (quiet cue, auto-matched — no more false "short"), learned payee rules remember which bank ACCOUNT
   taught them, and a click-gated 🤖 "Suggest tenants" names the deposits nothing recognized** (George's spec: "Bank

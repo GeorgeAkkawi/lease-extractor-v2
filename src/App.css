@@ -141,6 +141,12 @@ tr.stmt-off td{opacity:.55}
 /* "auto" — a checked tenant deposit is remembered automatically (money-in needs no
    explicit "Always" tick; money-out keeps opt-in). */
 .stmt-auto{font-size:10px;font-style:italic;letter-spacing:.02em}
+/* Each statement month is a collapsible section (all-matched months start collapsed),
+   its Money in / Money out tables indented under a bold header with live counts. */
+.stmt-month{margin-top:18px}
+.stmt-month-head{font-weight:600}
+.stmt-month-body{margin-left:6px;padding-left:10px;border-left:2px solid var(--border)}
+.stmt-month-body .stmt-group{margin-top:10px}
 
 /* ---- layout ---- */
 .app{display:flex;height:100vh;overflow:hidden}
