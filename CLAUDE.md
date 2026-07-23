@@ -75,6 +75,46 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **A mid-year rent escalation is now visible in the Rent Ledger: a stepped tenant's two different
+  monthly box values read as the intended raise, not a mismatch** (George: "why do sam nails ricky lyons and hong
+  kong all have slightly off values? did they go through a rent escalation … it should show in the boxes as well";
+  his AskUserQuestion pick: **"Show the step in the Ledger"**). Deployed: frontend Cloudflare version `e64967af`,
+  demo worker `57fe1bbc`. **Frontend + one pure helper + a unit test — $0, NO DB migration, NO edge functions, NO
+  data-layer/roll/demo-mock changes, no tenant emails.** Tests **481/481** (was 472 — +9 ledgerEscalationStep).
+  - **Diagnosis (live DB + code, verified to the penny — everything was already CORRECT, the gap was UX):**
+    **Ricki's-Lyons** has an *applied* escalation dated **2026-05-01** ($27,793.08 → $28,348.92/yr) → Jan–Apr boxes
+    $3,102.76, May–Dec $3,149.08. **Sam Nails** — same, one month later: applied **2026-06-01** ($32,472.96 →
+    $33,122.40/yr) → Jan–May $4,106.08, Jun–Dec $4,160.20. **Hong Kong** is actually **uniform** ($2,849.60 every
+    month — last escalation June 2023, no 2026 step); it only *looks* odd because base $25,730.56 + est $8,464.64 ÷ 12
+    isn't a round number. The full chain ties out (lease `base_rent` → escalation ledger → invoice `base_rent_annual`
+    = blended old+new months → boxes). The only real problem was that two different box values read like an error at a
+    glance — which is exactly what prompted George's question.
+  - **The cue (pure helper, derived from the same data the boxes paint from):** new `escalationStepMonths({ schedule,
+    comp })` in `src/lib/ledger.js` returns `[{ month, owed, base, prevBase }]` for each month whose `comp[m].base`
+    steps **up** vs `m-1`, **guarded** to skip if either month is `outsideTerm` (a mid-year lease START is not a raise
+    — its prior month is out-of-term, base 0) or `abated` (an abatement ENDING shows base 0 → X), and requiring
+    `prevBase > 0 && curBase > prevBase + 0.02` (increases only, cents-safe). Normally length 1; returns all when a
+    lease steps twice. Because it reads `componentizeSchedule`'s per-month base (the exact figures the boxes show), the
+    cue can never disagree with the boxes; and because `monthlyBases` (via `buildLeaseSchedule`) reflects only
+    **applied** steps, a not-yet-applied future step correctly produces no cue.
+  - **UI (`src/pages/LedgerPage.js` + `.rr-*` in `App.css`):** the `derived` map adds `steps`; a small olive note
+    under the tenant name — **↗ rent raised to $3,149.08/mo in May** (`.rr-step-note`) — and an olive **left accent**
+    on the step month's box (`.rr-cell.rr-step` = `box-shadow:inset 3px 0 0 var(--accent)`, no box-model shift,
+    distinct from the gold used by late/partial cells, composes with the paid/late state classes) with a "↗ Scheduled
+    rent escalation — the higher amount from here on is the raise, not an error" tooltip prefix on every cell state
+    (settled/pool/partial/late-mark). Hong Kong (no 2026 step) stays uniform with no note.
+  - **Files:** `src/lib/ledger.js` (`escalationStepMonths`), `src/pages/LedgerPage.js` (import + `steps` in `derived`
+    + row note + per-cell `rr-step` class/tooltip), `src/App.css` (`.rr-cell.rr-step`, `.rr-step-note`),
+    `src/lib/__tests__/ledgerEscalationStep.test.js` (new — 9 cases: Ricki's→May, Sam Nails→June, Hong Kong uniform→
+    [], mid-year start→[], abatement-end→[], two steps→[4,9], base decrease→[], sub-2¢ wobble→[], missing input).
+    No demo-seed change (the demo has no mid-2026 applied step, so no note renders and the existing `ledgerPage` render
+    test still mounts — feature is immediately live on George's own Ledger).
+  - **Verified:** unit **481/481** (`vitest run`); `vite build` compiles (798 modules); live 200s (amlakre.com + www +
+    workers.dev + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (the pure helper is unit-tested; the cue is CSS/text). **George: hard-refresh (Cmd+Shift+R) →
+    Financials → Ledger. Ricki's and Sam Nails now show a small "↗ rent raised to $X/mo in May/June" note under the
+    tenant and an olive accent on the step month's box; Hong Kong (no 2026 step) stays uniform with no note.**
+
 - **2026-07-23** — **The estimate is now the source of truth all year: changing a tenant's CAM & tax estimate re-syncs
   its invoice AND its recorded "mark paid" months to base + estimate, and the ledger boxes stop reading the stale
   actual** (George: "the box should show whatever number is in the left hand column … michuacana should show 5300 in
