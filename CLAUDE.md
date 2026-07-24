@@ -75,6 +75,84 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-24** — **Five asks in one round: the For-month column follows the STATEMENT's date · the "Always" column
+  is gone (payees are remembered by saving) · Est. roof off the lease-terms panel · a Management fee entered as a
+  % of base rent · property taxes itemized, one line per statement payment** (George: *"again for the ledger the
+  months under the for month column should correspond with the date of the statement. Also, i dont understand the
+  always collumn on the ledger. take out estimated roof box on lease terms. we need to add an option in the CAM
+  total entry as management fee but this is special because when it is clicked i need it to offer a percentage of
+  base rent as that calcuation then it needs to be added to the expenses. also when taxes are pulled from the
+  statement they shouldnt upload to expenses rather to the property taxes box in the expense entry and it should
+  put a new line per time it sees it on the statement make it look like the CAM / maintenance - itemized give it
+  its own line item"*). Deployed: DB migration `0067` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare
+  version `05aa229a`, demo worker `5d912f89`. **$0, NO edge functions, no tenant emails, NO live-data repair, no
+  destructive data** (0067 is two additive columns + two CHECKs + an index). Tests **591/591** (was 582 — +7
+  expenseEntry, +2 expenseEntryUi; five existing assertions intentionally reversed, listed below).
+  - **1) The month follows the statement** (`statementMatch.js` `corroborateAmount`). It preferred the earliest
+    month a tenant still OWED, so importing a June statement onto a ledger with January open tagged the line
+    January — the second time George has asked for this ("again…"). Now the date the bank printed on a line
+    **decides** the month: `target = txnMonth` when the line carries one, else (2-arg calls) the earliest owed
+    month exactly as before. A **lump still wins** — a check matching several months' gaps, the whole invoice, or
+    an open true-up is returned untagged so the ledger's pool spreads it (tagging it would settle one month and
+    lose the rest), and the review now says **"covers several months"** under an empty month box instead of
+    leaving it blank. One tightening fell out of it: corroboration now requires the month to be **open**
+    (`gap > DUST`) — a deposit matching a month already recorded corroborates nothing, so it no longer pre-ticks;
+    the "already recorded as paid" warning handles it. The month select's tooltip states the new rule, and the
+    "earliest month still owed" hint is gone with the behavior it explained.
+  - **2) The Always column is gone** (`StatementReview.js`). It was a no-op on deposits ("auto") and an opt-in tick
+    on expenses — one more thing to understand for no gain. Now **every checked line teaches its payee**, deposits
+    and expenses alike, and the row says so on itself: a quiet *remembers "GREENLEAF LANDSCAPING"* under the Match
+    chip, plus a footer line stating that only the payee is remembered, never the month, and where to change it.
+    The boilerplate screen (`screenRulePatterns`, 7/23) still refuses a pattern that matches two different payees,
+    so auto-learning an expense can't produce a rule that swallows the statement. Table is 8 columns → **7**.
+  - **3) Est. roof off the lease-terms panel** (`LeaseDetailPage.js`) — the field is removed; roof responsibility
+    (the On/Off toggle) and the Financials estimate editor are untouched.
+  - **4) Management fee = a percentage of base rent** (`CamSection.js` + `api.js` + 0067 `rent_pct`). Typing a
+    label that reads like a fee flips the amount box to a **%** entry (a checkbox does the same for anything else
+    priced that way) with a live reading — *"5% of $144,000.00 base rent = $7,200.00"*. The row stores BOTH the
+    dollars that bill and the rate they came from, so it can say what it is and **follow the rent**: new
+    `syncRentPctCamItems` re-prices it against `v_property_totals.total_revenue` whenever the year is opened
+    (idempotent, writes only on real drift, and never zeroes the fee when the rent hasn't loaded — the
+    `syncContractCamItems` precedent). It bills through CAM like any other component; the "not billed" tick still
+    applies. `Management fee` joins the bucket datalist.
+  - **5) Property taxes are itemized** (0067 `kind` + new `TaxSection.js` + `PropertyFinancialsPage.js`). One
+    table, two lists: `kind='cam'` rolls into `cam_total` exactly as today, `kind='tax'` into `taxes_total` — so
+    every downstream figure (tax PSF, tenant shares, invoices, views) is unchanged in shape. The Expense entry
+    gains a **"Property taxes — itemized"** block that reads like the CAM one (a line per payment, a total, an
+    "imported" badge, ✕ per row, single-figure entry only while nothing is itemized); `ExpenseForm` is now
+    **roof-only** and preserves taxes. An imported tax line books **its own row named after the payee**
+    ("COOK COUNTY TREASURER" → *Cook County Treasurer*) instead of accumulating onto a running total, and undo
+    deletes that row (the pre-0067 decrement branch is kept for statements imported before today).
+  - **The safety property that shaped #5:** re-summing taxes from items would have re-priced a hand-typed year
+    down to the first instalment — $25,000 → $3,100 — and silently under-billed every tenant. So the first time
+    anything is itemized, the flat figure is **carried into its own line** ("Entered by hand"); the year becomes
+    the sum, nothing is lost, and the carried row is a normal row to rename, split or delete. Net effect on the
+    existing figures: identical (the import test's $25,000 + $3,100 = $28,100 still holds, and undo returns it to
+    $25,000). **No live-data repair needed** — the carry-over is lazy, so George's entered tax totals are
+    untouched until he itemizes.
+  - **Files:** `supabase/migrations/0067_expense_line_kinds.sql` (new), `src/components/TaxSection.js` (new),
+    `src/lib/statementMatch.js`, `src/lib/api.js` (kind-aware list/add/delete + `syncTaxTotal` +
+    `carryFlatTaxesIntoItems` + `syncRentPctCamItems` + the import/undo tax branches),
+    `src/components/{StatementReview,CamSection,ImportStatementButton}.js`,
+    `src/pages/{PropertyFinancialsPage,LeaseDetailPage,LedgerPage}.js`, `src/App.css` (`.stmt-learn`), tests
+    (`expenseEntry.test.js` + `expenseEntryUi.test.js` new). **Intentional assertion reversals** (the behavior
+    George asked to change): a May-dated check now tags May, not the earliest owed month
+    (`statementMatch` ×3, `statementImport` ×1), and rows carry one checkbox, not two (`statementReview*` ×3).
+    No demo-seed change.
+  - **Verified:** unit **591/591** (`vitest run`); `vite build` compiles; live read-back confirms both columns,
+    both CHECKs, and all 4 existing rows reading `kind='cam'`; live 200s (amlakre.com + www + workers.dev + demo,
+    demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference (the
+    jsdom tests drive the real CamSection/TaxSection/StatementReview against the demo mock).
+    **George: hard-refresh (Cmd+Shift+R). Re-import a statement — every line is dated to the month on the line,
+    there's one tick per row, and a tax payment lands as its own line under Property taxes. In the Expense entry,
+    type "Management fee" and enter 5 to price it off the rent.**
+  - **Flags (no action needed):** ① A deposit that pays a month EARLY (a June check for July's rent) now reads
+    June, where it may bill nothing — the row says so and the dropdown fixes it; back-filling old statements was
+    the far more common case. ② The first tax line you add to a property carries its existing total in as
+    "Entered by hand" — if that figure already included the instalment you're importing, delete or reduce that
+    row so the year isn't counted twice. ③ A management fee re-prices itself when the rent changes; delete the
+    row if you'd rather pin a fixed dollar figure.
+
 - **2026-07-24** — **Boost Mobile's ledger now bills AND shows Jan–Jun at $2,716 — the tenancy predates the lease
   document it was filed under** (George: *"add 2716 for months jan-jun for boost mibile on the ledegr and update to
   annual rent roll and such"*). **LIVE DATA ONLY — no code change, NO deploy, NO migration, $0, no tenant emails,

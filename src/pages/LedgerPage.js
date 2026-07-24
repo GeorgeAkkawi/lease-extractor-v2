@@ -519,7 +519,7 @@ export default function LedgerPage() {
                     const pays = applied.filter((a) => a.kind === 'payment');
                     // Explicit expense kinds only — 'rule' records (auto-learned payees) also
                     // ride in `applied` but aren't expenses, so they mustn't be counted here.
-                    const exps = applied.filter((a) => a.kind === 'cam' || a.kind === 'tax' || a.kind === 'roof');
+                    const exps = applied.filter((a) => a.kind === 'cam' || a.kind === 'tax_item' || a.kind === 'tax' || a.kind === 'roof');
                     return (
                       <tr key={imp.id}>
                         <td>{imp.file_name || '—'}</td>

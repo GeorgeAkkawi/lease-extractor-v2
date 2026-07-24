@@ -1344,9 +1344,12 @@ export const upsertExpenseRecord = async ({ property_id, year, taxes_total, cam_
       .single()
   );
 
-// ---- CAM line items (itemized CAM that auto-sums) --------------------------
-export const listCamLineItems = (propertyId, year) =>
-  rows(
+// ---- Expense line items (itemized CAM and property taxes, both auto-summing) --
+// One table, two lists (0067 `kind`): 'cam' rolls into expense_records.cam_total,
+// 'tax' into taxes_total. Rows written before 0067 have no kind at all in the demo
+// store, so the read tolerates a missing value rather than filtering them away.
+const listExpenseLineItems = async (propertyId, year, kind) => {
+  const all = await rows(
     supabase
       .from('cam_line_items')
       .select('*')
@@ -1354,6 +1357,11 @@ export const listCamLineItems = (propertyId, year) =>
       .eq('year', year)
       .order('created_at')
   );
+  return all.filter((it) => (it.kind || 'cam') === kind);
+};
+
+export const listCamLineItems = (propertyId, year) => listExpenseLineItems(propertyId, year, 'cam');
+export const listTaxLineItems = (propertyId, year) => listExpenseLineItems(propertyId, year, 'tax');
 
 // Re-sum the line items and write the total into expense_records.cam_total,
 // preserving taxes/roof. This is the "adds everything up" step — pure code.
@@ -1374,21 +1382,96 @@ async function syncCamTotal(propertyId, year) {
   return camSum;
 }
 
-export async function addCamLineItem({ property_id, year, label, amount, import_id = null, billable = true }) {
-  const item = await one(
+// Re-sum the property-tax line items into expense_records.taxes_total, preserving
+// CAM/roof. The mirror of syncCamTotal — called only from the tax-item writers, so
+// a property that itemizes nothing keeps whatever figure was typed by hand.
+async function syncTaxTotal(propertyId, year) {
+  const items = await listTaxLineItems(propertyId, year);
+  const taxSum = items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
+  const existing = await getExpenseRecord(propertyId, year);
+  await upsertExpenseRecord({
+    property_id: propertyId,
+    year,
+    taxes_total: taxSum,
+    cam_total: existing?.cam_total ?? 0,
+    roof_total: existing?.roof_total ?? 0,
+  });
+  return taxSum;
+}
+
+// Itemizing must never LOSE the figure that was already there. A property whose taxes
+// were entered as one flat number gets that number carried into its own line the first
+// time anything is itemized — otherwise the first $3,100 instalment an import finds
+// would re-sum the year's taxes down to $3,100 and quietly under-bill every tenant.
+// The carried line is a normal row: rename it, split it, or delete it once the real
+// instalments are in.
+async function carryFlatTaxesIntoItems(property_id, year) {
+  const existing = await listTaxLineItems(property_id, year);
+  if (existing.length) return;
+  const rec = await getExpenseRecord(property_id, year);
+  const flat = Number(rec?.taxes_total) || 0;
+  if (flat <= 0) return;
+  await one(
     supabase
       .from('cam_line_items')
-      .insert({ property_id, year, label, amount, billable: billable !== false, ...(import_id ? { import_id } : {}), owner_id: await ownerId() })
+      .insert({ property_id, year, kind: 'tax', label: 'Entered by hand', amount: flat, owner_id: await ownerId() })
       .select()
       .single()
   );
-  await syncCamTotal(property_id, year);
+}
+
+async function addExpenseLineItem({ property_id, year, label, amount, import_id = null, billable = true, kind = 'cam', rent_pct = null }) {
+  if (kind === 'tax') await carryFlatTaxesIntoItems(property_id, year);
+  const item = await one(
+    supabase
+      .from('cam_line_items')
+      .insert({
+        property_id, year, label, amount, kind,
+        billable: billable !== false,
+        ...(rent_pct != null ? { rent_pct } : {}),
+        ...(import_id ? { import_id } : {}),
+        owner_id: await ownerId(),
+      })
+      .select()
+      .single()
+  );
+  await (kind === 'tax' ? syncTaxTotal(property_id, year) : syncCamTotal(property_id, year));
   return item;
 }
 
-export async function deleteCamLineItem(id, propertyId, year) {
+export const addCamLineItem = (fields) => addExpenseLineItem({ ...fields, kind: 'cam' });
+export const addTaxLineItem = (fields) => addExpenseLineItem({ ...fields, kind: 'tax' });
+
+async function deleteExpenseLineItem(id, propertyId, year, kind) {
   await rows(supabase.from('cam_line_items').delete().eq('id', id));
-  return syncCamTotal(propertyId, year);
+  return kind === 'tax' ? syncTaxTotal(propertyId, year) : syncCamTotal(propertyId, year);
+}
+
+export const deleteCamLineItem = (id, propertyId, year) => deleteExpenseLineItem(id, propertyId, year, 'cam');
+export const deleteTaxLineItem = (id, propertyId, year) => deleteExpenseLineItem(id, propertyId, year, 'tax');
+
+// A management fee is priced off the rent, not typed as a figure: the row stores the
+// percentage it was struck at (0067 `rent_pct`) and this keeps its dollar amount in
+// step with the property's annual base rent for that year — the same self-healing
+// contract rows get. Idempotent: writes only on a real drift, and never zeroes a fee
+// because the rent hasn't loaded (basis 0 → left exactly as it is).
+export async function syncRentPctCamItems(propertyId, year) {
+  const [totals, items] = await Promise.all([
+    getPropertyTotals(propertyId, year),
+    listCamLineItems(propertyId, year),
+  ]);
+  const basis = Number(totals?.total_revenue) || 0;
+  if (basis <= 0) return false;
+  let changed = false;
+  for (const it of items) {
+    if (it.rent_pct == null) continue;
+    const amount = Math.round(basis * (Number(it.rent_pct) / 100) * 100) / 100;
+    if (Math.abs(amount - (Number(it.amount) || 0)) < 0.005) continue;
+    await one(supabase.from('cam_line_items').update({ amount }).eq('id', it.id).select().single());
+    changed = true;
+  }
+  if (changed) await syncCamTotal(propertyId, year);
+  return changed;
 }
 
 // Auto-carry service contracts into CAM for a given fiscal year: one CAM line item per
@@ -3307,18 +3390,25 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       const item = await addCamLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Imported expense', amount: Number(e.amount), import_id: imp.id, billable: e.billable !== false });
       applied.push({ kind: 'cam', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: e.label || 'Imported expense', billable: e.billable !== false, hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
-    } else if (e.type === 'tax' || e.type === 'roof') {
+    } else if (e.type === 'tax') {
+      // Every tax payment the statement shows gets its OWN line, the way CAM does —
+      // a year's taxes are usually two or three instalments to a county, and one
+      // accumulating figure hides which was which (George: "it should put a new line
+      // per time it sees it on the statement").
+      const item = await addTaxLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Property tax', amount: Number(e.amount), import_id: imp.id });
+      applied.push({ kind: 'tax_item', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: item.label, hash: e.hash });
+      expensesCount++; expensesTotal += Number(e.amount);
+    } else if (e.type === 'roof') {
       const cur = await getExpenseRecord(e.property_id, e.year);
-      const field = e.type === 'tax' ? 'taxes_total' : 'roof_total';
-      const prev = Number(cur?.[field]) || 0;
+      const prev = Number(cur?.roof_total) || 0;
       await upsertExpenseRecord({
         property_id: e.property_id,
         year: e.year,
-        taxes_total: e.type === 'tax' ? prev + Number(e.amount) : (Number(cur?.taxes_total) || 0),
+        taxes_total: Number(cur?.taxes_total) || 0,
         cam_total: Number(cur?.cam_total) || 0,
-        roof_total: e.type === 'roof' ? prev + Number(e.amount) : (Number(cur?.roof_total) || 0),
+        roof_total: prev + Number(e.amount),
       });
-      applied.push({ kind: e.type, property_id: e.property_id, year: e.year, amount: Number(e.amount), hash: e.hash });
+      applied.push({ kind: 'roof', property_id: e.property_id, year: e.year, amount: Number(e.amount), hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
     } else if (e.type === 'rule') {
       // Learn (or overwrite) a payee → target rule. Best-effort: a failure here must
@@ -3380,7 +3470,11 @@ export async function undoStatementImport(imp) {
       await deletePayment(a.payment_id);
     } else if (a.kind === 'cam') {
       await deleteCamLineItem(a.item_id, a.property_id, a.year);
+    } else if (a.kind === 'tax_item') {
+      await deleteTaxLineItem(a.item_id, a.property_id, a.year);
     } else if (a.kind === 'tax' || a.kind === 'roof') {
+      // Pre-0067 imports recorded taxes as a running total, not a line — reverse
+      // those exactly as they were written.
       const cur = await getExpenseRecord(a.property_id, a.year);
       const field = a.kind === 'tax' ? 'taxes_total' : 'roof_total';
       const current = Number(cur?.[field]) || 0;

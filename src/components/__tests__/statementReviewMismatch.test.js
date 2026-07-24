@@ -42,10 +42,12 @@ describe('StatementReview — rent mismatch + auto-learn', () => {
     renderReview();
     await waitFor(() => expect(screen.getByText(/Money in · 1/)).toBeTruthy());
 
-    // Money-in never shows an "Always" tick (auto-learned); the money-out expense does.
-    expect(depRow().querySelectorAll('input[type=checkbox]')).toHaveLength(1); // include only
+    // Every row has exactly ONE tick — include. Payees are remembered automatically,
+    // so there's no second "Always" box to understand (George: "i dont understand the
+    // always collumn").
+    expect(depRow().querySelectorAll('input[type=checkbox]')).toHaveLength(1);
     const expRow = screen.getByText('GREENLEAF LANDSCAPING INV 88').closest('tr');
-    expect(expRow.querySelectorAll('input[type=checkbox]')).toHaveLength(2); // include + Always
+    expect(expRow.querySelectorAll('input[type=checkbox]')).toHaveLength(1);
 
     // Tag the deposit to April (owed $9,150) → the mismatch chip + Draft letter appear.
     const monthSelect = depRow().querySelectorAll('select')[1]; // [Record as, For month]
@@ -61,7 +63,7 @@ describe('StatementReview — rent mismatch + auto-learn', () => {
     expect(body).toContain('Dana Lee'); // the tenant contact from the lease
   });
 
-  it('a checked deposit shows the "auto" hint and teaches a payee rule on save', async () => {
+  it('a checked deposit says what it will remember, and teaches that payee rule on save', async () => {
     const onSaved = vi.fn();
     renderReview(onSaved);
     await waitFor(() => expect(screen.getByText(/Money in · 1/)).toBeTruthy());
@@ -69,8 +71,8 @@ describe('StatementReview — rent mismatch + auto-learn', () => {
     // Tag the month and include the deposit.
     fireEvent.change(depRow().querySelectorAll('select')[1], { target: { value: '4' } });
     fireEvent.click(depRow().querySelector('input[type=checkbox]'));
-    // A checked tenant deposit is remembered automatically (no tick needed).
-    await waitFor(() => expect(within(depRow()).getByText('auto')).toBeTruthy());
+    // A checked line is remembered automatically — and says which payee, on the row.
+    await waitFor(() => expect(within(depRow()).getByText(/remembers “CITY DENTAL PC”/)).toBeTruthy());
     // The footer counts the checked mismatch.
     expect(document.querySelector('.stmt-footer').textContent).toContain('≠ projected');
 

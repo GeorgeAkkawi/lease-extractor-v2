@@ -105,6 +105,7 @@ export function settleStatementImport(qc) {
   qc.invalidateQueries({ queryKey: ['propertyTotals'] });
   qc.invalidateQueries({ queryKey: ['expenseRecord'] });
   qc.invalidateQueries({ queryKey: ['camLineItems'] });
+  qc.invalidateQueries({ queryKey: ['taxLineItems'] });
   qc.invalidateQueries({ queryKey: ['corpRollups'] });
   qc.invalidateQueries({ queryKey: ['historyEvents'] });
   qc.invalidateQueries({ queryKey: ['statementImports'] });

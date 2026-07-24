@@ -13,6 +13,7 @@ import { useChrome, usePageChrome } from '../context/ChromeContext';
 import FinancialsTabs from '../components/FinancialsTabs';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
+import TaxSection from '../components/TaxSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
@@ -143,7 +144,7 @@ export default function PropertyFinancialsPage() {
         <div className="panel-head">
           <strong>Expense entry · FY {year}</strong>
           <span className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <span className="muted">Taxes & roof below; CAM is itemized.</span>
+            <span className="muted">Roof below; taxes and CAM are itemized.</span>
             <ImportStatementButton onReady={setImportDoc} />
           </span>
         </div>
@@ -156,6 +157,17 @@ export default function PropertyFinancialsPage() {
         <MutationError of={[undoImport]} />
         <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} />
         <ExpenseForm propId={propId} year={year} expense={expense} qc={qc} />
+        <div className="cam-block">
+          <div className="cam-head">
+            <div>
+              <strong>Property taxes — itemized</strong>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                One line per tax payment — every instalment an imported statement finds lands here. The total drives the tax PSF tenants are billed.
+              </div>
+            </div>
+          </div>
+          <TaxSection propId={propId} year={year} expense={expense} />
+        </div>
         <div className="cam-block">
           <div className="cam-head">
             <div>
@@ -191,13 +203,13 @@ function StatCard({ label, main, footValue, footCap, note }) {
   );
 }
 
+// Roof only — property taxes moved into their own itemized list (TaxSection), so this
+// form must PRESERVE taxes_total rather than write it.
 function ExpenseForm({ propId, year, expense, qc }) {
-  const [taxes, setTaxes] = useState('');
   const [roof, setRoof] = useState('');
-  // The post-save ↩ Undo: { label, undo } where undo restores the pre-save figures.
+  // The post-save ↩ Undo: { label, undo } where undo restores the pre-save figure.
   const [saved, setSaved] = useState(null);
   useEffect(() => {
-    setTaxes(expense?.taxes_total ?? '');
     setRoof(expense?.roof_total ?? '');
   }, [expense, year]);
   useEffect(() => setSaved(null), [year]); // never show a strip under another year's figures
@@ -210,28 +222,28 @@ function ExpenseForm({ propId, year, expense, qc }) {
   };
 
   const save = useMutation({
-    // `prev` (the pre-save figures, or null on a first-ever save) rides along for the undo.
+    // `prev` (the pre-save roof figure, or null on a first-ever save) rides along for the undo.
     mutationFn: (_prev) =>
       upsertExpenseRecord({
         property_id: propId,
         year,
-        taxes_total: Number(taxes) || 0,
-        cam_total: expense?.cam_total ?? 0, // preserved; maintained by CAM section
+        taxes_total: expense?.taxes_total ?? 0, // preserved; maintained by the tax section
+        cam_total: expense?.cam_total ?? 0,     // preserved; maintained by the CAM section
         roof_total: Number(roof) || 0,
       }),
     onSuccess: (_data, prev) => {
       invalidate();
       setSaved({
-        label: 'taxes & roof saved',
-        // Undo restores the previous taxes/roof (zeros on a first-ever save) but
-        // re-reads the record at undo time so a CAM total the line-items section
-        // synced meanwhile is never clobbered.
+        label: 'roof saved',
+        // Undo restores the previous roof figure (zero on a first-ever save) but
+        // re-reads the record at undo time so taxes/CAM the itemized sections
+        // synced meanwhile are never clobbered.
         undo: async () => {
           const cur = await getExpenseRecord(propId, year);
           await upsertExpenseRecord({
             property_id: propId,
             year,
-            taxes_total: prev ? prev.taxes : 0,
+            taxes_total: Number(cur?.taxes_total) || 0,
             cam_total: Number(cur?.cam_total) || 0,
             roof_total: prev ? prev.roof : 0,
           });
@@ -246,17 +258,13 @@ function ExpenseForm({ propId, year, expense, qc }) {
     <>
       <form className="row" onSubmit={(e) => {
         e.preventDefault();
-        save.mutate(expense ? { taxes: Number(expense.taxes_total) || 0, roof: Number(expense.roof_total) || 0 } : null);
+        save.mutate(expense ? { roof: Number(expense.roof_total) || 0 } : null);
       }} style={{ alignItems: 'flex-end' }}>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
-          <span>Property taxes ($)</span>
-          <input className="text-input num" type="number" step="any" value={taxes} onChange={(e) => setTaxes(e.target.value)} />
-        </label>
         <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
           <span>Roof ($) — separate</span>
           <input className="text-input num" type="number" step="any" value={roof} onChange={(e) => setRoof(e.target.value)} />
         </label>
-        <button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save taxes & roof'}</button>
+        <button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save roof'}</button>
         {saved && (
           <UndoStrip
             label={saved.label}

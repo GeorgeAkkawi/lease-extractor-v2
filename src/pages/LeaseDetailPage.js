@@ -412,9 +412,10 @@ export default function LeaseDetailPage() {
             onCommit={commitEstCamTax}
             hint={`${estHint(estCamTaxAnnual)}${estCamTaxAnnual == null && statedCamTax > 0 ? `the lease states ${money(statedCamTax)}/yr — enter it to start billing it; ` : ''}CAM + tax combined — what the tenant pays during the year, reconciled at year end; blank = bill actuals`}
           />
-          {lease.roof_responsible && (
-            <EditField label={estPerSf ? 'Est. roof ($/SF/yr)' : 'Est. roof (annual)'} type="number" prefix="$" value={estValue(lease.est_roof_annual)} onCommit={commit('est_roof_annual')} hint={`${estHint(lease.est_roof_annual)}roof is billed separately — same estimate → reconcile treatment`} />
-          )}
+          {/* No roof-estimate field here (George: "take out estimated roof box on lease
+              terms"). Roof is billed off the actual expense by default; the estimate,
+              when a lease states one, is set beside the tenant's other figures in
+              Financials → per-tenant breakdown. */}
           <EditField label="Lease terms / notes" value={lease.lease_terms || ''} onCommit={commit('lease_terms')} conf={conf('lease_terms')} />
         </div>
 

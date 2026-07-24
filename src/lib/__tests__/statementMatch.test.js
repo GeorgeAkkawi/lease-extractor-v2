@@ -146,28 +146,31 @@ describe('deposit corroboration', () => {
   function round(n) { return Math.round(n * 100) / 100; }
 });
 
-// George back-filled an old May statement onto a ledger whose open months started in
-// July: every line was tagged to a month that hadn't happened when the money arrived,
-// or to no month at all — and an untagged deposit pools forward, so May's rent settled
-// July's box. The line's own month is the third input that fixes both.
-describe('deposit corroboration — the month the money actually landed', () => {
+// George imports his statements one month at a time, and asked twice for the same
+// thing: "the months under the for month column should correspond with the date of the
+// statement." So the date the bank printed on a line decides the month it's about — a
+// May statement records May — and only a lump (several months, the whole year, an open
+// true-up) is left untagged for the ledger's pool to spread.
+describe('deposit corroboration — the month the statement says', () => {
   const openFromJuly = cityDental({ coverage: [8208.33, 8208.33, 8208.33, 8208.33, 8208.33, 8208.33, 0, 0, 0, 0, 0, 0] });
 
-  it('with no third argument, behaviour is byte-identical to before', () => {
+  it('with no third argument, the earliest month still owed is still the answer', () => {
     expect(corroborateAmount(8208.33, openFromJuly)).toEqual({ corroborated: true, month: 7, toRecon: false });
   });
-  it('a May deposit is never tagged to July — it falls back to its own month', () => {
+  it('a May deposit is tagged May, whatever the ledger still has open', () => {
     const c = corroborateAmount(8208.33, openFromJuly, 5);
     expect(c.month).toBe(5);
-    expect(c.corroborated).toBe(false); // uncorroborated, so nothing newly auto-ticks
+    expect(c.corroborated).toBe(false); // May is already covered, so nothing auto-ticks
   });
-  it('one month ahead is still allowed — rent is due on the 1st, so paying early is normal', () => {
-    expect(corroborateAmount(8208.33, openFromJuly, 6)).toMatchObject({ corroborated: true, month: 7 });
+  it('a deposit whose month bills exactly that amount is corroborated on its own month', () => {
+    expect(corroborateAmount(8208.33, openFromJuly, 8)).toEqual({ corroborated: true, month: 8, toRecon: false });
+    expect(corroborateAmount(8208.33, cityDental(), 8)).toEqual({ corroborated: true, month: 8, toRecon: false });
   });
-  it('a LATE payment still settles the month it owes (the earliest-owed rule stands)', () => {
-    // August deposit, June still owed → June, exactly as before.
-    expect(corroborateAmount(8208.33, openFromJuly, 8)).toMatchObject({ corroborated: true, month: 7 });
-    expect(corroborateAmount(8208.33, cityDental(), 8)).toMatchObject({ corroborated: true, month: 3 });
+  it('an early payment lands on the month it arrived, not the one it might be for', () => {
+    // June deposit on a ledger open from July: June, uncorroborated — the landlord
+    // moves it if it was really July's rent. Guessing is what tagged nine of his
+    // deposits to months he never chose.
+    expect(corroborateAmount(8208.33, openFromJuly, 6)).toEqual({ corroborated: false, month: 6, toRecon: false });
   });
   it('nothing matches a billed figure → the line is dated from itself, not left to the pool', () => {
     const c = corroborateAmount(1234.56, cityDental(), 5);
@@ -230,8 +233,9 @@ describe('withdrawal keyword table', () => {
 
 describe('matchStatement — the driver', () => {
   it('a clean tenant deposit is high-confidence and pre-checked with its month', () => {
+    // A May check for exactly one month's rent, on a tenant whose May is open → May.
     const { rows } = matchStatement({ transactions: [txn()], propertyId: 'prop-1', tenants: [cityDental()] });
-    expect(rows[0]).toMatchObject({ kind: 'tenant', confidence: 'high', checked: true, month: 3 });
+    expect(rows[0]).toMatchObject({ kind: 'tenant', confidence: 'high', checked: true, month: 5 });
   });
 
   it('rules win over fuzzy — the garbled-payee one-time fix', () => {
@@ -396,7 +400,9 @@ describe('escalation-aware corroboration & delta', () => {
   it('matchStatement: a stepped tenant + pre-step deposit → high, checked, tagged to the step month', () => {
     const t = stepped({ coverage: [4106.08, 4106.08, 4106.08, 4106.08, 4106.08, 0, 0, 0, 0, 0, 0, 0] });
     const { rows } = matchStatement({
-      transactions: [txn({ description: 'ACH SAM NAILS 5521', amount: 4106.08 })],
+      // A JUNE deposit — the month the statement dates it to, and the month the rent
+      // stepped up in, still paid at the old rate.
+      transactions: [txn({ date: '2026-06-03', description: 'ACH SAM NAILS 5521', amount: 4106.08 })],
       propertyId: 'prop-3', tenants: [t],
     });
     expect(rows[0]).toMatchObject({ kind: 'tenant', confidence: 'high', checked: true, month: 6 });

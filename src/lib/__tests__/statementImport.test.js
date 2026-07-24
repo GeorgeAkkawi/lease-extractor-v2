@@ -57,8 +57,12 @@ describe('statement import — apply / dedupe / override / undo', () => {
     const { rows: matched } = matchStatement({ transactions: [cityDentalCheck, taxLine, camLine], propertyId: 'prop-1', tenants: ctx.tenants, rules: ctx.rules, existingHashes: ctx.existingHashes });
     expect(matched[0]).toMatchObject({ kind: 'tenant', confidence: 'high' });
     expect(matched[0].candidate.lease_id).toBe('lease-2');
-    // Jan+Feb tagged, the $4,000 pool part-covers March → earliest uncovered = March.
-    expect(matched[0].month).toBe(3);
+    // The bank dated this line May 2, so it's May's rent — every statement is read
+    // from its own dates (George: "the months … should correspond with the date of
+    // the statement"). Jan+Feb are tagged and the $4,000 pool part-covers March, but
+    // guessing March for a May check is what recorded his deposits on months he
+    // never chose.
+    expect(matched[0].month).toBe(5);
     expect(matched[1].kind).toBe('expense_tax');
     expect(matched[2]).toMatchObject({ kind: 'expense_cam', label: 'Landscaping' });
   });

@@ -214,19 +214,21 @@ export const monthOfDate = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ''
 //   { corroborated, month (1-12|null), toRecon, escalated? } — month null = untagged
 //   (FIFO); escalated marks a match at the pre-raise rate on a post-step month.
 //
-// txnMonth (optional, 1-12) is the month the money actually LANDED, and it does two
-// things — both only ever reachable when it's passed, so every 2-arg call behaves
-// exactly as before:
-//   • it caps how far ahead the earliest-owed answer may reach. Rent is due on the
-//     1st, so a deposit can settle a month already past (a late payment) or the very
-//     next one (paid a few days early) — but never a month two or more out. Without
-//     this, back-filling an old statement onto a ledger whose open months start later
-//     tagged every line to a FUTURE month;
-//   • when nothing corroborates at all, it dates the line to its own month, so every
-//     statement is read and autodated instead of falling into the untagged pool
-//     (which silently drifts the money to the earliest open month).
-// The fallback is deliberately NOT corroborated, so confidence is unchanged and
-// nothing newly auto-ticks — it only fills the month the landlord would have typed.
+// txnMonth (optional, 1-12) is the month the money LANDED, printed on the line, and
+// when it's there it DECIDES the month — a statement is dated from its own lines
+// (George, twice: "the months under the for month column should correspond with the
+// date of the statement"). A landlord importing last May's statement is telling you
+// what month it is; guessing a different one from what's still open is how nine of his
+// deposits ended up settling months he never chose. Every 2-arg call is unchanged: with
+// no date to go on, the earliest month the tenant still owes is still the best answer.
+//
+// A lump still wins over the line's own month — a check that pays several months, the
+// whole year, or an open true-up is returned UNTAGGED so the ledger's pool spreads it.
+// Tagging it to one month would settle that month and lose the rest.
+//
+// `corroborated` keeps its exact meaning: the amount matches what that month bills (or
+// its remaining gap, or the pre-raise rate). An uncorroborated line still carries its
+// month — it just doesn't auto-tick, so confidence and auto-ticking are untouched.
 export function corroborateAmount(amount, t, txnMonth = null) {
   // An open reconciliation true-up: the check that settles it matches its balance.
   if (t.reconBalance > 0 && amountMatches(amount, t.reconBalance)) {
@@ -238,20 +240,25 @@ export function corroborateAmount(amount, t, txnMonth = null) {
   const cov = t.coverage || [];
   const gaps = owed.map((o, i) => round2(Math.max(0, (Number(o) || 0) - (Number(cov[i]) || 0))));
   const firstOpen = gaps.findIndex((g) => g > DUST);
-  // One month's billed charge → the earliest uncovered owed month, unless that month
-  // hadn't come around yet when the money arrived (see txnMonth above).
-  const reachable = firstOpen !== -1 && !(hasTxnMonth && firstOpen + 1 > tm + 1);
-  if (reachable) {
-    if (amountMatches(amount, owed[firstOpen]) || amountMatches(amount, gaps[firstOpen])) {
-      return { corroborated: true, month: firstOpen + 1, toRecon: false };
+  // The month this line is ABOUT: the one the bank printed on it, else the earliest
+  // month still owed.
+  const target = hasTxnMonth ? tm : (firstOpen !== -1 ? firstOpen + 1 : null);
+  // Corroboration is about money that still needs settling: the month has to be OPEN.
+  // A deposit matching a month already covered corroborates nothing — it would record
+  // the rent twice, which the review flags rather than pre-ticks.
+  if (target && gaps[target - 1] > DUST) {
+    const owedT = Number(owed[target - 1]) || 0;
+    const gapT = gaps[target - 1];
+    if (amountMatches(amount, owedT) || amountMatches(amount, gapT)) {
+      return { corroborated: true, month: target, toRecon: false };
     }
     // A mid-year rent escalation explains a deposit still at the PRE-raise rate for a
     // post-step month — it's not short, the raise just hasn't been paid at the new
     // amount yet. Accept it and flag `escalated` so the review shows the quiet
     // "matches the pre-raise rate" cue instead of the amber short chip.
-    const step = stepAtOrBefore(t.steps, firstOpen + 1);
-    if (step && amountMatches(amount, preStepOwed(owed[firstOpen], step))) {
-      return { corroborated: true, month: firstOpen + 1, toRecon: false, escalated: true };
+    const step = stepAtOrBefore(t.steps, target);
+    if (owedT > DUST && step && amountMatches(amount, preStepOwed(owedT, step))) {
+      return { corroborated: true, month: target, toRecon: false, escalated: true };
     }
   }
   if (firstOpen !== -1) {

@@ -2,9 +2,8 @@
 // each locking one thing George couldn't read on his real Chase import:
 //  1. the tenant dropdown leads with the property you're standing in — the rest of the
 //     portfolio stays reachable under "Other properties", never padding the main list;
-//  2. every column has a name, so the include tick reads as the include tick and the
-//     "Always" column explains itself instead of looking like a missing checkbox;
-//  3. the auto-filled "For month" says WHY it isn't the month the deposit landed in;
+//  2. every column has a name, and there is exactly one tick per row to understand;
+//  3. "For month" is the month the bank printed on the line, and a month he picks wins;
 //  4. clicking one 🤖 helper puts only that button into "Suggesting…".
 // A sibling of statementReviewMismatch/Escalation so those files stay untouched.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -65,7 +64,10 @@ function renderReview() {
   );
 }
 
-const rowFor = (text) => screen.getByText(new RegExp(text)).closest('tr');
+// Match on the DESCRIPTION cell: a checked row also names the payee it will
+// remember, so a bare text search finds the same wording twice.
+const rowFor = (text) => Array.from(document.querySelectorAll('.stmt-table tbody tr'))
+  .find((tr) => new RegExp(text).test(tr.querySelector('.stmt-desc')?.textContent || ''));
 const optionsOf = (sel, label) => Array.from(sel.querySelector(`optgroup[label="${label}"]`).querySelectorAll('option')).map((o) => o.textContent);
 
 beforeEach(() => { cleanup(); h.resolveSuggest = null; });
@@ -87,39 +89,34 @@ describe('StatementReview — reading the lines', () => {
     expect(optionsOf(sel, 'Other properties')).toContain('Northwind Books — Oak Center');
   });
 
-  it('names every column, and the Always cell explains itself on a tenant row', async () => {
+  it('names every column, and no row asks for a second tick', async () => {
     renderReview();
     await waitFor(() => expect(screen.getByText(/Money in · 2/)).toBeTruthy());
     // Both tables share one header row component, so they can't drift apart.
     for (const table of document.querySelectorAll('.stmt-table')) {
       expect(Array.from(table.querySelectorAll('thead th')).map((t) => t.textContent))
-        .toEqual(['Import', 'Date', 'Description', 'Amount', 'Record as', 'For month', 'Match', 'Always']);
+        .toEqual(['Import', 'Date', 'Description', 'Amount', 'Record as', 'For month', 'Match']);
     }
 
-    // A deposit needs no "Always" tick — booking it teaches the payee — so the cell says
-    // "auto" rather than sitting empty next to the include tick on the far left.
-    const depRow = rowFor('CHECK 1044 CITY DENTAL PC');
-    const cells = depRow.querySelectorAll('td');
-    expect(cells[cells.length - 1].textContent).toBe('auto');
-    expect(depRow.querySelectorAll('input[type=checkbox]')).toHaveLength(1);
-    // A recognized expense keeps its opt-in tick: include + Always.
-    expect(rowFor('SNOW REMOVAL SERVICE').querySelectorAll('input[type=checkbox]')).toHaveLength(2);
+    // One tick per row — include. Deposits and expenses alike remember their payee by
+    // being saved, so the "Always" column George couldn't make sense of is gone.
+    expect(rowFor('CHECK 1044 CITY DENTAL PC').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
+    expect(rowFor('SNOW REMOVAL SERVICE').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
   });
 
-  it('says why the tagged month isn\'t the month the deposit landed in — and stops once you choose', async () => {
+  it('dates a deposit from the statement, and never argues with a month you choose', async () => {
     renderReview();
     await waitFor(() => expect(screen.getByText(/Money in · 2/)).toBeTruthy());
     const depRow = rowFor('CHECK 1044 CITY DENTAL PC');
     const monthSel = depRow.querySelectorAll('select')[1];
 
-    // Posted in August, but June is the earliest month still owed — so it settles June.
-    await waitFor(() => expect(monthSel.value).toBe('6'));
-    expect(within(depRow).getByText('earliest month still owed')).toBeTruthy();
+    // Posted in August — so it's August, even though June is the earliest month still
+    // owed. An August statement records August.
+    await waitFor(() => expect(monthSel.value).toBe('8'));
 
-    // The landlord's own choice is never second-guessed.
-    fireEvent.change(monthSel, { target: { value: '8' } });
-    expect(monthSel.value).toBe('8');
-    expect(within(depRow).queryByText('earliest month still owed')).toBe(null);
+    // And the landlord's own choice always wins.
+    fireEvent.change(monthSel, { target: { value: '6' } });
+    expect(monthSel.value).toBe('6');
   });
 
   it('only the 🤖 helper you clicked says "Suggesting…"', async () => {

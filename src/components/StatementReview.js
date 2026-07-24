@@ -134,7 +134,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       return {
         row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth,
         checked: writable && checked && !(alreadyPaid && ov.checked === undefined),
-        always: !!ov.always, ai: !!ov.ai, picked: ov.pick != null,
+        ai: !!ov.ai, picked: ov.pick != null,
         monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
       };
     });
@@ -237,10 +237,13 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     }
   }
 
-  // Learn payee → target rules so the NEXT statement auto-classifies without asking:
-  //  • every CHECKED tenant deposit is remembered automatically (on the tenant's OWN
-  //    property — deposits self-route across the portfolio);
-  //  • an expense line is remembered only when its "Always" box is ticked.
+  // Learn payee → target rules so the NEXT statement auto-classifies without asking.
+  // EVERY checked line teaches its payee — a deposit on the tenant's OWN property
+  // (deposits self-route across the portfolio), an expense on the property being
+  // imported. It used to take a tick in an "Always" column for expenses, which George
+  // read as one more thing to understand for no gain ("i dont understand the always
+  // collumn"); a rule is only ever a starting guess on the next statement, and every
+  // one is listed and removable under Learned payees.
   // Deduped by pattern (a repeat payee → one rule), then SCREENED for specificity: a
   // pattern that also appears on a line belonging to a different payee is the bank's
   // boilerplate, not a payee, and learning it would make one rule swallow them all.
@@ -254,7 +257,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       if (!pattern) continue;
       if (r.kind === 'tenant' && r.tenant) {
         ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, targetKey: targetKeyOf(r), property_id: r.tenant.property_id, target_kind: 'tenant', lease_id: r.tenant.lease_id, cam_label: null });
-      } else if (r.always && r.kind.startsWith('expense_')) {
+      } else if (r.kind.startsWith('expense_')) {
         ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, targetKey: targetKeyOf(r), property_id: expenseProp, target_kind: r.kind, lease_id: null, cam_label: (r.kind === 'expense_cam' || r.kind === 'expense_other') ? (r.label || null) : null });
       }
     }
@@ -279,7 +282,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         } else if (r.kind === 'expense_other') {
           entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: r.label || 'Other', billable: false, hash: r.row.hash });
         } else if (r.kind === 'expense_tax') {
-          entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
+          entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: taxLabel(r.row.txn.description), hash: r.row.hash });
         } else if (r.kind === 'expense_roof') {
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
         }
@@ -457,6 +460,11 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             {learned.rejected.map((x) => `${x.count} lines share the wording “${x.pattern}”`).join('; ')} — that's your bank's own wording, not a payee, so it won't be remembered. These lines still import; name them individually under <strong>Learned payees</strong> if you want them matched automatically.
           </div>
         )}
+        {learned.keep.length > 0 && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            Saving also remembers <strong>{learned.keep.length}</strong> payee{learned.keep.length === 1 ? '' : 's'} → where {learned.keep.length === 1 ? 'it goes' : 'they go'}, so the next statement sorts itself. Only the payee is remembered, never the month — every statement is dated from its own lines. Change or drop any of them under <strong>Learned payees</strong> on the Ledger tab.
+          </div>
+        )}
         {nothingTicked && (
           <div className="note-msg warn">
             Nothing is ticked yet — tick the <strong>Import</strong> box on each line you want recorded.
@@ -488,6 +496,15 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       )}
     </div>
   );
+}
+
+// The label a property-tax payment carries in the itemized list: the payee the bank
+// named, tidied ("COOK COUNTY TREASURER" → "Cook County Treasurer"), so three
+// instalments read as three recognizable lines instead of three identical rows.
+function taxLabel(description) {
+  const payee = suggestRulePattern(description);
+  if (!payee) return 'Property tax';
+  return payee.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).slice(0, 60);
 }
 
 // What a resolved row RESOLVES TO — the identity the specificity screen compares. Two
@@ -550,7 +567,6 @@ function HeadRow() {
         <th>Record as</th>
         <th>For month</th>
         <th title="How confident the match is">Match</th>
-        <th title="Remember this payee so future statements sort it the same way">Always</th>
       </tr>
     </thead>
   );
@@ -738,17 +754,18 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
               <select
                 className="text-input"
                 value={r.month ?? ''}
-                title="Which month's rent this deposit pays. Filled in from the earliest month this tenant still owes when the amount says so — a payment that arrives late lands on the month it settles — and otherwise from the date on the line itself. Change it whenever it's for a different month; your choice always wins."
+                title="Which month's rent this deposit pays — filled in from the date the bank printed on this line, so a May statement records May. Change it whenever the money was for a different month; your choice always wins. “— (lump)” leaves it untagged, and the ledger spreads it across the months still owed."
                 onChange={(e) => setOv(r.i, { month: e.target.value })}
               >
                 <option value="">— (lump)</option>
                 {MONTH_NAMES.map((nm, mi) => <option key={nm} value={mi + 1}>{nm.slice(0, 3)}</option>)}
               </select>
-              {/* Say so when the month chosen isn't the month the deposit landed in —
-                  otherwise a May tag on a June deposit reads as a mistake. */}
-              {!r.monthPicked && r.month && txnMonth && r.month !== txnMonth && (
-                <div className="stmt-monthhint" title={`This deposit posted in ${MONTH_NAMES[txnMonth - 1]}, but ${MONTH_NAMES[r.month - 1]} is the earliest month this tenant still owes, so it settles that one first. Pick a different month if that's wrong.`}>
-                  earliest month still owed
+              {/* A check big enough to cover several months, the whole year, or an open
+                  true-up is deliberately left untagged — say so, otherwise an empty
+                  month box reads as something that failed to fill in. */}
+              {!r.monthPicked && !r.month && (
+                <div className="stmt-monthhint" title="This amount doesn't match one month's rent — it covers more than one, so it's left untagged and the ledger applies it to the months still owed, oldest first. Pick a month to pin it to just that one.">
+                  covers several months
                 </div>
               )}
               {!dupe && r.mismatch && (
@@ -779,26 +796,13 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
         ) : (
           <span className={`badge ${CONF_TONE[row.confidence] || 'info'}`} title={`Match confidence: ${row.confidence}`}>{CONF_LABEL[row.confidence] || row.confidence}</span>
         )}
-      </td>
-      <td>
-        {/* A tenant deposit needs no tick — booking it teaches the payee by itself. Say
-            that in the column rather than leaving it blank, which read as a missing
-            checkbox. Money-out keeps the opt-in tick, and a row that resolves to nothing
-            says why it has neither, so the column is never silently empty. */}
-        {r.kind === 'tenant' ? (
-          <span className="stmt-auto muted" title={payee ? `No tick needed — saving this deposit remembers “${payee}” automatically, so the next statement sorts it with no questions. The month is never remembered: every statement is dated from its own lines.` : 'No tick needed — saving this deposit remembers the payee automatically. The month is never remembered: every statement is dated from its own lines.'}>auto</span>
-        ) : r.kind.startsWith('expense_') ? (
-          <input
-            type="checkbox"
-            checked={r.always}
-            onChange={(e) => setOv(r.i, { always: e.target.checked })}
-            title={payee
-              ? `Remember “${payee}” → this bucket for future statements. The month is never remembered — every statement is dated from its own lines.`
-              : 'This line has no distinctive payee wording to remember — sort it here just this once.'}
-            disabled={!payee}
-          />
-        ) : (
-          <span className="stmt-auto muted" title="Choose what this line is first — then it can be remembered">—</span>
+        {/* Saving a line teaches its payee, so there is nothing to tick — the column
+            that used to ask ("Always") only ever confused things. Say what will be
+            learned, quietly, on the row it's learned from. */}
+        {r.checked && payee && (r.kind === 'tenant' || r.kind.startsWith('expense_')) && (
+          <div className="stmt-learn muted" title={`Saving this remembers “${payee}” and sorts it here on future statements. Change or remove it any time under Learned payees. The month is never remembered — every statement is dated from its own lines.`}>
+            remembers “{payee}”
+          </div>
         )}
       </td>
     </tr>

@@ -37,7 +37,10 @@ function renderReview(transactions, onSaved = () => {}) {
   );
 }
 
-const rowFor = (text) => screen.getByText(new RegExp(text)).closest('tr');
+// Match on the DESCRIPTION cell: a checked row also names the payee it will
+// remember, so a bare text search finds the same wording twice.
+const rowFor = (text) => Array.from(document.querySelectorAll('.stmt-table tbody tr'))
+  .find((tr) => new RegExp(text).test(tr.querySelector('.stmt-desc')?.textContent || ''));
 
 beforeEach(() => cleanup());
 afterAll(async () => {
@@ -49,20 +52,24 @@ describe('StatementReview — the month follows the statement', () => {
     // A remembered payee pointing at the WRONG tenant — exactly the state a boilerplate
     // pattern used to leave the ledger in.
     const rule = await saveImportRule({ property_id: 'prop-1', pattern: 'ZZGUSTAVO', target_kind: 'tenant', lease_id: 'lease-1' });
-    renderReview([{ date: `${Y}-05-02`, description: 'ONLINE ACH DEBIT 9031521835 FROM ZZGUSTAVO', amount: 9150, direction: 'in', balance: null, line: 1 }]);
+    // $109,800 — City Dental's WHOLE year in one payment, and nothing at all to Bright
+    // Coffee, so the two tenants genuinely deserve different answers.
+    renderReview([{ date: `${Y}-05-02`, description: 'ONLINE ACH DEBIT 9031521835 FROM ZZGUSTAVO', amount: 109800, direction: 'in', balance: null, line: 1 }]);
     await waitFor(() => expect(screen.getByText(/Money in · 1/)).toBeTruthy());
     const row = screen.getByText('ONLINE ACH DEBIT 9031521835 FROM ZZGUSTAVO').closest('tr');
     const [pickSel, monthSel] = row.querySelectorAll('select');
 
-    // The rule matched Bright Coffee, whose year is settled — so nothing corroborates
-    // and the line is dated from the statement itself: May.
+    // The rule matched Bright Coffee, whose year is settled — nothing corroborates, so
+    // the line is dated from the statement itself: May.
     expect(pickSel.value).toBe('lease:lease-1');
     await waitFor(() => expect(monthSel.value).toBe('5'));
 
-    // Name the real tenant → the month is recomputed for THEM (City Dental's earliest
-    // still-owed month is March, and $9,150 is exactly one of its months).
+    // Name the real tenant → the answer is recomputed for THEM: this is City Dental's
+    // whole year, so it goes in untagged and the ledger spreads it. Inheriting the
+    // previous tenant's answer is how a hand-corrected line saved with no month at all.
     fireEvent.change(pickSel, { target: { value: 'lease:lease-2' } });
-    await waitFor(() => expect(row.querySelectorAll('select')[1].value).toBe('3'));
+    await waitFor(() => expect(row.querySelectorAll('select')[1].value).toBe(''));
+    expect(within(row).getByText('covers several months')).toBeTruthy();
 
     // And a month typed by hand still wins over both.
     fireEvent.change(row.querySelectorAll('select')[1], { target: { value: '5' } });
@@ -111,21 +118,29 @@ describe('StatementReview — the affordances around Save', () => {
     await waitFor(() => expect(row().className).not.toContain('stmt-off'));
   });
 
-  it('every row says something in the Always column — it is never blank', async () => {
+  it('a line about to be recorded says which payee it will remember — and there is no second tick', async () => {
     renderReview([
       { date: `${Y}-05-02`, description: 'CHECK 1044 CITY DENTAL PC', amount: 9150, direction: 'in', balance: null, line: 1 },
       { date: `${Y}-05-03`, description: 'ZZUNKNOWN PAYEE 4412', amount: 1234.56, direction: 'in', balance: null, line: 2 },
       { date: `${Y}-05-15`, description: 'GREENLEAF LANDSCAPING INV 88', amount: 450, direction: 'out', balance: null, line: 3 },
     ]);
     await waitFor(() => expect(screen.getByText(/Money in · 2/)).toBeTruthy());
+    // Seven columns, one tick each: the "Always" column George couldn't make sense of
+    // is gone, and remembering happens by saving.
     for (const tr of document.querySelectorAll('.stmt-table tbody tr')) {
-      const last = tr.querySelectorAll('td')[7];
-      expect(last.textContent.trim() || last.querySelector('input')).toBeTruthy();
+      expect(tr.querySelectorAll('td')).toHaveLength(7);
+      expect(tr.querySelectorAll('input[type=checkbox]')).toHaveLength(1);
     }
-    // A tenant deposit is remembered automatically; an unresolved line says to pick first.
-    expect(within(rowFor('CHECK 1044 CITY DENTAL PC')).getByText('auto')).toBeTruthy();
-    expect(within(rowFor('ZZUNKNOWN PAYEE 4412')).getByText('—')).toBeTruthy();
-    expect(rowFor('GREENLEAF LANDSCAPING INV 88').querySelectorAll('input[type=checkbox]')).toHaveLength(2);
+    // The recognized deposit is ticked, so it names what it teaches; a line nothing
+    // recognizes teaches nothing and says nothing.
+    expect(within(rowFor('CHECK 1044 CITY DENTAL PC')).getByText(/remembers “CITY DENTAL PC”/)).toBeTruthy();
+    expect(within(rowFor('ZZUNKNOWN PAYEE 4412')).queryByText(/remembers/)).toBe(null);
+
+    // An expense teaches its payee the same way — no extra column needed — and drops
+    // the promise the moment it's left out of the import.
+    expect(within(rowFor('GREENLEAF LANDSCAPING INV 88')).getByText(/remembers “GREENLEAF LANDSCAPING/)).toBeTruthy();
+    fireEvent.click(rowFor('GREENLEAF LANDSCAPING INV 88').querySelector('input[type=checkbox]'));
+    await waitFor(() => expect(within(rowFor('GREENLEAF LANDSCAPING INV 88')).queryByText(/remembers/)).toBe(null));
   });
 });
 
