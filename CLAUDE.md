@@ -613,13 +613,29 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
     `type PdfChunk` import). No `src/` change → no frontend deploy.
   - **Verified:** deployed clean (server-side bundle + type-check); unauth POST → **401**; Vitest **525/525**; live
     read-back of the repaired text as above.
-  - **⚠️ FLAGGED FOR GEORGE — the rent ledger disagrees with the now-visible printed table, and I did NOT change it**
-    (money data needs your OK). Today's billing is CORRECT ($364,629.12 = the Sep 2025–Aug 2026 rate), and the next
-    step is off by only $3.44 — **but from Sept 2028 the schedule is shifted a year late and under-bills ~$10k/yr**:
-    2028 reads $382,664.68 (printed: **$392,665.68**), 2029 $391,465.68 (**$402,482.28**), 2030 $402,481.68
-    (**$412,544.40**), plus a **spurious 2031-09-01 step** ($412,542.40) past the Aug 31 2031 term end — the option
-    period is already covered by the pending $422,858.04 option. Two cents-level slips too (2023 $347,053.20 vs
-    $347,059.32; 2026 $373,741.48 vs $373,744.92). Say the word and I'll correct all six rows to the printed table.
+  - **✅ FOLLOW-ON, SAME DAY — the rent ledger corrected to the printed table (George: *"yes correct all 6 rows"*).**
+    The restored page 1 exposed a disagreement between `rent_escalations` and the lease's own "Period / Monthly
+    Installment(s) of Base Rent" table. Today's billing was already CORRECT ($364,629.12 = the Sep 2025–Aug 2026 rate)
+    and 2022/2024/2025/2027 matched to the cent, **but from Sept 2028 the schedule was shifted a year late and
+    under-billed ~$10k/yr**. **Six changes in ONE guarded transaction** — five updates + one delete, each keyed on the
+    exact wrong value so a re-run is a no-op: **2023-09-01** $347,053.20 → **$347,059.32** · **2026-09-01** $373,741.48
+    → **$373,744.92** · **2028-09-01** $382,664.68 → **$392,665.68** · **2029-09-01** $391,465.68 → **$402,482.28** ·
+    **2030-09-01** $402,481.68 → **$412,544.40** · and the **spurious 2031-09-01 step** ($412,542.40, past the Aug 31
+    2031 term end) **deleted** — the option period is covered by the pending $422,858.04 renewal option, not by a
+    primary-term escalation. **No code change, NO deploy, NO migration, $0, no tenant emails.**
+    - **Every figure is the printed monthly × 12** — the app's own convention, never a model's arithmetic. Read-back
+      confirms all nine surviving rows now divide back to the exact printed monthly (28,216.20 · 28,921.61 · 29,644.65
+      · 30,385.76 · 31,145.41 · 31,924.04 · 32,722.14 · 33,540.19 · 34,378.70).
+    - **Nothing else moved.** `base_rent` stays **$364,629.12**, term end 2031-08-31, lease active, the renewal option
+      untouched at $422,858.04 pending, and `lease_text` still 112,859 chars. The property's **2026** revenue is
+      **unchanged** at $364,629.12 — era-aware `effective_rent` (0054) lets `base_rent` win for the current era, so a
+      future-dated step can't disturb today's figures; **2023** moved by exactly the $6.12 correction to $347,059.32.
+    - **Self-cleaning side effect:** the `escalations_reminders` AFTER-DELETE trigger regenerated the lease's key dates,
+      so the stale 2031-09-01 escalation key date + its reminders are gone (verified: 0 escalation key dates past term).
+      `notifications` has no `escalation_id`, so nothing was orphaned.
+    - **Flag (no action needed):** there is still **no ledger row for the opening 2021-09-01 period** ($27,528.00/mo =
+      $330,336.00/yr) — outside the six you approved, and it only affects how FY2021 reads in historical reporting, not
+      any bill. Say the word and I'll add it.
 
 - **2026-07-23** — **Statement import v2: the review screen now GROUPS each statement by month (all-matched months
   collapsed, months needing a look open, live "N matched · M need review" counts in every header), and the Ledger tab
