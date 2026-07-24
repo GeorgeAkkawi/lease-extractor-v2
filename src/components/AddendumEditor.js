@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAddendum, uploadDoc } from '../lib/api';
-import { fmtDate } from '../lib/format';
+import { fmtDate, money } from '../lib/format';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
 // into the lease via applyAddendum. The AI reads the document and LEADS: it pre-fills
@@ -20,7 +20,8 @@ const KIND_LABEL = {
 
 const blankForm = () => ({
   label: '', amendment_date: '', summary: '',
-  fx_extension: false, fx_rent: false, fx_option: false, fx_assignment: false, fx_abatement: false,
+  fx_extension: false, fx_rent: false, fx_option: false, fx_assignment: false, fx_abatement: false, fx_estimate: false,
+  est_camtax: '', est_roof: '', est_quote: '',
   new_termination_date: '',
   rentSteps: [], // [{ effective_date, new_base_rent }]
   opt_label: '', opt_term_months: '', opt_new_rent: '', opt_annual_pct: '', opt_notice_by: '',
@@ -61,7 +62,11 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
   const removeStep = (i) => setForm((f) => ({ ...f, rentSteps: f.rentSteps.filter((_, j) => j !== i) }));
 
   const refresh = () => {
-    ['addendums', 'lease', 'leases', 'escalations', 'renewals', 'propertyTotals', 'tenantShares', 'alerts', 'expiredLeases', 'searchIndex', 'notifications']
+    // A rider can move the term, the rent AND the CAM & tax estimate — and an estimate
+    // change resyncs the year invoice + the recorded paid months, so the Ledger boxes,
+    // the monthly tracker and the invoices/payments panels must repaint too.
+    ['addendums', 'lease', 'leases', 'escalations', 'renewals', 'propertyTotals', 'tenantShares', 'alerts',
+      'expiredLeases', 'searchIndex', 'notifications', 'propertyRentRoll', 'monthlyRent', 'invoices', 'payments', 'historyEvents']
       .forEach((key) => qc.invalidateQueries({ queryKey: [key] }));
   };
 
@@ -92,6 +97,16 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
         newTenantEmail: f.asg_email || null,
         newTenantEmail2: f.asg_email_2 || null,
         effectiveDate: f.asg_effective_date || null,
+      };
+    }
+    // The CAM & tax the rider says the tenant pays during the year. Stored the merged
+    // way the whole app bills from (one combined figure), and the year's invoice +
+    // recorded months resync to it — the estimate is the source of truth all year.
+    if (f.fx_estimate && (f.est_camtax !== '' || f.est_roof !== '')) {
+      changes.estimates = {
+        camTaxAnnual: numOrNull(f.est_camtax),
+        roofAnnual: numOrNull(f.est_roof),
+        effectiveDate: f.amendment_date || null,
       };
     }
     if (f.fx_abatement && f.ab_start && f.ab_months !== '') {
@@ -138,6 +153,12 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
       const first = opts[0] || null;
       const abs = fields.abatements || [];
       const ab0 = abs[0] || null;
+      // CAM & tax the rider states, already annualized in code by the extractor. Merged
+      // into the ONE combined figure the app bills from (2026-07-20 convention).
+      const estCamTax =
+        fields.est_cam_annual != null || fields.est_tax_annual != null
+          ? Number(fields.est_cam_annual || 0) + Number(fields.est_tax_annual || 0)
+          : null;
 
       setForm((f) => ({
         ...f,
@@ -168,6 +189,10 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
         ab_value: ab0?.value ?? '',
         ab_note: ab0?.note || '',
         _aiAbatements: abs.slice(1),
+        fx_estimate: estCamTax != null || fields.est_roof_annual != null,
+        est_camtax: estCamTax != null ? String(estCamTax) : '',
+        est_roof: fields.est_roof_annual != null ? String(fields.est_roof_annual) : '',
+        est_quote: fields.est_quote || '',
         addendum_text: addendum_text || null,
         extraction_raw: fields || null,
         _rentFlag: fields.rent_schedule_flag || null,
@@ -186,8 +211,9 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
   };
   const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim(), squareFootage })); };
 
-  const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment || form.fx_abatement;
+  const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment || form.fx_abatement || form.fx_estimate;
   const canSave =
+    (!form.fx_estimate || form.est_camtax !== '' || form.est_roof !== '') &&
     (!form.fx_extension || !!form.new_termination_date) &&
     (!form.fx_option || (form.opt_term_months !== '' || form.opt_new_rent !== '' || form.opt_annual_pct !== '')) &&
     (!form.fx_assignment || !!form.asg_tenant_name) &&
@@ -341,6 +367,26 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
                 </div>
               </EffectCard>
 
+              {/* Sets the CAM & tax estimate */}
+              <EffectCard on={form.fx_estimate} onToggle={toggle('fx_estimate')} title="Sets the CAM &amp; tax estimate"
+                hint="What the tenant pays toward real-estate taxes and CAM during the year. Saved on the lease and billed from here on — the actual expenses only settle it at year-end ⚖ Reconcile.">
+                <div className="field-grid">
+                  <label className="form-field" style={{ marginBottom: 0 }}>
+                    <span>CAM &amp; tax (annual $)</span>
+                    <input className="text-input num" type="number" step="any" placeholder="e.g. 13200" value={form.est_camtax} onChange={set('est_camtax')} />
+                    <PerMonth annual={form.est_camtax} sqft={squareFootage} />
+                  </label>
+                  <label className="form-field" style={{ marginBottom: 0 }}>
+                    <span>Roof (annual $) — optional</span>
+                    <input className="text-input num" type="number" step="any" placeholder="only if billed separately" value={form.est_roof} onChange={set('est_roof')} />
+                    <PerMonth annual={form.est_roof} sqft={squareFootage} />
+                  </label>
+                </div>
+                {form.est_quote && (
+                  <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>From the rider: “{form.est_quote}”</p>
+                )}
+              </EffectCard>
+
               {/* Grants free / reduced rent (abatement) */}
               <EffectCard on={form.fx_abatement} onToggle={toggle('fx_abatement')} title="Grants free / reduced rent"
                 hint="A stretch of free or reduced BASE rent. Credited on the invoice & monthly tracker — CAM / taxes still apply; base rent itself is unchanged.">
@@ -378,6 +424,21 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
         </div>
       )}
     </div>
+  );
+}
+
+// Riders print these figures MONTHLY ("Real Estate Taxes & CAM: $1,100.00"), while the
+// lease stores them annually — so the annual field states its own monthly back, and the
+// $/SF rate beside it. Entering the annual keeps the figure exact: 12 × a rounded $/SF
+// would land $4 off the rider.
+function PerMonth({ annual, sqft }) {
+  const n = Number(annual);
+  if (annual === '' || annual == null || !isFinite(n) || n <= 0) return null;
+  const sf = Number(sqft) || 0;
+  return (
+    <span className="est-preview" style={{ marginTop: 4 }}>
+      = {money(n / 12)}/mo{sf > 0 ? ` · $${(n / sf).toFixed(2)}/SF/yr` : ''}
+    </span>
   );
 }
 

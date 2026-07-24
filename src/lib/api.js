@@ -1290,6 +1290,34 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
     });
   }
 
+  // Estimated CAM & tax the rider states ("Real Estate Taxes & CAM: $1,100.00" beside
+  // the new base rent). Stored the merged way the whole app bills from — the combined
+  // figure on est_cam_annual with est_tax_annual zeroed — then the year's billing is
+  // resynced so the invoice AND the system-marked paid months move to base + the new
+  // estimate. That is the standing rule: the estimate is what's billed all year; the
+  // actual only settles it at year-end ⚖ Reconcile.
+  const est = changes.estimates;
+  if (est && (est.camTaxAnnual != null || est.roofAnnual != null)) {
+    const fy = today.getFullYear();
+    const patch = { est_confirmed_year: fy };
+    if (est.camTaxAnnual != null) {
+      patch.est_cam_annual = Number(est.camTaxAnnual);
+      patch.est_tax_annual = 0; // the combined convention — cam + tax reads back as the figure entered
+    }
+    if (est.roofAnnual != null) patch.est_roof_annual = Number(est.roofAnnual);
+    await updateLease(leaseId, patch);
+    await resyncYearBillingToEstimate(leaseId, lease?.property_id, fy);
+    await logHistoryEvent({
+      property_id: lease?.property_id || null, lease_id: leaseId, type: 'estimate_set', tenant_name: lease?.tenant_name || null,
+      description:
+        `CAM & tax estimate set${addendum.label ? ` (${addendum.label})` : ''}: ` +
+        [est.camTaxAnnual != null ? `CAM & tax ${money(est.camTaxAnnual)}/yr` : null,
+          est.roofAnnual != null ? `roof ${money(est.roofAnnual)}/yr` : null].filter(Boolean).join(' · '),
+      event_date: est.effectiveDate || addendum.amendment_date || null,
+      meta: { addendum_id: addendum.id, cam_tax_annual: est.camTaxAnnual ?? null, roof_annual: est.roofAnnual ?? null },
+    });
+  }
+
   return backfillLeaseToToday(leaseId, today);
 }
 

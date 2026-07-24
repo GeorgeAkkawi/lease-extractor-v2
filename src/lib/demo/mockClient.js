@@ -569,6 +569,13 @@ function demoExtractAddendum() {
       new_base_rent_effective_date: `${y}-01-01`,
       escalations: [{ effective_date: `${y + 2}-01-01`, escalation_type: 'percent', escalation_value: 3, new_base_rent: null }],
       renewal_options: [],
+      // A rider almost always re-states what the tenant pays toward taxes and CAM,
+      // usually as a monthly "Monthly Figures" block. The extractor reads the raw
+      // $1,500.00 and annualizes it in code → $18,000.00 exactly.
+      est_cam_annual: 18000,
+      est_tax_annual: null,
+      est_roof_annual: null,
+      est_quote: 'Real Estate Taxes & CAM: $1,500.00',
       summary: `Extends the term through ${fmtDate(newEnd)} at $132,000/yr with a 3% bump in ${y + 2}.`,
     },
     full_text: [
@@ -577,6 +584,14 @@ function demoExtractAddendum() {
       `1. Term. The Lease term is extended through December 31, ${y + 5}.`,
       `2. Base Rent. Effective January 1, ${y}, annual base rent is $132,000.00, payable monthly.`,
       `3. Escalation. Base rent increases three percent (3%) on January 1, ${y + 2}.`,
+      '4. Real Estate Taxes and Additional Rent. As described in the first Addendum.',
+      '',
+      'Monthly Figures',
+      '        Base Rent:                    $11,000.00',
+      '        Real Estate Taxes & CAM:       $1,500.00',
+      '        ------------------------------------------',
+      '        Total                         $12,500.00 Monthly rent',
+      '',
       'All other terms of the Lease remain in full force and effect.',
     ].join('\n'),
   };

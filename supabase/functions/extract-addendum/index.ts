@@ -11,7 +11,7 @@ import { callClaude, transcribeDocument, uploadFile, deleteFile, MAX_VISION_BYTE
 import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
-import { rebuildRentSchedule } from '../_shared/rentSchedule.js';
+import { rebuildRentSchedule, estimateAnnualsFrom } from '../_shared/rentSchedule.js';
 
 const MODEL = 'claude-haiku-4-5';
 const BUCKET = 'lease-documents';
@@ -100,7 +100,7 @@ const SYSTEM_ASSIGNMENT =
 const RENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['square_footage', 'rent_schedule', 'abatements'],
+  required: ['square_footage', 'rent_schedule', 'abatements', 'expense_estimates'],
   properties: {
     square_footage: { type: ['number', 'null'], description: 'the leased area in square feet exactly as written (raw number), else null' },
     rent_schedule: {
@@ -132,6 +132,27 @@ const RENT_SCHEMA = {
         },
       },
     },
+    // ESTIMATED CAM / property-tax charges a rider states alongside the new base rent —
+    // very often as its own "Monthly Figures" block ("Base Rent $2,650.08 / Real Estate
+    // Taxes & CAM $1,100.00 / Total $3,750.08"). Read RAW + basis exactly like
+    // rent_schedule; estimateAnnualsFrom() does the arithmetic. Every item field is
+    // REQUIRED (non-nullable) on purpose, so this whole array costs ZERO of the 16
+    // union-typed-parameter budget (the extract-lease precedent; this schema sits at 7).
+    expense_estimates: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['charge', 'amount', 'period', 'confidence', 'source_quote'],
+        properties: {
+          charge: { type: 'string', enum: ['cam', 'tax', 'roof', 'combined'] }, // 'combined' = one figure covering CAM + taxes together
+          amount: { type: 'number' },  // the figure EXACTLY as written — never multiplied
+          period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
+          confidence: { type: 'number' },
+          source_quote: { type: 'string' },
+        },
+      },
+    },
   },
 };
 
@@ -157,7 +178,20 @@ const SYSTEM_RENT =
   'months, kind = "free" (no base rent), "percent" (a percent of base rent is abated — put the ' +
   'percent in value), or "amount" (the tenant pays a reduced FIXED monthly base — put that monthly ' +
   'dollar figure in value), note = the exact wording. Abatement applies to BASE rent only. If none ' +
-  'is mentioned, return an empty abatements array.';
+  'is mentioned, return an empty abatements array.\n\n' +
+  'ESTIMATED CAM / TAX CHARGES. A rider very often re-states what the tenant pays toward real-estate ' +
+  'taxes and common-area maintenance alongside the new base rent — commonly as its own summary block ' +
+  '("Monthly Figures — Base Rent: $2,650.08 / Real Estate Taxes & CAM: $1,100.00 / Total: $3,750.08"), ' +
+  'or as a clause ("additional rent of $1,200 per month for taxes and common area costs", "estimated ' +
+  'CAM charges of $4.50 per square foot per annum"). Add ONE expense_estimates entry per stated ' +
+  'figure: charge = "cam" (CAM / operating expenses), "tax" (real-estate / property taxes), "roof" (a ' +
+  'separate roof charge), or "combined" (ONE figure covering CAM and taxes together — e.g. a line ' +
+  'labeled "Real Estate Taxes & CAM"); amount = the figure EXACTLY as written (never multiply or ' +
+  'annualize it); period = how it is expressed, same choices as rent_schedule; source_quote = the ' +
+  'exact wording. NEVER put base rent here, and never put the block\'s Total (base + CAM + tax) here — ' +
+  'only the CAM/tax/roof line itself. A clause that merely says the tenant pays its "proportionate ' +
+  'share" with NO dollar or $/SF figure is not an estimate — skip it. If the rider states no such ' +
+  'figure, return an empty expense_estimates array.';
 
 const SYSTEM_FIELDS =
   'You read commercial lease addenda / riders / amendments and extract the changes ' +
@@ -320,6 +354,17 @@ Deno.serve(async (req) => {
         (parsed as any).new_base_rent = rebuilt.baseRent;
         if (rebuilt.baseDate) (parsed as any).new_base_rent_effective_date = rebuilt.baseDate;
         (parsed as any).escalations = rebuilt.escalations || [];
+      }
+      // The CAM & tax the rider states the tenant pays during the year — annualized here
+      // in code from the raw figure + basis (a "$1,100.00" monthly line becomes $13,200.00
+      // exactly, never 12 × a rounded $/SF). Surfaced on the review form as its own
+      // effect the landlord confirms; nothing bills until it's saved.
+      const est = estimateAnnualsFrom((rent as any)?.expense_estimates, sqft);
+      if (est.cam != null || est.tax != null || est.roof != null) {
+        (parsed as any).est_cam_annual = est.cam;
+        (parsed as any).est_tax_annual = est.tax;
+        (parsed as any).est_roof_annual = est.roof;
+        (parsed as any).est_quote = est.quotes.cam || est.quotes.tax || est.quotes.roof || null;
       }
     } catch (_e) {
       // non-fatal — keep the main call's own rent figures

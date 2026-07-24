@@ -75,6 +75,75 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-24** — **A rider's CAM & tax is finally read (it had no field to land in) + the per-tenant breakdown
+  states each figure per MONTH under the annual** (George: *"need a monthly base rent in the per tenant break down
+  under the annual. i just added an addendum/rider to beauty and barber shop but it didnt extract the cam and tax
+  correctly"*). Deployed: `extract-addendum` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `7ec8148e`, demo worker `794555ae`. **$0 recurring** (the estimate rides the EXISTING non-fatal rent-supplement
+  call — no new AI call, ~20 extra tokens), **NO DB migration**, no tenant emails, **no live-data change**. Tests
+  **576/576** (was 566 — +8 addendumEstimate, +2 breakdownMonthly).
+  - **The diagnosis (read-only, from his live rows).** The 4th Addendum uploaded today reads, verbatim:
+    `Monthly Figures — Base Rent: $2,650.08 / Real Estate Taxes & CAM: $1,100.00 / Total $3,750.08 Monthly rent`.
+    The AI read it fine — its own summary even says *"Lessee continues to pay proportionate share of real estate
+    taxes and additional operating/maintenance expenses"* — but **`extract-addendum` had no field for an expense
+    estimate anywhere in any of its four schemas**, so the $1,100.00 was read and silently dropped. Exactly the
+    shape of the 2026-07-03 prose-escalation bug: *no model, however good, can output what the form can't hold.*
+    (The rent half was already right — `rebuildRentSchedule` correctly annualized the printed $2,650.08/mo to
+    **$31,800.96**, not the document's rounded "$31,801.00". The lease's stored estimate, `$13,204.02`, is
+    1,077 SF × $12.26 — a hand-typed $/SF rate, $4.02 above the $13,200.00 the rider actually states.)
+  - **1) The rider's estimate now has a home** (`extract-addendum/index.ts`). `RENT_SCHEMA` gains
+    `expense_estimates` — the same all-REQUIRED single-typed array `extract-lease` uses, so it costs **ZERO** of
+    the 16-union structured-output budget (this schema sits at 7/16). The prompt names the exact shape his riders
+    print (a "Monthly Figures" summary block, an *"additional rent of $X per month for taxes and common area
+    costs"* clause) and pins the two traps: **never** the block's Total, and a bare *"proportionate share"* with no
+    dollar figure is not an estimate. The model reads the figure RAW + basis; the shared pure
+    `estimateAnnualsFrom` does the arithmetic in code — **$1,100.00/mo → $13,200.00/yr exactly**, never 12 × a
+    rounded $/SF.
+  - **2) A new effect card on the review** (`AddendumEditor.js`). "**Sets the CAM & tax estimate**" joins the
+    extension / rent / option / assignment / abatement cards — pre-ticked and filled when the AI finds a figure,
+    quoting the rider's own words underneath. Entry is the **annual** dollar figure (riders print dollars, so this
+    stays penny-exact) with the field stating its own monthly back plus the $/SF: *"= $1,500.00/mo · $9.00/SF/yr"*.
+    No new `lease_addendums.kind` — the 0021 CHECK constrains it, so an estimate-only rider stays `other`.
+  - **3) Applying it bills it** (`api.js applyAddendum`). Saves the merged way the whole app bills from (the whole
+    figure on `est_cam_annual`, `est_tax_annual` zeroed — the 7/20 convention, so cam + tax reads back as exactly
+    what the rider stated), stamps `est_confirmed_year` (clearing the carried-over nag), then calls
+    `resyncYearBillingToEstimate` so the year invoice AND the system-marked paid months move to base + the new
+    estimate — George's 7/23 rule that the estimate is the source of truth all year and the actual only settles it
+    at ⚖ Reconcile. A roof-only rider never wipes an existing CAM & tax figure. Logged as a new
+    `estimate_set` history event (free-text column → no migration) and labeled on the property History page; the
+    editor's refresh now also invalidates the Ledger / tracker / invoices / payments keys the resync moves.
+  - **4) The monthly figure** (`TenantShareTable.js` + one CSS line). Each numeric cell's sub-line already carried
+    the $/SF rate; the **monthly now leads it** — `$5,000.00/mo · $30.00/SF` — on **Base rent** (his ask) and on
+    the all-in **Total**, which is the figure that ties to that month's Ledger box and to a rider's own "Total
+    $3,750.08 Monthly rent" line. The Totals band carries both too, so the property's monthly rent roll reads off
+    the page. Row heights are unchanged (one sub-line, as before); `.mo-rate` shares `.sf-rate`'s bold-ink
+    treatment so both read as real figures. **CAM & tax is deliberately left alone** — that column already holds
+    the estimate's $/SF, a carried-over hint and the click-to-edit affordance; its monthly is Total − Base.
+  - **Universal by construction:** the extractor change is in the shared schema/prompt + the shared pure
+    `estimateAnnualsFrom`; the apply path and the breakdown are shared components. No migration, no per-account
+    data, no hardcoded lease id, tenant or property anywhere — his rider's wording appears only as a test fixture,
+    so it became a permanent regression rather than a special case.
+  - **Files:** `supabase/functions/extract-addendum/index.ts` (schema + prompt + the annualize/merge),
+    `src/components/AddendumEditor.js` (the effect card + `PerMonth` readout + invalidations),
+    `src/lib/api.js` (`applyAddendum` estimate block), `src/components/TenantShareTable.js` (`PerMo`),
+    `src/pages/HistoryPage.js` (label + badge), `src/App.css` (`.mo-rate`), `src/lib/demo/mockClient.js` (the
+    canned rider now prints a Monthly Figures block so the demo shows the card), tests
+    (`addendumEstimate.test.js` + `breakdownMonthly.test.js`, both new).
+  - **Verified:** unit **576/576** (`vitest run`); `vite build` compiles; edge fn deployed clean, unauth POST →
+    **401**; live 200s (amlakre.com + www + workers.dev + demo, demo bundle grep-free of the live ref). Browser
+    drive-through skipped per George's standing preference (the jsdom tests mount the real TenantShareTable and
+    drive the real AddendumEditor's AI lane → card → save against the demo mock).
+    **George: re-upload the beauty-and-barber 4th Addendum (~10–15¢, the normal rider read) — the review now shows
+    a "Sets the CAM & tax estimate" card pre-filled at $13,200.00 with "= $1,100.00/mo" under it. Saving replaces
+    the $13,204.02 currently on the lease with the exact figure and re-syncs the year's invoice and paid months.**
+  - **Flags (no action needed):** ① I did **not** touch the live lease — its estimate still reads $13,204.02
+    ($4.02 high) until you re-upload the rider or edit it in Financials; say the word and I'll correct the one row.
+    ② That rider's `amendment_date` extracted as **2008-01-25** because the document itself says *"entered into
+    effective as of January 25, 2008"* while extending 6/1/2025–5/31/2030 (a copy-paste slip in your own paperwork
+    — the model read it faithfully). Harmless, but the Dated field on the addendum is editable. ③ A rider that
+    only says *"proportionate share as described in the first Addendum"* with no dollar figure still yields no
+    estimate — by design; there's nothing to annualize.
+
 - **2026-07-23** — **Statement import → ledger: the month you choose wins, and the payee it learns is the payee —
   plus the billed-vs-received difference finally visible on the grid** (George, across three messages: *"i want to
   make sure that the difference in payments is clear and easy to read but also clean and sleek and professional"* ·

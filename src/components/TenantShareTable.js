@@ -43,6 +43,12 @@ function Stat({ label, main, sub, className = '', subClass = '' }) {
 // bolder square-footage treatment — used on every figure's sub-line.
 const SfRate = ({ psf }) => <span className="sf-rate">{psf}/SF</span>;
 
+// The same figure per month — what the tenant actually writes the check for, and what
+// a rider prints ("Base Rent: $2,650.08 monthly"). Rides the sub-line beside the $/SF
+// rate on the two figures a landlord reconciles against a deposit: base rent and the
+// all-in total (which equals that month's Ledger box).
+const PerMo = ({ annual }) => <span className="mo-rate">{money(Number(annual || 0) / 12)}/mo</span>;
+
 // Per-tenant breakdown + the estimated-vs-actual reconciliation view (0060),
 // laid out as a LEDGER — one entry per tenant — instead of a 13-column table,
 // so the whole page fits the viewport with no sideways scrolling. The header
@@ -311,7 +317,11 @@ export default function TenantShareTable({ propertyId, year }) {
                 )}
               </div>
             </div>
-            <Stat label="Base rent" main={money(s.base_rent)} sub={hasSf ? <SfRate psf={psf2(s.base_rent / s.square_footage)} /> : ''} />
+            <Stat
+              label="Base rent"
+              main={money(s.base_rent)}
+              sub={<><PerMo annual={s.base_rent} />{hasSf && <> · <SfRate psf={psf2(s.base_rent / s.square_footage)} /></>}</>}
+            />
             <EstimateStat
               share={s}
               billed={row.billed}
@@ -322,7 +332,12 @@ export default function TenantShareTable({ propertyId, year }) {
             />
             <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? <SfRate psf={psf2(camTaxPsf)} /> : ''} />
             <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? <SfRate psf={psf2(roofPsf)} /> : ''} />
-            <Stat className="ledger-total" label="Total · base + CAM & tax + roof" main={money(rowTotal)} sub={hasSf ? <SfRate psf={psf2(rowTotal / s.square_footage)} /> : ''} />
+            <Stat
+              className="ledger-total"
+              label="Total · base + CAM & tax + roof"
+              main={money(rowTotal)}
+              sub={<><PerMo annual={rowTotal} />{hasSf && <> · <SfRate psf={psf2(rowTotal / s.square_footage)} /></>}</>}
+            />
             <DiffStat fig={row.fig} show={row.billed.anyEstimate} />
             {editingId === s.lease_id && (
               <EstimateEditor
@@ -375,7 +390,7 @@ export default function TenantShareTable({ propertyId, year }) {
           <div className="ledger-name">Totals</div>
           <div className="ledger-meta">{sf(tot.sf)} leased{buildingSf > 0 ? ` of ${sf(buildingSf)} building` : ''}</div>
         </div>
-        <Stat label="Base rent" main={money(tot.base)} />
+        <Stat label="Base rent" main={money(tot.base)} sub={<PerMo annual={tot.base} />} />
         <Stat className="lg-est" label="CAM & tax · estimated" main={tot.anyEst ? money(tot.est) : <span className="muted">—</span>} />
         <Stat
           className="lg-actual"
@@ -387,7 +402,7 @@ export default function TenantShareTable({ propertyId, year }) {
             : ''}
         />
         <Stat label="Roof · actual" main={money(tot.roof)} />
-        <Stat className="ledger-total" label="Total" main={money(tot.total)} />
+        <Stat className="ledger-total" label="Total" main={money(tot.total)} sub={<PerMo annual={tot.total} />} />
         <Stat
           label="Difference · actual − estimated"
           className="ledger-diff"

@@ -711,7 +711,10 @@ tbody tr:last-child td{border-bottom:none}
    "+ $X vacant / = $Y entered" reconciliation) — never overflow into the neighbor. */
 .cell-sub.wrap{white-space:normal;line-height:1.3}
 /* $/SF rates read as real figures, not fine print (matches the bolder SF treatment). */
-.sf-rate{font-weight:700;color:var(--ink)}
+/* The two real figures on a sub-line — the monthly and the $/SF rate — set bold + ink
+   so they read as figures, not annotations (George). The separator between them stays
+   muted, so the sub-line still steps back from the annual figure above it. */
+.sf-rate,.mo-rate{font-weight:700;color:var(--ink)}
 
 /* value labels drawn on top of the History bars */
 .bar-label{fill:var(--muted);font-size:10px;font-weight:600}
