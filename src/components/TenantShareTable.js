@@ -295,7 +295,9 @@ export default function TenantShareTable({ propertyId, year }) {
           the note clears once you do.
         </div>
       )}
-      {sortedRows.length > 1 && <TenantSortBar />}
+      {sortedRows.length > 1 && (
+        <div className="ledger-toolbar"><TenantSortBar /></div>
+      )}
       {/* The band labels duplicate each figure's own (screen-reader) label, so this is
           presentation-only; on narrow screens it hides and the per-figure labels show.
           The estimated and actual CAM & tax columns are visually distinguished (tinted

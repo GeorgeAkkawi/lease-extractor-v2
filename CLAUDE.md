@@ -75,6 +75,29 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-24** — **Follow-up: the per-tenant breakdown's "Sort by" bar now reads as the panel's own toolbar
+  instead of floating flush in the top-left corner** (George: *"the sort by formatting on the per tenant break down
+  isnt the best looking please format correctly"*). Deployed: frontend Cloudflare version `954ea081`, demo worker
+  `60839106`. **Frontend + CSS only — $0, NO DB migration, NO edge functions, no tenant emails.** Tests **620/620**
+  (unchanged — markup/CSS only; the `tenantSortUi` render test still passes with the wrapper).
+  - **Root:** the shared `TenantSortBar` was dropped directly inside the bordered breakdown panel
+    (`.table-wrap.share-ledger`), which has no padding of its own — so the bar hugged the panel's top-left corner,
+    its left edge didn't align with the 20px gutter of the column-header band + rows below it, and it collided with
+    the tinted "Tenant / Base rent / CAM & tax…" band right beneath. On the Leases + Ledger pages the same bar sits
+    in the padded page flow, so it already looked fine there — the fix had to be scoped to the breakdown only.
+  - **Fix:** `TenantShareTable.js` wraps `<TenantSortBar/>` in a new `.ledger-toolbar` div; `App.css` styles that
+    toolbar to match the column-header band directly below it — same `--panel-2` tint, same 20px gutter (16px at the
+    ≤880px breakpoint, matching the mobile grid), a bottom hairline — so the sort control + column labels read as one
+    connected header zone, with "Sort by" aligned above the "Tenant" column it reorders. The bar's own
+    `margin-bottom` is zeroed in this context. **Scoped by the `.ledger-toolbar` wrapper**, so the Leases/Ledger
+    pages' plain page-flow look is untouched.
+  - **Files:** `src/components/TenantShareTable.js`, `src/App.css`.
+  - **Verified:** unit **620/620** (`vitest run` — the `tenantSortUi` test mounts the real TenantShareTable and still
+    reorders through the wrapper); `vite build` compiles; live 200s (amlakre.com + www + workers.dev + demo, demo
+    bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference. **George:
+    hard-refresh (Cmd+Shift+R) → Financials → the per-tenant breakdown's Sort-by bar now sits cleanly in its own
+    header strip above the columns.**
+
 - **2026-07-24** — **Four features in one round: a change-password flow · sort the Ledger + per-tenant breakdown
   (name/size/rent/suite) · CAM & tax estimate READ from a bank deposit · a downloadable Excel reconciliation
   report** (George: *"set up a change password option in settings … i want to be able to sort by size and space and
