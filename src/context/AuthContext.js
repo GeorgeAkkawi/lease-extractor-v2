@@ -15,6 +15,11 @@ export function AuthProvider({ children }) {
   // the same thing on the data itself (a bare aal1 JWT can't read the tables); this
   // state is only the UI gate that shows the challenge screen.
   const [mfa, setMfa] = useState({ loading: true, needs: false });
+  // True while the user arrived from a password-reset link (Supabase fires a
+  // PASSWORD_RECOVERY auth event, whatever path the link lands on — so this works
+  // even if redirectTo isn't in the hosted allow-list and it falls back to the Site
+  // URL). Gating on the EVENT, not a route, is what makes the flow robust to config.
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   // Last signed-in user id we've seen. `undefined` = first sync not done yet.
   const lastUidRef = useRef(undefined);
 
@@ -52,11 +57,19 @@ export function AuthProvider({ children }) {
       syncUser(data.session);
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       syncUser(s);
+      // The reset link brings the user back with a recovery session — show the reset
+      // page. Cleared once they set a new password (finishPasswordRecovery) or sign out.
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
+      else if (event === 'SIGNED_OUT') setPasswordRecovery(false);
     });
     return () => sub.subscription.unsubscribe();
   }, [queryClient]);
+
+  // Called by the reset page after the password is changed + all sessions are signed
+  // out — drop the recovery gate so the app returns to the sign-in screen.
+  const finishPasswordRecovery = useCallback(() => setPasswordRecovery(false), []);
 
   // When the signed-in user changes, re-evaluate their assurance level (do they
   // have a factor, and is this session already stepped-up?).
@@ -82,6 +95,8 @@ export function AuthProvider({ children }) {
     securityLoading,
     needsTwoFactor,
     passTwoFactor,
+    passwordRecovery,
+    finishPasswordRecovery,
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -295,6 +295,10 @@ const auth = {
   async signInWithPassword() { return ok({ user: DEMO_USER }); },
   async signUp() { return ok({ user: DEMO_USER }); },
   async signOut() { return ok({}); },
+  // Password reset / change is inactive in the demo (the UI says so); the stubs keep
+  // the buttons from throwing if a caller reaches them.
+  async resetPasswordForEmail() { return ok({}); },
+  async updateUser() { return ok({ user: DEMO_USER }); },
 };
 
 const storage = {

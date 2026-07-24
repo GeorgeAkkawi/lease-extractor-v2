@@ -10,7 +10,7 @@ import {
 } from '../lib/api';
 import {
   matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
-  corroborateAmount, monthOfDate, CAM_KEYWORD_LABELS,
+  corroborateAmount, monthOfDate, deriveEstimateFromDeposit, CAM_KEYWORD_LABELS,
 } from '../lib/statementMatch';
 import { buildMonthGroups } from '../lib/statementMonths';
 import { buildPaymentShortfallEmail } from '../lib/emailTemplates';
@@ -65,6 +65,10 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   // A drafted "your payment came in short of the scheduled rent" letter, opened in the
   // compose modal (nothing auto-sends — the landlord sends it, or closes it).
   const [letterDraft, setLetterDraft] = useState(null);
+  // Per-lease tick for the CAM & tax estimates read from this statement: undefined =
+  // the smart default (pre-ticked when the tenant has no estimate yet, unticked when it
+  // would CHANGE one), true/false = the landlord's explicit choice.
+  const [estOverrides, setEstOverrides] = useState({});
 
   // Draft rules from this session's "always" ticks re-apply to the OTHER lines of
   // this same import immediately (a garbled payee fixed once fixes the whole file).
@@ -266,9 +270,42 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     return { keep: keep.map(({ targetKey, ...e }) => e), rejected };
   }, [resolved, expenseProp]);
 
+  // CAM & tax estimates read from the statement: for each CHECKED tenant deposit tagged
+  // to a month, back out CAM&tax = deposit − base − roof (deriveEstimateFromDeposit).
+  // Keep the LATEST month's figure per lease (a mid-statement escalation makes the newest
+  // month the current truth). The base rent is exact from the lease, so this is pure
+  // arithmetic — no AI. Shown for the landlord to tick + Save; nothing writes on its own.
+  const estimateSuggestions = useMemo(() => {
+    if (!ctx) return [];
+    const byLease = new Map();
+    for (const r of resolved) {
+      if (!r.checked || r.kind !== 'tenant' || !r.tenant || r.toRecon || !r.month || r.row.duplicate) continue;
+      const derived = deriveEstimateFromDeposit(r.row.txn.amount, r.tenant, r.month);
+      if (!derived) continue;
+      const prev = byLease.get(r.tenant.lease_id);
+      if (!prev || r.month >= prev.month) {
+        byLease.set(r.tenant.lease_id, { lease_id: r.tenant.lease_id, tenant: r.tenant, month: r.month, deposit: r.row.txn.amount, year: r.row.year, derived });
+      }
+    }
+    return [...byLease.values()].sort((a, b) => a.tenant.tenant_name.localeCompare(b.tenant.tenant_name));
+  }, [ctx, resolved]);
+
+  // Smart pre-tick (George): a NEW estimate is pre-ticked; a change to an EXISTING one
+  // arrives unticked, so a short deposit can never quietly lower a good estimate.
+  const estChecked = (s) => {
+    const ov = estOverrides[s.lease_id];
+    return ov !== undefined ? ov : !s.tenant.anyEstimate;
+  };
+  const estToApply = estimateSuggestions.filter(estChecked);
+
   const save = useMutation({
     mutationFn: async () => {
       const entries = [];
+      // Estimate writes go FIRST so the year's billing resyncs to base + the new estimate
+      // before the deposits book — then each deposit settles its month exactly.
+      const estEntries = estToApply.map((s) => ({
+        type: 'estimate', lease_id: s.lease_id, property_id: s.tenant.property_id, year, est_cam_annual: s.derived.annual,
+      }));
       for (const r of resolved) {
         if (!r.checked) continue;
         if (r.kind === 'tenant' && r.tenant) {
@@ -287,7 +324,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
         }
       }
-      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, storagePath, entries: [...entries, ...learned.keep] });
+      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, storagePath, entries: [...estEntries, ...entries, ...learned.keep] });
     },
     onSuccess: (res) => onSaved(res),
   });
@@ -439,6 +476,45 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />}
       {parsed.skippedLines.length > 0 && <SkippedGroup skipped={parsed.skippedLines} />}
 
+      {estimateSuggestions.length > 0 && (
+        <div className="stmt-group stmt-estimates">
+          <div className="fin-subhead">CAM &amp; tax estimates read from this statement</div>
+          <p className="muted" style={{ fontSize: 12, marginTop: -4, marginBottom: 8 }}>
+            The base rent is exact from each lease, so a deposit minus the base is the tenant's CAM &amp; tax. Tick to
+            store it as the tenant's estimate — it then bills all year and the actual settles it at year end. A new
+            estimate is pre-ticked; a change to one you've already set arrives unticked, so a short deposit can't quietly
+            lower it.
+          </p>
+          <div className="table-wrap">
+            <table className="stmt-table">
+              <thead><tr><th title="Tick to store this as the tenant's CAM & tax estimate">Set</th><th>Tenant</th><th>Read from the statement</th></tr></thead>
+              <tbody>
+                {estimateSuggestions.map((s) => {
+                  const on = estChecked(s);
+                  const base = Number(s.tenant.baseByMonth[s.month - 1]) || 0;
+                  const roof = Number(s.tenant.roofByMonth[s.month - 1]) || 0;
+                  return (
+                    <tr key={s.lease_id} className={on ? undefined : 'stmt-off'}>
+                      <td><input type="checkbox" checked={on} onChange={(e) => setEstOverrides((o) => ({ ...o, [s.lease_id]: e.target.checked }))} /></td>
+                      <td className="stmt-desc">
+                        {s.tenant.tenant_name}
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          from {MONTH_NAMES[s.month - 1]} · {s.tenant.anyEstimate ? `currently ${money(s.tenant.camTaxAnnual)}/yr` : 'none set yet'}
+                        </div>
+                      </td>
+                      <td>
+                        {money(s.deposit)} deposit − {money(base)} base{roof > 0.005 ? ` − ${money(roof)} roof` : ''} = <strong>{money(s.derived.monthly)}/mo</strong> → <strong>{money(s.derived.annual)}/yr</strong>
+                        {s.derived.psf != null && <> · <span title="Rounded to 4 decimals so you can validate the rate">${s.derived.psf.toFixed(4)}/SF</span></>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="stmt-footer">
         {reconciledCount > 0 && willExpense.length > 0 && (
           <div className="note-msg warn">
@@ -478,6 +554,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             {mismatchCount > 0 && <> · <strong>{mismatchCount}</strong> ≠ projected</>}
             {' — '}<strong>{willExpense.length}</strong> expense{willExpense.length === 1 ? '' : 's'} · {money(expTotal)} out
             {' — '}<strong>{ignored}</strong> ignored
+            {estToApply.length > 0 && <> — <strong>{estToApply.length}</strong> CAM &amp; tax estimate{estToApply.length === 1 ? '' : 's'}</>}
           </div>
           <button type="button" disabled={save.isPending || nothingTicked} onClick={() => save.mutate()}>
             {save.isPending ? 'Saving…' : 'Save to ledger'}

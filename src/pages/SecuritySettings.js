@@ -2,8 +2,62 @@ import { useEffect, useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase, DEMO_MODE } from '../lib/supabaseClient';
 import { usePageChrome } from '../context/ChromeContext';
+import { useAuth } from '../context/AuthContext';
 import { getAutoLogoutMinutes, setAutoLogoutMinutes } from '../lib/api';
 import { AUTO_LOGOUT_OPTIONS, resolveMinutes } from '../lib/idleLogout';
+
+// Change password: sends a reset link to the account's own email address. Following
+// it brings the user back into the app with a recovery session (caught by the
+// PASSWORD_RECOVERY auth event → the reset page), where they set the new password and
+// every session is signed out. Kept email-based so it works the same whether or not
+// the current session is nearby, and never handles the current password here.
+function PasswordCard() {
+  const { user } = useAuth();
+  const email = user?.email || '';
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function sendReset() {
+    setBusy(true); setMsg('');
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/` });
+      if (error) throw error;
+      setSent(true);
+    } catch (e) {
+      setMsg(e?.message || 'Could not send the reset email — try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="panel" style={{ maxWidth: 560, marginBottom: 18 }}>
+      <div className="panel-head"><strong>Security · Password</strong></div>
+      {DEMO_MODE ? (
+        <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
+          Changing your password is available on a real account — it isn’t part of the demo.
+        </p>
+      ) : sent ? (
+        <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
+          A reset link is on its way to <strong>{email}</strong>. Open it on this device to set your new password —
+          the link expires after a while, so use it soon. When you’re done, you’ll be signed out everywhere.
+        </p>
+      ) : (
+        <>
+          <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+            We’ll email a secure link to <strong>{email || 'your account'}</strong>. Opening it lets you set a new
+            password, and signs you out of every device.
+          </p>
+          <button type="button" disabled={busy || !email} onClick={sendReset} style={{ marginTop: 4 }}>
+            {busy ? 'Sending…' : 'Change password'}
+          </button>
+        </>
+      )}
+      {msg && <p className="muted" style={{ marginTop: 10 }}>{msg}</p>}
+    </div>
+  );
+}
 
 // Auto sign-out card: pick how long of inactivity before the app signs you out of
 // this browser (a 60-second warning lets you stay). Saved per account.
@@ -136,6 +190,7 @@ export default function SecuritySettings() {
   if (DEMO_MODE) {
     return (
       <>
+        <PasswordCard />
         <div className="panel" style={{ maxWidth: 560 }}>
           <div className="panel-head"><strong>Security · Two-factor authentication</strong></div>
           <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
@@ -151,6 +206,7 @@ export default function SecuritySettings() {
 
   return (
     <>
+    <PasswordCard />
     <div className="panel" style={{ maxWidth: 560 }}>
       <div className="panel-head"><strong>Security · Two-factor authentication</strong></div>
       <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>

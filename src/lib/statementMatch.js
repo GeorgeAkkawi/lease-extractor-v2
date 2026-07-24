@@ -306,6 +306,47 @@ export function depositProjectionDelta(amount, tenant, month) {
   return { projected: owed, delta };
 }
 
+// Derive a tenant's monthly (and annual) CAM & tax estimate from ONE all-in bank
+// deposit. The base rent is exact from the lease; a deposit is base + CAM&tax (+ roof,
+// when the tenant is roof-responsible), so:
+//   CAM&tax/mo = deposit − base − roof   →   ×12 = /yr   →   ÷SF = $/SF
+// (George, 2026-07-24 — automating the reconstruction done by hand for Boost Mobile:
+// $2,716 − $1,811.42 = $904.58/mo → $10,855.00/yr). Pure — nothing writes; the review
+// SHOWS this and the landlord ticks + Saves. Escalation-aware by construction: `base`
+// comes from the per-month schedule (componentizeSchedule), so a stepped tenant derives
+// off the right month's base. Returns { monthly, annual, psf } or null when the figure
+// can't be trusted:
+//   - the month bills no base (out of term / abated) — nothing to subtract from,
+//   - the remainder is under $1 — a gross lease, or a partial payment, not an estimate,
+//   - the deposit is at the PRE-raise rate for a post-step month (the escalation
+//     explains it; deriving off the raised base would understate the estimate),
+//   - the derived annual already matches the estimate on file (nothing would change).
+// tenant must carry baseByMonth / roofByMonth / owed / steps / square_footage /
+// camTaxAnnual (getStatementMatchContext provides them). The annual is stored exact
+// (penny-true so the deposit settles its month); the $/SF is shown to 4 decimals so
+// George can validate the rate.
+export function deriveEstimateFromDeposit(amount, tenant, month) {
+  const m = Number(month);
+  if (!tenant || !(m >= 1 && m <= 12)) return null;
+  const base = round2(Number((tenant.baseByMonth || [])[m - 1]) || 0);
+  if (base <= DUST) return null; // the month bills no base rent — nothing to derive from
+  const roof = round2(Number((tenant.roofByMonth || [])[m - 1]) || 0);
+  // A deposit still at the pre-raise rate is explained by the escalation, not a new
+  // estimate — deriving off the raised base would understate it.
+  const step = stepAtOrBefore(tenant.steps, m);
+  if (step) {
+    const owedM = Number((tenant.owed || [])[m - 1]) || 0;
+    if (owedM > DUST && amountMatches(Number(amount), preStepOwed(owedM, step))) return null;
+  }
+  const monthly = round2(Number(amount) - base - roof);
+  if (monthly < 1) return null; // gross lease / partial payment — no meaningful estimate
+  const annual = round2(monthly * 12);
+  const current = round2(Number(tenant.camTaxAnnual) || 0);
+  if (current > 0 && Math.abs(annual - current) <= 1) return null; // already at this estimate
+  const sqft = Number(tenant.square_footage) || 0;
+  return { monthly, annual, psf: sqft > 0 ? annual / sqft : null };
+}
+
 // The first saved rule (the payee memory) that matches one line: pattern contained in
 // the normalized description AND direction-compatible with the target. Extracted from
 // matchStatement so the save path can reuse the exact same test.

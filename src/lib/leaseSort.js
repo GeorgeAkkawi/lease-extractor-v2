@@ -36,6 +36,47 @@ function valueFor(mode, totals) {
 // regardless of direction (so "no data yet" rows never crowd the top when flipped
 // to descending). `manualOrder` is the saved id array for `custom` (ids not in it
 // are appended in the default term-end order). Never mutates the input array.
+// The sort modes offered on the Rent Ledger + the per-tenant breakdown (George's
+// four fields). Shared by both surfaces so they sort identically. Persisted under
+// user_preferences.lease_sort.tenants ({ mode, dir }) — the same jsonb the Leases
+// page uses, a nested key so it never clobbers the page's own prefs (no migration).
+export const TENANT_SORTS = [
+  { key: 'tenant_name', label: 'Tenant name' },
+  { key: 'square_footage', label: 'Size (SF)' },
+  { key: 'base_rent', label: 'Base rent' },
+  { key: 'premises_address', label: 'Suite / address' },
+];
+
+// Order tenant rows by one of TENANT_SORTS. Works on any row shape via `pick`, which
+// returns the sortable fields ({ tenant_name, square_footage, base_rent,
+// premises_address }) — the Ledger passes its roll rows directly; the breakdown maps
+// each entry to its `.share`. Nulls/blanks always sort LAST (both directions), with a
+// tenant-name tiebreak; suites compare numerically ("Suite 2" before "Suite 10").
+// Never mutates the input array.
+export function sortTenantRows(rows, { mode = 'tenant_name', dir = 'asc', pick = (r) => r } = {}) {
+  const list = [...(rows || [])];
+  const numeric = mode === 'square_footage' || mode === 'base_rent';
+  const nameOf = (row) => String((pick(row) || {}).tenant_name || '');
+  const valOf = (row) => {
+    const src = pick(row) || {};
+    if (numeric) return num(src[mode]);
+    const v = src[mode];
+    return (v == null ? '' : String(v)).trim() || null; // blank strings sort last
+  };
+  const withVal = [];
+  const blank = [];
+  for (const row of list) (valOf(row) == null ? blank : withVal).push(row);
+  withVal.sort((a, b) => {
+    const va = valOf(a);
+    const vb = valOf(b);
+    let c = numeric ? va - vb : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: 'base' });
+    if (c === 0) c = nameOf(a).localeCompare(nameOf(b));
+    return dir === 'desc' ? -c : c;
+  });
+  blank.sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+  return [...withVal, ...blank];
+}
+
 export function sortLeases(leases, { mode = 'term_end', dir = 'asc', manualOrder = [], totals = {} } = {}) {
   const list = [...(leases || [])];
 

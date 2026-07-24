@@ -14,8 +14,9 @@ const SIGNUP_OPEN = false;
 // Mirror the server-side policy (config.toml: minimum_password_length = 10,
 // password_requirements = lower_upper_letters_digits) so users get instant,
 // specific feedback instead of a generic server rejection. The server remains
-// the source of truth — this is a UX nicety, not the enforcement.
-function passwordProblem(pw) {
+// the source of truth — this is a UX nicety, not the enforcement. Exported so the
+// reset-password page enforces the exact same rule.
+export function passwordProblem(pw) {
   if (pw.length < MIN_PASSWORD) return `Use at least ${MIN_PASSWORD} characters.`;
   if (!/[a-z]/.test(pw)) return 'Include a lowercase letter.';
   if (!/[A-Z]/.test(pw)) return 'Include an uppercase letter.';
@@ -29,6 +30,27 @@ export default function Login() {
   const [mode, setMode] = useState('signin');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
+  // "Forgot your password?" — send the account a recovery link. The link brings the
+  // user back into the app with a recovery session, which the app catches (the
+  // PASSWORD_RECOVERY auth event) and shows the reset page. Works signed-out — a
+  // locked-out user can't reach Settings. Always reports "sent" (never reveals whether
+  // an address has an account).
+  async function sendReset() {
+    const cleanEmail = email.trim();
+    if (!EMAIL_RE.test(cleanEmail)) { setMsg('Enter your email above first, then tap “Forgot your password?”.'); return; }
+    setBusy(true); setMsg('');
+    try {
+      await supabase.auth.resetPasswordForEmail(cleanEmail, { redirectTo: `${window.location.origin}/` });
+      setResetSent(true);
+      setMsg(`If an account exists for ${cleanEmail}, a password-reset link is on its way. Open it on this device to set a new password.`);
+    } catch (err) {
+      setMsg(err.message || 'Could not send the reset email — try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -81,6 +103,13 @@ export default function Login() {
         )}
         <button type="submit" disabled={busy}>{busy ? '…' : mode === 'signin' ? 'Sign in' : 'Sign up'}</button>
       </form>
+      {mode === 'signin' && !resetSent && (
+        <p style={{ marginTop: 12 }}>
+          <button type="button" className="ghost" style={{ fontSize: 13 }} disabled={busy} onClick={sendReset}>
+            Forgot your password?
+          </button>
+        </p>
+      )}
       {SIGNUP_OPEN && (
         <p style={{ marginTop: 14 }}>
           <button type="button" className="ghost" onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>

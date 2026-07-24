@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import TwoFactorChallenge from './pages/TwoFactorChallenge';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import SecuritySettings from './pages/SecuritySettings';
 import DisplaySettings from './pages/DisplaySettings';
 import NotificationSettings from './pages/NotificationSettings';
@@ -22,12 +23,15 @@ import HistoryPage from './pages/HistoryPage';
 import './App.css';
 
 export default function App() {
-  const { session, loading, securityLoading, needsTwoFactor } = useAuth();
+  const { session, loading, securityLoading, needsTwoFactor, passwordRecovery } = useAuth();
 
   if (loading) return <div className="centered">Loading…</div>;
   if (!session) return <Login />;
   if (securityLoading) return <div className="centered">Loading…</div>;
   if (needsTwoFactor) return <TwoFactorChallenge />;
+  // Arrived from a reset link → set a new password (after 2FA, since Supabase needs
+  // aal2 to change the password when an authenticator is enrolled).
+  if (passwordRecovery) return <ResetPasswordPage />;
 
   return (
     <Layout>

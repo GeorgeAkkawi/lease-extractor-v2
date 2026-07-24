@@ -17,6 +17,7 @@ import TaxSection from '../components/TaxSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
+import ExportReconciliationModal from '../components/ExportReconciliationModal';
 import MutationError from '../components/MutationError';
 import UndoStrip from '../components/UndoStrip';
 import { money, psf, sf } from '../lib/format';
@@ -44,6 +45,7 @@ export default function PropertyFinancialsPage() {
   // then the results strip with ↩ Undo shows here beside the expenses it created.
   const [importDoc, setImportDoc] = useState(null);
   const [imported, setImported] = useState(null);
+  const [exporting, setExporting] = useState(false);
   const undoImport = useMutation({
     mutationFn: (imp) => undoStatementImport(imp),
     onSuccess: () => { setImported(null); settleStatementImport(qc); },
@@ -181,8 +183,16 @@ export default function PropertyFinancialsPage() {
         </div>
       </div>
 
-      <h3 className="section-title">Per-tenant breakdown</h3>
+      <div className="page-head" style={{ marginTop: 8 }}>
+        <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>
+        <button className="secondary" onClick={() => setExporting(true)} title="Download a year-end reconciliation workbook — one tab per tenant, actual vs estimated CAM & tax">
+          ⬇ Export reconciliation
+        </button>
+      </div>
       <TenantShareTable propertyId={propId} year={year} />
+      {exporting && (
+        <ExportReconciliationModal propertyId={propId} year={year} propertyName={prop?.name} onClose={() => setExporting(false)} />
+      )}
     </div>
   );
 }

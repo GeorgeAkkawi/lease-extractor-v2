@@ -113,6 +113,10 @@ export function settleStatementImport(qc) {
   qc.invalidateQueries({ queryKey: ['reconciliations'] });
   // An import auto-learns payee rules (and undo un-learns them) — refresh the manager.
   qc.invalidateQueries({ queryKey: ['importRules'] });
+  // An import can set a tenant's CAM & tax estimate (read from a deposit), which lives
+  // on the lease row itself — refresh the lease-terms page + Leases list.
+  qc.invalidateQueries({ queryKey: ['leases'] });
+  qc.invalidateQueries({ queryKey: ['lease'] });
 }
 
 // The post-save results strip: totals + cross-property note + ↩ Undo.

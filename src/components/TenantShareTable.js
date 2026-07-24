@@ -14,11 +14,14 @@ import {
   undoReconciliationRefund,
   draftCamReconciliationEmail,
   getLeaseStatedEstimate,
+  getLeaseSort,
   isAnnualInvoice,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
+import { sortTenantRows } from '../lib/leaseSort';
 import { money, money0, sf, pct, approx } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
+import TenantSortBar from './TenantSortBar';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
 
@@ -107,6 +110,7 @@ export default function TenantShareTable({ propertyId, year }) {
     queryKey: ['invoicesForProperty', propertyId],
     queryFn: () => listInvoicesForProperty(propertyId),
   });
+  const { data: leaseSort = {} } = useQuery({ queryKey: ['leaseSort'], queryFn: getLeaseSort });
 
   const [editingId, setEditingId] = useState(null); // lease being estimate-edited
   const [emailDraft, setEmailDraft] = useState(null); // reconciliation statement
@@ -231,6 +235,10 @@ export default function TenantShareTable({ propertyId, year }) {
     const billed = billedComponents(s);
     return { share: s, fig, billed, recon: reconByLease[s.lease_id] || null };
   });
+  // Order the tenant entries by the shared sort preference (name / size / rent /
+  // suite). The vacant + totals bands render after the map, so they stay pinned last.
+  const tenantSort = leaseSort.tenants || {};
+  const sortedRows = sortTenantRows(rowsData, { mode: tenantSort.mode, dir: tenantSort.dir, pick: (row) => row.share });
 
   // Estimated + Difference totals only count tenants who actually have an estimate
   // set — otherwise the fallback (a tenant's plain actual share) would masquerade as
@@ -287,6 +295,7 @@ export default function TenantShareTable({ propertyId, year }) {
           the note clears once you do.
         </div>
       )}
+      {sortedRows.length > 1 && <TenantSortBar />}
       {/* The band labels duplicate each figure's own (screen-reader) label, so this is
           presentation-only; on narrow screens it hides and the per-figure labels show.
           The estimated and actual CAM & tax columns are visually distinguished (tinted
@@ -300,7 +309,7 @@ export default function TenantShareTable({ propertyId, year }) {
         <div className="lg-num">Total<span className="sub-cap">base + CAM &amp; tax + roof</span></div>
         <div className="lg-num">Difference<span className="sub-cap">actual − estimated</span></div>
       </div>
-      {rowsData.map((row) => {
+      {sortedRows.map((row) => {
         const s = row.share;
         const hasSf = Number(s.square_footage) > 0;
         const camTaxActual = Number(s.cam_amount || 0) + Number(s.tax_amount || 0);

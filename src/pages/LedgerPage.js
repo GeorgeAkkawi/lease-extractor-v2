@@ -15,12 +15,15 @@ import {
   listSnapshots,
   signDocUrl,
   localDateIso,
+  getLeaseSort,
 } from '../lib/api';
 import { allocatePayments, componentizeSchedule, escalationStepMonths, ledgerRowSummary, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
+import { sortTenantRows } from '../lib/leaseSort';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
 import FinancialsTabs from '../components/FinancialsTabs';
 import StatementReview from '../components/StatementReview';
+import TenantSortBar from '../components/TenantSortBar';
 import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
 import LearnedPayeesPanel from '../components/LearnedPayeesPanel';
 import MutationError from '../components/MutationError';
@@ -59,6 +62,7 @@ export default function LedgerPage() {
   const { data: totals } = useQuery({ queryKey: ['propertyTotals', propId, year], queryFn: () => getPropertyTotals(propId, year), placeholderData: keepPreviousData });
   const rollKey = ['propertyRentRoll', propId, year];
   const { data: rows = [], isLoading } = useQuery({ queryKey: rollKey, queryFn: () => getPropertyMonthlyRoll(propId, year) });
+  const { data: leaseSort = {} } = useQuery({ queryKey: ['leaseSort'], queryFn: getLeaseSort });
   usePageChrome([
     { label: 'Financials', to: '/financials' },
     { label: corp?.name || '…', to: `/financials/${corpId}` },
@@ -184,14 +188,19 @@ export default function LedgerPage() {
   const isCurrentFy = year === curY;
   const throughM = year < curY ? 12 : (isCurrentFy ? curM : 0);
 
-  // Derive each row's allocation / components / summary ONCE per render.
-  const derived = rows.map((r) => {
-    const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
-    const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual });
-    const summary = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc, today });
-    const steps = escalationStepMonths({ schedule: r.schedule, comp });
-    return { r, alloc, comp, summary, steps };
-  });
+  // Derive each row's allocation / components / summary ONCE per render, then order
+  // the tenants by the shared sort preference (name / size / rent / suite).
+  const tenantSort = leaseSort.tenants || {};
+  const derived = sortTenantRows(
+    rows.map((r) => {
+      const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
+      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual });
+      const summary = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc, today });
+      const steps = escalationStepMonths({ schedule: r.schedule, comp });
+      return { r, alloc, comp, summary, steps };
+    }),
+    { mode: tenantSort.mode, dir: tenantSort.dir, pick: (d) => d.r }
+  );
 
   const markAll = (m) => {
     const unpaid = derived.filter(({ alloc }) => round2(alloc.owed[m - 1] - alloc.coverage[m - 1]) > 0.05).length;
@@ -286,6 +295,7 @@ export default function LedgerPage() {
           )}
         </div>
         {note && <p className="badge good" style={{ marginBottom: 10 }}>{note}</p>}
+        {rows.length > 1 && <TenantSortBar />}
         {isLoading ? <p className="muted">Loading…</p> : (!rows.length && vacant <= 0) ? (
           <p className="empty-line muted">No tenants with rent on file for FY {year}.</p>
         ) : (

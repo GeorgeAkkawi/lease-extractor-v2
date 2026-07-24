@@ -75,6 +75,94 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-24** — **Four features in one round: a change-password flow · sort the Ledger + per-tenant breakdown
+  (name/size/rent/suite) · CAM & tax estimate READ from a bank deposit · a downloadable Excel reconciliation
+  report** (George: *"set up a change password option in settings … i want to be able to sort by size and space and
+  rent … i want to have this software … find the estimated CAM and tax when I upload a bank statement into the ledger.
+  It should take that total number … subtract the monthly base rent, multiply that by twelve, divide by the square
+  footage … the remainder should be stored as the estimated cam and tax in the per tenant breakdown. round all numbers
+  on cam and tax estimate to the 4th number when people want to validate"* — plus a mid-build "# Feature 4: Excel Export"
+  reconciliation-report spec he pasted; his scoping picks via AskUserQuestion: password = **email link** flow · estimate
+  apply = **smart pre-tick** · recalc = **re-import only** (his two conditions: *"can this just be code with no AI after
+  the AI extracts data?"* → yes, pure arithmetic; *"the user should have the option to recalc every time it shouldnt be
+  automatic"* → suggestion-only, tick+Save gated) · sort fields = **all four**; and his propagation check: *"just to
+  confirm this repopulates all areas of the software that need to be changed correct?"* → yes, verified in code — plan
+  `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed: frontend Cloudflare version `e2b2ee03`, demo worker
+  `a4fe8258`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no tenant emails, no destructive
+  data.** Tests **620/620** (was 591 — +8 tenantSort, +8 estimateFromStatement, +7 reconciliationReport, +2 tenantSortUi,
+  +1 statementEstimate, +3 passwordReset). Vite build compiles (806 modules; exceljs stays lazily chunked).
+  - **1) Change password (email-link flow).** Settings → Security gains a **Password** card → *Change password* sends
+    `supabase.auth.resetPasswordForEmail(user.email, { redirectTo: origin + '/' })`. The reset link lands back in the app
+    with a recovery session, which `AuthContext` catches via the **`PASSWORD_RECOVERY` auth event** (not a route — so it's
+    robust even if `redirectTo` isn't allow-listed and Supabase falls back to the Site URL) → a new
+    `passwordRecovery` state → `App.js` renders the new branded **`ResetPasswordPage`** (AFTER the `needsTwoFactor` gate,
+    since Supabase requires aal2 to change the password when MFA is enrolled). Setting the password → `updateUser` →
+    `signOut({ scope: 'global' })` (all sessions out, per George) → back to Login. `Login.js` gained a signed-out
+    **"Forgot your password?"** button (same machinery — a locked-out user can't reach Settings) and now exports
+    `passwordProblem` (the shared 10-char/upper/lower/digit policy). Demo: mock `auth` gained no-op
+    `resetPasswordForEmail`/`updateUser` stubs (the cards say it's inactive in demo).
+  - **2) Sorting on the Ledger + the per-tenant breakdown.** New `sortTenantRows(rows, { mode, dir, pick })` +
+    `TENANT_SORTS` (George's four: **Tenant name · Size (SF) · Base rent · Suite/address**) in `leaseSort.js` — nulls/blanks
+    always last both directions, name tiebreak, numeric suite compare ("Suite 2" < "Suite 10"). New shared
+    **`TenantSortBar.js`** reuses the Leases-page `.lease-sortbar` styling + its optimistic-save shape, persisting to
+    `user_preferences.lease_sort.tenants` ({mode,dir}) — a **nested key** the top-level merge in `setLeaseSort` keeps
+    separate from the page's own prefs, so **NO migration**. Mounted on `LedgerPage` (sorts `derived`) and inside
+    `TenantShareTable` (sorts `rowsData`); the vacant + Totals bands render after the map, so they stay pinned. Roll rows
+    gained `base_rent`/`premises_address`/`anyEstimate` (`getPropertyMonthlyRoll`). Default = name asc (the demo seed is
+    already alphabetical → pinned suites unchanged).
+  - **3) CAM & tax estimate read from a statement.** New pure `deriveEstimateFromDeposit(amount, tenant, month)`
+    (`statementMatch.js`): the base rent is exact from the lease, so `CAM&tax/mo = deposit − base − roof → ×12 = /yr →
+    ÷SF = $/SF` (the Boost repair automated: $2,716 − $1,811.42 = $904.58/mo → $10,854.96/yr, penny-exact so the deposit
+    settles its month to the cent; $/SF shown to **4 decimals** for George's validation). Escalation-aware by construction
+    (base comes from `componentizeSchedule`), with guards → null: month bills no base (out of term/abated), remainder < $1
+    (gross lease/partial), deposit at the PRE-raise rate on a post-step month (the escalation explains it), or the derived
+    annual already on file. `getStatementMatchContext` now carries `baseByMonth`/`roofByMonth`/`square_footage`/
+    `camTaxAnnual`/`anyEstimate` per tenant. The review shows a **"CAM & tax estimates read from this statement"** section
+    (per checked tenant deposit, latest month per lease): `$2,716.00 deposit − $1,811.42 base = $904.58/mo → $10,854.96/yr
+    · $13.0000/SF`, with the **smart pre-tick** — a NEW estimate pre-ticked, a CHANGE to an existing one **unticked** (a
+    short deposit can't quietly lower a good estimate). Ticked rows apply through the EXISTING estimate write path: a new
+    `type:'estimate'` entry processed **FIRST** in `applyStatementImport` (so the year's billing resyncs to base + estimate
+    BEFORE the deposits book → each settles its month exactly), storing the 7/20 combined convention (whole figure on
+    `est_cam_annual`, `est_tax_annual=0`) + stamping `est_confirmed_year`, then `resyncYearBillingToEstimate`; logged as an
+    `estimate_set` history event. Undo reverses estimates **LAST** (prior restored + resync). **No AI, $0** — pure
+    arithmetic; re-import IS the recalc (George's pick), suggestion-only, nothing writes without his tick + Save.
+    `settleStatementImport` gained `['leases']`/`['lease']` so the lease-terms page + Leases list repaint too.
+  - **The propagation, verified in code (George's question):** the statement-derived estimate uses the IDENTICAL write as
+    the hand-typed editor, so every surface reading the lease row / `v_tenant_shares` / the regenerated invoice / the
+    re-recorded months repopulates — per-tenant breakdown (Estimated·Total·Difference·⚖ Reconcile), lease-terms field
+    (carried-over nag clears), Leases columns, Ledger boxes + left rail (deposits settle exactly), year invoice/AR, monthly
+    tracker, the next import's match context, behind-on-rent alerts, Ask AI (v4 fingerprint flips), and year-end
+    Reconcile/History. Undo reverses the whole chain.
+  - **4) Excel reconciliation report.** New pure `shapeTenantReport` + `buildReconciliationReport` (`reconciliationData.js`)
+    + `downloadReconciliationXlsx` (`reconciliationExcel.js`, lazy ExcelJS, brand olive/cream headers, green/red variance
+    fills, landscape, frozen header, one tab per tenant) + `ExportReconciliationModal` (tenant checklist, default all) +
+    an **⬇ Export reconciliation** button on the Financials "Per-tenant breakdown" head. The spec's SQL used imagined
+    table names; this maps to Amlak's real model and reuses `reconcileFigures`/`billedComponents`/`componentizeSchedule`,
+    so the workbook can't disagree with the on-screen breakdown. **The one honest mapping:** the estimate is a single
+    combined figure per tenant (no per-item estimate), so the report **itemizes the ACTUALS** (each CAM bucket, each tax
+    line, roof — the tenant's pro-rata share, scaled to reconcile to the tenant's actual component even under a share
+    override), shows the combined estimate, and computes variance at the total level. Each tab: header block → base rent +
+    CAM&tax est/actual + total owed + variance (monthly) → itemized actuals → summary card → auto-insights (refund/balance
+    due, per-line over/under) → lease-terms reference (initial term + renewal options). **No AI, $0.**
+  - **Files:** `src/context/AuthContext.js`, `src/App.js`, `src/pages/{ResetPasswordPage (new),Login,SecuritySettings}.js`,
+    `src/lib/leaseSort.js`, `src/components/{TenantSortBar (new),TenantShareTable}.js`, `src/pages/LedgerPage.js`,
+    `src/lib/{statementMatch,api}.js`, `src/components/{StatementReview,ImportStatementButton}.js`,
+    `src/lib/{reconciliationData (new),reconciliationExcel (new)}.js`, `src/components/ExportReconciliationModal (new)`,
+    `src/pages/PropertyFinancialsPage.js`, `src/lib/demo/mockClient.js`, tests (`tenantSort`, `estimateFromStatement`,
+    `reconciliationReport`, `tenantSortUi`, `statementEstimate`, `passwordReset` — all new). No DB/edge/CSS/seed changes.
+  - **Verified:** unit **620/620** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev +
+    demo, demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference (the jsdom
+    tests mount the real ResetPasswordPage / SecuritySettings / Login, the real LedgerPage + TenantShareTable sort bars, and
+    the real StatementReview estimate section against the demo mock). **George: hard-refresh (Cmd+Shift+R). Settings →
+    Security → Change password to get the reset email. On the Ledger or per-tenant breakdown, use "Sort by" to order by
+    name/size/rent/suite. Import a statement → an all-in deposit shows its derived CAM & tax estimate to tick + Save. On
+    Financials, "⬇ Export reconciliation" downloads the per-tenant workbook.**
+  - **Flag (needs your OK if the reset link misroutes):** I couldn't reach the Supabase Management API from here to confirm
+    the hosted Auth **redirect allow-list / Site URL** covers amlakre.com + www + workers.dev. The PASSWORD_RECOVERY event
+    catch makes the flow work even on the Site-URL fallback, so it should be fine — but if a reset link ever lands on the
+    wrong origin, add those three URLs under Supabase → Authentication → URL Configuration (a 30-second dashboard step).
+    The reset EMAIL round-trip can't be driven from here — your proof is clicking Change password and following the link.
+
 - **2026-07-24** — **Five asks in one round: the For-month column follows the STATEMENT's date · the "Always" column
   is gone (payees are remembered by saving) · Est. roof off the lease-terms panel · a Management fee entered as a
   % of base rent · property taxes itemized, one line per statement payment** (George: *"again for the ledger the

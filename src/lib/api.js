@@ -1984,7 +1984,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
       if (!m) continue;
       (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
     }
-    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage };
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage, base_rent: Number(s.base_rent || 0), premises_address: s.premises_address || null, anyEstimate: billed.anyEstimate };
   });
 }
 
@@ -3287,6 +3287,11 @@ export async function getStatementMatchContext(propertyId, year) {
       // never disagree with the boxes).
       const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual });
       const steps = escalationStepMonths({ schedule: r.schedule, comp });
+      // Per-month base + roof (the exact figures the Ledger boxes paint) so an imported
+      // deposit can back out its CAM & tax estimate: CAM&tax = deposit − base − roof.
+      const baseByMonth = [];
+      const roofByMonth = [];
+      for (let mm = 1; mm <= 12; mm++) { baseByMonth.push(comp[mm]?.base || 0); roofByMonth.push(comp[mm]?.roof || 0); }
       tenants.push({
         lease_id: r.lease_id,
         property_id: p.id,
@@ -3299,6 +3304,11 @@ export async function getStatementMatchContext(propertyId, year) {
         owed: alloc.owed,
         coverage: alloc.coverage,
         steps,
+        baseByMonth,
+        roofByMonth,
+        square_footage: Number(r.square_footage) || 0,
+        camTaxAnnual: Number(r.camTaxAnnual) || 0,
+        anyEstimate: !!r.anyEstimate,
         invoiceTotal: r.annual,
         invoiceBalance: r.balance != null ? Number(r.balance) : null,
         reconInvoiceId: recon?.id || null,
@@ -3410,6 +3420,29 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       });
       applied.push({ kind: 'roof', property_id: e.property_id, year: e.year, amount: Number(e.amount), hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
+    } else if (e.type === 'estimate') {
+      // A CAM & tax estimate read from a deposit (Feature: deriveEstimateFromDeposit).
+      // Processed FIRST (the review puts estimate entries ahead of payments in the
+      // array) so the year's billing is resynced to base + the new estimate BEFORE the
+      // deposits book — then each deposit settles its month exactly (✓, no gold "under").
+      // Capture the lease's prior estimate so undo restores it precisely; write the 7/20
+      // combined convention (whole figure on est_cam_annual, est_tax_annual = 0) and
+      // stamp est_confirmed_year so the carried-over note clears. Same write path as the
+      // hand-typed estimate editor, so every downstream surface repopulates identically.
+      const leaseRow = await one(supabase.from('leases').select('est_cam_annual,est_tax_annual,est_roof_annual,est_confirmed_year,tenant_name').eq('id', e.lease_id).single());
+      const prior = {
+        est_cam_annual: leaseRow?.est_cam_annual ?? null,
+        est_tax_annual: leaseRow?.est_tax_annual ?? null,
+        est_roof_annual: leaseRow?.est_roof_annual ?? null,
+        est_confirmed_year: leaseRow?.est_confirmed_year ?? null,
+      };
+      await updateLease(e.lease_id, { est_cam_annual: Number(e.est_cam_annual), est_tax_annual: 0, est_confirmed_year: Number(e.year) });
+      await resyncYearBillingToEstimate(e.lease_id, e.property_id, e.year);
+      applied.push({ kind: 'estimate', lease_id: e.lease_id, property_id: e.property_id, year: e.year, amount: Number(e.est_cam_annual), prior });
+      await logHistoryEvent({
+        property_id: e.property_id, lease_id: e.lease_id, type: 'estimate_set', tenant_name: leaseRow?.tenant_name || null,
+        description: `CAM & tax estimate set from ${fileName || 'a bank statement'}: ${money(Number(e.est_cam_annual))}/yr`,
+      });
     } else if (e.type === 'rule') {
       // Learn (or overwrite) a payee → target rule. Best-effort: a failure here must
       // never lose the import. NO hash on the applied record — a rule isn't a money
@@ -3465,8 +3498,14 @@ export async function applyStatementImport({ propertyId, year, fileName, account
 // the dedupe universe so a fully-undone statement is cleanly re-importable.
 export async function undoStatementImport(imp) {
   const notes = [];
+  // Estimate writes are reversed LAST — after the import's payments + expenses are gone
+  // — so the invoice + system-marked months re-price to the RESTORED prior estimate with
+  // this import's deposits already removed.
+  const estRecords = [];
   for (const a of imp.applied || []) {
-    if (a.kind === 'payment') {
+    if (a.kind === 'estimate') {
+      estRecords.push(a);
+    } else if (a.kind === 'payment') {
       await deletePayment(a.payment_id);
     } else if (a.kind === 'cam') {
       await deleteCamLineItem(a.item_id, a.property_id, a.year);
@@ -3495,6 +3534,13 @@ export async function undoStatementImport(imp) {
         else if (a.rule_id) await deleteImportRule(a.rule_id);
       } catch { /* best-effort */ }
     }
+  }
+  // Restore each lease's prior estimate + resync the year back (payments are already gone).
+  for (const a of estRecords) {
+    try {
+      await updateLease(a.lease_id, a.prior);
+      await resyncYearBillingToEstimate(a.lease_id, a.property_id, a.year);
+    } catch { /* best-effort — never blocks the rest of the undo */ }
   }
   await rows(supabase.from('statement_imports').delete().eq('id', imp.id));
   await logHistoryEvent({
