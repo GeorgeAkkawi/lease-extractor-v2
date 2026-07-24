@@ -9,6 +9,7 @@ import DocAssistant from './DocAssistant';
 import { money, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
 import { missingAdditionalInsured, additionalInsuredAlertKey } from '../lib/insuranceNotices';
+import { useConfirm } from './ConfirmDialog';
 
 // Expiry status of a policy by its date: green while current, amber within a month,
 // red once expired. Drives the badge on the card and whether a tenant policy shows the
@@ -31,6 +32,7 @@ export function expiryStatus(expiryDate, now = new Date()) {
 // lease page opens the matching professional request email with it.
 export default function InsuranceVault({ party, propertyId, leaseId, onRequestRenewal }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const scopeKey = party === 'landlord' ? propertyId : leaseId;
   const queryKey = ['insurance', party, scopeKey];
   const archivedKey = ['insurance-archived', party, scopeKey];
@@ -408,7 +410,17 @@ function ArchivedSection({ party, propertyId, leaseId, archivedKey }) {
                 className="icon-btn danger-btn"
                 title="Delete permanently from history"
                 style={{ alignSelf: 'center', marginLeft: 'auto' }}
-                onClick={() => { if (window.confirm('Permanently delete this archived policy and its documents?')) del.mutate(p.id); }}
+                onClick={async () => {
+                  if (await askConfirm({
+                    title: 'Delete archived policy?',
+                    message: 'Permanently delete this archived policy?',
+                    implications: [
+                      'The policy record and its uploaded documents are permanently deleted.',
+                      'This can’t be undone.',
+                    ],
+                    confirmLabel: 'Delete permanently',
+                  })) del.mutate(p.id);
+                }}
               >🗑</button>
             </div>
           ))}

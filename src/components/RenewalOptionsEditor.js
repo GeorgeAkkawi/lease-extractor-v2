@@ -4,6 +4,7 @@ import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRene
 import { money0, fmtDate } from '../lib/format';
 import NotificationEmailModal from './NotificationEmailModal';
 import MutationError from './MutationError';
+import { useConfirm } from './ConfirmDialog';
 
 // Badge tone + label for an option's lifecycle status. A pending option whose term
 // window has already passed is shown as "Lapsed" (still actionable — the tenant may
@@ -60,6 +61,7 @@ function renewalRent(r, base, pendingSteps) {
 export default function RenewalOptionsEditor({ leaseId, lease, escalations = [], estimateBase }) {
   const base = estimateBase != null ? estimateBase : Number(lease?.base_rent) || 0;
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
 
   // A PENDING option "lapses" once the term it would have extended has already ended —
@@ -222,7 +224,18 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                       className="icon-btn danger-btn"
                       title="Delete this renewal option"
                       disabled={remove.isPending}
-                      onClick={() => { if (window.confirm('Delete this renewal option?')) remove.mutate(r.id); }}
+                      onClick={async () => {
+                        if (await askConfirm({
+                          title: 'Delete renewal option?',
+                          message: 'Delete this renewal option?',
+                          implications: [
+                            'Removes the option from this lease.',
+                            'If it was already applied, the term and rent it set are NOT reversed.',
+                            'This can’t be undone.',
+                          ],
+                          confirmLabel: 'Delete',
+                        })) remove.mutate(r.id);
+                      }}
                     >
                       ✕
                     </button>

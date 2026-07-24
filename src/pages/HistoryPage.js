@@ -10,6 +10,7 @@ import { invokeFunction } from '../lib/supabaseClient';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { money, psf, sf, fmtDate } from '../lib/format';
 import LeaseAssistant from '../components/LeaseAssistant';
+import { useConfirm } from '../components/ConfirmDialog';
 
 // Friendly labels + badge tones for the history_events timeline.
 const EVENT_LABEL = {
@@ -54,6 +55,7 @@ const kfmt = (v) => (v == null || isNaN(v) ? '' : Math.abs(v) >= 1000 ? `$${Math
 export default function HistoryPage() {
   const { corpId, propId } = useParams();
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const { year } = useChrome();
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
@@ -90,15 +92,30 @@ export default function HistoryPage() {
   const prev = idx > 0 ? sorted[idx - 1] : null;
   const closed = !!cur; // this fiscal year already has a saved snapshot
 
-  function handleClose() {
-    if (window.confirm(
-      `Close FY ${year}?\n\nThis saves a permanent snapshot of this property's revenue, expenses, and per-tenant breakdown exactly as they are now, and files it under History. It does NOT change your live financials — you can edit them anytime, and you can reopen the year later to remove the snapshot.`
-    )) close.mutate();
+  async function handleClose() {
+    if (await askConfirm({
+      title: `Close FY ${year}?`,
+      message: `Save a permanent snapshot of ${prop?.name || 'this property'}'s financials as they are now?`,
+      implications: [
+        'Files this year’s revenue, expenses, and per-tenant breakdown under History.',
+        'Does NOT change your live financials — you can edit them anytime.',
+        'You can reopen the year later to remove the snapshot.',
+      ],
+      confirmLabel: 'Close year',
+      tone: 'default',
+    })) close.mutate();
   }
-  function handleReopen() {
-    if (window.confirm(
-      `Reopen FY ${year}?\n\nThis removes the saved snapshot for ${year} from History. Your live financials for ${year} are not affected.`
-    )) reopen.mutate();
+  async function handleReopen() {
+    if (await askConfirm({
+      title: `Reopen FY ${year}?`,
+      message: `Remove the saved ${year} snapshot from History?`,
+      implications: [
+        `Deletes the ${year} snapshot from History.`,
+        `Your live financials for ${year} are not affected.`,
+      ],
+      confirmLabel: 'Reopen year',
+      tone: 'warn',
+    })) reopen.mutate();
   }
 
   const chartData = sorted.map((s) => ({ year: String(s.year), Revenue: num(s.total_revenue), Expenses: expenses(s), NOI: noi(s) }));
@@ -253,13 +270,18 @@ export default function HistoryPage() {
               type="button"
               className="secondary"
               disabled={clearHistory.isPending}
-              onClick={() => {
-                if (window.confirm(
-                  `Clear ${prop?.name || 'this property'}'s lease & tenant history?\n\n`
-                  + `This permanently deletes the timeline below (renewals, assignments, insurance requests, etc.). `
-                  + `It can't be undone, and it also clears the "📨 Last requested" date shown on tenants' insurance panels. `
-                  + `Your leases, tenants, invoices, and the "Expired & renewed leases" archive are NOT affected.`
-                )) clearHistory.mutate();
+              onClick={async () => {
+                if (await askConfirm({
+                  title: 'Clear lease & tenant history?',
+                  message: `Clear ${prop?.name || 'this property'}'s lease & tenant history?`,
+                  implications: [
+                    'Permanently deletes the timeline below (renewals, assignments, insurance requests, etc.).',
+                    'Also clears the "📨 Last requested" date shown on tenants’ insurance panels.',
+                    'Your leases, tenants, invoices, and the "Expired & renewed leases" archive are NOT affected.',
+                    'This can’t be undone.',
+                  ],
+                  confirmLabel: 'Clear history',
+                })) clearHistory.mutate();
               }}
             >{clearHistory.isPending ? 'Clearing…' : 'Clear history'}</button>
           )}
@@ -328,7 +350,17 @@ export default function HistoryPage() {
                               className="icon-btn danger-btn"
                               title="Remove this archived lease from History"
                               disabled={removeExpired.isPending}
-                              onClick={() => { if (window.confirm(`Remove ${e.tenant_name}'s archived lease from History? This deletes the record permanently.`)) removeExpired.mutate(e.id); }}
+                              onClick={async () => {
+                                if (await askConfirm({
+                                  title: 'Remove archived lease?',
+                                  message: `Remove ${e.tenant_name}'s archived lease from History?`,
+                                  implications: [
+                                    'Permanently deletes this archived record and its stored financials.',
+                                    'This can’t be undone.',
+                                  ],
+                                  confirmLabel: 'Remove',
+                                })) removeExpired.mutate(e.id);
+                              }}
                             >✕</button>
                           </div>
                         </td>

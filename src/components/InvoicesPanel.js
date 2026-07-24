@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listInvoices, listPayments, recordPayment, deletePayment, updateInvoice } from '../lib/api';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
+import { useConfirm } from './ConfirmDialog';
 
 // Per-lease invoices & payments: each invoice with its derived balance + status, a
 // "record payment" form (partial payments supported), and the payment history. Invoices
@@ -13,6 +14,7 @@ const STATUS_TONE = { paid: 'good', partial: 'warn', overdue: 'danger', sent: 'i
 
 export default function InvoicesPanel({ leaseId }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const { data: invoices = [], isLoading } = useQuery({ queryKey: ['invoices', leaseId], queryFn: () => listInvoices(leaseId) });
   const [openId, setOpenId] = useState(null);
   const [showRemoved, setShowRemoved] = useState(false);
@@ -60,7 +62,19 @@ export default function InvoicesPanel({ leaseId }) {
                 open={openId === inv.id}
                 onToggle={() => setOpenId(openId === inv.id ? null : inv.id)}
                 onRefresh={refresh}
-                onRemove={() => { if (window.confirm('Remove this invoice? It stops counting toward receivables (you can still see it under “removed”).')) removeInv.mutate(inv.id); }}
+                onRemove={async () => {
+                  if (await askConfirm({
+                    title: 'Remove invoice?',
+                    message: 'Remove this invoice?',
+                    implications: [
+                      'It stops counting toward receivables.',
+                      'You can still see it under “removed” — this is reversible.',
+                      'Recorded payments stay attached.',
+                    ],
+                    confirmLabel: 'Remove',
+                    tone: 'warn',
+                  })) removeInv.mutate(inv.id);
+                }}
               />
             ))}
           </tbody>
@@ -111,6 +125,7 @@ const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'Ju
 
 function PaymentBlock({ inv, onRefresh, onRemove }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const { data: payments = [] } = useQuery({ queryKey: ['payments', inv.id], queryFn: () => listPayments(inv.id) });
   const [form, setForm] = useState({ amount: Number(inv.balance) > 0 ? String(inv.balance) : '', paid_date: '', method: 'check', note: '', period_month: '' });
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -152,7 +167,18 @@ function PaymentBlock({ inv, onRefresh, onRemove }) {
                 <td>{p.note || '—'}</td>
                 <td className="num">
                   <button type="button" className="icon-btn danger-btn" title="Delete this payment"
-                    onClick={() => { if (window.confirm('Delete this payment?')) remove.mutate(p.id); }}>✕</button>
+                    onClick={async () => {
+                      if (await askConfirm({
+                        title: 'Delete payment?',
+                        message: 'Delete this recorded payment?',
+                        implications: [
+                          'The invoice balance and receivables update.',
+                          'The ledger box for its month reopens.',
+                          'This can’t be undone.',
+                        ],
+                        confirmLabel: 'Delete',
+                      })) remove.mutate(p.id);
+                    }}>✕</button>
                 </td>
               </tr>
             ))}

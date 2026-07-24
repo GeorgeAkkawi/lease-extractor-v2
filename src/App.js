@@ -20,6 +20,7 @@ import FinancialsPropertiesPage from './pages/FinancialsPropertiesPage';
 import PropertyFinancialsPage from './pages/PropertyFinancialsPage';
 import LedgerPage from './pages/LedgerPage';
 import HistoryPage from './pages/HistoryPage';
+import { ConfirmProvider } from './components/ConfirmDialog';
 import './App.css';
 
 export default function App() {
@@ -34,6 +35,7 @@ export default function App() {
   if (passwordRecovery) return <ResetPasswordPage />;
 
   return (
+    <ConfirmProvider>
     <Layout>
       <Routes>
         <Route path="/" element={<DashboardPage />} />
@@ -72,5 +74,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/leases" replace />} />
       </Routes>
     </Layout>
+    </ConfirmProvider>
   );
 }

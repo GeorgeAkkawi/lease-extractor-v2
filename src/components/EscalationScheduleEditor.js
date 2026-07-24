@@ -4,12 +4,26 @@ import { listEscalations, createEscalation, deleteEscalation, backfillLeaseToTod
 import { computeEscalatedRent, priorRentBefore } from '../lib/escalations';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
+import { useConfirm } from './ConfirmDialog';
 
 // Lists, adds & removes rent escalations. New rent is computed BY CODE (no AI).
 // New escalations are 'scheduled' until accepted on the recommendation card.
 // Delete is here so an AI mis-read can be corrected (remove the wrong row).
 export default function EscalationScheduleEditor({ lease }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
+  const askDeleteEsc = (id) => async () => {
+    if (await askConfirm({
+      title: 'Delete escalation?',
+      message: 'Delete this rent escalation?',
+      implications: [
+        'Removes this rent step from the lease.',
+        'The rent schedule and any billing that used it re-compute.',
+        'This can’t be undone.',
+      ],
+      confirmLabel: 'Delete',
+    })) remove.mutate(id);
+  };
   const leaseId = lease.id;
   const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
 
@@ -112,7 +126,7 @@ export default function EscalationScheduleEditor({ lease }) {
                       className="icon-btn danger-btn"
                       title="Delete this escalation"
                       disabled={remove.isPending}
-                      onClick={() => { if (window.confirm('Delete this escalation? This removes it from the lease.')) remove.mutate(e.id); }}
+                      onClick={askDeleteEsc(e.id)}
                     >
                       ✕
                     </button>
@@ -161,7 +175,7 @@ export default function EscalationScheduleEditor({ lease }) {
                         className="icon-btn danger-btn"
                         title="Delete this escalation"
                         disabled={remove.isPending}
-                        onClick={() => { if (window.confirm('Delete this escalation? This removes it from the lease.')) remove.mutate(e.id); }}
+                        onClick={askDeleteEsc(e.id)}
                       >
                         ✕
                       </button>

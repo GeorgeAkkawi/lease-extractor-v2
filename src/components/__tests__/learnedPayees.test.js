@@ -3,11 +3,12 @@
 // shared per file, cleared before each test), then the panel lists THIS property's
 // rules, retargets one in place (id preserved so an import's applied[].rule_id stays
 // valid), and removes one behind the confirm gate.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, within, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
+import { ConfirmProvider } from '../ConfirmDialog';
 import LedgerPage from '../../pages/LedgerPage';
 import { saveImportRule, listImportRules, deleteImportRule } from '../../lib/api';
 
@@ -16,12 +17,14 @@ function renderLedger(propId = 'prop-1') {
   return render(
     <MemoryRouter initialEntries={[`/financials/corp-1/${propId}/ledger`]}>
       <QueryClientProvider client={qc}>
-        <ChromeProvider>
-          <Routes>
-            <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
-            <Route path="/financials/:corpId/:propId" element={<div>financials-page</div>} />
-          </Routes>
-        </ChromeProvider>
+        <ConfirmProvider>
+          <ChromeProvider>
+            <Routes>
+              <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
+              <Route path="/financials/:corpId/:propId" element={<div>financials-page</div>} />
+            </Routes>
+          </ChromeProvider>
+        </ConfirmProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -75,8 +78,7 @@ describe('LearnedPayeesPanel — the learned-payee manager', () => {
     expect(after.account_hint).toBe('••4821'); // hint carried through
   });
 
-  it('removes a rule behind a confirm and drops the count', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('removes a rule behind the confirm dialog and drops the count', async () => {
     await saveImportRule({ property_id: 'prop-1', pattern: 'CITY DENTAL PC', target_kind: 'tenant', lease_id: 'lease-2' });
     await saveImportRule({ property_id: 'prop-1', pattern: 'GREENLEAF LANDSCAPING', target_kind: 'expense_cam', cam_label: 'Landscaping' });
 
@@ -87,9 +89,12 @@ describe('LearnedPayeesPanel — the learned-payee manager', () => {
     const row = screen.getByText('GREENLEAF LANDSCAPING').closest('tr');
     fireEvent.click(within(row).getByText(/Remove/));
 
+    // The professional confirm dialog appears; approving it removes the rule.
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('Remove learned payee?')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+
     await waitFor(() => expect(screen.getByText(/Learned payees \(1\)/)).toBeTruthy());
     expect(screen.queryByText('GREENLEAF LANDSCAPING')).toBeNull();
-    expect(window.confirm).toHaveBeenCalled();
-    window.confirm.mockRestore();
   });
 });

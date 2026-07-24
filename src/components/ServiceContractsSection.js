@@ -5,6 +5,7 @@ import { contractAnnualCost } from '../lib/contracts';
 import DocAssistant from './DocAssistant';
 import { money, fmtDate, currentYear } from '../lib/format';
 import MutationError from './MutationError';
+import { useConfirm } from './ConfirmDialog';
 
 const TYPES = [['landscaping', 'Landscaping'], ['snow_removal', 'Snow removal'], ['security', 'Security'], ['other', 'Other']];
 const FREQ = [['annual', 'per year'], ['monthly', 'per month'], ['one-time', 'one-time']];
@@ -49,6 +50,7 @@ export default function ServiceContractsSection({ propId }) {
 
 // One contract row: glanceable terms + Edit + Open & ask.
 function ContractItem({ c, onChange }) {
+  const askConfirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const remove = useMutation({ mutationFn: () => deleteServiceContract(c.id), onSuccess: onChange });
@@ -77,7 +79,18 @@ function ContractItem({ c, onChange }) {
         </div>
         <button type="button" className="ghost" onClick={() => setEditing((e) => !e)}>Edit</button>
         <button type="button" className="ghost" onClick={() => setOpen((o) => !o)}>{open ? 'Close' : 'Open & ask'}</button>
-        <button type="button" className="icon-btn danger-btn" title="Delete contract" onClick={() => { if (window.confirm('Delete this contract?')) remove.mutate(); }}>✕</button>
+        <button type="button" className="icon-btn danger-btn" title="Delete contract" onClick={async () => {
+          if (await askConfirm({
+            title: 'Delete contract?',
+            message: 'Delete this service contract?',
+            implications: [
+              'Removes it from this property.',
+              'If it fed a CAM line item, that contribution stops on the next open year.',
+              'This can’t be undone.',
+            ],
+            confirmLabel: 'Delete',
+          })) remove.mutate();
+        }}>✕</button>
       </div>
 
       {editing && (

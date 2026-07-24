@@ -75,6 +75,51 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-24** — **A professional "Are you sure?" pop-up (with the consequences highlighted) now guards every
+  destructive delete, replacing the bare browser prompt · AND Infinite Mobile's Jan–Jun ledger boxes are green
+  again — they were reading ~$2.53 "under" because a stray roof actual was billed on top of the all-in estimate**
+  (George: *"needs to be an are you sure when deleting things and the implications listed … if not it needs to be a
+  professional looking pop-up window with implications highlighted and such. infinite mobile isnt underpaid for months
+  jan-june please fix that box to a green number please."*). Deployed: frontend Cloudflare version `f8f32b84`, demo
+  worker `4cbc4c42`, plus a one-row live data fix. **Frontend + one guarded DB write — $0, NO migration, NO edge
+  functions, no tenant emails, non-destructive.** Tests **623/623** (was 620 — +3 confirmDialog; the learnedPayees
+  remove test rewritten to click through the new dialog).
+  - **1) The confirm dialog (the delete-guard George asked for).** New shared **`ConfirmDialog.js`** — a
+    `ConfirmProvider` (mounted once around the app in `App.js`) + a `useConfirm()` hook returning an imperative
+    `askConfirm(opts) → Promise<boolean>`, so a call site stays a one-liner: `if (await askConfirm({ title, message,
+    implications, confirmLabel, tone })) remove.mutate(id)`. The dialog uses the app's `.modal` idiom + `useModalA11y`
+    (Escape/scrim/✕ = cancel, focus trapped, opens on the ✕ so a stray Enter never deletes) and renders the
+    consequences in a **highlighted box** (`.confirm-imp`, left-accent bar + uppercase eyebrow, tinted by severity —
+    red `danger` for permanent deletes, gold `warn` for reversible/undo, accent `default` for consequential-but-safe).
+    Resolves true on confirm, false otherwise; the default context is a no-op returning false, so a component still
+    renders fine without a provider (tests).
+  - **Wired into every destructive DELETE / permanent-removal / undo** (each with a specific, plain-English implications
+    list): Learned-payee remove, archived-policy delete (permanent + docs), addendum delete (notes it does NOT reverse
+    applied changes), service-contract delete, renewal-option delete, rent-abatement delete (months revert to full
+    rent), invoice remove (reversible → warn) + payment delete, escalation delete (×2), History clear (the big one) +
+    remove-archived-lease + close/reopen year, and the Ledger's statement-import undo (warn). Left as the plain browser
+    prompt on purpose (not deletes / reversible / benign): the demo-reset, mark-all-paid + catch-up, turn-off-2FA, and
+    the renew/decline actions — say the word and I'll upgrade those for consistency too.
+  - **2) Infinite Mobile Jan–Jun → green (a data fix, no code).** The lease is flagged `roof_responsible = true` but
+    had **no roof ESTIMATE** (`est_roof_annual` was null), so `billedComponents` fell back to the tenant's tiny ACTUAL
+    roof share ($30.36/yr) and billed it ON TOP of the all-in $10,855 CAM & tax estimate — pushing each month's owed
+    from $2,716.00 to **$2,718.53**, so the $2,716 deposits read ~$2.53 "under" (gold) for all of Jan–Jun. But the
+    $10,855 combined estimate (from the 7/24 all-in-deposit reconstruction) already covers roof — there is no separate
+    roof line. Fix: set **`est_roof_annual = 0`** on that one lease (guarded `where est_roof_annual is null`; keeps the
+    roof-responsible flag, just says "no separate roof estimate — it's inside the combined figure"). Now
+    `billedComponents.roof = 0`, owed Jan–Jun = base $1,811.42 + $904.58 = **$2,716.00** = the deposit → **green**, and
+    the year's owed sums to exactly the existing invoice ($36,096.04, roof_annual already 0) — so the ledger and the
+    invoice now agree to the cent. Reversible (set back to null); no bill changed.
+  - **Files:** `src/components/ConfirmDialog.js` (new), `src/App.js`, `src/App.css` (`.confirm-*`),
+    `src/components/{LearnedPayeesPanel,InsuranceVault,AddendumEditor,ServiceContractsSection,RenewalOptionsEditor,
+    AbatementEditor,InvoicesPanel,EscalationScheduleEditor}.js`, `src/pages/{HistoryPage,LedgerPage}.js`, tests
+    (`confirmDialog.test.js` new; `learnedPayees.test.js` updated to drive the dialog). Data: one `leases` UPDATE.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles; live DB read-back confirms
+    `est_roof_annual = 0`; live 200s (amlakre.com + www + workers.dev + demo, demo bundle grep-free of the live ref).
+    Browser drive-through skipped per George's standing preference (the confirmDialog + learnedPayees jsdom tests drive
+    the real provider → dialog → confirm/cancel flow). **George: hard-refresh (Cmd+Shift+R). Infinite Mobile's Jan–Jun
+    boxes now read $2,716.00 in green; deleting anything now opens a proper pop-up listing exactly what it will do.**
+
 - **2026-07-24** — **The statement-derived CAM & tax estimate readout now shows EVERY figure to 4 decimals (was
   only the $/SF), so George can validate the whole arithmetic chain** (George: *"show the rounding of all numbers to
   the 4th decimal place as well. i want to verify the math … statement payment − monthly base rent = monthly

@@ -4,6 +4,7 @@ import { listImportRules, listLeases, listCamLineItems, saveImportRule, deleteIm
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
 import { resolvePick } from './StatementReview';
 import MutationError from './MutationError';
+import { useConfirm } from './ConfirmDialog';
 
 // The learned-payee memory, editable. Every checked tenant deposit teaches a
 // "always match {payee} → {tenant}" rule (StatementReview save), and an expense line
@@ -20,6 +21,7 @@ import MutationError from './MutationError';
 // pre-import world).
 export default function LearnedPayeesPanel({ propId, year }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const [open, setOpen] = useState(false);
 
   const { data: allRules = [] } = useQuery({ queryKey: ['importRules'], queryFn: listImportRules });
@@ -104,7 +106,18 @@ export default function LearnedPayeesPanel({ propId, year }) {
                   <td>{rule.account_hint || '—'}</td>
                   <td className="num">
                     <button type="button" className="ghost btn-sm" disabled={remove.isPending}
-                      onClick={() => { if (window.confirm(`Stop auto-matching "${rule.pattern}"? Future statements won't recognize this payee (past imports are untouched).`)) remove.mutate(rule.id); }}>
+                      onClick={async () => {
+                        if (await askConfirm({
+                          title: 'Remove learned payee?',
+                          message: `Stop auto-matching "${rule.pattern}"?`,
+                          implications: [
+                            'Future statements won’t recognize this payee automatically.',
+                            'Past imports and recorded payments are untouched.',
+                            'You can re-teach it by ticking a deposit on the next import.',
+                          ],
+                          confirmLabel: 'Remove',
+                        })) remove.mutate(rule.id);
+                      }}>
                       ✕ Remove
                     </button>
                   </td>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAddendum, uploadDoc } from '../lib/api';
 import { fmtDate, money } from '../lib/format';
+import { useConfirm } from './ConfirmDialog';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
 // into the lease via applyAddendum. The AI reads the document and LEADS: it pre-fills
@@ -46,6 +47,7 @@ function primaryKind(f) {
 
 export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
 
   const [adding, setAdding] = useState(false);
@@ -243,7 +245,18 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
                   <td className="num">
                     <button type="button" className="icon-btn danger-btn" title="Delete this addendum (does not undo its applied changes)"
                       disabled={remove.isPending}
-                      onClick={() => { if (window.confirm('Delete this addendum record? Note: this removes the record but does not reverse changes it already applied to the lease.')) remove.mutate(a.id); }}>
+                      onClick={async () => {
+                        if (await askConfirm({
+                          title: 'Delete addendum record?',
+                          message: 'Delete this addendum record?',
+                          implications: [
+                            'Removes the record from this lease.',
+                            'Does NOT reverse changes it already applied (rent steps, term extension, assignment) — those stay on the lease.',
+                            'This can’t be undone.',
+                          ],
+                          confirmLabel: 'Delete',
+                        })) remove.mutate(a.id);
+                      }}>
                       ✕
                     </button>
                   </td>

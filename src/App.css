@@ -621,6 +621,16 @@ tbody tr:last-child td{border-bottom:none}
 .modal-foot{padding:15px 22px;border-top:1px solid var(--border);background:var(--panel-2)}
 .modal-actions{display:flex;justify-content:space-between;align-items:center;gap:14px}
 .modal-actions .muted{font-size:12.5px}
+/* ---- confirm dialog: the message + a highlighted box of what the action does ---- */
+.confirm-msg{font-size:14px;line-height:1.55;margin:0 0 14px;color:var(--ink)}
+.confirm-imp{border:1px solid var(--border);border-left:3px solid var(--danger);background:#F7EBE7;border-radius:var(--radius);padding:12px 14px}
+.confirm-imp.warn{border-left-color:var(--gold);background:var(--gold-soft)}
+.confirm-imp.info{border-left-color:var(--accent);background:var(--accent-soft)}
+.confirm-imp-title{font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--danger);margin:0 0 7px}
+.confirm-imp.warn .confirm-imp-title{color:var(--gold)}
+.confirm-imp.info .confirm-imp-title{color:var(--accent)}
+.confirm-imp ul{margin:0;padding-left:17px}
+.confirm-imp li{font-size:12.5px;line-height:1.5;color:var(--ink);margin:3px 0}
 .invoice-text{width:100%;min-height:300px;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:13px;line-height:1.6;border:1px solid var(--border);border-radius:var(--radius);padding:16px;resize:vertical;color:var(--ink);background:var(--panel-2);outline:none}
 .invoice-text:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .ai-loading{display:flex;align-items:center;gap:12px;padding:44px;justify-content:center;color:var(--muted);font-size:15px;font-style:italic;font-family:var(--display)}

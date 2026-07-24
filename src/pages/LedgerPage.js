@@ -27,6 +27,7 @@ import TenantSortBar from '../components/TenantSortBar';
 import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
 import LearnedPayeesPanel from '../components/LearnedPayeesPanel';
 import MutationError from '../components/MutationError';
+import { useConfirm } from '../components/ConfirmDialog';
 import { money, money0, sf, fmtDate } from '../lib/format';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -56,6 +57,7 @@ export default function LedgerPage() {
   const { year } = useChrome();
   const { isOn, loading: featuresLoading } = useFeatures();
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
@@ -549,7 +551,20 @@ export default function LedgerPage() {
                             </button>
                           )}
                           <button type="button" className="ghost btn-sm" disabled={undoImport.isPending}
-                            onClick={() => { if (window.confirm(`Undo the import of ${imp.file_name || 'this statement'}? Its payments and expense additions are reversed.`)) undoImport.mutate(imp); }}>
+                            onClick={async () => {
+                              if (await askConfirm({
+                                title: 'Undo statement import?',
+                                message: `Undo the import of ${imp.file_name || 'this statement'}?`,
+                                implications: [
+                                  'Reverses the payments it recorded.',
+                                  'Reverses the CAM / tax / expense additions it made.',
+                                  'Any payee rules it learned are un-learned.',
+                                  'Estimates it set are restored to their prior values.',
+                                ],
+                                confirmLabel: 'Undo import',
+                                tone: 'warn',
+                              })) undoImport.mutate(imp);
+                            }}>
                             ↩ Undo
                           </button>
                         </td>

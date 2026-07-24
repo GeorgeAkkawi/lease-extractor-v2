@@ -4,6 +4,7 @@ import { listAbatements, createAbatement, deleteAbatement } from '../lib/api';
 import { abatementEnd, abatementMonthCount, abatementKindLabel } from '../lib/abatement';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
+import { useConfirm } from './ConfirmDialog';
 
 // Lists, adds & removes rent-abatement windows (free / reduced BASE rent for a stretch
 // of the term). The base rent itself is never changed — a window just credits those
@@ -11,6 +12,7 @@ import MutationError from './MutationError';
 // Mirrors EscalationScheduleEditor / RenewalOptionsEditor.
 export default function AbatementEditor({ lease }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const leaseId = lease.id;
   const { data: abatements = [] } = useQuery({ queryKey: ['abatements', leaseId], queryFn: () => listAbatements(leaseId) });
 
@@ -76,7 +78,18 @@ export default function AbatementEditor({ lease }) {
                         className="icon-btn danger-btn"
                         title="Delete this abatement"
                         disabled={remove.isPending}
-                        onClick={() => { if (window.confirm('Delete this rent abatement? The credited months will go back to full rent.')) remove.mutate(a.id); }}
+                        onClick={async () => {
+                          if (await askConfirm({
+                            title: 'Delete rent abatement?',
+                            message: 'Delete this rent abatement?',
+                            implications: [
+                              'The credited (free / reduced) months go back to full rent.',
+                              'Invoices and the ledger re-price accordingly.',
+                              'This can’t be undone.',
+                            ],
+                            confirmLabel: 'Delete',
+                          })) remove.mutate(a.id);
+                        }}
                       >
                         ✕
                       </button>
