@@ -74,14 +74,15 @@ describe('StatementReview — CAM & tax estimates read from the statement', () =
     await waitFor(() => expect(screen.getByText(/CAM & tax estimates read from this statement/)).toBeTruthy());
 
     // City Dental has NO estimate → derived $1,000/mo → $12,000/yr, pre-ticked.
+    // (Figures shown to 4 decimals so George can validate the math.)
     const city = estRowFor('City Dental');
-    expect(within(city).getByText(/\$12,000\.00\/yr/)).toBeTruthy();
+    expect(within(city).getByText(/\$12,000\.0000\/yr/)).toBeTruthy();
     expect(city.querySelector('input[type=checkbox]').checked).toBe(true);
 
     // Bright Coffee already bills $16,500 → derived $2,000/mo → $24,000/yr, UNTICKED
     // (a change can't silently lower a good estimate).
     const bright = estRowFor('Bright Coffee');
-    expect(within(bright).getByText(/\$24,000\.00\/yr/)).toBeTruthy();
+    expect(within(bright).getByText(/\$24,000\.0000\/yr/)).toBeTruthy();
     expect(bright.querySelector('input[type=checkbox]').checked).toBe(false);
 
     // The footer counts only the ticked (pre-ticked) estimate.

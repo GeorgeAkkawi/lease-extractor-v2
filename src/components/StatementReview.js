@@ -15,7 +15,7 @@ import {
 import { buildMonthGroups } from '../lib/statementMonths';
 import { buildPaymentShortfallEmail } from '../lib/emailTemplates';
 import { DEMO_MODE } from '../lib/supabaseClient';
-import { money, money0, fmtDate } from '../lib/format';
+import { money, money0, money4, fmtDate } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
 
@@ -491,8 +491,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
               <tbody>
                 {estimateSuggestions.map((s) => {
                   const on = estChecked(s);
-                  const base = Number(s.tenant.baseByMonth[s.month - 1]) || 0;
-                  const roof = Number(s.tenant.roofByMonth[s.month - 1]) || 0;
+                  const roof = Number(s.derived.roof) || 0;
                   return (
                     <tr key={s.lease_id} className={on ? undefined : 'stmt-off'}>
                       <td><input type="checkbox" checked={on} onChange={(e) => setEstOverrides((o) => ({ ...o, [s.lease_id]: e.target.checked }))} /></td>
@@ -502,9 +501,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
                           from {MONTH_NAMES[s.month - 1]} · {s.tenant.anyEstimate ? `currently ${money(s.tenant.camTaxAnnual)}/yr` : 'none set yet'}
                         </div>
                       </td>
-                      <td>
-                        {money(s.deposit)} deposit − {money(base)} base{roof > 0.005 ? ` − ${money(roof)} roof` : ''} = <strong>{money(s.derived.monthly)}/mo</strong> → <strong>{money(s.derived.annual)}/yr</strong>
-                        {s.derived.psf != null && <> · <span title="Rounded to 4 decimals so you can validate the rate">${s.derived.psf.toFixed(4)}/SF</span></>}
+                      <td title="All figures shown to 4 decimals so you can validate the math">
+                        {money4(s.deposit)} deposit − {money4(s.derived.base)} base{roof > 0.005 ? ` − ${money4(roof)} roof` : ''} = <strong>{money4(s.derived.monthly)}/mo</strong> → <strong>{money4(s.derived.annual)}/yr</strong>
+                        {s.derived.psf != null && <> · <span title="Annual ÷ square footage — the $/SF rate">${s.derived.psf.toFixed(4)}/SF</span></>}
                       </td>
                     </tr>
                   );

@@ -344,7 +344,9 @@ export function deriveEstimateFromDeposit(amount, tenant, month) {
   const current = round2(Number(tenant.camTaxAnnual) || 0);
   if (current > 0 && Math.abs(annual - current) <= 1) return null; // already at this estimate
   const sqft = Number(tenant.square_footage) || 0;
-  return { monthly, annual, psf: sqft > 0 ? annual / sqft : null };
+  // base/roof are the exact round2 figures the arithmetic used, so the review can show
+  // deposit − base − roof = monthly to 4 decimals and have it visibly tie out.
+  return { base, roof, monthly, annual, psf: sqft > 0 ? annual / sqft : null };
 }
 
 // The first saved rule (the payee memory) that matches one line: pattern contained in

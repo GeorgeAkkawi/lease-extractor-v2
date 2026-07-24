@@ -10,6 +10,15 @@ export const money0 = (n) =>
     ? '—'
     : Number(n).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 
+// Money shown to 4 decimals — for the statement-derived CAM & tax estimate readout, so
+// George can validate every step of the chain to the same 4-decimal precision as the
+// $/SF rate: deposit − base = monthly → ×12 = /yr → ÷SF = $/SF (George, 2026-07-24).
+// The stored figures stay penny-exact (round2) — this is display only.
+export const money4 = (n) =>
+  n == null || n === '' || isNaN(n)
+    ? '—'
+    : Number(n).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 });
+
 export const psf = (n) =>
   n == null || isNaN(n) ? '—' : `$${Number(n).toFixed(2)}/SF`;
 

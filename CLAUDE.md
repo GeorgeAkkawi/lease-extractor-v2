@@ -75,6 +75,37 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-24** — **The statement-derived CAM & tax estimate readout now shows EVERY figure to 4 decimals (was
+  only the $/SF), so George can validate the whole arithmetic chain** (George: *"show the rounding of all numbers to
+  the 4th decimal place as well. i want to verify the math … statement payment − monthly base rent = monthly
+  estimated cam and tax, ×12 = annual, ÷ SF = psf rate rounded to 4th decimal — is that what we have it as?"*).
+  Deployed: frontend Cloudflare version `9f1b777c`, demo worker `66b81954`. **Frontend + one pure return-shape tweak
+  — $0, NO DB migration, NO edge functions, no tenant emails, ZERO math/storage change.** Tests **620/620** (the
+  `statementEstimate` render test's two `/yr` regexes updated `.00`→`.0000`).
+  - **The math, confirmed exactly as George stated it** (`deriveEstimateFromDeposit`, `statementMatch.js`):
+    `monthly = round2(deposit − base − roof)` → `annual = round2(monthly × 12)` → `psf = annual ÷ SF`. The base is
+    exact from the lease's escalation-aware per-month schedule (`componentizeSchedule`), so a stepped tenant derives
+    off the right month's base. **One addition beyond his formula:** a **roof-responsible** tenant's all-in deposit
+    includes the separately-billed roof line, so the code subtracts roof too (`− roof`) to avoid folding it into the
+    CAM & tax estimate — for a non-roof tenant `roof = 0`, so it's exactly his `deposit − base`. The Boost replay
+    still holds: $2,716 − $1,811.42 = $904.58/mo → $10,854.96/yr · $13.0000/SF.
+  - **What changed (display only):** previously only the **$/SF** was shown to 4 decimals; the deposit/base/roof/
+    monthly/annual dollar figures used 2-decimal `money()`. Now a new `money4()` helper (`format.js`) renders all of
+    them to 4 decimals in that readout — `$2,716.0000 deposit − $1,811.4200 base = $904.5800/mo → $10,854.9600/yr ·
+    $13.0000/SF` — so each step visibly ties out (the dollar figures end in `00`; the $/SF is the one with genuine
+    sub-cent content). The **stored** annual stays penny-exact (`round2`) so the deposit still settles its month to
+    the cent — 4 decimals is a validation view, never the stored value.
+  - **`deriveEstimateFromDeposit` now returns the exact `base`/`roof` it subtracted** (the round2 figures) so the
+    review reads them straight off `s.derived` instead of re-deriving from the raw `baseByMonth` — guaranteeing the
+    shown `deposit − base − roof = monthly` can't drift from the arithmetic actually performed.
+  - **Files:** `src/lib/format.js` (`money4`), `src/lib/statementMatch.js` (return `base`/`roof`),
+    `src/components/StatementReview.js` (use `money4` + `s.derived.base/roof`), `src/components/__tests__/
+    statementEstimate.test.js` (regex `.0000/yr`). No math/api/DB/edge/demo-seed change.
+  - **Verified:** unit **620/620** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev
+    + demo, demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference.
+    **George: hard-refresh (Cmd+Shift+R) → import a statement → the "CAM & tax estimates read from this statement"
+    section shows deposit − base = monthly → ×12 = /yr → ÷SF = $/SF, every figure to 4 decimals for you to check.**
+
 - **2026-07-24** — **Follow-up: the per-tenant breakdown's "Sort by" bar now reads as the panel's own toolbar
   instead of floating flush in the top-left corner** (George: *"the sort by formatting on the per tenant break down
   isnt the best looking please format correctly"*). Deployed: frontend Cloudflare version `954ea081`, demo worker
