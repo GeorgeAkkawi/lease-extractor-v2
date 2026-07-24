@@ -10,7 +10,7 @@ import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import PropertyTabs from '../components/PropertyTabs';
 import { RowListSkeleton } from '../components/Skeleton';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
-import { money, psf, sf, fmtDate } from '../lib/format';
+import { money, psf, sf, fmtDate, approx } from '../lib/format';
 
 const CURRENT_YEAR = new Date().getFullYear();
 
@@ -251,7 +251,7 @@ function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, on
       <span className="lease-col">
         <span className="muted">Base rent</span>
         <b>{money(lease.base_rent)}</b>
-        <span className="psf-sub">{brPsf == null ? '' : psf(brPsf)}</span>
+        <span className="psf-sub">{brPsf == null ? '' : approx(lease.base_rent, lease.square_footage) + psf(brPsf)}</span>
       </span>
       <span className="lease-col">
         <span className="muted">CAM + tax</span>
@@ -269,7 +269,7 @@ function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, on
       <span className="lease-col">
         <span className="muted">Total rent</span>
         <b>{money(totals?.total ?? lease.base_rent)}</b>
-        <span className="psf-sub">{totals?.totalPsf == null ? '' : psf(totals.totalPsf)}</span>
+        <span className="psf-sub">{totals?.totalPsf == null ? '' : approx(totals.total, lease.square_footage) + psf(totals.totalPsf)}</span>
       </span>
       <span className="lease-col">
         <span className="muted">Term ends</span>

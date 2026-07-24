@@ -17,12 +17,11 @@ import {
   isAnnualInvoice,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
-import { money, money0, sf, pct } from '../lib/format';
+import { money, money0, sf, pct, approx } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
 
-const psf2 = (n) => (n == null || isNaN(n) ? '—' : `$${Number(n).toFixed(2)}`);
 const NBSP = ' ';
 
 // One aligned figure in a ledger entry: a right-aligned main figure over an
@@ -40,14 +39,36 @@ function Stat({ label, main, sub, className = '', subClass = '' }) {
 }
 
 // A $/SF rate, set bold + ink so it reads as a real figure (George), matching the
-// bolder square-footage treatment — used on every figure's sub-line.
-const SfRate = ({ psf }) => <span className="sf-rate">{psf}/SF</span>;
+// bolder square-footage treatment — used on every figure's sub-line. It takes the
+// annual figure and the area rather than a pre-divided rate, so it can say "≈"
+// when rounding to the cent means the rate no longer multiplies back to the
+// annual sitting right above it; the exact rate is in the tooltip.
+const SfRate = ({ annual, area }) => {
+  const n = Number(annual);
+  const a = Number(area);
+  if (!isFinite(n) || !isFinite(a) || a <= 0) return <span className="sf-rate">—/SF</span>;
+  const mark = approx(n, a);
+  return (
+    <span className="sf-rate" title={mark ? `Exactly $${(n / a).toFixed(4)}/SF — shown rounded to the cent` : undefined}>
+      {mark}${(n / a).toFixed(2)}/SF
+    </span>
+  );
+};
 
 // The same figure per month — what the tenant actually writes the check for, and what
 // a rider prints ("Base Rent: $2,650.08 monthly"). Rides the sub-line beside the $/SF
 // rate on the two figures a landlord reconciles against a deposit: base rent and the
-// all-in total (which equals that month's Ledger box).
-const PerMo = ({ annual }) => <span className="mo-rate">{money(Number(annual || 0) / 12)}/mo</span>;
+// all-in total (which equals that month's Ledger box). Marked "≈" on the same rule
+// as the $/SF rate — twelve rounded months don't always sum to the year.
+const PerMo = ({ annual }) => {
+  const n = Number(annual || 0);
+  const mark = approx(n, 12);
+  return (
+    <span className="mo-rate" title={mark ? `${money(n)} ÷ 12 = $${(n / 12).toFixed(4)} — shown rounded to the cent` : undefined}>
+      {mark}{money(n / 12)}/mo
+    </span>
+  );
+};
 
 // Per-tenant breakdown + the estimated-vs-actual reconciliation view (0060),
 // laid out as a LEDGER — one entry per tenant — instead of a 13-column table,
@@ -283,8 +304,6 @@ export default function TenantShareTable({ propertyId, year }) {
         const s = row.share;
         const hasSf = Number(s.square_footage) > 0;
         const camTaxActual = Number(s.cam_amount || 0) + Number(s.tax_amount || 0);
-        const camTaxPsf = hasSf ? camTaxActual / s.square_footage : null;
-        const roofPsf = hasSf ? s.roof_amt / s.square_footage : null;
         const roofBilled = s.roof_responsible && s.roof_amt > 0;
         const rowTotal = Number(s.base_rent || 0) + row.billed.camTax + row.billed.roof;
         const carried = isCarried(s, row.billed.anyEstimate);
@@ -320,7 +339,7 @@ export default function TenantShareTable({ propertyId, year }) {
             <Stat
               label="Base rent"
               main={money(s.base_rent)}
-              sub={<><PerMo annual={s.base_rent} />{hasSf && <> · <SfRate psf={psf2(s.base_rent / s.square_footage)} /></>}</>}
+              sub={<><PerMo annual={s.base_rent} />{hasSf && <> · <SfRate annual={s.base_rent} area={s.square_footage} /></>}</>}
             />
             <EstimateStat
               share={s}
@@ -330,13 +349,13 @@ export default function TenantShareTable({ propertyId, year }) {
               priorBilled={priorBilledByLease[s.lease_id]}
               onToggle={() => setEditingId(editingId === s.lease_id ? null : s.lease_id)}
             />
-            <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? <SfRate psf={psf2(camTaxPsf)} /> : ''} />
-            <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? <SfRate psf={psf2(roofPsf)} /> : ''} />
+            <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? <SfRate annual={camTaxActual} area={s.square_footage} /> : ''} />
+            <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? <SfRate annual={s.roof_amt} area={s.square_footage} /> : ''} />
             <Stat
               className="ledger-total"
               label="Total · base + CAM & tax + roof"
               main={money(rowTotal)}
-              sub={<><PerMo annual={rowTotal} />{hasSf && <> · <SfRate psf={psf2(rowTotal / s.square_footage)} /></>}</>}
+              sub={<><PerMo annual={rowTotal} />{hasSf && <> · <SfRate annual={rowTotal} area={s.square_footage} /></>}</>}
             />
             <DiffStat fig={row.fig} show={row.billed.anyEstimate} />
             {editingId === s.lease_id && (
@@ -378,7 +397,7 @@ export default function TenantShareTable({ propertyId, year }) {
             className="lg-actual"
             label="CAM & tax · vacant share, stays with you"
             main={money(vacantCamTax)}
-            sub={<SfRate psf={psf2(camTaxEntered / buildingSf)} />}
+            sub={<SfRate annual={camTaxEntered} area={buildingSf} />}
           />
           <Stat label="Roof" main={<span className="muted">—</span>} />
           <Stat className="ledger-total" label="Total" main={<span className="muted">—</span>} />
@@ -467,7 +486,7 @@ function DiffStat({ fig, show }) {
 function EstimateStat({ share, billed, editing, carried, priorBilled, onToggle }) {
   const sfNum = Number(share.square_footage) || 0;
   const estCamTax = billed.camTax;
-  const psfSub = sfNum > 0 ? <SfRate psf={psf2(estCamTax / sfNum)} /> : '';
+  const psfSub = sfNum > 0 ? <SfRate annual={estCamTax} area={sfNum} /> : '';
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
   const lastYear = priorBilled != null && priorBilled > 0 ? priorBilled : estCamTax;
   return (

@@ -12,7 +12,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TenantShareTable from '../TenantShareTable';
 import AddendumEditor from '../AddendumEditor';
-import { getLease } from '../../lib/api';
+import { getLease, updateLease } from '../../lib/api';
 import { currentYear } from '../../lib/format';
 
 const Y = currentYear();
@@ -40,6 +40,25 @@ describe('per-tenant breakdown — the monthly figure under the annual', () => {
     // The Totals band carries the property's monthly rent roll too.
     const totals = document.querySelector('.ledger-totals');
     expect(within(totals).getByText('$12,000.00/mo')).toBeTruthy(); // 144,000 base / 12
+  });
+
+  // George checked the arithmetic by hand and found the rate didn't reproduce the
+  // rent above it. Replay his exact figures — FIVE POINTS WINGS, $41,403 on
+  // 2,100 SF — through the real component: the rate now says it's rounded.
+  it('marks a $/SF rate that had to be rounded, instead of inviting the multiply-back', async () => {
+    await updateLease('lease-1', { base_rent: 41403, square_footage: 2100 });
+    try {
+      wrap(<TenantShareTable propertyId="prop-1" year={Y} />);
+      await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
+      const row = screen.getByText('Bright Coffee Co.').closest('.ledger-row');
+      // $41,403 / 2,100 = $19.7157/SF — shown as $19.72, which multiplies back to
+      // $41,412. The "≈" is what stops that reading as a $9 error.
+      expect(within(row).getByText('≈ $19.72/SF')).toBeTruthy();
+      // The monthly divides evenly ($3,450.25 x 12 = $41,403), so it stays plain.
+      expect(within(row).getByText('$3,450.25/mo')).toBeTruthy();
+    } finally {
+      await updateLease('lease-1', { base_rent: 60000, square_footage: 2000 });
+    }
   });
 });
 
