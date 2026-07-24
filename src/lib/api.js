@@ -3017,11 +3017,16 @@ export async function closeYear(propertyId, year) {
     // open months at the current owed) — the same Y the live Ledger measures collected
     // against, so a fully-settled year freezes at exactly 100% and a later estimate edit
     // never re-prices a month already paid.
-    const projected = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc }).projected;
+    const sum = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc });
+    const projected = sum.projected;
     // Raw collected — an overpaid tenant can read a rate > 100% (truthful, unclamped).
     const collected = alloc.totalPaid;
     collectionByLease[r.lease_id] = {
       projected,
+      // What the LEASE billed for the year, kept beside what was collected against it —
+      // the pair is the payment difference, preserved once the year is frozen.
+      billed: sum.billed,
+      variance: sum.variance,
       collected,
       collection_rate: projected > 0 ? Math.round((collected / projected) * 1000) / 1000 : null,
       // Real dollars received per month (a settled month = the tagged amount, a pooled
@@ -3111,9 +3116,15 @@ export async function saveImportRule({ property_id, pattern, target_kind, lease_
 export const deleteImportRule = (id) => rows(supabase.from('import_rules').delete().eq('id', id));
 
 // The import register, newest first (sorted here — portable across live + mock).
-export async function listStatementImports(propertyId) {
+// Scoped to a fiscal year when one is given, so the log resets with the year the rest
+// of the page follows instead of stacking every statement ever imported. A row from
+// before the year was recorded (year null) stays visible in every year rather than
+// disappearing from the record.
+export async function listStatementImports(propertyId, year = null) {
   const list = await rows(supabase.from('statement_imports').select('*').eq('property_id', propertyId));
-  return [...(list || [])].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  const y = Number(year);
+  const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
+  return [...scoped].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
 }
 
 // Everything the matcher needs, assembled once per import: every property's
@@ -3229,10 +3240,10 @@ export async function getStatementMatchContext(propertyId, year) {
 //   { type:'tax'|'roof', property_id, year, amount, hash }
 // The duplicate hash guard is advisory and lives in MATCHING — apply never
 // re-runs it, so an "import anyway" override writes like any other row.
-export async function applyStatementImport({ propertyId, year, fileName, accountHint = null, entries = [] }) {
+export async function applyStatementImport({ propertyId, year, fileName, accountHint = null, storagePath = null, entries = [] }) {
   const imp = await one(
     supabase.from('statement_imports')
-      .insert({ property_id: propertyId, year: Number(year) || null, file_name: fileName || null, account_hint: accountHint, applied: [], owner_id: await ownerId() })
+      .insert({ property_id: propertyId, year: Number(year) || null, file_name: fileName || null, account_hint: accountHint, storage_path: storagePath || null, applied: [], owner_id: await ownerId() })
       .select().single()
   );
   const applied = [];

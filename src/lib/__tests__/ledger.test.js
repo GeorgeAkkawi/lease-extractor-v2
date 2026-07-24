@@ -54,12 +54,26 @@ describe('allocatePayments', () => {
     expect(a.credit).toBe(1000);
   });
 
-  it("a tag on a month that owes nothing can't invent a charge — the money pools instead", () => {
+  // A tag on a month the lease bills nothing for used to be RE-POOLED, which silently
+  // walked the money forward to the first month the lease did bill — so a new tenant's
+  // first deposits landed on the month their lease happened to open. The tag holds now:
+  // it settles no charge (a tag can't invent one) but it stays where the money arrived,
+  // and the month says 'unbilled' so the grid can show it instead of hiding it.
+  it("a tag on a month that owes nothing stays put — it settles no charge, and never drifts", () => {
     const owed = [0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000]; // Jan–Feb pre-tenancy
     const a = allocatePayments({ owedByMonth: owed, payments: [pay(1000, { month: 1 })] });
-    expect(a.coverage[0]).toBe(0);
+    expect(a.coverage[0]).toBe(0);        // no charge satisfied
+    expect(a.received[0]).toBe(1000);     // but the money is on January, where it landed
+    expect(a.states[0]).toBe('unbilled');
+    expect(a.states[2]).toBe('open');     // March is untouched — nothing drifted onto it
+    expect(a.credit).toBe(0);             // and it isn't parked as a credit either
+  });
+
+  it('an untagged payment on a lease with pre-tenancy months still pools onto the first real month', () => {
+    const owed = [0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000];
+    const a = allocatePayments({ owedByMonth: owed, payments: [pay(1000)] });
     expect(a.states[0]).toBe(null);
-    expect(a.states[2]).toBe('covered'); // the pooled money lands on the first real month
+    expect(a.states[2]).toBe('covered');
   });
 
   it("a tagged month settles at the received amount — excess does NOT roll forward (only untagged lumps prepay)", () => {

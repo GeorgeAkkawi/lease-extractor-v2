@@ -39,17 +39,20 @@ describe('LedgerPage — the rent ledger grid', () => {
     // Single Collected column now — the Owes column is gone.
     expect(screen.getByRole('columnheader', { name: 'Collected' })).toBeTruthy();
     expect(screen.queryByRole('columnheader', { name: 'Owes' })).toBeNull();
-    // Bright Coffee's untagged $78,000 lump settles its whole year → ✓ cells.
-    expect(screen.getAllByText('✓').length).toBeGreaterThan(0);
-    // Collected reads "$X of $Y": Bright $78,000.00 of $78,000.00 → 100%.
+    // Bright Coffee's untagged $78,000 lump settles its whole year → pool-covered ✓
+    // cells, each now showing the amount it drew (a figureless faded ✓ read as a
+    // button that hadn't pressed).
+    expect(document.querySelectorAll('.rr-cell.paid.pool').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('$6,500').length).toBe(12);
+    // Collected reads "$X of $Y billed": Bright $78,000.00 of $78,000.00 → 100%.
     expect(screen.getByText('$78,000.00')).toBeTruthy();
-    expect(screen.getByText('of $78,000.00')).toBeTruthy();
+    expect(screen.getByText('of $78,000.00 billed')).toBeTruthy();
     expect(screen.getByText('100%')).toBeTruthy();
     // City Dental: Jan + Feb tagged (full months), $4,000 untagged partial → a ◐ cell,
-    // and collected $22,300.00 of the $109,800.00 projected.
+    // and collected $22,300.00 of the $109,800.00 billed.
     expect(screen.getAllByText('◐').length).toBeGreaterThan(0);
     expect(screen.getByText('$22,300.00')).toBeTruthy();
-    expect(screen.getByText('of $109,800.00')).toBeTruthy();
+    expect(screen.getByText('of $109,800.00 billed')).toBeTruthy();
     // Each settled (tagged) month now shows its received dollar figure in the box, not
     // just a bare ✓ (George: "the number doesnt show up"). City Dental's Jan + Feb are
     // tagged at $9,150 each → two "$9,150" cell amounts.
@@ -126,9 +129,15 @@ describe('LedgerPage — the rent ledger grid', () => {
     renderLedger();
     await waitFor(() => expect(screen.getByText('City Dental')).toBeTruthy());
     // "paid = paid": a recorded payment marks the month paid whatever the amount — there is
-    // NO amber "short" badge (its removal is this fix). The received-vs-projected gap lives
-    // only in the Collected column + the year-end reconcile.
+    // NO amber "short" cell state (its removal is a deliberate earlier fix).
     expect(document.querySelector('.rr-cell.paid.short')).toBeNull();
+    // The DIFFERENCE is readable all the same: the figure alone goes gold, and the row
+    // states the gap. $5,000 against April's $9,150 bill → short $4,150. (Scoped to the
+    // grid — the key strip above it carries the same classes on purpose, so it can never
+    // drift from what the cells actually look like.)
+    expect(document.querySelector('.rent-roll .rr-amt.under').textContent).toBe('$5,000');
+    // Once on City Dental's row, once on the all-tenants total (it's the only gap).
+    expect(screen.getAllByText('short $4,150.00')).toHaveLength(2);
     // April's cell reads ✓ with the received figure ($5,000) and is a single-payment
     // click-to-undo (not a top-up button).
     const aprCell = Array.from(document.querySelectorAll('button.rr-cell.paid'))
@@ -142,5 +151,25 @@ describe('LedgerPage — the rent ledger grid', () => {
         .find((c) => (c.getAttribute('title') || '').includes('received $5,000'))
     ).toBeUndefined());
     await unmarkMonthPaid('lease-2', Y, 4); // clean up (no-op if already undone)
+  });
+
+  // A brand-new tenant's first deposits arrive before the lease's own year bills
+  // anything. That money used to be re-pooled onto the first month the lease DID bill —
+  // silently settling a month nobody paid. It stays where it landed and says so.
+  it('a payment recorded for a month the lease bills nothing for reads "received, not billed"', async () => {
+    const Y = currentYear();
+    // Sunrise Yoga's lease commences July 1 — its FY bills nothing Jan–Jun.
+    await markMonthPaid('lease-4', 'prop-2', Y, 5, { amount: 2716 });
+    renderLedger('prop-2');
+    await waitFor(() => expect(screen.getByText('Sunrise Yoga Studio')).toBeTruthy());
+
+    const recv = document.querySelector('.rent-roll .rr-cell.recv');
+    expect(recv).toBeTruthy();
+    expect(within(recv).getByText('$2,716')).toBeTruthy();
+    expect(recv.getAttribute('title')).toContain('bills nothing for May');
+    // It settles no charge, so it can't read as a paid month.
+    expect(recv.className).not.toContain('paid');
+
+    await unmarkMonthPaid('lease-4', Y, 5);
   });
 });

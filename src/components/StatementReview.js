@@ -8,7 +8,10 @@ import {
   suggestExpenseBuckets,
   suggestTenantMatches,
 } from '../lib/api';
-import { matchStatement, suggestRulePattern, depositProjectionDelta, CAM_KEYWORD_LABELS } from '../lib/statementMatch';
+import {
+  matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
+  corroborateAmount, monthOfDate, CAM_KEYWORD_LABELS,
+} from '../lib/statementMatch';
 import { buildMonthGroups } from '../lib/statementMonths';
 import { buildPaymentShortfallEmail } from '../lib/emailTemplates';
 import { DEMO_MODE } from '../lib/supabaseClient';
@@ -28,7 +31,7 @@ const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', ex
 const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info', ai: 'info' };
 const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
-export default function StatementReview({ propertyId, year, fileName, accountHint, parsed, pdfLane = false, onCancel, onSaved }) {
+export default function StatementReview({ propertyId, year, fileName, accountHint, parsed, storagePath = null, pdfLane = false, onCancel, onSaved }) {
   // isError is read deliberately: without it a failed context load left the screen
   // on "Reading the statement…" forever, which reads as a hung AI even though the
   // transcript is already in hand. A failure must say so and offer a way out.
@@ -104,7 +107,14 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const tenant = leaseId ? ctx.tenants.find((t) => t.lease_id === leaseId) : null;
       // Recompute recon routing when the user re-picked the tenant by hand.
       const toRecon = !pick ? !!row.candidate?.toRecon : !!(tenant?.reconBalance > 0 && Math.abs(tenant.reconBalance - row.txn.amount) <= Math.max(1, 0.01 * tenant.reconBalance));
-      const month = ov.month !== undefined ? (ov.month === '' ? null : Number(ov.month)) : row.month;
+      // Re-date on re-pick. row.month was computed against whoever the MATCHER named;
+      // once the landlord names a different tenant that answer is about someone else,
+      // and inheriting it is how a hand-corrected line saved with no month at all.
+      // Only when they haven't chosen a month themselves — their pick always wins.
+      const autoMonth = pick && kind === 'tenant' && tenant
+        ? corroborateAmount(row.txn.amount, tenant, monthOfDate(row.txn.date)).month
+        : row.month;
+      const month = ov.month !== undefined ? (ov.month === '' ? null : Number(ov.month)) : autoMonth;
       const finalMonth = toRecon ? null : month;
       const defaultChecked = row.checked && !row.txn.needsReview;
       const checked = ov.checked !== undefined ? ov.checked : defaultChecked;
@@ -114,7 +124,19 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
       // by construction. Tolerance is amountMatches, so a "confident" row never flags.
       const mismatch = kind === 'tenant' && tenant && finalMonth ? depositProjectionDelta(row.txn.amount, tenant, finalMonth) : null;
-      return { row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth, checked: writable && checked, always: !!ov.always, ai: !!ov.ai, picked: ov.pick != null, monthPicked: ov.month !== undefined, mismatch };
+      // Exact already-paid test, at the row level: is the month this line would settle
+      // ALREADY covered on the ledger? (The matcher's coarse `collision` only fires on a
+      // fully-covered tenant, and never at all on a remembered payee.) Back-filling old
+      // statements onto months marked by hand is precisely how rent gets recorded twice.
+      const alreadyPaid = !!(kind === 'tenant' && tenant && finalMonth && !toRecon
+        && Number((tenant.owed || [])[finalMonth - 1]) > 0
+        && Number((tenant.coverage || [])[finalMonth - 1]) >= Number(tenant.owed[finalMonth - 1]) - 0.05);
+      return {
+        row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth,
+        checked: writable && checked && !(alreadyPaid && ov.checked === undefined),
+        always: !!ov.always, ai: !!ov.ai, picked: ov.pick != null,
+        monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
+      };
     });
   }, [matched, overrides, ctx]);
 
@@ -173,13 +195,24 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     }
   }
 
-  // 🤖 Suggest tenants — the deposit twin of Suggest buckets. Only for money-IN lines
-  // nothing recognized (a low-confidence row already shows candidates, so it's excluded).
-  // Name-matching only; suggestions land UNCHECKED with the AI chip.
+  // 🤖 Suggest tenants — the deposit twin of Suggest buckets. Every money-IN line the
+  // matcher couldn't settle confidently, not just the ones it scored zero on: a bank
+  // that abbreviates "Five Points Wings, LLC" to "Five Points Wing" lands a weak/likely
+  // guess, and that guess is exactly the one worth an AI read. Name-matching only;
+  // suggestions land UNCHECKED with the AI chip.
   const unmatchedDeposits = useMemo(
-    () => resolved.filter((r) => r.row.txn.direction === 'in' && !r.row.duplicate && !overrides[r.i]?.pick && r.row.kind === 'unmatched'),
+    () => resolved.filter((r) => r.row.txn.direction === 'in' && !r.row.duplicate && !overrides[r.i]?.pick
+      && r.row.confidence !== 'high' && r.row.confidence !== 'rule'),
     [resolved, overrides]
   );
+  // Rows carrying an AI suggestion that hasn't been accepted yet — "✓ Accept N AI
+  // matches" is the bulk tick, so a 20-line statement isn't 20 clicks.
+  const aiPending = useMemo(() => resolved.filter((r) => r.ai && !r.checked && !r.row.duplicate), [resolved]);
+  const acceptAllAi = () => {
+    const patch = {};
+    aiPending.forEach((r) => { patch[r.i] = { ...overrides[r.i], checked: true }; });
+    setOverrides((o) => ({ ...o, ...patch }));
+  };
   async function suggestTenants() {
     setAiErr('');
     setAiOp('tenants');
@@ -204,6 +237,32 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     }
   }
 
+  // Learn payee → target rules so the NEXT statement auto-classifies without asking:
+  //  • every CHECKED tenant deposit is remembered automatically (on the tenant's OWN
+  //    property — deposits self-route across the portfolio);
+  //  • an expense line is remembered only when its "Always" box is ticked.
+  // Deduped by pattern (a repeat payee → one rule), then SCREENED for specificity: a
+  // pattern that also appears on a line belonging to a different payee is the bank's
+  // boilerplate, not a payee, and learning it would make one rule swallow them all.
+  // Computed here rather than inside the mutation so the footer can say what won't be
+  // remembered BEFORE the landlord presses Save.
+  const learned = useMemo(() => {
+    const ruleByPattern = new Map();
+    for (const r of resolved) {
+      if (!r.checked) continue;
+      const pattern = suggestRulePattern(r.row.txn.description);
+      if (!pattern) continue;
+      if (r.kind === 'tenant' && r.tenant) {
+        ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, targetKey: targetKeyOf(r), property_id: r.tenant.property_id, target_kind: 'tenant', lease_id: r.tenant.lease_id, cam_label: null });
+      } else if (r.always && r.kind.startsWith('expense_')) {
+        ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, targetKey: targetKeyOf(r), property_id: expenseProp, target_kind: r.kind, lease_id: null, cam_label: (r.kind === 'expense_cam' || r.kind === 'expense_other') ? (r.label || null) : null });
+      }
+    }
+    const lines = resolved.map((r) => ({ description: r.row.txn.description, targetKey: targetKeyOf(r) }));
+    const { keep, rejected } = screenRulePatterns([...ruleByPattern.values()], lines);
+    return { keep: keep.map(({ targetKey, ...e }) => e), rejected };
+  }, [resolved, expenseProp]);
+
   const save = useMutation({
     mutationFn: async () => {
       const entries = [];
@@ -225,24 +284,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
         }
       }
-      // Learn payee → target rules so the NEXT statement auto-classifies without asking:
-      //  • every CHECKED tenant deposit is remembered automatically (on the tenant's OWN
-      //    property — deposits self-route across the portfolio);
-      //  • an expense line is remembered only when its "Always" box is ticked.
-      // Deduped by pattern (a repeat payee → one rule); each rides the import as a 'rule'
-      // entry so undo reverses exactly what the import taught.
-      const ruleByPattern = new Map();
-      for (const r of resolved) {
-        if (!r.checked) continue;
-        const pattern = suggestRulePattern(r.row.txn.description);
-        if (!pattern) continue;
-        if (r.kind === 'tenant' && r.tenant) {
-          ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, property_id: r.tenant.property_id, target_kind: 'tenant', lease_id: r.tenant.lease_id, cam_label: null });
-        } else if (r.always && r.kind.startsWith('expense_')) {
-          ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, property_id: expenseProp, target_kind: r.kind, lease_id: null, cam_label: (r.kind === 'expense_cam' || r.kind === 'expense_other') ? (r.label || null) : null });
-        }
-      }
-      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, entries: [...entries, ...ruleByPattern.values()] });
+      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, storagePath, entries: [...entries, ...learned.keep] });
     },
     onSuccess: (res) => onSaved(res),
   });
@@ -299,6 +341,8 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   const payTenants = new Set(willPay.map((r) => r.tenant.lease_id)).size;
   const mismatchCount = willPay.filter((r) => r.mismatch && !r.mismatch.escalation).length;
   const ignored = rows.filter((r) => !r.checked).length;
+  const alreadyPaidCount = rows.filter((r) => r.alreadyPaid && !r.checked && !r.row.duplicate).length;
+  const nothingTicked = willPay.length === 0 && willExpense.length === 0;
   const reconciledCount = (recons || []).length;
   const closedYearLines = rows.filter((r) => r.checked && closedYears.has(r.row.year));
   const propName = (id) => ctx.properties.find((p) => p.id === id)?.name || '…';
@@ -353,6 +397,11 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
               )}
             </span>
           )}
+          {aiPending.length > 0 && (
+            <button type="button" className="ghost" onClick={acceptAllAi} title="Tick every line the AI named — review them first; nothing is written until you press Save">
+              ✓ Accept {aiPending.length} AI match{aiPending.length === 1 ? '' : 'es'}
+            </button>
+          )}
           <button type="button" className="ghost" onClick={acceptAllConfident}>✓ Accept all confident</button>
           <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
         </div>
@@ -398,6 +447,22 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             {closedYearLines.length} line{closedYearLines.length === 1 ? '' : 's'} fall in a closed fiscal year — they import normally, but that year's History snapshot is stale until you close it again.
           </div>
         )}
+        {alreadyPaidCount > 0 && (
+          <div className="note-msg warn">
+            {alreadyPaidCount} line{alreadyPaidCount === 1 ? '' : 's'} would settle a month that is <strong>already recorded as paid</strong> — left unticked so the rent isn't recorded twice. Tick one anyway if the tenant genuinely paid that month more than once.
+          </div>
+        )}
+        {learned.rejected.length > 0 && (
+          <div className="note-msg warn">
+            {learned.rejected.map((x) => `${x.count} lines share the wording “${x.pattern}”`).join('; ')} — that's your bank's own wording, not a payee, so it won't be remembered. These lines still import; name them individually under <strong>Learned payees</strong> if you want them matched automatically.
+          </div>
+        )}
+        {nothingTicked && (
+          <div className="note-msg warn">
+            Nothing is ticked yet — tick the <strong>Import</strong> box on each line you want recorded.
+            {unmatchedDeposits.length > 0 && <> If your bank abbreviated the payees, the <strong>🤖 helper</strong> above will name them for you.</>}
+          </div>
+        )}
         <MutationError of={[save]} />
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <div className="muted">
@@ -406,7 +471,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             {' — '}<strong>{willExpense.length}</strong> expense{willExpense.length === 1 ? '' : 's'} · {money(expTotal)} out
             {' — '}<strong>{ignored}</strong> ignored
           </div>
-          <button type="button" disabled={save.isPending || (willPay.length === 0 && willExpense.length === 0)} onClick={() => save.mutate()}>
+          <button type="button" disabled={save.isPending || nothingTicked} onClick={() => save.mutate()}>
             {save.isPending ? 'Saving…' : 'Save to ledger'}
           </button>
         </div>
@@ -423,6 +488,17 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       )}
     </div>
   );
+}
+
+// What a resolved row RESOLVES TO — the identity the specificity screen compares. Two
+// lines with the same key are the same payee; two with different keys are not, so a
+// pattern matching both is boilerplate. null = the line resolves to nothing (ignored /
+// unpicked) and therefore never contradicts anyone.
+function targetKeyOf(r) {
+  if (r.kind === 'tenant' && r.tenant) return `lease:${r.tenant.lease_id}`;
+  if (r.kind === 'expense_cam' || r.kind === 'expense_other') return `${r.kind}:${(r.label || '').toLowerCase()}`;
+  if (r.kind === 'expense_tax' || r.kind === 'expense_roof') return r.kind;
+  return null;
 }
 
 // The one pick → { kind, lease_id?, label? } decoder, shared by the review's overrides
@@ -501,7 +577,10 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   const { row } = r;
   const txn = row.txn;
   const isIn = txn.direction === 'in';
-  const txnMonth = /^\d{4}-\d{2}-\d{2}$/.test(txn.date || '') ? Number(txn.date.slice(5, 7)) : null;
+  const txnMonth = monthOfDate(txn.date);
+  // The wording this line would be remembered by, with the bank's rail words stripped —
+  // null when nothing distinctive survives, which the Always cell says out loud.
+  const payee = suggestRulePattern(txn.description);
   // The new-bucket mini-form, opened by picking "＋ New bucket…" in the dropdown.
   const [addingBucket, setAddingBucket] = useState(false);
   const [newName, setNewName] = useState('');
@@ -623,11 +702,30 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             <button type="button" className="ghost btn-sm" onClick={() => { setAddingBucket(false); setNewName(''); }}>Cancel</button>
           </div>
         )}
+        {/* Money out gets a one-click way out of the dropdown — "Ignore" is the last
+            option under two optgroups, which is a long way to travel to say "not an
+            expense". */}
+        {!isIn && (
+          r.kind === 'ignore' ? (
+            <button type="button" className="ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setOv(r.i, { pick: undefined, checked: undefined })} title="Put this line back in play">
+              ↩ Undo ignore
+            </button>
+          ) : (
+            <button type="button" className="ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setOv(r.i, { pick: 'ignore', checked: false })} title="Not an expense — leave this line out of the ledger entirely">
+              ✕ Ignore
+            </button>
+          )
+        )}
         {row.reason && <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{row.reason}</div>}
         {r.kind === 'expense_other' && (
           <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>tracked for your records — not billed to tenants</div>
         )}
-        {r.row.collision && (
+        {r.alreadyPaid && !dupe && (
+          <div className="note-msg warn" style={{ marginTop: 4 }}>
+            {MONTH_NAMES[r.month - 1]} is already recorded as paid — ticking this records it twice
+          </div>
+        )}
+        {r.row.collision && !r.alreadyPaid && (
           <div className="note-msg warn" style={{ marginTop: 4 }}>possibly already recorded by hand — left unchecked</div>
         )}
       </td>
@@ -640,7 +738,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
               <select
                 className="text-input"
                 value={r.month ?? ''}
-                title="Which month's rent this deposit pays. Filled in with the earliest month this tenant still owes — not the date on the line — so a payment that arrives late lands on the month it settles. Change it whenever it's for a different month."
+                title="Which month's rent this deposit pays. Filled in from the earliest month this tenant still owes when the amount says so — a payment that arrives late lands on the month it settles — and otherwise from the date on the line itself. Change it whenever it's for a different month; your choice always wins."
                 onChange={(e) => setOv(r.i, { month: e.target.value })}
               >
                 <option value="">— (lump)</option>
@@ -685,17 +783,23 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
       <td>
         {/* A tenant deposit needs no tick — booking it teaches the payee by itself. Say
             that in the column rather than leaving it blank, which read as a missing
-            checkbox. Money-out keeps the opt-in tick. */}
+            checkbox. Money-out keeps the opt-in tick, and a row that resolves to nothing
+            says why it has neither, so the column is never silently empty. */}
         {r.kind === 'tenant' ? (
-          <span className="stmt-auto muted" title="No tick needed — saving this deposit remembers the payee automatically, so the next statement sorts it with no questions">auto</span>
+          <span className="stmt-auto muted" title={payee ? `No tick needed — saving this deposit remembers “${payee}” automatically, so the next statement sorts it with no questions. The month is never remembered: every statement is dated from its own lines.` : 'No tick needed — saving this deposit remembers the payee automatically. The month is never remembered: every statement is dated from its own lines.'}>auto</span>
         ) : r.kind.startsWith('expense_') ? (
           <input
             type="checkbox"
             checked={r.always}
             onChange={(e) => setOv(r.i, { always: e.target.checked })}
-            title={`Always match "${suggestRulePattern(txn.description) || txn.description}" this way on future imports`}
+            title={payee
+              ? `Remember “${payee}” → this bucket for future statements. The month is never remembered — every statement is dated from its own lines.`
+              : 'This line has no distinctive payee wording to remember — sort it here just this once.'}
+            disabled={!payee}
           />
-        ) : null}
+        ) : (
+          <span className="stmt-auto muted" title="Choose what this line is first — then it can be remembered">—</span>
+        )}
       </td>
     </tr>
   );

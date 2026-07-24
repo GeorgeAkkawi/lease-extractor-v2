@@ -78,6 +78,7 @@ export default function PropertyFinancialsPage() {
             fileName={importDoc.fileName}
             accountHint={importDoc.accountHint}
             parsed={importDoc.parsed}
+            storagePath={importDoc.storagePath}
             pdfLane={importDoc.pdfLane}
             onCancel={() => setImportDoc(null)}
             onSaved={(res) => {

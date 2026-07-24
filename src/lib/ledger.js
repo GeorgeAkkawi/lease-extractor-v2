@@ -37,8 +37,12 @@ export function owedArray(owedByMonth) {
 // Which months this tenant's payments cover — the "paid = paid" model.
 //   1. Every payment tagged period_month (1-12) adds to that month's tagged sum —
 //      several payments tagged the same month SUM (check + Zelle in one month works).
-//      A tag pointing at a month that owes nothing (before the tenancy, or a $0 month)
-//      falls back to the untagged pool — the tag can't invent a charge to cover.
+//      The tag ALWAYS holds, even on a month the lease bills nothing for (before the
+//      tenancy began, or a $0 month): money that actually arrived in May is money that
+//      arrived in May. It settles no charge (coverage stays 0) and the month reads
+//      'unbilled' so the grid says so out loud. Re-pooling it instead — which is what
+//      this used to do — silently moved a brand-new tenant's first deposits onto
+//      whatever month the lease happened to open in.
 //   2. A tag SETTLES its month (settled_m = tagged_m > 0). A settled month reads "paid"
 //      whatever the amount — short or over — because the landlord recorded a payment for
 //      it. The gap between what was received and what was projected is NOT hidden in the
@@ -55,8 +59,9 @@ export function owedArray(owedByMonth) {
 //      statement-matching logic no matter the amount tagged. received_m = tagged_m +
 //      poolDraw_m — the real dollars on that month, for the cells and closeYear.
 //      Invariant: Σ received + credit = totalPaid.
-// States: null (owed ≤ 0) · 'covered' (settled, or pool ≥ owed − dust) · 'partial'
-// (pool > 0) · 'open' (0); the caller renders "—"/"Free" for a null month.
+// States: null (owed ≤ 0, nothing received) · 'unbilled' (owed ≤ 0 but money was
+// tagged here) · 'covered' (settled, or pool ≥ owed − dust) · 'partial' (pool > 0) ·
+// 'open' (0); the caller renders "—"/"Free" for a null month.
 export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {}) {
   const owed = owedArray(owedByMonth);
   const tagged = Array(12).fill(0);
@@ -68,7 +73,7 @@ export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {
     if (!(amt > 0)) continue;
     totalPaid = round2(totalPaid + amt);
     const m = Number(p?.period_month);
-    if (m >= 1 && m <= 12 && owed[m - 1] > 0) tagged[m - 1] = round2(tagged[m - 1] + amt);
+    if (m >= 1 && m <= 12) tagged[m - 1] = round2(tagged[m - 1] + amt);
     else pool = round2(pool + amt);
   }
   // A tag settles its month at the received amount — no cap, and (the fix) NO excess
@@ -88,9 +93,10 @@ export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {
   const states = [];
   for (let i = 0; i < 12; i++) {
     received.push(round2(tagged[i] + poolDraw[i]));
-    const c = settled[i] ? owed[i] : round2(Math.min(owed[i], poolDraw[i]));
+    // Coverage is bill-satisfaction: a tag on an unbilled month settles nothing.
+    const c = settled[i] && owed[i] > 0 ? owed[i] : round2(Math.min(owed[i], poolDraw[i]));
     coverage.push(c);
-    if (!(owed[i] > 0)) states.push(null);
+    if (!(owed[i] > 0)) states.push(tagged[i] > 0 ? 'unbilled' : null);
     else if (settled[i] || c >= owed[i] - dust) states.push('covered');
     else if (c > 0) states.push('partial');
     else states.push('open');
@@ -188,6 +194,14 @@ export function representativeMonth({ owedByMonth = [], schedule = {}, isCurrent
 //   projected    — the year total the "collected" is measured against: Σ over months of
 //                  (settled ? received : owed) — forward-only, so a fully settled year
 //                  reads 100% and a mid-year estimate change moves only unsettled months
+//   billed       — Σ owed: what the LEASE says for the year (base + CAM & tax estimate
+//                  + roof), untouched by what came in. Where `projected` freezes a paid
+//                  month at the cheque that settled it, `billed` keeps the bill — the
+//                  pair is what makes a payment difference visible at all
+//   variance     — Σ (received − owed) over months that have come due AND are settled.
+//                  Settled-only on purpose: an unpaid or part-covered month is already
+//                  reported by owesToDate / monthsBehind, and an untagged lump draws
+//                  exactly each month's residual need, so it can never invent a variance
 //   rate         — collected / projected (null when projected 0; unclamped, may exceed 1)
 //   owesToDate   — Σ (owed − coverage) over months that have COME DUE (their 1st is
 //                  on/before today) — settled/free/out-of-term months owe nothing here
@@ -234,13 +248,20 @@ export function ledgerRowSummary({ year, owedByMonth, allocation, today = new Da
   let owes = 0;
   let monthsBehind = 0;
   let projected = 0;
+  let billed = 0;
+  let variance = 0;
   for (let m = 1; m <= 12; m++) {
     const i = m - 1;
     // Forward-only projection: a settled month is frozen at what was received, an
     // unsettled month reflects the CURRENT owed. So a mid-year estimate change moves
     // only the months still open, and a fully settled year reads exactly 100%.
-    projected = round2(projected + (settled[i] ? (received[i] || 0) : owed[i]));
+    // A month the lease doesn't bill can carry received money (see 'unbilled' above)
+    // without inflating the year total — it settles no charge, so it projects nothing.
+    const settledBill = settled[i] && owed[i] > 0;
+    projected = round2(projected + (settledBill ? (received[i] || 0) : owed[i]));
+    billed = round2(billed + owed[i]);
     if (monthStart(Number(year), m) > today) continue; // not yet due
+    if (settledBill) variance = round2(variance + round2((received[i] || 0) - owed[i]));
     const gap = round2(owed[i] - (alloc.coverage[i] || 0));
     if (gap > dust) owes = round2(owes + gap);
     // Genuinely behind = a due month with NO payment recorded against it at all
@@ -251,6 +272,8 @@ export function ledgerRowSummary({ year, owedByMonth, allocation, today = new Da
   return {
     collected,
     projected,
+    billed,
+    variance,
     rate: projected > 0 ? collected / projected : null,
     owesToDate: owes,
     monthsBehind,

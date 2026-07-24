@@ -110,6 +110,23 @@ button.rr-cell.abated{cursor:pointer}
    up"). Whole dollars, one line; the cell grows to fit, and full cents live in the title. */
 .rr-amt{font-size:9.5px;font-weight:700;line-height:1;margin-top:1px;opacity:.9;white-space:nowrap;font-variant-numeric:tabular-nums}
 .rr-cell.paid{min-width:46px}
+/* "paid = paid" stands — a month with a recorded payment keeps its forest ✓ and stays
+   clickable. The DIFFERENCE rides the figure alone: gold when the deposit came in under
+   what the lease billed, forest with a + when it came in over. One tint, no new cell
+   state, so a landlord reads the gap at a glance without the box changing meaning. */
+.rr-amt.under{color:var(--gold);opacity:1}
+.rr-amt.over{opacity:1}
+/* Money recorded FOR a month this lease bills nothing for — a new tenant's first
+   deposits, or an abated month. It settles no charge, so it can't be a ✓; it says so
+   instead of quietly drifting onto the next month the lease does bill. */
+.rr-cell.recv{background:var(--gold-soft);border-color:var(--gold);color:var(--gold);border-style:dashed;min-width:46px}
+/* The key: real .rr-cell swatches wearing the live classes, so it can't drift from
+   the grid it explains. */
+.rr-key{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin:6px 0 14px;font-size:11.5px;color:var(--faint)}
+.rr-key-label{font-family:var(--ui);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.rr-key-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.rr-key .rr-cell{cursor:default;pointer-events:none;min-height:22px}
+.rr-key-note{flex-basis:100%;font-size:11px;color:var(--faint)}
 .rent-roll th.rr-owes,.rent-roll td.rr-owes{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .rr-split{color:var(--faint);font-size:11px;margin-top:2px;white-space:nowrap}
 /* Plain-language cue next to a tenant whose base rent stepped up mid-year — so the two
@@ -124,11 +141,20 @@ button.rr-cell.abated{cursor:pointer}
 .rr-collected-sub{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap;font-size:11px;margin-top:1px}
 .rr-credit{color:var(--forest);background:var(--forest-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
 .rr-behind{color:var(--danger);background:#F3E0DB;border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
+/* The payment difference across the months already paid — the same gold/forest pair the
+   month figures use, so the chip and the cells read as one signal. */
+.rr-short{color:var(--gold);background:var(--gold-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
+.rr-over{color:var(--forest);background:var(--forest-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
 .rent-roll tr.rr-totals td{border-top:1px solid var(--border);padding-top:8px}
 /* Statement-import review (full-page, not a modal). */
 .stmt-propline{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:6px 0 10px}
 .stmt-group{margin-top:14px}
 .stmt-table th,.stmt-table td{vertical-align:middle}
+/* The two checkbox columns sit under their own headers. Left-aligned in a wide cell,
+   the Import tick drifted away from its label and the Always tick looked stranded on
+   the far side of the table. */
+.stmt-table th:first-child,.stmt-table td:first-child,
+.stmt-table th:last-child,.stmt-table td:last-child{text-align:center;width:1%;white-space:nowrap}
 /* A bank prints long descriptions ("Orig CO Name:Five Points Wing Orig ID:9200502235
    Desc Date:…") and the payee is often at the END, so an ellipsis hid exactly the part
    worth reading. The line wraps instead; the odd unbroken token breaks rather than

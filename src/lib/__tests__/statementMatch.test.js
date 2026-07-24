@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeDesc, lineHash, tenantNameScore, amountMatches, suggestRulePattern,
   classifyWithdrawal, corroborateAmount, rankDepositCandidates, matchStatement,
-  findMatchingRule, depositProjectionDelta, stepAtOrBefore,
+  findMatchingRule, depositProjectionDelta, stepAtOrBefore, screenRulePatterns,
 } from '../statementMatch';
 
 const flat = (n) => Array(12).fill(n);
@@ -44,10 +44,73 @@ describe('name matching', () => {
     expect(a).toBe(b);
     expect(normalizeDesc('  Check #1044 — City Dental. ')).toBe('CHECK 1044 CITY DENTAL');
   });
-  it('suggestRulePattern picks the longest digit-free run — check numbers change monthly', () => {
+  it('suggestRulePattern picks the longest run that is neither digits nor rail wording', () => {
     expect(suggestRulePattern('CHECK 1044 CITY DENTAL PC')).toBe('CITY DENTAL PC');
-    expect(suggestRulePattern('ACH A HEGAZY 2211')).toBe('ACH A HEGAZY');
+    // "ACH" names the payment rail, not the payee — every ACH tenant would match it.
+    expect(suggestRulePattern('ACH A HEGAZY 2211')).toBe('A HEGAZY');
     expect(suggestRulePattern('12 34 56')).toBe(null); // nothing rule-worthy
+  });
+
+  // George's real Chase statement taught ONE rule ("ONLINE ACH DEBIT") that swallowed
+  // six different tenants, and a second of pure boilerplate that matched nearly every
+  // line — because the longest digit-free run on a bank line is the rail's own wording.
+  // Each of these must now yield ITS OWN payee, and none may yield the rail.
+  describe('a bank line is learned by its payee, never by the rail', () => {
+    const CHASE = [
+      ['Online ACH Debit 9031521835 From Gustavo', 'GUSTAVO'],
+      ['Online ACH Debit 9031473238 From Samsnails', 'SAMSNAILS'],
+      ['Online ACH Debit 9031500012 From Lyonsvapez', 'LYONSVAPEZ'],
+      ['Online ACH Debit 9031500013 From Chinese', 'CHINESE'],
+      ['Online ACH Debit 9031500014 From Boost', 'BOOST'],
+      ['Online ACH Debit 9031500015 From Hiarcut', 'HIARCUT'],
+      ['Orig CO Name:Five Points Wing Orig ID:9200502235 Desc Date:060126 CO Entry Descr:ACH PAYMENSEC:CCD', 'FIVE POINTS WING'],
+      ['Orig CO Name:Laredo Hospitali Orig ID:9200502235 Desc Date:060126 CO Entry Descr:ACH PAYMENSEC:CCD Trace#:021000029', 'LAREDO HOSPITALI'],
+      ['Orig CO Name:Dentaloffice Orig ID:9200502235 Desc Date:060126', 'DENTALOFFICE'],
+    ];
+    it('each of the nine gets its own payee — and none gets the rail wording', () => {
+      const learned = CHASE.map(([desc]) => suggestRulePattern(desc));
+      CHASE.forEach(([, want], i) => expect(learned[i]).toBe(want));
+      expect(learned).not.toContain('ONLINE ACH DEBIT');
+      expect(new Set(learned).size).toBe(CHASE.length); // nine payees, nine patterns
+    });
+    it('a line with nothing but rail wording and numbers is not learned at all', () => {
+      expect(suggestRulePattern('ONLINE ACH DEBIT 9031521835')).toBe(null);
+      expect(suggestRulePattern('Desc Date:060126 CO Entry Descr:ACH SEC:CCD Trace#:021000029')).toBe(null);
+    });
+  });
+
+  // The guarantee that needs no word list: a pattern that can't tell two of your own
+  // payees apart is not a payee, whatever the bank calls it.
+  describe('screenRulePatterns — specificity within the same statement', () => {
+    const lines = [
+      { description: 'ONLINE ACH DEBIT 111 FROM GUSTAVO', targetKey: 'lease:a' },
+      { description: 'ONLINE ACH DEBIT 222 FROM SAMSNAILS', targetKey: 'lease:b' },
+      { description: 'CHECK 1044 CITY DENTAL PC', targetKey: 'lease:c' },
+    ];
+    it('rejects a pattern that also matches a line belonging to someone else', () => {
+      const { keep, rejected } = screenRulePatterns(
+        [{ pattern: 'ONLINE ACH DEBIT', targetKey: 'lease:a' }, { pattern: 'CITY DENTAL PC', targetKey: 'lease:c' }],
+        lines
+      );
+      expect(keep.map((k) => k.pattern)).toEqual(['CITY DENTAL PC']);
+      expect(rejected).toEqual([{ pattern: 'ONLINE ACH DEBIT', count: 2 }]);
+    });
+    it('two lines that are the SAME payee are not a conflict', () => {
+      const same = [
+        { description: 'CHECK 1044 CITY DENTAL PC', targetKey: 'lease:c' },
+        { description: 'CHECK 1051 CITY DENTAL PC', targetKey: 'lease:c' },
+      ];
+      const { keep, rejected } = screenRulePatterns([{ pattern: 'CITY DENTAL PC', targetKey: 'lease:c' }], same);
+      expect(keep).toHaveLength(1);
+      expect(rejected).toHaveLength(0);
+    });
+    it('an unresolved line never contradicts anyone', () => {
+      const { keep } = screenRulePatterns(
+        [{ pattern: 'CITY DENTAL PC', targetKey: 'lease:c' }],
+        [{ description: 'CHECK 1044 CITY DENTAL PC', targetKey: null }, ...lines]
+      );
+      expect(keep).toHaveLength(1);
+    });
   });
   it('amountMatches allows ±$1 or ±1%', () => {
     expect(amountMatches(8208, 8208.33)).toBe(true);
@@ -81,6 +144,53 @@ describe('deposit corroboration', () => {
     expect(c).toMatchObject({ corroborated: true, toRecon: true, month: null });
   });
   function round(n) { return Math.round(n * 100) / 100; }
+});
+
+// George back-filled an old May statement onto a ledger whose open months started in
+// July: every line was tagged to a month that hadn't happened when the money arrived,
+// or to no month at all — and an untagged deposit pools forward, so May's rent settled
+// July's box. The line's own month is the third input that fixes both.
+describe('deposit corroboration — the month the money actually landed', () => {
+  const openFromJuly = cityDental({ coverage: [8208.33, 8208.33, 8208.33, 8208.33, 8208.33, 8208.33, 0, 0, 0, 0, 0, 0] });
+
+  it('with no third argument, behaviour is byte-identical to before', () => {
+    expect(corroborateAmount(8208.33, openFromJuly)).toEqual({ corroborated: true, month: 7, toRecon: false });
+  });
+  it('a May deposit is never tagged to July — it falls back to its own month', () => {
+    const c = corroborateAmount(8208.33, openFromJuly, 5);
+    expect(c.month).toBe(5);
+    expect(c.corroborated).toBe(false); // uncorroborated, so nothing newly auto-ticks
+  });
+  it('one month ahead is still allowed — rent is due on the 1st, so paying early is normal', () => {
+    expect(corroborateAmount(8208.33, openFromJuly, 6)).toMatchObject({ corroborated: true, month: 7 });
+  });
+  it('a LATE payment still settles the month it owes (the earliest-owed rule stands)', () => {
+    // August deposit, June still owed → June, exactly as before.
+    expect(corroborateAmount(8208.33, openFromJuly, 8)).toMatchObject({ corroborated: true, month: 7 });
+    expect(corroborateAmount(8208.33, cityDental(), 8)).toMatchObject({ corroborated: true, month: 3 });
+  });
+  it('nothing matches a billed figure → the line is dated from itself, not left to the pool', () => {
+    const c = corroborateAmount(1234.56, cityDental(), 5);
+    expect(c).toEqual({ corroborated: false, month: 5, toRecon: false });
+  });
+  it('a lease that bills nothing that month still keeps the date (the ledger says so out loud)', () => {
+    const midYear = cityDental({ owed: [0, 0, 0, 0, 0, 0, 2716, 2716, 2716, 2716, 2716, 2716], coverage: Array(12).fill(0), invoiceTotal: 16296, invoiceBalance: 16296 });
+    expect(corroborateAmount(2716, midYear, 5).month).toBe(5);
+  });
+  it('a true-up / k-month / whole-invoice match is still untagged', () => {
+    const recon = cityDental({ reconInvoiceId: 'inv-recon', reconBalance: 985.04 });
+    expect(corroborateAmount(985.04, recon, 5)).toMatchObject({ toRecon: true, month: null });
+    expect(corroborateAmount(Math.round(8208.33 * 3 * 100) / 100, cityDental(), 5).month).toBe(null);
+    expect(corroborateAmount(98500, cityDental(), 5).month).toBe(null);
+  });
+  it('matchStatement dates a line from the statement even when the amount matches nothing', () => {
+    const { rows } = matchStatement({
+      transactions: [txn({ date: '2026-05-02', description: 'CHECK 1044 CITY DENTAL PC', amount: 8500 })],
+      propertyId: 'prop-1', tenants: [openFromJuly],
+    });
+    expect(rows[0].month).toBe(5);
+    expect(rows[0].checked).toBe(false); // dated, but still the landlord's call
+  });
 });
 
 describe('hand-entry collision', () => {

@@ -75,6 +75,109 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-23** — **Statement import → ledger: the month you choose wins, and the payee it learns is the payee —
+  plus the billed-vs-received difference finally visible on the grid** (George, across three messages: *"i want to
+  make sure that the difference in payments is clear and easy to read but also clean and sleek and professional"* ·
+  *"the always boxes are still not in the always collumn"* · *"add an ignore button for money out"* · *"i clicked
+  save ledger and the buttons didnt press"* · *"every statement should be read and autodated that should be simple"* ·
+  *"it only learned 4 payees"* · *"when i close the fiscal year the logs should reset"* · *"we need to store a real
+  copy of the statements uploaded"* · *"the remembered payee is recognized the ach debit to all the tenants but it
+  should match to something more specific"* · Infinite Mobile *"doesnt have any prior base rent … the code doesnt
+  upload the previous rent on the ledger"* · **"im trying to upload previous statements and when i put the correct
+  month it doesnt upload to the coressponding month on the ledger"**; his two scoping picks: Infinite Mobile →
+  *"it should bill it as the month chosen on the statement breakdown"*, May duplicates → *"dont worry im going to
+  remove that myself"*). Deployed: frontend Cloudflare version `6c629b1d`, demo worker `3dfe4682`. **Frontend +
+  `src/lib` + tests — $0, NO DB migration, NO edge functions, no tenant emails, no live-data repair** (George had
+  already undone both imports). Tests **566/566** (was 534 — +21 statementMatch, +2 ledger, +11 ledgerVariance,
+  +6 statementReviewSave, +1 ledgerPage).
+  - **The diagnosis (read-only, from his live rows before he cleared them) — one chain, four defects.** Two imports
+    had run: June (13 applied records) and May (9). **Every payment from the May import saved with `period_month:
+    null` — all nine** — while June's were correctly tagged. (1) **`suggestRulePattern` learned the bank's rail, not
+    the payee**: it picked the longest digit-free run, which on a Chase line is the wording every ACH share —
+    `Online ACH Debit 9031521835 From Gustavo` → **`ONLINE ACH DEBIT`** (16 chars, beating `FROM GUSTAVO` at 12). So
+    Gustavo · Samsnails · Lyonsvapez · Chinese · Boost · Hiarcut collapsed onto ONE rule, last-write-wins (→ beauty
+    and barber shop), and a second rule was pure boilerplate. That is both *"it only learned 4 payees"* and *"the ach
+    debit is recognized to all the tenants."* (2) Those rules were **live when May was imported**, so every deposit
+    arrived pre-matched AND pre-ticked as the wrong tenant. (3) **Re-picking the tenant never recomputed the month** —
+    `resolved` fell back to `row.month`, computed against the RULE's tenant, so a hand-corrected line kept an answer
+    about someone else: null. **That is his "when i put the correct month it doesnt upload to the corresponding
+    month."** (4) An untagged deposit **pools forward**, and with Jan–May hand-marked and June tagged, each May
+    deposit drew into **July**. Separately, **Infinite Mobile** (lease starts 2026-07-01) bills nothing Jan–Jun, and
+    `allocatePayments` **silently re-pooled any tag on a $0 month** — so even a correct May tag was thrown away.
+  - **1) The month follows the statement** (`statementMatch.js` + `StatementReview.js`). `corroborateAmount(amount,
+    t, txnMonth?)` — **every existing 2-arg call is byte-identical**, which is what keeps the pinned cases green.
+    With the line's own month: the earliest-owed answer may reach at most **one month ahead** (rent is due on the
+    1st, so paying a few days early is normal; two months out is not a payment for that month) — that's the back-fill
+    fix; and when nothing corroborates, the line is **dated from itself** rather than dropped into the pool
+    (*"every statement should be read and autodated"*). Uncorroborated on purpose, so confidence is untouched and
+    nothing newly auto-ticks. And `resolved` now **re-dates on re-pick** — the proven cause of the nine nulls.
+  - **2) A month tag is never silently dropped** (`ledger.js` + `LedgerPage.js`). A tag holds whatever the month
+    bills; coverage stays bill-shaped (it settles no charge), the month reads a new **`'unbilled'`** state, and
+    `projected` counts a settled month only when it bills, so unbilled receipts can't inflate the year. The grid
+    paints a gold dashed **`↓ $2,716`** box — *"$2,716 received — this lease bills nothing for May"* — instead of
+    quietly moving the money to July. Per his answer, **his lease was not touched**: the month he picks wins.
+  - **3) Learn the payee, not the rail** (`statementMatch.js`). A `BANK_NOISE` token now **breaks a run exactly like
+    a digit** (never spliced out — splicing would fuse two runs into a phrase matching neither next month): `ORIG CO
+    NAME ID DESC DATE ENTRY DESCR ACH SEC CCD PPD WEB TEL TRACE ONLINE DEBIT CREDIT FROM TO PMT PAYMENT DEPOSIT
+    TRANSFER CHECK MOBILE BANKING EFT XFER REF INDN BANK ACCT ACCOUNT`. His nine lines now yield **nine distinct
+    payees** (GUSTAVO · SAMSNAILS · LYONSVAPEZ · CHINESE · BOOST · HIARCUT · FIVE POINTS WING · LAREDO HOSPITALI ·
+    DENTALOFFICE); an all-boilerplate line learns **nothing**. **And the guarantee that doesn't depend on the word
+    list:** new pure `screenRulePatterns` — before a rule is kept, count the lines in the SAME statement containing
+    it; if any resolve to a **different** target, it's boilerplate, not a payee → learn nothing and say so in the
+    footer. `ONLINE ACH DEBIT` matched six other tenants, so it would have been rejected on the spot with no stopword
+    involved. Holds for any bank, any wording, any account.
+  - **4) Warn before recording a month twice.** The old collision guard only fired on a fully-covered tenant and
+    hard-coded `collision:false` on a rule hit. A precise row-level test now reads the ledger's own coverage: a line
+    settling an already-covered month shows *"January is already recorded as paid — ticking this records it twice"*
+    and stays unticked (still tickable — it's a warning, not a lock).
+  - **5–7) The review's affordances.** Save is never a silent grey button (an explicit *"Nothing is ticked yet…"*
+    line); **🤖 Suggest tenants reaches every unconfident deposit** (was gated on `kind === 'unmatched'`, which hid
+    exactly the abbreviated payees it's for) plus a **✓ Accept N AI matches** bulk tick (still unchecked on arrival);
+    the **Always column is never blank** (`auto` on a deposit, a tick on an expense, a muted `—` on an unresolved
+    row) with both checkbox columns centred under their headers and a tooltip that answers his question in place —
+    *"the month is never remembered; each statement is dated from its own lines"*; and money-out gets a one-click
+    **✕ Ignore / ↩ Undo ignore** beside the dropdown.
+  - **8–9) A real copy, and a log that resets with the year.** `statement_imports.storage_path` existed since 0063
+    and was never written — and the PDF lane already uploaded the file and threw the path away. Both lanes now keep
+    it (CSV too: a few KB, no AI, best-effort so a storage hiccup can't block an import) and the register gains an
+    **Open** button via the existing `signDocUrl`. `listStatementImports(propertyId, year)` filters by year and the
+    query key carries it, so a new fiscal year starts with a clean log. **No migration.**
+  - **10) The difference, readable at a glance.** `ledgerRowSummary` gains **`billed`** (Σ owed — what the lease says,
+    untouched by receipts) and **`variance`** (Σ received − owed over months that have come due AND settled).
+    `projected` keeps its exact meaning, so both pinned forward-only tests stay green; `closeYear` freezes the new
+    pair too. The Collected column reads **"$X of $Y billed"** with a gold **`short $649.44`** / forest **`over $X`**
+    chip; **"paid = paid" does not return as an amber cell** — the box stays forest ✓ and clickable, only the FIGURE
+    goes gold (or gains a `+`), and `.rr-cell.paid.short` is still asserted absent. A pool-covered ✓ now shows the
+    amount it drew (a faded figureless one read as a button that hadn't pressed). The run-on help paragraph is
+    replaced by his *"brief chart at the top"* — a compact `.rr-key` strip whose swatches are **real `.rr-cell`
+    elements wearing the live classes**, so it can't drift from the grid it explains.
+  - **Universal by construction:** every change is in shared pure code (`statementMatch.js`, `ledger.js`) or the
+    shared review/ledger components. No migration, no per-account data, **no hardcoded lease id, tenant name,
+    property or bank name anywhere** — his real descriptions appear only as test fixtures, so they became permanent
+    regressions rather than special cases.
+  - **Files:** `src/lib/statementMatch.js` (`BANK_NOISE`, `screenRulePatterns`, `monthOfDate`, `txnMonth`),
+    `src/lib/ledger.js` (`'unbilled'`, `billed`, `variance`), `src/components/StatementReview.js`,
+    `src/components/ImportStatementButton.js`, `src/pages/LedgerPage.js`, `src/pages/PropertyFinancialsPage.js`,
+    `src/lib/api.js` (storage_path, year-scoped register, closeYear), `src/App.css`, tests
+    (`ledgerVariance.test.js` + `statementReviewSave.test.js` new; `statementMatch`/`ledger`/`ledgerPage` extended).
+    **One intentional assertion change:** `suggestRulePattern('ACH A HEGAZY 2211')` is now `'A HEGAZY'` — "ACH" is the
+    payment rail, not the payee. No demo-seed change (a seeded short month would ripple the pinned $22,300 /
+    $109,800 / $78,000 figures).
+  - **Verified:** unit **566/566** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev +
+    demo, demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference (the
+    jsdom tests mount the real StatementReview + LedgerPage against the demo mock). **George: hard-refresh
+    (Cmd+Shift+R), then re-import June and then May. Every line pre-matches to a payee you'd recognize — no ACH line
+    claiming to be beauty and barber shop — and each is already dated to its OWN month, so May lands on May. Infinite
+    Mobile's May and June deposits sit on May and June marked "received, not billed" instead of settling July.
+    Learned payees should list nine rules, one per tenant. On the grid, a month paid under the bill keeps its ✓ but
+    shows its figure in gold and the row reads "short $X".**
+  - **Flags (no action needed):** once real deposits sit on the ledger, raising a CAM estimate mid-year makes those
+    months read short — because they are; the estimate is what's billed, and year-end ⚖ Reconcile settles it. Five
+    Points already shows the shape (billed $5,025.25/mo, deposits $5,324). Single-word payee patterns (`BOOST`,
+    `CHINESE`) match on *contains*, so an unrelated line carrying that word would pre-match — every rule is visible
+    and removable under Learned payees. Statements imported before today have no stored copy; the column fills from
+    the next import.
+
 - **2026-07-23** — **Statement review made readable: full transaction descriptions, named columns (the "Always"
   mystery solved), a tenant list scoped to the property you're standing in, a plain-English reason for the
   auto-picked month, and one "Suggesting…" instead of two** (George, reading his real Chase import on screen for

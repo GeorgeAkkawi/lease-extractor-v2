@@ -20,9 +20,12 @@ export default function ImportStatementButton({ onReady }) {
     setBusy(true);
     try {
       if (/\.csv$/i.test(file.name)) {
-        // CSV lane — parsed right here, $0, never uploaded.
+        // CSV lane — parsed right here, $0, no AI. The file itself is still kept: the
+        // ledger should be able to show you the statement a figure came from, and a
+        // CSV is a few KB. Best-effort — a storage hiccup must never block the import.
         const parsed = parseBankStatementCsv(await file.text(), { fileName: file.name });
-        onReady({ fileName: file.name, accountHint: parsed.accountHint, parsed, pdfLane: false });
+        const path = await uploadDoc(file).catch(() => null);
+        onReady({ fileName: file.name, accountHint: parsed.accountHint, parsed, storagePath: path, pdfLane: false });
       } else {
         // PDF lane — one transcription read (~5–15¢); the transcript still passes
         // the same validation gate + balance check the CSV lane gets.
@@ -40,6 +43,7 @@ export default function ImportStatementButton({ onReady }) {
           fileName: file.name,
           accountHint: null,
           parsed: { transactions: checked.transactions, skippedLines: gate.skippedLines, warnings: checked.warnings },
+          storagePath: path,
           pdfLane: true,
         });
       }

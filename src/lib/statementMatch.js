@@ -66,21 +66,65 @@ export function amountMatches(a, b) {
   return Math.abs(a - b) <= Math.max(1, 0.01 * b);
 }
 
-// The "always match {payee}" pattern suggested from one statement line: the
-// longest CONTIGUOUS run of digit-free tokens — contiguous because matching is a
-// plain `contains`, and check/reference numbers change every month ("CHECK 1044
-// CITY DENTAL PC" → "CITY DENTAL PC" still matches next month's CHECK 1045).
+// Wording that names the payment RAIL, not the payee — it appears on every ACH /
+// wire / check line whoever sent the money. A noise token BREAKS a run exactly like
+// a digit does; it is never spliced out, because splicing would fuse two separate
+// runs into a phrase that matches neither line next month.
+//   "Online ACH Debit 9031521835 From Gustavo" → GUSTAVO (was "ONLINE ACH DEBIT",
+//   which every one of the landlord's ACH tenants also matched — so one rule
+//   swallowed six payees, last one saved wins).
+const BANK_NOISE = new Set([
+  'ORIG', 'CO', 'NAME', 'ID', 'DESC', 'DATE', 'ENTRY', 'DESCR', 'ACH', 'SEC',
+  'CCD', 'PPD', 'WEB', 'TEL', 'TRACE', 'ONLINE', 'DEBIT', 'CREDIT', 'FROM', 'TO',
+  'PMT', 'PAYMENT', 'PAYMENTS', 'DEPOSIT', 'DEPOSITS', 'TRANSFER', 'CHECK',
+  'MOBILE', 'BANKING', 'EFT', 'XFER', 'REF', 'INDN', 'BANK', 'ACCT', 'ACCOUNT',
+]);
+
+// The "always match {payee}" pattern suggested from one statement line: the longest
+// CONTIGUOUS run of tokens that are neither digits nor rail wording — contiguous
+// because matching is a plain `contains`, and check/reference numbers change every
+// month ("CHECK 1044 CITY DENTAL PC" → "CITY DENTAL PC" still matches CHECK 1045).
+// When only boilerplate survives, learn NOTHING (null) rather than a pattern that
+// would match every line on next month's statement.
 export function suggestRulePattern(description) {
   const tokens = normalizeDesc(description).split(' ');
   let best = [];
   let cur = [];
+  const flush = () => { if (cur.join(' ').length > best.join(' ').length) best = cur; cur = []; };
   for (const t of tokens) {
-    if (/\d/.test(t)) { if (cur.join(' ').length > best.join(' ').length) best = cur; cur = []; }
+    if (!t || /\d/.test(t) || BANK_NOISE.has(t)) flush();
     else cur.push(t);
   }
-  if (cur.join(' ').length > best.join(' ').length) best = cur;
+  flush();
   const pat = best.join(' ');
   return pat.length >= 3 ? pat : null;
+}
+
+// The guarantee that doesn't depend on the word list above: a pattern is only a
+// PAYEE if it can tell this statement's own payees apart. A stopword list makes a
+// good pattern likely; this makes a bad one impossible, for any bank's wording.
+//   candidates — [{ pattern, targetKey, ... }] the rules we'd like to learn
+//   lines      — [{ description, targetKey }] every line in the SAME statement that
+//                resolves to something (targetKey identifies the tenant/bucket)
+// A candidate whose pattern also appears on a line resolving to a DIFFERENT target
+// is boilerplate: learning it would point all of those lines at whichever saved
+// last. Reject it (and say so), keep the rest.
+export function screenRulePatterns(candidates = [], lines = []) {
+  const norm = (lines || []).map((l) => ({ desc: normalizeDesc(l?.description), targetKey: l?.targetKey || null }));
+  const keep = [];
+  const rejected = new Map();
+  for (const c of candidates || []) {
+    const pat = normalizeDesc(c?.pattern);
+    if (pat.length < 3) continue;
+    const hits = norm.filter((l) => l.desc.includes(pat));
+    const conflicts = hits.filter((l) => l.targetKey && l.targetKey !== c.targetKey);
+    if (conflicts.length) {
+      if (!rejected.has(pat)) rejected.set(pat, { pattern: c.pattern, count: hits.length });
+    } else {
+      keep.push(c);
+    }
+  }
+  return { keep, rejected: [...rejected.values()] };
 }
 
 // ---- Withdrawal keyword table ------------------------------------------------
@@ -163,20 +207,41 @@ export function stepAtOrBefore(steps, m) {
 // for any post-step month and never disturbs the non-base components.
 const preStepOwed = (owedM, s) => round2(owedM - round2(Number(s.base) - Number(s.prevBase)));
 
+// The 1-12 month a statement line's own date falls in (null when unparseable).
+export const monthOfDate = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(String(iso || '')) ? Number(String(iso).slice(5, 7)) : null);
+
 // Amount corroboration against ONE tenant. Returns
 //   { corroborated, month (1-12|null), toRecon, escalated? } — month null = untagged
 //   (FIFO); escalated marks a match at the pre-raise rate on a post-step month.
-export function corroborateAmount(amount, t) {
+//
+// txnMonth (optional, 1-12) is the month the money actually LANDED, and it does two
+// things — both only ever reachable when it's passed, so every 2-arg call behaves
+// exactly as before:
+//   • it caps how far ahead the earliest-owed answer may reach. Rent is due on the
+//     1st, so a deposit can settle a month already past (a late payment) or the very
+//     next one (paid a few days early) — but never a month two or more out. Without
+//     this, back-filling an old statement onto a ledger whose open months start later
+//     tagged every line to a FUTURE month;
+//   • when nothing corroborates at all, it dates the line to its own month, so every
+//     statement is read and autodated instead of falling into the untagged pool
+//     (which silently drifts the money to the earliest open month).
+// The fallback is deliberately NOT corroborated, so confidence is unchanged and
+// nothing newly auto-ticks — it only fills the month the landlord would have typed.
+export function corroborateAmount(amount, t, txnMonth = null) {
   // An open reconciliation true-up: the check that settles it matches its balance.
   if (t.reconBalance > 0 && amountMatches(amount, t.reconBalance)) {
     return { corroborated: true, month: null, toRecon: true };
   }
+  const tm = Number(txnMonth);
+  const hasTxnMonth = tm >= 1 && tm <= 12;
   const owed = t.owed || [];
   const cov = t.coverage || [];
   const gaps = owed.map((o, i) => round2(Math.max(0, (Number(o) || 0) - (Number(cov[i]) || 0))));
   const firstOpen = gaps.findIndex((g) => g > DUST);
-  // One month's billed charge → the earliest uncovered owed month.
-  if (firstOpen !== -1) {
+  // One month's billed charge → the earliest uncovered owed month, unless that month
+  // hadn't come around yet when the money arrived (see txnMonth above).
+  const reachable = firstOpen !== -1 && !(hasTxnMonth && firstOpen + 1 > tm + 1);
+  if (reachable) {
     if (amountMatches(amount, owed[firstOpen]) || amountMatches(amount, gaps[firstOpen])) {
       return { corroborated: true, month: firstOpen + 1, toRecon: false };
     }
@@ -188,6 +253,8 @@ export function corroborateAmount(amount, t) {
     if (step && amountMatches(amount, preStepOwed(owed[firstOpen], step))) {
       return { corroborated: true, month: firstOpen + 1, toRecon: false, escalated: true };
     }
+  }
+  if (firstOpen !== -1) {
     // k consecutive uncovered months' gap-sum (2..12) → untagged; Stage 1's FIFO
     // pool spreads one payment row correctly, no fake splits.
     let sum = 0;
@@ -200,6 +267,9 @@ export function corroborateAmount(amount, t) {
   if (amountMatches(amount, t.invoiceTotal) || (t.invoiceBalance > 0 && amountMatches(amount, t.invoiceBalance))) {
     return { corroborated: true, month: null, toRecon: false };
   }
+  // Autodate from the statement itself: nothing matched a billed figure, so the month
+  // the money landed in is the honest default. Uncorroborated on purpose.
+  if (hasTxnMonth) return { corroborated: false, month: tm, toRecon: false };
   return { corroborated: false, month: null, toRecon: false };
 }
 
@@ -255,10 +325,11 @@ export function findMatchingRule(rules = [], txn, accountHint = null) {
 //     month, toRecon, collision }
 export function rankDepositCandidates(txn, tenants = []) {
   const out = [];
+  const tm = monthOfDate(txn.date);
   for (const t of tenants) {
     const score = tenantNameScore(txn.description, t.tenant_name);
     if (score <= 0) continue;
-    const corr = corroborateAmount(txn.amount, t);
+    const corr = corroborateAmount(txn.amount, t, tm);
     // Hand-entry collision: the money this deposit represents is ALREADY covered
     // (no open gap it would fill, and no open recon) — likely recorded by hand.
     const gaps = (t.owed || []).map((o, i) => round2(Math.max(0, (Number(o) || 0) - (Number((t.coverage || [])[i]) || 0))));
@@ -308,7 +379,7 @@ export function matchStatement({ transactions = [], propertyId = null, tenants =
     const ruleHit = findMatchingRule(rules, txn, accountHint);
     if (ruleHit) {
       const t = ruleHit.target_kind === 'tenant' ? tenants.find((x) => x.lease_id === ruleHit.lease_id) : null;
-      const corr = t ? corroborateAmount(txn.amount, t) : { month: null, toRecon: false };
+      const corr = t ? corroborateAmount(txn.amount, t, monthOfDate(txn.date)) : { month: null, toRecon: false };
       rows.push({
         txn, hash, year, duplicate,
         kind: ruleHit.target_kind,

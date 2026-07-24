@@ -13,6 +13,7 @@ import {
   listStatementImports,
   undoStatementImport,
   listSnapshots,
+  signDocUrl,
   localDateIso,
 } from '../lib/api';
 import { allocatePayments, componentizeSchedule, escalationStepMonths, ledgerRowSummary, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
@@ -27,6 +28,17 @@ import { money, money0, sf, fmtDate } from '../lib/format';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+// The row's payment difference in one chip: across every month that has come due AND
+// been paid, how far the deposits landed from the bill. Silent below 50¢ — that's
+// rounding, not a difference worth a landlord's attention.
+function VarianceChip({ variance }) {
+  const v = round2(Number(variance) || 0);
+  if (Math.abs(v) <= 0.5) return null;
+  return v < 0
+    ? <span className="rr-short" title="Across the months already paid, the deposits came in under what the lease billed. The estimate is what's billed all year; the year-end ⚖ Reconcile settles the difference.">short {money(Math.abs(v))}</span>
+    : <span className="rr-over" title="Across the months already paid, the deposits came in over what the lease billed.">over {money(v)}</span>;
+}
 
 // The Rent Ledger: tenants down the side, the 12 months across, PROJECTED (what the
 // lease bills) vs ACTUAL (what's been collected) — the per-tenant "owes $X / owed $X"
@@ -60,9 +72,11 @@ export default function LedgerPage() {
   // The post-save results strip: { summary, import, fileName }.
   const [imported, setImported] = useState(null);
   const [showRegister, setShowRegister] = useState(false);
+  // Scoped to the fiscal year the rest of the page follows, so the log resets with the
+  // year instead of every statement ever imported piling into one list.
   const { data: register = [] } = useQuery({
-    queryKey: ['statementImports', propId],
-    queryFn: () => listStatementImports(propId),
+    queryKey: ['statementImports', propId, year],
+    queryFn: () => listStatementImports(propId, year),
     enabled: isOn('ledger'),
   });
   // Prior-year collection rate (from the year-close snapshot) — the quiet trend chip.
@@ -196,6 +210,8 @@ export default function LedgerPage() {
   const behindTotal = derived.reduce((acc, { summary }) => acc + summary.monthsBehind, 0);
   const totalCollected = derived.reduce((s, { summary }) => s + summary.collected, 0);
   const totalProjected = derived.reduce((s, { summary }) => s + summary.projected, 0);
+  const totalBilled = derived.reduce((s, { summary }) => s + summary.billed, 0);
+  const totalVariance = round2(derived.reduce((s, { summary }) => s + summary.variance, 0));
   const totalCredit = derived.reduce((s, { summary }) => s + (summary.credit > 0.05 ? summary.credit : 0), 0);
   const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : null);
 
@@ -216,6 +232,7 @@ export default function LedgerPage() {
             fileName={importDoc.fileName}
             accountHint={importDoc.accountHint}
             parsed={importDoc.parsed}
+            storagePath={importDoc.storagePath}
             pdfLane={importDoc.pdfLane}
             onCancel={() => setImportDoc(null)}
             onSaved={(res) => {
@@ -252,11 +269,20 @@ export default function LedgerPage() {
             <ImportStatementButton onReady={setImportDoc} />
           </span>
         </div>
-        <div className="muted" style={{ fontSize: 12, marginTop: 4, marginBottom: 12 }}>
-          <strong>✓</strong> paid — recording a payment marks the month paid whatever the amount; any gap vs the projection shows up in <em>Collected</em> and the year-end reconcile · dashed <strong>✓</strong> covered by a lump payment · <strong>◐</strong> partly covered by a lump · amber months have come due and aren't paid · <strong>—</strong> before the tenant moved in · <strong>Free</strong> abated.
-          Click a box to record that month (or undo). A lump payment with no month recorded fills the earliest months first.
+        {/* The key is built from REAL .rr-cell elements wearing the live classes, so it
+            can never drift from what the grid actually paints. */}
+        <div className="rr-key">
+          <span className="rr-key-label">Key</span>
+          <span className="rr-key-item"><span className="rr-cell paid">✓<span className="rr-amt">5,324</span></span> paid in full</span>
+          <span className="rr-key-item"><span className="rr-cell paid">✓<span className="rr-amt under">5,025</span></span> paid under the bill</span>
+          <span className="rr-key-item"><span className="rr-cell paid pool">✓</span> covered by a lump</span>
+          <span className="rr-key-item"><span className="rr-cell partial">◐</span> partly covered</span>
+          <span className="rr-key-item"><span className="rr-cell late">—</span> due, unpaid</span>
+          <span className="rr-key-item"><span className="rr-cell recv">↓</span> received, not billed</span>
+          <span className="rr-key-item"><span className="rr-cell rr-step">▌</span> rent stepped up</span>
+          <span className="rr-key-note">Click a box to record that month, or undo it. A payment with no month recorded fills the earliest months first.</span>
           {prevCollection?.rate != null && (
-            <> · <Link to={`/history/${corpId}/${propId}`} className="rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link></>
+            <Link to={`/history/${corpId}/${propId}`} className="rr-key-note rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link>
           )}
         </div>
         {note && <p className="badge good" style={{ marginBottom: 10 }}>{note}</p>}
@@ -329,6 +355,22 @@ export default function LedgerPage() {
                       const isStep = stepSet.has(m);
                       const stepCls = isStep ? ' rr-step' : '';
                       const stepTip = isStep ? '↗ Scheduled rent escalation — base rent stepped up this month; the higher amount from here on is the raise, not an error. ' : '';
+                      // Money recorded FOR a month the lease bills nothing for (a tenant
+                      // whose lease starts later in the year, an abated month). The tag
+                      // holds — it renders before the out-of-term / abated cells, which
+                      // would otherwise print "—" over a real deposit and leave the money
+                      // to drift onto whatever month the lease does bill.
+                      if (state === 'unbilled') {
+                        return (
+                          <td key={m}>
+                            <button type="button" className="rr-cell recv" disabled={pending}
+                              onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
+                              title={`${ml}: ${money(receivedM)} received — this lease bills nothing for ${ml}, so it settles no charge and isn't counted as collected rent. Click to undo.`}>
+                              ↓<span className="rr-amt">{money0(receivedM)}</span>
+                            </button>
+                          </td>
+                        );
+                      }
                       if (s?.outsideTerm) {
                         return <td key={m}><span className="rr-cell outside" title={`${ml}: before this lease began`}>—</span></td>;
                       }
@@ -343,35 +385,47 @@ export default function LedgerPage() {
                         // when what came in differs from the projection, show that received figure.
                         if (settledM) {
                           const tagCount = (r.payments || []).filter((p) => Number(p.period_month) === m).length;
-                          const off = Math.abs(receivedM - owedM) > 0.05;
+                          const diff = round2(receivedM - owedM);
+                          // "paid = paid" stands: the box stays forest ✓ and stays clickable. Only
+                          // the FIGURE carries the difference — gold when the deposit came in under
+                          // the bill, a + when it came in over. That's the whole signal George
+                          // asked to be able to read at a glance, and it costs the cell nothing.
+                          const off = Math.abs(diff) > 0.5;
+                          const amtCls = `rr-amt${off ? (diff < 0 ? ' under' : ' over') : ''}`;
+                          const amtText = `${off && diff > 0 ? '+' : ''}${money0(receivedM)}`;
+                          const diffTip = off
+                            ? ` — ${diff < 0 ? `${money(Math.abs(diff))} under` : `${money(diff)} over`} the ${money(owedM)} billed`
+                            : '';
                           // Recorded across MORE than one same-month payment: undoing would delete
                           // them all, so it's inert here and managed on the lease's Invoices & payments.
                           if (tagCount > 1) {
                             return (
                               <td key={m}>
                                 <span className={`rr-cell paid${s?.abated ? ' abated' : ''}${stepCls}`}
-                                  title={`${stepTip}${ml}: received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} — recorded across ${tagCount} payments · manage on the lease's Invoices & payments`}>
-                                  ✓<span className="rr-amt">{money0(receivedM)}</span>
+                                  title={`${stepTip}${ml}: received ${money(receivedM)}${diffTip} — recorded across ${tagCount} payments · manage on the lease's Invoices & payments`}>
+                                  ✓<span className={amtCls}>{amtText}</span>
                                 </span>
                               </td>
                             );
                           }
                           // One tagged payment — paid = paid, click to undo whatever the amount.
-                          // Any received-vs-projected gap lives in the Collected column + reconcile.
                           return (
                             <td key={m}>
                               <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
                                 onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
-                                title={`${stepTip}${ml} paid — received ${money(receivedM)}${off ? ` (projected ${money(owedM)})` : ''} · click to undo`}>
-                                ✓<span className="rr-amt">{money0(receivedM)}</span>
+                                title={`${stepTip}${ml} paid — received ${money(receivedM)}${diffTip} · click to undo`}>
+                                ✓<span className={amtCls}>{amtText}</span>
                               </button>
                             </td>
                           );
                         }
-                        // Covered by an untagged lump — inert (managed on the lease's payments panel).
+                        // Covered by an untagged lump. Show the amount it drew and say a lump paid
+                        // it — a faded, figureless, unclickable ✓ reads as a button that didn't press.
                         return (
                           <td key={m}>
-                            <span className={`rr-cell paid pool${stepCls}`} title={`${stepTip}${monthLine} — covered by a lump payment · manage it on the lease's Invoices & payments`}>✓</span>
+                            <span className={`rr-cell paid pool${stepCls}`} title={`${stepTip}${monthLine} — ${money(receivedM)} drawn from a lump payment · manage it on the lease's Invoices & payments`}>
+                              ✓<span className="rr-amt">{money0(receivedM)}</span>
+                            </span>
                           </td>
                         );
                       }
@@ -397,10 +451,11 @@ export default function LedgerPage() {
                       );
                     })}
                     <td className="rr-owes">
-                      <div className="rr-collected"><strong>{money(summary.collected)}</strong> <span className="muted">of {money(summary.projected)}</span></div>
+                      <div className="rr-collected"><strong>{money(summary.collected)}</strong> <span className="muted">of {money(summary.billed)} billed</span></div>
                       <div className="rr-progress"><span style={{ width: `${Math.min(100, rate ?? 0)}%` }} /></div>
                       <div className="rr-collected-sub">
                         <span className="muted">{rate != null ? `${rate}%` : '—'}</span>
+                        <VarianceChip variance={summary.variance} />
                         {summary.credit > 0.05 && <span className="rr-credit" title="Collected more than projected — owed back to the tenant">credit {money(summary.credit)}</span>}
                         {summary.monthsBehind > 0 && <span className="rr-behind" title="Due months with nothing collected yet">{summary.monthsBehind} mo behind</span>}
                       </div>
@@ -425,10 +480,11 @@ export default function LedgerPage() {
                   <td className="muted">All tenants</td>
                   <td colSpan={12} />
                   <td className="rr-owes">
-                    <div className="rr-collected"><strong>{money(totalCollected)}</strong> <span className="muted">of {money(totalProjected)}</span></div>
+                    <div className="rr-collected"><strong>{money(totalCollected)}</strong> <span className="muted">of {money(totalBilled)} billed</span></div>
                     <div className="rr-progress"><span style={{ width: `${Math.min(100, pct(totalCollected, totalProjected) ?? 0)}%` }} /></div>
                     <div className="rr-collected-sub">
                       <span className="muted">{pct(totalCollected, totalProjected) != null ? `${pct(totalCollected, totalProjected)}%` : '—'}</span>
+                      <VarianceChip variance={totalVariance} />
                       {totalCredit > 0.05 && <span className="rr-credit">credit {money(totalCredit)}</span>}
                       {behindTotal > 0 && <span className="rr-behind">{behindTotal} mo behind</span>}
                     </div>
@@ -453,6 +509,7 @@ export default function LedgerPage() {
             <button type="button" className="ghost" onClick={() => setShowRegister((v) => !v)}>
               {showRegister ? '▾' : '▸'} Imported statements ({register.length}) — {showRegister ? 'hide' : 'show'}
             </button>
+            <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>FY {year}</span>
             {showRegister && (
               <table style={{ minWidth: 0, marginTop: 8 }}>
                 <thead><tr><th>File</th><th>Account</th><th>Imported</th><th className="num">Payments</th><th className="num">Expenses</th><th></th></tr></thead>
@@ -471,6 +528,16 @@ export default function LedgerPage() {
                         <td className="num">{pays.length} · {money(pays.reduce((s, a) => s + Number(a.amount || 0), 0))}</td>
                         <td className="num">{exps.length} · {money(exps.reduce((s, a) => s + Number(a.amount || 0), 0))}</td>
                         <td className="num">
+                          {imp.storage_path && (
+                            <button type="button" className="ghost btn-sm" title="Open the statement file this came from"
+                              onClick={async () => {
+                                const url = await signDocUrl(imp.storage_path).catch(() => null);
+                                if (url) window.open(url, '_blank', 'noopener');
+                                else setNote('That statement file is no longer available.');
+                              }}>
+                              Open
+                            </button>
+                          )}
                           <button type="button" className="ghost btn-sm" disabled={undoImport.isPending}
                             onClick={() => { if (window.confirm(`Undo the import of ${imp.file_name || 'this statement'}? Its payments and expense additions are reversed.`)) undoImport.mutate(imp); }}>
                             ↩ Undo
