@@ -285,7 +285,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
             <>
               <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
                 Upload the rider (PDF, scan, photo, or Word .docx). The AI reads it and pre-fills every change it finds —
-                you just confirm or correct. <strong>This uses a paid AI call.</strong>
+                you just confirm or correct.
               </div>
               <div className="dropzone">
                 <input type="file" accept=".pdf,.docx,image/*" className="file-native" onChange={onFile} disabled={busy} aria-label="Upload addendum file" />

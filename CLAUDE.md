@@ -75,6 +75,28 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-25** — **The "This uses a paid AI call" line is gone from the addendum-upload description** (George:
+  *"take out anything that says paid ai call in the description"*). Deployed: frontend Cloudflare version
+  `c71c0950`, demo worker `31d8d66c`. **One sentence of copy — $0, NO DB migration, NO edge functions, no AI
+  calls, no tenant emails, nothing destructive.** Tests **623/623** (unchanged — no test asserted the sentence).
+  - **Where it was:** the "Add an addendum / rider" panel's upload description (`AddendumEditor.js:288`) ended
+    with a bolded **"This uses a paid AI call."** — the last surviving bit of cost wording in the app's
+    user-facing copy. The 2026-06-30 insurance round had stripped the same kind of line out of `InsuranceVault.js`
+    and the demo mock; this one was missed. The description now reads "Upload the rider (PDF, scan, photo, or
+    Word .docx). The AI reads it and pre-fills every change it finds — you just confirm or correct."
+  - **Swept the rest of the app for the same phrasing** — `paid AI call` / `a paid read` / `paid extraction`
+    appear nowhere else in user-facing copy (the only other hits are code comments in `api.js`, `App.css` and two
+    edge functions, which nobody sees). **Deliberately left alone:** the ¢ figures that sit on *click-gated*
+    actions — the 🤖 Suggest tenants/buckets tooltips, the ⬆ Import statement title, and Ask Amlak's "📄 Read my
+    leases (~a few cents)". Those aren't a warning attached to a description; they're the price shown on a button
+    before you press it, which is the whole reason those actions are click-gated. Say the word if you'd rather
+    those went too.
+  - **Files:** `src/components/AddendumEditor.js`.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles; the built bundle grepped **free of the
+    phrase**; demo bundle grep-free of the live ref `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four
+    URLs. **George: hard-refresh (Cmd+Shift+R) — open any lease → Add addendum / rider → the description no longer
+    mentions a paid call.**
+
 - **2026-07-25** — **Follow-up: the mark now lines up with the "Amlak" wordmark on the sign-up / sign-in card
   (it was hanging below the word's feet)** (George: *"line up the logo with AMLAK on the sign up page"*). Deployed:
   frontend Cloudflare version `ea0ea2fd`, demo worker `f7174ffe`. **Frontend + CSS only — $0, NO DB migration, NO
