@@ -68,9 +68,41 @@ export function extractionMismatches({ verdicts, escalations, renewalOptions, ab
   return out;
 }
 
-// Human-readable label per mismatch code, used by the review screen's warning text.
+// The same check for an ADDENDUM / rider. It can't reuse extractionMismatches: a rider's
+// rent change usually lands on new_base_rent (a single new rent), not on an escalations
+// array, so "the rent was captured" means something different here. A rider also has two
+// effects a lease doesn't — an extension of the term and an assignment to a new tenant.
+// Same discipline throughout: only an affirmative verdict with an empty form flags.
+export function riderMismatches({
+  verdicts, newBaseRent, escalations, newTerminationDate, renewalOptions, assignment, abatements, expenseEstimate,
+}) {
+  const v = verdicts || {};
+  const out = [];
+
+  const gotRent = (newBaseRent != null && Number(newBaseRent) > 0) || hasEscalationSteps(escalations);
+  if (v.rent_change === 'yes' && !gotRent) out.push('rent_change');
+
+  if (v.term_extension === 'yes' && !newTerminationDate) out.push('term_extension');
+  if (v.renewal_options === 'yes' && !nonEmptyArray(renewalOptions)) out.push('renewal_options');
+  // The assignment read returns null unless it's confident, so an analyst 'yes' against a
+  // null assignment is exactly the disagreement worth surfacing.
+  if (v.assignment === 'yes' && !(assignment && assignment.new_tenant_name)) out.push('assignment');
+  if (v.abatement === 'yes' && !nonEmptyArray(abatements)) out.push('abatement');
+  if (v.expense_estimate === 'yes' && !(expenseEstimate != null && Number(expenseEstimate) > 0)) out.push('expense_estimate');
+
+  return out;
+}
+
+// Human-readable label per mismatch code, used by the review screens' warning text.
+// Mirrored in src/lib/analystBrief.js (the app build can't import across into
+// supabase/functions) — keep the two in step.
 export const MISMATCH_LABELS = {
   escalation: 'a rent escalation',
   renewal_options: 'a renewal or extension option',
   abatement: 'a free / reduced-rent (abatement) period',
+  // rider-only codes
+  rent_change: 'a change to the rent',
+  term_extension: 'an extension of the term',
+  assignment: 'an assignment to a new tenant',
+  expense_estimate: 'a stated CAM / tax estimate',
 };

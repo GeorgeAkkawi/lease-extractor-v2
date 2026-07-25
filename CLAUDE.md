@@ -75,6 +75,129 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-25** — **Full audit + overhaul of the addendum / rider extractor: it now knows that an amendment
+  RECITES the clause it replaces (the Denny's bug), keeps percent rent steps instead of silently deleting them,
+  links the uploaded document, reads an extension stated as a LENGTH, and is led by a Sonnet analyst read with a
+  disagreement alarm** (George: *"need to do a full audit of the lease addendums and riders extraction its not
+  nearly as good as the lease extractor AI. i gave it that dennys rider and it gave me that screenshot back. find
+  the bugs as well as any others. YOU decide if you want to use the lease extractor AI as a guide after you do
+  your research."* — his two scoping picks: **add the analyst read** (~2–5¢/rider) and **fix forward only** for the
+  6 orphaned rider documents; plan `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed:
+  `extract-addendum` + `extract-lease` edge fns (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `f7267648`, demo worker `8659b9a3`. **NO DB migration, no tenant emails, nothing destructive, no live-data
+  repair needed.** The only cost change is the analyst read George approved: **~2–5¢ per rider upload** (a rider is
+  1–3 pages vs 10–15¢ for a full lease); manual entry stays $0. Tests **656/656** (was 623 — +12 supersededRider,
+  +11 rider analystVerdicts, +7 addendumPercentApply, +4 addendumReview render). **Decision on the guide: yes** —
+  `extract-lease` has been hardened over ~15 rounds and the rider lane received almost none of it; this ports what
+  applies and adds the one thing a lease never needs.
+  - **The Denny's diagnosis.** The one-page scanned "THIRD ADDENDUM" reads: *"Number 4 of the agreement reads 'The
+    Monthly Base Rent … shall be increased to $12,595 beginning **June 1, 2023** to April 31, 2028.'"* — the clause
+    being **replaced** — then *"This will be changed to … $12,595 beginning **July 1, 2023** to April 31, 2033."* —
+    the clause that **governs**. The review screen came back with **two rent steps, both $151,140**. Nothing in any
+    of the extractor's three prompts mentioned recitals, which is the defining feature of the genre. Here the damage
+    is cosmetic (both figures match); the identical shape with a *changed* rent ("the rent **was** $10,000; it will
+    be changed to $12,595") writes a false $120,000 step dated a month early, and `effective_rent` then misreports
+    that fiscal year permanently.
+  - **12 findings, all verified in code, two against live data.** ① superseded clause read as operative ·
+    ② a step that changes nothing survives (`periodKey` dedupes on date, never compares the amount) · ③ **percent
+    rent steps silently dropped** — `intake` only pushed a step with a dollar figure, so `{percent, 3, null}`
+    vanished and `formToChanges` then hard-coded `manual`; **the demo mock shipped a live reproduction**, its canned
+    rider's summary promising a "3% bump" the form never showed · ④ the merge wiped the main call's escalations
+    whenever the rent call returned one row, destroying any percent step it *had* found · ⑤ no analyst read, no
+    disagreement alarm (the 2026-07-03 lesson never applied here) · ⑥ four model calls strictly **serial**, three at
+    the default 90 s box — the same HTTP 546 class fixed twice in extract-lease, latent · ⑦ **the uploaded rider PDF
+    was never linked** — `onFile` uploaded and discarded the path (**live: all 6 addendums have `storage_path`
+    null**) · ⑧ an extension stated as a LENGTH unreadable · ⑨ no lease-year rent tables · ⑩ no option rent tables ·
+    ⑪ both non-fatal catches silent · ⑫ header comment said "Sonnet 4.6" while `MODEL` is Haiku.
+  - **Live data is otherwise clean** — all 7 addendum-derived `rent_escalations` rows have distinct amounts per
+    lease, so **no rent repair was needed**. Per George, the 6 orphaned rider documents stay orphaned (their
+    extracted text is on the record; only the file link was lost, and matching by upload time is ambiguous).
+  - **The superseded fix (the core).** A **required** `superseded: boolean` on `RENT_SCHEMA.rent_schedule` items —
+    a required, single-typed field costs **ZERO** of Anthropic's 16-union budget (the `is_assignment` precedent), so
+    it was free; the schema moved 7 → 8 only because `months_from_start` was added beside it. A shared
+    `SUPERSEDED_RULE` paragraph now leads BOTH rent prompts, naming the trigger phrasing ("currently reads",
+    "deleted and replaced with", "amended in its entirety", "in lieu thereof", "This will be changed to") and
+    spelling out the Denny's shape explicitly — **because the identical dollar figure on both rows is exactly what
+    makes the quotation look like a second table row**. The edge fn splits the rows before any of them becomes a
+    schedule and keeps the dropped ones on `parsed.superseded_rent`, so the review says quietly *"This rider quotes
+    a prior rent it replaces — not applied: $120,000.00 from Jan 1 2023"* rather than dropping it silently.
+    **The all-superseded edge case is specified, not left to chance:** if every row is flagged, `rebuilt.baseRent`
+    is null, the merge guard never fires and the main call's superseded figure would leak through as the new rent —
+    so it's explicitly cleared and flagged `all_rent_rows_superseded`. **Deliberately NOT** mirrored onto
+    `SCHEMA.escalations`: on Denny's the superseded row is the *earliest*, so it lands in `new_base_rent`, which has
+    nowhere to carry a flag — flagging escalations alone would drop the operative step and keep the superseded base,
+    strictly worse than nothing.
+  - **Second line of defence — a step that changes nothing isn't a step** (`rentSchedule.js`, **dated mode only**,
+    placed AFTER `crossCheck` so the divergence flag sees exactly what it saw before). Walks the steps tracking the
+    last *kept* amount and drops any within a cent of it. Two contracts are load-bearing: it returns **`[]`, never
+    `null`** (extract-lease reads `if (rebuilt.escalations)` — `null` means "we priced nothing, keep the model's
+    rows", `[]` means "we priced them and there are none"), and `withFormula`'s `tableRowCount` stays at the
+    **pre**-dedupe count so a printed table of equal rents still beats a prose "2%/yr" formula. **Not applied to
+    relative mode**: `relativeRentSchedule.test.js` pins the real Wingstop lease, whose Year 1 and Year 2 are *both*
+    $30,525 — equal consecutive periods genuinely occur, and the rider lane can't reach relative mode anyway. The
+    test documents the fallback's known imperfection too: without the flag the pair collapses to one period, but the
+    surviving date is the quoted June 1, a month early. Only the flag gets the date right.
+  - **Percent steps survive end to end.** One shared `stepIsUsable` predicate now governs `intake`, `formToChanges`
+    and `canSave` alike (a step qualifies on a dollar amount **or** a percent/CPI type with a value > 0), the steps
+    table gained a **Type** column (Amount $/yr · +% per step) that binds the percent to `escalation_value` and says
+    so, and a percent step is saved with `new_base_rent: null` so the formula — not a stale figure — wins. Verified
+    through the real apply path: base $151,140 + 3% → **$155,674.20**. The merge now keeps the model's dollar-less
+    percent/CPI steps on dates the rebuild doesn't own, sorted in; anything carrying dollars stays owned by
+    `rebuildRentSchedule`, so the model's arithmetic still can't re-enter.
+  - **Analyst read + disagreement alarm** (Sonnet 4.6, unconstrained prose, best-effort, 45 s box). Its headline
+    section is **WHAT THIS DOCUMENT CHANGES vs WHAT IT MERELY QUOTES** — the one judgment the rigid form-fillers
+    keep getting wrong — and it closes with a rider-specific VERDICTS line (`rent_change`, `superseded_quote`,
+    `term_extension`, `extension_months`, `new_end_date`, `renewal_options`, `assignment`, `abatement`,
+    `expense_estimate`). New `riderMismatches()` in `_shared/analystVerdicts.js`: `extractionMismatches` couldn't be
+    reused because for a rider "the rent was captured" includes `new_base_rent`, not just a non-empty escalations
+    array, and a rider has two effects a lease doesn't. Only an affirmative verdict against an empty form flags —
+    `unclear`/absent never cry wolf. The review renders the warning plus a collapsed **"Read the AI analyst's
+    notes"**. `stripVerdicts` + `MISMATCH_LABELS` were hand-mirrored in `LeaseNewPage.js` with a comment admitting
+    the drift risk; both are now lifted into shared `src/lib/analystBrief.js` and imported by both screens.
+  - **Parallelized and boxed.** The transcription starts first and isn't awaited; the analyst is awaited; then the
+    three structured calls + the transcript resolve in ONE `Promise.all`. `ANALYST 45 s · FORM 35 s/attempt ·
+    TRANSCRIBE 75 s / 8 k` → worst case ≈ **130 s**, inside the ~150 s edge budget (the old serial path had no upper
+    bound at all). The two best-effort reads are wrapped in `extractAssignment()` / `extractRent()` that catch →
+    **log** → return null, because `Promise.all` rejects on any member — without them a transient 429 on the cheap
+    assignment call would have taken down an extraction that survives it today. That also closes finding ⑪.
+  - **Extension stated as a LENGTH.** `extension_months` **cannot** live on `SCHEMA` (it is at exactly 16/16), so it
+    comes off the analyst's VERDICTS line — zero schema budget, and the stronger model is the better reader of *"an
+    additional five (5) years"*. The lease's current end is threaded `LeaseDetailPage → AddendumEditor →
+    extractAddendum → api.js → the edge fn`; a new shared `addMonths` computes `old_end + N`, fills the date when
+    the rider printed none, and flags a disagreement when it printed a different one. Denny's: 2028-04-30 + 60 =
+    **2033-04-30** — and the document literally prints *"April 31, 2033"*, a date that does not exist, which is the
+    whole argument for computing it. **A test caught a real hole here:** `"2033-04-31"` passes a `\d{4}-\d{2}-\d{2}`
+    regex AND V8's lenient parser, which quietly rolls it to May 1 — so `addMonths` now rejects any date that
+    doesn't round-trip, rather than returning a plausible lie.
+  - **The last two parity gaps.** Lease-year rent tables in riders (`months_from_start` + an anchor rule: the
+    operative rent's own date, else — only for a committed extension — the term end it begins from, **never** the
+    amendment/signing date), and option rent tables (`renewal_options[].rent_schedule`, all-required items → 0
+    unions, `annualizeOptionSchedule`). Two client-side pieces nobody had flagged: `formToChanges` dropped
+    `rent_schedule` on the floor, and **`applyAddendum` never called `buildRenewalScheduleSteps`** — it does now,
+    with `termEnd = changes.extensionEnd || lease.lease_termination_date` (a rider often extends the term in the
+    same document, so the option window must start after the *new* end) and the just-built escalation rows as
+    `existingSteps` so the ±45-day guard can't double-book.
+  - **Files:** `supabase/functions/extract-addendum/index.ts`, `supabase/functions/_shared/{rentSchedule.js,
+    analystVerdicts.js}`, `src/lib/analystBrief.js` (new), `src/components/AddendumEditor.js`, `src/lib/api.js`,
+    `src/pages/{LeaseDetailPage,LeaseNewPage}.js`, `src/lib/demo/mockClient.js` (the canned rider now recites the
+    clause it replaces and carries an analyst brief, so the new behaviour is demoable), tests
+    (`supersededRider.test.js`, `addendumPercentApply.test.js`, `addendumReview.test.js` new;
+    `analystVerdicts.test.js` extended). **`extract-lease` was redeployed unchanged** — it imports both shared
+    modules I edited, and leaving its deployed copy on the old ones would have been exactly the source-vs-deployed
+    drift the standing rule warns about.
+  - **Verified:** unit **656/656** (`vitest run`); `vite build` compiles (809 modules); both edge fns deployed clean
+    with unauth POST → **401** (RLS-gated, *not* a schema 500 — proof the new schema was accepted); demo bundle
+    grepped free of the live ref `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. Browser
+    drive-through skipped per George's standing preference — the render test mounts the real AddendumEditor and
+    drives the actual paste → review → save path against the demo mock. **George: hard-refresh (Cmd+Shift+R), then
+    re-upload the Denny's rider (~2–5¢) — expect ONE rent step at July 1 2023, $151,140, the term at 2033-04-30, a
+    quiet line naming the June figure it recognized as replaced, and the analyst's notes readable on the review.**
+  - **Flags (no action needed):** ① The 6 existing riders keep `storage_path` null — forward-only, as you chose;
+    re-upload any rider whose file you want reachable from its record. ② A percent step is priced from the rent in
+    effect *just before it*, so editing an earlier step re-prices it — that's the formula behaving correctly, not
+    drift. ③ The analyst is best-effort: if it times out, the brief is null, no mismatch can flag, and extraction
+    proceeds exactly as it did before — you lose the alarm, never the extraction.
+
 - **2026-07-25** — **The "This uses a paid AI call" line is gone from the addendum-upload description** (George:
   *"take out anything that says paid ai call in the description"*). Deployed: frontend Cloudflare version
   `c71c0950`, demo worker `31d8d66c`. **One sentence of copy — $0, NO DB migration, NO edge functions, no AI

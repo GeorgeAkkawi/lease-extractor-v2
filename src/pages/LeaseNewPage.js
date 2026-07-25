@@ -6,6 +6,7 @@ import { resolveCurrentTerm } from '../lib/leaseTerm';
 import { abatementKindLabel, leadingFreeMonths } from '../lib/abatement';
 import { addMonths } from '../lib/renewals';
 import { money, fmtDate } from '../lib/format';
+import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { usePageChrome } from '../context/ChromeContext';
 import LeaseForm from '../components/LeaseForm';
 import LeaseUpload from '../components/LeaseUpload';
@@ -228,7 +229,7 @@ function SchedulePreview({ ex }) {
       {mismatches.length > 0 && (
         <p className="note-msg warn" style={{ marginBottom: 8 }}>
           ⚠ The AI analyst read the full document and found{' '}
-          <strong>{mismatches.map((m) => MISMATCH_LABELS[m] || m).join(' and ')}</strong>, but{' '}
+          <strong>{mismatchPhrase(mismatches)}</strong>, but{' '}
           {mismatches.length === 1 ? 'it was' : 'they were'} not captured onto the form. Open{' '}
           <em>the AI analyst's notes</em> below to see what it read, then add{' '}
           {mismatches.length === 1 ? 'it' : 'them'} by hand before saving — or re-upload a clearer copy of the lease.
@@ -317,17 +318,3 @@ function SchedulePreview({ ex }) {
   );
 }
 
-// Strip the trailing machine-readable "VERDICTS: …" line (parsed by the edge function) so
-// only the human-readable brief is shown.
-function stripVerdicts(brief) {
-  return String(brief).replace(/\n*^\s*VERDICTS:.*$/im, '').trimEnd();
-}
-
-// Labels for the disagreement codes the edge function flags (kept in sync with
-// analystVerdicts.js MISMATCH_LABELS; the app build can't import across into
-// supabase/functions, so they're mirrored here).
-const MISMATCH_LABELS = {
-  escalation: 'a rent escalation',
-  renewal_options: 'a renewal or extension option',
-  abatement: 'a free / reduced-rent (abatement) period',
-};

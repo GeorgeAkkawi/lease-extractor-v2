@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAddendum, uploadDoc } from '../lib/api';
 import { fmtDate, money } from '../lib/format';
+import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { useConfirm } from './ConfirmDialog';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
@@ -24,16 +25,40 @@ const blankForm = () => ({
   fx_extension: false, fx_rent: false, fx_option: false, fx_assignment: false, fx_abatement: false, fx_estimate: false,
   est_camtax: '', est_roof: '', est_quote: '',
   new_termination_date: '',
-  rentSteps: [], // [{ effective_date, new_base_rent }]
+  rentSteps: [], // [{ effective_date, new_base_rent, escalation_type, escalation_value }]
   opt_label: '', opt_term_months: '', opt_new_rent: '', opt_annual_pct: '', opt_notice_by: '',
+  _optSchedule: [], // the first option's year-by-year rent table, when it prices one
   _aiRenewals: [], // any additional options beyond the first (rare)
   asg_tenant_name: '', asg_contact_name: '', asg_email: '', asg_email_2: '', asg_effective_date: '',
   ab_start: '', ab_months: '', ab_kind: 'free', ab_value: '', ab_note: '',
   _aiAbatements: [], // any additional abatement windows beyond the first (rare)
   storage_path: null, addendum_text: null, extraction_raw: null, _rentFlag: null, _fromAI: false,
+  _superseded: [], _termFlag: null, _mismatch: [], _brief: '',
 });
 
+// Why the rent schedule needs a human eye. The banner used to say "$/SF" no matter the
+// reason, which was simply wrong for a model-math divergence and would be wrong again for a
+// rider whose only rent figures are quotations of the clause it replaces.
+const RENT_FLAG_MSG = {
+  missing_sqft_for_psf: 'Some amounts were read from a $/SF rate — double-check them against the addendum before saving.',
+  model_math_divergence: 'The amounts here were recomputed from the rates in the document and differ from what the AI first wrote — check them against the addendum.',
+  all_rent_rows_superseded: 'Every rent figure in this rider looks like a quotation of the clause it replaces, so none was applied. If the rider does set a new rent, enter it below.',
+  _default: 'Double-check these amounts against the addendum before saving.',
+};
+
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
+
+// Is this rent step worth keeping? A plain step carries a dollar amount. A PERCENT (or CPI)
+// step carries no dollars at all — buildEscalations → computeEscalatedRent prices it off the
+// prior rent when it's applied — so it qualifies on its type + value instead. Used by intake,
+// the save mapping and canSave alike, so the three can't disagree about what a step is.
+// Accepts both the AI's shape (numbers) and the form's (strings).
+const stepIsUsable = (s) => {
+  if (!s) return false;
+  if (s.new_base_rent !== '' && s.new_base_rent != null) return true;
+  const t = s.escalation_type;
+  return (t === 'percent' || t === 'cpi') && s.escalation_value !== '' && s.escalation_value != null && Number(s.escalation_value) > 0;
+};
 
 // Primary kind stored on the addendum row (for the History badge). An addendum can
 // do several things; this is just the headline. 'assignment' requires migration 0035.
@@ -45,7 +70,7 @@ function primaryKind(f) {
   return 'other';
 }
 
-export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }) {
+export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, currentTermEnd }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
@@ -60,7 +85,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
 
   // rent-step list editing
   const setStep = (i, k) => (e) => setForm((f) => ({ ...f, rentSteps: f.rentSteps.map((s, j) => (j === i ? { ...s, [k]: e.target.value } : s)) }));
-  const addStep = () => setForm((f) => ({ ...f, rentSteps: [...f.rentSteps, { effective_date: '', new_base_rent: '' }] }));
+  const addStep = () => setForm((f) => ({ ...f, rentSteps: [...f.rentSteps, { effective_date: '', new_base_rent: '', escalation_type: 'manual', escalation_value: '' }] }));
   const removeStep = (i) => setForm((f) => ({ ...f, rentSteps: f.rentSteps.filter((_, j) => j !== i) }));
 
   const refresh = () => {
@@ -82,14 +107,31 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
     if (f.fx_extension && f.new_termination_date) changes.extensionEnd = f.new_termination_date;
     if (f.fx_rent) {
       changes.escalations = (f.rentSteps || [])
-        .filter((s) => s.new_base_rent !== '' && s.new_base_rent != null)
-        .map((s) => ({ effective_date: s.effective_date || f.amendment_date || null, escalation_type: 'manual', escalation_value: null, new_base_rent: Number(s.new_base_rent) }));
+        .filter(stepIsUsable)
+        .map((s) => {
+          const pct = s.escalation_type === 'percent' || s.escalation_type === 'cpi';
+          return {
+            effective_date: s.effective_date || f.amendment_date || null,
+            escalation_type: pct ? s.escalation_type : 'manual',
+            escalation_value: pct ? numOrNull(s.escalation_value) : null,
+            // A percent step's dollars are computed at apply time from the prior rent —
+            // never carry a stale figure here or it would win over the formula.
+            new_base_rent: pct ? null : Number(s.new_base_rent),
+          };
+        });
     }
     if (f.fx_option) {
-      const primary = { option_label: f.opt_label || null, term_months: numOrNull(f.opt_term_months), new_rent: numOrNull(f.opt_new_rent), annual_escalation_pct: numOrNull(f.opt_annual_pct), notice_by_date: f.opt_notice_by || null };
+      // rent_schedule (an option priced year by year) rides along untouched — it isn't
+      // editable on this form, but dropping it would lose the whole option rent table.
+      const primary = {
+        option_label: f.opt_label || null, term_months: numOrNull(f.opt_term_months), new_rent: numOrNull(f.opt_new_rent),
+        annual_escalation_pct: numOrNull(f.opt_annual_pct), notice_by_date: f.opt_notice_by || null,
+        rent_schedule: f._optSchedule || [],
+      };
       changes.renewals = [primary, ...(f._aiRenewals || []).map((r) => ({
         option_label: r.option_label ?? null, term_months: r.term_months ?? null, new_rent: r.new_rent ?? null,
         annual_escalation_pct: r.annual_escalation_pct ?? null, notice_by_date: r.notice_by_date ?? null,
+        rent_schedule: Array.isArray(r.rent_schedule) ? r.rent_schedule : [],
       }))];
     }
     if (f.fx_assignment && f.asg_tenant_name) {
@@ -142,14 +184,32 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
   async function intake(getExtract) {
     setBusy(true); setErr('');
     try {
-      const { fields, addendum_text } = await getExtract();
+      const { fields, addendum_text, storagePath } = await getExtract();
       const asg = fields.assignment || null;
 
       // Rent steps: the opening base rent + every later period, as dated steps.
+      // A PERCENT step ("then 3% each year") carries no dollar figure — it's priced
+      // downstream off the prior rent by computeEscalatedRent — so it must be kept on its
+      // type + value, not on new_base_rent. Requiring a dollar amount here silently dropped
+      // every percent step the extractor found (the demo mock's own canned rider is a live
+      // reproduction: its summary promises a 3% bump the form never showed).
       const steps = [];
-      if (fields.new_base_rent != null) steps.push({ effective_date: fields.new_base_rent_effective_date || fields.amendment_date || '', new_base_rent: String(fields.new_base_rent) });
+      if (fields.new_base_rent != null) {
+        steps.push({
+          effective_date: fields.new_base_rent_effective_date || fields.amendment_date || '',
+          new_base_rent: String(fields.new_base_rent),
+          escalation_type: 'manual',
+          escalation_value: '',
+        });
+      }
       (fields.escalations || []).forEach((e) => {
-        if (e.new_base_rent != null) steps.push({ effective_date: e.effective_date || '', new_base_rent: String(e.new_base_rent) });
+        if (!stepIsUsable(e)) return;
+        steps.push({
+          effective_date: e.effective_date || '',
+          new_base_rent: e.new_base_rent != null ? String(e.new_base_rent) : '',
+          escalation_type: e.escalation_type === 'percent' || e.escalation_type === 'cpi' ? e.escalation_type : 'manual',
+          escalation_value: e.escalation_value != null ? String(e.escalation_value) : '',
+        });
       });
       const opts = fields.renewal_options || [];
       const first = opts[0] || null;
@@ -177,6 +237,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
         opt_new_rent: first?.new_rent ?? '',
         opt_annual_pct: first?.annual_escalation_pct ?? '',
         opt_notice_by: first?.notice_by_date || '',
+        _optSchedule: Array.isArray(first?.rent_schedule) ? first.rent_schedule : [],
         _aiRenewals: opts.slice(1),
         fx_assignment: !!(asg && asg.is_assignment && asg.new_tenant_name),
         asg_tenant_name: asg?.new_tenant_name || '',
@@ -195,9 +256,14 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
         est_camtax: estCamTax != null ? String(estCamTax) : '',
         est_roof: fields.est_roof_annual != null ? String(fields.est_roof_annual) : '',
         est_quote: fields.est_quote || '',
+        storage_path: storagePath || f.storage_path || null,
         addendum_text: addendum_text || null,
         extraction_raw: fields || null,
         _rentFlag: fields.rent_schedule_flag || null,
+        _superseded: Array.isArray(fields.superseded_rent) ? fields.superseded_rent : [],
+        _termFlag: fields.term_extension_flag || null,
+        _mismatch: Array.isArray(fields.extraction_mismatch) ? fields.extraction_mismatch : [],
+        _brief: fields.analysis_brief || '',
         _fromAI: true,
       }));
       setMode('manual'); // the review form (pre-filled)
@@ -208,10 +274,19 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
   const [showPaste, setShowPaste] = useState(false);
   const onFile = (e) => {
     const file = e.target.files?.[0];
-    if (file) intake(async () => extractAddendum({ storagePath: await uploadDoc(file), squareFootage }));
+    // Return the storage path alongside the extraction so `intake` can carry it into the
+    // form — until now it was uploaded and then thrown away, so every saved rider had
+    // storage_path null and the document itself was unreachable from its record. Threaded
+    // through the return value (rather than a setForm before intake) so a failed read can't
+    // strand a path on a form that's about to be reset.
+    if (file) intake(async () => {
+      const storagePath = await uploadDoc(file);
+      const res = await extractAddendum({ storagePath, squareFootage, currentTermEnd });
+      return { ...res, storagePath };
+    });
     e.target.value = '';
   };
-  const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim(), squareFootage })); };
+  const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim(), squareFootage, currentTermEnd })); };
 
   const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment || form.fx_abatement || form.fx_estimate;
   const canSave =
@@ -220,7 +295,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
     (!form.fx_option || (form.opt_term_months !== '' || form.opt_new_rent !== '' || form.opt_annual_pct !== '')) &&
     (!form.fx_assignment || !!form.asg_tenant_name) &&
     (!form.fx_abatement || (!!form.ab_start && form.ab_months !== '')) &&
-    (!form.fx_rent || (form.rentSteps || []).some((s) => s.new_base_rent !== '' && s.new_base_rent != null));
+    (!form.fx_rent || (form.rentSteps || []).some(stepIsUsable));
 
   return (
     <div>
@@ -316,6 +391,17 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
                 </div>
               )}
 
+              {/* The analyst read the whole rider; the form-filler works to a fixed shape. When
+                  the two disagree, say so — a change the cards can't hold must never vanish. */}
+              {(form._mismatch || []).length > 0 && (
+                <p className="note-msg warn" style={{ marginBottom: 12 }}>
+                  ⚠ The AI analyst read the whole rider and found <strong>{mismatchPhrase(form._mismatch)}</strong>, but{' '}
+                  {form._mismatch.length === 1 ? 'it was' : 'they were'} not captured below. Open{' '}
+                  <em>the AI analyst's notes</em> at the bottom to see what it read, then tick the matching card and enter{' '}
+                  {form._mismatch.length === 1 ? 'it' : 'them'} by hand before saving.
+                </p>
+              )}
+
               <div className="field-grid">
                 <label className="form-field" style={{ marginBottom: 0 }}><span>Label</span><input className="text-input" placeholder="First Amendment" value={form.label} onChange={set('label')} /></label>
                 <label className="form-field" style={{ marginBottom: 0 }}><span>Dated</span><input className="text-input" type="date" value={form.amendment_date} onChange={set('amendment_date')} /></label>
@@ -326,30 +412,74 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
                 <div className="field-grid">
                   <label className="form-field" style={{ marginBottom: 0 }}><span>New termination date</span><input className="text-input" type="date" value={form.new_termination_date} onChange={set('new_termination_date')} /></label>
                 </div>
+                {/* A rider often states the extension as a LENGTH ("an additional five (5) years")
+                    and prints an end date that's wrong, or impossible — Denny's says "April 31".
+                    We compute old end + N months and say when the two disagree. */}
+                {form._termFlag && (
+                  <p className={form._termFlag.reason === 'computed_from_length' ? 'muted' : 'note-msg warn'} style={{ fontSize: 12.5, marginTop: 8 }}>
+                    {form._termFlag.reason === 'computed_from_length'
+                      ? `Computed from “${form._termFlag.months} months” added to the current end${form._termFlag.currentEnd ? ` (${fmtDate(form._termFlag.currentEnd)})` : ''} — the rider states a length, not a usable date.`
+                      : `⚠ The rider extends by ${form._termFlag.months} months, which lands on ${fmtDate(form._termFlag.computed)} — but the date it prints is ${fmtDate(form._termFlag.stated)}. Check which is right before saving.`}
+                  </p>
+                )}
               </EffectCard>
 
               {/* Changes the rent */}
               <EffectCard on={form.fx_rent} onToggle={toggle('fx_rent')} title="Changes the rent" hint="One row per rent step. Amounts are ANNUAL base rent.">
                 {form._rentFlag && (
-                  <p className="note-msg warn" style={{ marginBottom: 8 }}>
-                    ⚠ Some amounts were read from a $/SF rate — double-check them against the addendum before saving.
+                  <p className="note-msg warn" style={{ marginBottom: 8 }}>⚠ {RENT_FLAG_MSG[form._rentFlag.reason] || RENT_FLAG_MSG._default}</p>
+                )}
+                {/* A rider recites the clause it replaces. Those rows are recognized and left
+                    OUT of the schedule — say so out loud rather than dropping them silently. */}
+                {(form._superseded || []).length > 0 && (
+                  <p className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
+                    This rider quotes {form._superseded.length === 1 ? 'a prior rent it replaces' : 'prior rents it replaces'} — not applied:{' '}
+                    {form._superseded.map((s, i) => (
+                      <span key={i}>
+                        {i > 0 && ' · '}
+                        {s.annual != null ? money(s.annual) : '—'}{s.effective_date ? ` from ${fmtDate(s.effective_date)}` : ''}
+                      </span>
+                    ))}.
                   </p>
                 )}
                 <div className="table-wrap">
                   <table style={{ minWidth: 0 }}>
-                    <thead><tr><th>Effective date</th><th className="num">Annual base rent ($)</th><th></th></tr></thead>
+                    <thead><tr><th>Effective date</th><th>Type</th><th className="num">Amount</th><th></th></tr></thead>
                     <tbody>
-                      {(form.rentSteps || []).map((s, i) => (
-                        <tr key={i}>
-                          <td><input className="text-input" type="date" value={s.effective_date} onChange={setStep(i, 'effective_date')} /></td>
-                          <td className="num"><input className="text-input num" type="number" step="any" value={s.new_base_rent} onChange={setStep(i, 'new_base_rent')} /></td>
-                          <td className="num"><button type="button" className="icon-btn danger-btn" title="Remove step" onClick={() => removeStep(i)}>✕</button></td>
-                        </tr>
-                      ))}
-                      {(form.rentSteps || []).length === 0 && <tr><td colSpan={3} className="muted" style={{ fontSize: 12.5 }}>No steps — add one.</td></tr>}
+                      {(form.rentSteps || []).map((s, i) => {
+                        const pct = s.escalation_type === 'percent' || s.escalation_type === 'cpi';
+                        return (
+                          <tr key={i}>
+                            <td><input className="text-input" type="date" value={s.effective_date} onChange={setStep(i, 'effective_date')} /></td>
+                            <td>
+                              <select className="text-input" value={s.escalation_type || 'manual'} onChange={setStep(i, 'escalation_type')}>
+                                <option value="manual">Amount ($/yr)</option>
+                                <option value="percent">+% per step</option>
+                              </select>
+                            </td>
+                            {/* A percent step has no dollar figure of its own — it's priced from the
+                                rent in effect just before it, when the addendum is applied. */}
+                            <td className="num">
+                              {pct ? (
+                                <input className="text-input num" type="number" step="any" placeholder="e.g. 3" value={s.escalation_value} onChange={setStep(i, 'escalation_value')} />
+                              ) : (
+                                <input className="text-input num" type="number" step="any" value={s.new_base_rent} onChange={setStep(i, 'new_base_rent')} />
+                              )}
+                            </td>
+                            <td className="num"><button type="button" className="icon-btn danger-btn" title="Remove step" onClick={() => removeStep(i)}>✕</button></td>
+                          </tr>
+                        );
+                      })}
+                      {(form.rentSteps || []).length === 0 && <tr><td colSpan={4} className="muted" style={{ fontSize: 12.5 }}>No steps — add one.</td></tr>}
                     </tbody>
                   </table>
                 </div>
+                {(form.rentSteps || []).some((s) => s.escalation_type === 'percent' || s.escalation_type === 'cpi') && (
+                  <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    A <strong>+% per step</strong> row is computed from the rent in effect just before it — enter the
+                    percent, not a dollar figure.
+                  </p>
+                )}
                 <button type="button" className="ghost" style={{ marginTop: 6 }} onClick={addStep}>+ Add rent step</button>
               </EffectCard>
 
@@ -363,6 +493,13 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
                   <label className="form-field" style={{ marginBottom: 0 }}><span>or +%/yr</span><input className="text-input num" type="number" step="any" placeholder="e.g. 5" value={form.opt_annual_pct} onChange={set('opt_annual_pct')} /></label>
                   <label className="form-field" style={{ marginBottom: 0 }}><span>Notice by</span><input className="text-input" type="date" value={form.opt_notice_by} onChange={set('opt_notice_by')} /></label>
                 </div>
+                {(form._optSchedule || []).length > 1 && (
+                  <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    This option is priced year by year — {form._optSchedule.length} steps from {money(form._optSchedule[0].annual)}/yr
+                    to {money(form._optSchedule[form._optSchedule.length - 1].annual)}/yr. They're saved as pending-renewal steps and
+                    only take effect if you confirm the option.
+                  </p>
+                )}
                 {(form._aiRenewals || []).length > 0 && (
                   <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>+ {form._aiRenewals.length} more option{form._aiRenewals.length > 1 ? 's' : ''} the AI found will also be added.</p>
                 )}
@@ -426,6 +563,17 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage }
                 <span>Summary / note</span>
                 <input className="text-input" value={form.summary} onChange={set('summary')} placeholder="e.g. Extends term 5 years and adds a renewal option" />
               </div>
+
+              {form._brief && (
+                <details style={{ marginTop: 12 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12.5 }}>Read the AI analyst's notes</summary>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    What the AI understood from reading the whole rider — including which clauses it merely quotes.
+                    Check it against the cards above before saving.
+                  </div>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 6, fontFamily: 'inherit' }}>{stripVerdicts(form._brief)}</pre>
+                </details>
+              )}
 
               <div className="row" style={{ marginTop: 14 }}>
                 <button type="submit" disabled={!canSave || save.isPending}>{save.isPending ? 'Applying…' : 'Save & apply'}</button>

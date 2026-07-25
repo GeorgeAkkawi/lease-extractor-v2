@@ -1191,8 +1191,16 @@ export const deleteAddendum = (id) =>
 
 // One-time AI extraction of a rider/amendment (paid Claude call). Mirrors
 // extractContract: accepts pasted text or an uploaded file (PDF/scan/photo/Word).
-export async function extractAddendum({ text, storagePath, squareFootage }) {
-  const { fields, full_text } = await invokeFunction('extract-addendum', { text, storage_path: storagePath, square_footage: squareFootage ?? null });
+// currentTermEnd lets the extractor turn an extension stated as a LENGTH ("an additional
+// five (5) years") into a real date — and cross-check the one the rider prints, which is
+// sometimes impossible (Denny's says "April 31").
+export async function extractAddendum({ text, storagePath, squareFootage, currentTermEnd }) {
+  const { fields, full_text } = await invokeFunction('extract-addendum', {
+    text,
+    storage_path: storagePath,
+    square_footage: squareFootage ?? null,
+    current_term_end: currentTermEnd || null,
+  });
   return { fields: fields || {}, addendum_text: full_text || text || null };
 }
 
@@ -1221,7 +1229,15 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
   }
 
   // Escalations contributed by the rider (incl. the extension's opening rent above).
-  const escRows = buildEscalations(lease?.base_rent, escInputs);
+  // A rider that prices its rent by lease YEAR ("Year 1 … Year 3") returns undated steps
+  // carrying months_from_start; they need an anchor or buildEscalations drops them. In
+  // order: the operative rent's own start date when one is printed; else — only for a
+  // committed EXTENSION — the term end the new period begins at; else null, i.e. the
+  // drop-the-row behaviour we had before. NEVER the amendment date: that's the signing
+  // date, the same trap extract-lease already warns about.
+  const datedStart = escInputs.find((e) => e && e.effective_date)?.effective_date || null;
+  const anchor = datedStart || (changes.extensionEnd ? fromEnd : null);
+  const escRows = buildEscalations(lease?.base_rent, escInputs, anchor);
   if (escRows.length) {
     await rows(
       supabase.from('rent_escalations').insert(
@@ -1272,6 +1288,21 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
         renRows.map((r) => ({ ...r, lease_id: leaseId, owner_id: uid, status: 'pending', addendum_id: addendum.id }))
       )
     );
+    // An option this rider prices YEAR BY YEAR becomes dated, gated "pending renewal" rent
+    // steps — the same treatment a lease import gives them. The window starts after the
+    // term end this rider leaves behind (a rider often extends the term in the very same
+    // document, so it must be the NEW end, not the old one), and the rows just inserted are
+    // passed as existingSteps so the ±45-day guard can't double-book a step the rider
+    // already spelled out.
+    const optionTermEnd = changes.extensionEnd || lease?.lease_termination_date || null;
+    const optionSteps = buildRenewalScheduleSteps(changes.renewals, optionTermEnd, escRows, today);
+    if (optionSteps.length) {
+      await rows(
+        supabase.from('rent_escalations').insert(
+          optionSteps.map((e) => ({ ...e, lease_id: leaseId, owner_id: uid, status: 'scheduled', addendum_id: addendum.id }))
+        )
+      );
+    }
   }
 
   // Rent abatements the rider grants (free / reduced base-rent windows). Term-neutral:

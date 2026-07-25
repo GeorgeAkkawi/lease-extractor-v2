@@ -2,7 +2,7 @@
 // form-fillers captured. This is the universal safety net for hard-to-read leases:
 // a term the strong reader saw but the rigid form dropped must raise a flag; the common
 // healthy case (they agree) and the ambiguous case (unclear) must NEVER flag.
-import { parseAnalystVerdicts, extractionMismatches, MISMATCH_LABELS } from '../../../supabase/functions/_shared/analystVerdicts.js';
+import { parseAnalystVerdicts, extractionMismatches, riderMismatches, MISMATCH_LABELS } from '../../../supabase/functions/_shared/analystVerdicts.js';
 
 describe('parseAnalystVerdicts', () => {
   test('parses a well-formed closing VERDICTS line', () => {
@@ -173,5 +173,119 @@ describe('extractionMismatches', () => {
       abatements: [],
     });
     expect(out).toEqual([]);
+  });
+});
+
+// ── Riders / addendums ──────────────────────────────────────────────────────────
+// A rider's VERDICTS line carries different keys (an amendment can extend the term or
+// assign the lease; a lease can't), and "the rent was captured" means something else:
+// a rider usually sets ONE new rent on new_base_rent, not an escalations array. Hence
+// riderMismatches rather than a reuse of extractionMismatches.
+describe('rider VERDICTS + riderMismatches', () => {
+  const RIDER_BRIEF = [
+    '• WHAT THIS DOCUMENT CHANGES vs WHAT IT MERELY QUOTES — Number 4 is recited, then replaced.',
+    '• TERM — extended by an additional five (5) years; the printed date "April 31, 2033" is malformed.',
+    '',
+    'VERDICTS: rent_change=yes; superseded_quote=yes; term_extension=yes; extension_months=60; ' +
+      'new_end_date=none; renewal_options=no; assignment=no; abatement=no; expense_estimate=no',
+  ].join('\n');
+
+  test('parses the rider keys, including a numeric extension_months', () => {
+    const v = parseAnalystVerdicts(RIDER_BRIEF);
+    expect(v.rent_change).toBe('yes');
+    expect(v.superseded_quote).toBe('yes');
+    expect(v.term_extension).toBe('yes');
+    expect(v.extension_months).toBe('60');
+    expect(Number(v.extension_months)).toBe(60);
+    expect(v.new_end_date).toBe('none');
+    expect(v.assignment).toBe('no');
+  });
+
+  test('parses a printed new_end_date', () => {
+    const v = parseAnalystVerdicts('VERDICTS: term_extension=yes; extension_months=none; new_end_date=2033-04-30');
+    expect(v.new_end_date).toBe('2033-04-30');
+  });
+
+  test('the healthy Denny\'s case: rent + term captured → no flags', () => {
+    const out = riderMismatches({
+      verdicts: parseAnalystVerdicts(RIDER_BRIEF),
+      newBaseRent: 151140,
+      escalations: [],
+      newTerminationDate: '2033-04-30',
+      renewalOptions: [],
+      assignment: null,
+      abatements: [],
+      expenseEstimate: null,
+    });
+    expect(out).toEqual([]);
+  });
+
+  test('a rent change the form dropped is flagged — even with an empty escalations array', () => {
+    // The exact failure mode a lease's escalations-only check would MISS.
+    const out = riderMismatches({
+      verdicts: parseAnalystVerdicts(RIDER_BRIEF),
+      newBaseRent: null,
+      escalations: [],
+      newTerminationDate: '2033-04-30',
+    });
+    expect(out).toEqual(['rent_change']);
+  });
+
+  test('a rider whose rent lands only as steps still counts as captured', () => {
+    const out = riderMismatches({
+      verdicts: { rent_change: 'yes' },
+      newBaseRent: null,
+      escalations: [{ effective_date: '2026-01-01', new_base_rent: 60000 }],
+    });
+    expect(out).toEqual([]);
+  });
+
+  test('a percent-only step counts as a captured rent change', () => {
+    const out = riderMismatches({
+      verdicts: { rent_change: 'yes' },
+      newBaseRent: null,
+      escalations: [{ effective_date: '2028-01-01', escalation_type: 'percent', escalation_value: 3, new_base_rent: null }],
+    });
+    expect(out).toEqual([]);
+  });
+
+  test('a dropped extension, option, assignment and estimate all flag', () => {
+    const out = riderMismatches({
+      verdicts: {
+        rent_change: 'no', term_extension: 'yes', renewal_options: 'yes',
+        assignment: 'yes', abatement: 'yes', expense_estimate: 'yes',
+      },
+      newBaseRent: null,
+      escalations: [],
+      newTerminationDate: null,
+      renewalOptions: [],
+      assignment: null,
+      abatements: [],
+      expenseEstimate: null,
+    });
+    expect(out).toEqual(['term_extension', 'renewal_options', 'assignment', 'abatement', 'expense_estimate']);
+  });
+
+  test('an assignment read that returned a tenant is NOT flagged', () => {
+    const out = riderMismatches({
+      verdicts: { assignment: 'yes' },
+      assignment: { is_assignment: true, new_tenant_name: 'D & D Dental, LLC' },
+    });
+    expect(out).toEqual([]);
+  });
+
+  test('never cries wolf: unclear / no / a missing VERDICTS line all stay silent', () => {
+    const empty = { newBaseRent: null, escalations: [], newTerminationDate: null, renewalOptions: [], assignment: null, abatements: [], expenseEstimate: null };
+    expect(riderMismatches({ verdicts: { rent_change: 'unclear', term_extension: 'unclear', assignment: 'unclear' }, ...empty })).toEqual([]);
+    expect(riderMismatches({ verdicts: { rent_change: 'no', term_extension: 'no' }, ...empty })).toEqual([]);
+    expect(riderMismatches({ verdicts: parseAnalystVerdicts('a brief with no verdicts line'), ...empty })).toEqual([]);
+    expect(riderMismatches({ verdicts: {}, ...empty })).toEqual([]);
+  });
+
+  test('every rider code has a human label', () => {
+    for (const code of ['rent_change', 'term_extension', 'assignment', 'expense_estimate']) {
+      expect(typeof MISMATCH_LABELS[code]).toBe('string');
+      expect(MISMATCH_LABELS[code].length).toBeGreaterThan(0);
+    }
   });
 });

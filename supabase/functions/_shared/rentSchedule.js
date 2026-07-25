@@ -19,6 +19,27 @@ export function annualRentFrom(amount, period, sqft) {
   }
 }
 
+// Add N calendar months to an ISO date (yyyy-mm-dd), clamping end-of-month. Same math as
+// the frontend's renewals.addMonths — duplicated (not imported) because an edge function
+// can't reach into src/. Used to derive a rider's new term end from an extension stated as
+// a LENGTH ("an additional five (5) years") when the document prints no usable end date.
+export function addMonths(iso, months) {
+  if (typeof iso !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const n = Number(months);
+  if (!isFinite(n)) return null;
+  const d = new Date(iso + 'T12:00:00');
+  if (isNaN(d.getTime())) return null;
+  // A calendar-impossible date is well-formed enough for the regex AND for V8's lenient
+  // parser, which quietly rolls it forward ("2033-04-31" → May 1). Riders really do print
+  // those — Denny's says "April 31, 2033" — so reject rather than return a plausible lie.
+  const [yy, mm, dd] = iso.split('-').map(Number);
+  if (d.getFullYear() !== yy || d.getMonth() + 1 !== mm || d.getDate() !== dd) return null;
+  const targetDay = d.getDate();
+  d.setMonth(d.getMonth() + Math.trunc(n));
+  if (d.getDate() < targetDay) d.setDate(0); // overflowed → last day of the intended month
+  return d.toISOString().slice(0, 10);
+}
+
 // Estimated additional-rent charges (CAM / property tax / roof) some leases state as a
 // specific figure the tenant pays during the year — "estimated CAM charges of $4.50 per
 // square foot per annum", "estimated monthly tax charges of $833.33". The model reads each
@@ -263,7 +284,24 @@ export function rebuildRentSchedule({ rentSchedule, sqft, modelEscalations, esca
     const steps = rows.slice(1).filter((r) => r.date);
     if (steps.length) {
       steps.forEach((r) => crossCheck(r.date, r.annual));
-      escalations = steps.map((r) => ({
+      // A "step" that doesn't change the rent isn't a step. An amendment routinely recites
+      // the clause it replaces ("the rent reads $12,595 beginning June 1 … this will be
+      // changed to $12,595 beginning July 1"), and a lease often restates the same figure at
+      // a second date; either way the model returns two dated rows carrying the SAME amount.
+      // Written into rent_escalations that becomes a phantom step — harmless when the amounts
+      // match, but the identical shape with a CHANGED rent is what makes it dangerous, so we
+      // drop any row within a cent of the last KEPT amount (a 1¢ move is still a real step).
+      // Runs AFTER crossCheck so the divergence flag sees exactly what it saw before.
+      const kept = [];
+      let last = baseRent;
+      for (const r of steps) {
+        if (last != null && Math.abs(r.annual - last) < 0.01) continue;
+        kept.push(r);
+        last = r.annual;
+      }
+      // [] (not null) when every step was a no-op: null means "we priced nothing, keep the
+      // model's rows"; [] means "we priced them and there are none". Callers depend on that.
+      escalations = kept.map((r) => ({
         effective_date: r.date,
         escalation_type: 'manual',
         escalation_value: null,

@@ -580,13 +580,32 @@ function demoExtractAddendum() {
       est_tax_annual: null,
       est_roof_annual: null,
       est_quote: 'Real Estate Taxes & CAM: $1,500.00',
+      // The rider recites the rent clause it replaces — the defining habit of the genre,
+      // and the shape that used to arrive as a second live rent period. Recognized and
+      // reported, never applied.
+      superseded_rent: [{ effective_date: `${y - 3}-01-01`, amount: 10000, period: 'per_month', annual: 120000 }],
+      analysis_brief: [
+        '• WHAT THIS DOCUMENT CHANGES vs WHAT IT MERELY QUOTES — Paragraph 2 recites the prior',
+        `  rent clause ("$10,000.00 per month beginning January 1, ${y - 3}"); that is the OLD rent and`,
+        `  does not govern. The operative rent is $11,000.00 per month effective January 1, ${y}.`,
+        `• TERM — extended through December 31, ${y + 5} (a printed date; no length stated).`,
+        `• RENT — $11,000.00/month from January 1, ${y}, rising three percent (3%) on January 1, ${y + 2}.`,
+        '• RENEWAL / EXTENSION OPTIONS THIS RIDER GRANTS — none.',
+        '• TENANT — not assigned; the tenant is unchanged.',
+        '• OTHER — Real Estate Taxes & CAM stated at $1,500.00 per month.',
+        '',
+        'VERDICTS: rent_change=yes; superseded_quote=yes; term_extension=yes; extension_months=none; ' +
+          `new_end_date=${newEnd}; renewal_options=no; assignment=no; abatement=no; expense_estimate=yes`,
+      ].join('\n'),
       summary: `Extends the term through ${fmtDate(newEnd)} at $132,000/yr with a 3% bump in ${y + 2}.`,
     },
     full_text: [
       'FIRST AMENDMENT TO COMMERCIAL LEASE',
       `This amendment, dated January 1, ${y}, modifies the lease between the parties.`,
       `1. Term. The Lease term is extended through December 31, ${y + 5}.`,
-      `2. Base Rent. Effective January 1, ${y}, annual base rent is $132,000.00, payable monthly.`,
+      `2. Base Rent. Paragraph 4 of the Lease currently reads "Monthly Base Rent shall be $10,000.00`,
+      `   beginning January 1, ${y - 3}." This will be changed to $11,000.00 per month effective`,
+      `   January 1, ${y} (annual base rent $132,000.00).`,
       `3. Escalation. Base rent increases three percent (3%) on January 1, ${y + 2}.`,
       '4. Real Estate Taxes and Additional Rent. As described in the first Addendum.',
       '',

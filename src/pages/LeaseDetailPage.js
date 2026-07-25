@@ -488,7 +488,7 @@ export default function LeaseDetailPage() {
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           Add each amendment on top of the original lease — the app works out the rent and term you're in <strong>today</strong>.
         </p>
-        <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} squareFootage={lease.square_footage} />
+        <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} squareFootage={lease.square_footage} currentTermEnd={lease.lease_termination_date} />
       </div>
 
       {showPanel('lease_receivables') && (
