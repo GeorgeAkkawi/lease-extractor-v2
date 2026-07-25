@@ -820,13 +820,21 @@ textarea.text-input{resize:vertical;min-height:90px}
 /* login */
 .login-wrap{max-width:380px;margin:12vh auto;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:30px;box-shadow:var(--shadow)}
 .login-wrap h1{font-size:34px;margin-bottom:6px}
-/* The mark + wordmark on one optical line (login, 2FA, password reset).
-   Centring on the LINE box would sit the tile low: "Amlak" has no descenders, so
-   the word's own band is cap-top to baseline and the empty descender space below
-   drags the midpoint down. The nudge is half that descender, in em, so it holds
-   if the heading size changes. */
-.brand-lockup{display:flex;align-items:center;gap:12px}
-.brand-lockup .brand-mark{flex-shrink:0;transform:translateY(-0.08em)}
+/* The mark + wordmark on one optical line, centred on the card (login, 2FA,
+   password reset).
+   Anchor on the BASELINE, not the line box. Cormorant carries deep descenders,
+   so at line-height 1.2 the word's ink sits high in its line box — centring the
+   tile there dropped it ~10px below the letters. `align-items:baseline` puts the
+   tile's bottom edge exactly on the baseline instead, which is a real
+   typographic reference and doesn't move if the line-height ever changes. From
+   there the tile only needs to straddle the word's ink symmetrically: half the
+   difference between the 30px tile and the word's ~24.65px ink height, which is
+   2.67px — 0.08em at this size, so it holds if the heading is resized.
+   The pair is centred as one unit and the line under it follows, so the card's
+   header reads as a masthead over the left-aligned form. */
+.brand-lockup{display:flex;align-items:baseline;justify-content:center;gap:12px}
+.brand-lockup .brand-mark{flex-shrink:0;transform:translateY(0.08em)}
+.brand-lockup + .muted{text-align:center}
 
 /* ---- loading skeletons (shimmer placeholders) ---- */
 .skeleton{position:relative;overflow:hidden;background:var(--panel-2);border:1px solid var(--hair)}

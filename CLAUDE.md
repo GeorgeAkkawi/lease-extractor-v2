@@ -75,6 +75,48 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-25** — **The sign-in mark is now genuinely square on the wordmark (yesterday's nudge had the right
+  size, the wrong sign AND the wrong anchor) and the lockup is centred on the card** (George: *"lineup and center
+  the logo on the log in page with the word AMLAK"* — the second time he's raised the alignment, correctly).
+  Deployed: frontend Cloudflare version `a974d4db`, demo worker `e1371040`. **CSS only — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, nothing destructive.** Tests **663/663** (unchanged — no test
+  asserts the auth heading's markup).
+  - **Measured, and the measurement contradicted the code.** Drove the built app in a real browser and read the
+    geometry off the rendered glyphs (baseline via a zero-width `vertical-align:baseline` probe; ink height via
+    canvas `measureText().actualBoundingBoxAscent`, so it's the face's real metrics, not a guess). The tile sat
+    **9.6px below** the centre of the word's ink band — overshooting 12.28 under the baseline while ending 6.93
+    *short* of the letter tops. Visibly low, exactly as George said.
+  - **Why yesterday's fix didn't hold.** The rule was `align-items:center` + `translateY(-0.08em)`. The 0.08em is
+    right and its derivation was right — half the difference between the 30px tile and the word's ~24.65px ink —
+    but that figure only means anything measured **from the baseline**, and the rule centred on the **line box**
+    then pushed the tile *up*. Cormorant carries deep descenders, so at line-height 1.2 the ink sits high in its
+    line box and the two errors compounded instead of cancelling. The comment even said "the nudge is half that
+    descender" — the code just wasn't anchored where the comment thought it was.
+  - **The fix — anchor on the baseline, which is a real typographic reference.** `align-items:baseline` puts the
+    tile's bottom edge **exactly** on the baseline (verified: `below: 0.00` with no transform at all — proof the
+    anchor is exact rather than approximately right), and from there the tile only has to straddle the ink
+    symmetrically: `translateY(0.08em)`, the same magnitude, now downward. Re-measured: centre offset **0.05px**,
+    overshoot **2.63 above / 2.72 below**. Unlike the line-box approach it doesn't move if the heading's
+    line-height ever changes. **Four variants were measured before choosing** — a line-height:1 reset made it
+    *worse* (12.33px), and a plain `translateY(-0.362em)` on the old centring also lands at 0.02px but is a magic
+    number pinned to line-height 1.2, so it was rejected as brittle.
+  - **Centred, and the line under it follows.** `justify-content:center` centres the pair as one unit (measured
+    **0px** off the card's inner centre), and `.brand-lockup + .muted` centres the single line beneath it, so the
+    header reads as a masthead over the left-aligned form rather than a centred title above stray left-aligned
+    copy. Applies to all three auth screens — the sibling selector matches one short line on each ("Sign in to
+    continue." / "Two-factor verification" / "Set a new password for your account."), never the body copy below.
+  - **Files:** `src/App.css` (the `.brand-lockup` rules) — nothing else; the three pages' markup is untouched.
+  - **Verified:** unit **663/663** (`vitest run`); `vite build` compiles; the built app driven in a real browser
+    with the numbers above, **zero console errors**, screenshot reviewed; demo bundle grepped free of the live ref
+    `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. **George: hard-refresh (Cmd+Shift+R).**
+  - **Answered, no code needed — Chrome's "install Amlak" prompt.** That's the real app, not a different one:
+    `public/manifest.json` (added 2026-07-25 with the brand mark) declares a name, icons, `start_url` and
+    `display: standalone`, which is what makes a site installable. Installing gives it its own window with no
+    browser chrome, its own dock/home-screen icon and its own entry in the app switcher — same live account, same
+    data, nothing to sign into twice. **It is not offline-capable** (there's no service worker registered
+    anywhere in the tree — grepped), so it still needs a connection exactly like the website. Same on a phone via
+    Share → Add to Home Screen.
+
 - **2026-07-25** — **BUGFIX (same rider, next wall): saving the Denny's addendum died with `date/time field value
   out of range: "2033-04-31"` — the document prints a date that does not exist, and every date guard in the app
   waved it through because `new Date()` silently rolls it to May 1** (George: *"i got this: date/time field value
