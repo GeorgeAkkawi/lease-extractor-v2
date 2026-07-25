@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { passwordProblem } from './Login';
+import BrandMark from '../components/BrandMark';
 
 const MIN_PASSWORD = 10;
 
@@ -46,7 +47,7 @@ export default function ResetPasswordPage() {
 
   return (
     <div className="login-wrap">
-      <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}>A</span>Amlak</h1>
+      <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}><BrandMark /></span>Amlak</h1>
       {done ? (
         <>
           <p className="muted">Your password has been changed. For your security, you’ve been signed out everywhere — sign in with the new password.</p>

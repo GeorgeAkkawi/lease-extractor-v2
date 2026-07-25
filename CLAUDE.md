@@ -75,6 +75,77 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-25** — **Amlak finally has its own brand mark — the Create React App atom is gone from the browser
+  tab, the home screen, the sidebar and the login screen, and pasting amlakre.com now shows a real link-preview
+  card** (George: *"can you use claude design to come up with some cool design ideas to replace the cover photo
+  that shows up for amlak? like in the chrome browser i think its just the react native one"* — he was right, and
+  it was broader than the tab; his scoping picks via AskUserQuestion: **build several, then I pick** + **all four
+  surfaces** (tab icon · home-screen icon & manifest · in-app sidebar/login mark · link-preview card). Three design
+  rounds: round one (Seal/Plat/Stamp) rejected — *"none of those really worked for me"*; his steer — *"amlak means
+  properties in arabic maybe put a little arabic spin in there? i dont want any arabic letters persay but just an
+  inspo"* — produced four Islamic-geometry marks; he chose the Portal but *"not a fan of the goldish color on the
+  bottom … give me a couple more versions of E on the same color pallate"*; from those five he picked **#5, the
+  plain portal**). Deployed: frontend Cloudflare version `8e2f0aeb`, demo worker `27c42ef2`. **Frontend + static
+  assets only — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing destructive.**
+  Tests **623/623** (unchanged — no test asserted the literal "A"; the four render sites swapped cleanly).
+  - **What was actually broken (all three confirmed by inspection, not assumed).** `public/favicon.ico`,
+    `logo192.png` and `logo512.png` were still CRA's **cyan React atom**, dated Jun 25, never touched — that's the
+    icon in every tab, his and the beta user's. `public/manifest.json` still read `"short_name": "React App"` /
+    `"name": "Create React App Sample"` with `theme_color: "#000000"`, so an add-to-home-screen copy would have
+    been called *React App* in black. And `index.html` carried **no `og:image`**, so amlakre.com pasted into
+    iMessage/Slack as a bare link with no card — which matters now the repo is public.
+  - **The mark: a pointed archway (a portal) cut into an olive tile.** Islamic-architecture inspired per his
+    steer — the *pishtaq*, a gateway set into a flat wall — with **zero Arabic letterforms**, exactly as he asked.
+    Three shapes total (tile · arch · doorway), which is the hard ceiling for a 16px tab icon; no gradients, no
+    stroke thinner than 2 device px, no interior text. Drawn on a **32-unit grid** so one unit lands on one device
+    pixel at tab size and the same paths scale cleanly ×16 to 512. Colors are the app's own tokens — `--accent`
+    olive `#5C6B3C` field, `--panel` ivory `#FBF8F1` figure.
+  - **The brass rail is gone, and not just deleted — four other homes for the gold were built and rejected**
+    (each rendered and read back at 16px before discarding): in the doorway it went muddy against the olive; as a
+    crossbar it broke the "A" George had spotted in the shape (a letter's crossbar has to match its legs); as a
+    keystone at the crown it read as a plumb bob dangling from the apex; as a cap it flattened the arch's point,
+    which is the whole reason the silhouette reads as architecture. So the mark is olive + ivory only, and gold
+    keeps its real in-app job: *look here*.
+  - **One artwork, not two.** `public/favicon.svg` and the new `src/components/BrandMark.js` carry the **same
+    paths**, with a comment on each pointing at the other — the classic way a logo drifts is a hand-tuned favicon
+    and a separately-drawn in-app mark. Pure geometry, no `<text>` and no font: **an SVG favicon cannot load a
+    webfont**, so anything letter-shaped has to survive as paths (this is the single most common way a favicon
+    ships silently broken).
+  - **New in `public/`:** `favicon.svg` (crisp at any size, what Chrome/Edge/Firefox take) · `favicon.ico`
+    (**16/32/48 PNG-in-ICO**, Safari + legacy fallback — written by a ~30-line python3 stdlib script, since this
+    machine has no ImageMagick/rsvg/sharp; verified with `file` → *"MS Windows icon resource - 3 icons"* and by
+    parsing the directory back and checking each payload's PNG signature) · `apple-touch-icon.png` (180,
+    **square corners** — iOS applies its own mask) · `logo192.png` / `logo512.png` (replacing CRA's) ·
+    `maskable-512.png` (**a separate padded file**, mark at 62% — the full-bleed art pokes outside Android's 80%
+    safe circle, so reusing logo512 as maskable would have clipped the arch) · `og.png` (1200×630).
+  - **The rasterizer:** `node_modules/playwright-core` + system Chrome, each icon screenshotted at an exact N×N
+    viewport at `deviceScaleFactor: 1` — pixel-exact, no resampling. The **og card renders as a real HTML page**
+    in the same headless Chrome, so unlike the favicon it *can* use the actual Cormorant Garamond + Hanken
+    Grotesk: paper ground, the wordmark at 132px, a gold hairline, one line of copy, and a full-height olive band
+    on the right with the mark reversed out — so it reads instantly at chat-thumbnail size.
+  - **Edited:** `index.html` — SVG icon first with the `.ico` as fallback, apple-touch repointed off `logo192`,
+    plus `og:type/url/title/description/image(+width/height/alt)` and `twitter:card=summary_large_image`
+    (`theme-color` was already correct). `public/manifest.json` — name/short_name → **Amlak**, theme `#5C6B3C`,
+    background `#F1ECE1`, maskable entry added. `src/App.css:195` `.brand-mark` — the letter styling
+    (`color`/`font-family`/`font-weight`/`font-size`) is gone and it becomes a **30px wrapper** for the SVG, so
+    the collapsed-rail (line ~219) and ≤768px mobile (line ~836) rules keep working untouched; the olive stays
+    behind it as insurance against a blank frame. The four `<span className="brand-mark">A</span>` sites now
+    render `<BrandMark/>`: `Sidebar.js:109` · `Login.js:83` · `TwoFactorChallenge.js:58` ·
+    `ResetPasswordPage.js:50`.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles and all seven assets + the rewritten
+    manifest land in `build/`; the built app served locally and driven in a real browser — `.brand-mark` renders a
+    30×30 SVG with both paths, the SVG icon link resolves, **zero page errors**, and the mark screenshots cleanly
+    beside the Cormorant wordmark on the login card; demo bundle grepped **free of the live ref**
+    `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs with correct content-types
+    (`favicon.svg` → `image/svg+xml`, `.ico` → `image/vnd.microsoft.icon`, `og.png` → `image/png`, 1200×630).
+    **George: hard-refresh (Cmd+Shift+R) — and if the tab still shows the old atom, close that tab and open a new
+    one; Chrome caches favicons harder than pages. Then paste amlakre.com into iMessage to see the new card.**
+  - **Flags (no action needed):** ① The `.ico` carries 16/32/48 only — no 256px entry; that's the normal set and
+    every modern browser prefers the SVG anyway. ② The og card's copy reads *"Commercial leases, expenses and
+    rent. Read, tracked and reconciled."* — say the word if you'd rather it said something else, it's a one-line
+    change plus a re-render. ③ Chrome/Slack/iMessage each cache link previews independently, so an old bare-link
+    preview may persist in an existing thread even though a fresh paste shows the card.
+
 - **2026-07-24** — **A professional "Are you sure?" pop-up (with the consequences highlighted) now guards every
   destructive delete, replacing the bare browser prompt · AND Infinite Mobile's Jan–Jun ledger boxes are green
   again — they were reading ~$2.53 "under" because a stray roof actual was billed on top of the all-in estimate**

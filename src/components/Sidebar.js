@@ -6,6 +6,7 @@ import { listCorporations, listPropertiesByCorps, listLeasesByProperties } from 
 import { useAuth } from '../context/AuthContext';
 import { useChrome } from '../context/ChromeContext';
 import { usePrefetchers } from '../lib/prefetch';
+import BrandMark from './BrandMark';
 import { DocIcon, ChartIcon, ClockIcon, GridIcon, SlidersIcon, ChevronLeftIcon, SignOutIcon, SparkIcon } from './icons';
 
 const COLLAPSE_KEY = 'amlak.sidebarCollapsed';
@@ -105,7 +106,7 @@ export default function Sidebar() {
   return (
     <aside className={'sidebar' + (collapsed ? ' collapsed' : '')}>
       <div className="brand">
-        <span className="brand-mark">A</span> <span className="side-label brand-text">Amlak</span>
+        <span className="brand-mark"><BrandMark /></span> <span className="side-label brand-text">Amlak</span>
       </div>
 
       <nav className="side-nav">

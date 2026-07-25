@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import BrandMark from '../components/BrandMark';
 
 // Second step at login for users who have an authenticator-app (TOTP) factor.
 // Shown by App.js when the session is only aal1 but a verified factor exists.
@@ -54,7 +55,7 @@ export default function TwoFactorChallenge() {
 
   return (
     <div className="login-wrap">
-      <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}>A</span>Amlak</h1>
+      <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}><BrandMark /></span>Amlak</h1>
       <p className="muted">Two-factor verification</p>
       <p className="muted" style={{ fontSize: 13 }}>
         Open your authenticator app and enter the current 6-digit code for Amlak to continue.

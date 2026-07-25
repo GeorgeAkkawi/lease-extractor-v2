@@ -2,14 +2,37 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" href="/favicon.ico" />
+    <!-- SVG first for browsers that take it (crisp at every size); .ico is the
+         Safari / legacy fallback. Both are the same artwork. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#5C6B3C" />
     <meta
       name="description"
       content="Amlak — commercial property lease & financial management"
     />
-    <link rel="apple-touch-icon" href="/logo192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!-- Link preview (iMessage, Slack, WhatsApp, X) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://amlakre.com/" />
+    <meta property="og:title" content="Amlak" />
+    <meta
+      property="og:description"
+      content="Commercial leases, expenses and rent. Read, tracked and reconciled."
+    />
+    <meta property="og:image" content="https://amlakre.com/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Amlak — commercial property management" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Amlak" />
+    <meta
+      name="twitter:description"
+      content="Commercial leases, expenses and rent. Read, tracked and reconciled."
+    />
+    <meta name="twitter:image" content="https://amlakre.com/og.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
