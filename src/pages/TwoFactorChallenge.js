@@ -55,7 +55,7 @@ export default function TwoFactorChallenge() {
 
   return (
     <div className="login-wrap">
-      <h1><span className="brand-mark" style={{ display: 'inline-grid', verticalAlign: 'middle', marginRight: 10 }}><BrandMark /></span>Amlak</h1>
+      <h1 className="brand-lockup"><span className="brand-mark"><BrandMark /></span>Amlak</h1>
       <p className="muted">Two-factor verification</p>
       <p className="muted" style={{ fontSize: 13 }}>
         Open your authenticator app and enter the current 6-digit code for Amlak to continue.

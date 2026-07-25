@@ -75,6 +75,34 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-25** — **Follow-up: the mark now lines up with the "Amlak" wordmark on the sign-up / sign-in card
+  (it was hanging below the word's feet)** (George: *"line up the logo with AMLAK on the sign up page"*). Deployed:
+  frontend Cloudflare version `ea0ea2fd`, demo worker `f7174ffe`. **Frontend + CSS only — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, nothing destructive.** Tests **623/623** (unchanged — no test
+  asserts the auth heading's markup).
+  - **Measured, not eyeballed.** Drove the built app in a real browser and read the geometry: the word "Amlak"
+    occupies cap-top **117.35px → baseline 142px** (cap height 24.65 at 34px Cormorant), while the 30px tile sat
+    **120.44 → 150.44** — hanging **8.4px below the baseline**, its centre **5.8px low**. Root cause: the tile was an
+    `inline-grid` with `vertical-align:middle`, which aligns to *baseline + half the x-height* — and Cormorant's
+    x-height is small, so the box sinks. The three auth pages each carried their own copy of that inline style.
+  - **Fix — one shared class, and the nudge is derived.** New `.brand-lockup` in `App.css` (beside `.login-wrap h1`)
+    makes the heading a flex row with `align-items:center` + `gap:12px`, matching the sidebar `.brand` idiom already
+    in the file. Centring on the LINE box alone still reads low, because *"Amlak" has no descenders* — the word's real
+    band is cap-top-to-baseline and the empty descender space below drags the midpoint down — so the tile is lifted by
+    half that descender: `transform:translateY(-0.08em)`. Expressed in **em**, so it holds if the heading size ever
+    changes. Result on re-measure: tile **114.61 → 144.61**, overshooting the caps by 2.74 above and the baseline by
+    2.61 below — centre offset **−0.07px**, i.e. centred on the word to a fraction of a pixel.
+  - **Applied to all three auth screens, not just the one named** — `Login.js:83`, `TwoFactorChallenge.js:58`,
+    `ResetPasswordPage.js:50` are byte-identical lockups, so fixing one and leaving two crooked would have been worse
+    than the original bug. Each drops its inline `display/verticalAlign/marginRight` for `className="brand-lockup"`;
+    the triplicated inline styles are gone, so the three can't drift apart again. The **sidebar mark is untouched** —
+    it was already correct (its `.brand` is flex-centred, and at 23px the mismatch never showed).
+  - **Files:** `src/App.css` (`.brand-lockup`), `src/pages/{Login,TwoFactorChallenge,ResetPasswordPage}.js`.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles; the built app driven in a real browser
+    before AND after with the numbers above, **zero page errors**; demo bundle grepped free of the live ref
+    `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. **George: hard-refresh (Cmd+Shift+R) — the
+    tile now sits square on the word instead of dangling under it.**
+
 - **2026-07-25** — **Amlak finally has its own brand mark — the Create React App atom is gone from the browser
   tab, the home screen, the sidebar and the login screen, and pasting amlakre.com now shows a real link-preview
   card** (George: *"can you use claude design to come up with some cool design ideas to replace the cover photo

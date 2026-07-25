@@ -820,6 +820,13 @@ textarea.text-input{resize:vertical;min-height:90px}
 /* login */
 .login-wrap{max-width:380px;margin:12vh auto;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:30px;box-shadow:var(--shadow)}
 .login-wrap h1{font-size:34px;margin-bottom:6px}
+/* The mark + wordmark on one optical line (login, 2FA, password reset).
+   Centring on the LINE box would sit the tile low: "Amlak" has no descenders, so
+   the word's own band is cap-top to baseline and the empty descender space below
+   drags the midpoint down. The nudge is half that descender, in em, so it holds
+   if the heading size changes. */
+.brand-lockup{display:flex;align-items:center;gap:12px}
+.brand-lockup .brand-mark{flex-shrink:0;transform:translateY(-0.08em)}
 
 /* ---- loading skeletons (shimmer placeholders) ---- */
 .skeleton{position:relative;overflow:hidden;background:var(--panel-2);border:1px solid var(--hair)}
