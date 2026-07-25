@@ -13,7 +13,7 @@
 // row. With a CHANGED rent the same shape writes a false step into rent_escalations dated a
 // month early, and effective_rent then misreports that fiscal year forever.
 
-import { rebuildRentSchedule, addMonths } from '../../../supabase/functions/_shared/rentSchedule.js';
+import { rebuildRentSchedule, addMonths, realIsoDate } from '../../../supabase/functions/_shared/rentSchedule.js';
 
 // The two rows exactly as the rent call now returns them, with the flag the model sets.
 const QUOTED = { effective_date: '2023-06-01', amount: 12595, period: 'per_month', superseded: true };
@@ -168,5 +168,27 @@ describe('addMonths — an extension stated as a LENGTH', () => {
     expect(addMonths('2033-04-31', 12)).toBeNull(); // the impossible date itself
     expect(addMonths('April 31, 2033', 12)).toBeNull();
     expect(addMonths('2028-04-30', 'five')).toBeNull();
+  });
+});
+
+describe('realIsoDate — the guard that stops an impossible date reaching Postgres', () => {
+  test('a date that parses but does not exist is refused', () => {
+    // The whole point: `new Date('2033-04-31T12:00:00')` is NOT NaN — it rolls to May 1 —
+    // so a shape regex plus an isNaN check waves it through, and the save then dies with
+    // `date/time field value out of range: "2033-04-31"`.
+    expect(realIsoDate('2033-04-31')).toBeNull();
+    expect(realIsoDate('2025-02-29')).toBeNull(); // 2025 isn't a leap year
+    expect(realIsoDate('2025-06-31')).toBeNull();
+  });
+  test('real dates pass, including the edges', () => {
+    expect(realIsoDate('2033-04-30')).toBe('2033-04-30');
+    expect(realIsoDate('2024-02-29')).toBe('2024-02-29'); // 2024 is
+    expect(realIsoDate(' 2026-12-31 ')).toBe('2026-12-31');
+  });
+  test('prose, blanks and non-strings are refused', () => {
+    expect(realIsoDate('April 31, 2033')).toBeNull();
+    expect(realIsoDate('')).toBeNull();
+    expect(realIsoDate(null)).toBeNull();
+    expect(realIsoDate(20330431)).toBeNull();
   });
 });

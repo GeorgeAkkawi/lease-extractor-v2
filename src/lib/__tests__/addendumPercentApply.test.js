@@ -158,3 +158,37 @@ describe('a rider that grants an option priced year by year', () => {
     expect(await listEscalations(lease.id)).toHaveLength(0);
   });
 });
+
+describe('a rider that prints a date that does not exist', () => {
+  test('an impossible termination date is refused BEFORE anything is written', async () => {
+    // George's save failed with `date/time field value out of range: "2033-04-31"` — the
+    // date Denny's rider literally prints ("April 31, 2033"). It reached Postgres because
+    // it passes a shape regex AND `new Date`, which quietly rolls it to May 1. Now it's
+    // caught at the gate, so the rent steps aren't inserted and then orphaned by a failed
+    // term update: either the whole addendum applies or none of it does.
+    const lease = await freshLease();
+    const add = await createAddendum({ lease_id: lease.id, label: 'Third Addendum', amendment_date: '2023-07-03', kind: 'extension' });
+
+    await expect(applyAddendum(add, {
+      extensionEnd: '2033-04-31',
+      escalations: [{ effective_date: '2023-07-01', escalation_type: 'manual', escalation_value: null, new_base_rent: 151140 }],
+      renewals: [],
+    }, TODAY)).rejects.toThrow(/isn't a real date/);
+
+    expect(await listEscalations(lease.id)).toHaveLength(0);
+    expect((await getLease(lease.id)).lease_termination_date).toBe('2028-12-31'); // untouched
+  });
+
+  test('the real date it meant applies cleanly', async () => {
+    const lease = await freshLease();
+    const add = await createAddendum({ lease_id: lease.id, label: 'Third Addendum', amendment_date: '2023-07-03', kind: 'extension' });
+    await applyAddendum(add, {
+      extensionEnd: '2033-04-30', // 2028-04-30 + 60 months, computed rather than printed
+      escalations: [{ effective_date: '2023-07-01', escalation_type: 'manual', escalation_value: null, new_base_rent: 151140 }],
+      renewals: [],
+    }, TODAY);
+
+    expect((await getLease(lease.id)).lease_termination_date).toBe('2033-04-30');
+    expect(await listEscalations(lease.id)).toHaveLength(1);
+  });
+});

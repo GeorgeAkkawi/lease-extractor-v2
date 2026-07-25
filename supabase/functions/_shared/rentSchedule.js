@@ -23,17 +23,30 @@ export function annualRentFrom(amount, period, sqft) {
 // the frontend's renewals.addMonths — duplicated (not imported) because an edge function
 // can't reach into src/. Used to derive a rider's new term end from an extension stated as
 // a LENGTH ("an additional five (5) years") when the document prints no usable end date.
+// A date that exists on the calendar, in YYYY-MM-DD form — or null.
+//
+// The shape regex is NOT enough on its own, and neither is Date's own parser: V8 accepts
+// "2033-04-31" and quietly rolls it to May 1, so `isNaN` never fires. Riders really do
+// print impossible dates — Denny's Third Addendum says "April 31, 2033" — and a value
+// that only *looks* like a date reaches Postgres and fails the whole save with
+// `date/time field value out of range`. So round-trip the parse and reject anything that
+// doesn't come back as the day it went in.
+export function realIsoDate(iso) {
+  if (typeof iso !== 'string') return null;
+  const s = iso.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(s + 'T12:00:00');
+  if (isNaN(d.getTime())) return null;
+  const [yy, mm, dd] = s.split('-').map(Number);
+  if (d.getFullYear() !== yy || d.getMonth() + 1 !== mm || d.getDate() !== dd) return null;
+  return s;
+}
+
 export function addMonths(iso, months) {
-  if (typeof iso !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  if (!realIsoDate(iso)) return null;
   const n = Number(months);
   if (!isFinite(n)) return null;
   const d = new Date(iso + 'T12:00:00');
-  if (isNaN(d.getTime())) return null;
-  // A calendar-impossible date is well-formed enough for the regex AND for V8's lenient
-  // parser, which quietly rolls it forward ("2033-04-31" → May 1). Riders really do print
-  // those — Denny's says "April 31, 2033" — so reject rather than return a plausible lie.
-  const [yy, mm, dd] = iso.split('-').map(Number);
-  if (d.getFullYear() !== yy || d.getMonth() + 1 !== mm || d.getDate() !== dd) return null;
   const targetDay = d.getDate();
   d.setMonth(d.getMonth() + Math.trunc(n));
   if (d.getDate() < targetDay) d.setDate(0); // overflowed → last day of the intended month

@@ -75,6 +75,59 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-25** — **BUGFIX (same rider, next wall): saving the Denny's addendum died with `date/time field value
+  out of range: "2033-04-31"` — the document prints a date that does not exist, and every date guard in the app
+  waved it through because `new Date()` silently rolls it to May 1** (George: *"i got this: date/time field value
+  out of range: '2033-04-31' when i tried to save it"*). Deployed: `extract-addendum` + `extract-lease` edge fns
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `4e413988`, demo worker `f8e8193c`, plus a
+  four-statement repair of the half-saved live lease. **$0, NO DB migration, no tenant emails, nothing deleted**
+  (every repair statement guarded on the exact wrong value → re-running is a no-op). Tests **663/663** (was 656 —
+  +5 realIsoDate, +5 isoDateOrNull calendar cases, +2 apply-path refusal, +1 render).
+  - **The trap, precisely.** `"2033-04-31"` satisfies a `\d{4}-\d{2}-\d{2}` regex **and** V8's parser, which
+    quietly rolls it to May 1 — so `isNaN` never fires. `isoDateOrNull` (api.js, shipped 2026-07-02 to stop prose
+    dates) checked exactly those two things, so it returned the string unchanged and Postgres refused it. Its own
+    test even asserted `'2026-13-40'` → null and called that "impossible calendar date" — month **13** makes the
+    parser give up; month 04 day 31 does not. **The one place that got it right was yesterday's `addMonths`,
+    because a test caught it there** — that round-trip check is now the shared rule.
+  - **Three layers, because one guard is how this happened.** ① New exported **`realIsoDate`** in
+    `_shared/rentSchedule.js` (round-trips the parse and rejects any date that comes back as a different day);
+    `addMonths` now delegates to it. ② `extract-addendum` sanitizes `new_termination_date` **unconditionally**
+    (was only inside the `extension_months` branch, so a rider printing an impossible date with no length stated
+    sailed through): an unusable printed date now **prefers the computed `old_end + N months`**, else is cleared,
+    and either way raises `term_extension_flag = { reason: 'impossible_date_printed', stated }`; `amendment_date`
+    and `new_base_rent_effective_date` get the same treatment. ③ `isoDateOrNull` gained the calendar round-trip —
+    **which fixes the whole app's date lane at once** (`buildEscalations`, `buildRenewals`, `buildAbatements`,
+    `anchorLeaseSchedule`), not just riders; a lease printing "February 30" would have 400'd its save too.
+  - **The partial write is now impossible, and the form can't produce one.** `applyAddendum` validated
+    `extensionEnd` **before any write** and throws a plain-English error — because the escalation insert runs
+    BEFORE the term update, so the old failure left rent steps behind and no extension (exactly what happened
+    live). All six `changes.extensionEnd` uses route through the one validated local. On the review screen,
+    `canSave` now requires a **real** date rather than a filled box — a date input renders an impossible value as
+    **blank** while the string stays in state, which is why Save looked ready — and the extension card **stays
+    ticked** when the printed date was unusable (clearing it would silently lose the extension) with a line naming
+    what the rider printed.
+  - **Live repair — George's Denny's lease `5e0bac78`, four guarded statements.** The extraction itself had worked:
+    **ONE** step at **2023-07-01 → $151,140** (the quoted June 1 row correctly suppressed) and the PDF **linked**
+    (`storage_path` non-null — yesterday's fix, confirmed on real data). But the save died at the term update, so
+    the lease sat half-applied: step inserted, term still 2028-04-30, `base_rent` still **$137,553** (under-billing
+    by $13,587/yr). Fixed: term → **2033-04-30** (2028-04-30 + 60 months, matching the document's intent), the
+    missing `term_extended` history event logged, `base_rent` → **$151,140**, and the past-dated step marked
+    `applied` — written in `applyEscalation`'s own order (rent first, then the status) so an interruption stays
+    re-appliable. Read-back: 2 steps, both applied, active, term 2033-04-30; Pershing's 2026 revenue
+    **$354,899.52**.
+  - **Files:** `supabase/functions/_shared/rentSchedule.js` (`realIsoDate`), `supabase/functions/extract-addendum/
+    index.ts`, `src/lib/api.js` (`isoDateOrNull` + the `applyAddendum` gate), `src/components/AddendumEditor.js`,
+    tests (`supersededRider`, `extractionDates`, `addendumPercentApply`, `addendumReview` — all extended).
+    **`extract-lease` redeployed unchanged** — it imports the shared module I edited.
+  - **Verified:** unit **663/663** (`vitest run`) incl. the exact failure replayed end to end (an impossible
+    `extensionEnd` is refused with **nothing written** — no orphaned rent steps, term untouched — and the real
+    date applies cleanly) and the render test driving the review form to a disabled Save; `vite build` compiles;
+    both edge fns deployed clean with unauth POST → **401**; demo bundle grepped free of the live ref; live 200s on
+    all four URLs. **George: hard-refresh (Cmd+Shift+R) — the Denny's lease already reads $151,140 through
+    April 30 2033; nothing to re-upload.**
+  - **Flag (no action needed):** that rider's **Dated** field reads **2023-06-30** while the document is dated
+    July 3 2023 — the model took the date from the rent clause it amends. Harmless and editable on the addendum.
+
 - **2026-07-25** — **Full audit + overhaul of the addendum / rider extractor: it now knows that an amendment
   RECITES the clause it replaces (the Denny's bug), keeps percent rent steps instead of silently deleting them,
   links the uploaded document, reads an extension stated as a LENGTH, and is led by a Sonnet analyst read with a

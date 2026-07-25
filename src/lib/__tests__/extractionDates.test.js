@@ -11,9 +11,20 @@ describe('isoDateOrNull', () => {
   test('rejects prose, blanks, and malformed dates', () => {
     expect(isoDateOrNull('180 days prior to expiration of Original Term')).toBeNull();
     expect(isoDateOrNull('')).toBeNull();
-    expect(isoDateOrNull('2026-13-40')).toBeNull(); // impossible calendar date
+    expect(isoDateOrNull('2026-13-40')).toBeNull(); // month 13 → the parser itself gives up
     expect(isoDateOrNull(null)).toBeNull();
     expect(isoDateOrNull(undefined)).toBeNull();
+  });
+  test('rejects a date that PARSES but does not exist', () => {
+    // The one that got through: the shape is right and `new Date` is happy — it silently
+    // rolls "2033-04-31" to May 1 — so only a round-trip catches it. Denny's Third
+    // Addendum prints exactly this, and Postgres answers with
+    // `date/time field value out of range: "2033-04-31"`, failing the entire save.
+    expect(isoDateOrNull('2033-04-31')).toBeNull();
+    expect(isoDateOrNull('2025-02-30')).toBeNull();
+    expect(isoDateOrNull('2025-02-29')).toBeNull(); // not a leap year
+    expect(isoDateOrNull('2024-02-29')).toBe('2024-02-29'); // but this one is
+    expect(isoDateOrNull('2026-04-30')).toBe('2026-04-30'); // the last real day of a 30-day month
   });
 });
 

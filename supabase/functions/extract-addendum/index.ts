@@ -18,7 +18,7 @@ import { callClaude, transcribeDocument, uploadFile, deleteFile, MAX_VISION_BYTE
 import { extractPdfText } from '../_shared/pdf.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
-import { rebuildRentSchedule, estimateAnnualsFrom, annualRentFrom, annualizeOptionSchedule, addMonths } from '../_shared/rentSchedule.js';
+import { rebuildRentSchedule, estimateAnnualsFrom, annualRentFrom, annualizeOptionSchedule, addMonths, realIsoDate } from '../_shared/rentSchedule.js';
 import { parseAnalystVerdicts, riderMismatches } from '../_shared/analystVerdicts.js';
 
 const MODEL = 'claude-haiku-4-5';
@@ -612,15 +612,30 @@ Deno.serve(async (req) => {
     // fill the date when the rider printed none, and flag a real disagreement (a rider can
     // print an impossible date: Denny's says "April 31").
     const extMonths = Number(verdicts.extension_months);
-    if (currentEnd && isFinite(extMonths) && extMonths > 0) {
-      const computed = addMonths(currentEnd, extMonths);
-      const stated = typeof parsed.new_termination_date === 'string' ? parsed.new_termination_date : null;
-      if (computed && !stated) {
-        (parsed as any).new_termination_date = computed;
-        (parsed as any).term_extension_flag = { reason: 'computed_from_length', months: extMonths, currentEnd, computed };
-      } else if (computed && stated && stated !== computed) {
-        (parsed as any).term_extension_flag = { reason: 'length_disagrees_with_date', months: extMonths, currentEnd, computed, stated };
-      }
+    const computed = currentEnd && isFinite(extMonths) && extMonths > 0 ? addMonths(currentEnd, extMonths) : null;
+    const statedRaw = typeof parsed.new_termination_date === 'string' ? parsed.new_termination_date.trim() : null;
+    const stated = realIsoDate(statedRaw);
+
+    if (statedRaw && !stated) {
+      // The rider printed a date that does not exist on the calendar — Denny's says
+      // "April 31, 2033". Postgres rejects it outright and the whole save fails, so it must
+      // never leave here. Prefer the computed date; with no length stated there is nothing
+      // to compute from, so clear it and let the review screen ask for it.
+      (parsed as any).new_termination_date = computed || null;
+      (parsed as any).term_extension_flag = { reason: 'impossible_date_printed', stated: statedRaw, currentEnd, computed, months: isFinite(extMonths) ? extMonths : null };
+    } else if (computed && !stated) {
+      (parsed as any).new_termination_date = computed;
+      (parsed as any).term_extension_flag = { reason: 'computed_from_length', months: extMonths, currentEnd, computed };
+    } else if (computed && stated && stated !== computed) {
+      (parsed as any).term_extension_flag = { reason: 'length_disagrees_with_date', months: extMonths, currentEnd, computed, stated };
+    } else if (statedRaw) {
+      (parsed as any).new_termination_date = stated; // normalized (trimmed)
+    }
+
+    // Same class, other date fields: an unusable value here would 400 the save too.
+    if ((parsed as any).amendment_date != null) (parsed as any).amendment_date = realIsoDate((parsed as any).amendment_date);
+    if ((parsed as any).new_base_rent_effective_date != null) {
+      (parsed as any).new_base_rent_effective_date = realIsoDate((parsed as any).new_base_rent_effective_date);
     }
 
     // Disagreement alarm: what the analyst saw in the whole rider vs what actually landed on

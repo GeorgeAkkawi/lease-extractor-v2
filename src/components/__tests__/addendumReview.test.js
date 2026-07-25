@@ -116,6 +116,46 @@ describe('AddendumEditor — the AI review screen', () => {
     }
   });
 
+  it("won't save a termination date that isn't a real day on the calendar", async () => {
+    // George's save failed with `date/time field value out of range: "2033-04-31"`. A date
+    // input shows an impossible value as BLANK while the string is still in state, so the
+    // form looked filled, Save looked enabled, and Postgres found out. The extractor now
+    // clears it and flags it; the form keeps the effect visible and holds Save until a real
+    // date is entered.
+    const lease = await freshLease();
+    const real = api.extractAddendum;
+    const spy = vi.spyOn(api, 'extractAddendum').mockImplementation(async (args) => {
+      const res = await real(args);
+      return {
+        ...res,
+        fields: {
+          ...res.fields,
+          new_termination_date: null,
+          term_extension_flag: { reason: 'impossible_date_printed', stated: '2033-04-31', currentEnd: '2028-04-30', computed: null, months: null },
+        },
+      };
+    });
+    try {
+      mount(lease.id);
+      await extractCanned();
+
+      // The extension is still on the review — losing it silently would be worse.
+      expect(screen.getByText(/2033-04-31.*isn't a real date/i)).toBeTruthy();
+      const date = screen.getByLabelText(/New termination date/i) || document.querySelector('input[type="date"]');
+      expect(date.value).toBe('');
+      expect(screen.getByRole('button', { name: /Save & apply/i }).disabled).toBe(true);
+
+      // Enter the real date and it saves normally.
+      fireEvent.change(date, { target: { value: '2033-04-30' } });
+      await waitFor(() => expect(screen.getByRole('button', { name: /Save & apply/i }).disabled).toBe(false));
+      fireEvent.click(screen.getByRole('button', { name: /Save & apply/i }));
+      await waitFor(async () => expect((await listAddendums(lease.id)).length).toBe(1));
+      expect((await api.getLease(lease.id)).lease_termination_date).toBe('2033-04-30');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('the uploaded document is linked to the record it created', async () => {
     const lease = await freshLease();
     // uploadDoc + extractAddendum are stubbed so the test never touches storage; what's

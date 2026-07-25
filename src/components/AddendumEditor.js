@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAddendum, uploadDoc } from '../lib/api';
+import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAddendum, uploadDoc, isoDateOrNull } from '../lib/api';
 import { fmtDate, money } from '../lib/format';
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { useConfirm } from './ConfirmDialog';
@@ -227,7 +227,10 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
         label: fields.label || '',
         amendment_date: fields.amendment_date || '',
         summary: fields.summary || '',
-        fx_extension: !!fields.new_termination_date,
+        // Keep the card ON when the rider clearly extends but printed a date we can't use
+        // ("April 31") and there was no length to compute from — otherwise the extension
+        // would silently vanish. canSave then holds the save until a real date is entered.
+        fx_extension: !!fields.new_termination_date || fields.term_extension_flag?.reason === 'impossible_date_printed',
         new_termination_date: fields.new_termination_date || '',
         fx_rent: steps.length > 0,
         rentSteps: steps,
@@ -291,7 +294,9 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
   const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment || form.fx_abatement || form.fx_estimate;
   const canSave =
     (!form.fx_estimate || form.est_camtax !== '' || form.est_roof !== '') &&
-    (!form.fx_extension || !!form.new_termination_date) &&
+    // A real calendar date, not just a filled box: an impossible one (a date input shows
+    // it blank while the value is still there) would fail the write, not the form.
+    (!form.fx_extension || !!isoDateOrNull(form.new_termination_date)) &&
     (!form.fx_option || (form.opt_term_months !== '' || form.opt_new_rent !== '' || form.opt_annual_pct !== '')) &&
     (!form.fx_assignment || !!form.asg_tenant_name) &&
     (!form.fx_abatement || (!!form.ab_start && form.ab_months !== '')) &&
@@ -419,7 +424,9 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
                   <p className={form._termFlag.reason === 'computed_from_length' ? 'muted' : 'note-msg warn'} style={{ fontSize: 12.5, marginTop: 8 }}>
                     {form._termFlag.reason === 'computed_from_length'
                       ? `Computed from “${form._termFlag.months} months” added to the current end${form._termFlag.currentEnd ? ` (${fmtDate(form._termFlag.currentEnd)})` : ''} — the rider states a length, not a usable date.`
-                      : `⚠ The rider extends by ${form._termFlag.months} months, which lands on ${fmtDate(form._termFlag.computed)} — but the date it prints is ${fmtDate(form._termFlag.stated)}. Check which is right before saving.`}
+                      : form._termFlag.reason === 'impossible_date_printed'
+                        ? `⚠ The rider prints “${form._termFlag.stated}”, which isn't a real date${form._termFlag.computed ? ` — its own “additional ${form._termFlag.months} months” lands on ${fmtDate(form._termFlag.computed)}, filled in above` : '. Enter the intended end date above'}.`
+                        : `⚠ The rider extends by ${form._termFlag.months} months, which lands on ${fmtDate(form._termFlag.computed)} — but the date it prints is ${fmtDate(form._termFlag.stated)}. Check which is right before saving.`}
                   </p>
                 )}
               </EffectCard>

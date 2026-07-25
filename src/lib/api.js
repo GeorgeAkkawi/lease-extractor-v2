@@ -450,12 +450,22 @@ export async function anchorLeaseSchedule(leaseId, startDate) {
 // sometimes returns for a relative deadline (e.g. "180 days prior to expiration of the
 // Original Term"), a blank, or a malformed value — becomes null, so it can never reach a
 // Postgres `date` column (which would reject it and fail the entire lease save).
+// It also rejects a date that PARSES but doesn't exist: `new Date('2033-04-31T12:00:00')`
+// is not NaN — V8 quietly rolls it to May 1 — so the shape regex plus an isNaN check let
+// an impossible date straight through to Postgres, which fails the save with `date/time
+// field value out of range`. Riders really do print those (Denny's Third Addendum says
+// "April 31, 2033"), so round-trip the parse and reject anything that comes back as a
+// different day. Same rule as realIsoDate() in _shared/rentSchedule.js, which guards the
+// edge functions; duplicated because the app build can't import across into supabase/.
 export function isoDateOrNull(v) {
   if (typeof v !== 'string') return null;
   const s = v.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
   const d = new Date(`${s}T12:00:00`);
-  return isNaN(d.getTime()) ? null : s;
+  if (isNaN(d.getTime())) return null;
+  const [yy, mm, dd] = s.split('-').map(Number);
+  if (d.getFullYear() !== yy || d.getMonth() + 1 !== mm || d.getDate() !== dd) return null;
+  return s;
 }
 
 // Shape AI-extracted escalation rows into rent_escalations inserts, computing the
@@ -1219,12 +1229,21 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
   const leaseId = addendum.lease_id;
   const lease = await getLease(leaseId);
 
+  // Last gate before anything is written. A date that only LOOKS like one — the
+  // calendar-impossible "2033-04-31" a rider can literally print — fails the Postgres
+  // write and would abort this sequence part-way through, after the escalation rows had
+  // already gone in. Checked up front, so a bad value costs nothing and says why.
+  const extensionEnd = isoDateOrNull(changes.extensionEnd);
+  if (changes.extensionEnd && !extensionEnd) {
+    throw new Error(`"${changes.extensionEnd}" isn't a real date — enter the new termination date and save again.`);
+  }
+
   // A committed extension's new base rent takes effect where the new term begins —
   // i.e. at the prior term end — so model it as the first dated step, ahead of any
   // later step-ups the rider spells out.
   const fromEnd = lease?.lease_termination_date || addendum.amendment_date || null;
   const escInputs = [...(changes.escalations || [])];
-  if (changes.extensionEnd && changes.newRent != null && fromEnd) {
+  if (extensionEnd && changes.newRent != null && fromEnd) {
     escInputs.unshift({ effective_date: fromEnd, escalation_type: 'manual', escalation_value: null, new_base_rent: Number(changes.newRent) });
   }
 
@@ -1236,7 +1255,7 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
   // drop-the-row behaviour we had before. NEVER the amendment date: that's the signing
   // date, the same trap extract-lease already warns about.
   const datedStart = escInputs.find((e) => e && e.effective_date)?.effective_date || null;
-  const anchor = datedStart || (changes.extensionEnd ? fromEnd : null);
+  const anchor = datedStart || (extensionEnd ? fromEnd : null);
   const escRows = buildEscalations(lease?.base_rent, escInputs, anchor);
   if (escRows.length) {
     await rows(
@@ -1248,12 +1267,12 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
 
   // Extend the committed term directly — the lease's own end date is the single
   // source of truth for how long the tenant is committed.
-  if (changes.extensionEnd) {
-    await updateLease(leaseId, { lease_termination_date: changes.extensionEnd, is_active: true });
+  if (extensionEnd) {
+    await updateLease(leaseId, { lease_termination_date: extensionEnd, is_active: true });
     await logHistoryEvent({
       property_id: lease?.property_id || null, lease_id: leaseId, type: 'term_extended', tenant_name: lease?.tenant_name || null,
-      description: `Term extended to ${fmtDate(changes.extensionEnd)}${addendum.label ? ` (${addendum.label})` : ''}`,
-      event_date: addendum.amendment_date || null, meta: { addendum_id: addendum.id, new_end: changes.extensionEnd },
+      description: `Term extended to ${fmtDate(extensionEnd)}${addendum.label ? ` (${addendum.label})` : ''}`,
+      event_date: addendum.amendment_date || null, meta: { addendum_id: addendum.id, new_end: extensionEnd },
     });
   }
 
@@ -1294,7 +1313,7 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
     // document, so it must be the NEW end, not the old one), and the rows just inserted are
     // passed as existingSteps so the ±45-day guard can't double-book a step the rider
     // already spelled out.
-    const optionTermEnd = changes.extensionEnd || lease?.lease_termination_date || null;
+    const optionTermEnd = extensionEnd || lease?.lease_termination_date || null;
     const optionSteps = buildRenewalScheduleSteps(changes.renewals, optionTermEnd, escRows, today);
     if (optionSteps.length) {
       await rows(
