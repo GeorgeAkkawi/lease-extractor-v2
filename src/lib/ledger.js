@@ -281,3 +281,50 @@ export function ledgerRowSummary({ year, owedByMonth, allocation, today = new Da
     settled: owes <= dust && (alloc.credit || 0) <= dust,
   };
 }
+
+// ---- "Which months still need logging?" — the bank-statement reminder -------
+// A landlord receives their bank statement AFTER the month closes, so a month with no
+// money on it does NOT mean the tenants are late — it means the month hasn't been
+// LOGGED yet. Judging it any earlier accuses tenants of something the app can't know,
+// and doing it per tenant turns one forgotten upload into a screenful of alarms.
+// These two selectors drive the single calm per-property reminder that replaces the
+// old per-tenant "behind on rent" alert. The genuinely-behind picture still lives
+// where it can be read in context: the Ledger grid's cells and Collected column.
+
+// Is `month` of `year` over AND far enough past its end for the statement to have
+// arrived? graceDays is the owner's configurable lead (default 7 days after month end),
+// so nothing is ever raised about a month still in progress.
+export function monthClosedForLogging(year, month, today = new Date(), graceDays = 7) {
+  const y = Number(year);
+  const m = Number(month);
+  if (!(y > 0) || !(m >= 1 && m <= 12)) return false;
+  const nextStart = m === 12 ? monthStart(y + 1, 1) : monthStart(y, m + 1);
+  const grace = Number(graceDays) > 0 ? Number(graceDays) : 0;
+  return today.getTime() >= nextStart.getTime() + grace * 86400000;
+}
+
+// Months of `year` that have closed with no money recorded anywhere on the property.
+// `rows` is one entry per lease carrying the SAME arrays the Ledger grid paints
+// ({ owed: owedByMonthForInvoice, received: allocatePayments().received }), so this can
+// never disagree with the grid. A month qualifies only when the property actually
+// BILLED something (never nag about a month nothing was due) and NOT ONE tenant has
+// money on it — a single recorded payment proves the month was logged, and whether an
+// individual tenant paid is the Ledger's job to show, not the bell's.
+export function unloggedMonths({ year, rows = [], today = new Date(), graceDays = 7, dust = 0.05 } = {}) {
+  const norm = (rows || []).map((r) => ({
+    owed: owedArray(r?.owed),
+    received: Array.isArray(r?.received) ? r.received : [],
+  }));
+  const out = [];
+  for (let m = 1; m <= 12; m++) {
+    if (!monthClosedForLogging(year, m, today, graceDays)) continue;
+    let billed = false;
+    let logged = false;
+    for (const r of norm) {
+      if (r.owed[m - 1] > dust) billed = true;
+      if ((Number(r.received[m - 1]) || 0) > dust) { logged = true; break; }
+    }
+    if (billed && !logged) out.push(m);
+  }
+  return out;
+}

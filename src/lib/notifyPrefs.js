@@ -28,8 +28,10 @@ export const NOTIFY_TYPES = [
     hint: 'A free / reduced-rent period about to end and full billing resume.' },
   { key: 'insurance_chase', label: 'Insurance not received', defaultDays: 21,  kind: 'after',
     hint: 'A certificate was requested this many days ago and still hasn’t arrived.' },
-  { key: 'unpaid_rent',     label: 'Tenant behind on rent', defaultDays: 7,   kind: 'after',
-    hint: 'Grace period after a rent month comes due before flagging it unpaid.' },
+  // Key kept as 'unpaid_rent' so saved preferences survive; what it now controls is the
+  // "import your bank statement" reminder, which waits for the month to CLOSE first.
+  { key: 'unpaid_rent',     label: 'Bank statement reminder', defaultDays: 7, kind: 'after',
+    hint: 'How long after a month ends before reminding you to import that month’s bank statement.' },
 ];
 
 // { key: defaultDays } — the neutral fallback used when the owner hasn't set a lead.

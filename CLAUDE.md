@@ -75,6 +75,73 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-27** — **The Overview stopped accusing tenants of being late: the per-tenant "behind on rent" alert
+  is replaced by ONE calm "import your bank statement" reminder per property, and it never fires until the month
+  has actually ENDED** (George: *"The notifications page put a bunch of notifications saying that a lot of tenants
+  were behind on rent. But the user of this platform usually only gets their bank statements the end of the month
+  … the payment shouldn't say that they're late until after the month has passed. And it shouldn't say they're
+  late. It should maybe say, like, upload your bank statement for the month of x to log payments and expenses …
+  it shouldn't have like fifty notifications if the landlord just forgets. So it should just be a reminder to
+  upload the statement."*). Deployed: frontend Cloudflare version `6cd28f6c`, demo worker `ae7f1d16`.
+  **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing
+  destructive.** Tests **683/683** (was 663 — +12 unloggedMonths, +3 statementReminderData, +5 net in
+  notifyLeadAlerts).
+  - **Why he saw a screenful, precisely.** `computeUnpaidRent` (api.js) walked EVERY annual invoice and pushed one
+    alert per lease with `monthsBehind >= 1`, where `ledgerRowSummary` counts a month as behind once its **1st**
+    has passed (plus a 7-day grace). So on **July 8** every tenant with no July deposit — which is all of them,
+    because the bank statement hasn't arrived yet — became "1 month behind". Nine Pershing tenants + four GENA
+    tenants = thirteen red rows about a month nobody could possibly have logged. **Two separate mistakes:** the
+    timing judged a month still in progress, and the granularity turned one forgotten upload into a per-tenant
+    accusation. The app cannot tell "the tenant didn't pay" from "the landlord hasn't logged it yet" — so it
+    should never have claimed the first.
+  - **The reframe.** An empty closed month is the **landlord's** to-do, so that is what the reminder says:
+    *"Import your June statement — Pershing Plaza / Nothing recorded for June — import the bank statement to log
+    payments and expenses."* Tone **info** (a task, not a problem); it only firms to **warn** once 3+ months have
+    piled up. Several unlogged months stay **one** alert — *"Import your bank statements — Pershing Plaza /
+    Nothing recorded for January, February and June…"*, capped at three names then "and N more" so a full-year
+    backlog can't run long. Clicking it lands on that property's **Ledger**, where ⬆ Import statement lives.
+    A test asserts the title, detail and chip contain **no** "behind / late / overdue / unpaid".
+  - **Timing, stated as a rule.** New pure `monthClosedForLogging(year, month, today, graceDays)` (`ledger.js`):
+    the grace now runs from the month's **END**, not its 1st. June opens for logging on **July 8**; July stays
+    silent until **August 8**. The old bug is replayed as a named regression (`monthClosedForLogging(2026, 7,
+    '2026-07-08')` → **false**). The grace is still the owner's configurable lead.
+  - **What counts as "logged" — the coarseness is the point.** New pure `unloggedMonths({year, rows, today,
+    graceDays})` reads the SAME arrays the Ledger grid paints (`owedByMonthForInvoice` + `allocatePayments().
+    received`), so it can never disagree with the grid. A month qualifies only when the property actually
+    **billed** something (never nag about an out-of-term or free month) and **not one tenant** has money on it —
+    a single recorded payment proves the statement was imported, and whether an individual tenant paid is the
+    Ledger's job to show in context, not the bell's. **Untagged lumps work correctly**: Bright Coffee's $78,000
+    cheque FIFO-fills every month, so nothing is raised; a $19,500 lump covers Jan–Mar and only Apr–Jun are
+    raised.
+  - **`alertKey` gained a `property_id` fallback** — last in the chain (`contract_id || report_id || lease_id ||
+    property_id`), so only this alert reaches it and no saved key is disturbed. The key is anchored to the
+    **latest** unlogged month's end date, which is what makes a dismissal **re-arm** when the NEXT month goes
+    unlogged (test-pinned: June's key ≠ June+July's key). Sorting moved off the old `-1000 - monthsBehind` hack
+    to `days: -months.length` — above what isn't due yet, below anything genuinely overdue.
+  - **Settings copy follows.** The Notifications row is now **"Bank statement reminder"** — *"How long after a
+    month ends before reminding you to import that month's bank statement"* (was "Tenant behind on rent" /
+    "Grace period after a rent month comes due before flagging it unpaid"). **The stored key stays
+    `unpaid_rent`** so any saved lead survives, with a comment saying so.
+  - **Files:** `src/lib/ledger.js` (`monthClosedForLogging`, `unloggedMonths`), `src/lib/api.js`
+    (`computeUnpaidRent` → `computeUnloggedMonths`, now aggregating per property), `src/lib/alerts.js` (the
+    `statement_reminder` block + `MONTH_NAMES`/`joinMonths` + the `alertKey` fallback; the now-unused `money0`
+    import dropped), `src/lib/notifyPrefs.js`, `src/pages/DashboardPage.js` (nav), tests
+    (`unloggedMonths.test.js` + `statementReminderData.test.js` new; `notifyLeadAlerts.test.js` rewritten).
+    **No demo-seed change** — a seeded unlogged month would ripple the pinned $22,300 / $78,000 / $109,800
+    figures, so the demo keeps showing the fully-logged "nothing to nag about" state and the new path is covered
+    by the integration test instead (it removes the lump against the mock, asserts ONE alert, then restores).
+  - **Verified:** unit **683/683** (`vitest run`) incl. the end-to-end `fetchAlertData` → `buildAlerts` run
+    against the demo mock, written date-independent so it keeps holding as the calendar moves; `vite build`
+    compiles; demo bundle grepped free of the live ref `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all
+    four URLs. **George: hard-refresh (Cmd+Shift+R) — the behind-on-rent notifications are gone. Nothing will be
+    raised about July until August 8; if July still isn't imported by then you'll get one line per property, not
+    one per tenant.**
+  - **Flags (no action needed):** ① The per-tenant behind-on-rent signal is no longer in the bell — it still
+    reads on the **Ledger** grid (the amber cells, the "N mo behind" badge and the Collected column), which is
+    where it has the month-by-month context to be judged. Say the word if you want a separate, quieter alert for
+    a tenant who's missing on a month you *have* imported. ② A property with no annual invoice for the year
+    raises nothing at all — there's no billing shape to judge months against.
+
 - **2026-07-26** — **README rewritten as the public repo's front door, with four screenshots — it was
   documenting features deleted a fortnight ago and omitting the Rent Ledger that replaced them** (George:
   *"what does the read me say this project is"* → *"do you think you could update it and make it more

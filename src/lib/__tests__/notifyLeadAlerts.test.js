@@ -1,14 +1,14 @@
-// Custom notification lead times + the new unpaid-rent alert. Pure buildAlerts — no
+// Custom notification lead times + the bank-statement reminder. Pure buildAlerts — no
 // backend. Confirms defaults are byte-identical to the old hard-coded horizons, a
 // custom lead widens/narrows a type's window, the per-lease lease-end override wins,
-// and the ledger-gated behind-on-rent alert renders from a precomputed list.
+// and the ledger-gated statement reminder renders ONE calm alert per property.
 import { describe, test, expect } from 'vitest';
-import { buildAlerts } from '../alerts';
+import { buildAlerts, alertKey } from '../alerts';
 
 const NOW = new Date('2026-01-15T12:00:00');
 const EMPTY = {
   leases: [], escalations: [], renewals: [], properties: [], insurance: [],
-  contracts: [], abatements: [], insuranceRequests: [], annualReports: [], corporations: [], unpaidRent: [],
+  contracts: [], abatements: [], insuranceRequests: [], annualReports: [], corporations: [], unloggedMonths: [],
 };
 
 const prop = { id: 'p1', name: 'Plaza', corporation_id: 'c1' };
@@ -59,31 +59,90 @@ describe('defaults are unchanged (byte-identical horizons)', () => {
   });
 });
 
-describe('unpaid-rent (tenant behind on rent) alert', () => {
-  const behind = (monthsBehind, amountBehind = 0) => ({
-    lease_id: 'l1', property_id: 'p1', tenant_name: 'Acme', monthsBehind, amountBehind, year: 2026,
-  });
-  test('1 month behind → a warn alert keyed by lease, clickable to the property', () => {
-    const out = buildAlerts({ ...EMPTY, properties: [prop], unpaidRent: [behind(1, 3300)] }, undefined, NOW);
-    const a = out.find((x) => x.focus === 'unpaid_rent');
+describe('bank-statement reminder (replaces the per-tenant "behind on rent" alert)', () => {
+  const unlogged = (months, property_id = 'p1') => ({ property_id, year: 2026, months });
+  const prop2 = { id: 'p2', name: 'Oak Center', corporation_id: 'c1' };
+
+  test('one unlogged month → ONE calm info alert naming the month and the property', () => {
+    const out = buildAlerts({ ...EMPTY, properties: [prop], unloggedMonths: [unlogged([6])] }, undefined, NOW);
+    const a = out.find((x) => x.focus === 'statement_reminder');
     expect(a).toBeTruthy();
-    expect(a.tone).toBe('warn');
+    expect(a.tone).toBe('info');
+    expect(a.title).toBe('Import your June statement — Plaza');
+    expect(a.detail).toBe('Nothing recorded for June — import the bank statement to log payments and expenses.');
     expect(a.corporation_id).toBe('c1');
     expect(a.property_id).toBe('p1');
   });
-  test('2+ months behind → danger', () => {
-    const out = buildAlerts({ ...EMPTY, properties: [prop], unpaidRent: [behind(3, 9900)] }, undefined, NOW);
-    expect(out.find((x) => x.focus === 'unpaid_rent').tone).toBe('danger');
+
+  test('nothing anywhere says a tenant is "behind" or "late"', () => {
+    const out = buildAlerts({ ...EMPTY, properties: [prop], unloggedMonths: [unlogged([1, 2, 6])] }, undefined, NOW);
+    const a = out.find((x) => x.focus === 'statement_reminder');
+    expect(`${a.title} ${a.detail} ${a.bucketLabel}`).not.toMatch(/behind|late|overdue|unpaid/i);
   });
-  test('0 months behind → no alert', () => {
-    const out = buildAlerts({ ...EMPTY, properties: [prop], unpaidRent: [behind(0)] }, undefined, NOW);
-    expect(out.find((x) => x.focus === 'unpaid_rent')).toBeUndefined();
+
+  test('several unlogged months stay ONE alert per property, not one per month', () => {
+    const out = buildAlerts({ ...EMPTY, properties: [prop], unloggedMonths: [unlogged([1, 2, 6])] }, undefined, NOW);
+    const all = out.filter((x) => x.focus === 'statement_reminder');
+    expect(all).toHaveLength(1);
+    expect(all[0].title).toBe('Import your bank statements — Plaza');
+    expect(all[0].detail).toContain('January, February and June');
+    expect(all[0].tone).toBe('warn'); // 3+ months piled up
   });
-  test('Rent Ledger module off → the alert is gone', () => {
+
+  test('a long backlog is summarised, never listed out in full', () => {
+    const out = buildAlerts({ ...EMPTY, properties: [prop], unloggedMonths: [unlogged([1, 2, 3, 4, 5, 6])] }, undefined, NOW);
+    expect(out.find((x) => x.focus === 'statement_reminder').detail)
+      .toContain('January, February, March and 3 more');
+  });
+
+  test('two properties → one alert each, with distinct dismiss keys', () => {
     const out = buildAlerts(
-      { ...EMPTY, properties: [prop], unpaidRent: [behind(2, 6600)] },
+      { ...EMPTY, properties: [prop, prop2], unloggedMonths: [unlogged([6]), unlogged([6], 'p2')] },
+      undefined, NOW,
+    );
+    const all = out.filter((x) => x.focus === 'statement_reminder');
+    expect(all).toHaveLength(2);
+    expect(new Set(all.map(alertKey)).size).toBe(2);
+  });
+
+  test('the dismiss key rolls forward when a NEW month goes unlogged', () => {
+    const june = buildAlerts({ ...EMPTY, properties: [prop], unloggedMonths: [unlogged([6])] }, undefined, NOW)
+      .find((x) => x.focus === 'statement_reminder');
+    const juneAndJuly = buildAlerts({ ...EMPTY, properties: [prop], unloggedMonths: [unlogged([6, 7])] }, undefined, NOW)
+      .find((x) => x.focus === 'statement_reminder');
+    // Dismissing June must not silence the reminder once July also needs logging.
+    expect(alertKey(june)).not.toBe(alertKey(juneAndJuly));
+    expect(june.date).toBe('2026-06-30');
+    expect(juneAndJuly.date).toBe('2026-07-31');
+  });
+
+  test('no unlogged months → no alert', () => {
+    const out = buildAlerts({ ...EMPTY, properties: [prop], unloggedMonths: [unlogged([])] }, undefined, NOW);
+    expect(out.find((x) => x.focus === 'statement_reminder')).toBeUndefined();
+  });
+
+  test('Rent Ledger module off → the reminder is gone', () => {
+    const out = buildAlerts(
+      { ...EMPTY, properties: [prop], unloggedMonths: [unlogged([1, 2])] },
       undefined, NOW, { features: ['insurance'] }, // ledger not in the enabled set
     );
-    expect(out.find((x) => x.focus === 'unpaid_rent')).toBeUndefined();
+    expect(out.find((x) => x.focus === 'statement_reminder')).toBeUndefined();
+  });
+
+  test('it sorts above what is not yet due, below what is genuinely overdue', () => {
+    const out = buildAlerts(
+      {
+        ...EMPTY,
+        properties: [prop],
+        unloggedMonths: [unlogged([6])],
+        leases: [leaseEndingIn('2026-03-01')], // ~45 days out → days ≈ 45
+        annualReports: [{ corporation_id: 'c1', due_date: '2026-01-05' }], // overdue → days < 0
+        corporations: [{ id: 'c1', name: 'Acme LLC' }],
+      },
+      undefined, NOW,
+    );
+    const order = out.map((a) => a.focus);
+    expect(order.indexOf('annual_report')).toBeLessThan(order.indexOf('statement_reminder'));
+    expect(order.indexOf('statement_reminder')).toBeLessThan(order.indexOf('termination'));
   });
 });

@@ -7,7 +7,7 @@ import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
-import { allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths } from './ledger';
+import { allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths, unloggedMonths } from './ledger';
 import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
@@ -2264,20 +2264,25 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true } = {}) 
     insuranceRequests: insReqR.data || [],
     corporations: corpR.data || [],
     annualReports: arR.data || [],
-    // Precomputed "tenant behind on rent" list for the unpaid_rent bell alert — built
-    // from the SAME ledger math the Rent Ledger grid paints, honoring the unpaid_rent
-    // grace lead. Only fetched when the Rent Ledger module is on (else the alert is
-    // hidden anyway). Skipped entirely on any error → no alert rather than a wrong one.
-    unpaidRent: ledgerOn ? await computeUnpaidRent(leases, escalations, abatements, leadDays) : [],
+    // Precomputed "these months still need logging" list for the statement reminder —
+    // built from the SAME ledger math the Rent Ledger grid paints, honoring the
+    // configurable grace after month end. Only fetched when the Rent Ledger module is on
+    // (else the alert is hidden anyway). Skipped on any error → no alert rather than a
+    // wrong one.
+    unloggedMonths: ledgerOn ? await computeUnloggedMonths(leases, escalations, abatements, leadDays) : [],
   };
 }
 
-// Which tenants are behind on the current year's rent, past the configured grace
-// period. Reuses owedByMonthForInvoice → allocatePayments → ledgerRowSummary so the
-// count/dollars match the Ledger tab exactly (never a flat total/12 that mis-reads a
-// free month or mid-year start). Returns [{ lease_id, property_id, tenant_name,
-// monthsBehind, amountBehind, year }] for leases at least one month behind.
-async function computeUnpaidRent(leases, escalations, abatements, leadDays) {
+// Which CLOSED months of the current year still have no money recorded against them,
+// per property. Reuses owedByMonthForInvoice → allocatePayments → unloggedMonths so the
+// answer matches the Ledger tab exactly (never a flat total/12 that mis-reads a free
+// month or mid-year start). Returns [{ property_id, year, months: [1,2,6] }] for
+// properties with at least one unlogged month.
+//
+// Deliberately NOT per tenant and never about a month still running: the landlord's
+// statement lands after the month closes, so an empty month means "not logged yet",
+// not "the tenant is late". See unloggedMonths (ledger.js) for the full reasoning.
+async function computeUnloggedMonths(leases, escalations, abatements, leadDays) {
   try {
     const year = Number(localDateIso().slice(0, 4));
     const graceDays = Number(leadDays?.unpaid_rent) > 0 ? Number(leadDays.unpaid_rent) : 7;
@@ -2298,10 +2303,7 @@ async function computeUnpaidRent(leases, escalations, abatements, leadDays) {
     const abaByLease = {};
     (abatements || []).forEach((a) => { (abaByLease[a.lease_id] ||= []).push(a); });
     const leaseById = Object.fromEntries((leases || []).map((l) => [l.id, l]));
-    // Grace: a month is only judged "due" this many days after its 1st, so a tenant
-    // isn't flagged the instant a month begins.
-    const asOf = new Date(Date.now() - graceDays * 86400000);
-    const out = [];
+    const byProperty = {};
     for (const inv of invoices) {
       const lease = leaseById[inv.lease_id];
       if (!lease || lease.is_active === false) continue;
@@ -2312,15 +2314,14 @@ async function computeUnpaidRent(leases, escalations, abatements, leadDays) {
       });
       if (!owedByMonth) continue; // no gross breakdown → can't judge months; skip
       const allocation = allocatePayments({ owedByMonth, payments: payByInvoice[inv.id] || [] });
-      const summary = ledgerRowSummary({ year, owedByMonth, allocation, today: asOf });
-      if (summary.monthsBehind >= 1) {
-        out.push({
-          lease_id: inv.lease_id, property_id: inv.property_id, tenant_name: lease.tenant_name,
-          monthsBehind: summary.monthsBehind, amountBehind: summary.owesToDate, year,
-        });
-      }
+      (byProperty[inv.property_id] ||= []).push({ owed: owedByMonth, received: allocation.received });
     }
-    return out;
+    const today = new Date();
+    return Object.entries(byProperty)
+      .map(([property_id, propRows]) => ({
+        property_id, year, months: unloggedMonths({ year, rows: propRows, today, graceDays }),
+      }))
+      .filter((p) => p.months.length > 0);
   } catch {
     return [];
   }

@@ -118,7 +118,7 @@ export default function DashboardPage() {
   // Where clicking an alert takes the landlord.
   function goToAlert(a) {
     if (a.focus === 'annual_report') navigate('/leases'); // corporations grid → Annual report button
-    else if (a.focus === 'unpaid_rent' && a.property_id) navigate(`/financials/${a.corporation_id}/${a.property_id}/ledger`);
+    else if (a.focus === 'statement_reminder' && a.property_id) navigate(`/financials/${a.corporation_id}/${a.property_id}/ledger`);
     else if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
     else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
     else navigate(`/leases/${a.corporation_id}`);

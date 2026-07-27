@@ -1,13 +1,26 @@
-import { fmtDate, money0 } from './format';
+import { fmtDate } from './format';
 import { DEFAULT_LEAD_DAYS } from './notifyPrefs';
 
 const DAY = 86400000;
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+// "June" · "May and June" · "April, May and June" · "January, February, March and 3 more"
+// — readable in a one-line alert detail without ever running long.
+function joinMonths(names, cap = 3) {
+  if (names.length <= 1) return names[0] || '';
+  if (names.length <= cap + 1) return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `${names.slice(0, cap).join(', ')} and ${names.length - cap} more`;
+}
 
 // Dismiss / snooze of computed alerts are stored SERVER-SIDE (table alert_states),
 // keyed by this stable alert_key, so they sync across the landlord's devices. A
 // contract or annual-report alert has no lease, so its own id anchors the key (falls
 // back to lease_id for every other alert type, keeping existing saved keys stable).
-export const alertKey = (a) => `${a.focus}:${a.contract_id || a.report_id || a.lease_id}:${a.date}`;
+// property_id is the last resort — only the statement reminder reaches it, so adding it
+// can't disturb any key already saved.
+export const alertKey = (a) => `${a.focus}:${a.contract_id || a.report_id || a.lease_id || a.property_id}:${a.date}`;
 
 // Transform alert_states rows (from listAlertStates) into the lookup buildAlerts
 // filters against: a Set of dismissed keys + a { key: untilMs } snooze map.
@@ -74,7 +87,7 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 //   • hiddenWidgets — the hidden_widgets array (reserved; no widget currently gates an alert).
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unpaidRent },
+  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unloggedMonths },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
   { features = null, hiddenWidgets = [], leadDays = null } = {}, // eslint-disable-line no-unused-vars
@@ -272,25 +285,47 @@ export function buildAlerts(
     });
   });
 
-  // Tenant behind on rent — a post-fact heads-up now that bank statements are imported.
-  // In-app only (no owner email — matches the removed behind-on-rent precedent), gated by
-  // the Rent Ledger module. `unpaidRent` is precomputed in fetchAlertData from the same
-  // ledger math the Ledger grid paints (owedByMonthForInvoice → allocatePayments →
-  // ledgerRowSummary), already honoring the unpaid_rent grace lead. Keyed by lease.
-  (ledgerOn ? unpaidRent || [] : []).forEach((u) => {
-    if (!(u.monthsBehind >= 1)) return;
+  // Import your bank statement — ONE calm reminder per property, never one per tenant.
+  //
+  // This replaces the old per-tenant "behind on rent" alert, which was wrong twice over:
+  // it judged a month the moment it began (the statement only lands after the month
+  // CLOSES, so there was nothing to log yet), and it raised a separate alarm for every
+  // tenant — turning one forgotten upload into a screenful of accusations about tenants
+  // who may well have paid. An empty month means the landlord hasn't logged it, which is
+  // the landlord's own to-do, so that's what the reminder says. Who actually paid stays
+  // on the Ledger grid, where the month's cells give it context.
+  //
+  // In-app only (no owner email), gated by the Rent Ledger module. `unloggedMonths` is
+  // precomputed in fetchAlertData from the same math the Ledger grid paints, already
+  // honoring the configurable grace after month end. Keyed by property + the latest
+  // unlogged month, so dismissing it re-arms when the NEXT month goes unlogged.
+  (ledgerOn ? unloggedMonths || [] : []).forEach((u) => {
+    const months = (u.months || []).filter((m) => m >= 1 && m <= 12).sort((a, b) => a - b);
+    if (!months.length) return;
+    const propName = propMap[u.property_id]?.name || 'property';
     const corpId = propMap[u.property_id]?.corporation_id;
+    const names = months.map((m) => MONTH_NAMES[m - 1]);
+    const listed = joinMonths(names);
+    const many = months.length > 1;
+    // Anchor the date to the LAST day of the latest unlogged month — the point the
+    // statement became available. Also what makes the dismiss key roll month to month.
+    const latest = months[months.length - 1];
+    const lastDay = new Date(u.year, latest, 0).getDate();
     out.push({
-      lease_id: u.lease_id, property_id: u.property_id, corporation_id: corpId,
-      focus: 'unpaid_rent',
-      tone: u.monthsBehind >= 2 ? 'danger' : 'warn',
-      bucketLabel: u.monthsBehind >= 2 ? `${u.monthsBehind} months behind` : '1 month behind',
-      // Anchor the dismiss key to the year (stable all year); no real due date, so sort
-      // it among the urgent items (more behind = higher up).
-      date: `${u.year}-12-31`, days: -1000 - u.monthsBehind,
-      monthsBehind: u.monthsBehind, amountBehind: u.amountBehind,
-      title: `Behind on rent — ${u.tenant_name || 'tenant'}`,
-      detail: `${u.monthsBehind} month${u.monthsBehind === 1 ? '' : 's'} behind${u.amountBehind > 0 ? ` · ${money0(u.amountBehind)}` : ''}`,
+      property_id: u.property_id, corporation_id: corpId, lease_id: null,
+      focus: 'statement_reminder',
+      // A to-do, not a problem — it only firms up once several months have piled up.
+      tone: months.length >= 3 ? 'warn' : 'info',
+      bucketLabel: 'To log',
+      date: `${u.year}-${String(latest).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`,
+      // Sorts just above what isn't due yet, below anything genuinely overdue; more
+      // unlogged months float higher.
+      days: -months.length,
+      months, year: u.year,
+      title: many
+        ? `Import your bank statements — ${propName}`
+        : `Import your ${names[0]} statement — ${propName}`,
+      detail: `Nothing recorded for ${listed} — import ${many ? 'those statements' : 'the bank statement'} to log payments and expenses.`,
     });
   });
 
