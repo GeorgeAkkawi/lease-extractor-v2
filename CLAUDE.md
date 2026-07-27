@@ -136,11 +136,41 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
     four URLs. **George: hard-refresh (Cmd+Shift+R) — the behind-on-rent notifications are gone. Nothing will be
     raised about July until August 8; if July still isn't imported by then you'll get one line per property, not
     one per tenant.**
-  - **Flags (no action needed):** ① The per-tenant behind-on-rent signal is no longer in the bell — it still
-    reads on the **Ledger** grid (the amber cells, the "N mo behind" badge and the Collected column), which is
-    where it has the month-by-month context to be judged. Say the word if you want a separate, quieter alert for
-    a tenant who's missing on a month you *have* imported. ② A property with no annual invoice for the year
-    raises nothing at all — there's no billing shape to judge months against.
+  - **✅ FOLLOW-ON, SAME DAY — the second tier George asked for** (*"yes i would like to still have an alert for
+    a tenant who is missing on the month the user has imported"*). Deployed: frontend Cloudflare version
+    `5702e9ae`, demo worker `132e2431`. **Still $0, no migration, no edge functions.** Tests **696/696**
+    (was 683 — +8 missingOnImportedMonths, +4 alert-shape, +1 integration).
+    - **What decides it — and why it can't recur as a wall of alarms.** New pure `missingOnImportedMonths`
+      (`ledger.js`): for months the property **imported**, name each tenant with nothing on them. The proof of an
+      import is a payment carrying a non-null **`import_id`** with a `period_month` (both columns exist since
+      0063 — no migration), which is precisely what separates *"I reconciled this month against the bank"* from
+      *"I ticked one box by hand"*. Without that proof it stays silent, so hand-marking one tenant can never
+      accuse the other eight. It still only judges a **closed** month — a statement imported mid-month covers a
+      partial period, and a tenant absent from it may simply not have paid yet.
+    - **One alert per TENANT, listing every month they're missing** — never one per month. `No payment recorded
+      — Michuacana` / *"April, May and June are imported with no payment from this tenant — $15,900
+      outstanding."* Warn at 1–2 months, danger at 3+. Sorts above the statement reminder (a real gap beats a
+      to-do) and below anything with a genuinely overdue date. Click → the property's **Ledger**.
+    - **Mutually exclusive with tier 1 by construction, and test-pinned:** an imported month has money on it, so
+      it can never also read as unlogged. A **short** payment is not a missing one either — that difference is
+      the Collected column's job, not the bell's.
+    - **`computeUnloggedMonths` → `computeLedgerAlerts`**, one pass over the year's invoices returning BOTH
+      lists (`{ unloggedMonths, missingPayments }`, spread into `fetchAlertData`'s result); the payments select
+      gained `import_id`. `alerts.js` adds the `missing_payment` block (gated by the same Rent Ledger module);
+      `DashboardPage` routes both reminders to the Ledger.
+    - **No ✉ button, deliberately** — chasing a tenant in writing is a decision, not a side effect of an alert
+      rendering. `buildPaymentShortfallEmail` already exists (it powers the statement-review ✉), so wiring one
+      on is a small change if George wants it.
+    - **Integration test pins the whole chain** against the demo mock with the clock fixed to Aug 15 (Date
+      faked only, so the mock's promises still resolve): remove Bright Coffee's lump → one statement reminder
+      for Apr–Jul; then add City Dental's July deposit **with an `import_id`** → July drops off the reminder and
+      Bright Coffee is named for July at $6,500. `vitest run` **696/696**; `vite build` compiles; demo bundle
+      grepped free of the live ref; live 200s on all four URLs.
+  - **Flags (no action needed):** ① A property with no annual invoice for the year raises nothing at all —
+    there's no billing shape to judge months against. ② An import whose lines are all UNTAGGED lumps marks no
+    month as imported, so tier 2 stays quiet there — silence rather than a false accusation. ③ The full
+    behind-on-rent picture (amber cells, the "N mo behind" badge, the Collected column) still lives on the
+    **Ledger** grid, where the month-by-month context makes it readable.
 
 - **2026-07-26** — **README rewritten as the public repo's front door, with four screenshots — it was
   documenting features deleted a fortnight ago and omitting the Rent Ledger that replaced them** (George:

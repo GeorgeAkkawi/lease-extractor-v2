@@ -7,8 +7,12 @@
 // single forgotten upload read as a dozen accusations. These tests pin the fix: a month
 // is only considered once it has ended (plus a grace for the statement to arrive), and
 // any money at all on the property proves the month was logged.
+//
+// The complementary case (George, same day: "yes i would like to still have an alert for
+// a tenant who is missing on the month the user has imported") is at the bottom: once the
+// month IS imported, an absent tenant is a real gap worth naming.
 import { describe, test, expect } from 'vitest';
-import { monthClosedForLogging, unloggedMonths, allocatePayments } from '../ledger';
+import { monthClosedForLogging, unloggedMonths, missingOnImportedMonths, allocatePayments } from '../ledger';
 
 // One tenant at $6,500/mo, billed every month of 2026.
 const FULL_YEAR = Array(12).fill(6500);
@@ -97,5 +101,72 @@ describe('any money on the property means the month was logged', () => {
   test('no leases at all → nothing to remind about', () => {
     expect(unloggedMonths({ year: 2026, rows: [], today: TODAY })).toEqual([]);
     expect(unloggedMonths({})).toEqual([]);
+  });
+});
+
+describe('a tenant missing from a month that WAS imported', () => {
+  const TODAY = new Date('2026-07-27T12:00:00'); // Jan–Jun closed
+  const paidThrough = (through) => {
+    const r = Array(12).fill(0);
+    for (let m = 1; m <= through; m++) r[m - 1] = 6500;
+    return r;
+  };
+  // June's statement is in. Two tenants are in it; one isn't.
+  const ROWS = [
+    { lease_id: 'a', tenant_name: 'Bright Coffee', owed: FULL_YEAR, received: paidThrough(6) },
+    { lease_id: 'b', tenant_name: 'City Dental', owed: FULL_YEAR, received: paidThrough(6) },
+    { lease_id: 'c', tenant_name: 'Michuacana', owed: FULL_YEAR, received: paidThrough(5) },
+  ];
+
+  test('names the tenant, the month and the outstanding amount', () => {
+    const out = missingOnImportedMonths({ year: 2026, rows: ROWS, importedMonths: [6], today: TODAY });
+    expect(out).toEqual([{ lease_id: 'c', tenant_name: 'Michuacana', months: [6], amount: 6500 }]);
+  });
+
+  test('ONE entry per tenant however many months they are missing', () => {
+    const out = missingOnImportedMonths({ year: 2026, rows: ROWS, importedMonths: [4, 5, 6], today: TODAY });
+    expect(out).toHaveLength(1);
+    expect(out[0].months).toEqual([6]); // Michuacana is only absent from June
+  });
+
+  test('a month that was NOT imported is silent — hand-ticking one box accuses nobody', () => {
+    // Every month has SOME money (the tenants above), but nothing was imported. This is
+    // the guard that stops one manual ✓ turning into an alert for every other tenant.
+    expect(missingOnImportedMonths({ year: 2026, rows: ROWS, importedMonths: [], today: TODAY })).toEqual([]);
+  });
+
+  test('an imported month still running is silent until it closes', () => {
+    // A statement imported mid-July covers a partial period — an absent tenant may simply
+    // not have paid yet.
+    const rows = [{ lease_id: 'c', tenant_name: 'Michuacana', owed: FULL_YEAR, received: paidThrough(6) }];
+    expect(missingOnImportedMonths({ year: 2026, rows, importedMonths: [7], today: TODAY })).toEqual([]);
+  });
+
+  test('a month the tenant is not billed for is never "missing"', () => {
+    const midYear = { lease_id: 'd', tenant_name: 'Sunrise Yoga', owed: [0, 0, 0, 0, 0, 0, 6500, 6500, 6500, 6500, 6500, 6500], received: Array(12).fill(0) };
+    expect(missingOnImportedMonths({ year: 2026, rows: [midYear], importedMonths: [5, 6], today: TODAY })).toEqual([]);
+  });
+
+  test('a short payment is not a missing one — that difference lives on the grid', () => {
+    const short = Array(12).fill(0);
+    short[5] = 100; // paid something in June, just not enough
+    const rows = [{ lease_id: 'c', tenant_name: 'Michuacana', owed: FULL_YEAR, received: short }];
+    expect(missingOnImportedMonths({ year: 2026, rows, importedMonths: [6], today: TODAY })).toEqual([]);
+  });
+
+  test('the two reminders can never both fire for the same month', () => {
+    // An imported month has money on it by definition, so it is never "unlogged".
+    const imported = [6];
+    const unlogged = unloggedMonths({ year: 2026, rows: ROWS, today: TODAY });
+    const missing = missingOnImportedMonths({ year: 2026, rows: ROWS, importedMonths: imported, today: TODAY });
+    const missingMonths = new Set(missing.flatMap((m) => m.months));
+    expect(unlogged.filter((m) => missingMonths.has(m))).toEqual([]);
+  });
+
+  test('several missing months sum their outstanding rent', () => {
+    const rows = [{ lease_id: 'c', tenant_name: 'Michuacana', owed: FULL_YEAR, received: paidThrough(3) }];
+    const out = missingOnImportedMonths({ year: 2026, rows, importedMonths: [4, 5, 6], today: TODAY });
+    expect(out[0].months).toEqual([4, 5, 6]);
+    expect(out[0].amount).toBe(19500);
   });
 });

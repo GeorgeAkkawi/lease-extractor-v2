@@ -7,7 +7,10 @@ import { addMonths } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
-import { allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths, unloggedMonths } from './ledger';
+import {
+  allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths,
+  unloggedMonths, missingOnImportedMonths,
+} from './ledger';
 import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
@@ -2264,25 +2267,31 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true } = {}) 
     insuranceRequests: insReqR.data || [],
     corporations: corpR.data || [],
     annualReports: arR.data || [],
-    // Precomputed "these months still need logging" list for the statement reminder —
-    // built from the SAME ledger math the Rent Ledger grid paints, honoring the
-    // configurable grace after month end. Only fetched when the Rent Ledger module is on
-    // (else the alert is hidden anyway). Skipped on any error → no alert rather than a
-    // wrong one.
-    unloggedMonths: ledgerOn ? await computeUnloggedMonths(leases, escalations, abatements, leadDays) : [],
+    // Precomputed inputs for the two Rent Ledger reminders — built from the SAME math the
+    // Ledger grid paints, honoring the configurable grace after month end. Only fetched
+    // when the Rent Ledger module is on (else both alerts are hidden anyway). Skipped on
+    // any error → no alert rather than a wrong one.
+    ...(ledgerOn
+      ? await computeLedgerAlerts(leases, escalations, abatements, leadDays)
+      : { unloggedMonths: [], missingPayments: [] }),
   };
 }
 
-// Which CLOSED months of the current year still have no money recorded against them,
-// per property. Reuses owedByMonthForInvoice → allocatePayments → unloggedMonths so the
-// answer matches the Ledger tab exactly (never a flat total/12 that mis-reads a free
-// month or mid-year start). Returns [{ property_id, year, months: [1,2,6] }] for
-// properties with at least one unlogged month.
+// One pass over the year's annual invoices producing BOTH ledger reminders:
 //
-// Deliberately NOT per tenant and never about a month still running: the landlord's
-// statement lands after the month closes, so an empty month means "not logged yet",
-// not "the tenant is late". See unloggedMonths (ledger.js) for the full reasoning.
-async function computeUnloggedMonths(leases, escalations, abatements, leadDays) {
+//   unloggedMonths  — [{ property_id, year, months }] · CLOSED months with no money
+//                     recorded anywhere on the property. "You haven't logged this yet."
+//   missingPayments — [{ lease_id, property_id, tenant_name, year, months, amount }] ·
+//                     for months the property DID import, the tenants absent from it.
+//                     "The bank is reconciled and this one isn't in it."
+//
+// The two are mutually exclusive by construction: an imported month has money on it, so
+// it can never also read as unlogged. Both reuse owedByMonthForInvoice →
+// allocatePayments so the answers match the Ledger tab exactly (never a flat total/12
+// that mis-reads a free month or a mid-year start), and neither ever speaks about a
+// month still running — the statement only lands after the month closes.
+async function computeLedgerAlerts(leases, escalations, abatements, leadDays) {
+  const none = { unloggedMonths: [], missingPayments: [] };
   try {
     const year = Number(localDateIso().slice(0, 4));
     const graceDays = Number(leadDays?.unpaid_rent) > 0 ? Number(leadDays.unpaid_rent) : 7;
@@ -2292,9 +2301,11 @@ async function computeUnloggedMonths(leases, escalations, abatements, leadDays) 
         .eq('year', year)
     );
     const invoices = (invAll || []).filter(isAnnualInvoice);
-    if (!invoices.length) return [];
+    if (!invoices.length) return none;
+    // import_id is what proves a month was reconciled against the bank rather than ticked
+    // by hand — without it the missing-payment alert stays silent.
     const payRows = await rows(
-      supabase.from('payments').select('invoice_id,amount,paid_date,period_month').in('invoice_id', invoices.map((i) => i.id))
+      supabase.from('payments').select('invoice_id,amount,paid_date,period_month,import_id').in('invoice_id', invoices.map((i) => i.id))
     );
     const payByInvoice = {};
     (payRows || []).forEach((p) => { (payByInvoice[p.invoice_id] ||= []).push(p); });
@@ -2304,6 +2315,7 @@ async function computeUnloggedMonths(leases, escalations, abatements, leadDays) 
     (abatements || []).forEach((a) => { (abaByLease[a.lease_id] ||= []).push(a); });
     const leaseById = Object.fromEntries((leases || []).map((l) => [l.id, l]));
     const byProperty = {};
+    const importedByProperty = {};
     for (const inv of invoices) {
       const lease = leaseById[inv.lease_id];
       if (!lease || lease.is_active === false) continue;
@@ -2313,17 +2325,31 @@ async function computeUnloggedMonths(leases, escalations, abatements, leadDays) 
         abatements: abaByLease[inv.lease_id] || [],
       });
       if (!owedByMonth) continue; // no gross breakdown → can't judge months; skip
-      const allocation = allocatePayments({ owedByMonth, payments: payByInvoice[inv.id] || [] });
-      (byProperty[inv.property_id] ||= []).push({ owed: owedByMonth, received: allocation.received });
+      const pays = payByInvoice[inv.id] || [];
+      const allocation = allocatePayments({ owedByMonth, payments: pays });
+      (byProperty[inv.property_id] ||= []).push({
+        lease_id: inv.lease_id, tenant_name: lease.tenant_name,
+        owed: owedByMonth, received: allocation.received,
+      });
+      pays.forEach((p) => {
+        if (!p.import_id || !(p.period_month >= 1 && p.period_month <= 12)) return;
+        (importedByProperty[inv.property_id] ||= new Set()).add(Number(p.period_month));
+      });
     }
     const today = new Date();
-    return Object.entries(byProperty)
-      .map(([property_id, propRows]) => ({
-        property_id, year, months: unloggedMonths({ year, rows: propRows, today, graceDays }),
-      }))
-      .filter((p) => p.months.length > 0);
+    const out = { unloggedMonths: [], missingPayments: [] };
+    for (const [property_id, propRows] of Object.entries(byProperty)) {
+      const months = unloggedMonths({ year, rows: propRows, today, graceDays });
+      if (months.length) out.unloggedMonths.push({ property_id, year, months });
+      const missing = missingOnImportedMonths({
+        year, rows: propRows, today, graceDays,
+        importedMonths: [...(importedByProperty[property_id] || [])],
+      });
+      missing.forEach((m) => out.missingPayments.push({ ...m, property_id, year }));
+    }
+    return out;
   } catch {
-    return [];
+    return none;
   }
 }
 

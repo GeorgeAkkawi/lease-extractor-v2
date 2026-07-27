@@ -8,7 +8,8 @@ import { buildAlerts, alertKey } from '../alerts';
 const NOW = new Date('2026-01-15T12:00:00');
 const EMPTY = {
   leases: [], escalations: [], renewals: [], properties: [], insurance: [],
-  contracts: [], abatements: [], insuranceRequests: [], annualReports: [], corporations: [], unloggedMonths: [],
+  contracts: [], abatements: [], insuranceRequests: [], annualReports: [], corporations: [],
+  unloggedMonths: [], missingPayments: [],
 };
 
 const prop = { id: 'p1', name: 'Plaza', corporation_id: 'c1' };
@@ -127,6 +128,64 @@ describe('bank-statement reminder (replaces the per-tenant "behind on rent" aler
       undefined, NOW, { features: ['insurance'] }, // ledger not in the enabled set
     );
     expect(out.find((x) => x.focus === 'statement_reminder')).toBeUndefined();
+  });
+
+  test('a tenant absent from an IMPORTED month gets its own named alert', () => {
+    const out = buildAlerts(
+      {
+        ...EMPTY,
+        properties: [prop],
+        missingPayments: [{ lease_id: 'l1', property_id: 'p1', tenant_name: 'Michuacana', year: 2026, months: [6], amount: 5300 }],
+      },
+      undefined, NOW,
+    );
+    const a = out.find((x) => x.focus === 'missing_payment');
+    expect(a.tone).toBe('warn');
+    expect(a.title).toBe('No payment recorded — Michuacana');
+    expect(a.detail).toBe('June is imported with no payment from this tenant — $5,300 outstanding.');
+    expect(a.lease_id).toBe('l1');
+    expect(a.property_id).toBe('p1');
+  });
+
+  test('several missing months stay ONE alert for that tenant, and read as danger', () => {
+    const out = buildAlerts(
+      {
+        ...EMPTY,
+        properties: [prop],
+        missingPayments: [{ lease_id: 'l1', property_id: 'p1', tenant_name: 'Michuacana', year: 2026, months: [4, 5, 6], amount: 15900 }],
+      },
+      undefined, NOW,
+    );
+    const all = out.filter((x) => x.focus === 'missing_payment');
+    expect(all).toHaveLength(1);
+    expect(all[0].tone).toBe('danger');
+    expect(all[0].detail).toBe('April, May and June are imported with no payment from this tenant — $15,900 outstanding.');
+  });
+
+  test('the missing-payment alert outranks the statement reminder', () => {
+    const out = buildAlerts(
+      {
+        ...EMPTY,
+        properties: [prop],
+        unloggedMonths: [unlogged([3])],
+        missingPayments: [{ lease_id: 'l1', property_id: 'p1', tenant_name: 'Michuacana', year: 2026, months: [6], amount: 5300 }],
+      },
+      undefined, NOW,
+    );
+    const order = out.map((a) => a.focus);
+    expect(order.indexOf('missing_payment')).toBeLessThan(order.indexOf('statement_reminder'));
+  });
+
+  test('Rent Ledger module off → the missing-payment alert goes too', () => {
+    const out = buildAlerts(
+      {
+        ...EMPTY,
+        properties: [prop],
+        missingPayments: [{ lease_id: 'l1', property_id: 'p1', tenant_name: 'Michuacana', year: 2026, months: [6], amount: 5300 }],
+      },
+      undefined, NOW, { features: ['insurance'] },
+    );
+    expect(out.find((x) => x.focus === 'missing_payment')).toBeUndefined();
   });
 
   test('it sorts above what is not yet due, below what is genuinely overdue', () => {

@@ -328,3 +328,47 @@ export function unloggedMonths({ year, rows = [], today = new Date(), graceDays 
   }
   return out;
 }
+
+// The other half of the picture: once a month's statement IS imported, a tenant with
+// nothing on it is a real gap the landlord should chase — the bank has been reconciled
+// and this tenant simply isn't in it.
+//
+// `importedMonths` are the months the property has a payment carrying an import_id
+// (see computeLedgerAlerts in api.js), which is what separates "I reconciled this month
+// against the bank" from "I ticked one box by hand". Without that proof this stays
+// silent, so hand-marking a single tenant can never accuse the other eight.
+//
+// One entry per TENANT listing every month they're missing — never one per month — with
+// the outstanding total. `rows` carries the same owed/received arrays as unloggedMonths
+// plus the lease's identity. Mutually exclusive with unloggedMonths by construction: an
+// imported month has money on it, so it can never also be reported as unlogged.
+export function missingOnImportedMonths({
+  year, rows = [], importedMonths = [], today = new Date(), graceDays = 7, dust = 0.05,
+} = {}) {
+  const imported = new Set((importedMonths || []).map(Number).filter((m) => m >= 1 && m <= 12));
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    // Still only judge a CLOSED month: a statement imported mid-month covers a partial
+    // period, and a tenant absent from it may simply not have paid yet.
+    if (imported.has(m) && monthClosedForLogging(year, m, today, graceDays)) months.push(m);
+  }
+  if (!months.length) return [];
+  const out = [];
+  for (const r of rows || []) {
+    const owed = owedArray(r?.owed);
+    const received = Array.isArray(r?.received) ? r.received : [];
+    const missing = [];
+    let amount = 0;
+    for (const m of months) {
+      const i = m - 1;
+      if (!(owed[i] > dust)) continue;                  // out of term or free — nothing to miss
+      if ((Number(received[i]) || 0) > dust) continue;  // money on it, however little
+      missing.push(m);
+      amount = round2(amount + owed[i]);
+    }
+    if (missing.length) {
+      out.push({ lease_id: r?.lease_id, tenant_name: r?.tenant_name, months: missing, amount });
+    }
+  }
+  return out;
+}

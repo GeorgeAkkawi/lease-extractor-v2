@@ -1,4 +1,4 @@
-import { fmtDate } from './format';
+import { fmtDate, money0 } from './format';
 import { DEFAULT_LEAD_DAYS } from './notifyPrefs';
 
 const DAY = 86400000;
@@ -87,7 +87,7 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 //   • hiddenWidgets — the hidden_widgets array (reserved; no widget currently gates an alert).
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unloggedMonths },
+  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unloggedMonths, missingPayments },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
   { features = null, hiddenWidgets = [], leadDays = null } = {}, // eslint-disable-line no-unused-vars
@@ -326,6 +326,34 @@ export function buildAlerts(
         ? `Import your bank statements — ${propName}`
         : `Import your ${names[0]} statement — ${propName}`,
       detail: `Nothing recorded for ${listed} — import ${many ? 'those statements' : 'the bank statement'} to log payments and expenses.`,
+    });
+  });
+
+  // No payment recorded — the OTHER half, and the one that's genuinely about the tenant.
+  // It fires only for months the property actually IMPORTED (proven by a payment carrying
+  // an import_id), so the bank has been reconciled and this tenant simply isn't in it.
+  // Hand-ticking one box never triggers it, and a month still running never does either —
+  // which is what keeps it from becoming the wall of accusations it replaced. One alert
+  // per TENANT listing every month they're missing, never one per month.
+  (ledgerOn ? missingPayments || [] : []).forEach((p) => {
+    const months = (p.months || []).filter((m) => m >= 1 && m <= 12).sort((a, b) => a - b);
+    if (!months.length) return;
+    const corpId = propMap[p.property_id]?.corporation_id;
+    const listed = joinMonths(months.map((m) => MONTH_NAMES[m - 1]));
+    const latest = months[months.length - 1];
+    const lastDay = new Date(p.year, latest, 0).getDate();
+    out.push({
+      lease_id: p.lease_id, property_id: p.property_id, corporation_id: corpId,
+      focus: 'missing_payment',
+      tone: months.length >= 3 ? 'danger' : 'warn',
+      bucketLabel: 'Not received',
+      date: `${p.year}-${String(latest).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`,
+      // Above the statement reminder (this one is a real gap, not a to-do), below
+      // anything with a genuinely overdue date of its own.
+      days: -10 - months.length,
+      months, year: p.year, amount: p.amount,
+      title: `No payment recorded — ${p.tenant_name || 'tenant'}`,
+      detail: `${listed} ${months.length > 1 ? 'are' : 'is'} imported with no payment from this tenant${p.amount > 0 ? ` — ${money0(p.amount)} outstanding` : ''}.`,
     });
   });
 
