@@ -75,6 +75,64 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-26** — **README rewritten as the public repo's front door, with four screenshots — it was
+  documenting features deleted a fortnight ago and omitting the Rent Ledger that replaced them** (George:
+  *"what does the read me say this project is"* → *"do you think you could update it and make it more
+  comprehensive?"*; his two scoping picks: screenshots **yes — "make some of them the financials page and ledger
+  page"**, and **one thorough README** rather than a README + ARCHITECTURE split). **DOCS ONLY — NO Cloudflare
+  deploy (the README isn't in the bundle), no `src/` change, no migration, no edge functions, $0, no tenant
+  emails, nothing destructive.** Tests **663/663 across 84 files** (unchanged — run to prove nothing was
+  touched). Commit + push only.
+  - **Why it needed doing, precisely.** The repo has been **public since 2026-07-07**, made public so reviewers
+    could read the source — so the README is the front door. It failed at that three ways. ① It described an app
+    that no longer exists: it listed "a monthly rent tracker, AR aging" and a "receivables" Overview card, all
+    **deleted 2026-07-13** (`cfe506f`). ② It never mentioned most of what shipped since — the **Rent Ledger**
+    (the replacement for exactly those three), bank-statement import, CAM/tax reconciliation, the two Excel
+    exports, the Settings hub, the feature switchboard, per-type notification leads, insurance, contracts,
+    annual reports, riders, TOTP 2FA, auto sign-out. ③ It linked **neither the live app nor the demo sandbox** —
+    for a repo meant to be evaluated, the zero-setup demo link is the single most valuable line in the file.
+  - **A correction I made to myself before writing.** I'd told George "Ask Amlak" was stale copy, from a
+    7/07 deploy-log entry describing a rename to "Ask AI". The code says otherwise (`Sidebar.js:114`,
+    `AskPage.js:27,104` all read "Ask Amlak"; no "Ask AI" string exists in the tree) — that rename was reversed
+    when the app was re-branded Amlak. The README keeps "Ask Amlak". **Lesson: read the code, not the log.**
+  - **Screenshots — demo sandbox ONLY, never the live app**, because the live account holds real tenant names,
+    rents and balances and the repo is public. Built `build-demo`, served it locally, drove system Chrome
+    headless via `node_modules/playwright-core` (the shared MCP browser was held by a concurrent session).
+    1440×900 at DSF 2, ledger at 1720 wide so the Collected column isn't clipped; **1.2 MB for all four**, well
+    inside the ~3 MB budget, so DSF 2 stayed. **Zero console errors on every capture.** The demo seed happens to
+    be the better subject anyway — it shows **every ledger cell state at once** (Bright Coffee's untagged
+    $78,000 lump filling Jan→Dec FIFO · City Dental's tagged Jan/Feb ✓, a ◐ short March, amber unpaid Apr–Jul,
+    a "4 mo behind" badge and an "expired — held over" flag).
+  - **The four:** `financials.png` + `ledger.png` (**George's two picks**), `ai-review.png` (the differentiator —
+    AI badges with the source clause and page ref for each field, above the **code-built** rent schedule showing
+    $96,000 → $98,880/yr "ROLLED FORWARD"), `overview.png`. Each carries a caption saying what it *demonstrates*,
+    not what it is.
+  - **The README (87 → 355 lines), eleven parts:** live + demo links first → screenshots → what it does (7 areas
+    + a short list of the rest) → how it fits together (the 3 views, the triggers, the 3 cron jobs, year-close) →
+    **the rules this codebase holds itself to** (money math never runs through a model · the model reads raw
+    figures and code multiplies · nothing writes without review · undo on every consequential action · honest
+    failure over a plausible lie) → the AI pipeline with its time boxes, the 16-union ceiling, and a
+    **cost-per-operation table** → security → testing → repo layout → running it → notes.
+  - **Every claim traced to code before it was written**, and four were corrected mid-draft as a result:
+    ① `ask-leases` is 10/min, not the 30/min the other Q&A functions use, so the rate-limit line now names all
+    three tiers; ② the alert list sorts by `days`, not severity (`alerts.js:303`), so "ranked by urgency" became
+    "ordered by how soon each one bites"; ③ **not** every alert row has a ✉ (the behind-on-rent one has no
+    outside recipient — visible in the screenshot), so the caption now says "where there's someone to write to";
+    ④ "RLS on every table" → "every **data** table" (`security_events` is service-role only). Also verified
+    against source: 66 migrations · 19 edge functions · 19 pages · 45 components · the 3 `security_invoker`
+    views · cron at 06:00/06:15/13:00 · the 25 MiB pinned-MIME bucket · the 2-account beta cap · `unpdf` ·
+    CHUNK_PAGES 10 × 9 chunks = 90 pages · every one of the 13 test files cited exists.
+  - **Files:** `README.md` (rewritten), `docs/screenshots/{overview,ai-review,financials,ledger}.png` (new).
+    Nothing else — `.claude/` tooling left untracked as always.
+  - **Flagged, deliberately NOT changed** (say the word and I'll do any separately): ① two live copy bugs found
+    while researching — `dashboardWidgets.js:9` labels the card *"Expiring ≤ 90 days"* while the page renders
+    **"≤ 6 months"** over a 183-day filter (`DashboardPage.js:149,182`), and `features.js:14` still describes a
+    "collected/owes column on Financials" removed in `60c9d69`; ② dead code — `src/lib/arStatus.js` and
+    `src/components/InvoiceButton.js` are imported by nothing; ③ `api.js:2924` builds an email for
+    `insurance_chase`, but `alertCanEmail` never returns true for it, so that ✉ can't render; ④ **`CLAUDE.md`
+    is public** — several thousand lines of internal working notes, visible to anyone reading the repo. Nothing
+    sensitive in it, but worth a conscious decision to keep, trim, or move out of the public tree.
+
 - **2026-07-25** — **The sign-in mark is now genuinely square on the wordmark (yesterday's nudge had the right
   size, the wrong sign AND the wrong anchor) and the lockup is centred on the card** (George: *"lineup and center
   the logo on the log in page with the word AMLAK"* — the second time he's raised the alignment, correctly).
