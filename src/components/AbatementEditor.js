@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listAbatements, createAbatement, deleteAbatement } from '../lib/api';
+import { listAbatements, createAbatement, deleteAbatement, resyncLeaseBilling } from '../lib/api';
+import { settleBillingChange } from '../lib/invalidate';
 import { abatementEnd, abatementMonthCount, abatementKindLabel } from '../lib/abatement';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
@@ -22,10 +23,17 @@ export default function AbatementEditor({ lease }) {
   const [value, setValue] = useState('');
   const [note, setNote] = useState('');
 
+  const propId = lease.property_id || null;
+  const fy = new Date().getFullYear();
+
   const refresh = () => {
-    ['abatements', 'lease', 'invoices', 'payments', 'tenantShares']
-      .forEach((key) => qc.invalidateQueries({ queryKey: [key] }));
+    qc.invalidateQueries({ queryKey: ['abatements', leaseId] });
+    settleBillingChange(qc, { propertyId: propId, leaseId, year: fy });
   };
+  // A free / reduced window credits those months, so the year's stored invoice and its
+  // system-marked paid months have to move with it — the Ledger and the breakdown
+  // rebuild themselves from the live windows, the invoice does not.
+  const carryThrough = () => resyncLeaseBilling(leaseId, propId, fy);
 
   const end = start && months ? abatementEnd(start, Number(months)) : null;
   const monthlyBase = (Number(lease.base_rent) || 0) / 12;
@@ -36,18 +44,24 @@ export default function AbatementEditor({ lease }) {
     : monthlyBase;
 
   const add = useMutation({
-    mutationFn: () => createAbatement({
-      lease_id: leaseId,
-      start_date: start,
-      end_date: end,
-      kind,
-      value: kind === 'free' ? null : (value === '' ? null : Number(value)),
-      note: note || null,
-    }),
+    mutationFn: async () => {
+      await createAbatement({
+        lease_id: leaseId,
+        start_date: start,
+        end_date: end,
+        kind,
+        value: kind === 'free' ? null : (value === '' ? null : Number(value)),
+        note: note || null,
+      });
+      await carryThrough();
+    },
     onSuccess: () => { setMonths(''); setValue(''); setNote(''); refresh(); },
   });
 
-  const remove = useMutation({ mutationFn: (id) => deleteAbatement(id), onSuccess: refresh });
+  const remove = useMutation({
+    mutationFn: async (id) => { await deleteAbatement(id); await carryThrough(); },
+    onSuccess: refresh,
+  });
 
   const valueLabel = kind === 'percent' ? '% abated' : kind === 'amount' ? 'Reduced $/mo' : '';
 

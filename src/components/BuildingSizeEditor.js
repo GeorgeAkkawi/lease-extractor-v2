@@ -1,32 +1,44 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { updateProperty } from '../lib/api';
+import { updateProperty, resyncPropertyBilling } from '../lib/api';
+import { settleBillingChange } from '../lib/invalidate';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
 
 // Edit a property's building size after creation (drives vacancy & occupancy).
-export default function BuildingSizeEditor({ propId, buildingSf }) {
+export default function BuildingSizeEditor({ propId, buildingSf, year }) {
   const qc = useQueryClient();
   const [val, setVal] = useState('');
   const [saved, setSaved] = useState(null); // post-save ↩ Undo (restores the prior size)
   useEffect(() => { setVal(buildingSf ?? ''); }, [buildingSf]);
+  const fy = year || new Date().getFullYear();
 
   const invalidate = () => {
     // The building size is the tax/CAM/roof divisor, so re-divide every downstream
     // figure the moment it's saved: rate cards, per-tenant breakdown, invoices.
     qc.invalidateQueries({ queryKey: ['property', propId] });
-    qc.invalidateQueries({ queryKey: ['propertyTotals', propId] });
     qc.invalidateQueries({ queryKey: ['properties'] });
-    qc.invalidateQueries({ queryKey: ['leases', propId] }); // vacancy on the leases page
-    qc.invalidateQueries({ queryKey: ['tenantShares', propId] }); // per-tenant breakdown + invoices
+    settleBillingChange(qc, { propertyId: propId, year: fy });
   };
+
+  // Changing the divisor re-splits EVERY tenant's share, so every live annual invoice
+  // on the property follows — not just the breakdown and the Ledger, which rebuild
+  // themselves from the live figures.
+  const carryThrough = () => resyncPropertyBilling(propId, fy);
 
   const save = useMutation({
     // `prev` (the pre-save size, or null) rides along for the undo.
-    mutationFn: (_prev) => updateProperty(propId, { building_sf: val === '' ? null : Number(val) }),
+    mutationFn: async (_prev) => {
+      const out = await updateProperty(propId, { building_sf: val === '' ? null : Number(val) });
+      await carryThrough();
+      return out;
+    },
     onSuccess: (_data, prev) => {
       invalidate();
-      setSaved({ label: 'building size saved', undo: () => updateProperty(propId, { building_sf: prev }) });
+      setSaved({
+        label: 'building size saved',
+        undo: async () => { await updateProperty(propId, { building_sf: prev }); await carryThrough(); },
+      });
     },
   });
 

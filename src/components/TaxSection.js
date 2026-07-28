@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listTaxLineItems, addTaxLineItem, deleteTaxLineItem, getExpenseRecord, upsertExpenseRecord } from '../lib/api';
+import { listTaxLineItems, addTaxLineItem, deleteTaxLineItem, getExpenseRecord, upsertExpenseRecord, resyncPropertyBilling } from '../lib/api';
+import { settleBillingChange } from '../lib/invalidate';
 import { money } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
@@ -27,34 +28,50 @@ export default function TaxSection({ propId, year, expense }) {
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['taxLineItems', propId, year] });
     qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
-    qc.invalidateQueries({ queryKey: ['propertyTotals', propId, year] });
-    qc.invalidateQueries({ queryKey: ['tenantShares', propId, year] });
-    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // taxes feed the corp roll-up
+    settleBillingChange(qc, { propertyId: propId, year });
   };
 
+  // The tax total is billed pro-rata to every tenant, so the year's stored invoices
+  // follow a line being added, removed or re-entered.
+  const carryThrough = () => resyncPropertyBilling(propId, year);
+
   const add = useMutation({
-    mutationFn: () => addTaxLineItem({ property_id: propId, year, label: label.trim() || 'Property tax', amount: Number(amount) || 0 }),
+    mutationFn: async () => {
+      const item = await addTaxLineItem({ property_id: propId, year, label: label.trim() || 'Property tax', amount: Number(amount) || 0 });
+      await carryThrough();
+      return item;
+    },
     onSuccess: (item) => {
       setLabel(''); setAmount(''); invalidate();
-      setSaved({ label: `added ${item.label}`, undo: () => deleteTaxLineItem(item.id, propId, year) });
+      setSaved({
+        label: `added ${item.label}`,
+        undo: async () => { await deleteTaxLineItem(item.id, propId, year); await carryThrough(); },
+      });
     },
   });
   const remove = useMutation({
-    mutationFn: (it) => deleteTaxLineItem(it.id, propId, year),
+    mutationFn: async (it) => { const out = await deleteTaxLineItem(it.id, propId, year); await carryThrough(); return out; },
     onSuccess: (_data, it) => {
       invalidate();
-      setSaved({ label: `removed ${it.label}`, undo: () => addTaxLineItem({ property_id: propId, year, label: it.label, amount: it.amount }) });
+      setSaved({
+        label: `removed ${it.label}`,
+        undo: async () => { await addTaxLineItem({ property_id: propId, year, label: it.label, amount: it.amount }); await carryThrough(); },
+      });
     },
   });
   const saveFlat = useMutation({
     // `prevTaxes` (the pre-save figure, or null) rides along for the undo.
-    mutationFn: (_prevTaxes) => upsertExpenseRecord({
-      property_id: propId,
-      year,
-      taxes_total: Number(flat) || 0,
-      cam_total: expense?.cam_total ?? 0,
-      roof_total: expense?.roof_total ?? 0,
-    }),
+    mutationFn: async (_prevTaxes) => {
+      const out = await upsertExpenseRecord({
+        property_id: propId,
+        year,
+        taxes_total: Number(flat) || 0,
+        cam_total: expense?.cam_total ?? 0,
+        roof_total: expense?.roof_total ?? 0,
+      });
+      await carryThrough();
+      return out;
+    },
     onSuccess: (_data, prevTaxes) => {
       invalidate();
       setSaved({
@@ -69,6 +86,7 @@ export default function TaxSection({ propId, year, expense }) {
             cam_total: Number(cur?.cam_total) || 0,
             roof_total: Number(cur?.roof_total) || 0,
           });
+          await carryThrough();
         },
       });
     },

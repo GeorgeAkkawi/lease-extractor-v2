@@ -1,7 +1,8 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests } from '../lib/api';
+import { settleBillingChange } from '../lib/invalidate';
 import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
 import { buildLeaseAskContext } from '../lib/leaseContext';
@@ -22,6 +23,12 @@ import { currentPhase } from '../lib/leaseTerm';
 import { reducedMonthlyBase, abatementKindLabel } from '../lib/abatement';
 import { PageSkeleton } from '../components/Skeleton';
 import { sf, pct, psf, money, fmtDate } from '../lib/format';
+
+// Lease fields that FEED what the tenant is billed: the rent itself, the two figures
+// that set the tenant's share of taxes/CAM/roof, and the term end (which decides how
+// many months the year bills). Editing one of these has to carry through to the stored
+// invoice; editing a name, contact or note must not.
+const BILLING_FIELDS = new Set(['base_rent', 'square_footage', 'share_override_pct', 'lease_termination_date']);
 
 export default function LeaseDetailPage() {
   const { corpId, propId, leaseId } = useParams();
@@ -87,12 +94,22 @@ export default function LeaseDetailPage() {
   };
 
   // Save one field; clear its AI review flag (set conf to 1) when present.
+  //
+  // A field in BILLING_FIELDS feeds what the tenant is billed, so the year's stored
+  // invoice has to follow it — the breakdown and the Ledger rebuild themselves from
+  // live data, the invoice is a frozen copy that otherwise goes stale. A tenant-name
+  // or contact edit must NOT rewrite an invoice, hence the set rather than "always".
   const saveField = useMutation({
-    mutationFn: ({ field, value }) => {
+    mutationFn: async ({ field, value }) => {
       const conf = lease.ai_confidence ? { ...lease.ai_confidence, [field]: 1 } : lease.ai_confidence;
-      return updateLease(leaseId, { [field]: value, ai_confidence: conf, extraction_status: 'reviewed' });
+      const out = await updateLease(leaseId, { [field]: value, ai_confidence: conf, extraction_status: 'reviewed' });
+      if (BILLING_FIELDS.has(field)) await resyncLeaseBilling(leaseId, propId, new Date().getFullYear());
+      return out;
     },
-    onSuccess: invalidate,
+    onSuccess: (_d, { field }) => {
+      invalidate();
+      if (BILLING_FIELDS.has(field)) settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
+    },
   });
   // Set/correct the lease start date and DATE the whole schedule from the cached
   // extraction (fills the end date + all rent steps). Used by the "no start date"
@@ -103,19 +120,33 @@ export default function LeaseDetailPage() {
       const conf = lease.ai_confidence ? { ...lease.ai_confidence, lease_start: 1 } : lease.ai_confidence;
       if (conf !== lease.ai_confidence) await updateLease(leaseId, { ai_confidence: conf, extraction_status: 'reviewed' });
       if (!value) return updateLease(leaseId, { lease_start: null });
-      return anchorLeaseSchedule(leaseId, value);
+      const out = await anchorLeaseSchedule(leaseId, value);
+      // The start decides which months are in term (and dates every rent step), so
+      // the year's proration moves with it — carry it through to the invoice.
+      await resyncLeaseBilling(leaseId, propId, new Date().getFullYear());
+      return out;
     },
     onSuccess: () => {
       invalidate();
       qc.invalidateQueries({ queryKey: ['escalations', leaseId] });
       qc.invalidateQueries({ queryKey: ['abatements', leaseId] });
       qc.invalidateQueries({ queryKey: ['renewals', leaseId] });
+      settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
       setStartInput('');
     },
   });
+  // Roof responsibility flips whether the roof line is billed to this tenant at all,
+  // so the invoice has to follow it.
   const setRoof = useMutation({
-    mutationFn: (v) => updateLease(leaseId, { roof_responsible: v }),
-    onSuccess: invalidate,
+    mutationFn: async (v) => {
+      const out = await updateLease(leaseId, { roof_responsible: v });
+      await resyncLeaseBilling(leaseId, propId, new Date().getFullYear());
+      return out;
+    },
+    onSuccess: () => {
+      invalidate();
+      settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
+    },
   });
   // Save the ONE combined CAM & tax estimate (George: one number). Stored in the
   // combined convention est_cam_annual = the whole figure, est_tax_annual = 0 — the

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listEscalations, createEscalation, deleteEscalation, backfillLeaseToToday } from '../lib/api';
+import { listEscalations, createEscalation, deleteEscalation, backfillLeaseToToday, resyncLeaseBilling } from '../lib/api';
+import { settleBillingChange } from '../lib/invalidate';
 import { computeEscalatedRent, priorRentBefore } from '../lib/escalations';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
@@ -63,21 +64,26 @@ export default function EscalationScheduleEditor({ lease }) {
     hiddenPast = past.length - visPast.length;
   }
 
+  const propId = lease?.property_id || null;
+  const fy = new Date().getFullYear();
+
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['escalations', leaseId] });
-    qc.invalidateQueries({ queryKey: ['lease', leaseId] }); // base rent up top may have changed
     qc.invalidateQueries({ queryKey: ['propertyEscalations'] });
-    qc.invalidateQueries({ queryKey: ['propertyTotals'] });
-    qc.invalidateQueries({ queryKey: ['tenantShares'] });
-    qc.invalidateQueries({ queryKey: ['alerts'] });
-    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // escalations change current rent → corp revenue
+    settleBillingChange(qc, { propertyId: propId, leaseId, year: fy });
   };
 
   // Adding or removing a step can change the rent in effect TODAY — re-resolve the
   // lease's current base rent so the header, financials, and this table always agree
-  // (a past-dated step takes effect immediately instead of waiting for a reload).
+  // (a past-dated step takes effect immediately instead of waiting for a reload), then
+  // carry that new rent through to the year's stored invoice, which does not rebuild
+  // itself from the lease the way the breakdown and the Ledger do.
   const remove = useMutation({
-    mutationFn: async (id) => { await deleteEscalation(id); await backfillLeaseToToday(leaseId); },
+    mutationFn: async (id) => {
+      await deleteEscalation(id);
+      await backfillLeaseToToday(leaseId);
+      await resyncLeaseBilling(leaseId, propId, fy);
+    },
     onSuccess: refresh,
   });
 
@@ -99,6 +105,7 @@ export default function EscalationScheduleEditor({ lease }) {
       // A step dated today or earlier takes effect now; backfill applies it and updates
       // the lease's base rent (future-dated steps stay scheduled until their date).
       await backfillLeaseToToday(leaseId);
+      await resyncLeaseBilling(leaseId, propId, fy);
     },
     onSuccess: () => { setValue(''); setDate(''); refresh(); },
   });

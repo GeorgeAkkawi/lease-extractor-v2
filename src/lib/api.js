@@ -1533,6 +1533,10 @@ export async function syncRentPctCamItems(propertyId, year) {
 // the year are all handled here — so a multi-year contract needs no re-entry when a new
 // fiscal year opens; viewing the year self-heals it. Idempotent: writes only on a real
 // change, then re-sums the CAM total. Mirrors src/lib/contracts.js.
+//
+// Returns { total, changed } — `changed` says whether this call actually wrote, so the
+// caller can carry a real CAM movement through to the year's invoices without doing so
+// on every page visit. (syncRentPctCamItems returns the same signal as a bare boolean.)
 export async function syncContractCamItems(propertyId, year) {
   const uid = await ownerId();
   const [contracts, items] = await Promise.all([
@@ -1563,8 +1567,8 @@ export async function syncContractCamItems(propertyId, year) {
     if (!coveringIds.has(cid)) { await rows(supabase.from('cam_line_items').delete().eq('id', it.id)); changed = true; }
   }
 
-  if (changed) return syncCamTotal(propertyId, year);
-  return items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
+  if (changed) return { total: await syncCamTotal(propertyId, year), changed: true };
+  return { total: items.reduce((s, it) => s + (Number(it.amount) || 0), 0), changed: false };
 }
 
 // ---- Computed views ---------------------------------------------------------
@@ -1817,6 +1821,60 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
     monthsResynced += 1;
   }
   return { invoice, monthsResynced };
+}
+
+// A year is "closed" once it has a financial_snapshots row — what closeYear writes
+// and reopenYear removes. The snapshot itself is immutable either way, so this isn't
+// about protecting History; it's about not rewriting a bill that was already sent.
+export async function isYearClosed(propertyId, year) {
+  if (!propertyId || !year) return false;
+  const snaps = await listSnapshots(propertyId).catch(() => []);
+  return (snaps || []).some((s) => Number(s.year) === Number(year));
+}
+
+// ---- Automatic follow-through -----------------------------------------------
+// The two functions below are for when a figure that FEEDS billing moved as a side
+// effect of some other edit — square footage, roof responsibility, a rent step, an
+// abatement, the building size, a CAM or tax total. The Financials breakdown and the
+// Ledger grid build UP from live data so they follow on their own; the stored invoice
+// is a frozen copy and does not, which is how it goes quietly stale.
+//
+// They differ from resyncYearBillingToEstimate (which they call) in ONE way: a year
+// the landlord has CLOSED is left exactly as it was. The distinction that makes that
+// right: there, the landlord typed a billed figure on that year's screen and meant it;
+// here they changed something else entirely, and a bill already sent for a closed year
+// should not move underneath them.
+export async function resyncLeaseBilling(leaseId, propertyId, year) {
+  if (!leaseId || !propertyId || !year) return { invoice: null, monthsResynced: 0, skipped: 'incomplete' };
+  if (await isYearClosed(propertyId, year)) return { invoice: null, monthsResynced: 0, skipped: 'closed' };
+  return resyncYearBillingToEstimate(leaseId, propertyId, year);
+}
+
+// A PROPERTY-wide figure moved (building size — the share denominator; a CAM, tax or
+// roof total — the numerator), so every tenant's share re-splits and every live annual
+// invoice on the property has to follow. Fans out over the invoices that actually
+// exist, reusing the per-lease resync so there stays exactly one implementation of the
+// math. Returns { leases, monthsResynced } — how many invoices moved, and how many
+// system-marked months were re-stamped across them.
+export async function resyncPropertyBilling(propertyId, year) {
+  if (!propertyId || !year) return { leases: 0, monthsResynced: 0, skipped: 'incomplete' };
+  if (await isYearClosed(propertyId, year)) return { leases: 0, monthsResynced: 0, skipped: 'closed' };
+  const invoices = await rows(
+    supabase
+      .from('invoices')
+      .select('id, lease_id, year, kind, status')
+      .eq('property_id', propertyId)
+      .eq('year', Number(year))
+      .neq('status', 'void')
+  );
+  const leaseIds = [...new Set((invoices || []).filter(isAnnualInvoice).map((i) => i.lease_id).filter(Boolean))];
+  const results = await Promise.all(
+    leaseIds.map((id) => resyncYearBillingToEstimate(id, propertyId, year).catch(() => null))
+  );
+  return {
+    leases: results.filter((r) => r?.invoice).length,
+    monthsResynced: results.reduce((s, r) => s + (r?.monthsResynced || 0), 0),
+  };
 }
 
 // buildLeaseSchedule (the term-aware monthly schedule builder) lives in

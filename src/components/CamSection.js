@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals } from '../lib/api';
+import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals, resyncPropertyBilling } from '../lib/api';
+import { settleBillingChange } from '../lib/invalidate';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
 import { money } from '../lib/format';
 import MutationError from './MutationError';
@@ -26,8 +27,13 @@ export default function CamSection({ propId, year, expense }) {
     // amount) and true up any rent-percentage line, then list — so opening any fiscal
     // year keeps its contract costs and management fee current.
     queryFn: async () => {
-      await syncContractCamItems(propId, year);
-      await syncRentPctCamItems(propId, year);
+      const contracts = await syncContractCamItems(propId, year);
+      const rentPct = await syncRentPctCamItems(propId, year);
+      // Only when a sync actually WROTE (a contract's escalated cost moved, the rent
+      // basis changed) does the CAM total differ — carry that through to the year's
+      // invoices. Both syncs are idempotent, so a plain revisit reports no change and
+      // this never fires; opening a page must not rewrite bills for nothing.
+      if (contracts?.changed || rentPct) await resyncPropertyBilling(propId, year);
       return listCamLineItems(propId, year);
     },
   });
@@ -58,38 +64,62 @@ export default function CamSection({ propId, year, expense }) {
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['camLineItems', propId, year] });
     qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
-    qc.invalidateQueries({ queryKey: ['propertyTotals', propId, year] });
-    qc.invalidateQueries({ queryKey: ['tenantShares', propId, year] });
-    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // CAM feeds the corp roll-up
+    settleBillingChange(qc, { propertyId: propId, year });
   };
 
+  // A billable CAM line changes what EVERY tenant on the property is charged, so the
+  // year's stored invoices follow it — the breakdown and the Ledger rebuild themselves
+  // from live expenses, the invoice is a frozen copy that would otherwise go stale.
+  const carryThrough = () => resyncPropertyBilling(propId, year);
+
   const add = useMutation({
-    mutationFn: () => addCamLineItem({
-      property_id: propId,
-      year,
-      label: label.trim(),
-      // A percentage line stores BOTH: the dollars that bill, and the rate they came
-      // from — so the row can say what it is and follow the rent when it changes.
-      amount: pctMode ? feeAmount : Number(amount) || 0,
-      rent_pct: pctMode ? Number(pct) || 0 : null,
-      billable: !notBilled,
-    }),
+    mutationFn: async () => {
+      const item = await addCamLineItem({
+        property_id: propId,
+        year,
+        label: label.trim(),
+        // A percentage line stores BOTH: the dollars that bill, and the rate they came
+        // from — so the row can say what it is and follow the rent when it changes.
+        amount: pctMode ? feeAmount : Number(amount) || 0,
+        rent_pct: pctMode ? Number(pct) || 0 : null,
+        billable: !notBilled,
+      });
+      if (item.billable !== false) await carryThrough();
+      return item;
+    },
     onSuccess: (item) => {
       setLabel(''); setAmount(''); setPct(''); setPctMode(false); setNotBilled(false); invalidate();
-      setSaved({ label: `added ${item.label}`, undo: () => deleteCamLineItem(item.id, propId, year) });
+      setSaved({
+        label: `added ${item.label}`,
+        undo: async () => { await deleteCamLineItem(item.id, propId, year); if (item.billable !== false) await carryThrough(); },
+      });
     },
   });
   const remove = useMutation({
-    mutationFn: (it) => deleteCamLineItem(it.id, propId, year),
+    mutationFn: async (it) => {
+      const out = await deleteCamLineItem(it.id, propId, year);
+      if (it.billable !== false) await carryThrough();
+      return out;
+    },
     onSuccess: (_data, it) => {
       invalidate();
       // Undo re-adds the same label/amount/kind (a fresh row — it lands at the list's end).
-      setSaved({ label: `removed ${it.label}`, undo: () => addCamLineItem({ property_id: propId, year, label: it.label, amount: it.amount, rent_pct: it.rent_pct ?? null, billable: it.billable !== false }) });
+      setSaved({
+        label: `removed ${it.label}`,
+        undo: async () => {
+          await addCamLineItem({ property_id: propId, year, label: it.label, amount: it.amount, rent_pct: it.rent_pct ?? null, billable: it.billable !== false });
+          if (it.billable !== false) await carryThrough();
+        },
+      });
     },
   });
   const saveFlat = useMutation({
     // `prevCam` (the pre-save flat total, or null) rides along for the undo.
-    mutationFn: (_prevCam) => upsertExpenseRecord({ property_id: propId, year, taxes_total: expense?.taxes_total ?? 0, cam_total: Number(flat) || 0, roof_total: expense?.roof_total ?? 0 }),
+    mutationFn: async (_prevCam) => {
+      const out = await upsertExpenseRecord({ property_id: propId, year, taxes_total: expense?.taxes_total ?? 0, cam_total: Number(flat) || 0, roof_total: expense?.roof_total ?? 0 });
+      await carryThrough();
+      return out;
+    },
     onSuccess: (_data, prevCam) => {
       invalidate();
       setSaved({
@@ -104,6 +134,7 @@ export default function CamSection({ propId, year, expense }) {
             cam_total: Number(prevCam) || 0,
             roof_total: Number(cur?.roof_total) || 0,
           });
+          await carryThrough();
         },
       });
     },

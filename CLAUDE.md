@@ -57,6 +57,110 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 >
 > Outside those four, treat "confirmed" as "ship it."
 
+## Following a change through
+
+> **Standing instruction (George, 2026-07-27):** *"A lot of times, changing one thing in this
+> software will have a lot of downstream effects on other places — like updating rent updates
+> a lot of other things on the financials page, and vice versa. If you're changing something
+> that has other implications, follow that line of logic and line of reasoning to make sure
+> that nothing breaks long term, that all of those functions are coherent with each other and
+> build off of one another, and nothing is left behind."*
+
+**The rule.** Trace it **both ways before** the first edit — what feeds this value, and what
+reads it — then walk the same chain **forward after**, confirming each link still agrees. If
+you can't finish a link, say so explicitly in your reply *and* in the deploy-log entry. An
+unfinished chain nobody names is exactly how a figure goes quietly stale.
+
+This is not a general reminder to be careful. In this codebase a figure is entered once and
+read by a dozen surfaces through shared pure functions, three SQL views, a hand-written demo
+mirror and ~20 React Query key families — and **none of that is visible from the file you
+happen to be editing**. The map below is what to check; every entry is code-verified.
+
+### 1. The money spine
+
+```
+leases (base_rent · est_*_annual · square_footage · share_override_pct ·
+        roof_responsible · lease_start · lease_termination_date)
+expense_records + cam_line_items + tax_line_items · properties.building_sf
+        │
+        ├─→ v_tenant_shares / v_property_totals   (the split — SQL)
+        │        │
+        │        ├─→ buildLeaseSchedule → componentizeSchedule → the Ledger grid
+        │        ├─→ billedComponents → the Financials per-tenant breakdown
+        │        └─→ draft-invoice (edge) → a NEW invoice
+        │
+        └─→ invoices  ← A FROZEN COPY. It does not rebuild itself.
+                 └─→ v_invoice_balances → Outstanding / receivables / the alerts'
+                     owedByMonthForInvoice path
+```
+
+**The asymmetry is the whole point.** The breakdown and the Ledger build **up** from live data
+(deliberate — 2026-07-21), so they follow any edit on their own. The stored invoice does not.
+So anything that moves a billed figure must call the carry-through:
+
+- one lease → `resyncLeaseBilling(leaseId, propertyId, year)`
+- a property-wide figure (building size, a CAM / tax / roof total) → `resyncPropertyBilling(propertyId, year)`
+- then `settleBillingChange(qc, { propertyId, leaseId, year })` (`src/lib/invalidate.js`) so the
+  screens repaint
+
+Both skip a **closed** year (one with a `financial_snapshots` row) — a bill already sent must not
+move under the landlord because they edited something else. The four **explicit** estimate saves
+call `resyncYearBillingToEstimate` directly and deliberately do not skip: there the landlord typed
+a billed figure on that year's screen and meant it.
+
+### 2. The three choke points
+
+Change one of these and you have changed every money screen at once. Read all the callers first.
+
+| Function | Lives in | Read by |
+|---|---|---|
+| `buildLeaseSchedule` | `src/lib/leaseSchedule.js` | `ledger.js`, `api.js` (5 call sites) — and note its **two documented modes**: projection (no `invoiceTotal`) vs reconcile-to-bill (scales + penny-folds to settle an issued invoice exactly) |
+| `allocatePayments` / `componentizeSchedule` | `src/lib/ledger.js` | the Ledger grid, the reminders, `closeYear`. `componentizeSchedule` holds the invariant **base + camTax + roof === owed** per month |
+| `billedComponents` | `src/lib/reconciliation.js` | `TenantShareTable`, `LeasesPage`, `ledger.js`, `reconciliationData.js`, `api.js` |
+
+### 3. Mirrors that must move together
+
+Two implementations of one rule always drift unless changed in the same commit.
+
+- **JS ↔ SQL twins:** `effective_rent` (migration `0054`) ↔ `effectiveRent` (`escalations.js:38`) ·
+  `abatement_credit` (`0041`) ↔ `abatement.js` · `app_today()` (`0051`) ↔ `localDateIso` (`api.js:36`).
+- **The estimate-preferred billing math exists in four copies:** `reconciliation.js:30`,
+  `draft-invoice/index.ts:78`, `resyncYearBillingToEstimate` in `api.js`, and `mockClient.js:464`.
+- **The demo mock hand-implements the views.** `mockClient.js` reimplements `v_property_totals`
+  (:37), `v_tenant_shares` (:73), `v_invoice_balances` (:111), `draft-invoice` (:369) and
+  `create_lease_tx` (:774). **A view change without a matching mock change means the suite passes
+  over behaviour that is broken live** — which is precisely the `not()` incident (see the comment
+  at `mockClient.js:155`). Update both, same commit.
+
+### 4. Registries where every entry has to be filled
+
+- **A new alert type** touches: the `buildAlerts` block · its feature gate · the **`alertKey`
+  anchor chain** (`alerts.js:23` — a new entity id must be added there or the key collapses to
+  `undefined` and dismissals collide) · a `NOTIFY_TYPES` entry (`notifyPrefs.js`) if it has a lead ·
+  `alertCanEmail` + `goToAlert` (`DashboardPage.js:100,119`) · the `fetchAlertData` payload ·
+  and, if it emails, a `send-reminders` sweep plus a `*_notice_bucket` column to dedupe on
+  (`0057`/`0059`).
+- **A new optional module** touches `FEATURES` (`features.js:11`) plus every gate that reads it —
+  tabs, route redirects, page sections, `buildAlerts`, `fetchAlertData`, the email sweep, the Ask
+  facts, and the demo mock. `grep -rl "isOn('insurance')"` is the fastest way to see the full set.
+- **A new Ask Amlak fact** must bump the `snapshotFingerprint` version prefix (`portfolio.js:61`,
+  now `v4`) — otherwise every previously cached answer keeps serving the thinner summary.
+
+### 5. Deploy fan-out — a shared edge module makes its importers stale
+
+`_shared/cors.ts` and `_shared/ratelimit.ts` → **17** functions · `_shared/anthropic.ts` → **13** ·
+`_shared/pdf.ts` and `_shared/docx.ts` → **3** each · `_shared/rentSchedule.js` and
+`_shared/analystVerdicts.js` → **2** each. Redeploy every importer in the same round, or the
+deployed copy silently drifts from source.
+
+### 6. Query-key invalidation
+
+Two shared sets exist, and they are deliberately different: **`settleBillingChange`**
+(`src/lib/invalidate.js`) for "a billed figure moved", and **`settleStatementImport`**
+(`ImportStatementButton.js:98`) for the wider statement-specific set (register, learned payees,
+history). Use one of them rather than hand-rolling a third list — hand-rolled lists drift apart by
+omission, which is how the invoice drift above survived unnoticed.
+
 ## Deploying to production
 
 - **Target:** Cloudflare Worker named `amlak` (serves the static `./build` directory).
@@ -74,6 +178,98 @@ Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
 > **Standing instruction (George, 2026-06-30):** Every time George confirms a change
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
+
+- **2026-07-27** — **A standing rule for downstream effects — and the one live gap it described,
+  closed: the stored invoice can no longer drift from the live figures** (George: *"A lot of times,
+  changing one thing in this software will have a lot of downstream effects on other places… like
+  updating rent updates a lot of other things on the financials page, and vice versa. I wanna make
+  sure that in the MD, there's something that talks about this kind of logic… if you're changing
+  something that has other implications, follow that line of logic and line of reasoning to make sure
+  that nothing breaks long term and that all of those functions are coherent with each other and
+  build off of one another, and nothing is left behind."*; asked how far to take it he chose
+  **rule + auto-resync everywhere**). Deployed: frontend Cloudflare version `8b5688ed`, demo worker
+  `6e505190`. **Frontend + `src/lib` + docs only — $0, NO DB migration, NO edge functions, no AI
+  calls, no tenant emails.** Tests **703/703** (was 696 — +7 in `estimateResync`).
+  - **The gap was real, not hypothetical.** `resyncYearBillingToEstimate` (api.js) is what moves a
+    stored annual invoice back in line with the live lease figures, and it had exactly **four**
+    callers — the two estimate editors, `applyAddendum`, and statement import. So editing a tenant's
+    **square footage**, **share override**, **roof responsibility**, the **building size**, a **CAM or
+    tax total**, a **rent escalation** or an **abatement** re-split `v_tenant_shares` — and the
+    Financials breakdown and the Ledger grid followed, because they build **up** from live data (the
+    2026-07-21 design) — while the **invoice kept its old total**. Everything reading that invoice
+    (`v_invoice_balances.balance`, Outstanding / receivables, the alerts' `owedByMonthForInvoice`
+    path) stayed stale until something unrelated happened to trigger a resync.
+  - **Part 1 — the rule.** New CLAUDE.md section **"Following a change through"**, between *Acting on
+    a confirmed change* and *Deploying to production*: George's instruction in his own words, then
+    *trace it both ways BEFORE the first edit, walk the chain forward AFTER, and name any link you
+    can't finish*. Then the map, written as an "if you changed X, also check Y" checklist so it gets
+    consulted rather than read: ① the money spine as a diagram, with **the asymmetry stated
+    explicitly** — screens rebuild themselves, the invoice is a frozen copy ② the three choke points
+    (`buildLeaseSchedule` and its two modes · `allocatePayments`/`componentizeSchedule` and the
+    base+camTax+roof === owed invariant · `billedComponents`) ③ mirrors that must move together —
+    the JS↔SQL twins, the **four** copies of the estimate math, and the demo mock's five hand-written
+    views, with the `not()` incident named as what happens when only one side moves ④ registries
+    where every entry has to be filled (9 touchpoints for an alert type — including the `alertKey`
+    anchor chain, where a missing entity id collapses the key to `undefined`; the feature registry;
+    the Ask fingerprint bump) ⑤ deploy fan-out (`cors.ts`/`ratelimit.ts` → **17** functions,
+    `anthropic.ts` → 13, `pdf`/`docx` → 3, `rentSchedule`/`analystVerdicts` → 2) ⑥ the two shared
+    invalidation sets. **Every file:line in it was re-verified against the code before writing**, not
+    taken from this log.
+  - **Part 2 — two safety properties make automating it correct.** ① **Real money is never
+    rewritten**: the resync re-stamps only **system** mark-paid months (`import_id == null && note ==
+    null`), so a bank-imported deposit or a manually-noted payment survives and a genuine short/over
+    payment still trues up at ⚖ Reconcile. ② **A closed year is never touched** — a year with a
+    `financial_snapshots` row is skipped. **Deliberate refinement of the plan:** the guard sits on the
+    NEW automatic paths, not inside `resyncYearBillingToEstimate` itself. The distinction is real —
+    on the four explicit paths the landlord typed a billed figure on that year's screen and meant it;
+    here they changed something else entirely, and a bill already sent shouldn't move underneath them.
+    It also means **zero behaviour change and zero regression risk** on the four existing callers
+    (putting it inside would have silently changed them, and would have broken on the demo seed, whose
+    prop-1 closes the current year).
+  - **New in `api.js`:** `isYearClosed(propertyId, year)` · `resyncLeaseBilling(leaseId, propertyId,
+    year)` · **`resyncPropertyBilling(propertyId, year)`**, which fans out over the property's live
+    `kind='annual'` invoices reusing the per-lease resync — so there is still exactly ONE
+    implementation of the math. `syncContractCamItems` now returns `{ total, changed }` (no caller
+    used the old number) so a year-open auto-carry can report whether it actually wrote.
+  - **New `src/lib/invalidate.js`** — `settleBillingChange(qc, { propertyId, leaseId, year })`, the one
+    invalidation set for "a billed figure moved" (10 key families). Each editor still invalidates its
+    own list; the shared part can't drift apart again. Deliberately **not** merged with
+    `settleStatementImport` — that's a wider statement-specific set, and two named sets beat one that
+    fits neither.
+  - **Nine call sites wired** — per-lease: `LeaseDetailPage` `saveField` (gated on a **`BILLING_FIELDS`**
+    set — `base_rent`, `square_footage`, `share_override_pct`, `lease_termination_date` — so a
+    tenant-name edit never rewrites an invoice), `setRoof`, `anchorStart`; `EscalationScheduleEditor`
+    (add + delete, after `backfillLeaseToToday`); `AbatementEditor` (add + delete). Property-wide:
+    `BuildingSizeEditor` (the share denominator — now takes the page's `year`), `CamSection` (add /
+    remove / flat save / **undo**, and on year-open **only when a contract or rent-% sync actually
+    wrote** — a plain page visit must not rewrite bills), `TaxSection`, `PropertyFinancialsPage`
+    `ExpenseForm` (roof). Lease-page edits use the current calendar year (the `saveEstCamTax`
+    precedent); Financials edits use the page's selected FY. **`LeaseForm.js` needed nothing** — it is
+    only the create path, and a new lease has no invoice, so the resync already no-ops.
+  - **Files:** `CLAUDE.md`, `src/lib/api.js`, `src/lib/invalidate.js` (new),
+    `src/pages/{LeaseDetailPage,PropertyFinancialsPage}.js`, `src/components/{EscalationScheduleEditor,
+    AbatementEditor,BuildingSizeEditor,CamSection,TaxSection}.js`,
+    `src/lib/__tests__/estimateResync.test.js`. No DB, edge-fn, CSS or demo-seed change.
+  - **Verified:** unit **703/703** (`vitest run`) — the 7 new cases run against the demo mock on
+    **prop-2** (the open-year property, whose Sunrise Yoga lease starts Jul 1 → exactly 6 in-term
+    months, so its figures are date-stable): a closed year is refused (`skipped: 'closed'`, invoice
+    byte-identical) · an SF change doubles that tenant's CAM and tax while base rent stays put · a roof
+    toggle moves the roof line to $1,000 and back to $0 · an applied rent step re-prices base
+    $18,000 → $24,000 · a **property** CAM change moves **both** tenants' invoices (`leases: 2`) · and
+    an `import_id`-carrying and a noted payment still survive the new automatic path untouched.
+    `npm run build` compiles; demo bundle grepped **free of the live ref** `awgrjmbcghdjgnqeiqkt`
+    before deploying; live 200s on all four URLs. Browser drive-through skipped per George's standing
+    preference (the tests drive the real resync + invalidation path against the mock).
+  - **⚠ Flag — this moves real invoices the first time it fires.** It reverses a prior default on
+    purpose: on **2026-07-21** I deliberately did *not* regenerate drifted invoices, because changing a
+    billed amount was George's call. That entry recorded roughly **3–4% CAM drift** across several
+    Pershing tenants and a **~$23k outlier on D&D Dental** — invoices generated before their expenses
+    grew. The first CAM, tax, building-size or lease-figure edit on a property now snaps every affected
+    invoice to current figures in one go, which will read as a **visible jump in Outstanding**. Nothing
+    is lost (the figures are recomputed from live data, no real payment is rewritten, and closed years
+    are untouched) — but it shouldn't arrive as a surprise. If George would rather see the drift before
+    it settles, a quiet *"this invoice is out of date · refresh"* line with a one-click resync is a
+    small follow-on on exactly this plumbing.
 
 - **2026-07-27** — **The Overview stopped accusing tenants of being late: the per-tenant "behind on rent" alert
   is replaced by ONE calm "import your bank statement" reminder per property, and it never fires until the month

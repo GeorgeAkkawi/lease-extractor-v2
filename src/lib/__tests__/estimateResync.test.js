@@ -13,10 +13,12 @@
 //   lease-2 (City Dental, prop-1): inv-2 — Jan+Feb tagged SYSTEM marks ($9,150 each,
 //     note null, no import_id) + a $4,000 UNTAGGED partial. No estimate → bills actuals.
 //   lease-4 (Sunrise Yoga, prop-2): mid-year start (Jul 1), NO invoice yet.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
   resyncYearBillingToEstimate, updateLease, getYearInvoice, getMonthlyRent,
   recordPayment, ensureInvoice,
+  isYearClosed, resyncLeaseBilling, resyncPropertyBilling,
+  upsertExpenseRecord, createEscalation, deleteEscalation, listEscalations,
 } from '../api';
 import { currentYear } from '../format';
 
@@ -99,5 +101,151 @@ describe('resyncYearBillingToEstimate', () => {
     expect(amt(byMonth, 1)).toBeNull(); // Jan is before the tenancy — never billed
     // Invoice total ties to the sum of the monthly boxes (George's "box == left rail").
     expect(round2(annual)).toBe(round2(inv.total_amount));
+  });
+});
+
+// The stored invoice is a frozen copy; the Financials breakdown and the Ledger grid
+// build UP from live data. So anything that FEEDS billing — square footage, roof
+// responsibility, a rent step, an expense total, the building size — used to move the
+// screens while the invoice stayed put, and everything reading that invoice (balances,
+// Outstanding, the alerts' owed-by-month) went quietly stale. These pin the carry-
+// through, and the two properties that make automating it safe.
+//
+// prop-2 (Oak Center) is the open-year property: building 6,000 SF · FY expenses
+// taxes $40,000 / CAM $30,000 / roof $12,000 · lease-3 Northwind (5,000 SF, 40% share
+// override, term ends ~3 weeks out so its year is prorated) · lease-4 Sunrise Yoga
+// (1,000 SF = 1/6 of the building, starts Jul 1 → exactly 6 in-term months, so its
+// figures are date-stable). prop-1 carries a snapshot for the current year (snap-2),
+// which makes it the closed-year case.
+describe('automatic follow-through — the invoice can no longer drift', () => {
+  const TAXES = 40000;
+  const CAM = 30000;
+  const ROOF = 12000;
+  const setExpenses = (cam) => upsertExpenseRecord({ property_id: 'prop-2', year: Y, taxes_total: TAXES, cam_total: cam, roof_total: ROOF });
+
+  beforeAll(async () => {
+    // Bill ACTUALS on Sunrise Yoga (the earlier block left a $6,000 combined estimate
+    // on it, which is estimate-preferred and so wouldn't follow an expense change).
+    await updateLease('lease-4', { est_cam_annual: null, est_tax_annual: null, est_roof_annual: null });
+    await ensureInvoice('lease-3', 'prop-2', Y);
+    await setExpenses(CAM);
+    await resyncPropertyBilling('prop-2', Y); // normalise both invoices to the live figures
+  });
+
+  it('knows which years are closed', async () => {
+    expect(await isYearClosed('prop-1', Y)).toBe(true); // snap-2
+    expect(await isYearClosed('prop-2', Y)).toBe(false);
+    expect(await isYearClosed('prop-2', Y + 5)).toBe(false);
+  });
+
+  it('a CLOSED year is left exactly as it was — a bill already sent does not move', async () => {
+    const before = await getYearInvoice('lease-2', Y);
+    await updateLease('lease-2', { square_footage: 4000 }); // would re-split the share
+    try {
+      expect((await resyncLeaseBilling('lease-2', 'prop-1', Y)).skipped).toBe('closed');
+      expect((await resyncPropertyBilling('prop-1', Y)).skipped).toBe('closed');
+      const after = await getYearInvoice('lease-2', Y);
+      expect(after.total_amount).toBe(before.total_amount);
+      expect(after.cam_annual).toBe(before.cam_annual);
+    } finally {
+      await updateLease('lease-2', { square_footage: 3000 });
+    }
+  });
+
+  it('a lease billing field carries through to that lease’s invoice', async () => {
+    // Baseline: 6 in-term months → ratio ½. CAM 30,000 × 1/6 = 5,000 → 2,500;
+    // tax 40,000 × 1/6 = 6,666.67 → 3,333.34 (the annual share is rounded to the cent
+    // before the term ratio is applied, exactly as draft-invoice does it);
+    // base 36,000 → 18,000.
+    const before = await getYearInvoice('lease-4', Y);
+    expect(before.cam_annual).toBe(2500);
+    expect(before.tax_annual).toBe(3333.34);
+    expect(before.base_rent_annual).toBe(18000);
+
+    await updateLease('lease-4', { square_footage: 2000 }); // 1/6 → 2/6 of the building
+    try {
+      expect((await resyncLeaseBilling('lease-4', 'prop-2', Y)).invoice).toBeTruthy();
+      const after = await getYearInvoice('lease-4', Y);
+      expect(after.cam_annual).toBe(5000);    // 30,000 × 2/6 × ½
+      expect(after.tax_annual).toBe(6666.67); // 40,000 × 2/6 × ½
+      expect(after.base_rent_annual).toBe(18000); // the rent itself did not change
+      expect(round2(after.total_amount)).toBe(29666.67);
+    } finally {
+      await updateLease('lease-4', { square_footage: 1000 });
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+    }
+  });
+
+  it('roof responsibility carries through — it decides whether roof bills at all', async () => {
+    expect((await getYearInvoice('lease-4', Y)).roof_annual).toBe(0);
+    await updateLease('lease-4', { roof_responsible: true });
+    try {
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+      expect((await getYearInvoice('lease-4', Y)).roof_annual).toBe(1000); // 12,000 × 1/6 × ½
+    } finally {
+      await updateLease('lease-4', { roof_responsible: false });
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+    }
+    expect((await getYearInvoice('lease-4', Y)).roof_annual).toBe(0);
+  });
+
+  it('a rent step that has taken effect re-prices the invoice', async () => {
+    // The end state EscalationScheduleEditor produces once backfillLeaseToToday has
+    // applied a past-dated step: the ledger row is applied and the lease's base rent
+    // has moved with it.
+    const esc = await createEscalation({
+      lease_id: 'lease-4', effective_date: `${Y}-07-01`, escalation_type: 'manual',
+      escalation_value: null, new_base_rent: 48000, status: 'applied',
+    });
+    await updateLease('lease-4', { base_rent: 48000 });
+    try {
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+      // 6 in-term months at $48,000/yr → $24,000 (was $18,000 at $36,000/yr).
+      expect((await getYearInvoice('lease-4', Y)).base_rent_annual).toBe(24000);
+    } finally {
+      await deleteEscalation(esc.id);
+      await updateLease('lease-4', { base_rent: 36000 });
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+    }
+    expect((await listEscalations('lease-4')).length).toBe(0);
+    expect((await getYearInvoice('lease-4', Y)).base_rent_annual).toBe(18000);
+  });
+
+  it('a PROPERTY figure moves EVERY tenant’s invoice, not just the one being edited', async () => {
+    const b3 = await getYearInvoice('lease-3', Y);
+    const b4 = await getYearInvoice('lease-4', Y);
+    await setExpenses(CAM * 2); // the CAM total is billed pro-rata to everyone
+    try {
+      const res = await resyncPropertyBilling('prop-2', Y);
+      expect(res.leases).toBe(2); // both tenants' invoices followed
+      // Sunrise Yoga is date-stable: 60,000 × 1/6 × ½.
+      expect((await getYearInvoice('lease-4', Y)).cam_annual).toBe(5000);
+      expect((await getYearInvoice('lease-4', Y)).cam_annual).toBe(round2(b4.cam_annual * 2));
+      // Northwind's year is prorated against a rolling term end, so pin the doubling
+      // rather than an absolute figure — the relationship is what matters.
+      const a3 = await getYearInvoice('lease-3', Y);
+      expect(a3.cam_annual).toBeCloseTo(b3.cam_annual * 2, 1);
+      expect(a3.tax_annual).toBe(b3.tax_annual); // taxes untouched → so is the tax line
+    } finally {
+      await setExpenses(CAM);
+      await resyncPropertyBilling('prop-2', Y);
+    }
+    expect((await getYearInvoice('lease-4', Y)).cam_annual).toBe(b4.cam_annual);
+  });
+
+  it('still never rewrites a bank-imported or manually-noted payment', async () => {
+    const invId = (await getYearInvoice('lease-4', Y)).id;
+    await recordPayment({ invoice_id: invId, lease_id: 'lease-4', amount: 1234.56, paid_date: `${Y}-10-04`, method: 'ach', note: null, period_month: 10, import_id: 'imp-auto' });
+    await recordPayment({ invoice_id: invId, lease_id: 'lease-4', amount: 2345.67, paid_date: `${Y}-11-04`, method: 'ach', note: 'wire ref 99', period_month: 11 });
+    await setExpenses(CAM * 3);
+    try {
+      await resyncPropertyBilling('prop-2', Y);
+      const { byMonth } = await getMonthlyRent('lease-4', Y);
+      expect(amt(byMonth, 10)).toBe(1234.56); // bank import — a recorded fact
+      expect(amt(byMonth, 11)).toBe(2345.67); // manually noted
+    } finally {
+      await setExpenses(CAM);
+      await resyncPropertyBilling('prop-2', Y);
+    }
   });
 });

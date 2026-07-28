@@ -8,7 +8,9 @@ import {
   getExpenseRecord,
   upsertExpenseRecord,
   undoStatementImport,
+  resyncPropertyBilling,
 } from '../lib/api';
+import { settleBillingChange } from '../lib/invalidate';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import FinancialsTabs from '../components/FinancialsTabs';
 import TenantShareTable from '../components/TenantShareTable';
@@ -157,7 +159,7 @@ export default function PropertyFinancialsPage() {
           onDismiss={() => setImported(null)}
         />
         <MutationError of={[undoImport]} />
-        <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} />
+        <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} year={year} />
         <ExpenseForm propId={propId} year={year} expense={expense} qc={qc} />
         <div className="cam-block">
           <div className="cam-head">
@@ -226,21 +228,27 @@ function ExpenseForm({ propId, year, expense, qc }) {
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
-    qc.invalidateQueries({ queryKey: ['propertyTotals', propId, year] });
-    qc.invalidateQueries({ queryKey: ['tenantShares', propId, year] });
-    qc.invalidateQueries({ queryKey: ['corpRollups'] }); // expenses feed the corp roll-up
+    settleBillingChange(qc, { propertyId: propId, year });
   };
+
+  // The roof total is billed to the roof-responsible tenants, so the year's stored
+  // invoices follow it — the breakdown and the Ledger rebuild from the live expense
+  // record, the invoice is a frozen copy that would otherwise go stale.
+  const carryThrough = () => resyncPropertyBilling(propId, year);
 
   const save = useMutation({
     // `prev` (the pre-save roof figure, or null on a first-ever save) rides along for the undo.
-    mutationFn: (_prev) =>
-      upsertExpenseRecord({
+    mutationFn: async (_prev) => {
+      const out = await upsertExpenseRecord({
         property_id: propId,
         year,
         taxes_total: expense?.taxes_total ?? 0, // preserved; maintained by the tax section
         cam_total: expense?.cam_total ?? 0,     // preserved; maintained by the CAM section
         roof_total: Number(roof) || 0,
-      }),
+      });
+      await carryThrough();
+      return out;
+    },
     onSuccess: (_data, prev) => {
       invalidate();
       setSaved({
@@ -257,6 +265,7 @@ function ExpenseForm({ propId, year, expense, qc }) {
             cam_total: Number(cur?.cam_total) || 0,
             roof_total: prev ? prev.roof : 0,
           });
+          await carryThrough();
         },
       });
     },
