@@ -8,6 +8,7 @@ import { useFeatures, isFeatureOn } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
 import { money, sf, psf, fmtDate } from '../lib/format';
 import NotificationEmailModal from '../components/NotificationEmailModal';
+import { useConfirm } from '../components/ConfirmDialog';
 import { PageSkeleton } from '../components/Skeleton';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 
@@ -23,6 +24,7 @@ export default function DashboardPage() {
   const [emailBusyAlert, setEmailBusyAlert] = useState(null); // alertKey while drafting its email
   const [undoDecline, setUndoDecline] = useState(null); // { id, tenant } after "Not renewing"
   const [rentEntry, setRentEntry] = useState(null); // { leaseId, value } when a renewal has no listed rent
+  const askConfirm = useConfirm();
   usePageChrome([{ label: 'Overview' }]);
   const { year } = useChrome(); // shared fiscal year — same selector the property pages use
 
@@ -80,9 +82,28 @@ export default function DashboardPage() {
   async function confirmRenewal(n, newRent) {
     setBusyNotif(n.id);
     try {
-      const res = await confirmRenewalForLease(n.lease_id, new Date(), newRent != null ? { newRent } : {});
+      const opts = newRent != null ? { newRent } : {};
+      let res = await confirmRenewalForLease(n.lease_id, new Date(), opts);
       if (res?.needsRent) { setRentEntry({ leaseId: n.lease_id, value: '' }); return; }
       if (res?.needsTermEnd) { window.alert('Set this lease’s term-end date first — a renewal extends the term from where it ends, so there’s nothing to roll forward without it.'); return; }
+      // The option books LESS than the rent in effect today — usually a stale option
+      // quoting an earlier term's figure. Show both figures before writing anything;
+      // the lease page shows the same warning in its own dialog.
+      if (res?.needsDecreaseOk) {
+        const ok = await askConfirm({
+          title: 'Apply a renewal that LOWERS the rent?',
+          message: `${res.optionLabel || 'This option'} books ${money(res.newRent)}/yr from ${fmtDate(res.effectiveFrom)}.`,
+          implications: [
+            `The rent in effect today is ${money(res.currentRent)} — this is ${money(res.currentRent - res.newRent)}/yr less.`,
+            'A stated rent well below today’s usually means the option belongs to an earlier term the lease has since been extended past.',
+            'An applied option can’t be undone from here.',
+          ],
+          confirmLabel: 'Apply anyway',
+          tone: 'danger',
+        });
+        if (!ok) return;
+        res = await confirmRenewalForLease(n.lease_id, new Date(), { ...opts, acceptDecrease: true });
+      }
       setRentEntry(null);
       refreshAfterRenewal();
     } finally { setBusyNotif(null); }

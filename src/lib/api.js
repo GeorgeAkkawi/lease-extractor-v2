@@ -3,7 +3,7 @@
 // edit invalidates and refreshes Page 2.
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
-import { addMonths } from './renewals';
+import { addMonths, optionLapsed, renewalFirstYearRent } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
@@ -2631,8 +2631,10 @@ function isRenewalDecisionDue(lease, ren, today = new Date()) {
   const termEnd = lease?.lease_termination_date;
   if (!termEnd) return false;
   const todayIso = localDateIso(today);
-  // Once the committed term has ended, the option lapsed unexercised — stop asking.
-  if (termEnd < todayIso) return false;
+  // Lapsed options are not a live decision — the term already ended, or the notice
+  // window belonged to a term the lease has since been extended past. Either way,
+  // stop asking. (optionLapseReason, src/lib/renewals.js — SQL twin in 0068.)
+  if (optionLapsed(ren, termEnd, todayIso)) return false;
   // The prompt opens a bit before the deadline: at the option's notice-by date if the
   // lease states one, else ~6 months before the committed term end. It stays open only
   // through the decision window (up to term end).
@@ -2659,14 +2661,10 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newR
   const newStart = lease.lease_termination_date;              // new term begins as the old one ends
   const newEnd = addMonths(lease.lease_termination_date, ren.term_months || 12);
   const oldRent = Number(lease.base_rent) || 0;
-  // First renewal-year rent, in precedence: a figure the landlord typed at renewal
-  // (options whose rent the lease left open — "fair market value" etc.) wins; else the
-  // option's own explicit new_rent; else apply the annual % to the prior rent; else
-  // carry the prior rent.
+  // First renewal-year rent — one shared rule (renewalFirstYearRent, ./renewals) so the
+  // figure the confirm dialog warns about is exactly the figure written here.
   const pct = Number(ren.annual_escalation_pct) || 0;
-  const newRent = newRentOverride != null && Number(newRentOverride) > 0
-    ? round2(Number(newRentOverride))
-    : ren.new_rent != null ? Number(ren.new_rent) : (pct > 0 ? round2(oldRent * (1 + pct / 100)) : oldRent);
+  const newRent = renewalFirstYearRent(ren, oldRent, newRentOverride);
   const prop = await getProperty(lease.property_id);
   if (prop?.corporation_id && !corpCache.has(prop.corporation_id)) {
     corpCache.set(prop.corporation_id, await getCorporation(prop.corporation_id));
@@ -2795,6 +2793,25 @@ export async function confirmRenewal(renewalId, today = new Date(), opts = {}) {
   // { needsRent } sentinel the UI already understands).
   if (!lease.lease_termination_date) return { needsTermEnd: true, renewalId: ren.id };
 
+  // Guard: confirming books the option's first-year rent. When that lands BELOW the
+  // rent in effect today it is usually a stale option quoting an earlier term's figure
+  // (the 2026-07-28 case: a 2008 option offering $19,386 against a current $31,800.96).
+  // Genuine decreases do happen, so this is a confirmation, not a block — the caller
+  // re-calls with { acceptDecrease: true } once the landlord has seen both figures.
+  // Returned from here rather than from a screen so every entry point inherits it.
+  const currentRent = Number(lease.base_rent) || 0;
+  const bookedRent = renewalFirstYearRent(ren, currentRent, opts.newRent);
+  if (!opts.acceptDecrease && currentRent > 0 && bookedRent > 0 && bookedRent < currentRent - 0.005) {
+    return {
+      needsDecreaseOk: true,
+      renewalId: ren.id,
+      optionLabel: ren.option_label || null,
+      currentRent,
+      newRent: bookedRent,
+      effectiveFrom: lease.lease_termination_date,
+    };
+  }
+
   const { newStart, newEnd, oldRent, newRent, business, prop } = await rollLeaseIntoRenewal(lease, ren, uid, new Map(), opts.newRent, today);
 
   await logHistoryEvent({
@@ -2919,7 +2936,9 @@ export async function confirmRenewalForLease(leaseId, today = new Date(), opts =
   // yet, don't apply blind — tell the caller to collect the agreed new base rent first.
   const hasRent = opt.new_rent != null || Number(opt.annual_escalation_pct) > 0;
   if (!hasRent && opts.newRent == null) return { needsRent: true, renewalId: opt.id };
-  return confirmRenewal(opt.id, today, { newRent: opts.newRent });
+  // Forward acceptDecrease so the bell can re-call after showing the below-current-rent
+  // warning, exactly as the lease page does.
+  return confirmRenewal(opt.id, today, { newRent: opts.newRent, acceptDecrease: opts.acceptDecrease });
 }
 export async function declineRenewalForLease(leaseId) {
   const pending = await rows(
@@ -3147,6 +3166,14 @@ export async function promptDueRenewalDecisions(today = new Date()) {
       supabase.from('renewal_options').select('*').eq('lease_id', lease.id).eq('status', 'pending').order('notice_by_date')
     );
     const ren = pending[0];
+    // A lapsed option isn't a live decision. The term-ended case is caught above; this
+    // catches the option whose NOTICE window belonged to a term an addendum has since
+    // extended past — its prompt is stale, so clear it rather than leaving the landlord
+    // a "Yes — apply renewal" button that books an earlier term's rent.
+    if (ren && optionLapsed(ren, lease.lease_termination_date, todayIso)) {
+      await rows(supabase.from('notifications').delete().eq('lease_id', l.id).eq('kind', 'renewal_decision'));
+      continue;
+    }
     if (!ren || !isRenewalDecisionDue(lease, ren, today)) continue;
 
     // one open decision per lease at a time. Don't re-prompt if we already asked AND the

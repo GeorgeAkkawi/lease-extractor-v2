@@ -123,7 +123,9 @@ Change one of these and you have changed every money screen at once. Read all th
 Two implementations of one rule always drift unless changed in the same commit.
 
 - **JS ↔ SQL twins:** `effective_rent` (migration `0054`) ↔ `effectiveRent` (`escalations.js:38`) ·
-  `abatement_credit` (`0041`) ↔ `abatement.js` · `app_today()` (`0051`) ↔ `localDateIso` (`api.js:36`).
+  `abatement_credit` (`0041`) ↔ `abatement.js` · `app_today()` (`0051`) ↔ `localDateIso` (`api.js:36`) ·
+  the renewal-option lapse rule in `apply_due_renewals()` (`0068`) ↔ `optionLapseReason`
+  (`renewals.js`).
 - **The estimate-preferred billing math exists in four copies:** `reconciliation.js:30`,
   `draft-invoice/index.ts:78`, `resyncYearBillingToEstimate` in `api.js`, and `mockClient.js:464`.
 - **The demo mock hand-implements the views.** `mockClient.js` reimplements `v_property_totals`
@@ -178,6 +180,83 @@ omission, which is how the invoice drift above survived unnoticed.
 > **Standing instruction (George, 2026-06-30):** Every time George confirms a change
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
+
+- **2026-07-28** — **A stale renewal option can no longer pose as a live decision — and no renewal can
+  quietly book a rent BELOW the one in effect today** (George: *"theres an outdated renewal on the beauty and
+  barber shop, if i click that will it force the renewal on the current lease terms or does the software
+  recognize the past due date and not update"* → after I traced it and named the two bugs, *"yeah do that"*).
+  Deployed: DB migration `0068` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), frontend
+  Cloudflare version `b726e21d`, demo worker `30d59b20`. **$0, NO edge functions, no AI calls, no tenant
+  emails, nothing destructive** (0068 is one `create or replace function`; the only rows it removes are
+  stale `renewal_decision` prompts, which regenerate whenever a decision is genuinely due). Tests
+  **717/717** (was 703 — +14 in a new `renewalLapse` suite).
+  - **The answer to his question was "neither", which is why it needed fixing.** Clicking Renew would NOT
+    have forced the option onto today's terms — `rollLeaseIntoRenewal`'s future branch leaves `lease_start`
+    and `base_rent` alone (the 2026-07-02 fix). But the app also did **not** recognize the past deadline:
+    staleness was judged on the committed **term end** alone. His lease reads `lease_start` 2004-01-01,
+    term end **2030-05-31** (carried there by addendums), base rent **$31,800.96**, with a pending *"First
+    Option to Renew"* — **notice by 2008-09-01**, 60 mo, **$19,386**. Term end in the future → the option
+    read as perfectly normal, so the lease page offered **Renew** and the nightly cron had been raising
+    *"Is beauty and barber shop renewing?"* since 7/24. Confirming would have extended the term to
+    **2035-05-31** and booked a $19,386 step — a **−$12,414.96/yr** decrease — from an option whose notice
+    window expired eighteen years ago. And an applied option has no ↩ Undo.
+  - **Fix 1 — the lapse rule learns about notice windows.** New pure `optionLapseReason(ren, termEnd,
+    todayIso)` in `renewals.js` returns `'term_ended'` (the existing rule) or the new **`'notice_passed'`**:
+    the deadline has passed AND sits more than **18 months** before the committed term end, so it cannot be
+    the notice window for *this* term — real ones are "180 days prior" or "twelve (12) months prior", and 18
+    leaves generous headroom. **The one-month-late option is deliberately safe**: a deadline that just passed
+    on a term ending this year is still a live choice and is test-pinned as such.
+  - **Fix 2 — a decrease is confirmed, never assumed.** The guard sits inside **`confirmRenewal`** rather
+    than on a screen, so every entry point inherits it: when the first-year rent lands below the current
+    rent it returns `{ needsDecreaseOk, currentRent, newRent, effectiveFrom }` and **writes nothing** until
+    the caller re-calls with `acceptDecrease: true`. Genuine decreases happen, so it's a confirmation, not a
+    block. Both callers show the figures first — the lease page in its own dialog, the bell in a matching
+    one.
+  - **The browser prompts on Renew / Not renewing are gone**, replaced by the `ConfirmDialog` the 7/24 round
+    offered to extend here. The Renew dialog states exactly what will happen: the new term end, the rent it
+    books **and when** (it branches on the same `hasBegun` test `rollLeaseIntoRenewal` uses, so it can't
+    promise one thing and write another), why the option looks stale if it does, a loud **"⚠ That is a
+    DECREASE from the current $X"** line, and that an applied option can't be undone. Title and tone flip to
+    danger on a decrease.
+  - **One rule, four consumers, zero duplication.** `optionLapseReason` now drives the option table's badge
+    (with a tooltip saying *which* way it lapsed), `isRenewalDecisionDue`, and `promptDueRenewalDecisions`
+    — which additionally **clears** a stale prompt rather than leaving it. `renewalFirstYearRent` was
+    extracted from `rollLeaseIntoRenewal` and is now shared with the dialogs, so the warning and the write
+    are the same arithmetic. The lease page also grew a distinct banner for the notice-lapsed case, since
+    "this term has ended" would have been simply untrue here.
+  - **The SQL twin moved in the same commit** (`0068`): `apply_due_renewals()` gains the identical rule in
+    its stale-prompt DELETE and its loop, otherwise byte-identical to `0065` — verified by diffing the
+    **deployed** function against the 0065 source first (identical but for Postgres's keyword casing), so
+    this wasn't rebased onto drift.
+  - **The migration-reviewer caught a real mirror gap and it was fixed before deploy:** my JS used
+    `monthsBetween` (whole months, floored) while the SQL uses `notice < term_end - interval '18 months'`,
+    so the two disagreed for about a month around the boundary — the cron could have re-raised a prompt the
+    app had just cleared. `optionLapseReason` now computes the cutoff with `addMonths(end, -18)`, and the
+    parity was **proved against the live database** on seven boundary dates including leap-year and
+    end-of-month clamping (2030-05-31 → 2028-11-30, 2028-02-29 → 2026-08-29 …) — JS and Postgres agree on
+    every one. A test pins the exact day either side of the boundary.
+  - **Blast radius measured on live data before deploying, and it is exactly one row.** A query for every
+    pending option matching the new rule returns **only** the beauty-and-barber option; a query for every
+    pending option that would book a decrease returns **the same single row**. The DELETE predicate was
+    dry-run as a SELECT first: one stale prompt, and the D&D Dental prompt (term ends 2026-09-30, no notice
+    date) correctly survives. Read-back after applying: the stale prompt is gone, `base_rent` still
+    $31,800.96, term still 2030-05-31, the option still `pending` — **closing it is George's call, not the
+    app's**.
+  - **Files:** `supabase/migrations/0068_renewal_notice_lapse.sql` (new), `src/lib/renewals.js`
+    (`STALE_NOTICE_MONTHS`, `optionLapseReason`, `optionLapsed`, `renewalFirstYearRent`), `src/lib/api.js`,
+    `src/components/RenewalOptionsEditor.js`, `src/pages/DashboardPage.js`,
+    `src/lib/__tests__/renewalLapse.test.js` (new), `CLAUDE.md` (the new twin added to the mirrors list).
+    No demo-seed or mock change — the mock never implemented `apply_due_renewals`; the demo runs the JS
+    twin, and its seeded option already demos the `term_ended` case.
+  - **Verified:** unit **717/717** (`vitest run`); `npm run build` compiles; migration applied clean and the
+    function run once by hand (returned 0 new prompts, cleared the stale one); demo bundle grepped **free of
+    the live ref** `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. Browser
+    drive-through skipped per George's standing preference (the new suite drives the real rule and the real
+    `confirmRenewal` guard against the demo mock).
+  - **George:** hard-refresh (Cmd+Shift+R). That option now reads **Lapsed** with a line explaining it
+    belongs to an earlier term, the bell has stopped asking, and if you ever do click Renew on anything
+    you'll see the new term end and the rent it books — with a red warning if it's below what the tenant
+    pays today — before anything is written.
 
 - **2026-07-27** — **A standing rule for downstream effects — and the one live gap it described,
   closed: the stored invoice can no longer drift from the live figures** (George: *"A lot of times,

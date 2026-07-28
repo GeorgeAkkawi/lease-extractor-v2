@@ -1,18 +1,20 @@
 import { useState, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, draftRenewalApproachingEmail } from '../lib/api';
-import { money0, fmtDate } from '../lib/format';
+import { money, money0, fmtDate } from '../lib/format';
+import { addMonths, optionLapseReason, renewalFirstYearRent } from '../lib/renewals';
 import NotificationEmailModal from './NotificationEmailModal';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
 
-// Badge tone + label for an option's lifecycle status. A pending option whose term
-// window has already passed is shown as "Lapsed" (still actionable — the tenant may
-// have renewed and we're catching the record up), not hidden.
-function statusBadge(status, lapsed) {
+// Badge tone + label for an option's lifecycle status. A pending option whose window
+// has passed is shown as "Lapsed" (still actionable — the tenant may have renewed and
+// we're catching the record up), not hidden. The title says WHICH way it lapsed.
+function statusBadge(status, reason) {
   if (status === 'applied') return { cls: 'good', label: 'Applied' };
   if (status === 'declined') return { cls: 'danger', label: 'Declined' };
-  if (lapsed) return { cls: 'info', label: 'Lapsed' };
+  if (reason === 'term_ended') return { cls: 'info', label: 'Lapsed', title: 'The term this option would have extended has already ended.' };
+  if (reason === 'notice_passed') return { cls: 'info', label: 'Lapsed', title: 'Its notice deadline passed long before the current term ends — this option belongs to an earlier term the lease has since been extended past.' };
   return { cls: 'warn', label: 'Pending' };
 }
 
@@ -64,16 +66,22 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   const askConfirm = useConfirm();
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
 
-  // A PENDING option "lapses" once the term it would have extended has already ended —
-  // its notice window passed. We STILL list it (the tenant may in fact have renewed and
-  // we're catching the record up), just badged "Lapsed". Local-date compare avoids a
-  // UTC off-by-one. Applied/declined options remain as a record either way.
+  // A PENDING option "lapses" either because the term it would have extended has ended,
+  // or because its notice window belonged to an earlier term the lease has since been
+  // extended past (optionLapseReason, ../lib/renewals — shared with the bell prompt and
+  // the nightly cron so all three agree). We STILL list a lapsed option (the tenant may
+  // in fact have renewed and we're catching the record up), just badged "Lapsed".
+  // Local-date compare avoids a UTC off-by-one. Applied/declined stay a record either way.
   const pad = (n) => String(n).padStart(2, '0');
   const now = new Date();
   const todayIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   const termEnd = lease?.lease_termination_date || null;
-  const isLapsed = (r) => r.status === 'pending' && termEnd && termEnd < todayIso;
-  const lapsedExists = renewals.some(isLapsed);
+  const lapseReason = (r) => optionLapseReason(r, termEnd, todayIso);
+  const lapsedRows = renewals.filter((r) => lapseReason(r));
+  // Which explanation the banner leads with — a term that ended reads differently from
+  // an option left over from a superseded term.
+  const staleNotice = lapsedRows.some((r) => lapseReason(r) === 'notice_passed');
+  const termEnded = lapsedRows.some((r) => lapseReason(r) === 'term_ended');
 
   // Rent steps sitting PAST the committed term end are the option-period "pending renewal"
   // schedule (an option priced year-by-year). Sorted earliest-first, they let an option's
@@ -103,7 +111,10 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   };
   const remove = useMutation({ mutationFn: (id) => deleteRenewal(id), onSuccess: refresh });
   const confirm = useMutation({
-    mutationFn: ({ id, newRent }) => confirmRenewal(id, new Date(), newRent != null ? { newRent } : {}),
+    // acceptDecrease: the dialog below has already shown both figures, so the API's
+    // below-current-rent guard doesn't need to stop us a second time.
+    mutationFn: ({ id, newRent }) =>
+      confirmRenewal(id, new Date(), { ...(newRent != null ? { newRent } : {}), acceptDecrease: true }),
     onSuccess: (res) => {
       if (res?.needsTermEnd) { setNotice(NO_TERM_END); return; }
       setNotice(''); setRenewEntry(null); refreshAll();
@@ -113,20 +124,55 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   const restore = useMutation({ mutationFn: (id) => restoreRenewal(id), onSuccess: refreshAll });
   const acting = confirm.isPending || decline.isPending || restore.isPending;
 
-  // Renew click: options that state a rent apply in one confirm; options with no stated
-  // rent open the inline entry so the landlord types the agreed figure first.
-  function onRenewClick(r, lapsed) {
+  // The "are you sure" for applying an option, stating the exact consequences: the new
+  // term end, the rent it books and WHEN, why the option looks stale if it does, and —
+  // the one that matters — a loud warning when the option's rent is BELOW the rent in
+  // effect today. `override` is the figure typed for an option the lease left open.
+  // Every figure here comes from the same helpers the API writes with, so the dialog
+  // can't promise one thing and book another.
+  async function askRenew(r, override = null) {
+    const reason = lapseReason(r);
+    const cur = Number(lease?.base_rent) || 0;
+    const booked = renewalFirstYearRent(r, cur, override);
+    const newEnd = addMonths(termEnd, r.term_months || 12);
+    // Has the option's window already started? This is what decides whether the API
+    // catches the lease up now or books a dated step — same test as rollLeaseIntoRenewal.
+    const begun = String(termEnd) <= todayIso;
+    const decrease = cur > 0 && booked > 0 && booked < cur - 0.005;
+
+    const implications = [];
+    if (reason === 'notice_passed') {
+      implications.push(`Notice on this option was due ${fmtDate(r.notice_by_date)} — years before the current term ends ${fmtDate(termEnd)}. It most likely belongs to an earlier term the lease has since been extended past.`);
+    } else if (reason === 'term_ended') {
+      implications.push(`This term ended ${fmtDate(termEnd)} — applying the option rolls the lease forward from there and archives the prior term.`);
+    }
+    implications.push(`Term end moves from ${fmtDate(termEnd)} to ${fmtDate(newEnd)}.`);
+    implications.push(begun
+      ? `Base rent becomes ${money(booked)} now, and the lease start rolls to ${fmtDate(termEnd)}.`
+      : `Books a rent step of ${money(booked)} effective ${fmtDate(termEnd)} — today's rent stays ${money(cur)}.`);
+    if (decrease) implications.push(`⚠ That is a DECREASE from the current ${money(cur)} — ${money(cur - booked)}/yr less.`);
+    implications.push('An applied option can’t be undone from here.');
+
+    return askConfirm({
+      title: decrease ? 'Apply a renewal that LOWERS the rent?' : 'Apply this renewal option?',
+      message: `${r.option_label || 'This option'} — ${termLabel(r.term_months)} at ${money(booked)}/yr.`,
+      implications,
+      confirmLabel: decrease ? 'Apply anyway' : 'Apply renewal',
+      tone: decrease ? 'danger' : 'warn',
+    });
+  }
+
+  // Renew click: options that state a rent go straight to the dialog; options with no
+  // stated rent open the inline entry so the landlord types the agreed figure first.
+  async function onRenewClick(r) {
     // A renewal rolls the term forward from the committed end date. Without one, refuse
     // up front (the API guards too) and tell the landlord what to fix.
     if (!termEnd) { setNotice(NO_TERM_END); return; }
-    if (optionHasRent(r)) {
-      const msg = lapsed
-        ? 'Apply this renewal retroactively? This rolls the term forward from where it ended and sets the new rent.'
-        : 'Confirm the tenant is renewing? This extends the term and applies the new rent.';
-      if (window.confirm(msg)) confirm.mutate({ id: r.id });
-    } else {
+    if (!optionHasRent(r)) {
       setRenewEntry({ id: r.id, value: base > 0 ? String(Math.round(base)) : '' });
+      return;
     }
+    if (await askRenew(r)) confirm.mutate({ id: r.id });
   }
 
   // "Renewal approaching" heads-up email — a ready-to-send draft the landlord can send any
@@ -159,11 +205,20 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
       {notice && (
         <p className="note-msg warn" style={{ marginBottom: 12 }}>{notice}</p>
       )}
-      {lapsedExists && (
+      {termEnded && (
         <p className="note-msg warn" style={{ marginBottom: 12 }}>
           This term has ended. If the tenant actually renewed, click <strong>Renew</strong> on the
           option below to roll the lease forward from where the term left off — you can chain them
           (apply Option 1, then Option 2…) until the lease is current again.
+        </p>
+      )}
+      {staleNotice && !termEnded && (
+        <p className="note-msg warn" style={{ marginBottom: 12 }}>
+          An option below is marked <strong>Lapsed</strong>: its notice deadline passed long before
+          this lease’s current term ends, so it belongs to an earlier term the lease has since been
+          extended past — usually by an addendum. It’s a leftover record, not a live choice. Unless
+          you know the tenant is exercising it, close it with <strong>Not renewing</strong> (undoable)
+          or delete it. Applying it would extend the term again and book the rent it quotes.
         </p>
       )}
       {renewals.length === 0 ? (
@@ -173,7 +228,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
           <table style={{ minWidth: 0 }}>
             <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => { const lapsed = isLapsed(r); const badge = statusBadge(r.status, lapsed); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); return (
+              {renewals.map((r) => { const reason = lapseReason(r); const lapsed = !!reason; const badge = statusBadge(r.status, reason); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); return (
                 <Fragment key={r.id}>
                 <tr>
                   <td>{r.option_label || '—'}</td>
@@ -183,18 +238,30 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                     <div>{rent.main}</div>
                     {rent.sub && <div className="cell-sub">{rent.sub}</div>}
                   </td>
-                  <td><span className={`badge ${badge.cls}`}>{badge.label}</span></td>
+                  <td><span className={`badge ${badge.cls}`} title={badge.title || undefined}>{badge.label}</span></td>
                   <td style={{ whiteSpace: 'normal' }}>
                     {r.status === 'pending' ? (
                       <div className="btn-row">
                         <button type="button" className="btn-sm" disabled={acting}
-                          title={lapsed ? 'Tenant renewed under this option — apply it retroactively (rolls the term forward + new rent)' : 'Tenant is exercising this option — apply it (extends the term + new rent)'}
-                          onClick={() => onRenewClick(r, lapsed)}>
+                          title={lapsed ? 'Apply this lapsed option — you’ll see exactly what it changes first' : 'Tenant is exercising this option — apply it (extends the term + new rent)'}
+                          onClick={() => onRenewClick(r)}>
                           Renew
                         </button>
                         <button type="button" className="ghost btn-sm" disabled={acting}
                           title="Tenant is not exercising this option"
-                          onClick={() => { if (window.confirm('Mark this option as not being exercised?')) decline.mutate(r.id); }}>
+                          onClick={async () => {
+                            if (await askConfirm({
+                              title: 'Mark this option as not being exercised?',
+                              message: `${r.option_label || 'This option'} closes — the lease runs out its committed term as it stands.`,
+                              implications: [
+                                'The term and rent are not changed.',
+                                'The option stops appearing as an open decision.',
+                                'Undoable — ↩ Undo puts it back to Pending.',
+                              ],
+                              confirmLabel: 'Not renewing',
+                              tone: 'warn',
+                            })) decline.mutate(r.id);
+                          }}>
                           Not renewing
                         </button>
                         {!lapsed && (
@@ -255,7 +322,10 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                             onChange={(e) => setRenewEntry({ id: r.id, value: e.target.value })} />
                         </label>
                         <button type="button" disabled={acting || renewEntry.value === '' || !(Number(renewEntry.value) > 0)}
-                          onClick={() => confirm.mutate({ id: r.id, newRent: Number(renewEntry.value) })}>
+                          onClick={async () => {
+                            const v = Number(renewEntry.value);
+                            if (await askRenew(r, v)) confirm.mutate({ id: r.id, newRent: v });
+                          }}>
                           {confirm.isPending ? 'Applying…' : 'Apply renewal'}
                         </button>
                         <button type="button" className="ghost" onClick={() => setRenewEntry(null)}>Cancel</button>
