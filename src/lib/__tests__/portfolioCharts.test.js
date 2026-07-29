@@ -89,13 +89,13 @@ describe('portfolioOccupancy', () => {
 
 describe('rentRollover', () => {
   const LEASES = [
-    { id: 'a', is_active: true, base_rent: 60000, lease_termination_date: '2026-11-30' }, // this year
-    { id: 'b', is_active: true, base_rent: 40000, lease_termination_date: '2026-03-31' }, // this year, already past
-    { id: 'c', is_active: true, base_rent: 90000, lease_termination_date: '2028-06-30' },
-    { id: 'd', is_active: true, base_rent: 20000, lease_termination_date: '2028-12-31' },
-    { id: 'e', is_active: true, base_rent: 10000, lease_termination_date: '2040-01-01' }, // beyond the window
-    { id: 'f', is_active: true, base_rent: 15000, lease_termination_date: null },          // no term end
-    { id: 'g', is_active: false, base_rent: 99000, lease_termination_date: '2028-01-01' }, // parked
+    { id: 'a', tenant_name: 'Anchor Foods', is_active: true, base_rent: 60000, lease_termination_date: '2026-11-30' }, // this year
+    { id: 'b', tenant_name: 'Barber Co', is_active: true, base_rent: 40000, lease_termination_date: '2026-03-31' },    // this year, already past
+    { id: 'c', tenant_name: 'City Dental', is_active: true, base_rent: 90000, lease_termination_date: '2028-06-30' },
+    { id: 'd', tenant_name: 'Dry Cleaners', is_active: true, base_rent: 20000, lease_termination_date: '2028-12-31' },
+    { id: 'e', tenant_name: 'Eastside Gym', is_active: true, base_rent: 10000, lease_termination_date: '2040-01-01' }, // beyond the window
+    { id: 'f', tenant_name: 'Florist', is_active: true, base_rent: 15000, lease_termination_date: null },              // no term end
+    { id: 'g', tenant_name: 'Gone Ltd', is_active: false, base_rent: 99000, lease_termination_date: '2028-01-01' },    // parked
   ];
   const TODAY = '2026-07-29';
 
@@ -118,6 +118,21 @@ describe('rentRollover', () => {
     expect(values).toBe(40000 + 60000 + 110000);   // not g (parked), f (no end) or e (2040)
   });
 
+  it('carries the leases inside each bar, biggest rent first — the hover names them', () => {
+    const y2028 = rentRollover(LEASES, TODAY).find((d) => d.label === '2028');
+    expect(y2028.leases.map((l) => l.name)).toEqual(['City Dental', 'Dry Cleaners']);
+    expect(y2028.leases[0]).toMatchObject({ id: 'c', rent: 90000, end: '2028-06-30' });
+    // The named rents must always add back up to the bar they sit under, or the tooltip
+    // would be describing a different figure than the one being hovered.
+    expect(y2028.leases.reduce((s, l) => s + l.rent, 0)).toBe(y2028.value);
+    expect(y2028.leases.length).toBe(y2028.count);
+  });
+
+  it('names an untitled tenant rather than rendering a blank row', () => {
+    const [b] = rentRollover([{ id: 'x', is_active: true, base_rent: 1000, lease_termination_date: '2027-02-01' }], TODAY);
+    expect(b.leases[0].name).toBe('Untitled tenant');
+  });
+
   it('degrades to an empty list, never a throw', () => {
     expect(rentRollover(null, TODAY)).toEqual([]);
     expect(rentRollover([], TODAY)).toEqual([]);
@@ -135,6 +150,15 @@ describe('revenueExpensesNoi', () => {
   it('drops a property with nothing to show and sorts by revenue', () => {
     const out = revenueExpensesNoi(PROPS, TOTALS);
     expect(out.map((d) => d.name)).toEqual(['Oak Center', 'Maple Plaza']);
+  });
+
+  it('carries the ACTUAL taxes/CAM/roof it summed, so the hover can show its working', () => {
+    // The bar is the landlord's entered expenses (expense_records), never the per-lease
+    // CAM & tax ESTIMATES billed to tenants — a distinct, usually larger figure. Carrying
+    // the three parts is what lets the tooltip prove which one is on screen.
+    const maple = revenueExpensesNoi(PROPS, TOTALS).find((d) => d.name === 'Maple Plaza');
+    expect(maple).toMatchObject({ taxes: 25000, cam: 18000, roof: 2000 });
+    expect(maple.taxes + maple.cam + maple.roof).toBe(maple.Expenses);
   });
 });
 

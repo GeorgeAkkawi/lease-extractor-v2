@@ -102,15 +102,19 @@ export function portfolioOccupancy(rows) {
 // Uses base_rent, the rent in effect today (the escalation engine keeps that column
 // live), projected forward — NOT the year-aware effective_rent the donut and NOI panels
 // read. The two answer different questions; the panel's caption says which this is.
+// Each bucket also carries the LEASES inside it — name, rent and end date, biggest rent
+// first — so hovering a bar answers the question the bar itself raises ("which ones?")
+// without a trip to the Leases page.
 export function rentRollover(leases, todayIso, years = 5) {
   const today = String(todayIso || '').slice(0, 10);
   const thisYear = Number(today.slice(0, 4));
   if (!(thisYear > 0)) return [];
 
-  const buckets = new Map();          // key → { key, label, value, count, kind }
-  const add = (key, label, kind, rent) => {
-    const b = buckets.get(key) || { key, label, kind, value: 0, count: 0 };
-    b.value += rent; b.count += 1;
+  const buckets = new Map();          // key → { key, label, value, count, kind, leases[] }
+  const add = (key, label, kind, lease) => {
+    const b = buckets.get(key) || { key, label, kind, value: 0, count: 0, leases: [] };
+    b.value += lease.rent; b.count += 1;
+    b.leases.push(lease);
     buckets.set(key, b);
   };
 
@@ -120,28 +124,42 @@ export function rentRollover(leases, todayIso, years = 5) {
     if (!end) return;                                // no term end → nothing to roll off
     const rent = num(l.base_rent);
     if (rent <= 0) return;
-    if (end < today) { add('now', 'Now', 'now', rent); return; }
+    const row = { id: l.id, name: l.tenant_name || 'Untitled tenant', rent, end };
+    if (end < today) { add('now', 'Now', 'now', row); return; }
     const y = Number(end.slice(0, 4));
     if (!(y >= thisYear) || y > thisYear + years - 1) return;  // beyond the window we show
-    add(String(y), String(y), 'year', rent);
+    add(String(y), String(y), 'year', row);
   });
 
   const order = ['now', ...Array.from({ length: years }, (_, i) => String(thisYear + i))];
-  return order.map((k) => buckets.get(k)).filter(Boolean);
+  return order
+    .map((k) => buckets.get(k))
+    .filter(Boolean)
+    .map((b) => ({ ...b, leases: b.leases.sort((a, c) => c.rent - a.rent || a.name.localeCompare(c.name)) }));
 }
 
 // Revenue / expenses / NOI per property — the grouped bars, the same triad the History
 // page charts across years. Expenses are summed from the three stored components rather
 // than read from a total column, matching how HistoryPage computes them.
+//
+// Those three components are the ACTUAL figures entered on the property's Expense entry
+// (expense_records.taxes_total / cam_total / roof_total) — never the CAM & tax ESTIMATES
+// billed to tenants, which live per-lease on est_cam_annual / est_tax_annual and are a
+// different quantity entirely (they're usually higher; the gap IS the year-end true-up).
+// They're carried onto each row so the tooltip can show its working, because a bar
+// labelled only "Expenses" can't tell the landlord which of the two it is.
 export function revenueExpensesNoi(properties, totalsByProp) {
   return (properties || [])
     .map((p) => {
       const t = totalsByProp?.[p.id];
       if (!t) return null;
+      const taxes = num(t.taxes_total);
+      const cam = num(t.cam_total);
+      const roof = num(t.roof_total);
       const revenue = num(t.total_revenue);
-      const expenses = num(t.taxes_total) + num(t.cam_total) + num(t.roof_total);
+      const expenses = taxes + cam + roof;
       if (revenue === 0 && expenses === 0) return null;
-      return { id: p.id, name: nameFor(p), Revenue: revenue, Expenses: expenses, NOI: num(t.noi) };
+      return { id: p.id, name: nameFor(p), Revenue: revenue, Expenses: expenses, NOI: num(t.noi), taxes, cam, roof };
     })
     .filter(Boolean)
     .sort((a, b) => b.Revenue - a.Revenue);

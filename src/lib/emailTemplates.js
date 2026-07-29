@@ -185,6 +185,38 @@ export function buildInsuranceRenewalRequestEmail({ business, tenant_name, conta
   return { subject, body, to: tenant_email || '' };
 }
 
+// The FOLLOW-UP to the letter above: a certificate was requested and never arrived, so
+// the "Insurance not received" reminder is showing. Powers that reminder's ✉.
+//
+// It has to do two things the first letter cannot: say plainly that this is the second
+// request (and when the first went out), and still ask courteously — the overwhelmingly
+// likely explanation is that the tenant's agent let it slip, not that anyone is refusing.
+// So the tone stays warm through the ask and only states the lease obligation at the end,
+// as a fact rather than a threat. No deadline is invented and no penalty is implied:
+// nothing in the app knows what this lease actually provides for.
+export function buildInsuranceSecondRequestEmail({ business, tenant_name, contact_name, tenant_email, propertyName, insurer, expiryDate, expired, requestedDate }) {
+  const company = business?.company_name || 'the landlord';
+  const place = propertyName || 'the premises';
+  const subject = `Second Request — Certificate of Insurance — ${place}`;
+  const when = requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? ` on ${longDate(requestedDate)}` : '';
+  const policyNote = insurer
+    ? ` The most recent certificate we hold is with ${insurer}${expiryDate ? `, ${expired ? 'which expired' : 'with coverage through'} ${longDate(expiryDate)}` : ''}.`
+    : '';
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: Certificate of insurance for ${place} — second request`,
+    paragraphs: [
+      `Dear ${contact_name || tenant_name || 'Tenant'},`,
+      `We wrote to you${when} to request a current certificate of insurance for ${place}, and our records show that we have not yet received it. This is our second request.${policyNote}`,
+      `We would kindly ask that you send an up-to-date certificate showing the current policy period, naming ${company} as an additional insured with the coverage limits required under your lease. If the certificate has already been sent, please accept our thanks and disregard this note — it may simply have crossed with this letter.`,
+      `The simplest route is usually to forward this message to your insurance agent and ask them to send the certificate to our office directly; you are also welcome to reply here with it attached. Your lease requires that coverage be maintained continuously, so keeping the certificate on file protects us both.`,
+      `Thank you for your attention to this — please let us know if there is anything we can do to help.`,
+    ],
+  });
+  return { subject, body, to: tenant_email || '' };
+}
+
 // Sent when the tenant's certificate ON FILE does not name the landlord as
 // additional insured: asks for a corrected certificate / endorsement. Powers the
 // "✉ Request corrected certificate" button on the additional-insured notice.

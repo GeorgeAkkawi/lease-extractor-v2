@@ -145,10 +145,7 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, le
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(27,24,19,.1)" vertical={false} />
               <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={0} />
               <YAxis tickFormatter={kfmt} tick={{ fontSize: 10 }} />
-              <Tooltip
-                formatter={(v, n, p) => [money(v), `${p?.payload?.count || 0} lease${p?.payload?.count === 1 ? '' : 's'}`]}
-                labelFormatter={(l) => (l === 'Now' ? 'Already in holdover' : `Expiring ${l}`)}
-              />
+              <Tooltip content={<RolloverTip />} cursor={{ fill: 'rgba(27,24,19,.05)' }} />
               <Bar dataKey="value" isAnimationActive={false} maxBarSize={58}>
                 {rollover.map((d, i) => <Cell key={d.key} fill={ROLLOVER_RAMP[Math.min(i, ROLLOVER_RAMP.length - 1)]} />)}
                 <LabelList dataKey="value" position="top" formatter={kfmt} className="bar-label" />
@@ -174,7 +171,11 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, le
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(27,24,19,.1)" vertical={false} />
               <XAxis dataKey="name" tickFormatter={(v) => shortName(v, 16)} tick={{ fontSize: 10 }} interval={0} />
               <YAxis tickFormatter={kfmt} tick={{ fontSize: 10 }} />
-              <Tooltip formatter={(v) => money(v)} />
+              {/* Custom content, for two reasons: recharts' Tooltip defaults to
+                  itemSorter:'name', which sorted the three series ALPHABETICALLY —
+                  Expenses · NOI · Revenue — reading as though NOI came out of expenses;
+                  and the Expenses row has to show the actual taxes/CAM/roof it's made of. */}
+              <Tooltip content={<PerformanceTip />} cursor={{ fill: 'rgba(27,24,19,.05)' }} />
               {/* Above ~6 properties the figures start colliding; the tooltip still carries
                   them, and a row of overlapping numbers is worse than none. */}
               <Bar dataKey="Revenue" fill={CHART_SERIES.revenue} isAnimationActive={false} maxBarSize={54}>
@@ -188,8 +189,72 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, le
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+          <p className="chart-foot">
+            Expenses are the actual property taxes, CAM and roof entered on each property’s
+            Expense entry for FY {year} — not the CAM &amp; tax estimates billed to tenants.
+            Hover a property to see the three figures.
+          </p>
         </ChartPanel>
       )}
+    </div>
+  );
+}
+
+// Which leases sit inside a rollover bar — the question the bar itself raises.
+// Exported only so a test can render it: recharts' ResponsiveContainer measures 0×0 in
+// jsdom, so nothing inside a chart is ever drawn there and a crash in here would reach
+// the browser unseen.
+export function RolloverTip({ active, payload }) {
+  const d = active && payload?.length ? payload[0].payload : null;
+  if (!d) return null;
+  const shown = d.leases.slice(0, 6);
+  return (
+    <div className="chart-tip">
+      <div className="chart-tip-head">
+        {d.kind === 'now' ? 'Already past its end date' : `Ending in ${d.label}`}
+      </div>
+      <div className="chart-tip-total">
+        {money(d.value)} <span className="muted">· {d.count} lease{d.count === 1 ? '' : 's'}</span>
+      </div>
+      <ul className="chart-tip-list">
+        {shown.map((l) => (
+          <li key={l.id}>
+            <span className="chart-tip-name">{shortName(l.name, 22)}</span>
+            <span className="chart-tip-val">{money0(l.rent)}</span>
+          </li>
+        ))}
+        {d.leases.length > shown.length && (
+          <li className="muted">+{d.leases.length - shown.length} more</li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+// Revenue · Expenses · NOI, in that order, with the expenses broken into the actual
+// figures they were summed from. Exported for the same reason as RolloverTip.
+export function PerformanceTip({ active, payload, label }) {
+  const d = active && payload?.length ? payload[0].payload : null;
+  if (!d) return null;
+  const parts = [
+    ['Property taxes', d.taxes],
+    ['CAM / maintenance', d.cam],
+    ['Roof', d.roof],
+  ].filter(([, v]) => v > 0);
+  return (
+    <div className="chart-tip">
+      <div className="chart-tip-head">{label}</div>
+      <ul className="chart-tip-list">
+        <li><span className="sw" style={{ background: CHART_SERIES.revenue }} /><span className="chart-tip-name">Revenue</span><span className="chart-tip-val">{money(d.Revenue)}</span></li>
+        <li><span className="sw" style={{ background: CHART_SERIES.expenses }} /><span className="chart-tip-name">Expenses</span><span className="chart-tip-val">{money(d.Expenses)}</span></li>
+        {parts.map(([name, v]) => (
+          <li key={name} className="chart-tip-part">
+            <span className="chart-tip-name">{name}</span><span className="chart-tip-val">{money(v)}</span>
+          </li>
+        ))}
+        {parts.length === 0 && <li className="chart-tip-part muted">No expenses entered for this year</li>}
+        <li><span className="sw" style={{ background: CHART_SERIES.noi }} /><span className="chart-tip-name">NOI</span><span className="chart-tip-val">{money(d.NOI)}</span></li>
+      </ul>
     </div>
   );
 }

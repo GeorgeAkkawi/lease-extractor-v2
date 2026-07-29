@@ -4,7 +4,7 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths, optionLapsed, renewalFirstYearRent } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import {
@@ -3082,8 +3082,16 @@ export async function draftAlertEmail(alert) {
   // A tenant insurance-expiry alert or a chase-up → the expiry-aware "please send the
   // renewed certificate" letter, naming the insurer + expiry the alert carries. (The
   // landlord's own building-policy alert has no lease_id, so it returned null above.)
-  if (focus === 'insurance' || focus === 'insurance_chase') {
+  if (focus === 'insurance') {
     return wrap(buildInsuranceRenewalRequestEmail({ ...common, insurer: alert.insurer, expiryDate: alert.expiry_date, expired: alert.expired }), 'insurance_request');
+  }
+  // The chase-up fires precisely BECAUSE a first request went unanswered, so re-sending
+  // the same letter would read as though we'd forgotten we asked. Its own letter says so
+  // — second request, dated from the first — and carries the request date the alert holds.
+  // Kind stays 'insurance_request' so sending it logs another insurance_requested event:
+  // the "📨 Last requested" line moves to today and the chase-up re-arms from there.
+  if (focus === 'insurance_chase') {
+    return wrap(buildInsuranceSecondRequestEmail({ ...common, insurer: alert.insurer, expiryDate: alert.expiry_date, expired: alert.expired, requestedDate: alert.date }), 'insurance_request');
   }
   if (focus === 'escalation') {
     const escs = await listEscalations(lease.id);

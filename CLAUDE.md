@@ -181,6 +181,102 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-29** — **Five follow-up notes on the new Overview, all acted on: the Expenses bar proves it is the
+  ACTUAL figure · the rollover bars name the leases behind them · the property-performance hover reads
+  Revenue → Expenses → NOI again · a renewal option that lapsed eighteen years ago stops posing as a deadline
+  (plus a labelled Ignore for anything else long past) · and "Insurance not received" finally has a ✉, drafting
+  a proper SECOND-request letter** (George, after the round above went live: *"the bar graph should how actual
+  expenses(CAM+tax) not estimate. rent coming up for renewal should show the leases ending when hovering. the
+  hover for the 'what each property keeps should be Revenue, expenses, NOI in that order. Theres an outdated
+  renewal notice for like 6000 days for beauty and barber shop, if a renewal option has lapsed that far behind
+  there should just be an ignore button for something like that. if insurance is not recieved notification pops
+  up there should be an email prompt requesting the insurance again - this email should mention this is the
+  secont for insurance and that they kindly provide it (make it professional)"*). Deployed: frontend Cloudflare
+  version **`9e15ddda`**, demo worker `eb9f9ab7`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge
+  functions, no AI calls, no tenant emails, nothing destructive.** Tests **845/845 across 99 files** (was 820/95
+  — +25 across 4 new suites).
+  - **1) The Expenses bar was ALREADY the actual — so the fix is to make it prove it, not to change the figure.**
+    Checked against his live rows before touching anything: the bar reads `v_property_totals.taxes_total +
+    cam_total + roof_total`, which is `expense_records` — the landlord's own entered figures. Pershing FY2026 =
+    **127,000 + 24,200 + 500 = 151,700**, and the tenants' CAM & tax **estimates** sum to **161,322.49** — a
+    different number entirely (the ~$9.6k gap IS the year-end true-up). Nothing estimated ever reached the chart.
+    What was missing was any way to tell: a bar labelled only "Expenses" can't say which of the two it is. So
+    `revenueExpensesNoi` now carries the three components it summed, the hover breaks them out
+    (**Property taxes / CAM / roof**, indented under the Expenses row), and a foot line states it plainly —
+    *"the actual property taxes, CAM and roof entered on each property's Expense entry for FY {year} — not the
+    CAM & tax estimates billed to tenants."* **Roof stays in the total** deliberately: NOI subtracts it, so
+    dropping it would break Revenue − Expenses = NOI on the same chart. A component of $0 is omitted; a property
+    with none says *"No expenses entered for this year"* instead of drawing three zeros.
+  - **2) The hover order was a real bug, and the cause is one recharts default.** `Tooltip` ships
+    `itemSorter: 'name'`, so the three series were sorted **alphabetically** — **Expenses · NOI · Revenue** —
+    which reads as though NOI came out of expenses. Both charts now use custom `content`, so rows render in
+    declared order and can carry a breakdown beneath one of them. (Same reason the rollover tooltip is custom:
+    the default box can't list anything.)
+  - **3) The rollover bars name their leases.** `rentRollover` now returns each bucket's leases — name, rent,
+    end date, biggest rent first — and the hover lists up to six with "+N more" beyond, over the bucket total and
+    lease count. **Test-pinned invariant:** the named rents must sum to exactly the bar they sit under, and the
+    list length must equal `count` — otherwise the tooltip would be describing a different figure than the one
+    being hovered. The "Now" bar's header says what it is (*"Already past its end date"*) rather than repeating
+    the bare label.
+  - **4) The 6,540-day renewal notice — a missed consumer, not a new rule.** Confirmed live: beauty and barber
+    shop carries a **pending** option with `notice_by_date` **2008-09-01** against a term end of **2030-05-31**.
+    The 2026-07-28 round built `optionLapseReason` for exactly this and wired it into four places — the option
+    table's badge, `isRenewalDecisionDue`, `promptDueRenewalDecisions` and SQL `apply_due_renewals()` — but
+    **`buildAlerts` was never taught it**, so the bell kept counting down to a deadline that stopped mattering
+    eighteen years ago. It now skips a lapsed option, using the same shared rule (so a lapse judged in the bell
+    can't disagree with the badge on the lease page), with a local `localIso(now)` mirroring `api.js`'s
+    `localDateIso` so the date is the landlord's, not UTC's. **Cuts exactly one way, test-pinned both
+    directions:** a notice missed by two months on a term ending next year is still a live, actionable alert —
+    the ±18-month test is what separates it from one belonging to an earlier term. **Blast radius measured before
+    deploying:** of the eight pending options on live data, exactly **one** matches (beauty and barber shop);
+    Ricki's (notice 6 months before term end) and Five Points (≈6 months) are untouched. Nothing is written —
+    the option stays pending, and closing it is still George's call.
+  - **…plus the Ignore button he asked for, generalized.** New pure `isLongPast(a)` (`LONG_PAST_DAYS = 365`):
+    a **dated** alert more than a year past its date drops the snooze clock (there is nothing to defer to) and
+    its bare ✕ becomes a labelled **Ignore** — same server-side `alert_states` dismissal, but for something years
+    overdue "close" and "never show me this again" are not the same promise. Guarded against the trap that
+    created this bug in the first place: the three weight-based alerts carry a *sort weight* in `days`, not a
+    date, so a `−4000` weight must never read as a decade-old deadline — `isLongPast` requires `horizonDays`,
+    the same field the countdown and the urgency bar test.
+  - **5) "Insurance not received" gets its ✉ and its own letter.** The button was *unreachable*, not missing:
+    `draftAlertEmail` has built an email for `insurance_chase` since 2026-07-09, but `alertCanEmail` never
+    returned true for that focus — the gap flagged in CLAUDE.md on 2026-07-26. Fixed, and pointed at a **new**
+    `buildInsuranceSecondRequestEmail` rather than the first-request letter, which would have read as though
+    we'd forgotten we already asked. It says plainly *"This is our second request."*, dates the first ask from
+    the alert's own request date, names the certificate on file (insurer + expiry) when there is one, and
+    **asks courteously** — the likeliest explanation is an agent's oversight, so the tone stays warm through the
+    ask, offers *"if it has already been sent, please accept our thanks and disregard this note"*, and only
+    states the lease obligation at the end **as a fact**. Deliberately invents **no deadline and no penalty** —
+    nothing in the app knows what this lease actually provides for — and a test pins the absence of
+    *default / breach / terminate / penalty / "within N days"*. Kind stays `insurance_request`, so sending it
+    logs another `insurance_requested` event: "📨 Last requested" moves to today and the chase-up re-arms from
+    there.
+  - **Files:** `src/lib/{portfolioCharts,alerts,api,emailTemplates}.js` ·
+    `src/components/PortfolioCharts.js` · `src/pages/DashboardPage.js` · `src/App.css` (`.chart-tip*`,
+    `.alert-ignore`) · tests: `lapsedRenewalAlert`, `insuranceSecondRequest`, `chartTooltips`,
+    `insuranceChaseEmail` (all new) + `portfolioCharts` / `dashboardOverview` extended. **No** migration, edge
+    function, demo-seed or mock change.
+  - **A testing note worth keeping:** recharts' `ResponsiveContainer` measures its parent, and every element is
+    0×0 in jsdom — so **no chart is ever drawn there and no tooltip ever mounts**. A DashboardPage render test
+    would have gone green with either new tooltip throwing. `RolloverTip` and `PerformanceTip` are therefore
+    exported and rendered directly (`chartTooltips.test.js`), which is the only coverage those components can
+    get short of a browser. The `insuranceChaseEmail` suite likewise drives the **real button** rather than
+    `draftAlertEmail` — a helper test would have passed the whole time the feature was unreachable.
+  - **Verified:** unit **845/845** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; live 200s on all four URLs; and the edge
+    confirmed serving the new hash (`assets/index-C2Zg_KGG.js`) rather than a stale `index.html`. Browser
+    drive-through skipped per George's standing preference — the four new suites drive the real alert rule, the
+    real tooltips and the real ✉ path against the demo mock.
+  - **George: hard-refresh (Cmd+Shift+R).** The beauty-and-barber notice is gone from the bell; hover any
+    rollover bar to see which tenants are in it; the property hover reads Revenue → Expenses → NOI with the
+    taxes/CAM/roof breakdown under Expenses; and once a certificate has gone unanswered for 21 days the
+    reminder carries a ✉ that writes the second request for you.
+  - **Flags (no action needed):** ① The beauty-and-barber option is still **pending** on the lease — the bell
+    just stopped nagging. Mark it *Not renewing* on the lease page whenever you want it closed for good.
+    ② The Ignore button only appears on alerts more than a year past their date; with the lapse fix in, you may
+    not have one right now. ③ Your Pershing CAM & tax **estimates** total ~$161.3k against ~$151.7k of actual
+    expenses — about $9.6k over-collected on paper, which is what ⚖ Reconcile settles at year end.
+
 - **2026-07-29** — **Four features in one round: the Overview becomes a chart band (and loses its three metric
   cards) · notifications sort by real urgency · Ask Amlak drafts a tenant letter · every lease gets an AI
   red-flag review** (George dropped a PigJet screenshot — *"i dont like the design we need to make it fit the

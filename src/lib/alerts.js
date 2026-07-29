@@ -1,7 +1,16 @@
 import { fmtDate, money0 } from './format';
 import { DEFAULT_LEAD_DAYS } from './notifyPrefs';
+import { optionLapseReason } from './renewals';
 
 const DAY = 86400000;
+
+// The landlord's LOCAL calendar date, matching api.js's localDateIso — so a lapse judged
+// here can't disagree with the badge the lease page shows for the same option.
+const localIso = (now) => {
+  const d = now instanceof Date ? now : new Date(now);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
@@ -75,6 +84,14 @@ export function compareUrgencyKeys(x, y) {
   }
   return 0;
 }
+
+// An alert whose date passed more than a year ago is history, not a deadline — a
+// countdown of "6,540 days over" tells the landlord nothing they can act on, and the bare
+// ✕ reads as a temporary tidy-up rather than "stop showing me this". Those rows get an
+// explicit, labelled **Ignore** instead (and no snooze — there is nothing to defer to).
+// Dismissal is the same server-side alert_states write, so it syncs across devices.
+export const LONG_PAST_DAYS = 365;
+export const isLongPast = (a) => a?.horizonDays != null && a?.days != null && a.days < -LONG_PAST_DAYS;
 
 // Snooze presets offered in the UI (label + duration to add to "now").
 export const SNOOZE_OPTIONS = [
@@ -218,6 +235,17 @@ export function buildAlerts(
     }
     (renByLease[l.id] || []).forEach((r) => {
       if (!r.notice_by_date || r.status === 'applied') return; // applied renewals are done — no reminder
+      // A LAPSED option is not a live deadline, so it must not be counted down to. The
+      // rule is the shared one (0068): the term has already ended, or the notice date sits
+      // more than 18 months before the committed term end and so belongs to an earlier
+      // term. Without this the bell kept raising "Renewal notice — beauty and barber shop,
+      // 6,540 days over" off a 2008 notice date on a lease running to 2030 — a countdown to
+      // a deadline that stopped mattering eighteen years ago. The lease page already badges
+      // the option "Lapsed" and explains why; that is where a dead option belongs.
+      //
+      // A genuinely MISSED notice still alerts: the ±18-month test is what separates
+      // "you're two months late on next year's option" from "this belongs to a prior term".
+      if (optionLapseReason(r, l.lease_termination_date, localIso(now))) return;
       const renLead = lead('renewal');
       const b = bucketFor(r.notice_by_date, now, renLead);
       if (b) out.push({ ...ctx, focus: 'renewal', renewal_id: r.id, tone: b.tone, bucketLabel: b.label, date: r.notice_by_date, days: daysUntil(r.notice_by_date, now), horizonDays: renLead, title: `Renewal notice — ${l.tenant_name}`, detail: `Notice due ${fmtDate(r.notice_by_date)}` });

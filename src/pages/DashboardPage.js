@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
-import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER } from '../lib/alerts';
+import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER, isLongPast } from '../lib/alerts';
 import { resolveLeadDays } from '../lib/notifyPrefs';
 import { useFeatures, isFeatureOn } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
@@ -122,7 +122,11 @@ export default function DashboardPage() {
   const alertCanEmail = (a) => {
     if (a.focus === 'contract') return true;
     if (a.focus === 'renewal') return !!a.renewal_id;
-    if (a.focus === 'insurance') return !!a.lease_id; // tenant policy only
+    // A tenant insurance alert, and the chase-up that follows it, both write to the same
+    // tenant. The chase-up drafts the SECOND-request letter (draftAlertEmail branches on
+    // the focus) — the whole point of the reminder is that the first ask went unanswered,
+    // so it needs a one-click way to ask again.
+    if (a.focus === 'insurance' || a.focus === 'insurance_chase') return !!a.lease_id;
     return a.focus === 'termination' || a.focus === 'escalation';
   };
   // Draft the reminder's ready-to-send email and open the send modal. Sending it does NOT
@@ -390,13 +394,22 @@ export default function DashboardPage() {
                         {emailBusyAlert === k ? '…' : '✉'}
                       </button>
                     )}
-                    <button className="icon-btn" title="Remind me later" aria-label="Remind me later" onClick={() => setSnoozeFor(snoozeFor === k ? null : k)}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'block' }}>
-                        <circle cx="12" cy="12" r="9" />
-                        <path d="M12 7.5V12l3 2" />
-                      </svg>
-                    </button>
-                    <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => clearAlert(a)}>✕</button>
+                    {/* Long past its date? There is nothing to defer to and nothing to count
+                        down — so the clock goes and the ✕ becomes a labelled Ignore that says
+                        what it does. Same dismissal either way. */}
+                    {!isLongPast(a) && (
+                      <button className="icon-btn" title="Remind me later" aria-label="Remind me later" onClick={() => setSnoozeFor(snoozeFor === k ? null : k)}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'block' }}>
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M12 7.5V12l3 2" />
+                        </svg>
+                      </button>
+                    )}
+                    {isLongPast(a) ? (
+                      <button className="ghost btn-sm alert-ignore" title="Stop showing this — its date is long past" onClick={() => clearAlert(a)}>Ignore</button>
+                    ) : (
+                      <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => clearAlert(a)}>✕</button>
+                    )}
                     {snoozeFor === k && (
                       <div className="snooze-menu" style={{ position: 'absolute', top: '100%', right: 0, zIndex: 5, background: 'var(--surface, #fff)', border: '1px solid var(--line, #ddd)', borderRadius: 8, padding: 6, boxShadow: '0 6px 20px rgba(0,0,0,.12)', minWidth: 130 }}>
                         <div className="muted" style={{ fontSize: 11, padding: '2px 8px 6px' }}>Remind me…</div>

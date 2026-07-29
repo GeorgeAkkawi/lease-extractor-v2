@@ -636,6 +636,21 @@ tbody tr:last-child td{border-bottom:none}
    figure, so it takes the whole row rather than a third of it. */
 .chart-panel.wide{grid-column:1/-1}
 .chart-foot{font-size:11px;color:var(--muted);margin:9px 0 2px;line-height:1.45}
+/* Hover panels, replacing recharts' default box on both bar charts. The default sorted
+   its rows ALPHABETICALLY (itemSorter:'name'), which read as Expenses · NOI · Revenue —
+   so these render in declared order and can carry a breakdown beneath a row. */
+.chart-tip{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:9px 12px;font-size:12px;min-width:180px;max-width:260px}
+.chart-tip-head{font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:5px}
+.chart-tip-total{font-family:var(--display);font-size:17px;font-weight:600;line-height:1.1;margin-bottom:7px;font-variant-numeric:tabular-nums}
+.chart-tip-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.chart-tip-list li{display:flex;align-items:center;gap:7px}
+.chart-tip-list .sw{width:9px;height:9px;border-radius:2px;flex:none}
+.chart-tip-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chart-tip-val{font-variant-numeric:tabular-nums;font-weight:600;flex:none}
+/* An expense component sits UNDER the Expenses row it was summed from — indented past the
+   swatch column and quieted, so the three read as parts of that figure, not siblings. */
+.chart-tip-part{padding-left:16px;color:var(--muted);font-size:11px}
+.chart-tip-part .chart-tip-val{font-weight:500}
 /* Space leased — a headline share over one filled track per property. The same hairline
    progress language the Ledger's Collected column and the alert urgency bar speak, so it
    reads as part of the app rather than a chart bolted on. */
@@ -816,6 +831,10 @@ tbody tr:last-child td{border-bottom:none}
 .bell-item .bell-item-body{cursor:pointer;flex:1}
 .bell-item--event .dot.good{background:var(--accent)}
 .bell-link{font-size:11px;font-weight:600;color:var(--accent);margin-top:2px}
+/* Stands in for the ✕ on an alert whose date is long past — same dismissal, but labelled,
+   because for something years overdue "close" and "never show me this again" are not the
+   same promise. Centred so it sits on the row's axis like the icon buttons it replaces. */
+.alert-ignore{align-self:center;flex-shrink:0;white-space:nowrap}
 .dismiss-x{align-self:center;color:var(--faint);font-size:12px;flex-shrink:0}
 .dismiss-x:hover{background:#F3E0DB;color:var(--danger)}
 

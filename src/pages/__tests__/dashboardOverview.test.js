@@ -57,6 +57,11 @@ describe('Overview — portfolio charts', () => {
     expect(screen.getByText('Revenue')).toBeTruthy();
     expect(screen.getByText('NOI')).toBeTruthy();
     expect(container.querySelector('.chart-panel.wide')).toBeTruthy();
+    // …and it says which "expenses" it means. A bar labelled only "Expenses" can't tell a
+    // landlord whether it's the actuals he entered or the CAM & tax estimates he bills —
+    // two genuinely different figures, the gap between them being the year-end true-up.
+    expect(screen.getByText(/actual property taxes, CAM and roof/i)).toBeTruthy();
+    expect(screen.getByText(/not the CAM & tax estimates billed to tenants/i)).toBeTruthy();
   });
 
   it('no longer draws the three metric cards — the charts say all three better', async () => {
