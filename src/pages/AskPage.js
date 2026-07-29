@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { fetchPortfolioSnapshot, askPortfolioQuestion, askLeasesDocs } from '../lib/api';
+import { fetchPortfolioSnapshot, askPortfolioQuestion, askLeasesDocs, draftTenantEmailFromAsk } from '../lib/api';
 import { useFeatures } from '../lib/features';
 import { usePageChrome } from '../context/ChromeContext';
 import { SparkIcon } from '../components/icons';
+import EmailComposeModal from '../components/EmailComposeModal';
 
 // "Ask Amlak" — a natural-language assistant over the account's OWN records
 // (tenants, insurance, service contracts, rent, roof responsibility, lease terms,
@@ -21,6 +22,7 @@ const SUGGESTED = [
   { text: 'Who owes money?' },
   { text: 'Which leases end next year?' },
   { text: 'Which properties have service contracts?', feature: 'contracts' },
+  { text: 'Draft an email to my tenant about their outstanding balance' },
 ];
 
 export default function AskPage() {
@@ -30,6 +32,9 @@ export default function AskPage() {
   // right one after later questions prepend to the list.
   const [log, setLog] = useState([]);
   const idRef = useRef(0);
+  // The drafted letter currently open in the compose modal, if any. Mounted
+  // conditionally because EmailComposeModal reads its props into state once, on mount.
+  const [draft, setDraft] = useState(null);
   // The snapshot is gated to the enabled modules, so Ask Amlak never reads (or answers
   // about) a section the landlord turned off. Feature changes re-key the query → refetch.
   const { enabled, isOn } = useFeatures();
@@ -69,6 +74,36 @@ export default function AskPage() {
       setLog((l) => l.map((it) => (it.id === entry.id ? { ...it, docsState: 'done', docsAnswer: res.answer, docsFromCache: res.fromCache } : it)));
     } catch (err) {
       setLog((l) => l.map((it) => (it.id === entry.id ? { ...it, docsState: 'error', docsError: err?.message || 'Something went wrong reading your leases — please try again.' } : it)));
+    }
+  }
+
+  // Every tenant in the snapshot, flat — for resolving the name the answer named.
+  const allTenants = (snapshot?.properties || []).flatMap((p) => p.tenants || []);
+  // Match the model's `[EMAIL_DRAFT: …]` name against the snapshot: exact first (case
+  // and punctuation aside), then a containment match, since a model may shorten "D & D
+  // Dental, LLC" to "D & D Dental". No match → the button says so rather than drafting
+  // a letter to nobody.
+  function tenantNamed(name) {
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const want = norm(name);
+    if (!want) return null;
+    return allTenants.find((t) => norm(t.tenant) === want)
+      || allTenants.find((t) => norm(t.tenant).includes(want) || want.includes(norm(t.tenant)))
+      || null;
+  }
+
+  // Write the letter for one answer entry (click-gated, ~a cent) and open it in the
+  // compose modal, where it can go out via Gmail, another mail app, or Send now.
+  async function draftEmail(entry) {
+    const tenant = tenantNamed(entry.draftFor);
+    if (!tenant) return;
+    setLog((l) => l.map((it) => (it.id === entry.id ? { ...it, draftState: 'pending', draftError: null } : it)));
+    try {
+      const email = await draftTenantEmailFromAsk(entry.q, tenant);
+      setLog((l) => l.map((it) => (it.id === entry.id ? { ...it, draftState: 'done' } : it)));
+      setDraft(email);
+    } catch (err) {
+      setLog((l) => l.map((it) => (it.id === entry.id ? { ...it, draftState: 'error', draftError: err?.message || 'Something went wrong drafting that email — please try again.' } : it)));
     }
   }
 
@@ -165,6 +200,13 @@ export default function AskPage() {
                   </div>
                 )}
 
+                {/* The question was really "write to this tenant" — offer the letter.
+                    Nothing is written or sent until this is clicked, and the drafted
+                    letter still opens for review before it goes anywhere. */}
+                {it.draftFor && (
+                  <DraftAction entry={it} tenant={tenantNamed(it.draftFor)} onDraft={() => draftEmail(it)} />
+                )}
+
                 {/* "Read my leases" fallback — prominent when the summary couldn't
                     answer, a quiet option otherwise (in case the fact answer is wrong). */}
                 {it.docsState === 'pending' ? (
@@ -189,7 +231,7 @@ export default function AskPage() {
                   </div>
                 ) : it.needsDocs ? (
                   <button type="button" className="ask-docs-btn" onClick={() => askDocs(it)}>
-                    📄 Read my leases to answer this <span className="muted">(~a few cents)</span>
+                    📄 Read my leases to answer this
                   </button>
                 ) : (
                   <button type="button" className="ghost ask-docs-link" onClick={() => askDocs(it)}>
@@ -205,6 +247,42 @@ export default function AskPage() {
       {!isLoading && log.length === 0 && (
         <p className="muted ask-empty">Ask a question above, or tap one of the suggestions to get started.</p>
       )}
+
+      {draft && (
+        <EmailComposeModal
+          title={draft.title}
+          from={draft.from}
+          to={draft.to}
+          subject={draft.subject}
+          body={draft.body}
+          onClose={() => setDraft(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// The "write this for me" affordance under an answer. Shows the tenant it would write
+// to by name, so the landlord can see the model picked the right one before paying for
+// a draft; says so plainly when the named tenant isn't in the portfolio.
+function DraftAction({ entry, tenant, onDraft }) {
+  if (entry.draftState === 'pending') {
+    return <div className="ask-a muted" style={{ marginTop: 12 }}>Writing the letter…</div>;
+  }
+  if (!tenant) {
+    return (
+      <div className="note-msg warn" style={{ marginTop: 12 }}>
+        Couldn’t match “{entry.draftFor}” to a tenant on file — name the tenant exactly as it
+        appears in your records and ask again.
+      </div>
+    );
+  }
+  return (
+    <>
+      {entry.draftState === 'error' && <div className="note-msg warn" style={{ marginTop: 12 }}>{entry.draftError}</div>}
+      <button type="button" className="ask-docs-btn" onClick={onDraft}>
+        ✉ {entry.draftState === 'done' ? 'Draft another email' : 'Draft this email'} to {tenant.tenant}
+      </button>
+    </>
   );
 }

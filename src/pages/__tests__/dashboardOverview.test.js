@@ -1,0 +1,127 @@
+// Render smoke test for the two Overview additions: the "Portfolio at a glance" chart
+// band and the urgency visuals inside the existing alerts panel. Mounts the REAL
+// DashboardPage against the demo mock, so a crash, a missing field or a broken widget
+// gate surfaces here rather than in the browser.
+//
+// One jsdom caveat drives every assertion below: recharts' ResponsiveContainer measures
+// its parent, and in jsdom every element is 0×0 — so no SVG is ever drawn. Assert the
+// panel titles and legends (real DOM, rendered regardless), never chart geometry.
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import DashboardPage from '../DashboardPage';
+import { ChromeProvider } from '../../context/ChromeContext';
+import { ConfirmProvider } from '../../components/ConfirmDialog';
+import { setHiddenWidgets, listPayments } from '../../lib/api';
+import { supabase } from '../../lib/supabaseClient';
+
+function renderDash() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={qc}>
+        <ChromeProvider>
+          <ConfirmProvider>
+            <DashboardPage />
+          </ConfirmProvider>
+        </ChromeProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+beforeEach(() => cleanup());
+afterEach(async () => { await setHiddenWidgets([]); });
+
+describe('Overview — portfolio charts', () => {
+  it('renders the four panels drawn from the seeded portfolio', async () => {
+    const { container } = renderDash();
+    await waitFor(() => expect(screen.getByText('Where the rent comes from')).toBeTruthy());
+    expect(screen.getByText('Space leased')).toBeTruthy();
+    expect(screen.getByText('Rent coming up for renewal')).toBeTruthy();
+    // The panel has to say what a bar is, not just what it's called: City Dental's term
+    // ended in May and it's still in place, so the demo always carries a "Now" bucket —
+    // and the foot has to explain it rather than leave a bar labelled "Now" to guesswork.
+    expect(screen.getByText(/already past its end date/)).toBeTruthy();
+    expect(screen.getByText('What each property keeps')).toBeTruthy();
+    // The donut's centre caption — and now the ONLY place the rent roll is stated, since
+    // the metric card that repeated it came off the page.
+    expect(screen.getAllByText('Annual rent roll').length).toBe(1);
+    expect(screen.getAllByText(/Maple Plaza/).length).toBeGreaterThan(0);
+    // The occupancy headline replaces the old stacked bars (and their unlabelled axis):
+    // a percentage over one filled track per property.
+    expect(container.querySelector('.occ-figure').textContent).toMatch(/^\d+%$/);
+    expect(container.querySelectorAll('.occ-row').length).toBeGreaterThan(0);
+    // The Revenue/Expenses/NOI triad, in a panel that now spans the whole band.
+    expect(screen.getByText('Revenue')).toBeTruthy();
+    expect(screen.getByText('NOI')).toBeTruthy();
+    expect(container.querySelector('.chart-panel.wide')).toBeTruthy();
+  });
+
+  it('no longer draws the three metric cards — the charts say all three better', async () => {
+    const { container } = renderDash();
+    await waitFor(() => expect(screen.getByText('Where the rent comes from')).toBeTruthy());
+    expect(container.querySelector('.metric-group')).toBeNull();
+    expect(screen.queryByText('Expiring ≤ 6 months')).toBeNull();
+    expect(screen.queryByText('Occupancy')).toBeNull();
+    // …and the count they carried is still on the page, as the table itself.
+    expect(screen.getByText(/Lease expirations/)).toBeTruthy();
+  });
+
+  it('disappears entirely when the landlord hides the widget', async () => {
+    await setHiddenWidgets(['portfolio_charts']);
+    renderDash();
+    await waitFor(() => expect(screen.getByText('Overview')).toBeTruthy());
+    await waitFor(() => expect(screen.queryByText('Where the rent comes from')).toBeNull());
+  });
+});
+
+describe('Overview — alert urgency', () => {
+  it('gives a date-driven alert a countdown figure, an urgency bar and a who/where line', async () => {
+    const { container } = renderDash();
+    // The demo seed carries lease-end / renewal-notice dates, so at least one date-driven
+    // alert always renders.
+    await waitFor(() => expect(screen.getByText('Alerts & notifications')).toBeTruthy());
+    await waitFor(() => expect(container.querySelector('.alert-days')).toBeTruthy());
+
+    const cap = container.querySelector('.alert-days-cap');
+    expect(cap.textContent).toMatch(/days? (left|over)/);
+    // The figure itself is a whole number of days, never a negative sign — "over" carries
+    // the direction, so "-14 days over" can't happen.
+    expect(container.querySelector('.alert-days').textContent).toMatch(/^\d+$/);
+
+    const bar = container.querySelector('.alert-progress > span');
+    expect(bar).toBeTruthy();
+    const pct = Number(String(bar.style.width).replace('%', ''));
+    expect(pct).toBeGreaterThan(0);
+    expect(pct).toBeLessThanOrEqual(100);
+
+    // The who/where line an alert can't carry itself (it holds ids, not names).
+    expect(container.querySelector('.alert-where')).toBeTruthy();
+  });
+
+  it('shows NO countdown on a ledger reminder — its days value is a sort weight', async () => {
+    // Drop Bright Coffee's untagged lump so prop-1's later months lose their cover and a
+    // statement reminder appears (the statementReminderData precedent). That alert sorts
+    // by month count, so rendering "-2 days over" beside a bar would be a fabrication.
+    const before = await listPayments('inv-1');
+    await supabase.from('payments').delete().eq('invoice_id', 'inv-1');
+    try {
+      const { container } = renderDash();
+      await waitFor(() => expect(screen.getByText('Alerts & notifications')).toBeTruthy());
+      const reminder = await waitFor(() => {
+        const el = [...container.querySelectorAll('.callout')]
+          .find((n) => /Import your .*statement/i.test(n.textContent));
+        expect(el).toBeTruthy();
+        return el;
+      });
+      expect(reminder.querySelector('.alert-days')).toBeNull();
+      expect(reminder.querySelector('.alert-progress')).toBeNull();
+      // …while a dated alert on the same screen still has both.
+      expect(container.querySelector('.alert-days')).toBeTruthy();
+    } finally {
+      for (const p of before) await supabase.from('payments').insert(p);
+    }
+  });
+});

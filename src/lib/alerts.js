@@ -34,6 +34,48 @@ export function toAlertStates(stateRows) {
   return { dismissed, snoozedUntil };
 }
 
+// How the Overview feed ranks what needs attention — "most urgent to least urgent by
+// time left to handle", which is the one thing a plain `days` sort could NOT do.
+//
+// `days` is not one quantity. On a dated alert it counts down to a real deadline; on the
+// three weight-based focuses (statement_reminder, missing_payment, insurance_chase) it is
+// a sort weight that merely looks like days. Sorting them together put a statement
+// reminder at −3 above a lease that ended five days ago. The presence of `horizonDays` is
+// what separates the two — the same field the countdown and the urgency bar test, so a
+// new alert type opts in to a real countdown and to this ordering in one stroke.
+//
+// Four tiers, most urgent first:
+//   0  a date that has already passed          — longest overdue first
+//   1  a standing problem with no date         — most severe first, then by weight
+//   2  a date still ahead                      — soonest first
+//   3  already happened, for information       — newest first (notifications only)
+//
+// Tier 1 is the honest home for the weight-based alerts: they ARE overdue in substance —
+// money not received, a statement never imported, a certificate asked for and never sent —
+// but have no deadline to count, so they rank above anything merely upcoming without
+// pretending to a countdown they don't have.
+export const URGENCY_TIER = { overdue: 0, standing: 1, upcoming: 2, fyi: 3 };
+const TONE_RANK = { danger: 0, warn: 1, info: 2 };
+
+// The sort key as a fixed-length tuple, compared left to right by compareUrgencyKeys.
+export function alertUrgency(a) {
+  const days = a?.days;
+  const dated = a?.horizonDays != null && days != null;
+  if (dated && days < 0) return [URGENCY_TIER.overdue, days, 0];
+  if (!dated) return [URGENCY_TIER.standing, TONE_RANK[a?.tone] ?? 3, days ?? 0];
+  return [URGENCY_TIER.upcoming, days, 0];
+}
+
+// Compares two urgency tuples. Ties return 0, and Array#sort is stable, so equal-urgency
+// rows keep the order they arrived in rather than shuffling between renders.
+export function compareUrgencyKeys(x, y) {
+  for (let i = 0; i < 3; i += 1) {
+    const d = (x?.[i] ?? 0) - (y?.[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
 // Snooze presets offered in the UI (label + duration to add to "now").
 export const SNOOZE_OPTIONS = [
   { label: 'In 1 hour', ms: 3600_000 },
@@ -80,6 +122,19 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 // Derive urgent alerts from lease key dates (escalations / termination / renewal
 // notice). `states` is the server dismiss/snooze lookup from toAlertStates().
 //
+// A date-driven alert also carries **horizonDays** — the window it became visible in
+// (the owner's configured lead for that type, or a lease's own notify_lease_end_days
+// override). This is the only place that window is known, and the Overview needs it to
+// draw urgency honestly: "30 days out" is nearly here on a 31-day annual-report lead and
+// barely a blip on a 183-day lease-end one, so a bar has to be filled against the alert's
+// OWN horizon, not a fixed scale.
+//
+// Three focuses deliberately carry NO horizonDays, because their `days` is a sort weight
+// rather than a count of days remaining: statement_reminder (−months.length),
+// missing_payment (−10 − months.length) and insurance_chase (days SINCE the request, so
+// always negative). Rendering any of them as "N days over" would be a lie; the UI checks
+// for the field rather than the focus, so a new alert type opts in simply by stamping it.
+//
 // `opts` ties the alert feed to the Settings switchboard so a notification silences
 // with the module it belongs to (and returns when re-enabled):
 //   • features      — the enabled_features array (null = all on). Gates Insurance
@@ -117,8 +172,9 @@ export function buildAlerts(
       // A step dated on/after the committed term end belongs to an un-exercised renewal
       // option — don't alert on it until the renewal is confirmed (which extends the term).
       if (l.lease_termination_date && String(e.effective_date) >= String(l.lease_termination_date)) return;
-      const b = bucketFor(e.effective_date, now, lead('escalation'));
-      if (b) out.push({ ...ctx, focus: 'escalation', tone: b.tone, bucketLabel: b.label, date: e.effective_date, days: daysUntil(e.effective_date, now), title: `Rent escalation — ${l.tenant_name}`, detail: `Effective ${fmtDate(e.effective_date)}` });
+      const escLead = lead('escalation');
+      const b = bucketFor(e.effective_date, now, escLead);
+      if (b) out.push({ ...ctx, focus: 'escalation', tone: b.tone, bucketLabel: b.label, date: e.effective_date, days: daysUntil(e.effective_date, now), horizonDays: escLead, title: `Rent escalation — ${l.tenant_name}`, detail: `Effective ${fmtDate(e.effective_date)}` });
     });
     if (l.lease_termination_date) {
       // Lease ending has a per-lease override (notify_lease_end_days) for the landlord
@@ -146,6 +202,7 @@ export function buildAlerts(
           bucketLabel: holdover ? 'Holdover' : b.label,
           date: l.lease_termination_date,
           days: daysUntil(l.lease_termination_date, now),
+          horizonDays: leaseEndLead,
           noRenewal,
           holdover,
           title: holdover
@@ -161,8 +218,9 @@ export function buildAlerts(
     }
     (renByLease[l.id] || []).forEach((r) => {
       if (!r.notice_by_date || r.status === 'applied') return; // applied renewals are done — no reminder
-      const b = bucketFor(r.notice_by_date, now, lead('renewal'));
-      if (b) out.push({ ...ctx, focus: 'renewal', renewal_id: r.id, tone: b.tone, bucketLabel: b.label, date: r.notice_by_date, days: daysUntil(r.notice_by_date, now), title: `Renewal notice — ${l.tenant_name}`, detail: `Notice due ${fmtDate(r.notice_by_date)}` });
+      const renLead = lead('renewal');
+      const b = bucketFor(r.notice_by_date, now, renLead);
+      if (b) out.push({ ...ctx, focus: 'renewal', renewal_id: r.id, tone: b.tone, bucketLabel: b.label, date: r.notice_by_date, days: daysUntil(r.notice_by_date, now), horizonDays: renLead, title: `Renewal notice — ${l.tenant_name}`, detail: `Notice due ${fmtDate(r.notice_by_date)}` });
     });
   });
 
@@ -171,7 +229,8 @@ export function buildAlerts(
   // Silenced when the Service-contracts module is turned off in Settings.
   (contractsOn ? contracts || [] : []).forEach((c) => {
     if (!c.end_date) return;
-    const b = bucketFor(c.end_date, now, lead('contract'));
+    const contractLead = lead('contract');
+    const b = bucketFor(c.end_date, now, contractLead);
     if (!b) return;
     const prop = propMap[c.property_id];
     const label = c.name || c.vendor || 'service contract';
@@ -180,6 +239,7 @@ export function buildAlerts(
       property_id: c.property_id, corporation_id: prop?.corporation_id || null,
       vendor_email: c.vendor_email || null, contract_name: c.name || c.vendor || 'Service contract',
       tone: b.tone, bucketLabel: b.label, date: c.end_date, days: daysUntil(c.end_date, now),
+      horizonDays: contractLead,
       title: `Contract ending — ${label}`,
       detail: `${c.vendor ? c.vendor + ' · ' : ''}ends ${fmtDate(c.end_date)}`,
     });
@@ -192,7 +252,8 @@ export function buildAlerts(
   // policy has no outside recipient, so no ✉.
   (insuranceOn ? insurance || [] : []).forEach((p) => {
     if (!p.expiry_date) return;
-    const b = bucketFor(p.expiry_date, now, lead('insurance'));
+    const insLead = lead('insurance');
+    const b = bucketFor(p.expiry_date, now, insLead);
     if (!b) return;
     const isLandlord = p.party === 'landlord';
     const propertyId = isLandlord ? p.property_id : leaseById[p.lease_id]?.property_id;
@@ -203,7 +264,7 @@ export function buildAlerts(
     out.push({
       lease_id: leaseId, property_id: propertyId, corporation_id: corpId,
       focus: 'insurance', tone: b.tone, bucketLabel: b.label,
-      date: p.expiry_date, days: daysUntil(p.expiry_date, now),
+      date: p.expiry_date, days: daysUntil(p.expiry_date, now), horizonDays: insLead,
       // Carried so the tenant alert's ✉ can name the insurer + expiry in the letter.
       insurer: p.insurer || null, expiry_date: p.expiry_date, expired,
       title: `${isLandlord ? 'Landlord' : 'Tenant'} insurance ${expired ? 'expired' : 'expiring'} — ${who}`,
@@ -250,12 +311,13 @@ export function buildAlerts(
     const lease = leaseById[a.lease_id];
     if (!lease || lease.is_active === false) return;
     const d = daysUntil(a.end_date, now);
-    if (d == null || d < 0 || d > lead('abatement')) return; // only as it approaches
+    const abateLead = lead('abatement');
+    if (d == null || d < 0 || d > abateLead) return; // only as it approaches
     const corpId = propMap[lease.property_id]?.corporation_id;
     out.push({
       lease_id: a.lease_id, property_id: lease.property_id, corporation_id: corpId,
       focus: 'abatement', tone: d <= 7 ? 'warn' : 'info', bucketLabel: bucket(a.end_date, now)?.label || 'Within 1 month',
-      date: a.end_date, days: d,
+      date: a.end_date, days: d, horizonDays: abateLead,
       title: `Free rent ending — ${lease.tenant_name || 'tenant'}`,
       detail: `Free/reduced rent ends ${fmtDate(a.end_date)} · full billing resumes`,
     });
@@ -271,7 +333,8 @@ export function buildAlerts(
     if (!r.due_date) return;
     const d = daysUntil(r.due_date, now);
     if (d == null) return;
-    if (d > lead('annual_report')) return; // only within the configured window of the deadline
+    const reportLead = lead('annual_report');
+    if (d > reportLead) return; // only within the configured window of the deadline
     const overdue = d < 0;
     const name = corpNameById[r.corporation_id] || 'corporation';
     out.push({
@@ -279,7 +342,7 @@ export function buildAlerts(
       lease_id: null, property_id: null,
       tone: overdue ? 'danger' : 'warn',
       bucketLabel: overdue ? 'Overdue' : (bucket(r.due_date, now)?.label || 'Within 1 month'),
-      date: r.due_date, days: d, overdue,
+      date: r.due_date, days: d, horizonDays: reportLead, overdue,
       title: overdue ? `Annual report overdue — ${name}` : `Annual report due — ${name}`,
       detail: `File by ${fmtDate(r.due_date)}`,
     });
@@ -363,5 +426,5 @@ export function buildAlerts(
       const k = alertKey(a);
       return !states.dismissed?.has?.(k) && !(states.snoozedUntil?.[k] > nowMs);
     })
-    .sort((a, b) => a.days - b.days);
+    .sort((a, b) => compareUrgencyKeys(alertUrgency(a), alertUrgency(b)));
 }

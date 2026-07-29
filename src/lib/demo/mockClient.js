@@ -5,6 +5,9 @@ import { seed, DEMO_USER } from './store';
 import { effectiveRent, occupancyStart, monthlyBases } from '../escalations';
 import { monthlyScheduleForYear } from '../abatement';
 import { fmtDate } from '../format';
+// The same flag definitions the live edge functions use, so the demo's canned review
+// carries the real titles/notes/severities rather than a second set that could drift.
+import { LEASE_FLAG_DEFS } from '../../../supabase/functions/_shared/leaseFlags.js';
 
 const db = seed();
 let seq = 1000;
@@ -327,6 +330,20 @@ const functions = {
           // Stated estimated CAM (annualized in code from "$3.50/SF per annum" × 4,200 SF)
           // — prefills the review form's Est. CAM field, like the live extractor.
           est_cam_annual: { value: 14700, confidence: 0.9, source_quote: 'estimated CAM charges of $3.50 per square foot per annum', page: null },
+          // The red-flag review the analyst answers on the same read, in the shape the
+          // FLAGS line parses to. The canned lease below genuinely omits a guaranty,
+          // a late fee and a holdover premium, and prices its option at FMV — so these
+          // four are what a real read of it would return.
+          ai_review: {
+            flags: [
+              { key: 'no_personal_guarantee', severity: 'high', title: 'No personal guarantee', note: 'The lease is signed by the business only. If the entity folds or stops paying, there is no individual to pursue for the balance — a personal guarantee from an owner is the usual protection.', quote: 'No guaranty clause appears in the lease.' },
+              { key: 'no_late_fee', severity: 'medium', title: 'No late fee or interest on late rent', note: 'Nothing in the lease penalises paying late, so there is little cost to the tenant in doing so.', quote: 'The lease does not state a late fee or interest on overdue rent.' },
+              { key: 'no_holdover_premium', severity: 'medium', title: 'No holdover premium', note: 'If the tenant stays past the term, the rent does not step up. A holdover clause (commonly 150–200% of base rent) is what gets the space back or gets it paid for.', quote: 'Holdover is not addressed.' },
+            ],
+            model: 'claude-sonnet-4-6',
+            reviewed_at: new Date().toISOString(),
+            source: 'extract_lease',
+          },
         },
         // One-time plain-text copy cached on the lease for the AI assistant.
         full_text: [
@@ -373,6 +390,12 @@ const functions = {
     if (name === 'send-tenant-email') {
       // The demo sandbox never emails anyone — pretend it went out.
       return ok({ id: 'demo-email' });
+    }
+    if (name === 'draft-tenant-email') {
+      return ok(demoDraftTenantEmail(body));
+    }
+    if (name === 'review-lease') {
+      return ok(demoReviewLease(body));
     }
     if (name === 'extract-bank-statement') {
       // Canned PDF-lane transcription over the seeded tenants: clean deposits, a
@@ -706,6 +729,25 @@ function demoAskPortfolio(body) {
     '\n\n(Demo mode gives a data-driven canned answer. Connected to your API key, the AI answers any question about your portfolio.)';
   const list = (arr, f) => (arr.length ? arr.map(f).join('\n') : '  (none)');
 
+  // "Write to this tenant" — the demo twin of the live [EMAIL_DRAFT: name] marker.
+  // Names the tenant the letter would go to (the one the question mentions, else the one
+  // with the biggest balance, so the seeded portfolio always has an answer) and returns
+  // draft_for so the ✉ button appears. Checked before the topic branches, because
+  // "draft an email about their insurance" is a drafting request, not an insurance one.
+  if (/\b(draft|write|compose|send|email|letter|notice)\b/.test(q) && tenants.length) {
+    const named = tenants.find((t) => q.includes(String(t.tenant || '').toLowerCase().slice(0, 12)));
+    const target = named || [...tenants].sort((a, b) => (b.balance_owed || 0) - (a.balance_owed || 0))[0];
+    const bits = [
+      target.balance_owed > 0 ? `owes $${Math.round(target.balance_owed).toLocaleString()}` : 'is current on rent',
+      target.lease_end ? `lease runs to ${target.lease_end}` : null,
+      target.base_rent ? `annual base rent $${Math.round(target.base_rent).toLocaleString()}` : null,
+    ].filter(Boolean);
+    return {
+      answer: `${target.tenant} at ${target.property} — ${bits.join(', ')}. I can draft a letter on that basis for you to review and send.`,
+      draft_for: target.tenant,
+    };
+  }
+
   // Respect the Settings switchboard: if a module is off, its facts aren't in the
   // snapshot, so don't answer about it (mirrors snapshotToText omitting the section).
   if (/insur/.test(q) && snap.insurance_shown === false) {
@@ -744,6 +786,84 @@ function demoAskPortfolio(body) {
   return {
     answer: `That's not something the records summary tracks directly. You can have me read the full lease documents to answer it.`,
     needs_docs: true,
+  };
+}
+
+// Demo stand-in for the draft-tenant-email Edge Function. Returns PROSE ONLY — the
+// salutation and paragraphs, no letterhead and no sign-off — exactly like the live
+// function, so the client's letter() wrap is exercised for real in the demo.
+function demoDraftTenantEmail(body) {
+  const t = body?.tenant || {};
+  const req = String(body?.request || '').toLowerCase();
+  const who = t.contact_name || t.tenant || 'Tenant';
+  const where = t.property || 'the premises';
+  const owes = Number(t.balance_owed) || 0;
+  const usd = (n) => `$${Math.round(n).toLocaleString()}`;
+
+  let subject = `Regarding your lease at ${where}`;
+  let paras;
+  if (/insur|certificate|coi/.test(req)) {
+    subject = `Certificate of Insurance — ${where}`;
+    paras = [
+      `We are writing regarding the certificate of insurance for your premises at ${where}.`,
+      t.insurance_expiry
+        ? `Our records show your current policy${t.insurer ? ` with ${t.insurer}` : ''} expires ${t.insurance_expiry}. Please have your agent issue a renewed certificate naming the landlord as an additional insured, and forward a copy to our office.`
+        : `We do not have a current certificate on file. Please have your agent issue one naming the landlord as an additional insured and forward a copy to our office.`,
+      `If you have already sent it, please disregard this notice. Feel free to contact our office with any questions.`,
+    ];
+  } else if (/renew|option|extend|term/.test(req)) {
+    subject = `Upcoming Lease Term — ${where}`;
+    paras = [
+      `We are writing regarding your lease at ${where}${t.lease_end ? `, which runs through ${t.lease_end}` : ''}.`,
+      t.has_renewal_option
+        ? `Your lease includes a renewal option. Please let us know whether you intend to exercise it so we can prepare the paperwork in good time.`
+        : `As the term approaches its end, we would welcome a conversation about your plans for the space.`,
+      `Please contact our office at your convenience and we will be glad to discuss the details.`,
+    ];
+  } else {
+    subject = owes > 0 ? `Outstanding Balance — ${where}` : `Your Account — ${where}`;
+    paras = [
+      `We are writing regarding your account for the premises at ${where}.`,
+      owes > 0
+        ? `Our records show an outstanding balance of ${usd(owes)}${t.overdue_since ? `, outstanding since ${t.overdue_since}` : ''}. We would appreciate payment at your earliest convenience, or a call to let us know when we can expect it.`
+        : `Your account is current and no payment is outstanding at this time. We appreciate your prompt payments and your continued tenancy.`,
+      `If you have any questions about your account or believe our records are mistaken, please contact our office and we will review it with you.`,
+    ];
+  }
+  return {
+    subject,
+    body: `Dear ${who},\n\n${paras.join('\n\n')}\n\n(Demo mode gives a canned draft. Connected to your API key, the AI writes the letter from your request and this tenant's actual figures.)`,
+  };
+}
+
+// Demo stand-in for the review-lease Edge Function (the ⚠ Review this lease button).
+// Reads the seeded lease TEXT for the same signals the live checklist asks about, so the
+// demo's flags actually follow from the document on file rather than being a fixed list —
+// re-running on a different tenant gives a different answer, as it would live.
+function demoReviewLease(body) {
+  const lease = (db.leases || []).find((l) => l.id === body?.lease_id);
+  const text = String(lease?.lease_text || '').toLowerCase();
+  const flags = [];
+  const say = (key, quote) => flags.push({ key, quote });
+
+  if (!/guarant/.test(text)) say('no_personal_guarantee', 'No guaranty clause appears in the lease.');
+  if (!/(security deposit|deposit of)/.test(text)) say('no_security_deposit', 'No security deposit is required by the lease.');
+  if (!/(late (fee|charge)|interest on)/.test(text)) say('no_late_fee', 'The lease does not state a late fee or interest on overdue rent.');
+  if (!/holdover|hold over/.test(text)) say('no_holdover_premium', 'Holdover is not addressed.');
+  if (!/insur/.test(text)) say('no_insurance_requirements', 'The lease does not require the tenant to carry liability insurance.');
+  if (/exclusive/.test(text)) say('exclusive_use', 'Tenant is granted an exclusive use right at the property.');
+  // Only when the lease actually GRANTS an option and prices it at something other than
+  // market — "contains no option to renew" must not read as a fixed-rent option.
+  if (/option to (renew|extend)/.test(text) && !/no option to (renew|extend)/.test(text) && !/(fair market|fmv)/.test(text)) {
+    say('below_market_renewal', 'The renewal option states a fixed rent rather than fair market value.');
+  }
+
+  return {
+    flags: flags.map((f) => {
+      const def = LEASE_FLAG_DEFS.find((d) => d.key === f.key);
+      return { key: f.key, severity: def?.severity || 'info', title: def?.title || f.key, note: def?.note || '', quote: f.quote };
+    }),
+    model: 'demo',
   };
 }
 

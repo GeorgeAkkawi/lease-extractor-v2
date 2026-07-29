@@ -14,6 +14,7 @@ import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom, annualizeOptionSchedule } from '../_shared/rentSchedule.js';
 import { parseAnalystVerdicts, extractionMismatches } from '../_shared/analystVerdicts.js';
+import { LEASE_FLAG_INSTRUCTION, LEASE_FLAG_LINE_SPEC, parseAnalystFlags, flagsFromVerdicts, buildReviewRecord } from '../_shared/leaseFlags.js';
 
 const MODEL = 'claude-haiku-4-5';
 // The "analyst read" (below) runs on a stronger model so it can reason through confusing
@@ -202,11 +203,20 @@ const ANALYST_SYSTEM =
   '• OTHER NOTABLE TERMS — security deposit, assignment/subletting, holdover, any stated ' +
   'ESTIMATED CAM / operating-expense / real-estate-tax charge the tenant pays (the figure ' +
   'exactly as written and its basis — per month, per year, or per square foot), and anything ' +
-  'else that changes the rent or the term.\n\n' +
+  'else that changes the rent or the term.\n' +
+  '• RED FLAGS / MISSING PROTECTIONS — reading as the LANDLORD\'S advisor, note anything in ' +
+  'this lease that could cost them, and anything a commercial lease normally contains that ' +
+  'this one does NOT. For each point quote the clause, or say plainly that the lease does not ' +
+  'address it. Do not give legal advice or recommend a course of action — state what the ' +
+  'document does and does not say.\n\n' +
   'Be factual and specific. This brief is data, not advice.\n\n' +
-  'FINAL LINE — MACHINE-READABLE VERDICTS. After all the bullets, end your brief with ONE ' +
-  'final line in EXACTLY this format (nothing after it):\n' +
+  LEASE_FLAG_INSTRUCTION + '\n\n' +
+  'FINAL LINES — MACHINE-READABLE. After all the bullets, end your brief with TWO final ' +
+  'lines — the VERDICTS line then the FLAGS line — in EXACTLY these formats (nothing after ' +
+  'them):\n' +
   'VERDICTS: escalation=<yes|no|unclear>; escalation_pct=<number|none>; escalation_stop_months=<number|none>; renewal_options=<yes|no|unclear>; abatement=<yes|no|unclear>; start_date=<stated|not_stated>\n' +
+  LEASE_FLAG_LINE_SPEC + '\n' +
+  'On the FLAGS line, remember: yes = the concern APPLIES. ' +
   'Set escalation=yes ONLY if the lease actually states a base-rent increase (a rent table ' +
   'with different amounts over time, a percent/CPI formula, or stepped rent) — a cap on ' +
   'CAM/Additional Rent (e.g. "103% of the prior year") is NOT a base-rent escalation, so it ' +
@@ -793,6 +803,17 @@ Deno.serve(async (req) => {
         escalationPct: (parsed as any).rent_escalation_pct,
       });
       if (mismatches.length) (parsed as any).extraction_mismatch = mismatches;
+
+      // Red-flag review, free-riding on the read we already paid for: the analyst answered
+      // the landlord-side checklist on its FLAGS line, so this is a parse, not a call. Only
+      // "yes" answers become flags; no FLAGS line (an older brief, a model that ignored the
+      // instruction) simply yields none and the lease saves exactly as it did before.
+      const flags = flagsFromVerdicts(parseAnalystFlags(brief));
+      if (flags.length) {
+        (parsed as any).ai_review = buildReviewRecord({
+          flags, model: ANALYST_MODEL, source: 'extract_lease', reviewedAt: new Date().toISOString(),
+        });
+      }
     }
 
     // The scan transcription (best-effort, non-fatal) ran concurrently above; use it

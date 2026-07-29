@@ -4,7 +4,7 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths, optionLapsed, renewalFirstYearRent } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import {
@@ -272,6 +272,24 @@ export const updateLease = (id, patch) =>
 
 export const deleteLease = (id) => rows(supabase.from('leases').delete().eq('id', id));
 
+// Run the AI red-flag review over a lease's cached text and save it (leases.ai_review,
+// 0069). Click-gated (~2–5¢) and saved, so re-opening the lease page costs nothing.
+//
+// Writes through updateLease deliberately, NOT the lease page's saveField: that helper
+// also re-stamps ai_confidence and extraction_status, which belong to the extraction and
+// would be wrong to touch here. A review is advisory metadata — it never moves a figure.
+export async function reviewLease(leaseId) {
+  const { flags, model } = await invokeFunction('review-lease', { lease_id: leaseId });
+  const ai_review = {
+    flags: Array.isArray(flags) ? flags : [],
+    model: model || null,
+    reviewed_at: new Date().toISOString(),
+    source: 'review_button',
+  };
+  await updateLease(leaseId, { ai_review });
+  return ai_review;
+}
+
 // Remove a tenant while preserving history: archive the lease into the
 // expired/renewed log with an outcome (Vacated/Terminated/Renewed), then delete
 // the active lease. The landlord keeps a complete record of past tenants.
@@ -346,7 +364,7 @@ export async function extractFromText(text) {
 // Persist an AI-extracted lease plus its escalations/renewals in one go.
 // leaseText (the cached plain-text copy) is stored so the AI assistant can read
 // it later without re-running extraction.
-export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease, escalations, renewals, abatements, aiConfidence, leaseText }) {
+export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease, escalations, renewals, abatements, aiConfidence, leaseText, aiReview }) {
   // Build the exact rows to write (owner_id is forced server-side inside the RPC).
   const leasePayload = {
     ...lease,
@@ -356,6 +374,9 @@ export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease
     ai_confidence: aiConfidence ?? null,
     lease_file_id: leaseFileId,
     lease_text: leaseText ?? null,
+    // The red-flag review the analyst answered during the same read (0069). Metadata
+    // only — it rides create_lease_tx's jsonb_populate_record with no RPC change.
+    ai_review: aiReview ?? null,
   };
   const escPayload = (escalations || []).map((e) => ({ ...e, status: 'scheduled' }));
   // ATOMIC: insert the lease + all its escalations / renewals / abatements in ONE
@@ -756,8 +777,8 @@ export async function askPortfolioQuestion(question, snapshot) {
   // Demo mode: canned, data-driven answer — no network, no caching. The structured
   // snapshot rides along so the mock can answer from real seeded data.
   if (DEMO_MODE) {
-    const { answer, needs_docs } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText, snapshot_obj: snapshot });
-    return { answer, fromCache: false, needsDocs: !!needs_docs };
+    const { answer, needs_docs, draft_for } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText, snapshot_obj: snapshot });
+    return { answer, fromCache: false, needsDocs: !!needs_docs, draftFor: draft_for || null };
   }
 
   const fingerprint = snapshot?.fingerprint || snapshotFingerprint({});
@@ -765,15 +786,51 @@ export async function askPortfolioQuestion(question, snapshot) {
   // A cached answer never carries needs_docs (we don't persist the flag) — that's
   // fine: the ghost "read the documents instead" link is always available, and a
   // repeat of a fact-answerable question doesn't need the docs button anyway.
-  if (cached) return { answer: cached, fromCache: true, needsDocs: false };
+  if (cached) return { answer: cached, fromCache: true, needsDocs: false, draftFor: null };
 
-  const { answer, needs_docs } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText });
-  try {
-    await writeCachedPortfolioAnswer(questionNorm, fingerprint, answer);
-  } catch {
-    /* caching is best-effort — never fail the answer on a cache write */
+  const { answer, needs_docs, draft_for } = await invokeFunction('ask-portfolio', { question, snapshot: snapshotText });
+  // A "write to this tenant" answer is NOT cached: the cache stores the answer text only,
+  // so a hit would come back without draft_for and silently lose the ✉ button — and
+  // drafting is click-gated and paid for anyway, so there is nothing to save by caching it.
+  if (!draft_for) {
+    try {
+      await writeCachedPortfolioAnswer(questionNorm, fingerprint, answer);
+    } catch {
+      /* caching is best-effort — never fail the answer on a cache write */
+    }
   }
-  return { answer, fromCache: false, needsDocs: !!needs_docs };
+  return { answer, fromCache: false, needsDocs: !!needs_docs, draftFor: draft_for || null };
+}
+
+// Draft a personalised tenant letter from a plain-English request in Ask Amlak.
+// Click-gated (~1–2¢). The model writes the prose; the letterhead/date/To/RE/signature
+// come from the same letter() scaffold every built-in template uses, so the draft is
+// ready to send from the compose modal (Gmail, another mail app, or Send now).
+export async function draftTenantEmailFromAsk(request, tenant) {
+  if (!request?.trim() || !tenant) throw new Error('Nothing to draft.');
+  const corp = tenant.corpId ? await getCorporation(tenant.corpId) : null;
+  const business = businessFromCorp(corp);
+  const { subject, body } = await invokeFunction('draft-tenant-email', {
+    request: request.trim(),
+    tenant,
+    business_name: business?.company_name || '',
+  });
+  const email = buildAiDraftEmail({
+    business,
+    tenant_name: tenant.tenant,
+    contact_name: tenant.contact_name,
+    tenant_email: tenant.email,
+    propertyName: tenant.property,
+    subject,
+    bodyProse: body,
+  });
+  return {
+    title: `Email ${tenant.tenant}`,
+    from: business?.contact_email || '',
+    to: email.to,
+    subject: email.subject,
+    body: email.body,
+  };
 }
 
 // A light fingerprint of the lease-document corpus (counts + latest change stamp of

@@ -29,7 +29,14 @@ const INSTRUCTION =
   'depends on lease-document wording not present here), say so plainly and then end your ' +
   'entire reply with the exact token [NEEDS_DOCS] on its own — this signals the app to ' +
   'offer to read the full lease documents. Only add that token when the facts here are ' +
-  'genuinely insufficient, never when you could answer.';
+  'genuinely insufficient, never when you could answer. ' +
+  'SEPARATELY: if the question asks you to WRITE, DRAFT or SEND an email, letter or ' +
+  'notice to a specific tenant, do NOT write it here. Instead state in one or two ' +
+  'sentences the facts from the summary that letter would rest on (rent, dates, balance ' +
+  'owed, insurance status — whatever is relevant), then end your entire reply with the ' +
+  'exact token [EMAIL_DRAFT: <tenant name>] using the tenant\'s name EXACTLY as it ' +
+  'appears in the summary. This signals the app to offer a proper letter the landlord can ' +
+  'review and send. Only add that token when a single named tenant is identifiable.';
 
 Deno.serve(async (req) => {
   const { preflight, json, serverError } = cors(req);
@@ -70,9 +77,17 @@ Deno.serve(async (req) => {
     // Detect + strip the "not in the facts" marker so the app can offer to read the
     // full lease documents. Tolerate stray brackets/whitespace around the token.
     const needs_docs = /\[\s*NEEDS_DOCS\s*\]/i.test(raw);
-    const answer = raw.replace(/\[\s*NEEDS_DOCS\s*\]/gi, '').trim();
+    // The same mechanism for "this is really a request to write to a tenant": capture
+    // who, strip the marker, and let the app offer a proper letter instead of prose the
+    // landlord would have to reformat by hand.
+    const draftMatch = raw.match(/\[\s*EMAIL_DRAFT\s*:\s*([^\]]+?)\s*\]/i);
+    const draft_for = draftMatch ? draftMatch[1].trim().slice(0, 120) : null;
+    const answer = raw
+      .replace(/\[\s*NEEDS_DOCS\s*\]/gi, '')
+      .replace(/\[\s*EMAIL_DRAFT\s*:[^\]]*\]/gi, '')
+      .trim();
 
-    return json({ answer, needs_docs });
+    return json({ answer, needs_docs, draft_for });
   } catch (e) {
     return serverError(e, 'ask-portfolio');
   }

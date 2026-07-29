@@ -181,6 +181,134 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-29** — **Four features in one round: the Overview becomes a chart band (and loses its three metric
+  cards) · notifications sort by real urgency · Ask Amlak drafts a tenant letter · every lease gets an AI
+  red-flag review** (George dropped a PigJet screenshot — *"i dont like the design we need to make it fit the
+  design of my software"* — and scoped it down: red flags = *"a quick check to see whats missing from the leases
+  like important clauses or things that could hurt the landlord"*; email drafts in Ask Amlak only, *"connected to
+  the email service in gmail so the user can send it from there to a specific tenant from a users specific
+  email"*; no new critical-dates panel — *"we can just add that quick timeline to the notifications already
+  present"*; announcements + e-signature deferred, *"they need more depth"*. Then two demo-review rounds on top —
+  see **What his review changed** below). Deployed: DB migration `0069` (Supabase `awgrjmbcghdjgnqeiqkt`), edge
+  fns **`extract-lease`, `review-lease` (new), `ask-portfolio`, `draft-tenant-email` (new)**, frontend Cloudflare
+  version **`75247769`**, demo worker `92c94567`. **NO tenant emails** (a draft opens in the compose modal like
+  every other letter — nothing auto-sends), **nothing destructive** (0069 is one `add column if not exists` on a
+  nullable jsonb). Tests **820/820** (was 717 — +103 across 7 new suites).
+  - **⚠ George asked for demo-first this round** (*"before you implement any design changes this run i want to
+    see them in the demo before we pish them live"*), so the whole round shipped to the sandbox twice and
+    production stayed byte-identical until he said *"okay lets move forward and export all changes to the live
+    build"*. Worth keeping as a pattern for anything this visual.
+  - **Cost:** the lease review is **free at import** (it rides the Sonnet analyst read `extract-lease` already
+    pays for — one extra output line, ~20 tokens); a **↻ Re-review** click on an older lease is a separate Haiku
+    read of the CACHED text, **~2–5¢**; an Ask Amlak email draft is **~1–2¢**. Both new functions are Haiku 4.5,
+    `enforceRateLimit(req, 10, 60)`, click-gated — nothing fires on a page load.
+  - **1) The Overview is now a chart band.** Four panels off the two queries the page ALREADY runs (the search
+    index + `v_property_totals` for the selected FY) — **zero new network calls**, and they can't disagree with
+    the property pages they sum. **Where the rent comes from** (donut by property, rent roll in the centre) ·
+    **Space leased** · **Rent coming up for renewal** · **What each property keeps** (Revenue/Expenses/NOI, full
+    width). All shapers are pure in new `src/lib/portfolioCharts.js`; recharts was already a dependency
+    (HistoryPage's trends chart), and the two now share `CHART_SERIES` so they read as one visual language.
+  - **2) Notifications sort by urgency.** The panel used to render **all stored notifications first, unsorted**,
+    then alerts by a single `a.days - b.days` — and that one numeric sort mixed real days-remaining with three
+    *sort weights that only look like days* (`statement_reminder` = `-months.length`, `missing_payment` =
+    `-10 - months.length`, `insurance_chase` = days *since* the request). So a statement reminder at `-3`
+    outranked a lease that ended five days ago. Now **one merged list, four plain tiers** (`URGENCY_TIER`,
+    `alerts.js:57`): **0 overdue** (a date already passed, longest-overdue first) · **1 standing** (a problem
+    with no date — money not received, a statement not imported, a certificate asked for and never answered, an
+    open *"Is X renewing?"* prompt — ranked danger→warn→info) · **2 upcoming** (soonest first) · **3 fyi**. Tier
+    1 is the honest home for the three weight-based alerts: they *are* overdue in substance but have no deadline
+    to count, so they rank above anything merely upcoming **without rendering a countdown they can't back**
+    (test-pinned: a ledger reminder has no `.alert-days` and no bar, while a dated alert on the same screen has
+    both). `alertUrgency` is exported so the page and the tests use the identical rule; `buildFeed` (exported
+    from `DashboardPage.js`) returns the one ordered array. **Untouched:** `alertKey`, dismiss/snooze,
+    `send-reminders`, every email path.
+  - **3) Ask Amlak drafts a tenant letter.** Ask a question, get an answer, and where the answer names one
+    tenant a **"✉ Draft an email to {tenant}"** button appears → `draft-tenant-email` writes **prose only** (the
+    salutation and the paragraphs between it and the sign-off) and the client's own `letter()` scaffold adds the
+    letterhead, date, To block, RE line and signature — the same scaffold every hand-written Amlak template
+    uses, so an AI draft is typographically indistinguishable from a built-in one and **can't quietly drop the
+    business identity**. Opens in the existing compose modal, so Gmail / 📨 Send now / copy all work unchanged.
+    **Facts are supplied, never computed** — the model gets that one tenant's figures as data, must not invent a
+    number, a date or a legal threat, and is told not to follow instructions appearing inside the tenant record.
+  - **4) Lease review — the red flags.** New `_shared/leaseFlags.js` holds the landlord-side checklist ONCE and
+    both readers import it, so a flag raised at import and a flag raised by the button mean exactly the same
+    thing: **10 checks** — `no_personal_guarantee` · `no_security_deposit` · `tenant_early_termination` ·
+    `no_assignment_consent` · `cam_capped` · `no_late_fee` · `no_holdover_premium` · `no_insurance_requirements`
+    · `below_market_renewal` · `exclusive_use`. The convention is **yes = the concern applies**, and every flag
+    must carry the lease's own words (or say plainly that the lease is silent) — the whole point is *what's
+    missing*, which is exactly what a quote can't prove, so "silent" is a first-class answer rather than a
+    failure. Rendered by `LeaseReviewStrip` on the lease page, hideable via a new `lease_review` Display toggle.
+    `review-lease` reads the **cached** `lease_text` + addendum texts — **never re-parses a PDF, never makes a
+    vision call**; a lease with no cached text says so plainly instead of guessing from the structured fields.
+  - **What his review changed (two rounds on the demo, all six notes acted on):**
+    - **The "~a cent" wording is gone** from the review button and both Ask Amlak buttons. **Flagged, unchanged:**
+      the 🤖 Suggest tenants/buckets tooltips and the ⬆ Import statement title still carry ¢ figures — different
+      pages, and those are tooltips on a click-gated action rather than labels. Say the word and they go too.
+    - **The three metric cards came off** (*"with the implmemntation of the graphs we are not going to need the
+      top 3 cards"*) — and **nothing was lost, which had to be checked before deleting**: the rent roll is the
+      donut's centre figure (same sum, to the dollar), occupancy is both the page-head subtitle and the new
+      panel's headline, and the expiring count is the expirations table itself. The one genuine casualty was the
+      *"add building sizes"* nudge riding on the Occupancy card's foot — carried into the occupancy panel rather
+      than dropped. Their Display toggles went with them; a stale key in someone's saved `hidden_widgets` is
+      inert.
+    - **"Leased vs vacant" was rebuilt with no chart at all** (*"doesnt really make sense and its not intuitive
+      specifically the axis'"* — he was right: stacked bars compare *totals across* properties while the question
+      is a *ratio inside* each one, and the Y axis read `10k` of nothing named). Now **Space leased** — a headline
+      percentage over one filled track per property, the same hairline-progress language the Ledger's Collected
+      column already speaks. Most-vacant first, because the empty space is the point.
+    - **Every Expenses/NOI bar carries its figure** (was Revenue only), and the panel went **full width** — three
+      grouped bars per property need the room, and it's the comparison the other three lead up to. Above ~6
+      properties the labels are dropped and the tooltip carries them; a row of overlapping numbers is worse than
+      none. **The gold was re-cut** (*"a moore fitting shade of gold"*): `#B98B3A` sat at 47% lightness / 53%
+      saturation against olive at 33% and forest at 23% — which is precisely why it read mustard on ivory. New
+      chart gold **`#9C7430`**, same hue family as the `--gold` token, deep enough to sit with the greens. The
+      donut's two gold tints moved with it, and **`HistoryPage.js`'s one hex** moved in the same commit —
+      `portfolioCharts.js` documents the two as one visual language, so leaving History behind would have created
+      the drift the comment denies.
+    - **The new metric he asked for** (*"think of another metric we can visual that might be important for
+      landlords"*) is **rollover exposure** — how much annual rent comes up for renewal each year, the one thing
+      a commercial landlord watches that nothing else on the Overview touched (the other three panels are all
+      about *today*). Natural companion to the donut: concentration by tenant, then concentration **in time**.
+      A leading **"Now"** bucket carries active leases already past term end — rent on holdover is exposed today
+      and nothing else said so.
+    - **Then he said the metric itself wasn't clear** (*"i dont understanf what the new metric does explain it
+      and change the red color to something more fitting"*) — treated as the panel's fault, not the reply's.
+      **The red went**: `#8E2C22` is the `--danger` token, which everywhere else in Amlak signals a *fault*, and
+      a lease reaching its end date is a scheduled fact the landlord already agreed to. The ramp now opens on the
+      app's own **`--gold #94661B`** — gold's documented job here is *"look here"*, which is exactly the weight
+      that bucket wants — and cools through `#B08A46 · #9A9152 · #7C8B5A` into olive and forest. **The copy was
+      rewritten too**: title *"When your rent rolls off"* → **"Rent coming up for renewal"** (industry shorthand
+      out), the caption now answers *what is a bar* rather than carrying a statistic that presumed you knew, and
+      the foot assembles conditionally so each clause is only stated when it's true — the share, then *"Now" is
+      rent already past its end date — a tenant holding over*, then *at today's rent, not a forecast*.
+  - **Honesty guards, deliberate:** rollover uses **`base_rent`** (the rent in effect today, projected forward),
+    **not** the year-aware `effective_rent` the donut and NOI panels read — the two answer different questions,
+    and the caption is what keeps that legitimate. Parked tenants (`is_active === false`) aren't exposure and
+    are excluded; a lease with no term end is counted in the denominator but never drawn as rolling off.
+  - **Files.** New: `src/lib/portfolioCharts.js` · `src/lib/leaseRisks.js` · `src/components/PortfolioCharts.js`
+    · `src/components/LeaseReviewStrip.js` · `supabase/functions/_shared/leaseFlags.js` ·
+    `supabase/functions/{review-lease,draft-tenant-email}/index.ts` ·
+    `supabase/migrations/0069_lease_ai_review.sql` · 7 test suites (`portfolioCharts`, `alertUrgency`,
+    `feedOrder`, `leaseFlags`, `leaseRisks`, `leaseReviewStrip`, `askEmailDraft`, `dashboardOverview`).
+    Edited: `src/lib/{alerts,api,dashboardWidgets,analystBrief,emailTemplates,demo/mockClient}.js` ·
+    `src/pages/{DashboardPage,AskPage,LeaseDetailPage,LeaseNewPage,HistoryPage}.js` · `src/App.css` ·
+    `supabase/functions/{extract-lease,ask-portfolio}/index.ts`. **No demo-seed change** — `store.js`'s
+    `building_sf` is the CAM/tax share denominator since 0042, so moving it would re-price real bills.
+  - **Verified:** unit **820/820** (`vitest run`); `npm run build` compiles; `0069` applied clean and read back
+    (`ai_review`, jsonb, nullable); all four edge fns deployed clean with unauth POST on both new ones → **401**
+    (RLS-gated, *not* a schema 500); demo bundle grepped **free of the live ref** `awgrjmbcghdjgnqeiqkt` and the
+    live bundle confirmed to **carry** it; live 200s on all four URLs, and the edge confirmed serving the new
+    bundle hash (`assets/index-C49r7db3.js`) rather than a stale `index.html`. The deployed demo was driven in a
+    real browser across both review rounds — zero console errors.
+  - **George: hard-refresh (Cmd+Shift+R).** The Overview opens on four charts instead of three cards; the bell
+    reads most-urgent-first; open a lease for its red-flag review (older leases have a **↻ Re-review** button,
+    ~2–5¢); and in Ask Amlak, ask about one tenant and you'll get a **✉ Draft an email** button.
+  - **Flags (no action needed):** ① Deleting the three cards is one-way for their Display toggles — anyone who
+    had hidden one loses the switch, since the block it hid is gone. No data implication. ② The **demo can't
+    show vacancy** — both seeded properties are exactly 100% leased; your Pershing Plaza (882 SF empty) will.
+    ③ A lease imported before today has **no stored review** until you click ↻ Re-review; new imports carry one
+    automatically and free. ④ **Announcements** and **in-app e-signature** are still deferred, as you asked.
+
 - **2026-07-28** — **A stale renewal option can no longer pose as a live decision — and no renewal can
   quietly book a rent BELOW the one in effect today** (George: *"theres an outdated renewal on the beauty and
   barber shop, if i click that will it force the renewal on the current lease terms or does the software

@@ -198,7 +198,7 @@ export default function HistoryPage() {
 
           <div className="chart-legend">
             <span><span className="sw" style={{ background: '#5C6B3C' }} /> Revenue</span>
-            <span><span className="sw" style={{ background: '#B98B3A' }} /> Total expenses</span>
+            <span><span className="sw" style={{ background: '#9C7430' }} /> Total expenses</span>
             <span><span className="sw" style={{ background: '#2E4636' }} /> NOI</span>
           </div>
           <div className="hist-chart" style={{ height: 300, marginBottom: 24 }}>
@@ -209,7 +209,7 @@ export default function HistoryPage() {
                 <Bar dataKey="Revenue" fill="#5C6B3C">
                   <LabelList dataKey="Revenue" position="top" formatter={kfmt} className="bar-label" />
                 </Bar>
-                <Bar dataKey="Expenses" fill="#B98B3A">
+                <Bar dataKey="Expenses" fill="#9C7430">
                   <LabelList dataKey="Expenses" position="top" formatter={kfmt} className="bar-label" />
                 </Bar>
                 <Bar dataKey="NOI" fill="#2E4636">

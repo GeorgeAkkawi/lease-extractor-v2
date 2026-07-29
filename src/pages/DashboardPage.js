@@ -2,14 +2,15 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
-import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS } from '../lib/alerts';
+import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER } from '../lib/alerts';
 import { resolveLeadDays } from '../lib/notifyPrefs';
 import { useFeatures, isFeatureOn } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
-import { money, sf, psf, fmtDate } from '../lib/format';
+import { money, fmtDate } from '../lib/format';
 import NotificationEmailModal from '../components/NotificationEmailModal';
 import { useConfirm } from '../components/ConfirmDialog';
 import { PageSkeleton } from '../components/Skeleton';
+import PortfolioCharts from '../components/PortfolioCharts';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 
 // Portfolio overview — the landlord's one-glance home: rent roll, occupancy,
@@ -153,17 +154,14 @@ export default function DashboardPage() {
   const leases = (index?.leases || []).filter((l) => l.is_active !== false);
   const properties = index?.properties || [];
 
-  // Revenue / leased SF / occupancy summed from the property-page view (year-aware),
-  // so the Overview never disagrees with what each property shows. buildingSf from the
-  // view is already coalesced to leased SF when a property has no building size entered.
+  // Leased SF / occupancy summed from the property-page view (year-aware), so the
+  // Overview never disagrees with what each property shows. buildingSf from the view is
+  // already coalesced to leased SF when a property has no building size entered. Feeds
+  // the page-head subtitle; the charts below compute their own from the same rows.
   const totalsList = Object.values(totalsByProp || {});
-  const rentRoll = totalsList.reduce((s, t) => s + (Number(t.total_revenue) || 0), 0);
   const leasedSf = totalsList.reduce((s, t) => s + (Number(t.total_sf) || 0), 0);
   const buildingSf = totalsList.reduce((s, t) => s + (Number(t.building_sf) || 0), 0);
   const occupancy = buildingSf > 0 ? Math.round((leasedSf / buildingSf) * 100) : null;
-  const vacantSf = buildingSf > 0 ? Math.max(0, buildingSf - leasedSf) : 0;
-  // Only nudge "add building sizes" when NONE is set — otherwise show vacant SF.
-  const hasBuildingSizes = properties.some((p) => Number(p.building_sf) > 0);
 
   // Leases expiring within 6 months (active only), soonest first.
   const expiring = leases
@@ -174,11 +172,25 @@ export default function DashboardPage() {
 
   // Which blocks to render, per the landlord's Display settings. The two panels
   // share a 2-column grid — if only one shows, it goes full-width.
-  const showCards = ['rent_roll', 'occupancy', 'expiring'].some(show);
+  const showCharts = show('portfolio_charts');
   const showExpirations = show('expirations');
   const showAlerts = show('alerts');
   const twoPanels = showExpirations && showAlerts;
-  const nothingShown = !showCards && !showExpirations && !showAlerts;
+  const nothingShown = !showCharts && !showExpirations && !showAlerts;
+
+  // Everything that wants attention, in ONE list ordered most urgent first.
+  const feed = buildFeed(notifications, alerts);
+
+  // An alert names a lease or a property by id but never by name, so the "who and where"
+  // line is joined here from the search index the page has already loaded — no extra query.
+  const propNameById = Object.fromEntries(properties.map((p) => [p.id, p.name]));
+  const tenantByLeaseId = Object.fromEntries((index?.leases || []).map((l) => [l.id, l.tenant_name]));
+  // Where an alert sits: "City Dental · Maple Plaza". Falls back to whichever half is known.
+  function alertWhere(a) {
+    const who = a.tenant || tenantByLeaseId[a.lease_id] || null;
+    const where = propNameById[a.property_id] || null;
+    return [who, where].filter(Boolean).join(' · ');
+  }
 
   if (indexLoading) return <PageSkeleton />;
 
@@ -197,15 +209,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {showCards && (
-      <div className="metric-group">
-        <div className="metrics">
-          {show('rent_roll') && <Card label="Annual rent roll" main={money(rentRoll)} foot={leasedSf ? `${psf(rentRoll / leasedSf)} blended` : null} onClick={() => navigate('/financials')} />}
-          {show('occupancy') && <Card label="Occupancy" main={occupancy != null ? `${occupancy}%` : '—'} foot={hasBuildingSizes ? `${sf(vacantSf)} vacant` : 'add building sizes'} />}
-          {show('expiring') && <Card label="Expiring ≤ 6 months" main={String(expiring.length)} foot={expiring.length ? `next: ${fmtDate(expiring[0].lease_termination_date)}` : 'none'} tone={expiring.length ? 'warn' : undefined} />}
-        </div>
-      </div>
-      )}
+      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} leases={leases} year={year} />}
 
       {nothingShown && (
         <div className="panel">
@@ -267,8 +271,51 @@ export default function DashboardPage() {
                   <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => setUndoDecline(null)}>✕</button>
                 </div>
               )}
-              {/* Updates that already happened (rent applied, lease renewed) — dismiss only. */}
-              {notifications.map((n) => (
+              {/* Stored notifications and computed alerts as ONE list, ordered most
+                  urgent first — see buildFeed below. */}
+              {feed.map((row, i) => (row.type === 'notification' ? renderNotification(row.item) : renderAlert(row.item, i)))}
+            </div>
+          )}
+        </div>
+        )}
+      </div>
+      )}
+
+      {emailNotif && (
+        <NotificationEmailModal
+          notif={emailNotif}
+          onClose={() => setEmailNotif(null)}
+          onSend={async ({ to, subject }) => {
+            // Record COI requests sent straight from the insurance-expiry reminder, so the
+            // tenant's Insurance panel shows "Last requested" just like the lease-page button.
+            if (emailNotif.kind === 'insurance_request' && emailNotif.lease_id) {
+              await logInsuranceRequest({ propertyId: emailNotif.property_id, leaseId: emailNotif.lease_id, tenantName: emailNotif.tenant_name, to, subject });
+              qc.invalidateQueries({ queryKey: ['insuranceRequests', emailNotif.lease_id] });
+              qc.invalidateQueries({ queryKey: ['historyEvents', emailNotif.property_id] });
+            }
+          }}
+          onSent={async () => {
+            // The "renewal approaching" email rides on the still-open decision prompt —
+            // sending it must NOT dismiss the Yes/No prompt. A reminder-drafted email has
+            // no stored notification (no id) — nothing to dismiss. Terminal notices
+            // (renewed / not renewing) dismiss on send as before.
+            if (emailNotif.id && emailNotif.kind !== 'renewal_decision') await clearNotification(emailNotif.id);
+            setEmailNotif(null);
+          }}
+        />
+      )}
+    </div>
+  );
+
+  // ---- feed rows -------------------------------------------------------------
+  // Kept as functions rather than components so they close over the page's handlers
+  // and state exactly as they did when they were two inline maps; only the ORDER of
+  // the rows changed.
+
+  // An update that already happened (rent applied, lease renewed) — dismiss only —
+  // or the renewal Yes/No prompt, which is a question waiting on an answer.
+  function renderNotification(n) {
+    return (
                 <div key={n.id} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
                     <div role="button" tabIndex={0} style={{ cursor: 'pointer' }}
@@ -319,18 +366,24 @@ export default function DashboardPage() {
                   </div>
                   <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => clearNotification(n.id)}>✕</button>
                 </div>
-              ))}
+    );
+  }
 
-              {/* Upcoming key dates — describe what + when, with dismiss + remind-me-later. */}
-              {alerts.map((a, i) => { const k = alertKey(a); return (
+  // A key date — what + when, with dismiss + remind-me-later.
+  function renderAlert(a, i) {
+    const k = alertKey(a); const where = alertWhere(a);
+    return (
                 <div key={`${k}-${i}`} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start', borderLeftColor: a.tone === 'danger' ? 'var(--danger)' : a.tone === 'warn' ? 'var(--accent)' : 'var(--line)' }}>
-                  <div role="button" tabIndex={0} style={{ flex: 1, cursor: 'pointer' }}
+                  <div role="button" tabIndex={0} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}
                     onClick={() => goToAlert(a)}
                     onKeyDown={keyActivate(() => goToAlert(a))}>
                     <div className="alert-title"><strong>{a.title}</strong></div>
+                    {where && <div className="alert-where">{where}</div>}
                     <div className="muted" style={{ fontSize: 12.5 }}>{a.detail}</div>
+                    <UrgencyBar alert={a} />
                     <div className="muted" style={{ fontSize: 11.5 }}>{a.bucketLabel} · {fmtDate(a.date)}</div>
                   </div>
+                  <AlertCountdown alert={a} />
                   <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
                     {alertCanEmail(a) && (
                       <button className="icon-btn" title="Email a ready-to-send reminder" aria-label="Email reminder" disabled={emailBusyAlert === k} onClick={() => emailForAlert(a)}>
@@ -354,47 +407,86 @@ export default function DashboardPage() {
                     )}
                   </div>
                 </div>
-              ); })}
-            </div>
-          )}
-        </div>
-        )}
-      </div>
-      )}
-
-      {emailNotif && (
-        <NotificationEmailModal
-          notif={emailNotif}
-          onClose={() => setEmailNotif(null)}
-          onSend={async ({ to, subject }) => {
-            // Record COI requests sent straight from the insurance-expiry reminder, so the
-            // tenant's Insurance panel shows "Last requested" just like the lease-page button.
-            if (emailNotif.kind === 'insurance_request' && emailNotif.lease_id) {
-              await logInsuranceRequest({ propertyId: emailNotif.property_id, leaseId: emailNotif.lease_id, tenantName: emailNotif.tenant_name, to, subject });
-              qc.invalidateQueries({ queryKey: ['insuranceRequests', emailNotif.lease_id] });
-              qc.invalidateQueries({ queryKey: ['historyEvents', emailNotif.property_id] });
-            }
-          }}
-          onSent={async () => {
-            // The "renewal approaching" email rides on the still-open decision prompt —
-            // sending it must NOT dismiss the Yes/No prompt. A reminder-drafted email has
-            // no stored notification (no id) — nothing to dismiss. Terminal notices
-            // (renewed / not renewing) dismiss on send as before.
-            if (emailNotif.id && emailNotif.kind !== 'renewal_decision') await clearNotification(emailNotif.id);
-            setEmailNotif(null);
-          }}
-        />
-      )}
-    </div>
-  );
+    );
+  }
 }
 
-function Card({ label, main, foot, tone, onClick }) {
+// The Overview feed: stored notifications and computed alerts in ONE ordered list.
+//
+// They used to render as two blocks — every notification first, unsorted, then the alerts
+// — so an "escalation applied ✓" notice sat above a lease already in holdover. Both are
+// now ranked by the shared rule in alerts.js, exported here so a test can pin the order
+// without rendering the page.
+export function buildFeed(notifications = [], alerts = []) {
+  return [
+    ...notifications.map((n) => ({ type: 'notification', item: n, key: notificationUrgency(n) })),
+    ...alerts.map((a) => ({ type: 'alert', item: a, key: alertUrgency(a) })),
+  ]
+    .sort((x, y) => compareUrgencyKeys(x.key, y.key))
+    .map(({ type, item }) => ({ type, item }));
+}
+
+// A stored notification carries no date to count down to. The renewal Yes/No prompt is a
+// question waiting on an answer, so it ranks with the other standing problems; everything
+// else in the bell has already happened (rent applied, lease renewed) and is for
+// information — newest first.
+function notificationUrgency(n) {
+  if (n?.kind === 'renewal_decision') return [URGENCY_TIER.standing, 1, 0];
+  const ms = n?.created_at ? new Date(n.created_at).getTime() : 0;
+  return [URGENCY_TIER.fyi, -(Number.isFinite(ms) ? ms : 0), 0];
+}
+
+// Anything inside this many days is close in plain terms, whatever notice window the
+// alert belongs to.
+const SOON_DAYS = 90;
+
+// How full the urgency bar runs — fuller means sooner, empty means plenty of time, and a
+// date already passed is pinned full.
+//
+// It's the FULLER of two readings, because one alone lies in a way the landlord would
+// notice. Measured only against the alert's own notice window, a filing due in 30 days on
+// a 31-day lead reads nearly empty — technically "you've barely used your notice period",
+// visibly nonsense next to the words "30 days left". Measured only against a fixed scale,
+// a lease ending in 150 days on a 183-day lead reads empty right up until it isn't, and
+// the window the landlord chose stops meaning anything.
+//
+// So: how close the date is in absolute terms (dominant inside ~3 months), OR how far
+// through this reminder's own window we are (what gives a long-lead alert a rising bar
+// before it gets close) — whichever is further along. Never quite zero, so a bar always
+// reads as a bar rather than an empty box.
+export function urgencyFill(days, horizonDays) {
+  if (days == null || !(horizonDays > 0)) return null;
+  if (days < 0) return 1;
+  const soon = 1 - days / SOON_DAYS;              // absolute closeness
+  const window = 1 - days / horizonDays;          // progress through this alert's own lead
+  return Math.min(1, Math.max(0.04, soon, window));
+}
+
+// The hairline that fills as the date closes in. Only for alerts whose `days` genuinely
+// counts down (see the horizonDays note in alerts.js) — the ledger reminders sort by a
+// weight, so they get nothing rather than a fabricated deadline.
+function UrgencyBar({ alert }) {
+  const fill = urgencyFill(alert.days, alert.horizonDays);
+  if (fill == null) return null;
   return (
-    <div className="metric stat" style={onClick ? { cursor: 'pointer' } : undefined} onClick={onClick}>
-      <div className="label">{label}</div>
-      <div className={`value${tone === 'danger' ? ' neg' : ''}`}>{main}</div>
-      {foot && <div className="stat-foot"><span className="stat-cap">{foot}</span></div>}
+    <div className={`alert-progress ${alert.tone === 'danger' ? 'danger' : alert.tone === 'warn' ? 'warn' : ''}`}>
+      <span style={{ width: `${Math.round(fill * 100)}%` }} />
     </div>
   );
 }
+
+// "14 / days left" — the count set as a figure, because how soon is the whole point of a
+// reminder. Reads "days over" once the date has passed, and stays silent for alerts that
+// have no real countdown.
+function AlertCountdown({ alert }) {
+  if (alert.horizonDays == null || alert.days == null) return null;
+  const over = alert.days < 0;
+  const n = Math.abs(alert.days);
+  return (
+    <div className="alert-when">
+      <div className={`alert-days ${alert.tone || ''}`}>{n}</div>
+      <div className="alert-days-cap">{over ? (n === 1 ? 'day over' : 'days over') : (n === 1 ? 'day left' : 'days left')}</div>
+    </div>
+  );
+}
+

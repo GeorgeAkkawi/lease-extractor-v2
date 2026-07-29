@@ -615,6 +615,75 @@ tbody tr:last-child td{border-bottom:none}
 .exp-note{font-size:12px}
 .hist-chart{display:block;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px;width:100%}
 
+/* ---- Overview chart band ("Portfolio at a glance") ----
+   Three panels that answer what the metric cards can't: where the rent concentrates,
+   where the empty space sits, and which property keeps what it earns. Each panel is
+   the app's own paper card with a top hairline rule, so the band reads as part of the
+   Overview rather than a dashboard bolted on. */
+.chart-band{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:28px}
+.chart-panel{background:var(--panel);border:1px solid var(--border);border-top:2px solid var(--border);border-radius:var(--radius);padding:18px 20px 12px;box-shadow:var(--shadow);min-width:0;display:flex;flex-direction:column}
+.chart-panel-head{display:flex;flex-direction:column;gap:3px;margin-bottom:14px;padding-bottom:11px;border-bottom:1px solid var(--hair)}
+.chart-panel-head strong{font-family:var(--display);font-size:19px;font-weight:600;line-height:1.15}
+.chart-cap{font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700}
+.chart-legend.wrap{flex-wrap:wrap;gap:8px 16px;margin-top:12px;margin-bottom:2px}
+/* The donut's hole carries the figure it sums — serif, so it reads as a headline
+   number rather than a chart annotation. pointer-events off so the slices stay hoverable. */
+.donut-wrap{position:relative}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;text-align:center;padding:0 12px}
+.donut-figure{font-family:var(--display);font-size:26px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.donut-cap{font-size:9px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:700;margin-top:5px}
+/* The comparison the other panels lead up to — three bars per property, each carrying a
+   figure, so it takes the whole row rather than a third of it. */
+.chart-panel.wide{grid-column:1/-1}
+.chart-foot{font-size:11px;color:var(--muted);margin:9px 0 2px;line-height:1.45}
+/* Space leased — a headline share over one filled track per property. The same hairline
+   progress language the Ledger's Collected column and the alert urgency bar speak, so it
+   reads as part of the app rather than a chart bolted on. */
+.occ-body{flex:1;display:flex;flex-direction:column;justify-content:center;padding-bottom:6px}
+.occ-head{display:flex;flex-direction:column;gap:5px;align-items:center;text-align:center;padding:6px 0 22px}
+.occ-figure{font-family:var(--display);font-size:42px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.occ-cap{font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700}
+.occ-rows{display:flex;flex-direction:column;gap:9px;padding-bottom:6px}
+.occ-row{display:grid;grid-template-columns:minmax(0,1fr) 2fr auto;align-items:center;gap:10px}
+.occ-name{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.occ-track{height:8px;border-radius:8px;background:var(--panel-2);border:1px solid var(--border);overflow:hidden}
+.occ-track>span{display:block;height:100%;background:var(--accent)}
+.occ-pct{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--muted);min-width:34px;text-align:right}
+
+/* ---- alert urgency ----
+   A reminder's whole point is "how soon" — so the count of days is set as a figure in
+   the display face, and a hairline bar fills as the date closes in. Fuller = sooner. */
+.alert-when{display:flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:52px;padding-left:4px}
+.alert-days{font-family:var(--display);font-size:22px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted)}
+.alert-days.danger{color:var(--danger)} .alert-days.warn{color:var(--gold)} .alert-days.info{color:var(--forest)}
+.alert-days-cap{font-size:8.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700;white-space:nowrap}
+.alert-progress{height:3px;border-radius:3px;background:var(--panel-2);border:1px solid var(--border);overflow:hidden;margin:7px 0 1px}
+.alert-progress>span{display:block;height:100%;background:var(--forest);transition:width .3s ease}
+.alert-progress.warn>span{background:var(--gold)}
+.alert-progress.danger>span{background:var(--danger)}
+.alert-where{font-size:11.5px;color:var(--muted)}
+
+/* ---- lease review (red flags) ----
+   Findings read as a stack of short notes, each with a severity stripe down its left edge
+   — the callout idiom, tightened, so a list of ten still scans. Deliberately quiet: this
+   is a reading aid, and a panel that shouts undermines the one flag that matters. */
+.lease-review .panel-head{margin-bottom:14px}
+.review-head-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.review-note{font-size:12.5px;margin:0 0 14px}
+.review-list{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.review-item{border:1px solid var(--border);border-left:3px solid var(--border);background:var(--panel-2);border-radius:var(--radius);padding:12px 14px}
+.review-item.high{border-left-color:var(--danger)}
+.review-item.medium{border-left-color:var(--gold)}
+.review-item.info{border-left-color:var(--forest)}
+.review-item-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:5px}
+.review-item-head strong{font-family:var(--display);font-size:17px;font-weight:600}
+.review-item-note{font-size:12.5px;line-height:1.5}
+.review-quote{margin-top:8px;font-size:12px}
+.review-quote summary{cursor:pointer;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:9.5px;font-weight:700}
+.review-quote blockquote{margin:7px 0 0;padding-left:11px;border-left:2px solid var(--hair);color:var(--muted);font-style:italic;line-height:1.5}
+.review-jump{padding:4px 0;margin-top:6px;font-size:11px}
+.review-foot{font-size:11.5px;margin:14px 0 0;padding-top:12px;border-top:1px solid var(--hair)}
+
 /* ---- modal ---- */
 .modal-scrim{position:fixed;inset:0;background:rgba(27,22,16,.46);display:grid;place-items:center;z-index:50;padding:24px;backdrop-filter:blur(2px)}
 .modal{background:var(--panel);border-radius:var(--radius);box-shadow:0 30px 70px rgba(27,20,12,.34);max-width:94vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;animation:pop .15s ease-out;border:1px solid var(--border)}

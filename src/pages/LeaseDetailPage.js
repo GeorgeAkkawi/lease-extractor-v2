@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
@@ -17,6 +17,7 @@ import InvoicesPanel from '../components/InvoicesPanel';
 import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
 import InsuranceVault from '../components/InsuranceVault';
+import LeaseReviewStrip from '../components/LeaseReviewStrip';
 import EmailComposeModal from '../components/EmailComposeModal';
 import { buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildAdditionalInsuredRequestEmail } from '../lib/emailTemplates';
 import { currentPhase } from '../lib/leaseTerm';
@@ -62,6 +63,15 @@ export default function LeaseDetailPage() {
   // Dated trail of certificate-of-insurance requests sent from here (newest first),
   // so the Insurance panel can show when the tenant was last asked.
   const { data: insReqs = [] } = useQuery({ queryKey: ['insuranceRequests', leaseId], queryFn: () => listInsuranceRequests(leaseId), enabled: insuranceOn });
+  // The tenant's live certificate, for the lease review's insurance checks. It shares the
+  // key InsuranceVault already uses, so this is normally a cache hit rather than a query.
+  // Only fetched when the Insurance module is on — with the module off the review is
+  // passed `undefined` and stays silent about insurance rather than reporting "none".
+  const { data: tenantPolicy, isSuccess: policyLoaded } = useQuery({
+    queryKey: ['insurance', 'tenant', leaseId],
+    queryFn: () => getTenantInsurance(leaseId),
+    enabled: insuranceOn,
+  });
   // The raw AI read (cached on the linked lease_files row) — used only to surface the
   // "rent renegotiated in year N" reminder for a lease imported with a prose escalation
   // formula that stops mid-term. Read directly (not via api.js) so it stays self-contained.
@@ -183,6 +193,20 @@ export default function LeaseDetailPage() {
 
   // When opened from an alert, scroll the relevant section into view and flash it.
   const refByFocus = { termination: termsRef, escalation: escRef, renewal: renRef, insurance: insRef };
+  // The same scroll-and-flash, driven by a click instead of a URL — the lease review's
+  // findings use it to put the landlord in front of the panel that fixes each one.
+  // 'terms'/'renewals'/'escalations' are the review's own names for those sections.
+  const PANEL_TO_FOCUS = { terms: 'termination', renewals: 'renewal', escalations: 'escalation', insurance: 'insurance' };
+  function scrollToPanel(panel) {
+    // A finding about the property's own figures lives on the Financials page, not here.
+    if (panel === 'financials') { navigate(`/financials/${corpId}/${propId}`); return; }
+    const f = PANEL_TO_FOCUS[panel];
+    const el = f && refByFocus[f]?.current;
+    if (!el) return;
+    setFlash(f);
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => setFlash(null), 2600);
+  }
   useEffect(() => {
     if (!focus || isLoading || !lease) return;
     const el = refByFocus[focus]?.current;
@@ -328,6 +352,18 @@ export default function LeaseDetailPage() {
             <div className="muted">Click any flagged field to fix it; editing clears the review badge.</div>
           </div>
         </div>
+      )}
+
+      {showPanel('lease_review') && (
+        <LeaseReviewStrip
+          lease={lease}
+          escalations={escalations}
+          renewals={renewals}
+          // undefined while the module is off (or the policy hasn't loaded) → the review
+          // says nothing about insurance rather than reporting a certificate as missing.
+          insurance={insuranceOn && policyLoaded ? (tenantPolicy || null) : undefined}
+          onJump={scrollToPanel}
+        />
       )}
 
       <div className={`panel${flash === 'termination' ? ' panel-flash' : ''}`} ref={termsRef}>

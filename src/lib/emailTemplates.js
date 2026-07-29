@@ -14,7 +14,9 @@ const today = () => new Date().toLocaleDateString('en-US', { year: 'numeric', mo
 const monthlyOf = (annual) => (annual ? money(Math.round(Number(annual) / 12)) : null);
 
 // Shared letter scaffold: header → date → To block → RE → body → signature.
-function letter({ business, toBlock, reLine, paragraphs }) {
+// Exported so the AI-drafted letter (buildAiDraftEmail) is assembled the same way as
+// every hand-written template — the model supplies only the prose in the middle.
+export function letter({ business, toBlock, reLine, paragraphs }) {
   const contact = [business?.contact_email, business?.contact_phone].filter(Boolean).join(' · ');
   const out = [];
   [business?.company_name, business?.address, contact].filter(Boolean).forEach((l) => out.push(l));
@@ -29,13 +31,46 @@ function letter({ business, toBlock, reLine, paragraphs }) {
   return out.join('\n');
 }
 
-function toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }) {
+export function toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }) {
   return [
     contact_name || tenant_name,
     contact_name && tenant_name && contact_name !== tenant_name ? tenant_name : null,
     propertyName ? `Tenant at ${propertyName}` : null,
     tenant_email || null,
   ];
+}
+
+// Wrap AI-written prose in the standard letter. The model is asked for the salutation
+// and paragraphs only (see supabase/functions/draft-tenant-email), so the letterhead,
+// date, To block, RE line and signature come from here — an AI draft is therefore
+// typographically identical to a built-in template and always carries the landlord's
+// own business identity, whatever the model returns.
+//
+// The sign-off strip is belt-and-braces: a model asked not to sign off occasionally does
+// anyway, and two "Sincerely" blocks in one letter is the sort of thing that gets noticed
+// only after it's been sent.
+export function buildAiDraftEmail({ business, tenant_name, contact_name, tenant_email, propertyName, subject, bodyProse }) {
+  const prose = stripSignOff(bodyProse);
+  const paragraphs = prose
+    .split(/\n{2,}/)
+    .map((p) => p.replace(/\s+$/, '').replace(/\n+/g, ' ').trim())
+    .filter(Boolean);
+  const subj = String(subject || '').trim() || `Regarding your lease at ${propertyName || 'the premises'}`;
+  const body = letter({
+    business,
+    toBlock: toBlockFor({ contact_name, tenant_name, tenant_email, propertyName }),
+    reLine: `RE: ${subj}`,
+    paragraphs: paragraphs.length ? paragraphs : [String(bodyProse || '').trim()],
+  });
+  return { subject: subj, body, to: tenant_email || '' };
+}
+
+// Drop a trailing "Sincerely," / "Best regards," and everything after it — the scaffold
+// supplies the real one, signed with the business name.
+function stripSignOff(text) {
+  const s = String(text || '').trim();
+  const m = s.match(/\n\s*(sincerely|best regards|kind regards|regards|respectfully|yours truly|warm regards)\b[\s\S]*$/i);
+  return (m ? s.slice(0, m.index) : s).trim();
 }
 
 export function buildRenewalEmail({ business, tenant_name, contact_name, tenant_email, propertyName, newStart, newEnd, oldRent, newRent }) {

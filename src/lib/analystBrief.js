@@ -12,10 +12,14 @@
 // src/. Keeping ONE copy on this side (rather than one per review screen) at least means the
 // lease and rider screens can't drift apart from each other.
 
-// Strip the trailing machine-readable "VERDICTS: …" line so only the human-readable brief
-// is shown.
+// Strip the trailing machine-readable lines — "VERDICTS: …" and the red-flag "FLAGS: …"
+// that follows it — so only the human-readable brief is shown. Both are parsed by the edge
+// function before the brief is stored; on screen they're noise.
 export function stripVerdicts(brief) {
-  return String(brief).replace(/\n*^\s*VERDICTS:.*$/im, '').trimEnd();
+  return String(brief)
+    .replace(/\n*^\s*VERDICTS:.*$/im, '')
+    .replace(/\n*^\s*FLAGS:.*$/im, '')
+    .trimEnd();
 }
 
 export const MISMATCH_LABELS = {

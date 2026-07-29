@@ -67,6 +67,10 @@ export default function LeaseNewPage() {
         abatements,
         aiConfidence: buildAiConfidence(extractedDoc.extraction),
         leaseText: extractedDoc.lease_text,
+        // The red-flag review the analyst answered during the same read — carried onto
+        // the lease so it's waiting on the lease page (0069). Absent on an older
+        // extraction or a timed-out analyst, in which case nothing is stored.
+        aiReview: extractedDoc.extraction.ai_review || null,
       });
     },
     onSuccess: afterCreate,
@@ -219,6 +223,9 @@ function SchedulePreview({ ex }) {
   // extractions or when the analyst timed out, so everything below no-ops gracefully.
   const brief = typeof ex.analysis_brief === 'string' ? stripVerdicts(ex.analysis_brief) : '';
   const mismatches = Array.isArray(ex.extraction_mismatch) ? ex.extraction_mismatch : [];
+  // Red flags the analyst answered on the same read. Shown here as a heads-up before
+  // saving; the full list (plus the record-based checks) lives on the lease page after.
+  const reviewFlags = Array.isArray(ex.ai_review?.flags) ? ex.ai_review.flags : [];
 
   return (
     <div className="callout" style={{ marginTop: 14 }}>
@@ -304,6 +311,24 @@ function SchedulePreview({ ex }) {
             {abs.map((a, i) => `${fmtDate(a.start_date)}–${fmtDate(a.end_date)} (${abatementKindLabel(a)})`).join('; ')} — credited on the invoice &amp; monthly tracker.
           </span>
         </div>
+      )}
+      {reviewFlags.length > 0 && (
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12.5 }}>
+            ⚠ {reviewFlags.length} {reviewFlags.length === 1 ? 'point' : 'points'} to look at in this lease
+          </summary>
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            Terms this lease is missing, or carries, that tend to cost a landlord. None of it stops you saving —
+            it’s waiting on the lease page under <em>Lease review</em>. A reading aid, not legal advice.
+          </div>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12.5 }}>
+            {reviewFlags.map((f) => (
+              <li key={f.key} style={{ marginBottom: 4 }}>
+                <strong>{f.title}</strong> — <span className="muted">{f.note}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {brief && (
         <details style={{ marginTop: 10 }}>
