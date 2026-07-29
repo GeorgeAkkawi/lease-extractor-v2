@@ -2961,6 +2961,44 @@ export async function declineRenewal(renewalId) {
   }
 }
 
+// Record that an option was exercised YEARS AGO, as history — without touching the lease.
+//
+// The case (George, 2026-07-29): a 2004 lease carries a "First Option to Renew" with a
+// notice date of 2008-09-01. The tenant did renew, back then; everything since has been
+// carried by addendums, so the lease already reads the right rent ($31,800.96) and the
+// right term end (2030-05-31). The option row, though, still sat **pending** — so it kept
+// posing as an open decision, and the only two answers on offer were both wrong: "Renew"
+// would have extended the term again and booked that 2008-era rent, and "Not renewing" is
+// simply untrue.
+//
+// So this is the third answer: it happened, and it's over. Status → applied at the date it
+// happened, a dated history event so the property timeline shows it, and the stale prompt
+// cleared. It deliberately writes NOTHING to the lease — no term, no rent, no escalation —
+// because the lease's current figures already reflect everything that followed, and moving
+// them is exactly the damage this avoids. (confirmRenewal is still the path for an option
+// being exercised NOW.)
+export async function markRenewalRenewedHistoric(renewalId, renewedOn) {
+  const ren = await one(supabase.from('renewal_options').select('lease_id, option_label, notice_by_date, term_months').eq('id', renewalId).maybeSingle());
+  if (!ren) return null;
+  const dateIso = isoDateOrNull(renewedOn) || localDateIso(new Date());
+  // Noon UTC, so the calendar day reads the same in every timezone the landlord might be in
+  // (applied_at is a timestamptz; midnight would render as the day before west of UTC).
+  await updateRenewal(renewalId, { status: 'applied', applied_at: `${dateIso}T12:00:00Z` });
+  const lease = await getLease(ren.lease_id);
+  await logHistoryEvent({
+    property_id: lease?.property_id || null,
+    lease_id: ren.lease_id,
+    type: 'renewal_confirmed',
+    tenant_name: lease?.tenant_name || null,
+    description: `Renewal exercised${ren.option_label ? ` (${ren.option_label})` : ''} — recorded after the fact; the lease's term and rent were not changed`,
+    event_date: dateIso,
+    meta: { renewal_id: renewalId, historic: true },
+  });
+  // It is no longer an open question, so the bell stops asking.
+  await rows(supabase.from('notifications').delete().eq('lease_id', ren.lease_id).eq('kind', 'renewal_decision'));
+  return { renewalId, renewedOn: dateIso };
+}
+
 // Undo a decline — put a "not renewing" option back to pending so the decision can be
 // made again (e.g. it was clicked by mistake). Reverses declineRenewal, and re-raises the
 // "Is the tenant renewing?" prompt if the decision is still due (declining had deleted it).

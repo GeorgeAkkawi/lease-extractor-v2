@@ -108,21 +108,33 @@ export function resolveCurrentTerm({ lease, escalations = [], today } = {}) {
   };
 }
 
-// Human label for the period a lease is in NOW, for display. A confirmed renewal
-// option wins (its label); else an applied EXTENSION addendum means we're in the
-// extended term; else the original term.
+// Human label for the period a lease is in NOW, for display: whichever act LAST moved the
+// term — a confirmed renewal option or an extension addendum — else the original term.
+//
+// Ordering by date matters because both can be true of one lease. A 2004 lease can have
+// exercised its renewal option in 2008 and then been carried by addendums ever since: the
+// phase it is in today is the addendum's, not the option's. Taking the option
+// unconditionally (as this did) meant recording a long-past renewal as history would
+// relabel a term that came from somewhere else entirely.
+//
+// When either side has no date to compare, the option still wins — the prior behaviour,
+// so nothing shifts for a lease that never carried both.
+const extensionLabel = (a) => (a?.label ? `Extended term — ${a.label}` : 'Extended term');
+
 export function currentTermLabel(lease, renewals = [], addendums = []) {
   if (lease?.is_active === false) return 'Outdated';
   const applied = (renewals || []).filter((r) => r.status === 'applied');
-  if (applied.length) {
-    const last = [...applied].sort(cmpRenewal).pop();
-    return last?.option_label || `Renewal option ${applied.length}`;
-  }
   const extensions = (addendums || []).filter((a) => a.kind === 'extension');
-  if (extensions.length) {
-    const last = extensions[extensions.length - 1]; // listAddendums orders by amendment_date
-    return last.label ? `Extended term — ${last.label}` : 'Extended term';
+  const lastOption = applied.length ? [...applied].sort(cmpRenewal).pop() : null;
+  const lastExt = extensions.length ? extensions[extensions.length - 1] : null; // listAddendums orders by amendment_date
+
+  if (lastOption && lastExt) {
+    const optionDay = String(lastOption.applied_at || '').slice(0, 10);
+    const extDay = String(lastExt.amendment_date || '').slice(0, 10);
+    if (optionDay && extDay && extDay > optionDay) return extensionLabel(lastExt);
   }
+  if (lastOption) return lastOption.option_label || `Renewal option ${applied.length}`;
+  if (lastExt) return extensionLabel(lastExt);
   return 'Original term';
 }
 

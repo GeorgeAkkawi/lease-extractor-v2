@@ -31,6 +31,19 @@ function joinMonths(names, cap = 3) {
 // can't disturb any key already saved.
 export const alertKey = (a) => `${a.focus}:${a.contract_id || a.report_id || a.lease_id || a.property_id}:${a.date}`;
 
+// A STORED notification (the bell's "Is X renewing?", "rent applied ✓") lives in its own
+// table and is dismissed by deleting the row — so it never needed a key. Snoozing does:
+// "remind me next week" has to survive a reload without throwing the row away. It reuses
+// the same server-synced alert_states store under its own namespace, which can't collide
+// with an alertKey (those read `focus:id:date`). The row id is stable for as long as the
+// prompt is open — promptDueRenewalDecisions updates an existing prompt rather than
+// recreating it — so a snooze holds until the deadline it was deferred from.
+export const notificationKey = (n) => `notification:${n?.id}`;
+
+// Is this notification currently snoozed? Same lookup shape as the alert filter.
+export const notificationSnoozed = (n, states = {}, nowMs = Date.now()) =>
+  states.snoozedUntil?.[notificationKey(n)] > nowMs;
+
 // Transform alert_states rows (from listAlertStates) into the lookup buildAlerts
 // filters against: a Set of dismissed keys + a { key: untilMs } snooze map.
 export function toAlertStates(stateRows) {

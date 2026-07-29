@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
-import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER, isLongPast } from '../lib/alerts';
+import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER, isLongPast, notificationKey, notificationSnoozed } from '../lib/alerts';
 import { resolveLeadDays } from '../lib/notifyPrefs';
 import { useFeatures, isFeatureOn } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
@@ -64,6 +64,11 @@ export default function DashboardPage() {
     refetchInterval: 60_000,
   });
   const { data: notifications = [] } = useQuery({ queryKey: ['notifications'], queryFn: listNotifications, refetchInterval: 60_000 });
+  // The same server-synced dismiss/snooze store buildAlerts filters against, read here on
+  // its own so a STORED notification can be snoozed too — a notification is a row, not a
+  // computed alert, so "remind me next week" has nowhere else to live.
+  const { data: stateRows = [] } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates, refetchInterval: 60_000 });
+  const notifStates = toAlertStates(stateRows);
 
   // Hold the page until the portfolio data is in, so the metrics/tables appear
   // fully formed rather than counting up from zero on first load.
@@ -152,8 +157,16 @@ export default function DashboardPage() {
     else navigate(`/leases/${a.corporation_id}`);
   }
 
+  // Dismiss / snooze both write one alert_states row. Keyed by alertKey for a computed
+  // alert and by notificationKey for a stored one, so the two share this plumbing and can
+  // present the identical row of controls.
   async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
-  async function snooze(a, ms) { await upsertAlertState({ alert_key: alertKey(a), snoozed_until: new Date(Date.now() + ms).toISOString() }); setSnoozeFor(null); qc.invalidateQueries({ queryKey: ['alerts'] }); }
+  async function snoozeKey(key, ms) {
+    await upsertAlertState({ alert_key: key, snoozed_until: new Date(Date.now() + ms).toISOString() });
+    setSnoozeFor(null);
+    qc.invalidateQueries({ queryKey: ['alerts'] });
+    qc.invalidateQueries({ queryKey: ['alertStates'] });
+  }
 
   const leases = (index?.leases || []).filter((l) => l.is_active !== false);
   const properties = index?.properties || [];
@@ -182,8 +195,11 @@ export default function DashboardPage() {
   const twoPanels = showExpirations && showAlerts;
   const nothingShown = !showCharts && !showExpirations && !showAlerts;
 
-  // Everything that wants attention, in ONE list ordered most urgent first.
-  const feed = buildFeed(notifications, alerts);
+  // Everything that wants attention, in ONE list ordered most urgent first. A snoozed
+  // notification drops out until its time is up (alerts are already filtered inside
+  // buildAlerts against the same store).
+  const liveNotifications = notifications.filter((n) => !notificationSnoozed(n, notifStates));
+  const feed = buildFeed(liveNotifications, alerts);
 
   // An alert names a lease or a property by id but never by name, so the "who and where"
   // line is joined here from the search index the page has already loaded — no extra query.
@@ -258,9 +274,9 @@ export default function DashboardPage() {
         <div className="panel">
           <div className="panel-head">
             <strong>Alerts &amp; notifications</strong>
-            <span className="muted">{notifications.length + alerts.length} active</span>
+            <span className="muted">{feed.length} active</span>
           </div>
-          {notifications.length + alerts.length === 0 ? (
+          {feed.length === 0 ? (
             <p className="empty-line muted">All clear — nothing needs attention. 🎉</p>
           ) : (
             <div className="alert-list">
@@ -316,9 +332,51 @@ export default function DashboardPage() {
   // and state exactly as they did when they were two inline maps; only the ORDER of
   // the rows changed.
 
+  // The controls every row in this list carries, in one place — ✉ · remind me later · ✕.
+  // They used to be written twice: a computed alert had this column, while a stored
+  // notification had a wordy "✉ View / send tenant email" link buried in its body and no
+  // snooze at all, so two rows asking for the same kind of decision (the renewal Yes/No
+  // prompt beside a renewal-notice alert) read as different kinds of thing.
+  //
+  // `onEmail` null = nothing to write to, so no ✉. `ignore` swaps the bare ✕ for a
+  // labelled Ignore and drops the clock (see isLongPast — nothing to defer to).
+  function rowActions({ k, onEmail, emailTitle, emailBusy = false, onSnooze, onDismiss, ignore = false, ignoreTitle }) {
+    return (
+      <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
+        {onEmail && (
+          <button className="icon-btn" title={emailTitle} aria-label="Email reminder" disabled={emailBusy} onClick={onEmail}>
+            {emailBusy ? '…' : '✉'}
+          </button>
+        )}
+        {!ignore && (
+          <button className="icon-btn" title="Remind me later" aria-label="Remind me later" onClick={() => setSnoozeFor(snoozeFor === k ? null : k)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'block' }}>
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7.5V12l3 2" />
+            </svg>
+          </button>
+        )}
+        {ignore ? (
+          <button className="ghost btn-sm alert-ignore" title={ignoreTitle} onClick={onDismiss}>Ignore</button>
+        ) : (
+          <button className="icon-btn dismiss-x" title="Dismiss" onClick={onDismiss}>✕</button>
+        )}
+        {snoozeFor === k && (
+          <div className="snooze-menu" style={{ position: 'absolute', top: '100%', right: 0, zIndex: 5, background: 'var(--surface, #fff)', border: '1px solid var(--line, #ddd)', borderRadius: 8, padding: 6, boxShadow: '0 6px 20px rgba(0,0,0,.12)', minWidth: 130 }}>
+            <div className="muted" style={{ fontSize: 11, padding: '2px 8px 6px' }}>Remind me…</div>
+            {SNOOZE_OPTIONS.map((o) => (
+              <button key={o.label} className="ghost" style={{ display: 'block', width: '100%', textAlign: 'left', fontSize: 12.5 }} onClick={() => onSnooze(o.ms)}>{o.label}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // An update that already happened (rent applied, lease renewed) — dismiss only —
   // or the renewal Yes/No prompt, which is a question waiting on an answer.
   function renderNotification(n) {
+    const k = notificationKey(n);
     return (
                 <div key={n.id} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
                   <div style={{ flex: 1 }}>
@@ -328,11 +386,6 @@ export default function DashboardPage() {
                       <div className="alert-title"><strong>{n.title}</strong></div>
                       <div className="muted" style={{ fontSize: 12.5 }}>{n.body}</div>
                     </div>
-                    {n.email_body && (
-                      <span className="bell-link" role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                        onClick={(e) => { e.stopPropagation(); setEmailNotif(n); }}
-                        onKeyDown={keyActivate((e) => { e.stopPropagation(); setEmailNotif(n); })}>✉ View / send tenant email</span>
-                    )}
                     {n.kind === 'renewal_decision' && (
                       rentEntry?.leaseId === n.lease_id ? (
                         <div style={{ marginTop: 8 }}>
@@ -368,7 +421,13 @@ export default function DashboardPage() {
                       )
                     )}
                   </div>
-                  <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => clearNotification(n.id)}>✕</button>
+                  {rowActions({
+                    k,
+                    onEmail: n.email_body ? () => setEmailNotif(n) : null,
+                    emailTitle: 'View / send the tenant email',
+                    onSnooze: (ms) => snoozeKey(k, ms),
+                    onDismiss: () => clearNotification(n.id),
+                  })}
                 </div>
     );
   }
@@ -388,37 +447,19 @@ export default function DashboardPage() {
                     <div className="muted" style={{ fontSize: 11.5 }}>{a.bucketLabel} · {fmtDate(a.date)}</div>
                   </div>
                   <AlertCountdown alert={a} />
-                  <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
-                    {alertCanEmail(a) && (
-                      <button className="icon-btn" title="Email a ready-to-send reminder" aria-label="Email reminder" disabled={emailBusyAlert === k} onClick={() => emailForAlert(a)}>
-                        {emailBusyAlert === k ? '…' : '✉'}
-                      </button>
-                    )}
-                    {/* Long past its date? There is nothing to defer to and nothing to count
-                        down — so the clock goes and the ✕ becomes a labelled Ignore that says
-                        what it does. Same dismissal either way. */}
-                    {!isLongPast(a) && (
-                      <button className="icon-btn" title="Remind me later" aria-label="Remind me later" onClick={() => setSnoozeFor(snoozeFor === k ? null : k)}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ display: 'block' }}>
-                          <circle cx="12" cy="12" r="9" />
-                          <path d="M12 7.5V12l3 2" />
-                        </svg>
-                      </button>
-                    )}
-                    {isLongPast(a) ? (
-                      <button className="ghost btn-sm alert-ignore" title="Stop showing this — its date is long past" onClick={() => clearAlert(a)}>Ignore</button>
-                    ) : (
-                      <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => clearAlert(a)}>✕</button>
-                    )}
-                    {snoozeFor === k && (
-                      <div className="snooze-menu" style={{ position: 'absolute', top: '100%', right: 0, zIndex: 5, background: 'var(--surface, #fff)', border: '1px solid var(--line, #ddd)', borderRadius: 8, padding: 6, boxShadow: '0 6px 20px rgba(0,0,0,.12)', minWidth: 130 }}>
-                        <div className="muted" style={{ fontSize: 11, padding: '2px 8px 6px' }}>Remind me…</div>
-                        {SNOOZE_OPTIONS.map((o) => (
-                          <button key={o.label} className="ghost" style={{ display: 'block', width: '100%', textAlign: 'left', fontSize: 12.5 }} onClick={() => snooze(a, o.ms)}>{o.label}</button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  {/* Long past its date? There is nothing to defer to and nothing to count
+                      down — so the clock goes and the ✕ becomes a labelled Ignore that says
+                      what it does. Same dismissal either way. */}
+                  {rowActions({
+                    k,
+                    onEmail: alertCanEmail(a) ? () => emailForAlert(a) : null,
+                    emailTitle: 'Email a ready-to-send reminder',
+                    emailBusy: emailBusyAlert === k,
+                    onSnooze: (ms) => snoozeKey(k, ms),
+                    onDismiss: () => clearAlert(a),
+                    ignore: isLongPast(a),
+                    ignoreTitle: 'Stop showing this — its date is long past',
+                  })}
                 </div>
     );
   }

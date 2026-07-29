@@ -430,6 +430,12 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--hair)}
 .panel-head strong{font-family:var(--display);font-size:21px;font-weight:600}
 .panel-head .muted{font-size:12px}
+/* A panel head that folds its section away. It has to keep looking like a heading, not a
+   button — so every button default is stripped and only the caret says it's operable. */
+.panel-toggle{background:none;border:0;padding:0;margin:0;cursor:pointer;display:flex;align-items:center;gap:9px;color:inherit;text-transform:none;letter-spacing:normal;font:inherit;min-width:0}
+.panel-toggle:hover .panel-caret{color:var(--accent)}
+.panel-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+.panel-caret{font-size:11px;line-height:1;color:var(--muted);transition:color .15s ease}
 .field-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
 .field{display:flex;flex-direction:column;gap:6px}
 .field-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;display:flex;align-items:center;gap:8px}
@@ -830,7 +836,9 @@ tbody tr:last-child td{border-bottom:none}
 .bell-item{cursor:default}
 .bell-item .bell-item-body{cursor:pointer;flex:1}
 .bell-item--event .dot.good{background:var(--accent)}
-.bell-link{font-size:11px;font-weight:600;color:var(--accent);margin-top:2px}
+/* .bell-link was the Overview's wordy "✉ View / send tenant email" line inside a stored
+   notification's body. It's gone — a notification now carries the SAME ✉ / remind-me /
+   ✕ column as every other row in that list (DashboardPage rowActions). */
 /* Stands in for the ✕ on an alert whose date is long past — same dismissal, but labelled,
    because for something years overdue "close" and "never show me this again" are not the
    same promise. Centred so it sits on the row's axis like the icon buttons it replaces. */

@@ -1,6 +1,6 @@
 import { useState, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, draftRenewalApproachingEmail } from '../lib/api';
+import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail } from '../lib/api';
 import { money, money0, fmtDate } from '../lib/format';
 import { addMonths, optionLapseReason, renewalFirstYearRent } from '../lib/renewals';
 import NotificationEmailModal from './NotificationEmailModal';
@@ -95,6 +95,9 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   // When Renew is clicked on an option with no stated rent, we expand an inline row to
   // collect the agreed new base rent instead of applying blind: { id, value }.
   const [renewEntry, setRenewEntry] = useState(null);
+  // "Already renewed" on a lapsed option opens its own row to collect WHEN it happened:
+  // { id, value }. The date is the whole point — it's a history entry, not a decision.
+  const [histEntry, setHistEntry] = useState(null);
   // A friendly note when a renewal can't be applied yet (e.g. the lease has no term-end
   // date to roll forward from).
   const [notice, setNotice] = useState('');
@@ -122,7 +125,17 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   });
   const decline = useMutation({ mutationFn: (id) => declineRenewal(id), onSuccess: refreshAll });
   const restore = useMutation({ mutationFn: (id) => restoreRenewal(id), onSuccess: refreshAll });
-  const acting = confirm.isPending || decline.isPending || restore.isPending;
+  // Records a long-past exercise as history. Writes nothing to the lease, so it doesn't
+  // need the billing invalidations the other three carry — but it does clear the bell
+  // prompt and log a history event, so refresh those.
+  const historic = useMutation({
+    mutationFn: ({ id, date }) => markRenewalRenewedHistoric(id, date),
+    onSuccess: () => {
+      setHistEntry(null);
+      ['renewals', 'alerts', 'notifications', 'historyEvents', 'lease'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+    },
+  });
+  const acting = confirm.isPending || decline.isPending || restore.isPending || historic.isPending;
 
   // The "are you sure" for applying an option, stating the exact consequences: the new
   // term end, the rent it books and WHEN, why the option looks stale if it does, and —
@@ -216,9 +229,11 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
         <p className="note-msg warn" style={{ marginBottom: 12 }}>
           An option below is marked <strong>Lapsed</strong>: its notice deadline passed long before
           this lease’s current term ends, so it belongs to an earlier term the lease has since been
-          extended past — usually by an addendum. It’s a leftover record, not a live choice. Unless
-          you know the tenant is exercising it, close it with <strong>Not renewing</strong> (undoable)
-          or delete it. Applying it would extend the term again and book the rent it quotes.
+          extended past — usually by an addendum. It’s a leftover record, not a live choice.
+          If the tenant <em>did</em> take it back then, record that with <strong>Already renewed</strong> —
+          it keeps the history and stops the reminders without touching the term or rent. If they
+          never took it, close it with <strong>Not renewing</strong> (undoable) or delete it.
+          Applying it would extend the term again and book the rent it quotes.
         </p>
       )}
       {renewals.length === 0 ? (
@@ -247,6 +262,16 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                           onClick={() => onRenewClick(r)}>
                           Renew
                         </button>
+                        {/* The third answer a lapsed option needs. "Renew" would extend the
+                            term again and book its old rent; "Not renewing" would be untrue.
+                            This records that it WAS exercised, back then, and changes nothing. */}
+                        {lapsed && (
+                          <button type="button" className="ghost btn-sm" disabled={acting}
+                            title="The tenant exercised this option years ago — record it as history without changing the term or rent"
+                            onClick={() => setHistEntry({ id: r.id, value: r.notice_by_date || lease?.lease_start || todayIso })}>
+                            Already renewed
+                          </button>
+                        )}
                         <button type="button" className="ghost btn-sm" disabled={acting}
                           title="Tenant is not exercising this option"
                           onClick={async () => {
@@ -333,6 +358,41 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                     </td>
                   </tr>
                 )}
+                {histEntry?.id === r.id && (
+                  <tr>
+                    <td colSpan={7} style={{ background: 'var(--panel-2)' }}>
+                      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', padding: '4px 2px' }}>
+                        <div className="muted" style={{ fontSize: 12.5, flex: '1 1 240px', minWidth: 220 }}>
+                          Records that the tenant <strong>did</strong> exercise this option, on the date below.
+                          The lease’s term and rent are left exactly as they are — whatever followed is
+                          already on the lease.
+                        </div>
+                        <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
+                          <span>Renewed on</span>
+                          <input className="text-input" type="date" autoFocus value={histEntry.value}
+                            onChange={(e) => setHistEntry({ id: r.id, value: e.target.value })} />
+                        </label>
+                        <button type="button" disabled={acting || !histEntry.value}
+                          onClick={async () => {
+                            if (await askConfirm({
+                              title: 'Record this option as already renewed?',
+                              message: `${r.option_label || 'This option'} is marked exercised on ${fmtDate(histEntry.value)} — a history entry, not a change.`,
+                              implications: [
+                                'The term end and base rent are NOT changed — nothing is re-billed.',
+                                'It stops appearing as an open decision, and the reminder about it stops.',
+                                'It shows on the property’s History timeline as a renewal on that date.',
+                                'Can’t be undone from here (delete the option to remove the record).',
+                              ],
+                              confirmLabel: 'Record as renewed',
+                            })) historic.mutate({ id: r.id, date: histEntry.value });
+                          }}>
+                          {historic.isPending ? 'Recording…' : 'Record as renewed'}
+                        </button>
+                        <button type="button" className="ghost" onClick={() => setHistEntry(null)}>Cancel</button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
                 </Fragment>
               ); })}
             </tbody>
@@ -351,6 +411,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
       </form>
       <ul className="muted" style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, lineHeight: 1.6 }}>
         <li><strong>Renew</strong> extends the term + sets the new rent; <strong>Not renewing</strong> closes the option (both undoable).</li>
+        <li>On a <strong>Lapsed</strong> option, <strong>Already renewed</strong> records that it was exercised back then — history only, no change to the term or rent.</li>
         <li><strong>New rent</strong> = a flat option rent; <strong>+%/yr</strong> = an annual increase applied at renewal.</li>
         <li>If an option’s rent reads <strong>Not listed</strong>, the lease left it to be negotiated — you’ll enter the agreed new base rent when you click <strong>Renew</strong>.</li>
       </ul>

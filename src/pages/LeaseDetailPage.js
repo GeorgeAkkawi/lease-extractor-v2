@@ -52,6 +52,7 @@ export default function LeaseDetailPage() {
   const [showInsReq, setShowInsReq] = useState(false);
   const [renewalPolicy, setRenewalPolicy] = useState(null); // { policy, reason? } → cert-request email (renewal or additional-insured fix)
   const [startInput, setStartInput] = useState(''); // banner date entry for a start-less lease
+  const [escOpen, setEscOpen] = useState(true); // Rent escalations section — folds shut on demand
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
@@ -203,6 +204,7 @@ export default function LeaseDetailPage() {
     const f = PANEL_TO_FOCUS[panel];
     const el = f && refByFocus[f]?.current;
     if (!el) return;
+    if (f === 'escalation') setEscOpen(true); // never scroll-and-flash a panel that's folded shut
     setFlash(f);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setTimeout(() => setFlash(null), 2600);
@@ -211,6 +213,7 @@ export default function LeaseDetailPage() {
     if (!focus || isLoading || !lease) return;
     const el = refByFocus[focus]?.current;
     if (!el) return;
+    if (focus === 'escalation') setEscOpen(true);
     setFlash(focus);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     const t = setTimeout(() => setFlash(null), 2600);
@@ -312,6 +315,19 @@ export default function LeaseDetailPage() {
     ? (escalations || []).some((e) => e.effective_date && String(e.effective_date) >= String(renegDate))
     : false;
   const showReneg = renegDue && !renegCovered && lease.is_active !== false;
+
+  // What the Rent escalations panel says about itself while folded shut: how many steps
+  // it holds and the next one due, so collapsing never costs the landlord the one fact
+  // they'd have opened it for.
+  const escSummary = (() => {
+    const n = (escalations || []).length;
+    if (!n) return 'No escalations scheduled';
+    const next = (escalations || [])
+      .filter((e) => e.effective_date && String(e.effective_date) > todayIso)
+      .sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)))[0];
+    const count = `${n} step${n === 1 ? '' : 's'}`;
+    return next ? `${count} · next ${fmtDate(next.effective_date)} → ${money(next.new_base_rent)}` : `${count} · none upcoming`;
+  })();
 
   return (
     <div>
@@ -500,12 +516,30 @@ export default function LeaseDetailPage() {
         </div>
       </div>
 
+      {/* A long lease carries fifteen or twenty dated steps, and once they're entered
+          they're mostly settled — so the whole section folds away. Collapsed it still
+          states what it holds (how many steps, and the next one), because a fold that
+          hides its own summary just makes you open it again. Forced open when an alert
+          deep-links here, so the flash never lands on a closed panel. */}
       <div className={`panel${flash === 'escalation' ? ' panel-flash' : ''}`} ref={escRef}>
         <div className="panel-head">
-          <strong>Rent escalations</strong>
-          <span className="muted">Applied automatically on the effective date — you’re reminded as it approaches</span>
+          <button
+            type="button"
+            className="panel-toggle"
+            aria-expanded={escOpen}
+            onClick={() => setEscOpen((v) => !v)}
+            title={escOpen ? 'Collapse rent escalations' : 'Expand rent escalations'}
+          >
+            <span className="panel-caret" aria-hidden="true">{escOpen ? '▾' : '▸'}</span>
+            <strong>Rent escalations</strong>
+          </button>
+          <span className="muted">
+            {escOpen
+              ? 'Applied automatically on the effective date — you’re reminded as it approaches'
+              : escSummary}
+          </span>
         </div>
-        <EscalationScheduleEditor lease={lease} />
+        {escOpen && <EscalationScheduleEditor lease={lease} />}
       </div>
 
       <div className="panel">

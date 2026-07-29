@@ -181,6 +181,82 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-29** — **A stored notification is now formatted like every other row in the feed (✉ icon + snooze) ·
+  a lapsed option gains the third answer it always needed — "Already renewed", which records the history and
+  changes nothing · beauty and barber's 2008 renewal is on the record and the bell has stopped asking · and the
+  Rent escalations section folds shut** (George: *"the beauty and barber shop renewal and dnd dental renewal
+  notifications are formatted differently for emails and snooze. make sure its just the email emoticon and add a
+  snooze button for those types. Fix this for me - I want beauty and barber to have the history that they renewed
+  in 2008 but since its so far in the past i want you to stop the notifications but show that it happened - add a
+  collapse button for rent esclations."*). Deployed: frontend Cloudflare version **`58e4afa8`**, demo worker
+  `aae2a199`, plus a three-statement live repair. **Frontend + `src/lib` only — $0, NO DB migration, NO edge
+  functions, no AI calls, no tenant emails; the live writes are one status update, one history row and the
+  deletion of a stale prompt, each guarded so a re-run is a no-op.** Tests **866/866 across 103 files** (was
+  845/99 — +21 across 3 new suites).
+  - **1) The formatting difference was real, and it was two things at once.** A computed **alert** carried a
+    right-hand column — `✉` icon-button · a clock to defer · `✕` — while a stored **notification** (the bell's
+    *"Is X renewing?"* prompt) carried a wordy **"✉ View / send tenant email"** link buried in its body and **no
+    snooze at all**. So two rows asking for the same kind of decision — the renewal prompt sitting beside a
+    renewal-notice alert — read as different kinds of thing. Both row types now render through **one**
+    `rowActions` helper in `DashboardPage.js`, which is what stops them drifting apart again; `.bell-link` is
+    deleted from the CSS with a note saying where it went.
+  - **Snoozing a notification needed somewhere to live, and it reuses what's already there.** A notification is a
+    *row* — dismissing it deletes it — so "remind me next week" had nowhere to go. New `notificationKey(n)` =
+    `notification:{id}` writes to the same server-synced **`alert_states`** table the alerts use (**no migration**),
+    under a namespace that can't collide with an `alertKey` (those read `focus:id:date`). Test-pinned both ways:
+    the row leaves the feed **and the notification is still in the database** — a snooze defers a decision, it
+    doesn't answer it. Safe because `promptDueRenewalDecisions` *updates* an existing prompt rather than
+    recreating it, so the id — and the snooze — hold until the deadline they were deferred from.
+  - **2) "Already renewed" — the answer that was missing.** beauty and barber's option had exactly two buttons and
+    **both were wrong**: *Renew* would have extended the term again and booked the 2008-era **$19,386** against a
+    current **$31,800.96**, and *Not renewing* would simply have been untrue — the tenant did renew. The new
+    third button appears **only on a Lapsed option**, opens an inline row for the date it happened (pre-filled
+    from the option's own notice date), and its whole value is what it does **not** write: new
+    `markRenewalRenewedHistoric` sets the option applied at that date, logs a dated `renewal_confirmed` history
+    event, clears the prompt — and touches **no term, no rent, no escalation**. Test-pinned by re-reading the
+    lease after every call, plus a rent-step count that must not move. The confirm dialog leads with *"The term
+    end and base rent are NOT changed"*, because that is the reason to use it.
+  - **A consumer that would have broken it, caught by tracing forward.** `currentTermLabel` gave an applied
+    renewal option precedence over an extension addendum **unconditionally** — so recording a 2008 renewal would
+    have relabelled a lease whose current term came from a 2020 addendum. It now takes whichever act moved the
+    term **last**, comparing `applied_at` against `amendment_date`, falling back to the old behaviour when either
+    date is missing. Verified against the live rows: this lease's last extension is dated 2020-01-25, so its
+    header still reads *"Extended term — Third Addendum to Lease"* — unchanged by the repair.
+  - **3) The live repair, three guarded statements.** Option `15d516db` → **applied at 2008-09-01** (noon UTC, so
+    the calendar day can't shift west of UTC); a `renewal_confirmed` history event dated 2008-09-01 naming the
+    tenant and saying plainly it was *recorded after the fact*; and the stale `renewal_decision` prompt deleted.
+    **Read back:** base rent still **$31,800.96**, term still **2030-05-31**, **8** rent steps (unchanged), and
+    the only prompt left is **D & D Dental's — which is legitimately due** (term ends 2026-09-30, no notice date,
+    63 days out). That one keeps its Yes/No, and now has a ✉ and a snooze like everything else.
+  - **Why the prompt existed at all, for the record.** `promptDueRenewalDecisions` has cleared a lapsed option's
+    prompt since 0068 (7/28) — but this one was created **2026-07-29 15:24 UTC**, which is no cron time (06:00 ·
+    06:15 · 13:00). It came from a browser running a **cached pre-0068 bundle**. Recording the renewal makes it
+    moot whichever code path runs next.
+  - **4) Rent escalations folds shut.** The panel head is now a disclosure (`.panel-toggle`, `aria-expanded`), and
+    **collapsed it still states what it holds** — *"9 steps · next Jun 1 2027 → $34,000.00"* — because a fold that
+    hides its own summary just makes you open it again. Forced open when an alert deep-links to `?focus=escalation`
+    or the lease review's finding jumps here, so the scroll-and-flash can never land on a closed panel (pinned by a
+    test). The editor's own *"Show all N steps"* collapse inside the table is unchanged.
+  - **Files:** `src/lib/{alerts,api,leaseTerm}.js` · `src/pages/{DashboardPage,LeaseDetailPage}.js` ·
+    `src/components/RenewalOptionsEditor.js` · `src/App.css` (`.panel-toggle`/`.panel-caret`; `.bell-link`
+    removed) · tests: `historicRenewal`, `notificationRowActions`, `renewalHistoric`, `escalationCollapse` (all
+    new). **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **866/866** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; live 200s on all four URLs; the edge confirmed serving
+    the new hash (`assets/index-MYmF8Hbh.js`) rather than a stale `index.html`. Browser drive-through skipped per
+    George's standing preference — the three new render suites drive the real notification row (including the
+    snooze round-trip against `alert_states`), the real "Already renewed" flow through its confirm dialog, and the
+    real lease page's collapse.
+  - **George: hard-refresh (Cmd+Shift+R).** The beauty-and-barber prompt is gone and its option reads **Applied ·
+    September 1, 2008** with the renewal on the property's History timeline. D&D Dental's prompt still asks — now
+    with a ✉ and a clock beside it like every other row. Any lapsed option elsewhere offers **Already renewed**.
+    And the Rent escalations header is clickable to fold the whole section away.
+  - **Flags (no action needed):** ① Recording a renewal is **one-way from the UI** (deleting the option removes the
+    record) — the dialog says so. ② The 4th Addendum on that lease is dated **2008-01-25** in the app while it
+    extends 2025→2030 — a copy-paste slip in your own paperwork that the extractor read faithfully. Harmless, but
+    it's why the lease's header names the *Third* Addendum; the Dated field is editable if you want it fixed.
+    ③ The collapse is per-visit, not remembered — say the word if it should stick.
+
 - **2026-07-29** — **Five follow-up notes on the new Overview, all acted on: the Expenses bar proves it is the
   ACTUAL figure · the rollover bars name the leases behind them · the property-performance hover reads
   Revenue → Expenses → NOI again · a renewal option that lapsed eighteen years ago stops posing as a deadline
