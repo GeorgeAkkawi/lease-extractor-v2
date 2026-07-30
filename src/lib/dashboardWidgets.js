@@ -8,11 +8,15 @@
 // were retired when the chart band took over the top of the Overview — every figure they
 // carried is now said better below them: the rent roll in the donut's centre, occupancy as
 // the "Space leased" headline and the page-head subtitle, and the expiring count as the
-// expirations table itself. A key still sitting in someone's saved hidden_widgets array is
-// inert; show() simply stops asking about it.
+// alert feed's "Lease endings" column. A key still sitting in someone's saved
+// hidden_widgets array is inert; show() simply stops asking about it.
+//
+// The `expirations` key went the same way on 2026-07-30 (George: "you can remove the lease
+// expirations table because it will be a notification no need to double down"). The
+// termination alert covers the same leases on the same lead, is clickable to the lease,
+// and now has a column of its own — the table was saying it twice.
 export const DASHBOARD_WIDGETS = [
   { key: 'portfolio_charts', label: 'Portfolio charts',     hint: 'Where the rent comes from, how much space is leased, when leases come up for renewal, and what each property keeps.' },
-  { key: 'expirations', label: 'Lease expirations table',   hint: 'The list of leases ending in the next 6 months.' },
   { key: 'alerts',      label: 'Alerts & notifications',    hint: 'Reminders, renewal prompts, and key-date alerts.' },
 ];
 

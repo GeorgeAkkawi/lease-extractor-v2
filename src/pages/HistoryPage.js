@@ -1,23 +1,26 @@
-import { useState, Fragment } from 'react';
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
 } from 'recharts';
-import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents, clearPropertyHistory } from '../lib/api';
+import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents, clearPropertyHistory, listLeases, localDateIso } from '../lib/api';
+import { buildTenantStories, ledgerEvents } from '../lib/tenantStory';
 import { snapshotCollectionSummary } from '../lib/ledger';
 import { invokeFunction } from '../lib/supabaseClient';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
-import { money, psf, sf, fmtDate } from '../lib/format';
+import { money, sf, fmtDate } from '../lib/format';
 import LeaseAssistant from '../components/LeaseAssistant';
 import { useConfirm } from '../components/ConfirmDialog';
 
-// Friendly labels + badge tones for the history_events timeline.
+// Friendly labels + badge tones for history_events. Covers both halves — the events that
+// belong in a tenant's story and the bookkeeping ones that get their own folded log.
 const EVENT_LABEL = {
   tenant_assigned: 'Tenant assigned',
   term_extended: 'Term extended',
   renewal_confirmed: 'Renewal confirmed',
   renewal_declined: 'Renewal declined',
+  renewal_reopened: 'Renewal reopened',
   rent_stepped: 'Rent step',
   rent_abated: 'Rent abatement',
   estimate_set: 'CAM & tax estimate set',
@@ -29,12 +32,18 @@ const EVENT_LABEL = {
   cam_refund_reopened: 'CAM & tax refund reopened',
   statement_imported: 'Bank statement imported',
   statement_import_undone: 'Statement import undone',
+  // Derived from the lease rows themselves rather than logged — see tenantStory.js.
+  moved_in: 'Moved in',
+  term_ends: 'Term ends',
+  term_ended: 'Term ended',
+  left: 'Left',
 };
 const EVENT_BADGE = {
   tenant_assigned: 'info',
   term_extended: 'good',
   renewal_confirmed: 'good',
   renewal_declined: 'danger',
+  renewal_reopened: 'warn',
   rent_abated: 'warn',
   estimate_set: 'info',
   insurance_requested: 'info',
@@ -44,6 +53,10 @@ const EVENT_BADGE = {
   cam_refund_reopened: 'warn',
   statement_imported: 'info',
   statement_import_undone: 'warn',
+  moved_in: 'good',
+  term_ends: 'info',
+  term_ended: 'danger',
+  left: 'info',
 };
 
 const num = (v) => (v == null ? 0 : Number(v));
@@ -63,6 +76,10 @@ export default function HistoryPage() {
   const { data: snaps = [] } = useQuery({ queryKey: ['snapshots', propId], queryFn: () => listSnapshots(propId) });
   const { data: expired = [] } = useQuery({ queryKey: ['expiredLeases', propId], queryFn: () => listExpiredLeases(propId) });
   const { data: events = [] } = useQuery({ queryKey: ['historyEvents', propId], queryFn: () => listHistoryEvents(propId) });
+  // The current leases are what turn an empty timeline into a populated record: every
+  // tenancy's bookends (moved in / term ends) are derived from these rows, so a card is
+  // never blank even before a single history_event has been written.
+  const { data: leases = [] } = useQuery({ queryKey: ['leases', propId], queryFn: () => listLeases(propId) });
   usePageChrome([
     { label: 'History', to: '/history' },
     { label: corp?.name || '…', to: `/history/${corpId}` },
@@ -83,8 +100,12 @@ export default function HistoryPage() {
 
   const [narrative, setNarrative] = useState('');
   const [busy, setBusy] = useState(false);
-  const [showExpired, setShowExpired] = useState(false);
-  const [openExp, setOpenExp] = useState(null); // expired lease id whose document/assistant is open
+  const [openStory, setOpenStory] = useState(null); // story card key currently unfolded
+  const [showLedger, setShowLedger] = useState(false);
+  const [openExp, setOpenExp] = useState(null); // archived lease id whose document/assistant is open
+
+  const stories = buildTenantStories({ leases, expired, events, today: localDateIso() });
+  const ledger = ledgerEvents(events);
 
   const sorted = [...snaps].sort((a, b) => a.year - b.year);
   const idx = sorted.findIndex((s) => s.year === year);
@@ -258,12 +279,18 @@ export default function HistoryPage() {
         </>
       )}
 
-      {/* Lease & tenant history — this building's own timeline of what happened */}
+      {/* Who has occupied this building — one card per tenant, current and former.
+          Replaces the old pair of sections (a flat event table that was nearly always
+          empty, and a separate archive table): a tenant's whole record now reads in one
+          place, headed by the property so you always know where you are. */}
       <div className="exp-block" style={{ marginBottom: 24 }}>
         <div className="exp-head">
           <div>
-            <strong>Lease &amp; tenant history</strong>
-            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>What each tenant's lease has been through — assignments, term extensions, and renewal decisions — newest first. The <strong>Tenant</strong> column shows who each change applies to.</div>
+            <strong>Who has occupied {prop?.name || 'this property'}</strong>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              Every tenant this building has had, current and former — when they moved in, what
+              changed while they were here, and how their tenancy ended. Open one to read its record.
+            </div>
           </div>
           {events.length > 0 && (
             <button
@@ -273,11 +300,12 @@ export default function HistoryPage() {
               onClick={async () => {
                 if (await askConfirm({
                   title: 'Clear lease & tenant history?',
-                  message: `Clear ${prop?.name || 'this property'}'s lease & tenant history?`,
+                  message: `Clear ${prop?.name || 'this property'}'s recorded history?`,
                   implications: [
-                    'Permanently deletes the timeline below (renewals, assignments, insurance requests, etc.).',
+                    'Permanently deletes every recorded event — renewals, assignments, insurance requests, CAM reconciles and statement imports.',
                     'Also clears the "📨 Last requested" date shown on tenants’ insurance panels.',
-                    'Your leases, tenants, invoices, and the "Expired & renewed leases" archive are NOT affected.',
+                    'Each tenant keeps their move-in and term dates — those come from the leases themselves.',
+                    'Your leases, tenants, invoices and archived prior terms are NOT affected.',
                     'This can’t be undone.',
                   ],
                   confirmLabel: 'Clear history',
@@ -287,104 +315,135 @@ export default function HistoryPage() {
           )}
         </div>
         {clearHistory.isError && <p className="badge danger" style={{ marginTop: 10 }}>{clearHistory.error.message}</p>}
-        {events.length === 0 ? (
-          <p className="muted" style={{ marginTop: 14 }}>No recorded changes yet for this property.</p>
+        {stories.length === 0 ? (
+          <p className="muted" style={{ marginTop: 14 }}>No tenants on record for this property yet.</p>
         ) : (
-          <div className="table-wrap" style={{ marginTop: 14 }}>
-            <table style={{ minWidth: 0 }}>
-              <thead><tr><th>When</th><th>Tenant</th><th>Event</th><th>Detail</th></tr></thead>
-              <tbody>
-                {events.map((ev) => (
-                  <tr key={ev.id}>
-                    <td>{fmtDate(ev.event_date || ev.created_at)}</td>
-                    <td>{ev.tenant_name || '—'}</td>
-                    <td><span className={`badge ${EVENT_BADGE[ev.type] || 'info'}`}>{EVENT_LABEL[ev.type] || ev.type}</span></td>
-                    <td>{ev.description}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="story-list">
+            {stories.map((s) => (
+              <StoryCard
+                key={s.key}
+                story={s}
+                open={openStory === s.key}
+                onToggle={() => setOpenStory(openStory === s.key ? null : s.key)}
+                openDoc={openExp === s.key}
+                onToggleDoc={() => setOpenExp(openExp === s.key ? null : s.key)}
+                onRemove={s.expiredId ? async () => {
+                  if (await askConfirm({
+                    title: 'Remove archived lease?',
+                    message: `Remove ${s.tenant}'s archived lease from History?`,
+                    implications: [
+                      'Permanently deletes this archived record and its stored financials.',
+                      'This can’t be undone.',
+                    ],
+                    confirmLabel: 'Remove',
+                  })) removeExpired.mutate(s.expiredId);
+                } : null}
+                removing={removeExpired.isPending}
+              />
+            ))}
           </div>
         )}
       </div>
 
-      {/* Expired & renewed leases */}
-      <div className="exp-block">
-        <div className="exp-head">
-          <div>
-            <strong>Expired &amp; renewed leases</strong>
-            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Prior lease terms archived here once a renewal, turnover, or termination takes effect.</div>
-          </div>
-          <button className="secondary" onClick={() => setShowExpired((o) => !o)}>
-            {showExpired ? 'Hide' : `Show ${expired.length} expired lease${expired.length === 1 ? '' : 's'}`}
+      {/* Bookkeeping log — the events that happened to the BOOKS rather than to a tenancy.
+          They used to sit in the tenant timeline above, where the two statement events
+          rendered "—" in the Tenant column because they carry no tenant at all. */}
+      {ledger.length > 0 && (
+        <div className="exp-block">
+          <button type="button" className="panel-toggle" aria-expanded={showLedger} onClick={() => setShowLedger((o) => !o)}>
+            <span className="panel-caret" aria-hidden="true">{showLedger ? '▾' : '▸'}</span>
+            <strong>Bookkeeping log</strong>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {ledger.length} entr{ledger.length === 1 ? 'y' : 'ies'} · CAM reconciles, estimates and statement imports
+            </span>
           </button>
-        </div>
-        {showExpired && (
-          expired.length === 0 ? (
-            <p className="muted" style={{ marginTop: 14 }}>No expired leases on record for this property.</p>
-          ) : (
+          {showLedger && (
             <div className="table-wrap" style={{ marginTop: 14 }}>
-              <table>
-                <thead><tr><th>Tenant</th><th className="num">SF</th><th className="num">Base rent</th><th>Term</th><th>Outcome</th><th>Lease</th></tr></thead>
+              <table style={{ minWidth: 0 }}>
+                <thead><tr><th>When</th><th>Tenant</th><th>Event</th><th>Detail</th></tr></thead>
                 <tbody>
-                  {expired.map((e) => (
-                    <Fragment key={e.id}>
-                      <tr>
-                        <td>{e.tenant_name}</td>
-                        <td className="num">{sf(e.sf)}</td>
-                        <td className="num">{money(e.base_rent)}<div className="cell-sub">{e.sf > 0 ? psf(e.base_rent / e.sf) : ''}</div></td>
-                        <td>{fmtDate(e.lease_start)} – {fmtDate(e.lease_end)}</td>
-                        <td>
-                          <div className="outcome">
-                            <span className={`badge ${e.status === 'Renewed' ? 'good' : e.status === 'Terminated' ? 'danger' : 'info'}`}>{e.status}</span>
-                            {e.note && <span className="exp-note muted">{e.note}</span>}
-                          </div>
-                        </td>
-                        <td>
-                          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-                            {e.lease_text
-                              ? <button type="button" className="ghost" onClick={() => setOpenExp(openExp === e.id ? null : e.id)}>{openExp === e.id ? 'Close' : 'Open & ask'}</button>
-                              : <span className="muted" style={{ fontSize: 12 }}>—</span>}
-                            <button
-                              type="button"
-                              className="icon-btn danger-btn"
-                              title="Remove this archived lease from History"
-                              disabled={removeExpired.isPending}
-                              onClick={async () => {
-                                if (await askConfirm({
-                                  title: 'Remove archived lease?',
-                                  message: `Remove ${e.tenant_name}'s archived lease from History?`,
-                                  implications: [
-                                    'Permanently deletes this archived record and its stored financials.',
-                                    'This can’t be undone.',
-                                  ],
-                                  confirmLabel: 'Remove',
-                                })) removeExpired.mutate(e.id);
-                              }}
-                            >✕</button>
-                          </div>
-                        </td>
-                      </tr>
-                      {openExp === e.id && (
-                        <tr className="exp-doc-row">
-                          <td colSpan={6}>
-                            <div className="exp-doc-panel">
-                              <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 10 }}>
-                                Archived lease — {e.tenant_name}
-                              </div>
-                              <LeaseAssistant leaseText={e.lease_text} />
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
+                  {ledger.map((ev) => (
+                    <tr key={ev.id}>
+                      <td>{fmtDate(ev.event_date || ev.created_at)}</td>
+                      <td>{ev.tenant_name || '—'}</td>
+                      <td><span className={`badge ${EVENT_BADGE[ev.type] || 'info'}`}>{EVENT_LABEL[ev.type] || ev.type}</span></td>
+                      <td>{ev.description}</td>
+                    </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          )
-        )}
-      </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One tenant's record. Folded by default — and collapsed it still states what it holds
+// (size, rent, term, how many changes), following the .panel-toggle rule the Rent
+// escalations panel established: a fold that hides its own summary just makes you open it.
+function StoryCard({ story: s, open, onToggle, openDoc, onToggleDoc, onRemove, removing }) {
+  const changes = s.events.filter((e) => !e.synthetic).length;
+  const summary = [
+    s.address || null,
+    s.sf > 0 ? sf(s.sf) : null,
+    s.rent > 0 ? `${money(s.rent)}/yr` : null,
+    s.status === 'current'
+      ? (s.end ? `${s.holdover ? 'term ended' : 'term ends'} ${fmtDate(s.end)}` : 'no term end on file')
+      : (s.end ? `left ${fmtDate(s.end)}` : null),
+    `${changes} recorded change${changes === 1 ? '' : 's'}`,
+  ].filter(Boolean).join(' · ');
+
+  return (
+    <div className={`story-card${s.status === 'former' ? ' former' : ''}`}>
+      <button type="button" className="panel-toggle story-head" aria-expanded={open} onClick={onToggle}>
+        <span className="panel-caret" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <strong>{s.tenant}</strong>
+        {s.status === 'current'
+          ? (s.holdover
+            ? <span className="badge danger">Holdover</span>
+            : s.needsExtension
+              ? <span className="badge warn">Needs extension</span>
+              : <span className="badge good">Current</span>)
+          : <span className={`badge ${s.outcome === 'Renewed' ? 'good' : s.outcome === 'Terminated' ? 'danger' : 'info'}`}>{s.outcome || 'Former'}</span>}
+      </button>
+      <div className="story-summary muted">{summary}</div>
+      {open && (
+        <div className="story-body">
+          {s.events.length === 0 ? (
+            <p className="muted" style={{ margin: 0, fontSize: 12.5 }}>No dates on file for this tenancy.</p>
+          ) : (
+            <ol className="story-timeline">
+              {s.events.map((e, i) => (
+                <li key={e.id || `${e.type}-${i}`}>
+                  <span className="story-when">{fmtDate(e.date)}</span>
+                  <span className={`badge ${EVENT_BADGE[e.type] || 'info'}`}>{e.label || EVENT_LABEL[e.type] || e.type}</span>
+                  {e.description && <span className="story-what">{e.description}</span>}
+                </li>
+              ))}
+            </ol>
+          )}
+          {(s.leaseText || onRemove) && (
+            <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 12 }}>
+              {s.leaseText && (
+                <button type="button" className="ghost" onClick={onToggleDoc}>{openDoc ? 'Close' : 'Open & ask'}</button>
+              )}
+              {onRemove && (
+                <button type="button" className="icon-btn danger-btn" title="Remove this archived lease from History" disabled={removing} onClick={onRemove}>✕</button>
+              )}
+            </div>
+          )}
+          {openDoc && s.leaseText && (
+            <div className="exp-doc-panel" style={{ marginTop: 12 }}>
+              <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 10 }}>
+                {s.status === 'former' ? 'Archived lease' : 'Lease'} — {s.tenant}
+              </div>
+              <LeaseAssistant leaseText={s.leaseText} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

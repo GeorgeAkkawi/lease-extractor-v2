@@ -47,8 +47,12 @@ function renderDash() {
   );
 }
 
+// A compact feed row shows only its subject ("City Dental"); the full title and body live
+// in the row's title attribute, since the column heading already says what KIND of thing
+// it is. So match against both.
 const rowFor = (container, text) =>
-  [...container.querySelectorAll('.callout')].find((n) => n.textContent.includes(text));
+  [...container.querySelectorAll('.callout')]
+    .find((n) => `${n.getAttribute('title') || ''} ${n.textContent}`.includes(text));
 
 beforeEach(async () => {
   cleanup();

@@ -10,6 +10,7 @@ import { CardGridSkeleton } from '../components/Skeleton';
 import { ShieldIcon } from '../components/icons';
 import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
 import PropLeaseFlyout from '../components/PropLeaseFlyout';
+import PropertyMixDonut from '../components/PropertyMixDonut';
 
 // Leases-mode property list. Financials/History have their own (FinancialsPropertiesPage).
 export default function PropertiesPage() {
@@ -103,25 +104,28 @@ function PropCard({ corpId, property, onInsurance, pf }) {
 
   return (
     <div className="prop-card has-flyout" role="button" tabIndex={0} onClick={go} onKeyDown={keyGo} onMouseEnter={warm} onFocus={warm}>
-      <div className="prop-card-head">
-        <strong>{property.name}</strong>
-        {isOn('insurance') && (
-          <button
-            className="corp-edit"
-            title="Landlord insurance for this property"
-            onClick={(e) => { e.stopPropagation(); onInsurance(property); }}
-          >
-            <ShieldIcon /> Insurance
-          </button>
-        )}
+      <div className="prop-card-main">
+        <div className="prop-card-head">
+          <strong>{property.name}</strong>
+          {isOn('insurance') && (
+            <button
+              className="corp-edit"
+              title="Landlord insurance for this property"
+              onClick={(e) => { e.stopPropagation(); onInsurance(property); }}
+            >
+              <ShieldIcon /> Insurance
+            </button>
+          )}
+        </div>
+        <div className="prop-addr muted">{property.address || 'No address'}</div>
+        <div className="prop-card-stats">
+          <div><span className="muted">Tenants</span><b>{leases.length}</b></div>
+          <div><span className="muted">Sq ft</span><b>{Number(totalSf).toLocaleString()} / {Number(buildingSf).toLocaleString()}</b></div>
+          <div><span className="muted">Leased</span><b>{Math.round(occupancy * 100)}%</b></div>
+          <div><span className="muted">Revenue</span><b>{money(revenue)}</b></div>
+        </div>
       </div>
-      <div className="prop-addr muted">{property.address || 'No address'}</div>
-      <div className="prop-card-stats">
-        <div><span className="muted">Tenants</span><b>{leases.length}</b></div>
-        <div><span className="muted">Sq ft</span><b>{Number(totalSf).toLocaleString()} / {Number(buildingSf).toLocaleString()}</b></div>
-        <div><span className="muted">Leased</span><b>{Math.round(occupancy * 100)}%</b></div>
-        <div><span className="muted">Revenue</span><b>{money(revenue)}</b></div>
-      </div>
+      <PropertyMixDonut property={property} leases={leases} />
       <PropLeaseFlyout corpId={corpId} propertyId={property.id} />
     </div>
   );

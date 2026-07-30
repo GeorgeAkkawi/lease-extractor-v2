@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import { RolloverTip, PerformanceTip } from '../PortfolioCharts';
+import { TenantMixTip } from '../PropertyMixDonut';
 
 beforeEach(() => cleanup());
 
@@ -81,6 +82,54 @@ describe('PerformanceTip — Revenue · Expenses · NOI, in that order', () => {
 
   it('renders nothing when inactive', () => {
     const { container } = render(<PerformanceTip active={false} payload={[{ payload: row }]} label="Maple Plaza" />);
+    expect(container.firstChild).toBeNull();
+  });
+});
+
+// The property card's tenant-mix donut. Same jsdom caveat as the two above, and the same
+// reason for testing it directly — this hover IS the feature George asked for ("mainly
+// showing percentage of building and psf base rent when hovering"), so a page render test
+// that never draws the chart would prove nothing about it.
+describe('TenantMixTip — % of building and $/SF on hover', () => {
+  const tenant = {
+    id: 'a', name: 'D & D Dental', kind: 'tenant',
+    sf: 1077, rent: 31800.96, pct: 1077 / 13750, psf: 31800.96 / 1077,
+  };
+
+  it('names the tenant with its size, its share of the building and its rent', () => {
+    render(<TenantMixTip active payload={[{ payload: tenant }]} building={13750} />);
+    expect(screen.getByText('D & D Dental')).toBeTruthy();
+    expect(screen.getByText('1,077 SF · 7.8% of building')).toBeTruthy();
+    expect(screen.getByText('Base rent')).toBeTruthy();
+    expect(screen.getByText('$31,800.96/yr')).toBeTruthy();
+    expect(screen.getByText(/29\.53 \/SF\/yr/)).toBeTruthy();
+    expect(screen.getByText('Of 13,750 SF total.')).toBeTruthy();
+  });
+
+  it('marks the $/SF approximate when it cannot be multiplied back to the rent', () => {
+    // $31,800.96 ÷ 1,077 = $29.5273…, and $29.53 × 1,077 is $31,803.81 — three dollars
+    // above the figure printed directly above it (the format.js approx rule, 2026-07-24).
+    render(<TenantMixTip active payload={[{ payload: tenant }]} building={13750} />);
+    expect(screen.getByText(/≈ \$29\.53/)).toBeTruthy();
+  });
+
+  it('leaves an even rate exact, with no ≈', () => {
+    const even = { ...tenant, name: 'Round Co', sf: 1000, rent: 30000, psf: 30 };
+    render(<TenantMixTip active payload={[{ payload: even }]} building={13750} />);
+    expect(screen.getByText('$30.00 /SF/yr')).toBeTruthy();
+  });
+
+  it('reads the vacant slice as unleased, with no rent line to invent', () => {
+    const vacant = { id: '__vacant__', name: 'Vacant space', kind: 'vacant', sf: 882, rent: 0, pct: 882 / 13750, psf: null };
+    render(<TenantMixTip active payload={[{ payload: vacant }]} building={13750} />);
+    expect(screen.getByText('Vacant space')).toBeTruthy();
+    expect(screen.getByText('882 SF · 6.4% of building')).toBeTruthy();
+    expect(screen.getByText(/Unleased — nothing to collect/)).toBeTruthy();
+    expect(screen.queryByText('Base rent')).toBeNull();
+  });
+
+  it('renders nothing when inactive', () => {
+    const { container } = render(<TenantMixTip active={false} payload={[{ payload: tenant }]} building={13750} />);
     expect(container.firstChild).toBeNull();
   });
 });

@@ -330,8 +330,11 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .corp-flyout-item:hover,.corp-flyout-item:focus{background:var(--panel-2);color:var(--accent);outline:none}
 
 /* ---- property cards ---- */
-.prop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
-.prop-card{display:flex;flex-direction:column;gap:9px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;text-align:left;color:var(--ink);box-shadow:var(--shadow);font-weight:400;align-items:stretch;text-transform:none;letter-spacing:0;text-decoration:none;cursor:pointer}
+/* Widened from 300px to make room for the tenant-mix donut beside each card's figures.
+   The card is now a two-column grid — content left, donut right — rather than a column. */
+.prop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px}
+.prop-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:9px 18px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;text-align:left;color:var(--ink);box-shadow:var(--shadow);font-weight:400;text-transform:none;letter-spacing:0;text-decoration:none;cursor:pointer}
+.prop-card-main{display:flex;flex-direction:column;gap:9px;min-width:0}
 .prop-card:hover{border-color:var(--accent);filter:none}
 .prop-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .prop-card-head strong{font-family:var(--display);font-size:22px;font-weight:600}
@@ -340,6 +343,14 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .prop-card-stats>div,.fin-mini>div{display:flex;flex-direction:column;gap:2px}
 .prop-card-stats .muted,.fin-mini .muted{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em}
 .prop-card-stats b,.fin-mini b{font-family:var(--display);font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
+/* Tenant-mix donut on a property card: who occupies the building, and what's empty.
+   The centre reads the leased share, so the card states its headline even before a
+   hover — a donut whose only content is in a tooltip says nothing at a glance. */
+.prop-mix{flex:none;position:relative;cursor:default}
+.prop-mix-chart{position:relative}
+.prop-mix-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;text-align:center}
+.prop-mix-figure{font-family:var(--display);font-size:20px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.prop-mix-cap{font-size:8.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-top:2px}
 .fin-mini{gap:14px 26px}
 
 /* ---- alerts / callouts ---- */
@@ -617,6 +628,21 @@ tbody tr:last-child td{border-bottom:none}
 .exp-block{margin-top:30px}
 .exp-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:14px;border-bottom:1px solid var(--line)}
 .exp-head strong{font-family:var(--display);font-size:22px;font-weight:600}
+
+/* ---- tenant story (History) ----
+   One card per tenant, current then former. Folded by default, and collapsed each still
+   states what it holds — size, rent, term, how many changes — so folding doesn't hide the
+   thing you opened the page for. */
+.story-list{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+.story-card{border:1px solid var(--border);border-radius:var(--radius);background:var(--panel);padding:13px 16px}
+.story-card.former{background:var(--panel-2);border-style:dashed}
+.story-head strong{font-family:var(--display);font-size:17px;font-weight:600}
+.story-summary{font-size:12px;margin-top:4px;padding-left:23px}
+.story-body{margin-top:12px;padding-left:23px;border-top:1px solid var(--hair);padding-top:12px}
+.story-timeline{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
+.story-timeline li{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12.5px}
+.story-when{flex:none;min-width:112px;font-variant-numeric:tabular-nums;color:var(--muted);font-size:11.5px}
+.story-what{flex:1;min-width:140px}
 .outcome{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .exp-note{font-size:12px}
 .hist-chart{display:block;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px;width:100%}
@@ -657,6 +683,7 @@ tbody tr:last-child td{border-bottom:none}
    swatch column and quieted, so the three read as parts of that figure, not siblings. */
 .chart-tip-part{padding-left:16px;color:var(--muted);font-size:11px}
 .chart-tip-part .chart-tip-val{font-weight:500}
+.chart-tip-note{margin:6px 0 0;color:var(--muted);font-size:11px;line-height:1.35}
 /* Space leased — a headline share over one filled track per property. The same hairline
    progress language the Ledger's Collected column and the alert urgency bar speak, so it
    reads as part of the app rather than a chart bolted on. */
@@ -671,18 +698,63 @@ tbody tr:last-child td{border-bottom:none}
 .occ-track>span{display:block;height:100%;background:var(--accent)}
 .occ-pct{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--muted);min-width:34px;text-align:right}
 
+/* ---- the notification board ----
+   One column per kind of thing, so the whole feed reads ACROSS the page instead of down
+   it. It used to be a single unbounded list of ~120px rows with no scroll containment
+   anywhere, so a real book of leases produced thousands of pixels of panel — George,
+   2026-07-30: "fix notifications formatting to something where i dont have to scroll a
+   lot to see all". Compact rows across seven columns fit the same feed in ~400px.
+
+   An empty column still renders, reading "All clear", so the headings never move as the
+   week goes on (George's explicit pick over hiding them). */
+.notif-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px 18px;align-items:start}
+.notif-col{min-width:0;display:flex;flex-direction:column;gap:5px}
+.notif-col-head{display:flex;align-items:center;gap:6px;font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;font-weight:700;color:var(--muted);padding-bottom:5px;border-bottom:1px solid var(--hair)}
+.notif-col-head>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notif-count{flex:none;font-variant-numeric:tabular-nums;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;padding:1px 6px;letter-spacing:.04em;color:var(--ink)}
+.notif-clear{margin:2px 0 0;font-size:11.5px;color:var(--muted);font-style:italic}
+
+/* One row = one line. The full title, who/where, detail, bucket and date all live in the
+   row's title attribute rather than being dropped — the column heading already says what
+   KIND of thing it is, so the subject and the countdown are what's left to scan. */
+.nrow{padding:0;overflow:hidden;border-left-color:var(--line)}
+.nrow.warn{border-left-color:var(--gold)}
+.nrow.danger{border-left-color:var(--danger)}
+.nrow-line{display:flex;align-items:center;gap:7px;padding:5px 8px 5px 9px;min-height:26px}
+.nrow-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--line)}
+.nrow-dot.warn{background:var(--gold)} .nrow-dot.danger{background:var(--danger)}
+.nrow-dot.info{background:var(--forest)} .nrow-dot.done{background:var(--forest);opacity:.45}
+.nrow-subject{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;cursor:pointer}
+.nrow-subject:hover{text-decoration:underline}
+.nrow-body:not(:empty){padding:0 9px 9px 22px}
+
+/* The actions occupy the SAME fixed slot as the days chip and fade in over it, so a row
+   never changes width or height on hover — a board of 20 rows that reflowed under the
+   pointer would be unusable. */
+.nrow-line .icon-btn{padding:2px 4px;font-size:12px;line-height:1}
+.nrow-line>div:last-child{flex:none;opacity:0;width:0;overflow:visible;transition:opacity .12s ease}
+.nrow:hover .nrow-line>div:last-child,
+.nrow:focus-within .nrow-line>div:last-child{opacity:1;width:auto}
+.nrow:hover .alert-days,.nrow:focus-within .alert-days{display:none}
+/* …except a row carrying a question waiting on an answer (the renewal Yes/No prompt),
+   whose controls must never hide behind a hover. */
+.nrow.has-decision .nrow-line>div:last-child{opacity:1;width:auto}
+
 /* ---- alert urgency ----
-   A reminder's whole point is "how soon" — so the count of days is set as a figure in
-   the display face, and a hairline bar fills as the date closes in. Fuller = sooner. */
-.alert-when{display:flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:52px;padding-left:4px}
-.alert-days{font-family:var(--display);font-size:22px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted)}
-.alert-days.danger{color:var(--danger)} .alert-days.warn{color:var(--gold)} .alert-days.info{color:var(--forest)}
-.alert-days-cap{font-size:8.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700;white-space:nowrap}
-.alert-progress{height:3px;border-radius:3px;background:var(--panel-2);border:1px solid var(--border);overflow:hidden;margin:7px 0 1px}
-.alert-progress>span{display:block;height:100%;background:var(--forest);transition:width .3s ease}
-.alert-progress.warn>span{background:var(--gold)}
-.alert-progress.danger>span{background:var(--danger)}
-.alert-where{font-size:11.5px;color:var(--muted)}
+   A reminder's whole point is "how soon", so the count of days rides the row as a chip
+   that tints with the same urgency fill the hairline uses. Absent entirely on the
+   weight-based alerts, whose `days` is a sort weight rather than a deadline. */
+.alert-days{flex:none;font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--muted);letter-spacing:.02em;padding:1px 5px;border-radius:20px;background:color-mix(in srgb,var(--forest) calc(var(--fill,0) * 16%),transparent);white-space:nowrap}
+.alert-days.danger{color:var(--danger);background:color-mix(in srgb,var(--danger) calc(var(--fill,0) * 16%),transparent)}
+.alert-days.warn{color:var(--gold);background:color-mix(in srgb,var(--gold) calc(var(--fill,0) * 18%),transparent)}
+.alert-days.info{color:var(--forest)}
+.alert-days-cap{font-weight:600;letter-spacing:.04em}
+/* The urgency bar survives compaction as a hairline along the row's bottom edge — same
+   urgencyFill, zero added height. */
+.alert-progress{height:2px;background:transparent;overflow:hidden}
+.alert-progress>span{display:block;height:100%;background:var(--forest);opacity:.5;transition:width .3s ease}
+.alert-progress.warn>span{background:var(--gold);opacity:.7}
+.alert-progress.danger>span{background:var(--danger);opacity:.8}
 
 /* ---- lease review (red flags) ----
    Findings read as a stack of short notes, each with a severity stripe down its left edge
@@ -956,6 +1028,11 @@ textarea.text-input{resize:vertical;min-height:90px}
   .page-head{flex-wrap:wrap;align-items:flex-start}
   .head-actions{flex-wrap:wrap}
   .lease-row{grid-template-columns:1fr auto;gap:8px 14px}
+  /* The donut needs ~120px it doesn't have on a phone; the card returns to one column
+     rather than squeezing both into an unreadable pair. */
+  .prop-grid{grid-template-columns:1fr}
+  .prop-card{grid-template-columns:1fr}
+  .prop-mix{display:none}
   .esc-row{grid-template-columns:1fr 1fr;gap:12px}
   .cam-row{grid-template-columns:1fr 110px 34px;gap:10px}
 }

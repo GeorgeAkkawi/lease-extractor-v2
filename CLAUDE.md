@@ -181,6 +181,118 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **Three UI changes: every property card grows a tenant-mix donut (% of building + $/SF base
+  rent on hover) · the notification feed becomes a full-width board with one column per type, compact rows, and
+  no Lease expirations table · and "Lease & tenant history" is rebuilt as a story per tenant** (George: *"visuals
+  for the property tab (mainly showing percentage of building and psf base rent when hovering) - fix notifications
+  formatting to soething where i dont have to scroll a lot to see all - redefine lease tenant and history not sure
+  to what but dont like what it does."* Then two rounds of scoping: **pie chart**, and *"i want it on the same page
+  as the property card for example: pershing plaza and Joliet"* · *"compact row and i want you to sort by
+  notification type — create a column for each notification type … make sure for every notification theres one"* +
+  *"i like the option with the show empties - you can remove the lease experiations table because it will be a
+  notification no need to double down"* · *"i like a story per tenant maybe put it under a property to just so we
+  know where we are. but also filter out some of the noise"*). Deployed: frontend Cloudflare version **`afe5815f`**,
+  demo worker `4b3b6b86`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no AI calls, no
+  tenant emails, nothing destructive.** Tests **921/921 across 108 files** (was 866/103 — +55 across 5 new suites).
+  - **1) The donut, and where it went.** George's ask named the "property tab", but **% of building appears nowhere
+    on a tenant row today** — the only one on the whole Leases page is the vacancy line at the bottom. Asked where
+    he wanted it, he chose the page that lists property *cards* (`/leases/:corpId`). `PropCard` already reads the
+    batched `['leases', propId]` cache and holds `building_sf`, so the donut costs **zero extra network calls** and
+    can't disagree with the Tenants / Sq ft / Leased / Revenue figures beside it (test-pinned: the donut's centre
+    percentage must equal the card's own Leased stat — two derivations of one thing).
+  - **The denominator is the load-bearing detail.** New pure `tenantMix` mirrors the SQL rule the bills are split
+    by — `coalesce(nullif(p.building_sf,0), pt.total_sf)` (`v_tenant_shares`, 0065) — so a slice's percentage IS
+    the share that tenant is charged CAM and tax on. With no building size entered it falls back to leased SF and
+    draws **no vacant slice**: nothing is *known* to be empty, and inventing a vacancy would be a lie (the same
+    choice `occupancyByProperty` makes). Counts every lease including `is_active === false` — an outdated tenant
+    still occupies the space. A lease with rent but no SF can't be sized, so it takes no slice and its `psf` is
+    **null rather than Infinity**.
+  - **The hover is the feature**, so it's tested directly: *D & D Dental · 1,077 SF · 7.8% of building · Base rent
+    $31,800.96/yr · ≈ $29.53 /SF/yr*. The `≈` is the existing `format.js` rule (7/24) — $29.53 × 1,077 is three
+    dollars above the figure printed directly above it, so the rate says it's rounded. The vacant slice reads
+    *"882 SF · 6.4% of building — Unleased, nothing to collect"* and has no rent line to invent.
+  - **A real fix found in the browser:** the donut was first built on a `ResponsiveContainer`, which measures its
+    parent — and under the phone breakpoint (where the donut is hidden) that's 0×0, so recharts warned on every
+    render. It's a fixed 118px, so there was nothing to measure: it's now a plain `<PieChart width height>`.
+    Warning gone, **and the chart actually draws in jsdom**, so the render test can assert the real slices
+    (`['City Dental', 'Bright Coffee Co.']`, biggest first) rather than only the wrapper — the one chart in this
+    codebase that isn't limited to tooltip-only coverage.
+  - **2) The board — why the feed was unscrollable, precisely.** `.alert-list` had **no CSS rule at all**, `.panel`
+    has no `max-height`, and `.dash-cols` had no rule either — so the feed was one flat, unbounded list of ~120px
+    rows (title · who/where · detail · urgency bar · bucket + date). A 15-lease book realistically produces 15–40
+    rows = **2,000–5,000px** of panel. Measured after: seven columns of 32px rows put the demo's whole feed in
+    **207px**.
+  - **The registry is the guarantee, not a convention.** New `src/lib/notifyTypes.js` — seven columns, each
+    claiming a set of alert **focuses** and notification **kinds** (Rent escalations · Renewals · Lease endings ·
+    Insurance · Rent & payments · Service contracts · Corporate filings), plus an `other` catch-all that renders
+    **only when non-empty**. `notifyTypes.test.js` **reads the source**: every `focus:` literal in `alerts.js` (10)
+    and every `kind` inserted into `notifications` in `api.js` (4) must map to a real column, so adding an alert
+    type without giving it a home fails the suite instead of vanishing. That is George's *"make sure for every
+    notification theres one"* in mechanical form.
+  - **The compact row, and what compaction must NOT break.** One line: tone dot · subject · countdown chip. The
+    full title, who/where, detail, bucket and date move into the row's `title` — the column heading already says
+    what KIND of thing it is, so *"Rent escalation — Five Points Wings"* becomes just **Five Points Wings**
+    (`rowSubject`: tenant → contract name → text after the LAST em dash → the "Is X renewing?" strip → the title).
+    Three invariants held deliberately: the **urgency bar survives** as a 2px hairline along the row's bottom edge
+    (same `urgencyFill`, zero added height, and the chip tints with it too); the countdown still renders **only**
+    when `horizonDays != null`, so the three weight-based alerts — whose `days` is a sort weight, not a date —
+    still show none; and the ✉ / clock / ✕ fade in on hover **in the same fixed-width slot the chip occupies**
+    (browser-measured: the row stays 253×32 hovered and un-hovered — a board of 20 rows that reflowed under the
+    pointer would be unusable). A row carrying a **question** (the renewal Yes/No prompt) opts out of the
+    hover-reveal entirely and keeps its buttons and rent-entry visible.
+  - **The Lease expirations table is gone**, as he asked. Nothing is lost: the `termination` alert covers the same
+    leases on the same 183-day lead, carries the same "no renewal option" signal, and is clickable to the lease —
+    it now has a column of its own. `expirations` came out of `DASHBOARD_WIDGETS`; a key left in someone's saved
+    `hidden_widgets` is inert (the retired-metric-cards precedent).
+  - **3) The tenant story — and why the old timeline was always empty.** Every `history_events` type is a side
+    effect of some OTHER action (applying a renewal, reconciling CAM, importing a statement). **Nothing writes an
+    event when a lease is created or when a tenant leaves** — the two moments a landlord most expects — so the
+    table under a heading promising tenant history was usually blank, and when it filled it filled with CAM
+    reconciles and statement imports, which carry no `lease_id` and no `tenant_name` and rendered **"—" in the very
+    column the heading pointed at**.
+  - **The fix needs no new writes.** The lease rows already hold the bookends: `lease_start` → **"Moved in"**,
+    `lease_termination_date` → **"Term ends / ended"**, `expired_leases.lease_end` + `status` → **"Left —
+    Renewed / Vacated / Terminated"**. New pure `tenantStory.js` derives them, so **every card is populated on day
+    one — zero DB writes, no migration** — and there's no double-recording risk (a real `tenant_removed` event
+    would duplicate the derivation). Real events attach by `lease_id` for a current tenant and by `tenant_name` for
+    a former one (its lease row is gone — `ON DELETE SET NULL` — but 0040 denormalized the name onto the event).
+  - **Two bugs fixed in passing:** events inside a card sort **oldest → newest by their BUSINESS date**, which
+    fixes the existing mismatch where the list sorted by `created_at` while displaying `event_date` (so beauty and
+    barber's renewal backdated to 2008 sat at the top of the list reading 2008); and `renewal_reopened` — written
+    by `api.js` since 7/02 but missing from the label map — no longer renders as raw snake_case.
+  - **The noise moves rather than disappears.** `STORY_EVENTS` stay in the timeline; `LEDGER_EVENTS`
+    (`estimate_set`, the four `cam_*`, the two `statement_*`) move to a folded **"Bookkeeping log"** that keeps the
+    old When/Tenant/Event/Detail table. An **unknown** type falls to the log rather than vanishing — same principle
+    as the board's `other` column. Cards fold, and collapsed each still states what it holds — *"100 Maple St —
+    Suite 120 · 2,000 SF · $60,000.00/yr · term ends December 31 2027 · 1 recorded change"* — following the
+    `.panel-toggle` rule the Rent escalations panel set. A former tenant's card keeps both things the deleted
+    archive table did: **Open & ask** (`LeaseAssistant`) and the confirm-gated ✕.
+  - **Files.** New: `src/lib/{notifyTypes,tenantStory}.js` · `src/components/PropertyMixDonut.js` · tests
+    `notifyTypes`, `tenantStory`, `notifyBoard`, `tenantStoryPage`, `propertyMixDonut`. Edited:
+    `src/lib/{portfolioCharts,dashboardWidgets}.js` · `src/pages/{DashboardPage,HistoryPage,PropertiesPage}.js` ·
+    `src/App.css` (`.prop-mix*`, `.notif-board`/`.notif-col*`/`.nrow*`, `.story-*`; `.alert-when`/`.alert-where`
+    removed with the rows they styled) · tests `portfolioCharts`, `chartTooltips`, `dashboardOverview`,
+    `notificationRowActions`, `insuranceChaseEmail`. **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **921/921** across four consecutive runs (`vitest run`); `npm run build` compiles; live
+    bundle confirmed to **carry** the backend ref and the demo bundle grepped **free** of it; live 200s on all four
+    URLs, and the edge confirmed serving the new hash (`assets/index-kshAiVOx.js`) — it served a cached
+    `index.html` for the first ~30s after deploy, which cleared on revalidation. **Driven in a real browser at
+    1440px and 420px**: the donut renders with its slices and the hover reads *City Dental · 3,000 SF · 60.0% of
+    building · $84,000.00/yr · $28.00 /SF/yr*; the board shows seven headings with counts, empty ones reading "All
+    clear", the whole feed in 207px, and zero layout shift on hover; History reads *"Who has occupied Maple
+    Plaza"* with City Dental **Holdover**, Bright Coffee **Current** (timeline: Moved in → Insurance requested →
+    Term ends), and two former tenants **Vacated** / **Renewed**. **Zero console errors or warnings on every page.**
+  - **George: hard-refresh (Cmd+Shift+R).** Portfolio → a corporation → each property card carries a donut; hover a
+    slice for the tenant's share of the building and its $/SF. The Overview's alerts now read across seven columns
+    instead of down one long list. History opens on a card per tenant instead of an empty table.
+  - **Flags (no action needed):** ① Dismissing a lease-ending alert now removes it from the Overview entirely — the
+    expirations table used to show it regardless. ② The "Lease expirations table" toggle disappears from Settings →
+    Display with the table (one-way, same as the three retired metric cards). ③ The donut needs each property's
+    **Building size** entered to show vacant space; without it the slices divide by leased SF and the card reads
+    100% leased. ④ The demo's two properties are exactly 100% leased, so the vacant slice only shows on your real
+    Pershing Plaza (882 SF empty). ⑤ On a phone the donut is hidden and the card returns to one column — 118px of
+    chart doesn't survive that width. ⑥ Card folds are per-visit, not remembered; say the word if they should stick.
+
 - **2026-07-29** — **A stored notification is now formatted like every other row in the feed (✉ icon + snooze) ·
   a lapsed option gains the third answer it always needed — "Already renewed", which records the history and
   changes nothing · beauty and barber's 2008 renewal is on the record and the bell has stopped asking · and the

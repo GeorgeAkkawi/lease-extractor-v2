@@ -70,8 +70,16 @@ describe('Overview — portfolio charts', () => {
     expect(container.querySelector('.metric-group')).toBeNull();
     expect(screen.queryByText('Expiring ≤ 6 months')).toBeNull();
     expect(screen.queryByText('Occupancy')).toBeNull();
-    // …and the count they carried is still on the page, as the table itself.
-    expect(screen.getByText(/Lease expirations/)).toBeTruthy();
+  });
+
+  // George, 2026-07-30: "you can remove the lease expirations table because it will be a
+  // notification no need to double down." The termination alert covers the same leases on
+  // the same lead and is clickable to the lease — so the table was saying it twice.
+  it('no longer draws the lease expirations table — the Lease endings column says it', async () => {
+    renderDash();
+    await waitFor(() => expect(screen.getByText('Alerts & notifications')).toBeTruthy());
+    expect(screen.queryByText(/Lease expirations/)).toBeNull();
+    expect(screen.getByText('Lease endings')).toBeTruthy();
   });
 
   it('disappears entirely when the landlord hides the widget', async () => {
@@ -83,18 +91,16 @@ describe('Overview — portfolio charts', () => {
 });
 
 describe('Overview — alert urgency', () => {
-  it('gives a date-driven alert a countdown figure, an urgency bar and a who/where line', async () => {
+  it('gives a date-driven alert a countdown chip, an urgency hairline and a who/where tooltip', async () => {
     const { container } = renderDash();
     // The demo seed carries lease-end / renewal-notice dates, so at least one date-driven
     // alert always renders.
     await waitFor(() => expect(screen.getByText('Alerts & notifications')).toBeTruthy());
     await waitFor(() => expect(container.querySelector('.alert-days')).toBeTruthy());
 
-    const cap = container.querySelector('.alert-days-cap');
-    expect(cap.textContent).toMatch(/days? (left|over)/);
-    // The figure itself is a whole number of days, never a negative sign — "over" carries
-    // the direction, so "-14 days over" can't happen.
-    expect(container.querySelector('.alert-days').textContent).toMatch(/^\d+$/);
+    // "118d" or "63d over" — the figure is a whole number of days, never a negative sign;
+    // "over" carries the direction, so "-14d" can't happen.
+    expect(container.querySelector('.alert-days').textContent).toMatch(/^\d+d( over)?$/);
 
     const bar = container.querySelector('.alert-progress > span');
     expect(bar).toBeTruthy();
@@ -102,8 +108,10 @@ describe('Overview — alert urgency', () => {
     expect(pct).toBeGreaterThan(0);
     expect(pct).toBeLessThanOrEqual(100);
 
-    // The who/where line an alert can't carry itself (it holds ids, not names).
-    expect(container.querySelector('.alert-where')).toBeTruthy();
+    // The who/where an alert can't carry itself (it holds ids, not names) moved into the
+    // row's tooltip when the rows were compacted — but it must still be there.
+    const row = container.querySelector('.alert-days').closest('.nrow');
+    expect(row.getAttribute('title')).toMatch(/Maple Plaza|Oak Center/);
   });
 
   it('shows NO countdown on a ledger reminder — its days value is a sort weight', async () => {
@@ -116,8 +124,9 @@ describe('Overview — alert urgency', () => {
       const { container } = renderDash();
       await waitFor(() => expect(screen.getByText('Alerts & notifications')).toBeTruthy());
       const reminder = await waitFor(() => {
+        // A compact row shows only its subject; the full title lives in the tooltip.
         const el = [...container.querySelectorAll('.callout')]
-          .find((n) => /Import your .*statement/i.test(n.textContent));
+          .find((n) => /Import your .*statement/i.test(`${n.getAttribute('title') || ''} ${n.textContent}`));
         expect(el).toBeTruthy();
         return el;
       });

@@ -50,6 +50,11 @@ const backdate = async (days) => {
   return row;
 };
 
+// A compact feed row shows only its subject ("City Dental"); the full title, who/where,
+// detail and date all live in the row's title attribute, since the column heading already
+// says what KIND of thing it is. So match against both.
+const rowText = (el) => `${el.getAttribute('title') || ''} ${el.textContent}`.toLowerCase();
+
 beforeEach(() => cleanup());
 afterEach(async () => {
   if (ORIGINAL.row) {
@@ -67,8 +72,7 @@ describe('Insurance not received → a second-request letter', () => {
     const { container } = renderDash();
 
     const row = await waitFor(() => {
-      const el = [...container.querySelectorAll('.callout')]
-        .find((n) => /Insurance not received/i.test(n.textContent));
+      const el = [...container.querySelectorAll('.callout')].find((n) => rowText(n).includes('insurance not received'));
       expect(el).toBeTruthy();
       return el;
     });
@@ -102,7 +106,7 @@ describe('Insurance not received → a second-request letter', () => {
     await waitFor(() => expect(screen.getByText('Alerts & notifications')).toBeTruthy());
     await waitFor(() => {
       expect([...container.querySelectorAll('.callout')]
-        .some((n) => /Insurance not received/i.test(n.textContent))).toBe(false);
+        .some((n) => rowText(n).includes('insurance not received'))).toBe(false);
     });
   });
 });

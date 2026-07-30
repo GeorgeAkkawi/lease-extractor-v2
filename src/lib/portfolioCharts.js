@@ -138,6 +138,53 @@ export function rentRollover(leases, todayIso, years = 5) {
     .map((b) => ({ ...b, leases: b.leases.sort((a, c) => c.rent - a.rent || a.name.localeCompare(c.name)) }));
 }
 
+// Who occupies a building — one slice per tenant, sized by square footage, plus the
+// space nobody is renting. The donut on each property card.
+//
+// The denominator MIRRORS the SQL rule the bills are split by:
+// `coalesce(nullif(p.building_sf,0), pt.total_sf)` (v_tenant_shares, migration 0065) —
+// so a slice's percentage is the same share the tenant is charged CAM and tax on, and
+// the card can never disagree with the Financials breakdown. With no building size
+// entered, the split falls back to leased SF and there is no vacant slice to draw
+// (nothing is known to be empty), which is exactly what occupancyByProperty does.
+//
+// Counts EVERY lease including is_active === false: an outdated / needs-extension
+// tenant still occupies the space and still owes rent until the landlord removes them,
+// matching the card's own tenant count and the Leases page (PropertiesPage.js:92).
+// A lease with no square footage can't be sized, so it takes no slice — it is still
+// counted as a tenant everywhere else on the card.
+export function tenantMix(property, leases) {
+  const rows = (leases || [])
+    .map((l) => ({
+      id: l.id,
+      name: l.tenant_name || 'Untitled tenant',
+      sf: num(l.square_footage),
+      rent: num(l.base_rent),
+      kind: 'tenant',
+    }))
+    .filter((r) => r.sf > 0)
+    .sort((a, b) => b.sf - a.sf || a.name.localeCompare(b.name));
+
+  const leased = rows.reduce((s, r) => s + r.sf, 0);
+  const building = num(property?.building_sf);
+  const denom = building > 0 ? building : leased;
+  if (!(denom > 0)) return [];
+
+  const vacant = building > 0 ? Math.max(0, building - leased) : 0;
+  const out = vacant > 0
+    ? [...rows, { id: '__vacant__', name: 'Vacant space', sf: vacant, rent: 0, kind: 'vacant' }]
+    : rows;
+
+  return out.map((r) => ({
+    ...r,
+    pct: r.sf / denom,
+    // Rent per square foot, the figure George asked to see on hover. null rather than
+    // Infinity when a lease has rent but no size — the filter above already drops those,
+    // but the guard keeps the shaper honest if it's ever fed a raw row.
+    psf: r.kind === 'tenant' && r.sf > 0 ? r.rent / r.sf : null,
+  }));
+}
+
 // Revenue / expenses / NOI per property — the grouped bars, the same triad the History
 // page charts across years. Expenses are summed from the three stored components rather
 // than read from a total column, matching how HistoryPage computes them.

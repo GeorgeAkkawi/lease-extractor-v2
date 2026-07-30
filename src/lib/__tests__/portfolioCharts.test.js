@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   revenueByProperty, occupancyByProperty, portfolioOccupancy, revenueExpensesNoi, rentRollover,
-  kfmt, shortName, DONUT_PALETTE,
+  tenantMix, kfmt, shortName, DONUT_PALETTE,
 } from '../portfolioCharts';
 
 const PROPS = [
@@ -159,6 +159,72 @@ describe('revenueExpensesNoi', () => {
     const maple = revenueExpensesNoi(PROPS, TOTALS).find((d) => d.name === 'Maple Plaza');
     expect(maple).toMatchObject({ taxes: 25000, cam: 18000, roof: 2000 });
     expect(maple.taxes + maple.cam + maple.roof).toBe(maple.Expenses);
+  });
+});
+
+// The donut on each property card — who occupies the building, and what's empty.
+describe('tenantMix', () => {
+  const PERSHING = { id: 'p1', name: 'Pershing Plaza', building_sf: 13750 };
+  const LEASES = [
+    { id: 'a', tenant_name: 'D & D Dental', square_footage: 1077, base_rent: 31800.96 },
+    { id: 'b', tenant_name: 'Five Points Wings', square_footage: 2100, base_rent: 41403 },
+  ];
+
+  it('sizes every tenant by SF, biggest first, with the vacant slice LAST', () => {
+    const mix = tenantMix(PERSHING, LEASES);
+    expect(mix.map((r) => r.name)).toEqual(['Five Points Wings', 'D & D Dental', 'Vacant space']);
+    expect(mix.at(-1).kind).toBe('vacant');
+  });
+
+  it('leaves the vacant slice equal to building − leased, and the shares summing to 1', () => {
+    const mix = tenantMix(PERSHING, LEASES);
+    expect(mix.at(-1).sf).toBe(13750 - 1077 - 2100);
+    expect(mix.reduce((s, r) => s + r.pct, 0)).toBeCloseTo(1, 10);
+  });
+
+  it('divides by the BUILDING size, matching the rule the CAM/tax bills are split by', () => {
+    // v_tenant_shares: coalesce(nullif(p.building_sf,0), pt.total_sf). A slice's
+    // percentage has to be the same share the tenant is charged on, or the card and the
+    // Financials breakdown would disagree.
+    const dental = tenantMix(PERSHING, LEASES).find((r) => r.name === 'D & D Dental');
+    expect(dental.pct).toBeCloseTo(1077 / 13750, 10);
+  });
+
+  it('falls back to leased SF with no building size — and draws no vacant slice', () => {
+    // Nothing is KNOWN to be empty, so inventing a vacancy would be a lie. Same choice
+    // occupancyByProperty makes.
+    const mix = tenantMix({ id: 'p9', name: 'Elm Court', building_sf: 0 }, LEASES);
+    expect(mix.some((r) => r.kind === 'vacant')).toBe(false);
+    expect(mix.reduce((s, r) => s + r.pct, 0)).toBeCloseTo(1, 10);
+    expect(mix.find((r) => r.name === 'D & D Dental').pct).toBeCloseTo(1077 / 3177, 10);
+  });
+
+  it('carries $/SF base rent — the figure George asked to see on hover', () => {
+    const wings = tenantMix(PERSHING, LEASES).find((r) => r.name === 'Five Points Wings');
+    expect(wings.psf).toBeCloseTo(41403 / 2100, 10);
+    expect(tenantMix(PERSHING, LEASES).at(-1).psf).toBeNull(); // vacant space has no rate
+  });
+
+  it('never returns Infinity for a lease with rent but no size — it takes no slice', () => {
+    const mix = tenantMix(PERSHING, [...LEASES, { id: 'c', tenant_name: 'Ghost', square_footage: 0, base_rent: 9000 }]);
+    expect(mix.some((r) => r.name === 'Ghost')).toBe(false);
+    expect(mix.every((r) => r.psf == null || Number.isFinite(r.psf))).toBe(true);
+  });
+
+  it('counts an outdated (is_active false) tenant — they still occupy the space', () => {
+    const mix = tenantMix(PERSHING, [...LEASES, { id: 'd', tenant_name: 'Held over', square_footage: 500, base_rent: 12000, is_active: false }]);
+    expect(mix.some((r) => r.name === 'Held over')).toBe(true);
+  });
+
+  it('has nothing to divide when there is neither a building size nor a sized lease', () => {
+    expect(tenantMix({ id: 'p0', building_sf: 0 }, [])).toEqual([]);
+    expect(tenantMix(null, null)).toEqual([]);
+  });
+
+  it('is fully leased without a vacant slice when the tenants fill the building', () => {
+    const mix = tenantMix({ id: 'p2', name: 'Full', building_sf: 3177 }, LEASES);
+    expect(mix).toHaveLength(2);
+    expect(mix.some((r) => r.kind === 'vacant')).toBe(false);
   });
 });
 

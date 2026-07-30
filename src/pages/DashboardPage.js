@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
-import { buildAlerts, daysUntil, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER, isLongPast, notificationKey, notificationSnoozed } from '../lib/alerts';
+import { buildAlerts, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER, isLongPast, notificationKey, notificationSnoozed } from '../lib/alerts';
+import { groupFeed, rowSubject } from '../lib/notifyTypes';
 import { resolveLeadDays } from '../lib/notifyPrefs';
 import { useFeatures, isFeatureOn } from '../lib/features';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
@@ -180,26 +181,20 @@ export default function DashboardPage() {
   const buildingSf = totalsList.reduce((s, t) => s + (Number(t.building_sf) || 0), 0);
   const occupancy = buildingSf > 0 ? Math.round((leasedSf / buildingSf) * 100) : null;
 
-  // Leases expiring within 6 months (active only), soonest first.
-  const expiring = leases
-    .filter((l) => l.lease_termination_date)
-    .map((l) => ({ ...l, days: daysUntil(l.lease_termination_date) }))
-    .filter((l) => l.days != null && l.days >= 0 && l.days <= 183)
-    .sort((a, b) => a.days - b.days);
-
-  // Which blocks to render, per the landlord's Display settings. The two panels
-  // share a 2-column grid — if only one shows, it goes full-width.
+  // Which blocks to render, per the landlord's Display settings.
   const showCharts = show('portfolio_charts');
-  const showExpirations = show('expirations');
   const showAlerts = show('alerts');
-  const twoPanels = showExpirations && showAlerts;
-  const nothingShown = !showCharts && !showExpirations && !showAlerts;
+  const nothingShown = !showCharts && !showAlerts;
 
   // Everything that wants attention, in ONE list ordered most urgent first. A snoozed
   // notification drops out until its time is up (alerts are already filtered inside
   // buildAlerts against the same store).
   const liveNotifications = notifications.filter((n) => !notificationSnoozed(n, notifStates));
   const feed = buildFeed(liveNotifications, alerts);
+  // …then split into one column per kind of thing, so the whole feed reads across the
+  // page instead of down it. Empty columns still render ("All clear") so the headings
+  // stay put — George's pick.
+  const columns = groupFeed(feed);
 
   // An alert names a lease or a property by id but never by name, so the "who and where"
   // line is joined here from the search index the page has already loaded — no extra query.
@@ -239,66 +234,42 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {(showExpirations || showAlerts) && (
-      <div className="dash-cols" style={{ display: 'grid', gridTemplateColumns: twoPanels ? '1fr 1fr' : '1fr', gap: 16, alignItems: 'start' }}>
-        {showExpirations && (
-        <div className="panel">
-          <div className="panel-head">
-            <strong>Lease expirations · next 6 months</strong>
-            <span className="muted">Act before notice deadlines pass</span>
-          </div>
-          {expiring.length === 0 ? (
-            <p className="empty-line muted">No leases expiring in the next 6 months.</p>
-          ) : (
-            <div className="table-wrap">
-              <table style={{ minWidth: 0 }}>
-                <thead><tr><th>Tenant</th><th>Property</th><th>Ends</th><th className="num">In</th><th>Renewal</th></tr></thead>
-                <tbody>
-                  {expiring.slice(0, 8).map((l) => (
-                    <tr key={l.id} style={{ cursor: 'pointer' }} tabIndex={0} onClick={() => navigate(`/leases/${l.corporation_id}/${l.property_id}/${l.id}`)} onKeyDown={keyActivate(() => navigate(`/leases/${l.corporation_id}/${l.property_id}/${l.id}`))}>
-                      <td>{l.tenant_name}</td>
-                      <td>{l.property_name}</td>
-                      <td>{fmtDate(l.lease_termination_date)}</td>
-                      <td className="num">{l.days}d</td>
-                      <td>{l.has_renewal ? <span className="badge good">option</span> : <span className="badge danger">none</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-        )}
-
-        {showAlerts && (
+      {showAlerts && (
         <div className="panel">
           <div className="panel-head">
             <strong>Alerts &amp; notifications</strong>
             <span className="muted">{feed.length} active</span>
           </div>
-          {feed.length === 0 ? (
-            <p className="empty-line muted">All clear — nothing needs attention. 🎉</p>
-          ) : (
-            <div className="alert-list">
-              {/* Just declined a renewal? Offer an immediate, friendly undo. */}
-              {undoDecline && (
-                <div className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'center', borderLeftColor: 'var(--accent)' }}>
-                  <div style={{ flex: 1 }}>
-                    <div className="alert-title"><strong>Marked {undoDecline.tenant} as not renewing.</strong></div>
-                    <div className="muted" style={{ fontSize: 12.5 }}>Changed your mind? You can put it back to pending.</div>
-                  </div>
-                  <button className="secondary" onClick={undoDeclineNow}>↩ Undo</button>
-                  <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => setUndoDecline(null)}>✕</button>
-                </div>
-              )}
-              {/* Stored notifications and computed alerts as ONE list, ordered most
-                  urgent first — see buildFeed below. */}
-              {feed.map((row, i) => (row.type === 'notification' ? renderNotification(row.item) : renderAlert(row.item, i)))}
+          {/* Just declined a renewal? Offer an immediate, friendly undo. */}
+          {undoDecline && (
+            <div className="callout" style={{ marginBottom: 12, display: 'flex', gap: 10, alignItems: 'center', borderLeftColor: 'var(--accent)' }}>
+              <div style={{ flex: 1 }}>
+                <div className="alert-title"><strong>Marked {undoDecline.tenant} as not renewing.</strong></div>
+                <div className="muted" style={{ fontSize: 12.5 }}>Changed your mind? You can put it back to pending.</div>
+              </div>
+              <button className="secondary" onClick={undoDeclineNow}>↩ Undo</button>
+              <button className="icon-btn dismiss-x" title="Dismiss" onClick={() => setUndoDecline(null)}>✕</button>
             </div>
           )}
+          {/* One column per kind of thing. Stored notifications and computed alerts are
+              still ONE urgency-ordered feed (buildFeed) — groupFeed only deals them into
+              columns, so the order inside each is unchanged. */}
+          <div className="notif-board">
+            {columns.map((col) => (
+              <div key={col.key} className="notif-col">
+                <div className="notif-col-head">
+                  <span>{col.label}</span>
+                  {col.rows.length > 0 && <span className="notif-count">{col.rows.length}</span>}
+                </div>
+                {col.rows.length === 0 ? (
+                  <p className="notif-clear">All clear</p>
+                ) : (
+                  col.rows.map((row, i) => (row.type === 'notification' ? renderNotification(row.item) : renderAlert(row.item, i)))
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-        )}
-      </div>
       )}
 
       {emailNotif && (
@@ -377,16 +348,29 @@ export default function DashboardPage() {
   // or the renewal Yes/No prompt, which is a question waiting on an answer.
   function renderNotification(n) {
     const k = notificationKey(n);
+    const go = () => n.lease_id && navigate(`/leases/${n.corporation_id}/${n.property_id}/${n.lease_id}`);
+    // A question waiting on an answer keeps its buttons visible and its controls out of
+    // the hover-reveal; everything else in the bell has already happened.
+    const decision = n.kind === 'renewal_decision';
     return (
-                <div key={n.id} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <div style={{ flex: 1 }}>
-                    <div role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                      onClick={() => n.lease_id && navigate(`/leases/${n.corporation_id}/${n.property_id}/${n.lease_id}`)}
-                      onKeyDown={keyActivate(() => n.lease_id && navigate(`/leases/${n.corporation_id}/${n.property_id}/${n.lease_id}`))}>
-                      <div className="alert-title"><strong>{n.title}</strong></div>
-                      <div className="muted" style={{ fontSize: 12.5 }}>{n.body}</div>
-                    </div>
-                    {n.kind === 'renewal_decision' && (
+                <div key={n.id} className={`callout nrow${decision ? ' has-decision warn' : ''}`}
+                  title={[n.title, n.body].filter(Boolean).join(' · ')}>
+                  <div className="nrow-line">
+                    <span className={`nrow-dot ${decision ? 'warn' : 'done'}`} aria-hidden="true" />
+                    <span className="nrow-subject" role="button" tabIndex={0}
+                      onClick={go} onKeyDown={keyActivate(go)}>
+                      {rowSubject(n)}
+                    </span>
+                    {rowActions({
+                      k,
+                      onEmail: n.email_body ? () => setEmailNotif(n) : null,
+                      emailTitle: 'View / send the tenant email',
+                      onSnooze: (ms) => snoozeKey(k, ms),
+                      onDismiss: () => clearNotification(n.id),
+                    })}
+                  </div>
+                  <div className="nrow-body">
+                    {decision && (
                       rentEntry?.leaseId === n.lease_id ? (
                         <div style={{ marginTop: 8 }}>
                           <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
@@ -421,45 +405,52 @@ export default function DashboardPage() {
                       )
                     )}
                   </div>
-                  {rowActions({
-                    k,
-                    onEmail: n.email_body ? () => setEmailNotif(n) : null,
-                    emailTitle: 'View / send the tenant email',
-                    onSnooze: (ms) => snoozeKey(k, ms),
-                    onDismiss: () => clearNotification(n.id),
-                  })}
                 </div>
     );
   }
 
-  // A key date — what + when, with dismiss + remind-me-later.
+  // A key date, on one line. Everything the old three-line row carried — the full title,
+  // the who/where, the detail, the bucket and the date — moves into the row's title
+  // attribute rather than being dropped: the column heading says what kind of thing it
+  // is, and the subject + countdown are what a landlord scans for. Hover for the rest.
   function renderAlert(a, i) {
-    const k = alertKey(a); const where = alertWhere(a);
+    const k = alertKey(a);
+    const where = alertWhere(a);
+    const fill = urgencyFill(a.days, a.horizonDays);
+    const tip = [a.title, where, a.detail, `${a.bucketLabel} · ${fmtDate(a.date)}`]
+      .filter(Boolean).join(' · ');
     return (
-                <div key={`${k}-${i}`} className="callout" style={{ marginBottom: 8, display: 'flex', gap: 10, alignItems: 'flex-start', borderLeftColor: a.tone === 'danger' ? 'var(--danger)' : a.tone === 'warn' ? 'var(--accent)' : 'var(--line)' }}>
-                  <div role="button" tabIndex={0} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}
-                    onClick={() => goToAlert(a)}
-                    onKeyDown={keyActivate(() => goToAlert(a))}>
-                    <div className="alert-title"><strong>{a.title}</strong></div>
-                    {where && <div className="alert-where">{where}</div>}
-                    <div className="muted" style={{ fontSize: 12.5 }}>{a.detail}</div>
-                    <UrgencyBar alert={a} />
-                    <div className="muted" style={{ fontSize: 11.5 }}>{a.bucketLabel} · {fmtDate(a.date)}</div>
+                <div key={`${k}-${i}`} className={`callout nrow ${a.tone || 'info'}`} title={tip}>
+                  <div className="nrow-line">
+                    <span className={`nrow-dot ${a.tone || 'info'}`} aria-hidden="true" />
+                    <span className="nrow-subject" role="button" tabIndex={0}
+                      onClick={() => goToAlert(a)}
+                      onKeyDown={keyActivate(() => goToAlert(a))}>
+                      {rowSubject(a)}
+                    </span>
+                    <AlertCountdown alert={a} />
+                    {/* Long past its date? There is nothing to defer to and nothing to count
+                        down — so the clock goes and the ✕ becomes a labelled Ignore that says
+                        what it does. Same dismissal either way. */}
+                    {rowActions({
+                      k,
+                      onEmail: alertCanEmail(a) ? () => emailForAlert(a) : null,
+                      emailTitle: 'Email a ready-to-send reminder',
+                      emailBusy: emailBusyAlert === k,
+                      onSnooze: (ms) => snoozeKey(k, ms),
+                      onDismiss: () => clearAlert(a),
+                      ignore: isLongPast(a),
+                      ignoreTitle: 'Stop showing this — its date is long past',
+                    })}
                   </div>
-                  <AlertCountdown alert={a} />
-                  {/* Long past its date? There is nothing to defer to and nothing to count
-                      down — so the clock goes and the ✕ becomes a labelled Ignore that says
-                      what it does. Same dismissal either way. */}
-                  {rowActions({
-                    k,
-                    onEmail: alertCanEmail(a) ? () => emailForAlert(a) : null,
-                    emailTitle: 'Email a ready-to-send reminder',
-                    emailBusy: emailBusyAlert === k,
-                    onSnooze: (ms) => snoozeKey(k, ms),
-                    onDismiss: () => clearAlert(a),
-                    ignore: isLongPast(a),
-                    ignoreTitle: 'Stop showing this — its date is long past',
-                  })}
+                  {/* The urgency bar survives compaction as a hairline along the row's
+                      bottom edge — same urgencyFill, zero added height. Still absent on the
+                      weight-based alerts, whose `days` is a sort weight, not a deadline. */}
+                  {fill != null && (
+                    <div className={`alert-progress ${a.tone === 'danger' ? 'danger' : a.tone === 'warn' ? 'warn' : ''}`}>
+                      <span style={{ width: `${Math.round(fill * 100)}%` }} />
+                    </div>
+                  )}
                 </div>
     );
   }
@@ -516,31 +507,24 @@ export function urgencyFill(days, horizonDays) {
   return Math.min(1, Math.max(0.04, soon, window));
 }
 
-// The hairline that fills as the date closes in. Only for alerts whose `days` genuinely
-// counts down (see the horizonDays note in alerts.js) — the ledger reminders sort by a
-// weight, so they get nothing rather than a fabricated deadline.
-function UrgencyBar({ alert }) {
-  const fill = urgencyFill(alert.days, alert.horizonDays);
-  if (fill == null) return null;
-  return (
-    <div className={`alert-progress ${alert.tone === 'danger' ? 'danger' : alert.tone === 'warn' ? 'warn' : ''}`}>
-      <span style={{ width: `${Math.round(fill * 100)}%` }} />
-    </div>
-  );
-}
-
-// "14 / days left" — the count set as a figure, because how soon is the whole point of a
-// reminder. Reads "days over" once the date has passed, and stays silent for alerts that
-// have no real countdown.
+// "118d" · "63d over" — how soon, in the width of a chip, because how soon is the whole
+// point of a reminder. Stays SILENT for alerts that have no real countdown: the three
+// weight-based focuses carry a sort weight in `days`, not a date, and "−2d" would be a
+// fabrication (see the horizonDays note in alerts.js). The chip tints with the same
+// urgencyFill the hairline uses, so the signal survives at one line tall.
 function AlertCountdown({ alert }) {
   if (alert.horizonDays == null || alert.days == null) return null;
   const over = alert.days < 0;
   const n = Math.abs(alert.days);
+  const fill = urgencyFill(alert.days, alert.horizonDays) ?? 0;
   return (
-    <div className="alert-when">
-      <div className={`alert-days ${alert.tone || ''}`}>{n}</div>
-      <div className="alert-days-cap">{over ? (n === 1 ? 'day over' : 'days over') : (n === 1 ? 'day left' : 'days left')}</div>
-    </div>
+    <span
+      className={`alert-days ${alert.tone || ''}`}
+      style={{ '--fill': fill }}
+      title={over ? `${n} day${n === 1 ? '' : 's'} past its date` : `${n} day${n === 1 ? '' : 's'} left`}
+    >
+      {n}d{over ? <span className="alert-days-cap"> over</span> : null}
+    </span>
   );
 }
 
