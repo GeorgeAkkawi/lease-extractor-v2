@@ -181,6 +181,93 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **Every renewal option now states the period it covers as DATES · and an AI answer is
+  rendered instead of having its markdown printed at you** (George: *"The renewal options need to be dated from
+  when they start to when they end. Can we fix the formatting for the lease document assistant? There's a lot of
+  noise and would be hard to read for somebody who didn't know what it was. Keep the detail. Remove the noise."*).
+  Deployed: frontend Cloudflare version **`50e4028b`**, demo worker `6ec3c670`. **Frontend + `src/lib` only —
+  $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing destructive.** Tests
+  **1005/1005 across 115 files** (was 973/112 — +32 across 3 new suites).
+  - **1) The dates were never stored, and that's the point.** A lease states a **length** — *"sixty (60)
+    months"* — never a date, so `term_months` was all the table could show. The dates come from where the
+    committed term ends, which is precisely the arithmetic `rollLeaseIntoRenewal` already books
+    (`newEnd = addMonths(termEnd, term_months)`). New pure **`optionWindows`** (`renewals.js`) derives them once
+    so the row, the confirm dialog and the AI assistant all quote the same period rather than three components
+    each doing their own date math. A window runs from the **day after** the current term end through that new
+    end (the `buildRenewalScheduleSteps` convention), and the next option picks up from there.
+  - **The applied case runs the other way, and it's the part that would have been wrong.** Confirming an option
+    has ALREADY moved `lease_termination_date`, so the committed end *includes* it — chaining it forward would
+    date a period the tenant has been occupying for years as if it were still ahead. Applied options are walked
+    **backwards** from the committed end instead. Test-pinned on Ricki's live shape (2016 start, three 5-year
+    options, two exercised): Option 1 reads **May 2 2021 → May 1 2026**, Option 2 **May 2 2026 → May 1 2031**,
+    Option 3 (still open) **May 2 2031 → May 1 2036** — no gap and no overlap at either seam.
+  - **Two deliberate silences.** A **declined** option gets no dates at all — nothing will ever cover it, and
+    dating a period that won't happen is worse than saying nothing (it falls back to the bare length). And an
+    option with **no stated length stops its chain**: everything after it is unknowable, so the map returns what
+    it knows and no more rather than inventing a boundary.
+  - **The column is now `Covers`** — the date range as the main line, `60 mo (5 yr)` as the sub — and it lands
+    directly above the **Addendums & riders** table, which has carried a `Covers` column in the identical
+    `Jul 1, 2024 → Jun 30, 2027` arrow form since this morning. An option's period and a rider's period now read
+    as the same kind of fact because they're formatted by the same rule (`windowLabel` ↔ `coversLabel`). The
+    confirm dialog leads with the period too, so what you approve names the years you're agreeing to.
+  - **2) The assistant's "noise" was markdown, printed.** Claude writes `**bold**`, `- ` bullets, `> ` quotes and
+    `## ` headings by default; **nothing in this codebase has ever rendered markdown** (grepped: no `marked`, no
+    `react-markdown`, no renderer of any kind), and both answer boxes were `white-space:pre-wrap` — so every
+    asterisk, hyphen and angle bracket reached the page as literal punctuation. The detail was always there; it
+    was wearing its markup. **Invisible in demo**, which is why it survived: the canned answers are plain prose,
+    so only George's live account ever showed it.
+  - **New pure `answerFormat.js` + shared `AnswerText.js`**, applied to the lease/policy/contract assistant AND
+    Ask Amlak (both surfaces, so the two can't drift into formatting one model's output two ways). Deliberately
+    **not a markdown parser and no new dependency** — it handles the subset the models actually emit and leaves
+    everything else literal, because a half-understood construct rendered wrong is worse than one rendered as
+    text. Everything is built from parsed text nodes: no `dangerouslySetInnerHTML`, so a model echoing a tag out
+    of a lease can't inject it.
+  - **Italics are unsupported on purpose.** A lone `_` or `*` matches `est_cam_annual` and `3 * 4` far more often
+    than it marks emphasis in an answer about a lease, and a wrongly-eaten underscore silently corrupts the
+    figure it was part of. Test-pinned, along with: an unbalanced `**` stays literal rather than swallowing the
+    rest of the answer, `2026. was the year…` is not a numbered list, and a wrapped bullet folds into its own
+    item instead of breaking into a new paragraph.
+  - **3) Three sentences said one thing.** The panel heading, an intro paragraph beneath it, and the assistant's
+    own status line all said "ask questions about the lease". The paragraph is gone, the heading now carries the
+    only fact none of them did — *"Reads the lease, every rider, and where the term stands today"* — and the
+    status line reports state only: *"A copy of this lease is saved."*
+  - **4) The panel now reads as two things.** `DocAssistant` gained an optional **`documents` slot** rendered
+    between the opened copy and the ask box; the lease page passes its riders and saved copies into it. So
+    everything openable sits together under **Open lease** — which is where George asked for "Open rider" in the
+    first place, and where it had NOT been landing: `RiderDocs` and the file list were rendering *after* the
+    whole assistant, so the rider rows sat below the ask box with the suggestion chips wedged between them.
+    Insurance and contracts pass nothing and are untouched.
+  - **Labelled and ruled.** The rider rows get a **RIDERS** heading matching *SAVED COPIES OF THE LEASE* beneath
+    them (shared typography, declared once so they can't drift), and the ask half is ruled off with `.qa-ask` —
+    it previously ran flush into the last file row and read as one more list item. The suggestion chips get a
+    **TRY ASKING** label and a real class instead of an inline `fontSize: 11` on a generic ghost button.
+  - **A ragged edge found in the browser, not in the DOM.** The rider actions ended flush-right, so *Open rider*
+    sat at three different x positions depending on whether that rider had a file. Both action slots are now
+    always laid out, empty when there's nothing in them — measured after: every slot at **1209** and **1297**.
+  - **Demo parity.** `demoAskLease`'s rent answer now replies in **markdown**, as the real model does — otherwise
+    the demo literally could not show the fix, and the next session would "helpfully" plain-text it again.
+  - **Files.** New: `src/lib/answerFormat.js` · `src/components/AnswerText.js` · tests `answerFormat` (15),
+    `optionWindows` (13), `assistantAnswerRender` (4). Edited: `src/lib/{renewals,leaseContext,demo/mockClient}.js` ·
+    `src/components/{RenewalOptionsEditor,DocAssistant,LeaseAssistant,RiderDocs}.js` ·
+    `src/pages/{LeaseDetailPage,AskPage}.js` · `src/App.css`. **No** migration, edge function or demo-seed change.
+  - **Verified:** unit **1005/1005** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs with the edge serving the
+    new hash (`assets/index-B_Y0TTu-.js` — it served a cached `index.html` for one request, which cleared on
+    revalidation). **Driven in a real browser at 1440px and 420px:** the option row reads *June 1, 2026 → May 31,
+    2031* over *60 mo (5 yr)*, directly above the riders table's identically-formatted Covers column; asking the
+    rent question renders **$84,000** bold, three real bullets, and the quoted clause behind an olive rule with
+    **no asterisks, hyphens or angle brackets anywhere**; the rider action slots align to the pixel. **Zero
+    console errors or warnings; zero horizontal overflow at either width.**
+  - **George: hard-refresh (Cmd+Shift+R).** Every renewal option now reads as a date range — on Ricki's you'll
+    see all three periods chained, the two you've exercised dated backwards from today's term end. And every AI
+    answer is formatted: bold figures, real bullets, quoted clauses. Ask Amlak got the same treatment.
+  - **Flags (no action needed):** ① A **declined** option shows only its length — nothing covers it, so there's
+    no period to state. ② An option with no term length on file shows no dates, and stops the chain for any
+    option after it; fill in **Term (mo)** and the whole chain dates itself. ③ Markdown **tables** are the one
+    construct not rendered — if the AI ever answers with one, the pipes will still show as text. Say the word
+    and I'll add it. ④ Previously-cached Ask Amlak answers render through the new formatter too — no cache bump
+    needed, the change is entirely client-side.
+
 - **2026-07-30** — **Every uploaded file is now KEPT, listed and openable on its own record — and a rider opens
   like the lease does, with the period it governs** (George: *"need to come up with a way to save copies of things
   that are uploaded like insurance, riders, leases and any file that uploads like the bank statements. also when

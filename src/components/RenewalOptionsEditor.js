@@ -2,7 +2,8 @@ import { useState, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail } from '../lib/api';
 import { money, money0, fmtDate } from '../lib/format';
-import { addMonths, optionLapseReason, renewalFirstYearRent } from '../lib/renewals';
+import { addMonths, optionLapseReason, renewalFirstYearRent, optionWindows, windowLabel } from '../lib/renewals';
+import { cmpRenewal } from '../lib/leaseTerm';
 import NotificationEmailModal from './NotificationEmailModal';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
@@ -90,6 +91,11 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
     .filter((e) => e.effective_date && termEnd && String(e.effective_date) > String(termEnd))
     .sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)));
 
+  // The dates each option covers (George, 2026-07-30: "dated from when they start to
+  // when they end"). Chained in the order they'd be exercised, which is why the sort
+  // happens here rather than relying on whatever order the query returned.
+  const windows = optionWindows([...renewals].sort(cmpRenewal), termEnd);
+
   const [form, setForm] = useState({ option_label: '', notice_by_date: '', term_months: '', new_rent: '', annual_escalation_pct: '', notes: '' });
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   // When Renew is clicked on an option with no stated rent, we expand an inline row to
@@ -166,9 +172,12 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
     if (decrease) implications.push(`⚠ That is a DECREASE from the current ${money(cur)} — ${money(cur - booked)}/yr less.`);
     implications.push('An applied option can’t be undone from here.');
 
+    // Lead with the period it covers, not just its length — a date range is what the
+    // landlord is actually agreeing to, and it's the same window the row shows.
+    const covers = windowLabel(windows[r.id]);
     return askConfirm({
       title: decrease ? 'Apply a renewal that LOWERS the rent?' : 'Apply this renewal option?',
-      message: `${r.option_label || 'This option'} — ${termLabel(r.term_months)} at ${money(booked)}/yr.`,
+      message: `${r.option_label || 'This option'} — ${covers ? `${covers} (${termLabel(r.term_months)})` : termLabel(r.term_months)} at ${money(booked)}/yr.`,
       implications,
       confirmLabel: decrease ? 'Apply anyway' : 'Apply renewal',
       tone: decrease ? 'danger' : 'warn',
@@ -241,14 +250,20 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
       ) : (
         <div className="table-wrap" style={{ marginBottom: 16 }}>
           <table style={{ minWidth: 0 }}>
-            <thead><tr><th>Option</th><th>Notice by</th><th className="num">Term</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
+            <thead><tr><th>Option</th><th>Notice by</th><th title="The period the option covers — it picks up the day after the current term ends, and each option chains from the one before it. For an option not yet exercised this is the period it would cover.">Covers</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => { const reason = lapseReason(r); const lapsed = !!reason; const badge = statusBadge(r.status, reason); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); return (
+              {renewals.map((r) => { const reason = lapseReason(r); const lapsed = !!reason; const badge = statusBadge(r.status, reason); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); const covers = windowLabel(windows[r.id]); return (
                 <Fragment key={r.id}>
                 <tr>
                   <td>{r.option_label || '—'}</td>
                   <td>{r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">—</span>}</td>
-                  <td className="num">{termLabel(r.term_months)}</td>
+                  {/* The period, with the stated length under it. A declined option has
+                      no period — nothing will cover it — so it shows the length alone. */}
+                  <td className="opt-covers">
+                    {covers
+                      ? (<><div>{covers}</div><div className="cell-sub">{termLabel(r.term_months)}</div></>)
+                      : <span className="muted">{termLabel(r.term_months)}</span>}
+                  </td>
                   <td className="num">
                     <div>{rent.main}</div>
                     {rent.sub && <div className="cell-sub">{rent.sub}</div>}

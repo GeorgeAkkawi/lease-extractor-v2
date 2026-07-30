@@ -3,12 +3,17 @@
 // order. The original holds the complete base terms; riders add/override specifics; the
 // current phase says where things actually stand now. Fed to ask-lease as `lease_text`.
 import { fmtDate, money } from './format';
-import { currentPhase } from './leaseTerm';
+import { currentPhase, cmpRenewal } from './leaseTerm';
 import { abatementKindLabel } from './abatement';
+import { optionWindows, windowLabel } from './renewals';
 
 export function buildLeaseAskContext({ lease, renewals = [], addendums = [], escalations = [], abatements = [] } = {}) {
   if (!lease) return '';
   const ph = currentPhase({ lease, escalations, renewals, addendums, abatements });
+
+  // The same chained windows the renewal table shows, so "when would the option period
+  // run?" gets a real answer instead of a term length the assistant has to reason about.
+  const windows = optionWindows([...(renewals || [])].sort(cmpRenewal), lease.lease_termination_date);
 
   const pending = (renewals || []).filter((r) => r.status === 'pending');
   const pendingLines = pending.length
@@ -17,7 +22,9 @@ export function buildLeaseAskContext({ lease, renewals = [], addendums = [], esc
           : r.annual_escalation_pct ? `+${r.annual_escalation_pct}%/yr`
           : 'rent per the option';
         const notice = r.notice_by_date ? `, notice by ${fmtDate(r.notice_by_date)}` : '';
-        return `  - ${r.option_label || 'Renewal option'}: ${r.term_months || '?'} months at ${rent}${notice} — NOT yet exercised (pending the landlord's confirmation; it does not extend the committed term unless confirmed).`;
+        const covers = windowLabel(windows[r.id]);
+        const period = covers ? `, covering ${covers} if exercised` : '';
+        return `  - ${r.option_label || 'Renewal option'}: ${r.term_months || '?'} months at ${rent}${notice}${period} — NOT yet exercised (pending the landlord's confirmation; it does not extend the committed term unless confirmed).`;
       }).join('\n')
     : '  - None pending.';
 

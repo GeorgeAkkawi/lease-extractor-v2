@@ -607,27 +607,34 @@ export default function LeaseDetailPage() {
       <div className="panel">
         <div className="panel-head">
           <strong>Lease document &amp; assistant</strong>
-          <span className="muted">Open the lease and ask questions</span>
+          {/* One line where there were three. The heading, an intro paragraph and the
+              assistant's own status line all used to say "ask questions about the
+              lease"; this is the only one that adds anything — what the answers are
+              actually drawn from. */}
+          <span className="muted">Reads the lease, every rider, and where the term stands today</span>
         </div>
-        <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
-          Ask about the original terms or where the lease stands <strong>now</strong> — it reads the lease, every rider, and your current phase.
-        </p>
         <LeaseAssistant
           leaseId={lease.id}
           leaseText={lease.lease_text}
           askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations, abatements })}
           canSave
-        />
-        {/* Right under "Open lease", as asked — one row per rider, oldest first, each
-            opening its own cached text in the same box. The assistant above has been
-            reading these since 2026-07-01; this is the first time a human can. */}
-        <RiderDocs riders={addendums} />
-        <DocumentsList
-          entityType="lease"
-          entityId={lease.id}
-          title="Saved copies of the lease"
-          addLabel="Add a copy"
-          emptyText="No file on file — this lease was entered by hand or pasted in. Add a copy to keep the original alongside it."
+          documents={
+            <>
+              {/* Right under "Open lease", as asked — one row per rider, oldest first,
+                  each opening its own cached text in the same box. Passed in as the
+                  assistant's documents slot so everything openable sits together and
+                  the ask box is the last thing on the panel, rather than the rider
+                  rows and the file list landing beneath it. */}
+              <RiderDocs riders={addendums} />
+              <DocumentsList
+                entityType="lease"
+                entityId={lease.id}
+                title="Saved copies of the lease"
+                addLabel="Add a copy"
+                emptyText="No file on file — this lease was entered by hand or pasted in. Add a copy to keep the original alongside it."
+              />
+            </>
+          }
         />
       </div>
 

@@ -1,12 +1,18 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
+import AnswerText from './AnswerText';
 
 // Reusable "cached document + AI assistant": open the saved copy and ask
 // questions about it. Decoupled from any one document type via callbacks:
 //   ask(question) -> Promise<answer>     (required; wires the backend)
 //   onSave(text)  -> Promise              (optional; only when canSave)
 //   docText, suggested[], canSave, label ("lease" | "policy" | "contract" | …)
-export default function DocAssistant({ docText, suggested = [], canSave = false, onSave, ask, label = 'document' }) {
+//   documents     -> optional nodes rendered with the other document controls,
+//                    between the opened copy and the ask box (the lease page puts its
+//                    riders and saved copies here, so everything you can OPEN sits
+//                    together under "Open lease" and the ask box stays the last thing
+//                    on the panel — it was previously stranded above a file list).
+export default function DocAssistant({ docText, suggested = [], canSave = false, onSave, ask, label = 'document', documents = null }) {
   const [openDoc, setOpenDoc] = useState(false);
   const [q, setQ] = useState('');
   // Only the CURRENT question is shown — asking a new one replaces the previous Q&A
@@ -42,9 +48,13 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
   return (
     <div>
       <div className="between" style={{ marginBottom: 12 }}>
+        {/* State only. "Ask anything about it below" used to live here too, repeating
+            what the panel heading and its intro paragraph already said — three
+            sentences for one idea. The ask box says what it is; this says what's on
+            file. */}
         <span className="muted" style={{ fontSize: 12.5 }}>
           {hasDoc
-            ? `A copy of this ${label} is saved — ask anything about it below.`
+            ? `A copy of this ${label} is saved.`
             : canSave
               ? `No ${label} saved yet. Paste it once and the assistant can answer questions about it.`
               : `No ${label} on file.`}
@@ -57,6 +67,8 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
       </div>
 
       {hasDoc && openDoc && <div className="lease-doc">{docText}</div>}
+
+      {documents}
 
       {!hasDoc && canSave && (
         <div style={{ marginBottom: 16 }}>
@@ -76,23 +88,32 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
         </div>
       )}
 
+      {/* Ruled off from the documents above it, so the panel reads as two things —
+          what you can open, then what you can ask — instead of one undifferentiated
+          stack where the ask box looked like the last row of the file list. */}
       {(hasDoc || canSave) && (
-        <>
+        <div className="qa-ask">
           {log.length > 0 && (
             <div className="qa-log">
               {log.map((it, i) => (
                 <div className="qa-item" key={i}>
                   <div className="qa-q">{it.q}</div>
-                  <div className={`qa-a${it.pending ? ' thinking' : ''}`}>{it.pending ? `Reading the ${label}…` : it.a}</div>
+                  {/* The answer comes back as markdown. AnswerText renders it as
+                      headings, bullets and quoted clauses instead of printing the
+                      asterisks and hyphens as punctuation. */}
+                  {it.pending
+                    ? <div className="qa-a thinking">Reading the {label}…</div>
+                    : <AnswerText className="qa-a" text={it.a} />}
                 </div>
               ))}
             </div>
           )}
 
           {log.length === 0 && suggested.length > 0 && (
-            <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div className="qa-chips">
+              <span className="qa-chips-label">Try asking</span>
               {suggested.map((s) => (
-                <button type="button" key={s} className="ghost" style={{ fontSize: 11 }} onClick={() => { if (!askM.isPending) askM.mutate(s); }}>
+                <button type="button" key={s} className="ghost btn-sm qa-chip" onClick={() => { if (!askM.isPending) askM.mutate(s); }}>
                   {s}
                 </button>
               ))}
@@ -103,7 +124,7 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
             <input className="text-input" placeholder={`Ask a question about this ${label}…`} value={q} onChange={(e) => setQ(e.target.value)} />
             <button type="submit" disabled={askM.isPending || !q.trim()}>{askM.isPending ? 'Asking…' : 'Ask'}</button>
           </form>
-        </>
+        </div>
       )}
     </div>
   );

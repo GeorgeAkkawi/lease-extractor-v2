@@ -728,8 +728,20 @@ function demoAskLease(body) {
     return { answer: "I don't see a renewal option in this lease. If the document mentions one, add it under Renewal options — or mark the lease as having no renewal." + tail };
   }
   if (/(rent|how much|price|cost|monthly)/.test(q)) {
-    const psf = lease.square_footage ? ` (${usd(Math.round(lease.base_rent / lease.square_footage))} per sq ft on ${Number(lease.square_footage).toLocaleString()} SF)` : '';
-    return { answer: `The annual base rent is ${usd(lease.base_rent)}${psf}, per the lease.` + tail };
+    // Written in markdown on purpose: the real model answers this way, so the demo has
+    // to as well or it can't show that AnswerText renders it instead of printing the
+    // asterisks and hyphens (George, 2026-07-30: "remove the noise").
+    const lines = [`The annual base rent is **${usd(lease.base_rent)}**, per the lease.`, ''];
+    if (lease.square_footage) {
+      lines.push(
+        `- Rate: **${usd(Math.round(lease.base_rent / lease.square_footage))}** per sq ft`,
+        `- Premises: ${Number(lease.square_footage).toLocaleString()} SF`,
+        `- Monthly: ${usd(Math.round(lease.base_rent / 12))}`,
+        ''
+      );
+    }
+    lines.push('The lease states:', '', '> Tenant shall pay Base Rent in equal monthly installments, in advance, on the first day of each calendar month.');
+    return { answer: lines.join('\n') + tail };
   }
   if (/(escalat|increase|bump|raise|%)/.test(q)) {
     const esc = db.rent_escalations.find((e) => e.lease_id === lease.id);

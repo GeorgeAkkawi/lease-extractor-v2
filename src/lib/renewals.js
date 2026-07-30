@@ -1,6 +1,7 @@
 // Renewal date math + the two rules that decide whether an option is still a live
 // choice and what rent confirming it books. (The tenant-email drafts live in
 // ./emailTemplates.js.)
+import { fmtDate } from './format';
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
@@ -86,3 +87,68 @@ export function renewalFirstYearRent(ren, currentRent, override = null) {
   const pct = Number(ren?.annual_escalation_pct) || 0;
   return pct > 0 ? round2(old * (1 + pct / 100)) : old;
 }
+
+function addDays(iso, n) {
+  if (!iso) return null;
+  const d = new Date(iso + 'T12:00:00');
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// The period each option covers — as dates, chained, because options run back to back.
+//
+// George, 2026-07-30: "The renewal options need to be dated from when they start to
+// when they end." A lease states a LENGTH ("sixty (60) months"), never dates; the dates
+// come from where the committed term ends. That is exactly the arithmetic
+// rollLeaseIntoRenewal already books — newEnd = addMonths(termEnd, term_months) — so a
+// window runs from the day AFTER the current term end through that new end, and the
+// next option picks up from there. Deriving it here rather than in the table means the
+// row, the confirm dialog and the AI assistant all quote the same period.
+//
+// APPLIED options run the other way, and this is the part that's easy to get wrong.
+// Confirming one has ALREADY moved lease_termination_date, so the committed end
+// includes it — chaining it forward would date a period the tenant has been occupying
+// for years as if it were still ahead. Applied options are walked BACKWARDS from the
+// committed end instead, most recent first: the same arithmetic in reverse.
+//
+// Two deliberate silences. A DECLINED option gets no window: nothing will ever cover
+// it, and dating a period that won't happen is worse than saying nothing. And an option
+// with no stated length stops its chain — everything after it is unknowable, so we
+// return what we know and no more rather than guessing a boundary.
+//
+// @param ordered  the options in the order they'd be exercised (sort with cmpRenewal —
+//                 imported here it would close a cycle through leaseTerm → abatement).
+// @param termEnd  the lease's committed termination date.
+// @returns { [optionId]: { start, end } } — ISO dates, inclusive.
+export function optionWindows(ordered = [], termEnd) {
+  const out = {};
+  if (!termEnd) return out;
+  const end0 = String(termEnd);
+
+  const applied = ordered.filter((r) => r?.status === 'applied');
+  let back = end0;
+  for (let i = applied.length - 1; i >= 0; i--) {
+    const months = Number(applied[i].term_months) || 0;
+    if (!months) break;
+    const prevEnd = addMonths(back, -months);
+    if (!prevEnd) break;
+    out[applied[i].id] = { start: addDays(prevEnd, 1), end: back };
+    back = prevEnd;
+  }
+
+  let fwd = end0;
+  for (const r of ordered) {
+    if (r?.status !== 'pending') continue;
+    const months = Number(r.term_months) || 0;
+    if (!months) break;
+    const to = addMonths(fwd, months);
+    if (!to) break;
+    out[r.id] = { start: addDays(fwd, 1), end: to };
+    fwd = to;
+  }
+  return out;
+}
+
+// "Jun 1, 2030 → May 31, 2035". The same arrow form a rider's period uses
+// (coversLabel, ./riders.js), so a period on this page reads the same wherever it is.
+export const windowLabel = (w) => (w?.start && w?.end ? `${fmtDate(w.start)} → ${fmtDate(w.end)}` : null);

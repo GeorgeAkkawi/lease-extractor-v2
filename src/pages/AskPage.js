@@ -6,6 +6,7 @@ import { useFeatures } from '../lib/features';
 import { usePageChrome } from '../context/ChromeContext';
 import { SparkIcon } from '../components/icons';
 import EmailComposeModal from '../components/EmailComposeModal';
+import AnswerText from '../components/AnswerText';
 
 // "Ask Amlak" — a natural-language assistant over the account's OWN records
 // (tenants, insurance, service contracts, rent, roof responsibility, lease terms,
@@ -190,7 +191,9 @@ export default function AskPage() {
                   <strong>Answer</strong>
                   {it.fromCache && <span className="muted"> · saved answer (free)</span>}
                 </div>
-                <div className="ask-a-body">{it.answer}</div>
+                {/* Rendered, not printed — the model answers in markdown and the raw
+                    asterisks and hyphens were reaching the page as punctuation. */}
+                <AnswerText className="ask-a-body" text={it.answer} />
                 {mentioned(it.answer).length > 0 && (
                   <div className="ask-jump">
                     <span className="muted">Open:</span>
@@ -219,7 +222,7 @@ export default function AskPage() {
                       <strong>From your lease documents</strong>
                       {it.docsFromCache && <span className="muted"> · saved answer (free)</span>}
                     </div>
-                    <div className="ask-a-body">{it.docsAnswer}</div>
+                    <AnswerText className="ask-a-body" text={it.docsAnswer} />
                     {mentioned(it.docsAnswer).length > 0 && (
                       <div className="ask-jump">
                         <span className="muted">Open:</span>

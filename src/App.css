@@ -429,7 +429,8 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .ask-q{background:var(--bg-soft,#f6f5f2);padding:10px 14px;font-weight:600;font-size:13.5px}
 .ask-a{padding:12px 14px}
 .ask-a-head{font-family:var(--display);font-size:14px;margin-bottom:6px}
-.ask-a-body{white-space:pre-wrap;font-size:13.5px;line-height:1.6;color:var(--ink)}
+/* pre-wrap dropped with the same change as .qa-a — AnswerText renders the blocks */
+.ask-a-body{font-size:13.5px;line-height:1.6;color:var(--ink)}
 .ask-jump{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:12px;padding-top:11px;border-top:1px solid var(--border);font-size:12.5px}
 .ask-empty{margin-top:22px}
 .ask-log-head{display:flex;justify-content:flex-end;margin-top:18px;margin-bottom:-6px}
@@ -945,6 +946,10 @@ tbody tr:last-child td{border-bottom:none}
 /* A sub-line that may need to wrap within its own column (e.g. the totals band's
    "+ $X vacant / = $Y entered" reconciliation) — never overflow into the neighbor. */
 .cell-sub.wrap{white-space:normal;line-height:1.3}
+/* A renewal option's period ("Jun 1, 2030 → May 31, 2035") is a label, not a figure —
+   left-aligned and free to wrap at the arrow on a narrow column. */
+.opt-covers{white-space:normal;line-height:1.25}
+.opt-covers .cell-sub{white-space:normal}
 /* $/SF rates read as real figures, not fine print (matches the bolder SF treatment). */
 /* The two real figures on a sub-line — the monthly and the $/SF rate — set bold + ink
    so they read as figures, not annotations (George). The separator between them stays
@@ -1004,7 +1009,7 @@ textarea.text-input{resize:vertical;min-height:90px}
    filing drawer, not a feature. */
 .doc-list{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 .doc-list-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-.doc-list-head strong{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700}
+/* (typography shared with .rider-head, below — declared once so they can't drift) */
 .doc-list-head button{margin-left:auto}
 .doc-list-empty{font-size:12.5px;margin:0}
 .doc-row{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:13px;border-bottom:1px solid var(--hair)}
@@ -1017,21 +1022,54 @@ textarea.text-input{resize:vertical;min-height:90px}
   .doc-row-name{flex:1 0 100%}
 }
 
-/* Riders listed under "Open lease" — each opens its own cached text in the same box */
+/* Riders listed under "Open lease" — each opens its own cached text in the same box.
+   Labelled and ruled off like the saved-copies list beneath it, so the two read as one
+   filing drawer rather than as loose buttons under the assistant. */
+.rider-group{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
+.doc-list-head strong,.rider-head{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700}
+.rider-head{margin-bottom:2px}
 .rider-rows{display:flex;flex-direction:column;gap:6px;margin:10px 0 14px}
 .rider-row{display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap}
 .rider-row-name{flex:1;min-width:180px}
 .rider-row-dates{color:var(--muted);font-size:11.5px}
+/* Each action keeps its own column width whether or not it holds a button, so the
+   controls line up down the list rather than ending flush-right at three x positions. */
+.rider-act{display:inline-flex;justify-content:flex-end;min-width:78px}
 
 /* per-tenant lease document + AI assistant */
 .lease-doc{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:340px;overflow:auto;color:var(--ink);margin-bottom:16px}
 .qa-log{display:flex;flex-direction:column;gap:14px;margin-bottom:16px}
 .qa-item{display:flex;flex-direction:column;gap:6px}
 .qa-q{font-weight:600;font-size:13.5px}
-.qa-a{background:var(--accent-soft);border-radius:var(--radius);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}
+/* No white-space:pre-wrap — an answer is rendered as blocks now (AnswerText), so its
+   own paragraph and list spacing does the work the raw newlines used to. */
+.qa-a{background:var(--accent-soft);border-radius:var(--radius);padding:11px 13px;font-size:13px;line-height:1.55}
 .qa-a.thinking{background:var(--panel-2);color:var(--muted);font-style:italic}
 .qa-form{display:flex;gap:8px;align-items:center}
 .qa-form .text-input{flex:1}
+/* The ask half of the panel, ruled off from the documents above it. */
+.qa-ask{border-top:1px solid var(--hair);margin-top:14px;padding-top:14px}
+/* Suggested questions read as prompts, not as actions — labelled, so the row explains
+   itself to someone who has never used the assistant. */
+.qa-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.qa-chips-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-right:2px}
+button.qa-chip{background:var(--panel-2);border:1px solid var(--hair);color:var(--muted);font-weight:500}
+button.qa-chip:hover{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+
+/* An AI answer, rendered rather than printed. The models write markdown by default and
+   nothing here ever parsed it, so **bold**, "- " bullets and "> " quotes were reaching
+   the page as literal punctuation (George, 2026-07-30: "a lot of noise"). Structure
+   only — no new colour, no new type family; the answer still sits in its own box. */
+.ans>*{margin:0 0 9px}
+.ans>*:last-child{margin-bottom:0}
+.ans-h{font-weight:700}
+.ans-list{padding-left:17px}
+.ans-list li{margin:3px 0}
+.ans-list li::marker{color:var(--faint)}
+/* The ask-lease prompt asks the model to quote the clause it's answering from — this is
+   what makes that quotation look like a quotation instead of an angle bracket. */
+.ans-q{padding:1px 0 1px 11px;border-left:2px solid var(--accent);color:var(--muted)}
+.ans code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;background:var(--panel-2);border-radius:3px;padding:1px 4px}
 .no-ren{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--hair)}
 .no-ren button{margin-left:auto}
 
