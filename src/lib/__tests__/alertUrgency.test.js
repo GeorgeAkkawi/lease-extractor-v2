@@ -7,7 +7,7 @@
 // WEIGHT in `days`, not a countdown, and must never grow a bar or a "N days over" figure.
 import { describe, it, expect } from 'vitest';
 import { buildAlerts } from '../alerts';
-import { urgencyFill } from '../../pages/DashboardPage';
+import { urgencyFill, rowFill } from '../../pages/DashboardPage';
 
 const NOW = new Date('2026-07-29T12:00:00');
 const iso = (daysFromNow) => {
@@ -151,5 +151,51 @@ describe('urgencyFill', () => {
     expect(urgencyFill(10, null)).toBeNull();
     expect(urgencyFill(10, 0)).toBeNull();
     expect(urgencyFill(null, 183)).toBeNull();
+  });
+});
+
+// urgencyFill answers "how close is this date"; rowFill answers "how full is THIS ROW's
+// bar", which is a different question for the two kinds of row that have no date at all.
+// George, 2026-07-30: "I still want progress bars for the alerts and notifications … they
+// should be descending from most urgent to least urgent."
+describe('rowFill — every row gets a bar', () => {
+  const alert = (days, horizonDays) => ({ type: 'alert', item: { days, horizonDays } });
+
+  it('tracks the date on a dated alert', () => {
+    expect(rowFill(alert(183, 183))).toBeCloseTo(0.04);
+    expect(rowFill(alert(0, 183))).toBe(1);
+    expect(rowFill(alert(-5, 183))).toBe(1);
+  });
+
+  it('pins a standing alert FULL rather than leaving a gap in the column', () => {
+    // The three weight-based focuses carry a sort weight in `days` and no horizon. They
+    // rank above everything merely upcoming because they are problems NOW — money not
+    // received, a certificate never sent — so an empty bar would contradict their place.
+    expect(rowFill(alert(-3, undefined))).toBe(1);
+    expect(rowFill(alert(-1, null))).toBe(1);
+  });
+
+  it('leaves an update that already happened empty', () => {
+    expect(rowFill({ type: 'notification', item: { kind: 'escalation_applied' } })).toBe(0);
+    expect(rowFill({ type: 'notification', item: { kind: 'renewal_applied' } })).toBe(0);
+  });
+
+  it('fills the renewal question, which is still waiting on an answer', () => {
+    expect(rowFill({ type: 'notification', item: { kind: 'renewal_decision' } })).toBe(1);
+  });
+
+  it('never returns null — a missing bar is what made the row read as unranked', () => {
+    [rowFill(), rowFill({}), rowFill(alert(null, null))].forEach((v) => {
+      expect(typeof v).toBe('number');
+      expect(Number.isFinite(v)).toBe(true);
+    });
+  });
+
+  it('descends with the sort: later rows in a column never fill more than earlier ones', () => {
+    // Inside one column every countdown shares a notice window, so the feed's ordering
+    // (overdue → standing → soonest-first) maps onto a non-increasing series of bars.
+    const column = [alert(-20, 183), alert(-2, 183), alert(-1, undefined), alert(3, 183), alert(60, 183), alert(175, 183)];
+    const fills = column.map(rowFill);
+    for (let i = 1; i < fills.length; i += 1) expect(fills[i]).toBeLessThanOrEqual(fills[i - 1]);
   });
 });

@@ -128,11 +128,12 @@ export default function DashboardPage() {
   const alertCanEmail = (a) => {
     if (a.focus === 'contract') return true;
     if (a.focus === 'renewal') return !!a.renewal_id;
-    // A tenant insurance alert, and the chase-up that follows it, both write to the same
-    // tenant. The chase-up drafts the SECOND-request letter (draftAlertEmail branches on
-    // the focus) — the whole point of the reminder is that the first ask went unanswered,
-    // so it needs a one-click way to ask again.
-    if (a.focus === 'insurance' || a.focus === 'insurance_chase') return !!a.lease_id;
+    // Every insurance reminder writes to the same tenant, and draftAlertEmail branches on
+    // the focus for the right letter: expiry → "please send the renewed certificate",
+    // chase-up → the SECOND request (the first ask went unanswered), none-on-file → the
+    // plain first request. The landlord's OWN building policy has no lease and no outside
+    // recipient, so it correctly gets no ✉.
+    if (a.focus === 'insurance' || a.focus === 'insurance_chase' || a.focus === 'insurance_missing') return !!a.lease_id;
     return a.focus === 'termination' || a.focus === 'escalation';
   };
   // Draft the reminder's ready-to-send email and open the send modal. Sending it does NOT
@@ -264,7 +265,15 @@ export default function DashboardPage() {
                 {col.rows.length === 0 ? (
                   <p className="notif-clear">All clear</p>
                 ) : (
-                  col.rows.map((row, i) => (row.type === 'notification' ? renderNotification(row.item) : renderAlert(row.item, i)))
+                  // The LAST row of a column opens its hover panel upward: it is the one
+                  // sitting against the bottom of the board, where a downward panel would
+                  // spill out of the panel and stretch the page's scroll height.
+                  col.rows.map((row, i) => {
+                    const up = i === col.rows.length - 1;
+                    return row.type === 'notification'
+                      ? renderNotification(row.item, up)
+                      : renderAlert(row.item, i, up);
+                  })
                 )}
               </div>
             ))}
@@ -346,15 +355,14 @@ export default function DashboardPage() {
 
   // An update that already happened (rent applied, lease renewed) — dismiss only —
   // or the renewal Yes/No prompt, which is a question waiting on an answer.
-  function renderNotification(n) {
+  function renderNotification(n, popUp = false) {
     const k = notificationKey(n);
     const go = () => n.lease_id && navigate(`/leases/${n.corporation_id}/${n.property_id}/${n.lease_id}`);
     // A question waiting on an answer keeps its buttons visible and its controls out of
     // the hover-reveal; everything else in the bell has already happened.
     const decision = n.kind === 'renewal_decision';
     return (
-                <div key={n.id} className={`callout nrow${decision ? ' has-decision warn' : ''}`}
-                  title={[n.title, n.body].filter(Boolean).join(' · ')}>
+                <div key={n.id} className={`callout nrow${decision ? ' has-decision warn' : ''}`}>
                   <div className="nrow-line">
                     <span className={`nrow-dot ${decision ? 'warn' : 'done'}`} aria-hidden="true" />
                     <span className="nrow-subject" role="button" tabIndex={0}
@@ -405,22 +413,22 @@ export default function DashboardPage() {
                       )
                     )}
                   </div>
+                  <UrgencyBar tone={decision ? 'warn' : ''} fill={rowFill({ type: 'notification', item: n })} />
+                  <RowPopover up={popUp} title={n.title} detail={n.body}
+                    foot={n.created_at ? fmtDate(String(n.created_at).slice(0, 10)) : null} />
                 </div>
     );
   }
 
   // A key date, on one line. Everything the old three-line row carried — the full title,
-  // the who/where, the detail, the bucket and the date — moves into the row's title
-  // attribute rather than being dropped: the column heading says what kind of thing it
-  // is, and the subject + countdown are what a landlord scans for. Hover for the rest.
-  function renderAlert(a, i) {
+  // the who/where, the detail, the bucket and the date — moves into the hover panel rather
+  // than being dropped: the column heading says what kind of thing it is, and the subject
+  // + countdown are what a landlord scans for.
+  function renderAlert(a, i, popUp = false) {
     const k = alertKey(a);
     const where = alertWhere(a);
-    const fill = urgencyFill(a.days, a.horizonDays);
-    const tip = [a.title, where, a.detail, `${a.bucketLabel} · ${fmtDate(a.date)}`]
-      .filter(Boolean).join(' · ');
     return (
-                <div key={`${k}-${i}`} className={`callout nrow ${a.tone || 'info'}`} title={tip}>
+                <div key={`${k}-${i}`} className={`callout nrow ${a.tone || 'info'}`}>
                   <div className="nrow-line">
                     <span className={`nrow-dot ${a.tone || 'info'}`} aria-hidden="true" />
                     <span className="nrow-subject" role="button" tabIndex={0}
@@ -443,17 +451,76 @@ export default function DashboardPage() {
                       ignoreTitle: 'Stop showing this — its date is long past',
                     })}
                   </div>
-                  {/* The urgency bar survives compaction as a hairline along the row's
-                      bottom edge — same urgencyFill, zero added height. Still absent on the
-                      weight-based alerts, whose `days` is a sort weight, not a deadline. */}
-                  {fill != null && (
-                    <div className={`alert-progress ${a.tone === 'danger' ? 'danger' : a.tone === 'warn' ? 'warn' : ''}`}>
-                      <span style={{ width: `${Math.round(fill * 100)}%` }} />
-                    </div>
-                  )}
+                  <UrgencyBar tone={a.tone} fill={rowFill({ type: 'alert', item: a })} />
+                  <RowPopover
+                    up={popUp}
+                    title={a.title} where={where} detail={a.detail} action={a.action}
+                    extras={alertExtras(a)}
+                    foot={[a.bucketLabel, a.date ? fmtDate(a.date) : null].filter(Boolean).join(' · ')}
+                  />
                 </div>
     );
   }
+}
+
+// The extra facts an alert carries that the one-line row can't show. Insurance is the one
+// family where the row's subject genuinely isn't enough — "No certificate on file — City
+// Dental" doesn't say whether anyone has asked, which is the distinction George wanted
+// visible ("if the insurance was requested, that should be a different type of
+// notification … if it hasn't been requested, that should be known as well"). Any alert
+// type can grow entries here by stamping the fields in buildAlerts.
+function alertExtras(a) {
+  const out = [];
+  if (a.insurer) out.push(['Insurer', a.insurer]);
+  if (a.expiry_date) out.push([a.expired ? 'Expired' : 'Expires', fmtDate(a.expiry_date)]);
+  if (a.requested_on) out.push(['Last requested', fmtDate(a.requested_on)]);
+  else if (a.focus === 'insurance_missing' && a.party === 'tenant') out.push(['Last requested', 'Never']);
+  return out;
+}
+
+// The hover panel — George, 2026-07-30: "if I hover over one of the insurance
+// notifications, it kind of expands and tells me more in-depth details."
+//
+// It replaces the native `title=` the compact rows shipped with. A browser tooltip is
+// slow, unstyleable and can't lay out label/value pairs — and with a real panel there
+// would have been two tooltips fighting on one row. Positioned left:0/right:0 against the
+// row, so it is exactly the column's width: it reads as the row expanding downward over
+// its neighbours, and can never push the board sideways however narrow the window gets.
+//
+// aria-hidden because everything in here is already reachable — the row's own subject, and
+// the alert's page one click away. It stays in the DOM (hidden by CSS, not unmounted) so
+// there is no hover-latency and so a test can read it.
+function RowPopover({ title, where, detail, extras = [], action, foot, up = false }) {
+  return (
+    <div className={`nrow-pop${up ? ' nrow-pop-up' : ''}`} aria-hidden="true">
+      <div className="nrow-pop-title">{title}</div>
+      {where && <div className="nrow-pop-where">{where}</div>}
+      {detail && <p className="nrow-pop-detail">{detail}</p>}
+      {extras.length > 0 && (
+        <dl className="nrow-pop-facts">
+          {extras.map(([label, value]) => (
+            <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+          ))}
+        </dl>
+      )}
+      {action && <p className="nrow-pop-action">{action}</p>}
+      {foot && <div className="nrow-pop-foot">{foot}</div>}
+    </div>
+  );
+}
+
+// The urgency bar, back as an actual bar. It ran as a 2px hairline with a transparent
+// track after the row was compacted, which reads as a stray rule rather than a measure —
+// George, 2026-07-30: "I still want progress bars for the alerts and notifications." Now
+// a visible track with a coloured fill, still on the row's bottom edge so the row stays
+// one line tall.
+function UrgencyBar({ tone, fill }) {
+  const cls = tone === 'danger' ? 'danger' : tone === 'warn' ? 'warn' : '';
+  return (
+    <div className={`alert-progress ${cls}`} aria-hidden="true">
+      <span style={{ width: `${Math.round(Math.max(0, Math.min(1, fill || 0)) * 100)}%` }} />
+    </div>
+  );
 }
 
 // The Overview feed: stored notifications and computed alerts in ONE ordered list.
@@ -505,6 +572,24 @@ export function urgencyFill(days, horizonDays) {
   const soon = 1 - days / SOON_DAYS;              // absolute closeness
   const window = 1 - days / horizonDays;          // progress through this alert's own lead
   return Math.min(1, Math.max(0.04, soon, window));
+}
+
+// How full one FEED row's bar runs. Every row has a bar now, so that reading down a column
+// the bars descend — George's "descending from most urgent to least urgent in terms of
+// days" made visible, rather than an order you have to take on trust.
+//
+// Three cases, because `days` doesn't mean one thing across the feed:
+//   • a dated alert           → urgencyFill: fuller as its date approaches
+//   • a STANDING row          → pinned FULL. It has no deadline to measure, but it ranks
+//     (no horizonDays, and the   above everything merely upcoming precisely because it's a
+//      renewal Yes/No prompt)    problem right now — money not received, a certificate
+//                                never sent, a question waiting on an answer. An empty bar
+//                                mid-column would break the descent it genuinely belongs to.
+//   • an update that already   → EMPTY. Nothing is pending; the empty track confirms it.
+//     happened (rent applied)
+export function rowFill({ type, item } = {}) {
+  if (type === 'notification') return item?.kind === 'renewal_decision' ? 1 : 0;
+  return urgencyFill(item?.days, item?.horizonDays) ?? 1;
 }
 
 // "118d" · "63d over" — how soon, in the width of a chip, because how soon is the whole

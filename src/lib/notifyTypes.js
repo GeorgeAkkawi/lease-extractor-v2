@@ -38,10 +38,10 @@ export const NOTIFY_COLUMNS = [
   },
   {
     key: 'insurance',
-    // The expiry and the chase-up that follows it are the same conversation with the
-    // same tenant, so they belong under one heading.
+    // One heading for the whole life of a certificate: none on file → requested →
+    // chased → on file and expiring. Same tenant, same conversation.
     label: 'Insurance',
-    focuses: ['insurance', 'insurance_chase'],
+    focuses: ['insurance', 'insurance_chase', 'insurance_missing'],
     kinds: ['insurance_request'],
   },
   {

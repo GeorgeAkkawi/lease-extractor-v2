@@ -53,6 +53,46 @@ describe('Property cards — tenant mix donut', () => {
     expect(names).toEqual(['City Dental', 'Bright Coffee Co.']);
   });
 
+  it('names every slice with its share of the building, without needing a hover', async () => {
+    // George, 2026-07-30: "for each section, put the title of the tenant and the percent
+    // square footage." Naming them on the chart itself doesn't survive nine tenants — the
+    // labels collide — so the legend carries it, permanently.
+    const { container } = renderProps();
+    const legend = await waitFor(() => {
+      const el = cardFor(container, 'Maple Plaza').querySelector('.prop-mix-legend');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    const rows = [...legend.querySelectorAll('li')].map((li) => [
+      li.querySelector('.prop-mix-name').textContent,
+      li.querySelector('.prop-mix-pct')?.textContent,
+    ]);
+    // Biggest first, same order as the slices, each with its percentage.
+    expect(rows).toEqual([['City Dental', '60.0%'], ['Bright Coffee Co.', '40.0%']]);
+    // Every legend entry carries the swatch that ties it to its slice.
+    expect(legend.querySelectorAll('.prop-mix-swatch')).toHaveLength(2);
+    // Maple Plaza is fully leased, so there is no vacant entry to invent.
+    expect(legend.querySelector('.prop-mix-vacant')).toBeNull();
+  });
+
+  it('names the vacant space too — it is what the percentages are “of”', async () => {
+    // Shrink one tenant so the building is no longer fully leased.
+    const { data: before } = await supabase.from('leases').select('square_footage').eq('id', 'lease-1').single();
+    await supabase.from('leases').update({ square_footage: 1500 }).eq('id', 'lease-1');
+    try {
+      const { container } = renderProps();
+      const vacant = await waitFor(() => {
+        const el = cardFor(container, 'Maple Plaza')?.querySelector('.prop-mix-vacant');
+        expect(el).toBeTruthy();
+        return el;
+      });
+      expect(vacant.querySelector('.prop-mix-name').textContent).toBe('Vacant');
+      expect(vacant.querySelector('.prop-mix-pct').textContent).toBe('10.0%'); // 500 of 5,000
+    } finally {
+      await supabase.from('leases').update({ square_footage: before.square_footage }).eq('id', 'lease-1');
+    }
+  });
+
   it('leaves the card’s existing figures exactly where they were', async () => {
     const { container } = renderProps();
     const card = await waitFor(() => {

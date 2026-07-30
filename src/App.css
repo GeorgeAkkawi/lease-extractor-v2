@@ -332,8 +332,13 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 /* ---- property cards ---- */
 /* Widened from 300px to make room for the tenant-mix donut beside each card's figures.
    The card is now a two-column grid — content left, donut right — rather than a column. */
-.prop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px}
-.prop-card{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:9px 18px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;text-align:left;color:var(--ink);box-shadow:var(--shadow);font-weight:400;text-transform:none;letter-spacing:0;text-decoration:none;cursor:pointer}
+/* Wide enough for the donut and a two-column legend to sit side by side under the card's
+   own figures — at 380px the legend collapsed to one long column. */
+.prop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:16px}
+/* The card stacks: its own figures, then the tenant-mix block across the full width.
+   The mix used to sit in a narrow right-hand column, which left the donut too small to
+   read and gave a hover panel nowhere to open. */
+.prop-card{display:flex;flex-direction:column;gap:9px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;text-align:left;color:var(--ink);box-shadow:var(--shadow);font-weight:400;text-transform:none;letter-spacing:0;text-decoration:none;cursor:pointer}
 .prop-card-main{display:flex;flex-direction:column;gap:9px;min-width:0}
 .prop-card:hover{border-color:var(--accent);filter:none}
 .prop-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -345,12 +350,27 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .prop-card-stats b,.fin-mini b{font-family:var(--display);font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
 /* Tenant-mix donut on a property card: who occupies the building, and what's empty.
    The centre reads the leased share, so the card states its headline even before a
-   hover — a donut whose only content is in a tooltip says nothing at a glance. */
-.prop-mix{flex:none;position:relative;cursor:default}
-.prop-mix-chart{position:relative}
+   hover — a donut whose only content is in a tooltip says nothing at a glance — and the
+   legend names every slice with its share, so the chart is readable without hovering at
+   all. The centre steps aside while a slice is hovered, or it would sit on top of the
+   panel that answers the hover. */
+.prop-mix{display:flex;align-items:center;gap:18px;cursor:default;
+  border-top:1px solid var(--hair);margin-top:6px;padding-top:14px}
+.prop-mix-chart{position:relative;flex:none}
 .prop-mix-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;text-align:center}
-.prop-mix-figure{font-family:var(--display);font-size:20px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
-.prop-mix-cap{font-size:8.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-top:2px}
+.prop-mix-figure{font-family:var(--display);font-size:26px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.prop-mix-cap{font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-top:3px}
+.prop-mix-legend{flex:1;min-width:0;list-style:none;margin:0;padding:0;
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:3px 16px;align-content:center}
+.prop-mix-legend li{display:flex;align-items:baseline;gap:6px;min-width:0;font-size:11.5px;line-height:1.5}
+.prop-mix-swatch{flex:none;align-self:center;width:9px;height:9px;border-radius:2px;background:var(--line)}
+.prop-mix-swatch.is-more{background:transparent;border:1px dashed var(--line)}
+/* Name and share sit side by side rather than pushed to opposite ends of the column —
+   stretched across 160px the percentage read as belonging to the NEXT entry. */
+.prop-mix-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prop-mix-pct{flex:none;font-variant-numeric:tabular-nums;color:var(--muted)}
+.prop-mix-more,.prop-mix-vacant{color:var(--muted)}
+.prop-mix-vacant .prop-mix-name{font-style:italic}
 .fin-mini{gap:14px 26px}
 
 /* ---- alerts / callouts ---- */
@@ -715,9 +735,12 @@ tbody tr:last-child td{border-bottom:none}
 .notif-clear{margin:2px 0 0;font-size:11.5px;color:var(--muted);font-style:italic}
 
 /* One row = one line. The full title, who/where, detail, bucket and date all live in the
-   row's title attribute rather than being dropped — the column heading already says what
-   KIND of thing it is, so the subject and the countdown are what's left to scan. */
-.nrow{padding:0;overflow:hidden;border-left-color:var(--line)}
+   hover panel rather than being dropped — the column heading already says what KIND of
+   thing it is, so the subject and the countdown are what's left to scan.
+   overflow stays VISIBLE so .nrow-pop can escape the row; the progress bar rounds its own
+   bottom corners instead of being clipped. */
+.nrow{padding:0;position:relative;border-left-color:var(--line)}
+.nrow:hover,.nrow:focus-within{z-index:6}
 .nrow.warn{border-left-color:var(--gold)}
 .nrow.danger{border-left-color:var(--danger)}
 .nrow-line{display:flex;align-items:center;gap:7px;padding:5px 8px 5px 9px;min-height:26px}
@@ -749,12 +772,38 @@ tbody tr:last-child td{border-bottom:none}
 .alert-days.warn{color:var(--gold);background:color-mix(in srgb,var(--gold) calc(var(--fill,0) * 18%),transparent)}
 .alert-days.info{color:var(--forest)}
 .alert-days-cap{font-weight:600;letter-spacing:.04em}
-/* The urgency bar survives compaction as a hairline along the row's bottom edge — same
-   urgencyFill, zero added height. */
-.alert-progress{height:2px;background:transparent;overflow:hidden}
-.alert-progress>span{display:block;height:100%;background:var(--forest);opacity:.5;transition:width .3s ease}
-.alert-progress.warn>span{background:var(--gold);opacity:.7}
-.alert-progress.danger>span{background:var(--danger);opacity:.8}
+/* The urgency bar, on the row's bottom edge. It ran as a 2px hairline on a TRANSPARENT
+   track after compaction, which reads as a stray rule rather than a measure — so the track
+   is now visible and the bar is 4px. Every row carries one (see rowFill), so reading down
+   a column the bars descend with the urgency the rows are sorted by. */
+.alert-progress{height:4px;background:var(--hair);overflow:hidden;border-radius:0 0 var(--radius) var(--radius)}
+.alert-progress>span{display:block;height:100%;background:var(--forest);opacity:.55;transition:width .3s ease}
+.alert-progress.warn>span{background:var(--gold);opacity:.85}
+.alert-progress.danger>span{background:var(--danger);opacity:.9}
+
+/* ---- the hover panel ----
+   George: "if I hover over one of the insurance notifications, it kind of expands and
+   tells me more in-depth details." Anchored left:0/right:0 on the row, so it is exactly
+   the column's width — it reads as the row expanding downward over its neighbours, and can
+   never push the board sideways however narrow the window gets. Above the row (top:100%)
+   normally; a row in the lower half of the board flips it upward via .nrow-pop-up. */
+.nrow-pop{position:absolute;left:0;right:0;top:calc(100% - 2px);z-index:7;
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:0 10px 28px rgba(0,0,0,.14);padding:10px 12px 9px;
+  opacity:0;visibility:hidden;transform:translateY(-3px);pointer-events:none;
+  transition:opacity .12s ease,transform .12s ease,visibility 0s linear .12s}
+.nrow-pop-up{top:auto;bottom:calc(100% - 2px);transform:translateY(3px)}
+.nrow:hover>.nrow-pop,.nrow:focus-within>.nrow-pop{opacity:1;visibility:visible;transform:translateY(0);transition-delay:0s}
+.nrow-pop-title{font-weight:600;font-size:12.5px;line-height:1.35}
+.nrow-pop-where{font-size:11px;color:var(--muted);margin-top:2px}
+.nrow-pop-detail{margin:6px 0 0;font-size:12px;line-height:1.45}
+.nrow-pop-facts{margin:7px 0 0;display:flex;flex-direction:column;gap:2px}
+.nrow-pop-facts>div{display:flex;justify-content:space-between;gap:10px;font-size:11.5px}
+.nrow-pop-facts dt{color:var(--muted);margin:0}
+.nrow-pop-facts dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+.nrow-pop-action{margin:7px 0 0;font-size:11.5px;line-height:1.4;color:var(--accent);
+  border-top:1px solid var(--hair);padding-top:6px}
+.nrow-pop-foot{margin-top:6px;font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 
 /* ---- lease review (red flags) ----
    Findings read as a stack of short notes, each with a severity stripe down its left edge
@@ -1028,11 +1077,14 @@ textarea.text-input{resize:vertical;min-height:90px}
   .page-head{flex-wrap:wrap;align-items:flex-start}
   .head-actions{flex-wrap:wrap}
   .lease-row{grid-template-columns:1fr auto;gap:8px 14px}
-  /* The donut needs ~120px it doesn't have on a phone; the card returns to one column
-     rather than squeezing both into an unreadable pair. */
+  /* One card per row, and the mix block stacks — donut centred with the legend beneath
+     it in a single column. It used to be hidden outright here, which was right when the
+     donut was 118px and hover-only; now that the legend names every slice in text, the
+     information survives the width and is worth keeping. */
   .prop-grid{grid-template-columns:1fr}
-  .prop-card{grid-template-columns:1fr}
-  .prop-mix{display:none}
+  .prop-mix{flex-direction:column;align-items:stretch;gap:12px}
+  .prop-mix-chart{align-self:center}
+  .prop-mix-legend{grid-template-columns:1fr}
   .esc-row{grid-template-columns:1fr 1fr;gap:12px}
   .cam-row{grid-template-columns:1fr 110px 34px;gap:10px}
 }

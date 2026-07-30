@@ -3131,6 +3131,17 @@ export async function draftAlertEmail(alert) {
   if (focus === 'insurance_chase') {
     return wrap(buildInsuranceSecondRequestEmail({ ...common, insurer: alert.insurer, expiryDate: alert.expiry_date, expired: alert.expired, requestedDate: alert.date }), 'insurance_request');
   }
+  // Nothing on file. If we have never asked, this is a plain FIRST request — using the
+  // renewed-certificate letter would name a policy that doesn't exist. If we asked
+  // recently and are still waiting, the second-request letter is the right nudge.
+  if (focus === 'insurance_missing') {
+    return wrap(
+      alert.requested
+        ? buildInsuranceSecondRequestEmail({ ...common, requestedDate: alert.requested_on })
+        : buildInsuranceRequestEmail(common),
+      'insurance_request',
+    );
+  }
   if (focus === 'escalation') {
     const escs = await listEscalations(lease.id);
     const esc = escs.find((e) => String(e.effective_date) === String(alert.date));

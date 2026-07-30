@@ -316,6 +316,14 @@ export function buildAlerts(
   // Insurance chase-up — a certificate was requested from a tenant 21+ days ago and no
   // tenant policy has been saved/updated since. Nudges the landlord to follow up (its ✉
   // re-opens the same renewal-request letter). Gated with the Insurance module.
+  //
+  // …and, below it, the gap those two alerts could never show: a building or a tenant with
+  // NO certificate on file AT ALL. Both blocks above need a policy (or a request) to
+  // already exist, so a property nobody has ever entered insurance for was silent.
+  // George, 2026-07-30: "make sure to list every property that doesn't yet have insurance,
+  // but there needs to be nuance — if the insurance was requested that should be a
+  // different type of notification; if it hasn't been requested that should be known as
+  // well." Hence three mutually exclusive states, in escalating order of neglect.
   if (insuranceOn) {
     const lastReqByLease = {};
     (insuranceRequests || []).forEach((e) => {
@@ -324,7 +332,12 @@ export function buildAlerts(
       if (!lastReqByLease[e.lease_id] || d > lastReqByLease[e.lease_id]) lastReqByLease[e.lease_id] = d;
     });
     const tenantPolByLease = {};
-    (insurance || []).forEach((p) => { if (p.party === 'tenant' && p.lease_id) tenantPolByLease[p.lease_id] = p; });
+    const landlordPolByProperty = {};
+    (insurance || []).forEach((p) => {
+      if (p.party === 'tenant' && p.lease_id) tenantPolByLease[p.lease_id] = p;
+      if (p.party === 'landlord' && p.property_id) landlordPolByProperty[p.property_id] = p;
+    });
+    const chased = new Set();
     Object.entries(lastReqByLease).forEach(([leaseId, reqDate]) => {
       const lease = leaseById[leaseId];
       if (!lease || lease.is_active === false) return;
@@ -333,14 +346,62 @@ export function buildAlerts(
       const polStamp = pol ? String(pol.updated_at || pol.created_at || '').slice(0, 10) : null;
       if (polStamp && polStamp >= reqDate) return; // a policy was saved/updated after the request → they responded
       const corpId = propMap[lease.property_id]?.corporation_id;
+      chased.add(leaseId); // so the "none on file" block below doesn't say the same thing twice
       out.push({
         lease_id: leaseId, property_id: lease.property_id, corporation_id: corpId,
         focus: 'insurance_chase', tone: 'warn', bucketLabel: 'Follow-up',
         date: reqDate, days: daysUntil(reqDate, now),
         insurer: pol?.insurer || null, expiry_date: pol?.expiry_date || null,
         expired: pol?.expiry_date ? daysUntil(pol.expiry_date, now) < 0 : false,
+        requested_on: reqDate, requested: true,
         title: `Insurance not received — ${lease.tenant_name || 'tenant'}`,
         detail: `Requested ${fmtDate(reqDate)} · renewed certificate not received`,
+        action: 'Ask again — the ✉ writes a second-request letter naming the first date.',
+      });
+    });
+
+    // ── Nothing on file at all ───────────────────────────────────────────────────────
+    // No date to count down to, so no horizonDays and no countdown chip — `days` here is
+    // a sort weight, ranking the three states against each other inside the standing tier
+    // (see the URGENCY_TIER note above). Tone stays WARN rather than danger for all of
+    // them, deliberately: the app cannot tell "uninsured" from "not entered yet", so the
+    // wording says what it actually knows — none on file — and never claims a lapse.
+    (properties || []).forEach((p) => {
+      if (landlordPolByProperty[p.id]) return;
+      out.push({
+        lease_id: null, property_id: p.id, corporation_id: p.corporation_id,
+        focus: 'insurance_missing', tone: 'warn', bucketLabel: 'None on file',
+        date: null, days: -2, requested: false, party: 'landlord',
+        title: `No building insurance — ${p.name || 'property'}`,
+        detail: 'No policy on file for this building',
+        action: 'Add your building policy from the property card’s Insurance button.',
+      });
+    });
+
+    (leases || []).forEach((l) => {
+      if (l.is_active === false) return;
+      if (tenantPolByLease[l.id]) return;      // a certificate is on file — the expiry alert owns it
+      if (chased.has(l.id)) return;            // already chased above, don't say it twice
+      const corpId = propMap[l.property_id]?.corporation_id;
+      const reqDate = lastReqByLease[l.id] || null;
+      out.push({
+        lease_id: l.id, property_id: l.property_id, corporation_id: corpId,
+        focus: 'insurance_missing', tone: reqDate ? 'info' : 'warn',
+        bucketLabel: reqDate ? 'Requested' : 'Never requested',
+        // Keyed on the request date when there is one, so asking again re-arms a row the
+        // landlord had dismissed; a never-requested row keys on null and stays dismissed
+        // until a certificate actually arrives (which removes it outright).
+        date: reqDate, days: reqDate ? 0 : -1,
+        requested_on: reqDate, requested: !!reqDate, party: 'tenant',
+        title: reqDate
+          ? `Certificate requested — ${l.tenant_name || 'tenant'}`
+          : `No certificate on file — ${l.tenant_name || 'tenant'}`,
+        detail: reqDate
+          ? `Requested ${fmtDate(reqDate)} · waiting for the tenant`
+          : 'No certificate on file, and none has been requested yet',
+        action: reqDate
+          ? 'Asked recently — this becomes a follow-up if nothing arrives.'
+          : 'Send the request — the ✉ writes the letter to the tenant.',
       });
     });
   }

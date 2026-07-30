@@ -181,6 +181,123 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **Follow-ups on the same round: every alert row grows a real progress bar · insurance stops
+  being silent about the buildings and tenants with NO certificate at all (and says whether anyone has asked) ·
+  a hover panel replaces the native tooltip · and the property donut is bigger, names every slice, and no longer
+  hides behind its own tooltip** (George, reviewing the round above: *"I still want progress bars for the alerts
+  and notifications. They should be descending from most urgent to least urgent in terms of days. For the alerts
+  notifications, make sure to list every property that doesn't yet have insurance, but there needs to be nuance.
+  So if the insurance was requested, that should be a different type of notification. If the insurance hasn't
+  been requested, that should be known as well … maybe you can fix that by adding a hover feature, so if I hover
+  over one of the insurance notifications, it kind of expands and tells me more in-depth details. Also for the
+  portfolio, I like the chart, but the formatting is bad. If I hover over the chart, I can still see the ninety
+  four percent, and I don't see the chart. Can we make it bigger? And for each section, put the title of the
+  tenant and the percent square footage."*). Deployed: frontend Cloudflare version **`9de96e52`**, demo worker
+  `b7dba170`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no AI calls, no tenant
+  emails, nothing destructive.** Tests **942/942 across 109 files** (was 921/108 — +21, one new suite).
+  - **1) The bar is a bar again.** After the rows were compacted it ran as a 2px fill on a **transparent** track,
+    which reads as a stray rule rather than a measure — nothing to be "part way along". Now a **visible track**
+    (`--hair`) with a 4px coloured fill, still on the row's bottom edge, so the row grew 32px → 34px and no more.
+  - **Every row carries one now, which is what makes the column read as a series.** The old rule rendered a bar
+    only when `urgencyFill` returned a number, so the three weight-based alerts had none — leaving holes in the
+    middle of a column and breaking the descent George asked to see. New pure **`rowFill`** (exported, beside
+    `urgencyFill`) resolves the three cases the feed actually contains: a **dated** alert tracks its date; a
+    **standing** row (no `horizonDays` — a statement never imported, a certificate never sent, a renewal question
+    waiting on an answer) is pinned **full**, because it ranks above everything merely upcoming precisely by being
+    a problem now; and an update that **already happened** reads **empty**. Test-pinned as a series: a column's
+    fills are non-increasing top to bottom, which is George's "descending from most urgent to least urgent" as an
+    assertion rather than a promise. The ordering itself was already right (`buildFeed` → `groupFeed` preserves
+    it) and is now pinned per column too, off the rendered countdown chips.
+  - **2) The insurance gap was real, and it was structural.** Both existing insurance alerts need something to
+    ALREADY be on record — `insurance` needs a policy carrying an expiry date, `insurance_chase` needs a logged
+    request. So a building nobody had ever entered a policy for, or a tenant nobody had ever asked, produced **no
+    alert at all**. The one case a landlord most needs telling about was the one case the bell was silent on.
+  - **New focus `insurance_missing`, in three mutually exclusive states** — the nuance George specified, in
+    escalating order of neglect: a **property with no landlord policy** (*"No building insurance — Joliet"*), a
+    **tenant with no certificate and no request ever sent** (*"No certificate on file — D & D Dental · No
+    certificate on file, and none has been requested yet"*, bucket **Never requested**), and a **tenant asked
+    recently and still waiting** (*"Certificate requested — …"*, tone **info**, bucket **Requested**). Past the
+    21-day lead the existing chase-up takes over and this one steps aside — a `chased` set makes the hand-off
+    explicit, so one tenant is never named twice in the same column.
+  - **Tone stays WARN, never danger, and the wording is why.** The app cannot tell "uninsured" from "not entered
+    yet", so every line says only what it knows — *none on file* — and never claims a lapse. No date exists to
+    count down to, so no `horizonDays`, no countdown chip, and `days` is a sort weight ranking the three states
+    against each other inside the standing tier (never-asked outranks asked-and-waiting: the landlord's own
+    inaction first).
+  - **The registry entries were all filled** (the CLAUDE.md checklist): the `buildAlerts` block · the Insurance
+    feature gate (switching the module off silences all of it, test-pinned) · the `alertKey` anchor chain (a
+    tenant row anchors on `lease_id`, a building row on `property_id` — both already in the chain) · the
+    `notifyTypes` Insurance column, which `notifyTypes.test.js` **would have failed on** had I forgotten ·
+    `alertCanEmail` · and `draftAlertEmail`. **No lead entry** in `notifyPrefs` — it has no date, so there is
+    nothing to notify "ahead" of. **No fetchAlertData change** — properties, leases, policies and requests were
+    all already being fetched; the alert was simply never derived from them.
+  - **The ✉ picks the right letter.** Never asked → the plain **first**-request letter (the renewed-certificate
+    letter would name a policy that doesn't exist); asked and waiting → the second-request letter, dated from the
+    first. A building's own policy has no lease and nobody to write to, so it correctly shows **no ✉** at all.
+  - **3) The hover panel replaces the native tooltip.** A browser `title=` is slow, unstyleable and can't lay out
+    label/value pairs — and once a real panel existed there would have been two tooltips fighting on one row, so
+    the attribute is **gone**. `RowPopover` is anchored `left:0/right:0` **on the row**, so it is exactly the
+    column's width: it reads as the row expanding downward over its neighbours, and can never push the board
+    sideways however narrow the window gets (verified: zero horizontal overflow at 1440px **and** 420px). It
+    carries the full title, the who/where, the detail, a **label/value fact list**, a plain-English **next step**,
+    and the bucket + date. Insurance is where the facts earn their place — *Insurer · Expires · Last requested:
+    **Never*** — because "No certificate on file — City Dental" alone doesn't say whether anyone has asked, which
+    is exactly the distinction George wanted visible.
+  - **A real positioning bug found in the browser:** on the board's bottom row the panel spilled ~52px past the
+    panel container, into a `.content` that is `overflow:auto` — so it could clip or stretch the page's scroll
+    height. The **last row of each column now opens upward** (`.nrow-pop-up`), measured after: every last-row
+    panel flips, and the worst remaining spill across all ten demo rows is **24px**, inside the panel's own
+    padding. The panel stays in the DOM (hidden by CSS, not unmounted) so there's no hover latency, and
+    `aria-hidden` keeps it out of the accessibility tree — everything in it is already reachable via the row's
+    own subject and the page one click away.
+  - **4) The donut: bigger, named, and no longer hiding behind its own tooltip.** 118px → **150px**. Every slice
+    is named in a **permanent legend** — tenant, colour swatch, and its share of the building — which is George's
+    *"for each section, put the title of the tenant and the percent square footage"*. Labels **on** the chart were
+    the obvious reading of that ask and were rejected on the evidence: they collide at nine tenants (Pershing) and
+    the small slices have nowhere to sit, whereas a legend scales and stays readable at rest. The hover keeps the
+    deeper read ($/SF and annual rent) it always had.
+  - **The complaint about the 94% was a real overlap, and the first fix was the wrong one.** I initially hid the
+    centre figure while a slice was hovered — which treated the symptom. Driving it in the browser showed the
+    actual fault: recharts tracks the cursor, and on a 150px chart the panel lands **on top of the very slice
+    being pointed at**. So the tooltip is now **pinned beside the chart** (`position={{x: size + 12, y: 0}}`,
+    `allowEscapeViewBox`), the centre figure stays visible throughout, and the hide-on-hover state came back out.
+    Measured after: the panel's box and the chart's box do not intersect at all, and the centre reads **100%
+    leased** while the panel reads *City Dental · 3,000 SF · 60.0% of building · $84,000.00/yr · $28.00 /SF/yr*.
+    A fixed spot also stops the panel jittering across a small target.
+  - **Layout followed.** The mix block moved from a narrow right-hand column to the **full width of the card**
+    under its own figures, separated by a hairline — which is what gives the donut room and the legend two
+    columns; `.prop-grid` widened 380px → **440px** to match. A second browser fix: at 160px per legend column the
+    percentage sat at the far right of its cell and read as belonging to the **next** entry, so name and share now
+    sit side by side. On a phone the block **stacks** (donut centred, one-column legend) instead of being hidden
+    outright as before — that was right when the donut was 118px and hover-only, but the legend names every slice
+    in text, so the information now survives the width.
+  - **Files.** New: `src/lib/__tests__/insuranceMissing.test.js`. Edited: `src/lib/{alerts,notifyTypes,api}.js` ·
+    `src/pages/DashboardPage.js` (`rowFill`, `RowPopover`, `UrgencyBar`, `alertExtras`) ·
+    `src/components/PropertyMixDonut.js` · `src/App.css` (`.alert-progress`, `.nrow-pop*`, `.prop-mix*`,
+    `.prop-card`, `.prop-grid`, the phone breakpoint) · tests `alertUrgency`, `notifyBoard`, `dashboardOverview`,
+    `propertyMixDonut`. **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **942/942** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; live 200s on all four URLs with the edge confirmed
+    serving the new hash (`assets/index-BpZrJ-A1.js`) — it served a cached `index.html` briefly, which cleared on
+    revalidation. **Driven in a real browser at 1440px and 420px**: the Insurance column went **2 rows → 6** on the
+    demo seed (Oak Center's building, plus Northwind Books and Sunrise Yoga with no certificate), every row shows a
+    4px bar descending 100/100/100/100/89/89 down the column, the whole feed still fits in **332px**, the hover
+    panel reads its facts and next step, the building row correctly shows **no ✉** while the tenant rows do, and
+    the donut renders with its legend and a panel that no longer touches the chart. **Zero console errors at both
+    widths.**
+  - **George: hard-refresh (Cmd+Shift+R).** The Overview's rows each carry a filled bar now, fullest at the top of
+    every column. The Insurance column will list any building or tenant with no certificate on file — and says
+    whether you've asked. Hover any row for the full detail. On Portfolio, the donut is larger, names every tenant
+    with its share, and the hover panel sits beside the chart instead of on top of it.
+  - **Flags (no action needed):** ① The Insurance column will grow on your live data the first time you look —
+    every property with no landlord policy entered, and every tenant with no certificate, now has a row. They are
+    dismissible individually, and each disappears for good once a policy is saved. ② A tenant you asked **more
+    than 21 days** ago shows as the existing "Insurance not received" follow-up, not as "never requested" — same
+    tenant, one row, by design. ③ The tooltip on the donut opens over the legend's first column; the panel names
+    that tenant with more detail than the legend entry it covers. ④ The board still leaves white space under a
+    short column when a tall one sits beside it — inherent to a CSS grid row, cosmetic, and the whole feed is
+    unscrolled regardless. Say the word if you want the columns packed tighter.
+
 - **2026-07-30** — **Three UI changes: every property card grows a tenant-mix donut (% of building + $/SF base
   rent on hover) · the notification feed becomes a full-width board with one column per type, compact rows, and
   no Lease expirations table · and "Lease & tenant history" is rebuilt as a story per tenant** (George: *"visuals

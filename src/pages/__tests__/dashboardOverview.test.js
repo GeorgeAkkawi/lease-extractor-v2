@@ -109,9 +109,12 @@ describe('Overview — alert urgency', () => {
     expect(pct).toBeLessThanOrEqual(100);
 
     // The who/where an alert can't carry itself (it holds ids, not names) moved into the
-    // row's tooltip when the rows were compacted — but it must still be there.
+    // hover panel when the rows were compacted — but it must still be there.
     const row = container.querySelector('.alert-days').closest('.nrow');
-    expect(row.getAttribute('title')).toMatch(/Maple Plaza|Oak Center/);
+    expect(row.querySelector('.nrow-pop-where').textContent).toMatch(/Maple Plaza|Oak Center/);
+    // …along with the full title and the bucket + date the one-line row dropped.
+    expect(row.querySelector('.nrow-pop-title').textContent.length).toBeGreaterThan(0);
+    expect(row.querySelector('.nrow-pop-foot')).toBeTruthy();
   });
 
   it('shows NO countdown on a ledger reminder — its days value is a sort weight', async () => {
@@ -124,16 +127,21 @@ describe('Overview — alert urgency', () => {
       const { container } = renderDash();
       await waitFor(() => expect(screen.getByText('Alerts & notifications')).toBeTruthy());
       const reminder = await waitFor(() => {
-        // A compact row shows only its subject; the full title lives in the tooltip.
+        // A compact row shows only its subject; the full title lives in the hover panel.
         const el = [...container.querySelectorAll('.callout')]
-          .find((n) => /Import your .*statement/i.test(`${n.getAttribute('title') || ''} ${n.textContent}`));
+          .find((n) => /Import your .*statement/i.test(n.textContent));
         expect(el).toBeTruthy();
         return el;
       });
       expect(reminder.querySelector('.alert-days')).toBeNull();
-      expect(reminder.querySelector('.alert-progress')).toBeNull();
-      // …while a dated alert on the same screen still has both.
+      // …while a dated alert on the same screen still has one.
       expect(container.querySelector('.alert-days')).toBeTruthy();
+      // The BAR, unlike the countdown, is now present on every row — a standing problem
+      // with no deadline is pinned full, because it ranks above anything merely upcoming
+      // and a gap mid-column would break the descent the sort guarantees.
+      const fill = reminder.querySelector('.alert-progress > span');
+      expect(fill).toBeTruthy();
+      expect(fill.style.width).toBe('100%');
     } finally {
       for (const p of before) await supabase.from('payments').insert(p);
     }

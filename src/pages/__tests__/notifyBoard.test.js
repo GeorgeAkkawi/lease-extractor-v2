@@ -68,8 +68,47 @@ describe('Overview — the notification board', () => {
     // it — that repetition is what made the old rows three lines tall.
     expect(subject).not.toMatch(/^(Rent escalation|Lease ending|Renewal notice|Contract ending) —/);
     expect(subject.length).toBeGreaterThan(0);
-    // Everything the compact row dropped is still reachable, in the tooltip.
-    expect(row.getAttribute('title')).toContain(subject);
+    // Everything the compact row dropped is still reachable, in the hover panel that
+    // replaced the native tooltip — and the panel is in the DOM rather than mounted on
+    // hover, so there's no latency and no double tooltip.
+    expect(row.getAttribute('title')).toBeNull();
+    const pop = row.querySelector('.nrow-pop');
+    expect(pop).toBeTruthy();
+    expect(pop.getAttribute('aria-hidden')).toBe('true');
+    expect(pop.textContent).toContain(subject);
+  });
+
+  it('gives every row a progress bar, so the column reads as a descending series', async () => {
+    const { container } = renderDash();
+    await waitFor(() => expect(container.querySelector('.notif-board')).toBeTruthy());
+    const rows = [...container.querySelectorAll('.nrow')];
+    expect(rows.length).toBeGreaterThan(0);
+    rows.forEach((row) => {
+      const fill = row.querySelector('.alert-progress > span');
+      expect(fill).toBeTruthy();
+      const pctWide = Number(String(fill.style.width).replace('%', ''));
+      expect(pctWide).toBeGreaterThanOrEqual(0);
+      expect(pctWide).toBeLessThanOrEqual(100);
+    });
+  });
+
+  it('orders every column most urgent first — the ordering the bars visualise', async () => {
+    // George: "they should be descending from most urgent to least urgent in terms of
+    // days." groupFeed only deals buildFeed's ordered list into columns, so this is the
+    // guarantee that dealing never reshuffles.
+    const { container } = renderDash();
+    await waitFor(() => expect(container.querySelector('.notif-board')).toBeTruthy());
+    [...container.querySelectorAll('.notif-col')].forEach((col) => {
+      const chips = [...col.querySelectorAll('.alert-days')]
+        .map((n) => {
+          const m = n.textContent.match(/^(\d+)d( over)?$/);
+          return m ? (m[2] ? -Number(m[1]) : Number(m[1])) : null;
+        })
+        .filter((n) => n != null);
+      // Within a column every countdown belongs to the same notice window, so the plain
+      // reading holds: overdue (negative) first, then soonest-first.
+      for (let i = 1; i < chips.length; i += 1) expect(chips[i]).toBeGreaterThanOrEqual(chips[i - 1]);
+    });
   });
 
   it('files a lease-ending alert under Lease endings', async () => {
@@ -104,7 +143,7 @@ describe('Overview — what compaction must NOT break', () => {
     const { container } = renderDash();
     const row = await waitFor(() => {
       const el = [...container.querySelectorAll('.nrow')]
-        .find((n) => (n.getAttribute('title') || '').includes('Is City Dental renewing?'));
+        .find((n) => n.textContent.includes('Is City Dental renewing?'));
       expect(el).toBeTruthy();
       return el;
     });
