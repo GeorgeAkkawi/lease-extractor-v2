@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals, buildRenewalScheduleSteps, buildAbatements, isoDateOrNull } from '../lib/api';
+import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals, buildRenewalScheduleSteps, buildAbatements, isoDateOrNull, discardDocument } from '../lib/api';
 import { resolveCurrentTerm } from '../lib/leaseTerm';
 import { abatementKindLabel, leadingFreeMonths } from '../lib/abatement';
 import { addMonths } from '../lib/renewals';
@@ -71,6 +71,9 @@ export default function LeaseNewPage() {
         // the lease so it's waiting on the lease page (0069). Absent on an older
         // extraction or a timed-out analyst, in which case nothing is stored.
         aiReview: extractedDoc.extraction.ai_review || null,
+        // The uploaded copy, so saving the lease adopts it (migration 0070). Null on
+        // the paste-text lane — there is no file to keep.
+        storagePath: extractedDoc.storage_path || null,
       });
     },
     onSuccess: afterCreate,
@@ -91,7 +94,21 @@ export default function LeaseNewPage() {
       <div>
         <div className="page-head">
           <div><h1>Review extracted lease</h1><div className="muted">AI-extracted — check values, then save.</div></div>
-          <div className="head-actions"><button className="secondary" onClick={() => setExtractedDoc(null)}>Start over</button></div>
+          {/* Starting over throws the uploaded file away — an abandoned import used to
+              leave it in storage forever, which is where most of the bucket's orphans
+              came from. An explicit cancel is the only thing that deletes an upload. */}
+          <div className="head-actions">
+            <button
+              className="secondary"
+              onClick={() => {
+                const path = extractedDoc.storage_path;
+                setExtractedDoc(null);
+                if (path) discardDocument(path).catch(() => {});
+              }}
+            >
+              Start over
+            </button>
+          </div>
         </div>
         <div className="panel">
           {missingStart && hasDatedData && (

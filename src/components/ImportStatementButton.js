@@ -24,12 +24,18 @@ export default function ImportStatementButton({ onReady }) {
         // ledger should be able to show you the statement a figure came from, and a
         // CSV is a few KB. Best-effort — a storage hiccup must never block the import.
         const parsed = parseBankStatementCsv(await file.text(), { fileName: file.name });
-        const path = await uploadDoc(file).catch(() => null);
+        // Until migration 0070 this ALWAYS failed and the catch swallowed it: 'csv' was
+        // in neither the client allowlist nor the bucket's, so validateUploadFile threw
+        // and every CSV statement was silently discarded despite the comment above.
+        const path = await uploadDoc(file, { entityType: 'statement_import' }).catch((e) => {
+          setErr(`Imported fine, but the statement file couldn’t be saved (${e.message || e}).`);
+          return null;
+        });
         onReady({ fileName: file.name, accountHint: parsed.accountHint, parsed, storagePath: path, pdfLane: false });
       } else {
         // PDF lane — one transcription read (~5–15¢); the transcript still passes
         // the same validation gate + balance check the CSV lane gets.
-        const path = await uploadDoc(file);
+        const path = await uploadDoc(file, { entityType: 'statement_import' });
         const res = await extractBankStatement({ path });
         // Statement lines are frequently dated "06/01" with the year stated once in
         // the period header — pass the period so the gate can resolve them instead

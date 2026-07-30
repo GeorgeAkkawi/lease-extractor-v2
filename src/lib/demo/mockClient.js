@@ -36,6 +36,23 @@ function applyFilters(rows, filters) {
   );
 }
 
+// Stable order by one column, honouring the direction PostgREST was asked for.
+// Nulls sort LAST in both directions (Postgres's own default for ASC is NULLS LAST;
+// keeping them last in DESC too means a row with no timestamp never jumps to the top
+// of a "newest first" list, which is the only place the difference shows).
+function sortRows(rows, field, ascending = true) {
+  const dir = ascending ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = a?.[field], vb = b?.[field];
+    const na = va == null || va === '', nb = vb == null || vb === '';
+    if (na && nb) return 0;
+    if (na) return 1;
+    if (nb) return -1;
+    if (va === vb) return 0;
+    return va > vb ? dir : -dir;
+  });
+}
+
 // --- computed views ---------------------------------------------------------
 function propertyTotals(propertyId, year) {
   const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year);
@@ -140,6 +157,7 @@ class QB {
     this.table = table;
     this.filters = [];
     this._order = null;
+    this._orderAsc = true;
     this._limit = null;
     this._op = 'select';
     this._payload = null;
@@ -169,7 +187,12 @@ class QB {
   }
   ilike(field, value) { this.filters.push({ field, op: 'ilike', value }); return this; }
   filter(field, op, value) { this.filters.push({ field, op, value }); return this; }
-  order(field) { this._order = field; return this; }
+  // Mirrors postgrest-js: order(column, { ascending }) — ascending by DEFAULT, and
+  // descending when asked. This silently ignored the option until 2026-07-30, so any
+  // `.order(x, { ascending: false })` list (archived policies, insurance requests, a
+  // record's saved documents) came back in the OPPOSITE order in demo to live — the
+  // same class of mock-vs-live divergence as the `not()` incident below.
+  order(field, opts) { this._order = field; this._orderAsc = opts?.ascending !== false; return this; }
   limit(n) { this._limit = n; return this; }
   insert(payload) { this._op = 'insert'; this._payload = payload; return this; }
   update(payload) { this._op = 'update'; this._payload = payload; return this; }
@@ -182,7 +205,7 @@ class QB {
     // Computed AR view: build balance rows, then apply the generic filters/order.
     if (this.table === 'v_invoice_balances') {
       let list = applyFilters(invoiceBalances(), this.filters);
-      if (this._order) list = [...list].sort((a, b) => (a[this._order] > b[this._order] ? 1 : -1));
+      if (this._order) list = sortRows(list, this._order, this._orderAsc);
       if (this._limit) list = list.slice(0, this._limit);
       return this._wrap(list);
     }
@@ -277,7 +300,7 @@ class QB {
 
     // select
     let rows = applyFilters(list, this.filters);
-    if (this._order) rows = [...rows].sort((a, b) => (a[this._order] > b[this._order] ? 1 : -1));
+    if (this._order) rows = sortRows(rows, this._order, this._orderAsc);
     if (this._limit) rows = rows.slice(0, this._limit);
     return this._wrap(rows);
   }
@@ -307,9 +330,15 @@ const auth = {
 const storage = {
   from() {
     return {
-      async upload() { return ok({ path: 'demo/upload' }); },
+      // Each upload gets its own path, so the demo's document lists can show more
+      // than one version of a file (a single constant path would collapse them and
+      // hide the very behaviour the list exists to demonstrate).
+      async upload(path) { return ok({ path: path || 'demo/upload' }); },
       async download() { return ok(new Blob([])); },
       async createSignedUrl() { return ok({ signedUrl: '#demo-document' }); },
+      // Deleting a copy is a real action in the demo — the registry row goes either
+      // way, but without this stub the mock would throw where live code succeeds.
+      async remove() { return ok([]); },
     };
   },
 };

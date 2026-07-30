@@ -99,16 +99,25 @@ Deno.serve(async (req) => {
 
     // Riders amend the lease, so a review that ignored them would flag terms the landlord
     // already fixed. Best-effort: a failed read just means the original is reviewed alone.
+    //
+    // This selected `title, effective_date` — NEITHER COLUMN EXISTS on lease_addendums
+    // (it has label + amendment_date, since 0021). PostgREST 400s on an unknown column,
+    // and because the read is best-effort that failure was silent: every lease review
+    // since this shipped reviewed the original document with ZERO riders attached.
+    // effective_from/effective_to are the period the rider governs (0070).
     const { data: riders } = await supabase
       .from('lease_addendums')
-      .select('title, effective_date, addendum_text')
+      .select('label, amendment_date, effective_from, effective_to, addendum_text')
       .eq('lease_id', lease_id)
-      .order('effective_date', { ascending: true });
+      .order('amendment_date', { ascending: true });
 
     const parts = [`ORIGINAL LEASE (tenant: ${lease.tenant_name}):\n\n${base}`];
     for (const r of riders || []) {
       const t = String(r?.addendum_text || '').trim();
-      if (t) parts.push(`AMENDMENT — ${r.title || 'rider'}${r.effective_date ? ` (${r.effective_date})` : ''}:\n\n${t}`);
+      if (!t) continue;
+      const from = r.effective_from || r.amendment_date || null;
+      const period = from ? ` (${from}${r.effective_to ? ` → ${r.effective_to}` : ''})` : '';
+      parts.push(`AMENDMENT — ${r.label || 'rider'}${period}:\n\n${t}`);
     }
     let material = parts.join('\n\n---\n\n');
     if (material.length > MAX_CHARS) {

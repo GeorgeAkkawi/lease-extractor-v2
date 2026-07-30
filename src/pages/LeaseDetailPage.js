@@ -16,6 +16,8 @@ import AddendumEditor from '../components/AddendumEditor';
 import InvoicesPanel from '../components/InvoicesPanel';
 import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
+import DocumentsList from '../components/DocumentsList';
+import RiderDocs from '../components/RiderDocs';
 import InsuranceVault from '../components/InsuranceVault';
 import LeaseReviewStrip from '../components/LeaseReviewStrip';
 import EmailComposeModal from '../components/EmailComposeModal';
@@ -615,6 +617,17 @@ export default function LeaseDetailPage() {
           leaseText={lease.lease_text}
           askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations, abatements })}
           canSave
+        />
+        {/* Right under "Open lease", as asked — one row per rider, oldest first, each
+            opening its own cached text in the same box. The assistant above has been
+            reading these since 2026-07-01; this is the first time a human can. */}
+        <RiderDocs riders={addendums} />
+        <DocumentsList
+          entityType="lease"
+          entityId={lease.id}
+          title="Saved copies of the lease"
+          addLabel="Add a copy"
+          emptyText="No file on file — this lease was entered by hand or pasted in. Add a copy to keep the original alongside it."
         />
       </div>
 

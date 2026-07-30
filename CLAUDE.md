@@ -181,6 +181,114 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **Every uploaded file is now KEPT, listed and openable on its own record — and a rider opens
+  like the lease does, with the period it governs** (George: *"need to come up with a way to save copies of things
+  that are uploaded like insurance, riders, leases and any file that uploads like the bank statements. also when
+  new riders are uploaded we need to be able to cache those as well like in the lease document and assistant (we
+  have an open lease and right under make an open rider button (input the dates of the rider)) talk to me about
+  the health of my supabase first and the implications of storage. Will i need to upgrade supabase soon?"*; his
+  scoping picks: keep **every version with a delete button** · listed **on each record**, no portfolio-wide page ·
+  rider dates as a **from/to** pair · and, on the old files, *"Clear it out now, but keep both Hong Kongs"*).
+  Deployed: DB migration `0070` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **FIX-FIRST → fixed → applied
+  clean**), `review-lease` edge fn, frontend Cloudflare version **`a716f44c`**, demo worker `c32e27a1`. **$0, no
+  AI calls, no tenant emails; 0070 is additive only** (one new table, three nullable columns, two guarded
+  backfills, a widened MIME allowlist). Tests **973/973 across 112 files** (was 944/109 — +29 across 3 new suites).
+  - **The Supabase health answer, measured before touching anything.** Database **16 MB of 500** (3%). File storage
+    **413 MB of 1 GB — 41%**, across 118 objects. But only **41 distinct files by content hash**: 299 MB is
+    redundant identical copies (Wingstop ×7, Denny's ×3, Gzim ×4), **60 objects / 170 MB are referenced by no
+    database row at all**, and just **18** were reachable from the UI. Cached *text* is negligible — 641 KB for
+    every lease, 144 KB for every rider — so **text is free and files are the entire cost**. **No upgrade needed
+    on these numbers:** after the cleanup he sits at ~114 MB (11%), and at ~3.5 MB a document that is room for
+    roughly **280 documents, about 6× his book**. The real reason to take Pro is **backups** — free tier has no
+    point-in-time recovery and pauses after a week idle, against 41 irreplaceable scanned commercial leases.
+  - **The leaks, each one manufacturing orphans.** Insurance uploaded the certificate and **discarded the path** —
+    all **7** live policies had `storage_path` null, so not one certificate could be opened from the record it
+    belonged to (the column has existed since 0014). Service contracts, the same (column since 0015). **CSV bank
+    statements were never stored at all**: `csv` was in neither the client allowlist nor the bucket's, so
+    `validateUploadFile` threw and `ImportStatementButton`'s `.catch(() => null)` swallowed it — *while a code
+    comment claimed the file was kept*. Abandoned review flows (lease import, statement review, rider) left the
+    file behind forever, which is where 40 of the 55 unreachable lease files came from. And **nothing in the app
+    had ever deleted a file** — audit item **S-2**, open since 2026-07-06. All closed.
+  - **One registry, so a file can't be orphaned by construction.** New owner-scoped **`documents`** table
+    (`entity_type` ∈ lease · addendum · insurance_policy · service_contract · statement_import · annual_report),
+    written by the ONE `uploadDoc` helper. **The storage path is the key throughout** — every caller already holds
+    it, so `attachDocument` / `discardDocument` need no new id plumbing. `entity_id` is deliberately **nullable**:
+    an importer uploads before its record exists, the review screen adopts it on save, and **Cancel discards both
+    the row and the file** — an explicit cancel is now the only thing that deletes an upload. No cron, nothing
+    silent. `lease_files` and `insurance_documents` stay put doing their existing jobs; the migration backfills
+    **15 lease rows + 1 rider row** from data already on file.
+  - **The UI is one shared `DocumentsList`**, mounted on the lease, each open rider, each insurance policy and each
+    service contract: newest first, filename · size · date, **Open** via the existing `signDocUrl`, and a **✕**
+    behind the standard `ConfirmDialog` that says plainly the file goes but the cached text and extracted terms
+    stay. Everything after the first row is labelled **"earlier copy"**, so seven identically-named uploads read as
+    history rather than a mess. **This is also the first time a lease's own PDF is openable at all** —
+    `lease_files.storage_path` has been written since day one and never read back into the UI.
+  - **"Open rider", exactly where he asked for it** — directly under **Open lease**, inside the same panel, one row
+    per rider oldest-first, each naming the period it covers. It opens that rider's text into the **same
+    `.lease-doc` box** the lease uses, and shows **Open file** only when there is a file (a pasted rider has text
+    but no document — inventing the button would promise something that isn't there). **Zero new queries:**
+    `addendums` was already in scope (it feeds `buildLeaseAskContext`) and `listAddendums` already does
+    `select('*')`, so the text and path were already in the client cache. **The assistant needed no change — it has
+    been reading every rider since 2026-07-01.** This just lets a human read them too.
+  - **Rider dates.** `lease_addendums` has carried only `amendment_date` — the day it was **signed** — since 0021.
+    New nullable `effective_from` / `effective_to` are the period it **governs**, and the two are routinely months
+    apart. Backfilled from each rider's own cached extraction: **6 of the 7 live riders filled immediately**; the
+    assignment rider legitimately has neither (it swaps a tenant on a date and governs nothing after). New pure
+    `src/lib/riders.js` (`coversLabel` / `riderTitle` / `sortRiders` / `riderHasText`) keeps the review form, the
+    rider table's new **Covers** column and the lease page's rows describing that period identically.
+  - **The migration-reviewer caught a hard blocker and it was real.** My first backfill guarded the date cast with
+    a `~ '^\d{4}-\d{2}-\d{2}$'` regex plus a round-trip comparison — which is **self-defeating**: evaluating the
+    comparison requires executing the very cast that raises, and Postgres does not promise left-to-right `AND`
+    evaluation anyway. **Verified against live data before applying:** the Denny's rider's `extraction_raw` really
+    does carry `new_termination_date: "2033-04-31"` (the document literally prints "April 31") — so the file would
+    have aborted on every run, forever. Rewritten as a **per-row loop with the cast in its own exception block**:
+    read back after applying, that rider took its `effective_from` (2023-07-01) and left `effective_to` blank
+    instead of taking the whole migration down.
+  - **A latent bug fixed in the same round: your AI lease review had never seen a single rider.**
+    `review-lease/index.ts` selected `title, effective_date` from `lease_addendums` — **neither column exists**
+    (it has `label` + `amendment_date`). PostgREST 400s on an unknown column, and because the read is best-effort
+    that failure was **silent**: every lease review ever run reviewed the original document with **zero**
+    amendments attached. Now reads `label, amendment_date, effective_from, effective_to, addendum_text` and labels
+    each amendment with its period.
+  - **A mock-vs-live divergence found while testing, of exactly the `not()` kind.** The demo mock's `order()`
+    **ignored `{ ascending: false }`** — so every descending list (archived policies, insurance requests, and now a
+    record's saved copies) came back in the OPPOSITE order in demo to live. Fixed to honour the flag, with nulls
+    last in both directions; the full suite stayed green, so nothing had been relying on the wrong behaviour.
+  - **`archiveLease` deliberately does NOT delete the lease file** — it now carries the path onto
+    `expired_leases.storage_path` instead, so a departed tenant's original stays openable. Destroying it would be
+    the one genuinely lossy move available here.
+  - **Files.** New: `supabase/migrations/0070_document_registry.sql` · `src/lib/riders.js` ·
+    `src/components/{DocumentsList,RiderDocs}.js` · tests `documents`, `riderDates`, `riderOpen`. Edited:
+    `src/lib/api.js` (the registry + every delete sweep) · `src/components/{AddendumEditor,InsuranceVault,
+    ServiceContractsSection,ImportStatementButton,AnnualReportModal}.js` ·
+    `src/pages/{LeaseDetailPage,LeaseNewPage,LedgerPage,PropertyFinancialsPage}.js` · `src/App.css` ·
+    `src/lib/demo/{store,mockClient}.js` · `supabase/functions/review-lease/index.ts`.
+  - **Verified:** unit **973/973** (`vitest run`); `npm run build` compiles; migration applied clean and read back
+    (6 of 7 riders dated, 16 documents registered, the bucket's MIME list carrying all three CSV variants); edge fn
+    deployed clean; live bundle confirmed to **carry** the backend ref and the demo bundle grepped **free** of it;
+    200s on all four URLs with the edge serving the new hash (`assets/index-49tmXAij.js`). **Driven in a real
+    browser against the deployed demo:** both rider rows render under Open lease in the right order with their
+    periods (*"· July 1, 2024 → June 30, 2027"* and *"· From April 1, 2025"*), Open rider reveals the right text
+    and **switches** rather than stacking when the other is clicked, Open file appears only on the rider that has
+    one, the pasted rider correctly says *"No file on file for this rider — it was pasted in"*, the lease lists two
+    copies with the second marked **earlier copy**, and the ✕ opens the confirm naming all three consequences.
+    **Zero console errors or warnings; zero horizontal overflow at 1440px.**
+  - **George: hard-refresh (Cmd+Shift+R).** Open any lease → under **Open lease** you'll now see a row per rider
+    with the dates it covers and an **Open rider** button, plus **Saved copies of the lease** with an Open and a ✕
+    per version. Insurance policies and service contracts have the same list.
+  - **⏳ STILL TO DO — the cleanup needs a service-role key from you.** 20 objects / **141 MB belong to two deleted
+    accounts**, and storage RLS scopes deletes to your own uid, so a browser session physically cannot reach them
+    and the CLI has no `storage rm`. Paste your service-role key (Supabase → Settings → API) into the gitignored
+    `.env.secrets.local` as `SUPABASE_SERVICE_ROLE_KEY=…` and say the word — the script is written and will print
+    the full before/after report as a **dry run** first, deleting nothing until you've seen it.
+  - **Flags (no action needed):** ① **I am protecting more than you asked.** The strict "delete anything nothing
+    points at" rule would have destroyed **both** New Hong Kong versions — none of the 8 copies is linked to a live
+    lease. The rule I will run keeps **one copy of every distinct document** instead: 413 MB → ~114 MB rather than
+    → 91 MB, and nothing unique is lost. ② Your 7 insurance certificates still show no file — the fix keeps them
+    from today; the ones already uploaded are unreachable and will be swept. ③ Re-run a lease review on a lease
+    with riders to see the difference now that the review can actually read them. ④ Re-uploading a document adds a
+    version rather than replacing one, by your choice — the list will grow until you delete from it.
+
 - **2026-07-30** — **Two more on the donut: the legend names EVERY tenant (the "+1 more" placeholder is gone) ·
   and the hover panel no longer flashes out when the cursor crosses the middle of the chart** (George, reviewing
   the round below: *"the property pie chart says +1 more and vacant - go with the vacant drop the +1. also when i

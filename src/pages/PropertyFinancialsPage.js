@@ -8,7 +8,7 @@ import {
   getExpenseRecord,
   upsertExpenseRecord,
   undoStatementImport,
-  resyncPropertyBilling,
+  resyncPropertyBilling, discardDocument,
 } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
@@ -85,7 +85,7 @@ export default function PropertyFinancialsPage() {
             parsed={importDoc.parsed}
             storagePath={importDoc.storagePath}
             pdfLane={importDoc.pdfLane}
-            onCancel={() => setImportDoc(null)}
+            onCancel={() => { const p = importDoc.storagePath; setImportDoc(null); if (p) discardDocument(p).catch(() => {}); }}
             onSaved={(res) => {
               setImportDoc(null);
               setImported({ ...res, fileName: importDoc.fileName });

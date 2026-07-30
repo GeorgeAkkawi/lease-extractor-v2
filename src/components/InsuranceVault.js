@@ -4,8 +4,10 @@ import {
   getPropertyInsurance, getTenantInsurance, saveInsurance, extractInsurance, uploadDoc, askDoc,
   listInsuranceDocuments, addInsuranceDocument, removeInsuranceDocument, signDocUrl,
   listArchivedInsurance, archiveInsurance, deleteInsurance, listAlertStates, upsertAlertState,
+  attachDocument,
 } from '../lib/api';
 import DocAssistant from './DocAssistant';
+import DocumentsList from './DocumentsList';
 import { money, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
 import { missingAdditionalInsured, additionalInsuredAlertKey } from '../lib/insuranceNotices';
@@ -65,22 +67,36 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
   async function intake(getExtract) {
     setBusy(true); setErr('');
     try {
-      const { fields, policy_text } = await getExtract();
-      await saveInsurance({
+      const { fields, policy_text, storagePath } = await getExtract();
+      // The certificate itself is kept. Until now the file was uploaded and its path
+      // thrown on the floor — all 7 live policies had storage_path null, so not one
+      // certificate could be opened from the record it belonged to.
+      const saved = await saveInsurance({
         party, propertyId, leaseId,
         insurer: fields.insurer ?? null,
         coverage_amount: fields.coverage_amount ?? null,
         expiry_date: fields.expiry_date ?? null,
         additional_insured: fields.additional_insured ?? null,
         policy_text,
+        ...(storagePath ? { storage_path: storagePath } : {}),
       });
+      if (storagePath && saved?.id) {
+        await attachDocument(storagePath, { entityType: 'insurance_policy', entityId: saved.id });
+      }
       setText(''); setReplacing(false); invalidate();
     } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   }
   const onPaste = () => { if (text.trim()) intake(() => extractInsurance({ text: text.trim() })); };
   const onFile = (e) => {
     const f = e.target.files?.[0];
-    if (f) intake(async () => extractInsurance({ storagePath: await uploadDoc(f) }));
+    // The path rides back on the return value so a failed read can't strand it: the
+    // registry row exists either way, and attachDocument only runs once a policy
+    // row is there to own it.
+    if (f) intake(async () => {
+      const storagePath = await uploadDoc(f, { entityType: 'insurance_policy' });
+      const res = await extractInsurance({ storagePath });
+      return { ...res, storagePath };
+    });
     e.target.value = '';
   };
 
@@ -166,6 +182,16 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
             </div>
           )}
           <DocAssistant label="policy" docText={policy.policy_text} ask={(q) => askDoc(policy.policy_text, q, 'insurance')} />
+          {/* Every certificate ever uploaded for this policy, newest first. Until
+              migration 0070 the file was uploaded and its path discarded, so not one
+              of the live certificates could be opened from the record it belonged to. */}
+          <DocumentsList
+            entityType="insurance_policy"
+            entityId={policy.id}
+            title="Saved certificates"
+            addLabel="Add a copy"
+            emptyText="No certificate file on file for this policy — the facts above were pasted in, or the copy predates document keeping. Add one to keep it here."
+          />
           <DocumentsSection policyId={policy.id} />
         </>
       )}

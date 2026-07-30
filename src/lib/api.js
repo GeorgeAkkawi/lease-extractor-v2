@@ -68,10 +68,18 @@ async function callRpc(fn, args) {
 // that isn't a PDF or common image, and cap the size, before sending any bytes.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25 MiB — matches the bucket limit
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+// CSV is here for the bank-statement lane. It was missing from BOTH this list and
+// the bucket's allowed_mime_types, so validateUploadFile threw on every .csv and
+// ImportStatementButton's `.catch(() => null)` swallowed it — the file was never
+// kept, despite a comment saying it was (fixed with the bucket, migration 0070).
+// Browsers report a .csv variously as text/csv, application/csv, or (on machines
+// with Excel installed) application/vnd.ms-excel, so all three are accepted; the
+// extension check below is what actually constrains it.
 const ALLOWED_UPLOAD_TYPES = new Set([
   'application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif', DOCX_TYPE,
+  'text/csv', 'application/csv', 'application/vnd.ms-excel',
 ]);
-const ALLOWED_UPLOAD_EXTS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'docx']);
+const ALLOWED_UPLOAD_EXTS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'docx', 'csv']);
 
 function validateUploadFile(file) {
   if (!file) throw new Error('No file selected.');
@@ -306,6 +314,11 @@ export async function archiveLease(lease, { status, note, endDate }) {
     const payments = (await Promise.all(invoices.map((i) => listPayments(i.id)))).flat();
     financials = { invoices, payments, archived_at: new Date().toISOString() };
   } catch (_e) { /* keep null — never block removal on a history read */ }
+  let docPath = null;
+  try {
+    const docs = await listDocuments('lease', lease.id);
+    docPath = docs?.[0]?.storage_path ?? null;
+  } catch (_e) { /* same rule — a registry read must never block removal */ }
   await rows(
     supabase.from('expired_leases').insert({
       owner_id: uid,
@@ -318,6 +331,11 @@ export async function archiveLease(lease, { status, note, endDate }) {
       status,
       note: note || null,
       lease_text: lease.lease_text ?? null,
+      // Carry the document across, so a departed tenant's original lease is still
+      // openable from History ("Open & ask" already works on the cached text).
+      // Deliberately NOT deleted with the lease — it is the one file in the app
+      // whose loss would be genuinely irreplaceable.
+      storage_path: docPath,
       financials,
     })
   );
@@ -350,8 +368,18 @@ export async function uploadAndExtract(file) {
       .single()
   );
 
+  // Register the copy before extraction runs. entity_id is null until the review
+  // screen saves a lease (createLeaseFromExtraction attaches it) — cancelling the
+  // review calls discardDocument(path), which is what stops an abandoned import
+  // leaving the file behind. That leak alone produced 40 of the 55 unreachable
+  // lease files in the bucket.
+  await registerDocument({
+    entityType: 'lease', storagePath: path, filename: file.name,
+    bytes: file.size ?? null, mime: file.type || null,
+  });
+
   const { extraction, full_text } = await invokeFunction('extract-lease', { lease_file_id: fileRow.id });
-  return { lease_file_id: fileRow.id, extraction, lease_text: full_text || null };
+  return { lease_file_id: fileRow.id, extraction, lease_text: full_text || null, storage_path: path };
 }
 
 // Extract lease fields from pasted text (no file upload). The pasted text is
@@ -364,7 +392,7 @@ export async function extractFromText(text) {
 // Persist an AI-extracted lease plus its escalations/renewals in one go.
 // leaseText (the cached plain-text copy) is stored so the AI assistant can read
 // it later without re-running extraction.
-export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease, escalations, renewals, abatements, aiConfidence, leaseText, aiReview }) {
+export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease, escalations, renewals, abatements, aiConfidence, leaseText, aiReview, storagePath }) {
   // Build the exact rows to write (owner_id is forced server-side inside the RPC).
   const leasePayload = {
     ...lease,
@@ -389,6 +417,16 @@ export async function createLeaseFromExtraction({ propertyId, leaseFileId, lease
     p_renewals: renewals || [],
     p_abatements: abatements || [],
   });
+  // The uploaded file has been sitting in the registry with no entity since the
+  // import began — this is the moment it gets an owner. (Cancelling the review
+  // discards it instead.) Falls back to the lease_files row for a path the caller
+  // didn't thread through, so an older import screen still ends up with a copy.
+  let docPath = storagePath || null;
+  if (!docPath && leaseFileId) {
+    const lf = await one(supabase.from('lease_files').select('storage_path').eq('id', leaseFileId).single()).catch(() => null);
+    docPath = lf?.storage_path || null;
+  }
+  await attachDocument(docPath, { entityType: 'lease', entityId: leaseId });
   // Collapse the historical schedule to today: set the current rent + period (or
   // flag the lease outdated), marking past escalations/renewals applied silently.
   await backfillLeaseToToday(leaseId);
@@ -885,8 +923,36 @@ export async function askDoc(text, question, kind) {
   return answer;
 }
 
-// Upload a document to storage (shared bucket); returns its storage path.
-export async function uploadDoc(file) {
+// ---- The document registry (every uploaded file, kept and openable) --------
+//
+// George, 2026-07-30: "need to come up with a way to save copies of things that
+// are uploaded like insurance, riders, leases and any file that uploads like the
+// bank statements."
+//
+// Before this, some upload paths saved the file's location, some threw it away,
+// one never stored the file at all — and NOTHING in the app ever deleted a file.
+// Two-thirds of the bucket was unreachable garbage while the documents he wanted
+// to open had no button to open them.
+//
+// The fix is one table (`documents`, migration 0070) written by the ONE upload
+// helper below, so a file can no longer exist without a row naming it. The
+// STORAGE PATH is the key throughout — every caller already holds it, so nothing
+// needs new id plumbing to attach or discard a file later.
+//
+// entity_id is nullable on purpose: an importer uploads before its record exists.
+// The review screen calls attachDocument on save; cancel calls discardDocument,
+// which removes the file AND the row. An explicit cancel is the only thing that
+// ever deletes an uploaded file — no cron, nothing silent.
+
+const DOC_ENTITY_TYPES = new Set([
+  'lease', 'addendum', 'insurance_policy', 'service_contract',
+  'statement_import', 'annual_report',
+]);
+
+// Upload a document to storage (shared bucket) and register it. Returns its
+// storage path — unchanged from before, so every existing caller still works;
+// passing `meta` is what makes the copy retrievable afterwards.
+export async function uploadDoc(file, meta = {}) {
   validateUploadFile(file);
   const uid = await ownerId();
   const safe = file.name.replace(/[^\w.-]+/g, '_');
@@ -896,7 +962,105 @@ export async function uploadDoc(file) {
     upsert: false,
   });
   if (up.error) throw up.error;
+
+  if (meta.entityType) {
+    await registerDocument({
+      entityType: meta.entityType,
+      entityId: meta.entityId ?? null,
+      storagePath: path,
+      filename: file.name,
+      bytes: file.size ?? null,
+      mime: file.type || null,
+      label: meta.label ?? null,
+      note: meta.note ?? null,
+    });
+  }
   return path;
+}
+
+// Record a file that already lives in storage. Idempotent on (entity, path) so a
+// retry can't double-list the same document.
+export async function registerDocument({
+  entityType, entityId = null, storagePath, filename = null,
+  bytes = null, mime = null, label = null, note = null,
+}) {
+  if (!storagePath) return null;
+  if (!DOC_ENTITY_TYPES.has(entityType)) throw new Error(`Unknown document type "${entityType}".`);
+  const uid = await ownerId();
+  const existing = await rows(
+    supabase.from('documents').select('id').eq('storage_path', storagePath).limit(1)
+  );
+  if (existing?.length) return existing[0];
+  return one(
+    supabase.from('documents').insert({
+      owner_id: uid, entity_type: entityType, entity_id: entityId,
+      storage_path: storagePath, filename, bytes, mime, label, note,
+      // Stamped rather than left to the column default: the list is ordered newest
+      // first, and the demo store has no defaults, so an unstamped row would sort
+      // as though it had no date at all.
+      created_at: new Date().toISOString(),
+    }).select().single()
+  );
+}
+
+// Every document kept for one record, newest first — the version history.
+export const listDocuments = (entityType, entityId) => {
+  if (!entityType || !entityId) return Promise.resolve([]);
+  return rows(
+    supabase.from('documents').select('*')
+      .eq('entity_type', entityType).eq('entity_id', entityId)
+      .order('created_at', { ascending: false })
+  );
+};
+
+// A review flow finished: point the file it uploaded at the record it just created.
+export async function attachDocument(storagePath, { entityType, entityId }) {
+  if (!storagePath || !entityId) return null;
+  const patch = { entity_id: entityId };
+  if (entityType) patch.entity_type = entityType;
+  const updated = await rows(
+    supabase.from('documents').update(patch).eq('storage_path', storagePath).select()
+  );
+  // A file uploaded before this feature shipped (or by a path that didn't register)
+  // still gets a row, so nothing that reaches a record stays unlisted.
+  if (!updated?.length && entityType) {
+    return registerDocument({ entityType, entityId, storagePath });
+  }
+  return updated?.[0] ?? null;
+}
+
+// Remove the stored file itself. Best-effort by design: the caller has already
+// decided the file is going, and a storage hiccup must not strand the row.
+export async function removeStorageObjects(paths) {
+  const list = (paths || []).filter(Boolean);
+  if (!list.length) return;
+  try {
+    await supabase.storage.from('lease-documents').remove(list);
+  } catch (_e) { /* the registry row is removed regardless — nothing points at it */ }
+}
+
+// Throw a just-uploaded file away (cancelled review) — file AND row.
+export async function discardDocument(storagePath) {
+  if (!storagePath) return;
+  await rows(supabase.from('documents').delete().eq('storage_path', storagePath));
+  await removeStorageObjects([storagePath]);
+}
+
+// Delete one saved version from a record's document list (the ✕ button).
+export async function deleteDocument(id) {
+  const doc = await one(supabase.from('documents').select('*').eq('id', id).single());
+  await rows(supabase.from('documents').delete().eq('id', id));
+  await removeStorageObjects([doc?.storage_path]);
+  return doc;
+}
+
+// A record is being deleted: take its files with it. Extra paths (a legacy
+// storage_path column that never made it into the registry) are swept too.
+export async function deleteDocumentsFor(entityType, entityId, extraPaths = []) {
+  const docs = entityId ? await listDocuments(entityType, entityId) : [];
+  if (docs.length) await rows(supabase.from('documents').delete().eq('entity_type', entityType).eq('entity_id', entityId));
+  const paths = [...new Set([...docs.map((d) => d.storage_path), ...extraPaths].filter(Boolean))];
+  await removeStorageObjects(paths);
 }
 
 // One-time AI extraction of an insurance policy: key-facts + a cached transcription.
@@ -954,23 +1118,34 @@ export const listArchivedInsurance = ({ party, propertyId, leaseId }) => {
 export const archiveInsurance = (id) =>
   one(supabase.from('insurance_policies').update({ archived_at: new Date().toISOString() }).eq('id', id).select().single());
 
-// Remove policy → "Delete permanently": drop the row (its documents cascade).
-export const deleteInsurance = (id) =>
-  rows(supabase.from('insurance_policies').delete().eq('id', id));
+// Remove policy → "Delete permanently": drop the row (its documents cascade) and
+// take the stored certificates with it. "Save to history" (archiveInsurance,
+// above) deliberately keeps both — only an explicit permanent delete removes files.
+export async function deleteInsurance(id) {
+  const p = await one(supabase.from('insurance_policies').select('storage_path').eq('id', id).single()).catch(() => null);
+  const extras = await listInsuranceDocuments(id).catch(() => []);
+  await deleteDocumentsFor('insurance_policy', id, [p?.storage_path, ...extras.map((d) => d.storage_path)]);
+  return rows(supabase.from('insurance_policies').delete().eq('id', id));
+}
 
 // ---- Extra documents attached to a policy (renewals, premium notices, any PDF)
 export const listInsuranceDocuments = (policyId) =>
   rows(supabase.from('insurance_documents').select('*').eq('policy_id', policyId).order('created_at'));
 
 export async function addInsuranceDocument({ policyId, label, file, note }) {
-  const storage_path = file ? await uploadDoc(file) : null;
+  const storage_path = file
+    ? await uploadDoc(file, { entityType: 'insurance_policy', entityId: policyId, label, note })
+    : null;
   return one(supabase.from('insurance_documents')
     .insert({ owner_id: await ownerId(), policy_id: policyId, label, storage_path, note: note || null })
     .select().single());
 }
 
-export const removeInsuranceDocument = (id) =>
-  rows(supabase.from('insurance_documents').delete().eq('id', id));
+export async function removeInsuranceDocument(id) {
+  const d = await one(supabase.from('insurance_documents').select('storage_path').eq('id', id).single()).catch(() => null);
+  if (d?.storage_path) await discardDocument(d.storage_path);
+  return rows(supabase.from('insurance_documents').delete().eq('id', id));
+}
 
 // Short-lived signed URL to open a stored document (the lease-documents bucket is private).
 export async function signDocUrl(storagePath) {
@@ -999,8 +1174,11 @@ export async function updateServiceContract(id, patch) {
   return one(supabase.from('service_contracts').update(body).eq('id', id).select().single());
 }
 
-export const deleteServiceContract = (id) =>
-  rows(supabase.from('service_contracts').delete().eq('id', id));
+export async function deleteServiceContract(id) {
+  const c = await one(supabase.from('service_contracts').select('storage_path').eq('id', id).single()).catch(() => null);
+  await deleteDocumentsFor('service_contract', id, [c?.storage_path]);
+  return rows(supabase.from('service_contracts').delete().eq('id', id));
+}
 
 // ---- Escalations & renewals -------------------------------------------------
 export const listEscalations = (leaseId) =>
@@ -1253,11 +1431,17 @@ export async function listInsuranceRequests(leaseId) {
 export const listAddendums = (leaseId) =>
   rows(supabase.from('lease_addendums').select('*').eq('lease_id', leaseId).order('amendment_date'));
 
-export const createAddendum = async (a) =>
-  one(supabase.from('lease_addendums').insert({ ...a, owner_id: await ownerId() }).select().single());
+export const createAddendum = async (a) => {
+  const row = await one(supabase.from('lease_addendums').insert({ ...a, owner_id: await ownerId() }).select().single());
+  await attachDocument(a.storage_path, { entityType: 'addendum', entityId: row.id });
+  return row;
+};
 
-export const deleteAddendum = (id) =>
-  rows(supabase.from('lease_addendums').delete().eq('id', id));
+export async function deleteAddendum(id) {
+  const a = await one(supabase.from('lease_addendums').select('storage_path').eq('id', id).single()).catch(() => null);
+  await deleteDocumentsFor('addendum', id, [a?.storage_path]);
+  return rows(supabase.from('lease_addendums').delete().eq('id', id));
+}
 
 // One-time AI extraction of a rider/amendment (paid Claude call). Mirrors
 // extractContract: accepts pasted text or an uploaded file (PDF/scan/photo/Word).
@@ -3643,6 +3827,9 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       .insert({ property_id: propertyId, year: Number(year) || null, file_name: fileName || null, account_hint: accountHint, storage_path: storagePath || null, applied: [], owner_id: await ownerId() })
       .select().single()
   );
+  // The statement itself belongs to the import that read it — the ledger should be
+  // able to show you the document a figure came from.
+  await attachDocument(storagePath, { entityType: 'statement_import', entityId: imp.id });
   const applied = [];
   let paymentsCount = 0, paymentsTotal = 0, expensesCount = 0, expensesTotal = 0;
   const crossProperty = {};
@@ -3818,6 +4005,9 @@ export async function undoStatementImport(imp) {
       await resyncYearBillingToEstimate(a.lease_id, a.property_id, a.year);
     } catch { /* best-effort — never blocks the rest of the undo */ }
   }
+  // Undo reverses the import's whole delta, and the statement copy is part of it —
+  // there is no import left for it to belong to.
+  await deleteDocumentsFor('statement_import', imp.id, [imp.storage_path]);
   await rows(supabase.from('statement_imports').delete().eq('id', imp.id));
   await logHistoryEvent({
     property_id: imp.property_id,

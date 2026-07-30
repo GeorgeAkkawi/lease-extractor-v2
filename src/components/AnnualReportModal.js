@@ -67,7 +67,9 @@ export default function AnnualReportModal({ corp, onClose }) {
     if (f) {
       setBusy(true); setErr('');
       try {
-        const path = await uploadDoc(f);
+        // Registered against the corporation, so a report that never gets saved is
+        // still findable rather than a nameless object in the bucket.
+        const path = await uploadDoc(f, { entityType: 'annual_report', entityId: corp.id });
         await intake(() => extractAnnualReport({ storagePath: path }), path);
       } catch (e2) { setErr(e2.message || String(e2)); setBusy(false); }
     }

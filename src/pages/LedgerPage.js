@@ -15,7 +15,7 @@ import {
   listSnapshots,
   signDocUrl,
   localDateIso,
-  getLeaseSort,
+  getLeaseSort, discardDocument,
 } from '../lib/api';
 import { allocatePayments, componentizeSchedule, escalationStepMonths, ledgerRowSummary, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
 import { sortTenantRows } from '../lib/leaseSort';
@@ -245,7 +245,7 @@ export default function LedgerPage() {
             parsed={importDoc.parsed}
             storagePath={importDoc.storagePath}
             pdfLane={importDoc.pdfLane}
-            onCancel={() => setImportDoc(null)}
+            onCancel={() => { const p = importDoc.storagePath; setImportDoc(null); if (p) discardDocument(p).catch(() => {}); }}
             onSaved={(res) => {
               setImportDoc(null);
               setImported({ ...res, fileName: importDoc.fileName });

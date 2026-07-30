@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listServiceContracts, addServiceContract, updateServiceContract, deleteServiceContract, extractContract, uploadDoc, askDoc } from '../lib/api';
+import { listServiceContracts, addServiceContract, updateServiceContract, deleteServiceContract, extractContract, uploadDoc, askDoc, attachDocument } from '../lib/api';
 import { contractAnnualCost } from '../lib/contracts';
 import DocAssistant from './DocAssistant';
+import DocumentsList from './DocumentsList';
 import { money, fmtDate, currentYear } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
@@ -109,6 +110,13 @@ function ContractItem({ c, onChange }) {
             ask={(q) => askDoc(c.contract_text, q, 'contract')}
             onSave={async (text) => { await updateServiceContract(c.id, { contract_text: text }); onChange(); }}
           />
+          <DocumentsList
+            entityType="service_contract"
+            entityId={c.id}
+            title="Saved copies"
+            addLabel="Add a copy"
+            emptyText="No file on file for this contract. Add one to keep the signed copy here."
+          />
         </div>
       )}
     </div>
@@ -129,7 +137,9 @@ function AddContract({ propId, onClose, onAdded }) {
     try {
       const ex = getExtract ? await getExtract() : { fields: {}, contract_text: null };
       const f = ex.fields || {};
-      await addServiceContract({
+      // storage_path has existed on service_contracts since 0015 and was never written:
+      // the file was uploaded, read, and then unreachable from the contract it created.
+      const created = await addServiceContract({
         property_id: propId,
         name: name.trim(),
         service_type: f.service_type || null,
@@ -141,7 +151,11 @@ function AddContract({ propId, onClose, onAdded }) {
         start_date: f.start_date || null,
         end_date: f.end_date || null,
         contract_text: ex.contract_text || null,
+        storage_path: ex.storagePath || null,
       });
+      if (ex.storagePath && created?.id) {
+        await attachDocument(ex.storagePath, { entityType: 'service_contract', entityId: created.id });
+      }
       onAdded();
     } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   }
@@ -150,7 +164,11 @@ function AddContract({ propId, onClose, onAdded }) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!name.trim()) { setErr('Give the contract a name first.'); e.target.value = ''; return; }
-    create(async () => extractContract({ storagePath: await uploadDoc(file), name }));
+    create(async () => {
+      const storagePath = await uploadDoc(file, { entityType: 'service_contract' });
+      const res = await extractContract({ storagePath, name });
+      return { ...res, storagePath };
+    });
     e.target.value = '';
   };
 

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAddendum, uploadDoc, isoDateOrNull } from '../lib/api';
+import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAddendum, uploadDoc, isoDateOrNull, discardDocument } from '../lib/api';
 import { fmtDate, money } from '../lib/format';
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
+import { coversLabel } from '../lib/riders';
 import { useConfirm } from './ConfirmDialog';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
@@ -21,7 +22,10 @@ const KIND_LABEL = {
 };
 
 const blankForm = () => ({
-  label: '', amendment_date: '', summary: '',
+  // amendment_date is the day the rider was SIGNED. effective_from/to are the period
+  // it GOVERNS — George, 2026-07-30: "input the dates of the rider". They are usually
+  // different: the Denny's rider is dated June 2023 and governs Jul 2023 → Apr 2033.
+  label: '', amendment_date: '', effective_from: '', effective_to: '', summary: '',
   fx_extension: false, fx_rent: false, fx_option: false, fx_assignment: false, fx_abatement: false, fx_estimate: false,
   est_camtax: '', est_roof: '', est_quote: '',
   new_termination_date: '',
@@ -99,7 +103,13 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
 
   const remove = useMutation({ mutationFn: (id) => deleteAddendum(id), onSuccess: refresh });
 
-  function resetAdd() { setForm(blankForm()); setErr(''); setMode('upload'); setAdding(false); }
+  // `discard` is set when the user is BACKING OUT rather than saving: the file that
+  // was uploaded for a review that never became a rider is thrown away with it.
+  // (After a successful save the rider owns the file, so it must stay.)
+  function resetAdd({ discard = false } = {}) {
+    if (discard && form.storage_path) discardDocument(form.storage_path).catch(() => {});
+    setForm(blankForm()); setErr(''); setMode('upload'); setAdding(false);
+  }
 
   // Collect every ENABLED effect into the normalized `changes` applyAddendum wants.
   function formToChanges(f) {
@@ -168,6 +178,10 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
         lease_id: leaseId,
         label: form.label || null,
         amendment_date: form.amendment_date || null,
+        // A rider that prints an impossible date ("April 31") must not abort the save —
+        // isoDateOrNull drops it the same way every other date field is guarded.
+        effective_from: isoDateOrNull(form.effective_from),
+        effective_to: isoDateOrNull(form.effective_to),
         kind: primaryKind(form),
         summary: form.summary || null,
         storage_path: form.storage_path || null,
@@ -226,6 +240,11 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
         ...f,
         label: fields.label || '',
         amendment_date: fields.amendment_date || '',
+        // The period the rider governs, pre-filled from what the extractor already read
+        // and editable. It starts where its rent starts (or, failing that, the day it
+        // was signed) and runs to the term end it sets, if it sets one.
+        effective_from: fields.new_base_rent_effective_date || fields.amendment_date || '',
+        effective_to: fields.new_termination_date || '',
         summary: fields.summary || '',
         // Keep the card ON when the rider clearly extends but printed a date we can't use
         // ("April 31") and there was no length to compute from — otherwise the extension
@@ -283,7 +302,9 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
     // through the return value (rather than a setForm before intake) so a failed read can't
     // strand a path on a form that's about to be reset.
     if (file) intake(async () => {
-      const storagePath = await uploadDoc(file);
+      // entityId is null until the rider is saved — createAddendum adopts it, and
+      // Cancel (resetAdd) discards both the row and the file.
+      const storagePath = await uploadDoc(file, { entityType: 'addendum' });
       const res = await extractAddendum({ storagePath, squareFootage, currentTermEnd });
       return { ...res, storagePath };
     });
@@ -314,12 +335,13 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
       {addendums.length > 0 && (
         <div className="table-wrap" style={{ marginBottom: 16 }}>
           <table style={{ minWidth: 0 }}>
-            <thead><tr><th>Addendum</th><th>Dated</th><th>Type</th><th>What it changed</th><th></th></tr></thead>
+            <thead><tr><th>Addendum</th><th>Dated</th><th>Covers</th><th>Type</th><th>What it changed</th><th></th></tr></thead>
             <tbody>
               {addendums.map((a) => (
                 <tr key={a.id}>
                   <td>{a.label || '—'}</td>
                   <td>{fmtDate(a.amendment_date)}</td>
+                  <td>{coversLabel(a)}</td>
                   <td>{KIND_LABEL[a.kind] || a.kind}</td>
                   <td>{a.summary || '—'}</td>
                   <td className="num">
@@ -373,7 +395,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
               </div>
               <div className="row" style={{ marginTop: 12 }}>
                 <button type="button" className="ghost" onClick={() => setShowPaste((p) => !p)}>{showPaste ? 'Hide paste' : 'Paste text instead'}</button>
-                <button type="button" className="ghost" onClick={resetAdd}>Cancel</button>
+                <button type="button" className="ghost" onClick={() => resetAdd({ discard: true })}>Cancel</button>
               </div>
               {showPaste && (
                 <div style={{ marginTop: 10 }}>
@@ -410,6 +432,21 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
               <div className="field-grid">
                 <label className="form-field" style={{ marginBottom: 0 }}><span>Label</span><input className="text-input" placeholder="First Amendment" value={form.label} onChange={set('label')} /></label>
                 <label className="form-field" style={{ marginBottom: 0 }}><span>Dated</span><input className="text-input" type="date" value={form.amendment_date} onChange={set('amendment_date')} /></label>
+              </div>
+
+              {/* The period the rider GOVERNS — distinct from the day it was signed, and
+                  the thing you actually want to see beside it in the list. */}
+              <div className="field-grid">
+                <label className="form-field" style={{ marginBottom: 0 }}>
+                  <span>Covers from</span>
+                  <input className="text-input" type="date" value={form.effective_from} onChange={set('effective_from')} />
+                  <span className="field-note">The date this rider takes effect.</span>
+                </label>
+                <label className="form-field" style={{ marginBottom: 0 }}>
+                  <span>Covers to</span>
+                  <input className="text-input" type="date" value={form.effective_to} onChange={set('effective_to')} />
+                  <span className="field-note">Leave blank if it runs to the end of the lease.</span>
+                </label>
               </div>
 
               {/* Extends the term */}
@@ -584,7 +621,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
 
               <div className="row" style={{ marginTop: 14 }}>
                 <button type="submit" disabled={!canSave || save.isPending}>{save.isPending ? 'Applying…' : 'Save & apply'}</button>
-                <button type="button" className="secondary" onClick={resetAdd}>Cancel</button>
+                <button type="button" className="secondary" onClick={() => resetAdd({ discard: true })}>Cancel</button>
               </div>
             </form>
           )}

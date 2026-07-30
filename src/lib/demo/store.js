@@ -179,8 +179,46 @@ export function seed() {
     annual_reports: [
       { id: 'ar-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', due_date: soon, last_filed_date: iso(Y - 1, 3, 15), docs: [], due_notice_bucket: null, created_at: iso(Y, 1, 1), updated_at: iso(Y, 1, 1) },
     ],
-    // Starts empty — the landlord records riders/amendments per lease.
-    lease_addendums: [],
+    // Two riders on City Dental, so the lease page's "Open rider" rows have something
+    // to open and the Covers column has a real period to show. Deliberately kinds that
+    // do NOT move the term (currentTermLabel only reads kind==='extension'), so seeding
+    // them can't change the header the rest of the demo asserts.
+    lease_addendums: [
+      {
+        id: 'add-1', owner_id: DEMO_USER.id, lease_id: 'lease-2', label: 'First Amendment to Lease',
+        amendment_date: iso(Y - 2, 6, 30), effective_from: iso(Y - 2, 7, 1), effective_to: iso(Y + 1, 6, 30),
+        kind: 'rent_change', summary: 'Base rent adjusted; all other terms unchanged.',
+        storage_path: `${DEMO_USER.id}/first-amendment.pdf`,
+        addendum_text: [
+          'FIRST AMENDMENT TO LEASE',
+          `This First Amendment is entered into as of ${fmtDate(iso(Y - 2, 6, 30))} between the Landlord and City Dental (the "Tenant").`,
+          '1. RENT. Effective July 1, the Monthly Base Rent shall be increased to $7,000.00 per month.',
+          '2. All other terms and conditions of the Lease remain in full force and effect.',
+        ].join('\n'),
+        extraction_raw: null, created_at: iso(Y - 2, 6, 30),
+      },
+      {
+        id: 'add-2', owner_id: DEMO_USER.id, lease_id: 'lease-2', label: 'Signage Rider',
+        amendment_date: iso(Y - 1, 3, 12), effective_from: iso(Y - 1, 4, 1), effective_to: null,
+        kind: 'other', summary: 'Permits an exterior sign at Tenant’s expense.',
+        storage_path: null,   // pasted in, not uploaded — demos the "no file" row
+        addendum_text: [
+          'SIGNAGE RIDER',
+          'Tenant may install one (1) exterior sign on the storefront fascia, subject to Landlord’s prior written approval as to size and design.',
+          'Tenant shall maintain the sign at its own expense and remove it at the expiration of the Term, repairing any damage.',
+        ].join('\n'),
+        extraction_raw: null, created_at: iso(Y - 1, 3, 12),
+      },
+    ],
+    // Every uploaded file, kept and openable (0070). City Dental's lease has TWO saved
+    // copies — the version history George asked for ("keep every version but allow
+    // deletes") only reads as history when something actually has two.
+    documents: [
+      { id: 'doc-1', owner_id: DEMO_USER.id, entity_type: 'lease', entity_id: 'lease-2', storage_path: `${DEMO_USER.id}/city-dental-lease.pdf`, filename: 'city-dental-lease.pdf', bytes: 2_410_000, mime: 'application/pdf', label: null, note: null, created_at: iso(Y - 1, 5, 20) },
+      { id: 'doc-2', owner_id: DEMO_USER.id, entity_type: 'lease', entity_id: 'lease-2', storage_path: `${DEMO_USER.id}/city-dental-lease-scan.pdf`, filename: 'city-dental-lease.pdf', bytes: 2_380_000, mime: 'application/pdf', label: null, note: null, created_at: iso(Y - 2, 11, 2) },
+      { id: 'doc-3', owner_id: DEMO_USER.id, entity_type: 'addendum', entity_id: 'add-1', storage_path: `${DEMO_USER.id}/first-amendment.pdf`, filename: 'first-amendment.pdf', bytes: 184_000, mime: 'application/pdf', label: 'First Amendment to Lease', note: null, created_at: iso(Y - 2, 6, 30) },
+      { id: 'doc-4', owner_id: DEMO_USER.id, entity_type: 'insurance_policy', entity_id: 'ins-3', storage_path: `${DEMO_USER.id}/city-dental-coi.pdf`, filename: 'city-dental-coi.pdf', bytes: 96_000, mime: 'application/pdf', label: null, note: null, created_at: iso(Y - 1, 6, 1) },
+    ],
     // Bank-statement import (0063): the register + the "always match" rules both
     // start empty; the demo Import button offers a bundled sample CSV instead.
     statement_imports: [],
