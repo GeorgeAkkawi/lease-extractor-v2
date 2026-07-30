@@ -352,8 +352,7 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
    The centre reads the leased share, so the card states its headline even before a
    hover — a donut whose only content is in a tooltip says nothing at a glance — and the
    legend names every slice with its share, so the chart is readable without hovering at
-   all. The centre steps aside while a slice is hovered, or it would sit on top of the
-   panel that answers the hover. */
+   all. */
 .prop-mix{display:flex;align-items:center;gap:18px;cursor:default;
   border-top:1px solid var(--hair);margin-top:6px;padding-top:14px}
 .prop-mix-chart{position:relative;flex:none}
@@ -364,12 +363,15 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
   display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:3px 16px;align-content:center}
 .prop-mix-legend li{display:flex;align-items:baseline;gap:6px;min-width:0;font-size:11.5px;line-height:1.5}
 .prop-mix-swatch{flex:none;align-self:center;width:9px;height:9px;border-radius:2px;background:var(--line)}
-.prop-mix-swatch.is-more{background:transparent;border:1px dashed var(--line)}
+/* The hover panel, parked beside the chart (its `left` is set inline from the donut's
+   size). It stays put while the cursor moves anywhere inside the chart box — including
+   the hole — so crossing the middle no longer flashes it out and back. */
+.prop-mix-tip{position:absolute;top:0;left:var(--tip-x);z-index:20;pointer-events:none}
 /* Name and share sit side by side rather than pushed to opposite ends of the column —
    stretched across 160px the percentage read as belonging to the NEXT entry. */
 .prop-mix-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .prop-mix-pct{flex:none;font-variant-numeric:tabular-nums;color:var(--muted)}
-.prop-mix-more,.prop-mix-vacant{color:var(--muted)}
+.prop-mix-vacant{color:var(--muted)}
 .prop-mix-vacant .prop-mix-name{font-style:italic}
 .fin-mini{gap:14px 26px}
 
@@ -1085,6 +1087,9 @@ textarea.text-input{resize:vertical;min-height:90px}
   .prop-mix{flex-direction:column;align-items:stretch;gap:12px}
   .prop-mix-chart{align-self:center}
   .prop-mix-legend{grid-template-columns:1fr}
+  /* Beside the chart there is no room at this width, so the panel drops beneath it —
+     otherwise it would hang off the card's right edge. Touch rarely raises it at all. */
+  .prop-mix-tip{left:50%;top:calc(100% + 8px);transform:translateX(-50%)}
   .esc-row{grid-template-columns:1fr 1fr;gap:12px}
   .cam-row{grid-template-columns:1fr 110px 34px;gap:10px}
 }

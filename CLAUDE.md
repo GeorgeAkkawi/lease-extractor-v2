@@ -181,6 +181,47 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **Two more on the donut: the legend names EVERY tenant (the "+1 more" placeholder is gone) ·
+  and the hover panel no longer flashes out when the cursor crosses the middle of the chart** (George, reviewing
+  the round below: *"the property pie chart says +1 more and vacant - go with the vacant drop the +1. also when i
+  go into the ciricle of the pie chart like where is says 94% it resets the pop up which is kind of an eye sore,
+  the pop up should stay anywhere within the circle."*). Deployed: frontend Cloudflare version **`7c266983`**,
+  demo worker `9bc38d91`. **One component + its CSS — $0, NO DB migration, NO edge functions, no AI calls, no
+  tenant emails, nothing destructive.** Tests **944/944 across 109 files** (was 942 — +2).
+  - **1) The cap is gone, and the card doesn't grow.** `LEGEND_MAX = 8` rolled the ninth tenant into a "+N more"
+    row — and his Pershing Plaza has exactly nine, so the placeholder was hiding a real tenant while sitting in
+    the legend whose entire job is naming them. Measured before removing it: the legend renders **two 160px
+    columns** at 17px a row, inside a `.prop-mix` that is `align-items:center` against a **150px** chart — so ten
+    entries fill five rows (**85px**) and the block is still shorter than the donut beside it. The cap was buying
+    nothing.
+  - **2) The flash was recharts', and the fix is to stop using its tooltip.** `<Tooltip>` clears the moment the
+    cursor leaves a **sector** — and the donut's hole is off every sector, so passing over the centre figure blanked
+    the panel and brought it back. The active slice is now state the component owns: `onMouseEnter` on the `Pie`
+    sets it, and it is cleared only by `onMouseLeave` on the **chart wrapper**, so the hole, the centre figure and
+    the square's corners all keep the panel up. The recharts `<Tooltip>` import is gone entirely.
+  - **`TenantMixTip`'s props are unchanged** (`{active, payload, building}`) — it is now rendered directly rather
+    than by recharts, which left `chartTooltips.test.js` byte-identical and means the panel's own markup is still
+    covered by the one suite that can reach it.
+  - **Positioning survives the phone.** The panel's offset moved from an inline `left` to an inline **`--tip-x`**
+    custom property, so the ≤768px breakpoint can override it — beside the chart there is no room at that width,
+    so it drops **beneath** the donut instead of hanging off the card's right edge. Measured at 420px: inside the
+    card, **zero** page overflow.
+  - **Files:** `src/components/PropertyMixDonut.js` · `src/App.css` (`.prop-mix-tip` + the phone breakpoint;
+    `.prop-mix-swatch.is-more` and the `.prop-mix-more` colour rule deleted with the row they styled) ·
+    `src/pages/__tests__/propertyMixDonut.test.js` (+2). **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **944/944** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser at
+    1440px and 420px with actual pointer movement** (`page.mouse.move` around the arc, since a bounding-box hover
+    lands in the hole on a donut): on the big arc → *City Dental · 3,000 SF · 60.0% of building*; into the hole →
+    **same panel, still there**; onto the small arc → switches to *Bright Coffee Co.*; off the card → clears. The
+    panel's box and the chart's box do not intersect at either width, the centre still reads **100% leased** while
+    it is open, and the page has zero horizontal overflow. **Zero console errors or warnings.**
+  - **George: hard-refresh (Cmd+Shift+R).** Every tenant is named in the legend now, and the hover panel stays put
+    while you move around inside the donut.
+  - **Flag (no action needed):** a property with a very large number of tenants gets a taller legend rather than a
+    truncated one — at two columns it takes ~17px per pair, so even a twenty-tenant building adds about 85px to the
+    card. Say the word if you'd rather it capped and scrolled at some point.
+
 - **2026-07-30** — **Follow-ups on the same round: every alert row grows a real progress bar · insurance stops
   being silent about the buildings and tenants with NO certificate at all (and says whether anyone has asked) ·
   a hover panel replaces the native tooltip · and the property donut is bigger, names every slice, and no longer

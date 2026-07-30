@@ -8,7 +8,7 @@
 // fixed-size PieChart rather than a ResponsiveContainer (which measures 0×0 in jsdom and
 // draws nothing), so the sectors really render.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import PropertiesPage from '../PropertiesPage';
@@ -91,6 +91,61 @@ describe('Property cards — tenant mix donut', () => {
     } finally {
       await supabase.from('leases').update({ square_footage: before.square_footage }).eq('id', 'lease-1');
     }
+  });
+
+  it('names every tenant — a crowded building gets no “+N more” placeholder', async () => {
+    // George, 2026-07-30: "says +1 more and vacant - go with the vacant drop the +1."
+    // His Pershing Plaza has nine tenants, which is exactly where the old cap of eight
+    // bit — and the one entry it hid was a real tenant, which is the whole point of the
+    // legend. Seven extra leases here put Maple Plaza in the same shape.
+    const extra = Array.from({ length: 7 }, (_, i) => ({
+      id: `lease-mix-${i}`, property_id: 'prop-1', tenant_name: `Filler Tenant ${i + 1}`,
+      square_footage: 100, base_rent: 3000,
+    }));
+    await supabase.from('leases').insert(extra);
+    try {
+      const { container } = renderProps();
+      const legend = await waitFor(() => {
+        const el = cardFor(container, 'Maple Plaza')?.querySelector('.prop-mix-legend');
+        expect(el.querySelectorAll('li').length).toBeGreaterThan(8);
+        return el;
+      });
+      const names = [...legend.querySelectorAll('.prop-mix-name')].map((n) => n.textContent);
+      expect(names).toHaveLength(9);                       // 2 seeded + 7 filler
+      expect(names.some((n) => /more$/.test(n))).toBe(false);
+      expect(names).toContain('Filler Tenant 7');          // the one the cap used to eat
+    } finally {
+      await supabase.from('leases').delete().in('id', extra.map((l) => l.id));
+    }
+  });
+
+  it('keeps the hover panel up while the cursor crosses the donut’s hole', async () => {
+    // George, 2026-07-30: "when i go into the circle of the pie chart like where it says
+    // 94% it resets the pop up which is kind of an eye sore." recharts' own <Tooltip>
+    // clears the moment the cursor is off a sector, and the hole is off every sector — so
+    // the panel is state we own, cleared only when the pointer leaves the whole chart.
+    const { container } = renderProps();
+    const chart = await waitFor(() => {
+      const el = cardFor(container, 'Maple Plaza')?.querySelector('.prop-mix-chart');
+      expect(el.querySelector('path.recharts-sector')).toBeTruthy();
+      return el;
+    });
+    expect(chart.querySelector('.prop-mix-tip')).toBeNull();   // nothing before a hover
+
+    const [first] = chart.querySelectorAll('path.recharts-sector');
+    fireEvent.mouseOver(first);
+    await waitFor(() => expect(chart.querySelector('.prop-mix-tip')).toBeTruthy());
+    expect(chart.querySelector('.prop-mix-tip').textContent).toContain('City Dental');
+
+    // Off the slice, into the middle — the regression. The panel must NOT flash out.
+    fireEvent.mouseOut(first);
+    fireEvent.mouseOver(chart.querySelector('.prop-mix-center'));
+    expect(chart.querySelector('.prop-mix-tip')).toBeTruthy();
+    expect(chart.querySelector('.prop-mix-tip').textContent).toContain('City Dental');
+
+    // Leaving the chart entirely does clear it.
+    fireEvent.mouseLeave(chart);
+    await waitFor(() => expect(chart.querySelector('.prop-mix-tip')).toBeNull());
   });
 
   it('leaves the card’s existing figures exactly where they were', async () => {

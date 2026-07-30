@@ -1,10 +1,7 @@
-import { PieChart, Pie, Cell, Tooltip } from 'recharts';
+import { useState } from 'react';
+import { PieChart, Pie, Cell } from 'recharts';
 import { tenantMix, DONUT_PALETTE, CHART_SERIES, shortName } from '../lib/portfolioCharts';
 import { money, sf, pct, approx } from '../lib/format';
-
-// How many tenants the legend names before rolling the rest into "+N more". The vacant
-// slice is always kept — it's the whole reason the percentages are "of building".
-const LEGEND_MAX = 8;
 
 const sliceFill = (d, i) =>
   (d.kind === 'vacant' ? CHART_SERIES.vacant : DONUT_PALETTE[i % DONUT_PALETTE.length]);
@@ -25,6 +22,14 @@ const sliceFill = (d, i) =>
 // hover keeps the deeper read ($/SF and annual rent).
 export default function PropertyMixDonut({ property, leases, size = 150 }) {
   const mix = tenantMix(property, leases);
+  // Which slice the hover panel is describing. Held HERE rather than by recharts' own
+  // <Tooltip> because recharts clears it the moment the cursor is off a sector — and the
+  // donut's hole is off every sector, so crossing the middle made the panel flash out and
+  // back (George, 2026-07-30: "when i go into the circle … it resets the pop up which is
+  // kind of an eye sore"). Owning the state lets it survive until the pointer leaves the
+  // whole chart, which is the sticky behaviour he asked for.
+  const [activeId, setActiveId] = useState(null);
+
   // A donut of nothing is worse than no donut: a property with no sized leases and no
   // building size has nothing to divide.
   if (mix.length === 0) return null;
@@ -33,58 +38,61 @@ export default function PropertyMixDonut({ property, leases, size = 150 }) {
   const tenants = mix.filter((r) => r.kind === 'tenant');
   const vacant = mix.find((r) => r.kind === 'vacant');
   const leasedPct = tenants.reduce((s, r) => s + r.pct, 0);
-  const shown = tenants.slice(0, LEGEND_MAX);
-  const hidden = tenants.length - shown.length;
+  const active = mix.find((d) => d.id === activeId) || null;
 
   return (
     <div className="prop-mix" onClick={(e) => e.stopPropagation()} role="presentation">
       {/* Fixed size rather than a ResponsiveContainer: the donut is always `size` px, so
           there is nothing to measure — and a container that measures 0×0 (which is what
           happens under the phone breakpoint, where the donut is hidden) makes recharts
-          warn on every render. A fixed chart also actually DRAWS in jsdom. */}
-      <div className="prop-mix-chart" style={{ width: size, height: size }}>
+          warn on every render. A fixed chart also actually DRAWS in jsdom.
+
+          The mouseleave is on this WRAPPER, not on the sectors: everything inside it —
+          the hole, the centre figure, the square's corners — keeps the panel up. */}
+      <div
+        className="prop-mix-chart"
+        style={{ width: size, height: size }}
+        onMouseLeave={() => setActiveId(null)}
+      >
         <PieChart width={size} height={size}>
           <Pie
             data={mix} dataKey="sf" nameKey="name"
             cx="50%" cy="50%"
             innerRadius="56%" outerRadius="94%" paddingAngle={mix.length > 1 ? 1.5 : 0}
             stroke="var(--panel)" strokeWidth={1.5} isAnimationActive={false}
+            onMouseEnter={(_d, i) => setActiveId(mix[i]?.id ?? null)}
           >
             {mix.map((d, i) => <Cell key={d.id} fill={sliceFill(d, i)} />)}
           </Pie>
-          {/* PINNED beside the chart rather than following the cursor. On a chart this
-              small a cursor-tracked tooltip lands on top of the very slice being pointed
-              at — George, 2026-07-30: "if I hover over the chart … I don't see the chart."
-              A fixed spot also stops the panel jittering across a 150px target. It opens
-              over the legend, which has already done its job by the time you're hovering.
-              allowEscapeViewBox lets it out of the 150px chart box. */}
-          <Tooltip
-            content={<TenantMixTip building={building} />}
-            allowEscapeViewBox={{ x: true, y: true }}
-            position={{ x: size + 12, y: 0 }}
-            wrapperStyle={{ zIndex: 20, outline: 'none', pointerEvents: 'none' }}
-          />
         </PieChart>
         <div className="prop-mix-center" aria-hidden="true">
           <div className="prop-mix-figure">{Math.round(leasedPct * 100)}%</div>
           <div className="prop-mix-cap">leased</div>
         </div>
+        {/* PINNED beside the chart rather than following the cursor. On a chart this small
+            a cursor-tracked panel lands on top of the very slice being pointed at —
+            George, 2026-07-30: "if I hover over the chart … I don't see the chart." A
+            fixed spot also stops it jittering across a 150px target. It opens over the
+            legend, which has already done its job by the time you're hovering. */}
+        {active && (
+          <div className="prop-mix-tip" style={{ '--tip-x': `${size + 12}px` }}>
+            <TenantMixTip active payload={[{ payload: active }]} building={building} />
+          </div>
+        )}
       </div>
 
+      {/* Every tenant is named — no "+N more" row. It bought a shorter legend at the cost
+          of the one thing the legend is for (George, 2026-07-30: "says +1 more and vacant
+          - go with the vacant drop the +1"), and a two-column legend absorbs a nine-tenant
+          building without the card growing much at all. */}
       <ul className="prop-mix-legend">
-        {shown.map((d, i) => (
+        {tenants.map((d, i) => (
           <li key={d.id} title={`${d.name} — ${sf(d.sf)} · ${pct(d.pct)} of building`}>
             <span className="prop-mix-swatch" style={{ background: sliceFill(d, i) }} aria-hidden="true" />
             <span className="prop-mix-name">{shortName(d.name, 22)}</span>
             <span className="prop-mix-pct">{pct(d.pct)}</span>
           </li>
         ))}
-        {hidden > 0 && (
-          <li className="prop-mix-more">
-            <span className="prop-mix-swatch is-more" aria-hidden="true" />
-            <span className="prop-mix-name">+{hidden} more</span>
-          </li>
-        )}
         {vacant && (
           <li className="prop-mix-vacant" title={`Vacant space — ${sf(vacant.sf)} · ${pct(vacant.pct)} of building`}>
             <span className="prop-mix-swatch" style={{ background: sliceFill(vacant, 0) }} aria-hidden="true" />
