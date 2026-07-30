@@ -127,7 +127,19 @@ export function seed() {
       { id: 'esc-2', owner_id: DEMO_USER.id, lease_id: 'lease-3', effective_date: iso(Y - 1, 1, 1), escalation_type: 'fixed', escalation_value: 5000, new_base_rent: 125000, status: 'applied', applied_at: iso(Y - 1, 1, 1) },
     ],
     renewal_options: [
-      { id: 'ren-1', owner_id: DEMO_USER.id, lease_id: 'lease-2', option_label: 'Option 1', notice_by_date: iso(2025, 11, 30), term_months: 60, new_rent: 90000, annual_escalation_pct: 5, notes: 'Market-rate reset, then 5% annual increase.', status: 'pending' },
+      // Carries its OWN year-by-year rents (0071) rather than a +%/yr formula — the shape
+      // a lease actually prints, and the one the add-option dialog writes. They stay
+      // hidden until the option is renewed, then become real dated rent steps. The
+      // figures are the same 5%/yr climb the notes describe, so nothing about the
+      // displayed rent or the confirm dialog moves.
+      { id: 'ren-1', owner_id: DEMO_USER.id, lease_id: 'lease-2', option_label: 'Option 1', notice_by_date: iso(2025, 11, 30), term_months: 60, new_rent: 90000, annual_escalation_pct: null, notes: 'Market-rate reset, then 5% annual increase.', status: 'pending',
+        rent_schedule: [
+          { months_from_option_start: 0, annual: 90000 },
+          { months_from_option_start: 12, annual: 94500 },
+          { months_from_option_start: 24, annual: 99225 },
+          { months_from_option_start: 36, annual: 104186.25 },
+          { months_from_option_start: 48, annual: 109395.56 },
+        ] },
     ],
     expense_records: [
       { id: 'exp-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, taxes_total: 25000, cam_total: 18000, roof_total: 4000 },

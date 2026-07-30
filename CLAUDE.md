@@ -181,6 +181,95 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **Adding a renewal option moved into a dialog that can express a rent per YEAR of the option
+  period (remembered hidden, written only when it's exercised) · the decision buttons became one shape on every
+  row · AND the 299 MB of redundant storage copies were deleted** (George: *"go for the storage cleanup - and for
+  the renewal options tab can you take out all the boxes for adding an option and only have them appear when the
+  add option button is clicked. when that button is clicked you can create a popup that has the user answer all
+  those questions and it needs to be a bit more in depth like if the rent goes up yearly or within a certain term
+  amount the user should have to option to update that like 'add rent escalation as part of this option' and that
+  should be hidden but be rememberd so that when the renewal is applied the escalations save. lastly clean up the
+  format of the renewal decision - the renew not renewing email tenant is not symmetrical"*). Deployed: DB
+  migration `0071` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), frontend Cloudflare version
+  **`3c241e39`**, demo worker `74d1c5ee`, plus the one-time bucket cleanup. **$0, NO edge functions, no AI calls,
+  no tenant emails; 0071 is one nullable jsonb column + a guarded CHECK.** Tests **1020/1020 across 117 files**
+  (was 1005/115 — +15 across 2 new suites).
+  - **0) The storage cleanup ran** (approved 2026-07-30, dry run reviewed first as promised). **118 objects /
+    413.4 MB → 41 / 113.7 MB**; 77 redundant identical copies deleted, **zero** referenced paths touched, all **41**
+    distinct content hashes kept including **all 6** New Hong Kong versions. Read back after: 41 objects, 114 MB,
+    41 distinct hashes — free tier now **11%** used. The service-role key was piped straight from
+    `supabase projects api-keys` into the script's environment inside one shell command; it was never printed,
+    written to disk, or committed. **Known, harmless leftover:** ~40 abandoned `lease_files` rows keep dangling
+    `storage_path` values — unreachable from the UI either way, and their `extraction_raw` is untouched.
+  - **1) The add-option strip is gone; there's one button.** Six inputs sat permanently under the table, and two
+    of them (**New rent** and **or +%/yr**) were mutually exclusive with nothing saying so — filling both was
+    silently meaningless. New **`RenewalOptionModal`** asks the rent as **ONE question with four answers** —
+    **Flat · Rises yearly · Year by year · Not stated** — and only the answer you pick asks anything further.
+    Exactly one rent shape is written and the others are explicitly nulled, so an option can no longer carry two
+    contradictory answers (test-pinned both ways).
+  - **2) "Year by year" is the thing the old form could not express** — and it's the commonest thing a lease
+    actually prints. It renders **one row per option year, each labelled with the date it takes effect**
+    (*Year 1 · from June 1, 2031*), derived from the same `optionWindows` chain the table's Covers column uses —
+    so the dialog's dates ARE the dates written. A **"fill the rest from year 1 at N% a year"** control covers
+    George's *"if the rent goes up yearly"* without typing five boxes (browser-checked: 96,000 → 98,880 →
+    101,846 → 104,902 → 108,049 at 3%).
+  - **Hidden, then remembered — the load-bearing pair.** New nullable `renewal_options.rent_schedule` (`0071`),
+    shaped **identically** to what `buildRenewalScheduleSteps` already consumes from the AI read, so the
+    hand-entered and extracted paths speak one vocabulary. Nothing is written to the rent ledger while the option
+    is merely pending; `rollLeaseIntoRenewal` materializes the whole schedule as real dated `rent_escalations`
+    **only when the option is applied**. Test-pinned as a pair: a pending option leaves the escalations and the
+    lease byte-identical, and applying it books one step per priced year.
+  - **Why a column on the option rather than gated steps.** Gated steps past the term end (what the AI import
+    path writes) would have worked, but declining or deleting the option would strand them, and George asked for
+    *hidden*. On the option, the schedule dies with the option — pinned by a test that declines one and asserts
+    zero orphaned steps.
+  - **A seam this exposed, and the deliberate call.** `rollLeaseIntoRenewal` anchors its flat/+%-per-year year-1
+    step on the term end **itself** (2027-12-31), while `optionWindows` / `buildRenewalScheduleSteps` / the rider
+    `coversLabel` all treat the renewal as starting the **day after** (2028-01-01) — the tenant occupies through
+    the end date. The new schedule path uses the day-after convention, which is what lets the dialog's per-year
+    dates be the dates actually written. **The existing flat/% path was left exactly as it is** — moving it would
+    shift `lease_start` and every booked step by a day on every renewal, under live billing, for no ask. Pinned
+    by a test that asserts the flat option still dates year 1 on the term end. Flagged below.
+  - **The ±45-day dedupe does real work here:** in the caught-up branch the year-1 step booked alongside
+    `base_rent` and the schedule's own year-1 row are one day apart, so only one survives; and a lease whose
+    imported schedule already prints the option years (Ricki's) can't end up with two steps a fortnight apart.
+    Test-pinned.
+  - **3) The decision column is one shape on every row.** A `flex-wrap` row gave three buttons of three widths,
+    breaking wherever they happened to fit — different on every row, which is what George saw. Now a fixed
+    **two-column grid**: the two answers side by side, the follow-up (**✉ Email tenant**, or **Already renewed**
+    on a lapsed option) spanning both beneath. There is always exactly one follow-up, so every pending row has
+    the identical shape. **Measured in the browser across both demo rows: `Renew@1050/120` · `Not
+    renewing@1176/120` · `Already renewed@1050/246` — identical to the pixel.** A declined row drops the muted
+    "Not renewing" text that only repeated the Declined badge one cell to its left, so its ↩ Undo aligns under
+    Renew.
+  - **Demo parity.** `ren-1` now carries a year-by-year schedule instead of a `+%/yr` formula — the shape the
+    dialog writes. The figures are the same 5%/yr climb its notes already described, so **no displayed rent and
+    no confirm dialog moved**; only the code path exercised changed.
+  - **Files.** New: `supabase/migrations/0071_renewal_option_schedule.sql` · `src/components/RenewalOptionModal.js`
+    · tests `renewalOptionRentSchedule` (8), `renewalOptionModal` (7). Edited: `src/lib/{renewals,api,demo/store}.js`
+    · `src/components/RenewalOptionsEditor.js` · `src/App.css`. **No** edge function or view change (checked: no
+    view selects `renewal_options.*`, so rule #7 doesn't bite).
+  - **Verified:** unit **1020/1020** (`vitest run`); `npm run build` compiles; migration applied clean and read
+    back (`rent_schedule`, jsonb, nullable); live bundle confirmed to **carry** the backend ref and the demo bundle
+    grepped **free** of it; 200s on all four URLs with the edge serving the new hash (`assets/index-sN8gDVrh.js`).
+    **Driven in a real browser at 1440px and 420px:** the panel renders **zero** input boxes until Add option is
+    clicked; the dialog derives *Covers June 1, 2031 → May 31, 2036 · 5 years* while you type the term, chaining
+    correctly past the existing option; five dated year rows fill forward at 3%; saving produces a second row whose
+    Covers picks up exactly where the first ends; the three field inputs sit on one baseline (all at y=297) and the
+    dialog stacks to one column at 420px inside the viewport. **Zero console errors or warnings; zero horizontal
+    overflow at either width.**
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, **Renewal options** now shows one **+ Add option**
+    button; clicking it opens a dialog that shows the period the option would cover as you type its term, and lets
+    you write the rent for each year of that option. Those years stay hidden until you mark the option renewed —
+    then they become real rent steps. The Renew / Not renewing / ✉ buttons now line up the same way on every row.
+  - **Flags (no action needed):** ① A **flat** or **+%/yr** option still dates its first step on the term end
+    itself, one day before a year-by-year option's first step — pre-existing, deliberately not moved under a live
+    billing path. Say the word and I'll align them. ② **Term is now required** to add an option — it's what dates
+    the period and sizes the year rows; existing options with no term are untouched and still show their length
+    only. ③ Only the **hand-entered** path stores a schedule on the option; an AI-imported option still writes its
+    year rents as gated steps past the term end, as before. ④ Your storage sits at **114 MB of 1 GB** — the reason
+    to consider Pro is still **backups** (no point-in-time recovery on free tier), not space.
+
 - **2026-07-30** — **Every renewal option now states the period it covers as DATES · and an AI answer is
   rendered instead of having its markdown printed at you** (George: *"The renewal options need to be dated from
   when they start to when they end. Can we fix the formatting for the lease document assistant? There's a lot of

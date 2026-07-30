@@ -3,7 +3,7 @@
 // edit invalidates and refreshes Page 2.
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
-import { addMonths, optionLapsed, renewalFirstYearRent } from './renewals';
+import { addMonths, optionLapsed, renewalFirstYearRent, optionScheduleSteps } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
@@ -2898,6 +2898,51 @@ function isRenewalDecisionDue(lease, ren, today = new Date()) {
 //
 // Pure code — no email/notification. Returns the figures + business so the caller can
 // build the tenant email. Shared by confirmRenewal.
+const addDaysIso = (iso, n) => {
+  if (!iso) return null;
+  const d = new Date(String(iso) + 'T12:00:00');
+  if (isNaN(d)) return null;
+  d.setDate(d.getDate() + n);
+  return localDateIso(d);
+};
+
+// The option's own rent steps, dated and turned into rent_escalations rows. Only reached
+// when the option is actually applied — that is what makes a stored schedule "hidden but
+// remembered". A boundary that already has a step within 45 days is skipped, so a lease
+// whose imported schedule already prints the option years (Ricki's) can't end up with two
+// steps a fortnight apart — and, in the caught-up branch, so the year-1 step booked
+// alongside base_rent isn't booked twice.
+//
+// Year 1 starts the day AFTER the committed term ends: the tenant occupies through the
+// end date, so the renewal period begins the next day. Same convention as optionWindows
+// and buildRenewalScheduleSteps, which is what lets the dialog's per-year dates be the
+// dates actually written. (The flat / +%/yr paths below still date year 1 on the term end
+// itself — pre-existing, left alone rather than moved under a live billing path.)
+async function optionScheduleRows(leaseId, uid, termEndIso, schedule, knownEscalations = null) {
+  const anchor = addDaysIso(termEndIso, 1);
+  if (!anchor) return [];
+  const escs = knownEscalations || (await listEscalations(leaseId));
+  const dated = (escs || []).filter((e) => e.effective_date);
+  const daysApart = (a, b) => Math.round(Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+  const out = [];
+  for (const s of schedule) {
+    const d = addMonths(anchor, s.off);
+    if (!d) continue;
+    if (dated.some((e) => daysApart(String(e.effective_date), d) <= 45)) continue;
+    if (out.some((r) => daysApart(r.effective_date, d) <= 45)) continue;
+    out.push({
+      lease_id: leaseId,
+      owner_id: uid,
+      effective_date: d,
+      escalation_type: 'manual',
+      escalation_value: null,
+      new_base_rent: s.annual,
+      status: 'scheduled', // backfillLeaseToToday applies any that are already past
+    });
+  }
+  return out;
+}
+
 async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newRentOverride = null, today = new Date()) {
   const newStart = lease.lease_termination_date;              // new term begins as the old one ends
   const newEnd = addMonths(lease.lease_termination_date, ren.term_months || 12);
@@ -2905,6 +2950,10 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newR
   // First renewal-year rent — one shared rule (renewalFirstYearRent, ./renewals) so the
   // figure the confirm dialog warns about is exactly the figure written here.
   const pct = Number(ren.annual_escalation_pct) || 0;
+  // Rent steps the option itself carries (0071). Remembered on the option and made real
+  // only here — the landlord entered them when writing the option down, months or years
+  // before the tenant decided anything.
+  const schedule = optionScheduleSteps(ren.rent_schedule);
   const newRent = renewalFirstYearRent(ren, oldRent, newRentOverride);
   const prop = await getProperty(lease.property_id);
   if (prop?.corporation_id && !corpCache.has(prop.corporation_id)) {
@@ -2959,21 +3008,21 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newR
         }));
       }
     }
-    // 3b) materialize the option's annual step-ups (years 2..N) as scheduled escalations
-    // so a "+pct%/yr" option becomes real, dated rent steps (year 1 is the new base rent).
-    if (pct > 0 && newStart) {
-      const escRows = [];
-      for (let y = 1; y < years; y++) {
-        escRows.push({
-          lease_id: lease.id,
-          owner_id: uid,
-          effective_date: addMonths(newStart, y * 12),
-          escalation_type: 'percent',
-          escalation_value: pct,
-          new_base_rent: round2(newRent * Math.pow(1 + pct / 100, y)),
-          status: 'scheduled',
-        });
-      }
+    // 3b) materialize the rent movements INSIDE the option period. An explicit schedule
+    // the option carries wins over the +%/yr formula — it's what the lease actually
+    // prints. Either way this is the moment those steps stop being hypothetical.
+    if (newStart && (schedule.length || pct > 0)) {
+      const escRows = schedule.length
+        ? await optionScheduleRows(lease.id, uid, newStart, schedule)
+        : Array.from({ length: Math.max(0, years - 1) }, (_, i) => ({
+            lease_id: lease.id,
+            owner_id: uid,
+            effective_date: addMonths(newStart, (i + 1) * 12),
+            escalation_type: 'percent',
+            escalation_value: pct,
+            new_base_rent: round2(newRent * Math.pow(1 + pct / 100, i + 1)),
+            status: 'scheduled',
+          }));
       if (escRows.length) await rows(supabase.from('rent_escalations').insert(escRows));
     }
   } else {
@@ -2989,20 +3038,26 @@ async function rollLeaseIntoRenewal(lease, ren, uid, corpCache = new Map(), newR
     const dated = escs.filter((e) => e.effective_date);
     const daysApart = (a, b) => Math.round(Math.abs(new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
     const hasStepNear = (iso) => dated.some((e) => daysApart(String(e.effective_date), iso) <= 45);
-    const escRows = [];
-    for (let y = 0; y < years; y++) {
-      if (y >= 1 && pct <= 0) break;                 // flat option → only the year-1 step matters
-      const d = addMonths(newStart, y * 12);
-      if (!d || hasStepNear(d)) continue;
-      escRows.push({
-        lease_id: lease.id,
-        owner_id: uid,
-        effective_date: d,
-        escalation_type: y === 0 ? 'manual' : 'percent',
-        escalation_value: y === 0 ? null : pct,
-        new_base_rent: y === 0 ? newRent : round2(newRent * Math.pow(1 + pct / 100, y)),
-        status: 'scheduled',
-      });
+    let escRows;
+    if (schedule.length) {
+      // The option's own year-by-year rents, made real at the moment it's exercised.
+      escRows = await optionScheduleRows(lease.id, uid, newStart, schedule, escs);
+    } else {
+      escRows = [];
+      for (let y = 0; y < years; y++) {
+        if (y >= 1 && pct <= 0) break;               // flat option → only the year-1 step matters
+        const d = addMonths(newStart, y * 12);
+        if (!d || hasStepNear(d)) continue;
+        escRows.push({
+          lease_id: lease.id,
+          owner_id: uid,
+          effective_date: d,
+          escalation_type: y === 0 ? 'manual' : 'percent',
+          escalation_value: y === 0 ? null : pct,
+          new_base_rent: y === 0 ? newRent : round2(newRent * Math.pow(1 + pct / 100, y)),
+          status: 'scheduled',
+        });
+      }
     }
     if (escRows.length) await rows(supabase.from('rent_escalations').insert(escRows));
   }

@@ -1,10 +1,11 @@
 import { useState, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRenewals, createRenewal, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail } from '../lib/api';
+import { listRenewals, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail } from '../lib/api';
 import { money, money0, fmtDate } from '../lib/format';
 import { addMonths, optionLapseReason, renewalFirstYearRent, optionWindows, windowLabel } from '../lib/renewals';
 import { cmpRenewal } from '../lib/leaseTerm';
 import NotificationEmailModal from './NotificationEmailModal';
+import RenewalOptionModal from './RenewalOptionModal';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
 
@@ -96,8 +97,8 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   // happens here rather than relying on whatever order the query returned.
   const windows = optionWindows([...renewals].sort(cmpRenewal), termEnd);
 
-  const [form, setForm] = useState({ option_label: '', notice_by_date: '', term_months: '', new_rent: '', annual_escalation_pct: '', notes: '' });
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  // Adding an option opens a dialog — the fields no longer sit permanently under the table.
+  const [adding, setAdding] = useState(false);
   // When Renew is clicked on an option with no stated rent, we expand an inline row to
   // collect the agreed new base rent instead of applying blind: { id, value }.
   const [renewEntry, setRenewEntry] = useState(null);
@@ -207,23 +208,9 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
     finally { setEmailBusy(null); }
   }
 
-  const add = useMutation({
-    mutationFn: () =>
-      createRenewal({
-        lease_id: leaseId,
-        option_label: form.option_label || null,
-        notice_by_date: form.notice_by_date || null,
-        term_months: form.term_months === '' ? null : Number(form.term_months),
-        new_rent: form.new_rent === '' ? null : Number(form.new_rent),
-        annual_escalation_pct: form.annual_escalation_pct === '' ? null : Number(form.annual_escalation_pct),
-        notes: form.notes || null,
-      }),
-    onSuccess: () => { setForm({ option_label: '', notice_by_date: '', term_months: '', new_rent: '', annual_escalation_pct: '', notes: '' }); qc.invalidateQueries({ queryKey: ['renewals', leaseId] }); },
-  });
-
   return (
     <div>
-      <MutationError of={[add, remove, confirm, decline, restore]} />
+      <MutationError of={[remove, confirm, decline, restore]} />
       {notice && (
         <p className="note-msg warn" style={{ marginBottom: 12 }}>{notice}</p>
       )}
@@ -269,24 +256,18 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                     {rent.sub && <div className="cell-sub">{rent.sub}</div>}
                   </td>
                   <td><span className={`badge ${badge.cls}`} title={badge.title || undefined}>{badge.label}</span></td>
+                  {/* Every row's choices land in the same two columns at the same width —
+                      the two answers side by side, the follow-up action beneath them —
+                      so the column reads as one set of choices instead of a ragged wrap
+                      that changes shape per row. */}
                   <td style={{ whiteSpace: 'normal' }}>
                     {r.status === 'pending' ? (
-                      <div className="btn-row">
+                      <div className="opt-decide">
                         <button type="button" className="btn-sm" disabled={acting}
                           title={lapsed ? 'Apply this lapsed option — you’ll see exactly what it changes first' : 'Tenant is exercising this option — apply it (extends the term + new rent)'}
                           onClick={() => onRenewClick(r)}>
                           Renew
                         </button>
-                        {/* The third answer a lapsed option needs. "Renew" would extend the
-                            term again and book its old rent; "Not renewing" would be untrue.
-                            This records that it WAS exercised, back then, and changes nothing. */}
-                        {lapsed && (
-                          <button type="button" className="ghost btn-sm" disabled={acting}
-                            title="The tenant exercised this option years ago — record it as history without changing the term or rent"
-                            onClick={() => setHistEntry({ id: r.id, value: r.notice_by_date || lease?.lease_start || todayIso })}>
-                            Already renewed
-                          </button>
-                        )}
                         <button type="button" className="ghost btn-sm" disabled={acting}
                           title="Tenant is not exercising this option"
                           onClick={async () => {
@@ -304,8 +285,19 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                           }}>
                           Not renewing
                         </button>
-                        {!lapsed && (
-                          <button type="button" className="ghost btn-sm" disabled={emailBusy === r.id}
+                        {/* Exactly one follow-up action, spanning both columns. On a lapsed
+                            option it's the third answer that option needs: "Renew" would
+                            extend the term again and book its old rent, "Not renewing" would
+                            be untrue — this records that it WAS exercised, back then, and
+                            changes nothing. Otherwise it's the heads-up email. */}
+                        {lapsed ? (
+                          <button type="button" className="ghost btn-sm opt-wide" disabled={acting}
+                            title="The tenant exercised this option years ago — record it as history without changing the term or rent"
+                            onClick={() => setHistEntry({ id: r.id, value: r.notice_by_date || lease?.lease_start || todayIso })}>
+                            Already renewed
+                          </button>
+                        ) : (
+                          <button type="button" className="ghost btn-sm opt-wide" disabled={emailBusy === r.id}
                             title="Email the tenant that their renewal is coming up (a ready-to-send heads-up)"
                             onClick={() => emailApproaching(r.id)}>
                             {emailBusy === r.id ? '…' : '✉ Email tenant'}
@@ -313,8 +305,9 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                         )}
                       </div>
                     ) : r.status === 'declined' ? (
-                      <div className="btn-row">
-                        <span className="muted" style={{ fontSize: 12 }}>Not renewing</span>
+                      // The Status column one cell left already reads "Declined" — repeating
+                      // it here only pushed the one real action out of alignment.
+                      <div className="opt-decide">
                         <button type="button" className="ghost btn-sm" disabled={acting}
                           title="Undo — put this option back to Pending"
                           onClick={() => restore.mutate(r.id)}>
@@ -415,21 +408,26 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
         </div>
       )}
 
-      <form className="row" onSubmit={(e) => { e.preventDefault(); add.mutate(); }} style={{ alignItems: 'flex-end' }}>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 150 }}><span>Label</span><input className="text-input" placeholder="Option 1" value={form.option_label} onChange={set('option_label')} /></label>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 160 }}><span>Notice by</span><input className="text-input" type="date" value={form.notice_by_date} onChange={set('notice_by_date')} /></label>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 120 }}><span>Term (mo)</span><input className="text-input num" type="number" value={form.term_months} onChange={set('term_months')} /></label>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 130 }}><span>New rent</span><input className="text-input num" type="number" step="any" placeholder="flat $/yr" value={form.new_rent} onChange={set('new_rent')} /></label>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 120 }}><span>or +%/yr</span><input className="text-input num" type="number" step="any" placeholder="e.g. 5" value={form.annual_escalation_pct} onChange={set('annual_escalation_pct')} /></label>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 170 }}><span>Notes</span><input className="text-input" value={form.notes} onChange={set('notes')} /></label>
-        <button type="submit" disabled={add.isPending}>+ Add option</button>
-      </form>
-      <ul className="muted" style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, lineHeight: 1.6 }}>
+      {/* One button, not a permanent strip of six inputs. Everything an option needs —
+          including the rent steps inside its own period — is asked in the dialog, where
+          there's room to ask it properly (George, 2026-07-30). */}
+      <button type="button" onClick={() => setAdding(true)}>+ Add option</button>
+      <ul className="muted" style={{ fontSize: 12, marginTop: 10, paddingLeft: 18, lineHeight: 1.6 }}>
         <li><strong>Renew</strong> extends the term + sets the new rent; <strong>Not renewing</strong> closes the option (both undoable).</li>
         <li>On a <strong>Lapsed</strong> option, <strong>Already renewed</strong> records that it was exercised back then — history only, no change to the term or rent.</li>
-        <li><strong>New rent</strong> = a flat option rent; <strong>+%/yr</strong> = an annual increase applied at renewal.</li>
+        <li>An option can carry its own year-by-year rents. They stay hidden until it’s renewed, then become real rent steps.</li>
         <li>If an option’s rent reads <strong>Not listed</strong>, the lease left it to be negotiated — you’ll enter the agreed new base rent when you click <strong>Renew</strong>.</li>
       </ul>
+
+      {adding && (
+        <RenewalOptionModal
+          leaseId={leaseId}
+          renewals={renewals}
+          termEnd={termEnd}
+          baseRent={base}
+          onClose={() => setAdding(false)}
+        />
+      )}
 
       {emailNotif && (
         <NotificationEmailModal

@@ -88,6 +88,31 @@ export function renewalFirstYearRent(ren, currentRent, override = null) {
   return pct > 0 ? round2(old * (1 + pct / 100)) : old;
 }
 
+// The rent steps an option carries INSIDE its own period, normalized.
+//
+// George, 2026-07-30: "if the rent goes up yearly or within a certain term amount the
+// user should have to option to update that like 'add rent escalation as part of this
+// option' and that should be hidden but be remembered so that when the renewal is
+// applied the escalations save."
+//
+// Stored on the option (renewal_options.rent_schedule, migration 0071) and turned into
+// real dated rent_escalations ONLY when the option is applied — so nothing shows on the
+// ledger for a renewal the tenant hasn't exercised, and declining or deleting the option
+// takes its schedule with it instead of stranding steps.
+//
+// The shape matches what buildRenewalScheduleSteps already consumes from the AI read, so
+// the hand-entered and extracted paths speak one vocabulary. Offsets are months from the
+// option's OWN start (year 1 = 0, year 2 = 12 …); rows without a usable amount are
+// dropped rather than booked as $0.
+export function optionScheduleSteps(schedule) {
+  const seen = new Set();
+  return (Array.isArray(schedule) ? schedule : [])
+    .map((r) => ({ off: Math.trunc(Number(r?.months_from_option_start) || 0), annual: Number(r?.annual) }))
+    .filter((r) => r.off >= 0 && Number.isFinite(r.annual) && r.annual > 0)
+    .sort((a, b) => a.off - b.off)
+    .filter((r) => (seen.has(r.off) ? false : seen.add(r.off)));
+}
+
 function addDays(iso, n) {
   if (!iso) return null;
   const d = new Date(iso + 'T12:00:00');

@@ -950,6 +950,31 @@ tbody tr:last-child td{border-bottom:none}
    left-aligned and free to wrap at the arrow on a narrow column. */
 .opt-covers{white-space:normal;line-height:1.25}
 .opt-covers .cell-sub{white-space:normal}
+/* The decision column. A flex-wrap row gave every option row a different shape — three
+   buttons of three widths breaking wherever they happened to fit. Two fixed columns
+   instead: the two answers side by side, the follow-up beneath them spanning both, so
+   the same choice sits at the same place on every row. */
+.opt-decide{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;min-width:212px}
+.opt-decide>button{width:100%;padding-left:8px;padding-right:8px}
+.opt-decide .opt-wide{grid-column:1/-1}
+
+/* --- Add-a-renewal-option dialog ------------------------------------------ */
+.opt-fields{display:grid;grid-template-columns:1fr 130px 170px;gap:14px}
+.opt-fields .form-field{max-width:100%;margin-bottom:0}
+.opt-covers-note{margin:12px 0 0;font-size:12.5px;color:var(--ink)}
+.opt-covers-note.muted{color:var(--muted)}
+.opt-rent-block{background:var(--panel-2);border:1px solid var(--hair);border-radius:var(--radius);padding:14px 16px}
+.opt-rent-hint{font-size:12.5px;margin:10px 0 0;line-height:1.55}
+/* One row per option year, each labelled with the date it actually starts — a rent is
+   entered against when it takes effect, not against a bare row number. */
+.opt-years{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px}
+.opt-year{display:flex;flex-direction:column;gap:3px}
+.opt-year-n{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700}
+.opt-year-when{font-size:11px;color:var(--muted);min-height:14px}
+.opt-year .text-input{margin-top:3px}
+.opt-fill{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;font-size:12.5px}
+.opt-fill .text-input{width:64px}
+@media (max-width:640px){.opt-fields{grid-template-columns:1fr}}
 /* $/SF rates read as real figures, not fine print (matches the bolder SF treatment). */
 /* The two real figures on a sub-line — the monthly and the $/SF rate — set bold + ink
    so they read as figures, not annotations (George). The separator between them stays
