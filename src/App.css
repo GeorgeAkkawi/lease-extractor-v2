@@ -567,7 +567,8 @@ tbody tr:last-child td{border-bottom:none}
   border:1px solid var(--hair);background:transparent;color:var(--muted);
   font-size:9.5px;font-weight:700;letter-spacing:.08em;
   text-transform:uppercase;white-space:nowrap;vertical-align:1px}
-.lease-type-chip.gross{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+/* Deliberately NO gross/net variant: both states are the same kind of tag, so they get
+   one treatment and the word carries the fact (see LeaseTypeChip.js). */
 /* Estimated vs actual CAM & tax as a clearly distinct pair: the estimated column is
    warm-tinted (what you bill during the year), the actual column green-tinted (the
    real figures as expenses land) — so the two never blur together. */

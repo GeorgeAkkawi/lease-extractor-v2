@@ -66,9 +66,11 @@ describe('TenantShareTable — a gross lease carves, and says so', () => {
     // The total is the flat rent — NOT 60,000 + 18,800, which is what a net lease bills.
     expect(within(r).getByText('$60,000.00')).toBeTruthy();
     expect(within(r).queryByText('$78,800.00')).toBeNull();
-    // The row names itself so it doesn't read as a mis-priced net tenant.
+    // The row names itself so it doesn't read as a mis-priced net tenant — in the SAME
+    // chip a net row gets, since they answer the same question about the same row. Pinned
+    // exactly so no future round re-introduces a weight difference between the two.
     expect(r.querySelector('.lease-type-chip').textContent).toBe('Gross');
-    expect(r.querySelector('.lease-type-chip').className).toContain('gross');
+    expect(r.querySelector('.lease-type-chip').className).toBe('lease-type-chip');
   });
 
   it('makes the estimate un-editable and hides ⚖ Reconcile', async () => {
@@ -109,7 +111,8 @@ describe('TenantShareTable — a gross lease carves, and says so', () => {
     // Back to NNN — labeled, not blank: an unlabeled row would be ambiguous between
     // "triple net" and "nobody has recorded which this is".
     expect(r.querySelector('.lease-type-chip').textContent).toBe('NNN');
-    expect(r.querySelector('.lease-type-chip').className).not.toContain('gross');
+    // …and in the identical chip the gross row wears: one format, the word does the work.
+    expect(r.querySelector('.lease-type-chip').className).toBe('lease-type-chip');
     expect(within(r).queryByText(/flat \$60,000\.00 −/)).toBeNull();
   });
 });

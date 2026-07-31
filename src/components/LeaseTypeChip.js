@@ -7,13 +7,16 @@
 // left blank. An unlabeled row would be ambiguous between "triple net" and "nobody has
 // recorded which this is", and that ambiguity is exactly what the label exists to kill.
 //
-// Gross carries the accent because it's the one that changes how the money reads (the
-// share comes OUT of the rent instead of on top of it); NNN stays an outline chip,
-// being the default that most rows are.
+// ONE format for both states (George, 2026-07-31: "gross is not the same format as NNN
+// on the per tenant break down"). They answer the same question about the same row, so
+// they're the same kind of tag and read as one — the word is the whole difference. An
+// accent-filled Gross against an outline NNN made them look like two different kinds of
+// thing: a status flag on one row, a quiet label on the next. What actually marks the
+// gross row is the money beside it — the base cell's "flat $X − $Y expenses" sub-line.
 export default function LeaseTypeChip({ gross }) {
   return gross ? (
     <span
-      className="lease-type-chip gross"
+      className="lease-type-chip"
       title="Gross lease — one flat rent that already includes property taxes & CAM. This tenant's share is carved OUT of the rent, never billed on top of it."
     >
       Gross

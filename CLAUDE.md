@@ -181,6 +181,40 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Follow-up: NNN and Gross now wear the SAME chip — the word is the whole difference** (George,
+  reviewing the round below: *"gross is not the same format as NNN on the per tenant break down"*). Deployed: frontend
+  Cloudflare version **`9e517a64`**, demo worker `f6e49dee`. **One component + one CSS rule — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, zero billing-math change.** Tests **1108/1108 across 126 files**
+  (unchanged — two assertions rewritten to pin the new invariant instead of the old variant class).
+  - **He's right, and the reason is the same one that drove the last two rounds.** Two rounds ago I gave Gross a
+    filled accent chip and left NNN as a quiet outline one, reasoning that "the visual weight goes where the money
+    changes." But the two answer the **same question about the same row** — they are one label with two values, not
+    a status flag and a default. Styling them differently made them read as two different *kinds* of thing: an alert
+    on one row, a footnote on the next. That's the identical mistake On/Off made on the control that sets the fact
+    (fixed in the round below), reproduced one surface over.
+  - **One rule, no variant.** `.lease-type-chip.gross` is deleted and `LeaseTypeChip` renders one className for both
+    states; a comment in the CSS says the absence is deliberate, so the variant can't be "restored" as a tidy-up.
+    Browser-measured on both rows: colour, background, border, font-size, weight, letter-spacing, padding, radius and
+    rendered height are **byte-identical** — only the word differs.
+  - **Nothing is lost from the scan.** What actually marks a gross row is the money beside it: the base cell already
+    carries *"flat $60,000.00 − $18,800.00 expenses"*, the Estimated cell reads *included in rent*, and the Reconcile
+    slot states the reason. The chip's job was only ever to name which of the two the row is.
+  - **The invariant is now test-pinned rather than asserted in prose:** both cases assert `className === 'lease-type-chip'`
+    exactly (was `toContain('gross')` / `not.toContain('gross')`), so a future round that re-introduces a weight
+    difference fails the suite instead of shipping.
+  - **Files.** `src/components/LeaseTypeChip.js` · `src/App.css` · test `grossShareTable` (2 assertions).
+    **No** migration, edge function, api, page or demo-seed change — all three tenant lists render the shared
+    component, so the Ledger and the Leases page followed with no edit.
+  - **Verified:** unit **1108/1108** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser against
+    the deployed demo at 1440px and 420px, through the app's OWN router:** the breakdown's Bright Coffee **Gross** and
+    City Dental **NNN** chips return one identical computed-style signature, the Ledger's pair returns the same
+    signature again, and the Totals band stays correctly unlabeled. **Zero horizontal overflow at either width; zero
+    console errors or warnings.** (One deploy-propagation race hit and waited out: the demo edge served a stale
+    `index.html` for ~30s.)
+  - **George: hard-refresh (Cmd+Shift+R).** Both tags now look the same on every tenant list — the only difference is
+    whether it says NNN or Gross.
+
 - **2026-07-31** — **The expense structure is now PICKED (NNN / Gross), not switched on — and the statement importer
   says out loud why it read no estimate for a gross tenant** (George, reviewing the round below: *"is it connected to
   bank statement import as well so the import knows which tenants are gross? it shouldnt say gross lease on or off it
