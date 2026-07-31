@@ -632,6 +632,14 @@ function demoExtractAddendum() {
       est_tax_annual: null,
       est_roof_annual: null,
       est_quote: 'Real Estate Taxes & CAM: $1,500.00',
+      // The rider also RE-SIZES the premises — read all along for the $/SF arithmetic and
+      // then thrown away, so a tenant's CAM and tax share went on billing the old size. It
+      // is the numerator of that split, so the review screen asks before it re-splits.
+      // A surrender rather than an expansion on purpose: the seeded building is fully let,
+      // so an expansion would over-let it (shares summing past 100%) and read as a bug.
+      // This fits, and puts the vacant-space row on the Financials breakdown too.
+      new_square_footage: 1600,
+      square_footage_quote: 'Tenant surrenders the rear storage area, reducing the Premises to 1,600 rentable square feet',
       // The rider recites the rent clause it replaces — the defining habit of the genre,
       // and the shape that used to arrive as a second live rent period. Recognized and
       // reported, never applied.
@@ -644,6 +652,7 @@ function demoExtractAddendum() {
         `• RENT — $11,000.00/month from January 1, ${y}, rising three percent (3%) on January 1, ${y + 2}.`,
         '• RENEWAL / EXTENSION OPTIONS THIS RIDER GRANTS — none.',
         '• TENANT — not assigned; the tenant is unchanged.',
+        '• PREMISES — reduced to 1,600 rentable square feet; the rear storage area is surrendered (Paragraph 5).',
         '• OTHER — Real Estate Taxes & CAM stated at $1,500.00 per month.',
         '',
         'VERDICTS: rent_change=yes; superseded_quote=yes; term_extension=yes; extension_months=none; ' +
@@ -660,6 +669,8 @@ function demoExtractAddendum() {
       `   January 1, ${y} (annual base rent $132,000.00).`,
       `3. Escalation. Base rent increases three percent (3%) on January 1, ${y + 2}.`,
       '4. Real Estate Taxes and Additional Rent. As described in the first Addendum.',
+      '5. Premises. Tenant surrenders the rear storage area, reducing the Premises to',
+      '   1,600 rentable square feet.',
       '',
       'Monthly Figures',
       '        Base Rent:                    $11,000.00',

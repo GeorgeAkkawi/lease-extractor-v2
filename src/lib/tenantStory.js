@@ -22,7 +22,7 @@
 
 // Events that belong in a tenant's story — things that happened TO the tenancy.
 export const STORY_EVENTS = [
-  'tenant_assigned', 'term_extended', 'renewal_confirmed', 'renewal_declined',
+  'tenant_assigned', 'term_extended', 'premises_resized', 'renewal_confirmed', 'renewal_declined',
   'renewal_reopened', 'rent_abated', 'rent_stepped', 'lease_created', 'insurance_requested',
 ];
 

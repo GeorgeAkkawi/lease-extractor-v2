@@ -181,6 +181,89 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **A rider that re-sizes the premises is finally read as one: the extractor already knew the
+  square footage and threw it away, so a tenant's CAM and tax share went on billing the old size** (George:
+  *"is there a way for the rider ai extraction to notice when the squarefootage of a property increaes or
+  decreases and apply it to the lease terms?"*; asked how a mid-term change should hit the split he said *"im
+  really not sure here"*, so the call was mine — see the trade-off below). Deployed: `extract-addendum` edge fn
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`a4225a52`**, demo worker `fe437e2e`.
+  **$0 — the size rides the EXISTING rent-supplement call, so no new AI call and no new per-rider cost; NO DB
+  migration** (`leases.square_footage` has existed since 0001), no tenant emails, nothing destructive. Tests
+  **1057/1057 across 121 files** (was 1043/119 — +14 across 2 new suites).
+  - **The answer to his question was "it already reads it".** `RENT_SCHEMA` has carried `square_footage` — *"the
+    leased area in square feet exactly as written"* — all along, and `index.ts:533` used it three times (to
+    annualize a $/SF row, a superseded quote, and a stated CAM estimate) and then **never merged it onto
+    `parsed`**. It didn't even leave the edge function. Exactly the shape of the 7/24 CAM-estimate bug: read
+    fine, no field to land in. The **lease import** path writes `square_footage` (`api.js:1455`); only the rider
+    path dropped it.
+  - **Why it isn't a one-line fix, and the detail that decided the design.** `square_footage` is the numerator of
+    the CAM / tax / roof split — `v_tenant_shares` computes
+    `share_pct = square_footage / coalesce(nullif(p.building_sf,0), pt.total_sf)`. So the blast radius turns
+    entirely on whether a building size is entered: **with one** (Pershing 13,750, Joliet 13,000) the denominator
+    is fixed and only that tenant re-splits → `resyncLeaseBilling`; **without one** (401 S Main) the denominator
+    is Σ leased SF, so re-sizing one tenant **re-splits every tenant on the property** → `resyncPropertyBilling`.
+    That is the same distinction the 2026-07-27 carry-through rule already draws, and `square_footage` was
+    already in `BILLING_FIELDS`, so hand-editing it on the lease page has always carried through correctly — the
+    rider path just needed to route through the same call rather than invent a third one. Both branches are
+    test-pinned, including that the OTHER tenant's stored invoice moves in the no-building-size case.
+  - **The trade-off George was unsure about, and the call I made.** `leases.square_footage` is a **single current
+    value with no history** — unlike rent, which has the escalation ledger behind it — so a mid-year expansion
+    re-splits the WHOLE year rather than pro-rating from its date. On his own numbers that is real money: D&D
+    Dental going 2,156 → 3,000 SF at Pershing is $23,708 vs $32,989 of CAM & tax, and a July 1 change makes
+    whole-year ($32,989) and pro-rated ($28,349) differ by ~$4,600. **Chose whole-year**, because ① premises
+    changes overwhelmingly land at a renewal or extension boundary, which is a year edge where both answers are
+    identical, and ② it throws nothing away: the rider's `effective_from` is already stored (added 7/30), so
+    pro-rating later is a pure computation change on data already on file. The alternative costs a migration plus
+    a JS↔SQL twin inside `v_tenant_shares` — and twins are precisely what this codebase drifts on. **The card
+    says so in plain words** rather than leaving it implicit.
+  - **Recital vs operative — the same distinction `superseded` draws for rent.** A rider constantly restates the
+    existing area in a recital (*"the Premises, containing approximately 2,156 square feet, as more fully
+    described in the Lease"*), which changes nothing. So the size CHANGE gets its own field —
+    `new_square_footage` + `square_footage_quote`, both nullable, taking the schema from 8 → **10 of the 16-union
+    ceiling** — and the prompt is explicit that a recital leaves it null, and that a rider stating only the area
+    ADDED must not have a total guessed for it. The review card is then ticked **only when the figure differs
+    from the size on file**; an unchanged figure is filled but left unticked, and `applyAddendum` treats a
+    matching size as a no-op (no write, no history event, no re-split) — test-pinned.
+  - **The $/SF arithmetic got quietly more correct too.** A rider that expands the premises and then prices rent
+    at "$22.00 PSF" means the NEW area, so `resized || recited || leaseSqft` now leads the fallback chain.
+  - **Nothing to repair.** Checked all 7 live riders: not one mentions square footage (`rider_sf` null across the
+    board, and no `sq ft` string in any `addendum_text`). This is forward-looking only.
+  - **Registry entries filled:** a `premises_resized` history event (free-text `type`, so no migration) with the
+    prior and new area in `meta` and dated by the period the rider GOVERNS rather than the day it was signed ·
+    an `EVENT_LABEL` + `EVENT_BADGE` entry (`HistoryPage.js`) · and `STORY_EVENTS` (`tenantStory.js`), because a
+    tenant taking or giving back space belongs in their story, not the bookkeeping log.
+  - **Demo fixture — a deliberate reversal caught in the browser.** The canned rider first EXPANDED to 2,600 SF,
+    which drove the seeded property to *"5,600 SF leased of 5,000 SF building"* with shares summing to 112% —
+    the demo building is fully let, so any expansion over-lets it and reads as a bug. Switched to a **surrender
+    to 1,600 SF**: it fits, it exercises the contraction wording, and it puts the vacant-space row on the
+    breakdown. No seed change (moving `building_sf` would re-price the pinned demo bills).
+  - **Files.** New: tests `premisesResize` (10), `premisesResizeReview` (4). Edited:
+    `supabase/functions/extract-addendum/index.ts` (schema + prompt + merge) · `src/lib/api.js` (`applyAddendum`
+    write + carry-through) · `src/components/AddendumEditor.js` (the effect card, `formToChanges`, `canSave`,
+    intake pre-fill) · `src/pages/HistoryPage.js` · `src/lib/tenantStory.js` · `src/lib/demo/mockClient.js`.
+    **No** migration, view, or shared-edge-module change (so rule #5's fan-out doesn't bite — only
+    `extract-addendum` needed redeploying).
+  - **Verified:** unit **1057/1057** (`vitest run`); `npm run build` compiles; edge fn deployed clean with unauth
+    POST → **401**; live bundle confirmed to **carry** the backend ref and the demo bundle grepped **free** of
+    it; 200s on all four URLs. **Driven in a real browser against the deployed demo:** the card arrives ticked at
+    1,600 with *"Currently 2,000 SF on this lease"*, the rider's own words, and the whole-year note; saving moves
+    the lease to **1,600 SF**; Financials then reads **Bright Coffee 1,600 SF · 32.0%** (was 2,000 · 40.0%) with
+    **City Dental unchanged at 3,000 SF · 60.0%** — the fixed-denominator branch proven live — plus a **Vacant
+    space 400 SF · 8.0%** row and totals of 4,600 of 5,000; and the History timeline shows **PREMISES RE-SIZED —
+    "Premises reduced to 1,600 SF (was 2,000 SF) (First Amendment)"**. **Zero console errors or warnings; zero
+    horizontal overflow.** (Two deploy-propagation races hit and waited out: the demo edge served a stale
+    `index.html`, then a new `index.html` whose JS asset hadn't landed — both cleared on revalidation.)
+  - **George: hard-refresh (Cmd+Shift+R).** Upload a rider that changes how much space a tenant occupies and the
+    review screen now carries a **"Changes the size of the premises"** card, pre-filled with the new area and the
+    clause it came from. Confirming it re-splits that tenant's CAM and tax for the year.
+  - **Flags (no action needed):** ① The re-split covers the **whole year**, not just the months after the rider —
+    stated on the card. Say the word and I'll add pro-rating; the effective date is already stored. ② On a
+    property with **no building size entered** (401 S Main), re-sizing one tenant moves **every** tenant's share,
+    because the denominator is the leased total — entering a building size makes it behave like Pershing.
+    ③ A rider that states only the space **added** ("plus 400 square feet") leaves the field blank rather than
+    guessing a total; type the new total yourself. ④ Existing riders are untouched — re-upload one only if you
+    want its size change picked up.
+
 - **2026-07-30** — **A renewal option's notice deadline is now entered the way the lease writes it — "180 days
   before" — and the date is worked out for you** (George: *"for the renewal tab make sure i can click into notice
   by and change the duration to something specific like how many months before"*). Deployed: DB migration `0072`

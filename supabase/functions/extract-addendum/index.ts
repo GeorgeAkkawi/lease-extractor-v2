@@ -125,9 +125,15 @@ const SYSTEM_ASSIGNMENT =
 const RENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['square_footage', 'rent_schedule', 'abatements', 'expense_estimates'],
+  required: ['square_footage', 'new_square_footage', 'square_footage_quote', 'rent_schedule', 'abatements', 'expense_estimates'],
   properties: {
     square_footage: { type: ['number', 'null'], description: 'the leased area in square feet exactly as written (raw number), else null' },
+    // The size CHANGE, kept deliberately separate from square_footage above. That one is
+    // read for arithmetic and is happily filled from a recital; this one must only be set
+    // when the rider actually RE-SIZES the premises, because it rewrites the lease's CAM
+    // and tax share. Same recital-vs-operative distinction `superseded` draws for rent.
+    new_square_footage: { type: ['number', 'null'], description: 'the NEW leased area in square feet if this rider CHANGES the size of the premises (expansion, contraction, adding or surrendering a suite), else null' },
+    square_footage_quote: { type: ['string', 'null'], description: 'the exact wording that changes the size, else null' },
     rent_schedule: {
       type: 'array',
       items: {
@@ -229,6 +235,18 @@ const SYSTEM_RENT =
   '= the leased area in square feet exactly as written (raw number), so we can turn any $/SF rate into ' +
   'an annual figure. We do ALL the arithmetic ourselves — never multiply. If the addendum sets no new ' +
   'rent, return an empty array.\n\n' +
+  'A CHANGE IN THE SIZE OF THE PREMISES. Riders often expand or shrink what the tenant occupies ' +
+  '("the Premises are hereby expanded to include Suite 102, so that the Premises shall contain ' +
+  '3,400 rentable square feet", "Tenant surrenders the storage area, reducing the Premises to 1,800 ' +
+  'square feet", "the Premises shall be re-measured at"). When and ONLY when the rider CHANGES the ' +
+  'size, set new_square_footage = the resulting TOTAL leased area in square feet (not the amount ' +
+  'added or given up — the total the tenant will occupy afterwards) and square_footage_quote = the ' +
+  'exact wording. This is the same distinction superseded draws for rent: a recital that merely ' +
+  'RESTATES the existing size ("the Premises, containing approximately 2,156 square feet, as more ' +
+  'fully described in the Lease") changes nothing — leave new_square_footage null. If the rider adds ' +
+  'space but states only the added area, add it to the size the lease already had ONLY when the rider ' +
+  'itself prints that prior figure; otherwise return the added area in square_footage_quote and leave ' +
+  'new_square_footage null rather than guessing a total.\n\n' +
   'LEASE-YEAR SCHEDULES. When the rider prices the rent by lease/extension YEAR ("Year 1", ' +
   '"Year 2", "the first year of the Extension Term") with NO printed calendar date, set that ' +
   'row\'s effective_date to null and set months_from_start = the offset in months from the ' +
@@ -530,7 +548,21 @@ Deno.serve(async (req) => {
     // ── Merge: code owns every derived number ────────────────────────────────────────
     if (rent) {
       if (Array.isArray(rent.abatements)) (parsed as any).abatements = rent.abatements; // free/reduced-rent windows the rider grants
-      const sqft = (Number(rent.square_footage) || 0) || leaseSqft;
+      // A rider that RE-SIZES the premises and then prices the rent "$22.00 PSF" means the
+      // NEW size, so that figure leads. Falls back to whatever size the rider recites, then
+      // to the lease's own — the order it has always used.
+      const resized = Number((rent as any).new_square_footage) || 0;
+      const sqft = resized || (Number(rent.square_footage) || 0) || leaseSqft;
+
+      // Surface the change itself. Until now this was read, used for the arithmetic above
+      // and dropped on the floor — so a rider could expand a tenant's premises and the CAM
+      // and tax share (square_footage / building_sf) would silently keep billing the old
+      // size. Passed out as a proposal only: the review screen compares it against the
+      // lease and the landlord confirms it, exactly like every other effect.
+      if (resized > 0) {
+        (parsed as any).new_square_footage = resized;
+        (parsed as any).square_footage_quote = (rent as any).square_footage_quote || null;
+      }
 
       // Split the quoted clause off the operative one BEFORE any of it becomes a schedule.
       const allRows = Array.isArray(rent.rent_schedule) ? (rent.rent_schedule as any[]) : [];

@@ -27,6 +27,7 @@ const blankForm = () => ({
   // different: the Denny's rider is dated June 2023 and governs Jul 2023 → Apr 2033.
   label: '', amendment_date: '', effective_from: '', effective_to: '', summary: '',
   fx_extension: false, fx_rent: false, fx_option: false, fx_assignment: false, fx_abatement: false, fx_estimate: false,
+  fx_sqft: false, new_square_footage: '', sqft_quote: '',
   est_camtax: '', est_roof: '', est_quote: '',
   new_termination_date: '',
   rentSteps: [], // [{ effective_date, new_base_rent, escalation_type, escalation_value }]
@@ -163,6 +164,10 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
         effectiveDate: f.amendment_date || null,
       };
     }
+    // The size of the premises. applyAddendum ignores a figure equal to what the lease
+    // already carries, so re-confirming an unchanged size is a no-op rather than a
+    // pointless re-split of the year's CAM.
+    if (f.fx_sqft && f.new_square_footage !== '') changes.squareFootage = numOrNull(f.new_square_footage);
     if (f.fx_abatement && f.ab_start && f.ab_months !== '') {
       const primary = { start_date: f.ab_start, months: Number(f.ab_months), kind: f.ab_kind, value: numOrNull(f.ab_value), note: f.ab_note || null };
       changes.abatements = [primary, ...(f._aiAbatements || []).map((a) => ({
@@ -274,6 +279,13 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
         ab_value: ab0?.value ?? '',
         ab_note: ab0?.note || '',
         _aiAbatements: abs.slice(1),
+        // A re-sized premises. Ticked only when the figure the rider states actually
+        // DIFFERS from the size on file — a rider that merely recites the existing area
+        // shouldn't ask the landlord to confirm a change that isn't one. Filled either
+        // way, so an unticked card still shows what was read.
+        fx_sqft: fields.new_square_footage != null && Number(fields.new_square_footage) !== Number(squareFootage),
+        new_square_footage: fields.new_square_footage != null ? String(fields.new_square_footage) : '',
+        sqft_quote: fields.square_footage_quote || '',
         fx_estimate: estCamTax != null || fields.est_roof_annual != null,
         est_camtax: estCamTax != null ? String(estCamTax) : '',
         est_roof: fields.est_roof_annual != null ? String(fields.est_roof_annual) : '',
@@ -312,9 +324,11 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
   };
   const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim(), squareFootage, currentTermEnd })); };
 
-  const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment || form.fx_abatement || form.fx_estimate;
+  const anyEffect = form.fx_extension || form.fx_rent || form.fx_option || form.fx_assignment || form.fx_abatement || form.fx_estimate || form.fx_sqft;
   const canSave =
     (!form.fx_estimate || form.est_camtax !== '' || form.est_roof !== '') &&
+    // A size that isn't a positive number would re-split the year's CAM by zero.
+    (!form.fx_sqft || Number(form.new_square_footage) > 0) &&
     // A real calendar date, not just a filled box: an impossible one (a date input shows
     // it blank while the value is still there) would fail the write, not the form.
     (!form.fx_extension || !!isoDateOrNull(form.new_termination_date)) &&
@@ -562,6 +576,30 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
               </EffectCard>
 
               {/* Sets the CAM & tax estimate */}
+              {/* Changes the size of the premises */}
+              <EffectCard on={form.fx_sqft} onToggle={toggle('fx_sqft')} title="Changes the size of the premises"
+                hint="The tenant took on more space, or gave some back. This is the number the CAM, tax and roof shares are split by — saving it re-splits what this tenant is billed for the year.">
+                <div className="field-grid">
+                  <label className="form-field" style={{ marginBottom: 0 }}>
+                    <span>New size (SF)</span>
+                    <input className="text-input num" type="number" min="1" step="any" placeholder="e.g. 3400"
+                      value={form.new_square_footage} onChange={set('new_square_footage')} />
+                    <span className="field-note">
+                      {squareFootage
+                        ? `Currently ${Number(squareFootage).toLocaleString()} SF on this lease.`
+                        : 'No size on file for this lease yet.'}
+                    </span>
+                  </label>
+                </div>
+                {form.sqft_quote && (
+                  <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>From the rider: “{form.sqft_quote}”</p>
+                )}
+                <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                  Applies to the <strong>whole year</strong> — the share isn’t pro-rated from the date the rider
+                  takes effect, so this year’s CAM and tax are split at the new size throughout.
+                </p>
+              </EffectCard>
+
               <EffectCard on={form.fx_estimate} onToggle={toggle('fx_estimate')} title="Sets the CAM &amp; tax estimate"
                 hint="What the tenant pays toward real-estate taxes and CAM during the year. Saved on the lease and billed from here on — the actual expenses only settle it at year-end ⚖ Reconcile.">
                 <div className="field-grid">

@@ -1520,6 +1520,28 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
     });
   }
 
+  // A change in the SIZE of the premises — the tenant expanded into the next suite, or
+  // gave space back. Written before everything below it because square_footage is the
+  // numerator of the CAM / tax / roof split (v_tenant_shares:
+  // square_footage / coalesce(nullif(building_sf,0), Σ leased SF)), so every figure the
+  // rest of this function derives has to be computed against the new size. The stored
+  // invoice does NOT rebuild itself, so the carry-through runs at the end — see there
+  // for why it is sometimes property-wide.
+  const newSqft = Number(changes.squareFootage);
+  const priorSqft = Number(lease?.square_footage) || null;
+  const sizeChanged = newSqft > 0 && newSqft !== priorSqft;
+  if (sizeChanged) {
+    await updateLease(leaseId, { square_footage: newSqft });
+    await logHistoryEvent({
+      property_id: lease?.property_id || null, lease_id: leaseId, type: 'premises_resized', tenant_name: lease?.tenant_name || null,
+      description:
+        `Premises ${priorSqft && newSqft < priorSqft ? 'reduced' : 'expanded'} to ${newSqft.toLocaleString()} SF` +
+        `${priorSqft ? ` (was ${priorSqft.toLocaleString()} SF)` : ''}${addendum.label ? ` (${addendum.label})` : ''}`,
+      event_date: addendum.effective_from || addendum.amendment_date || null,
+      meta: { addendum_id: addendum.id, prior_sqft: priorSqft, new_sqft: newSqft },
+    });
+  }
+
   // Assignment / change of tenant — swap the tenant identity on the lease as of the
   // effective date, and keep the prior tenant in the building's history log.
   if (changes.assignment && changes.assignment.newTenantName) {
@@ -1610,6 +1632,23 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
       event_date: est.effectiveDate || addendum.amendment_date || null,
       meta: { addendum_id: addendum.id, cam_tax_annual: est.camTaxAnnual ?? null, roof_annual: est.roofAnnual ?? null },
     });
+  }
+
+  // Carry a size change through to the stored invoice. WHICH call is the load-bearing
+  // part, and it turns on whether the property has a building size entered:
+  //
+  //   building_sf set   → the denominator is fixed, so only THIS tenant's share moved.
+  //   building_sf null  → the denominator is Σ leased SF, so re-sizing one tenant
+  //                       re-splits EVERY tenant on the property.
+  //
+  // Both skip a closed year. Deliberately last, so it runs once against the finished
+  // lease rather than once per effect — an extension, a new rent and a resize in one
+  // rider settle together.
+  if (sizeChanged && lease?.property_id) {
+    const year = localDateIso(today).slice(0, 4);
+    const property = await getProperty(lease.property_id).catch(() => null);
+    if (Number(property?.building_sf) > 0) await resyncLeaseBilling(leaseId, lease.property_id, Number(year));
+    else await resyncPropertyBilling(lease.property_id, Number(year));
   }
 
   return backfillLeaseToToday(leaseId, today);

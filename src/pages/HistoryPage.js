@@ -18,6 +18,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 const EVENT_LABEL = {
   tenant_assigned: 'Tenant assigned',
   term_extended: 'Term extended',
+  premises_resized: 'Premises re-sized',
   renewal_confirmed: 'Renewal confirmed',
   renewal_declined: 'Renewal declined',
   renewal_reopened: 'Renewal reopened',
@@ -41,6 +42,7 @@ const EVENT_LABEL = {
 const EVENT_BADGE = {
   tenant_assigned: 'info',
   term_extended: 'good',
+  premises_resized: 'info',
   renewal_confirmed: 'good',
   renewal_declined: 'danger',
   renewal_reopened: 'warn',
