@@ -8,8 +8,9 @@
 // are surfaced in the review UI.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { cors } from '../_shared/cors.ts';
-import { callClaude, transcribeDocument, uploadFile, deleteFile, MAX_VISION_BYTES, Block } from '../_shared/anthropic.ts';
-import { extractPdfText, splitPdfIntoChunks, type PdfChunk } from '../_shared/pdf.ts';
+import { callClaude, uploadFile, deleteFile, MAX_VISION_BYTES, Block } from '../_shared/anthropic.ts';
+import { extractPdfText } from '../_shared/pdf.ts';
+import { transcribeScan } from '../_shared/transcribe.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
 import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom, annualizeOptionSchedule } from '../_shared/rentSchedule.js';
@@ -480,102 +481,11 @@ async function extractSupplement(content: Block[]): Promise<Record<string, any> 
   }
 }
 
-// TRANSCRIPTION OF A SCANNED LEASE — the single slowest read on a big scan. Its binding
-// cost is OUTPUT-generation TIME: the model visually reads each page and re-types it, and
-// writing ~600–700 tokens/page runs long (the 40s form-fill proves all pages RENDER fast;
-// it's the writing that's slow). A SINGLE serial call can only generate ~12–15 pages
-// before the edge function's ~150s wall clock, so a long scan (Busey Bank: renewal option
-// on p.32, rules & regs after) used to cache only its first pages — George: "the renewal
-// option, which is on page thirty two, did not get uploaded."
-//
-// Fix: for a multi-page PDF scan, split it into consecutive page-range chunks and
-// transcribe them CONCURRENTLY — each chunk is its own small PDF read by its own Haiku
-// call, so the wall-clock cost is ~ONE chunk (not the sum) and the WHOLE document is
-// captured. Because each chunk is physically small, the model transcribes it in full and
-// stops on its own (no page-counting to disobey, no mid-document truncation). Digital/
-// text PDFs skip all of this — their text layer is read for free, in full, already.
-//
-// Honest ceiling: up to MAX_TRANSCRIBE_CHUNKS × CHUNK_PAGES pages are cached per upload; a
-// scan beyond that caches its first N pages (with a note). A truly enormous scan can't be
-// transcribed verbatim in one 150s call at all — a digital/text PDF caches fully for free.
-const TRANSCRIBE_TIMEOUT_MS = 115_000; // per-transcription box; chunks run in parallel, so this bounds the WALL, not the sum
-const TRANSCRIBE_MAX_TOKENS = 12_000;  // single-call fallback: sized so generation reliably STOPS inside the box → non-null
-const CHUNK_PAGES = 10;                // pages per chunk (~7k tokens ≈ ~55s) — real headroom inside the budget, so a chunk rarely times out at all
-const CHUNK_MAX_TOKENS = 16_000;       // backstop only; a physical sub-PDF stops naturally well under this
-const MAX_TRANSCRIBE_CHUNKS = 9;       // still up to 90 pages fully cached per upload (9 × 10)
-const CHUNK_BUDGET_MS = 110_000;       // total per chunk ACROSS attempts, so a retry can never push past the edge's ~150s wall
-const CHUNK_MIN_RETRY_MS = 20_000;     // don't open a second attempt that couldn't plausibly finish
-
-function transcribeWithTimeout(model: string, docBlock: Block, ms: number, maxTokens = TRANSCRIBE_MAX_TOKENS): Promise<string | null> {
-  return Promise.race([
-    transcribeDocument(model, docBlock, { timeoutMs: ms, maxTokens }),
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
-  ]);
-}
-
-// Transcribe a scan to plain text for later Q&A. A single image, a small PDF, or a split
-// failure → ONE transcription over the whole document (unchanged behavior). A multi-page
-// PDF scan → parallel page-range chunks, each uploaded + transcribed concurrently and
-// stitched back in page order, so the ENTIRE lease is captured (not just the first pages).
-async function transcribeScan(bytes: Uint8Array, mediaType: string, fullDocBlock: Block, filename: string): Promise<string | null> {
-  const single = () => transcribeWithTimeout(MODEL, fullDocBlock, TRANSCRIBE_TIMEOUT_MS);
-  if (mediaType !== 'application/pdf') return single(); // a single photo/image — nothing to split
-
-  const split = await splitPdfIntoChunks(bytes, CHUNK_PAGES, MAX_TRANSCRIBE_CHUNKS);
-  if (!split || split.chunks.length <= 1) return single(); // small / undividable scan → one pass
-
-  const chunkIds: string[] = [];
-  try {
-    const parts = await Promise.all(split.chunks.map(async (chunk) => ({
-      chunk,
-      text: await transcribeChunk(chunk, filename, chunkIds),
-    })));
-    parts.sort((a, b) => a.chunk.startPage - b.chunk.startPage);
-    if (!parts.some((p) => p.text)) return single(); // every chunk failed → last-ditch single pass over the whole doc
-
-    // A chunk that still failed leaves an EXPLICIT gap marker in its own position — never a
-    // silent drop. Filtering failures out (the previous behavior) made a partial transcript
-    // read as a complete document: Khaled's 36-page Busey scan lost pages 1-15 to one timed-out
-    // chunk and cached as though the lease began mid-clause on page 16 — parties, term and the
-    // whole base-rent table gone, with nothing on screen to say so. An honest hole is far
-    // better than a plausible-looking lie.
-    let combined = parts
-      .map((p) => p.text?.trim() ||
-        `[Pages ${p.chunk.startPage}-${p.chunk.endPage} could not be read for search. Re-upload this lease to try again.]`)
-      .join('\n\n');
-    if (split.coveredPages < split.totalPages) {
-      combined += `\n\n[Only the first ${split.coveredPages} of ${split.totalPages} pages were transcribed for search. Upload a digital/text PDF of this lease for a full searchable copy.]`;
-    }
-    return combined;
-  } finally {
-    await Promise.all(chunkIds.map((id) => deleteFile(id))); // best-effort cleanup, in parallel
-  }
-}
-
-// One chunk, with a bounded second attempt. A chunk that fails FAST (a transient 429/5xx, or an
-// upload hiccup) leaves nearly the whole budget for a retry — that's the case worth rescuing, and
-// it's the cheap one. A chunk that fails by TIMEOUT has already spent its budget, so it gives up
-// rather than pushing the function past the edge's wall clock. Either way the caller marks the gap.
-async function transcribeChunk(chunk: PdfChunk, filename: string, chunkIds: string[]): Promise<string | null> {
-  const deadline = Date.now() + CHUNK_BUDGET_MS;
-  let fid: string | null = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const remaining = deadline - Date.now();
-    if (remaining < CHUNK_MIN_RETRY_MS) break;
-    try {
-      if (!fid) {
-        fid = await uploadFile(chunk.bytes, `${filename}-p${chunk.startPage}-${chunk.endPage}`, 'application/pdf');
-        chunkIds.push(fid); // registered immediately so the finally-block cleanup can't leak it
-      }
-      const block: Block = { type: 'document', source: { type: 'file', file_id: fid } };
-      const text = await transcribeWithTimeout(MODEL, block, remaining, CHUNK_MAX_TOKENS);
-      if (text && text.trim()) return text;
-    } catch {
-      // fall through to the retry, else to the caller's gap marker
-    }
-  }
-  return null;
-}
+// TRANSCRIPTION OF A SCANNED LEASE lives in ../_shared/transcribe.ts — the parallel
+// page-range chunking that captures a WHOLE big scan rather than its first ~15 pages
+// (2026-07-21). It moved out of this file so cache-lease-text, which repairs a lease
+// whose transcription failed at import, runs the SAME pipeline instead of a second copy.
+// ⚠ Both functions must be redeployed together whenever that module changes (CLAUDE.md §5).
 
 Deno.serve(async (req) => {
   const { preflight, json, serverError } = cors(req);
@@ -674,7 +584,7 @@ Deno.serve(async (req) => {
         // analyst + form reads below. Chunked for a big PDF scan so the whole document is
         // captured; best-effort + time-boxed, so it can never dominate the edge budget.
         // schema/system/maxTokens stay at the fields-only defaults for the form reads.
-        transcriptP = transcribeScan(bytes, mediaType, docBlock, fileRow.original_filename || fileRow.storage_path);
+        transcriptP = transcribeScan(MODEL, bytes, mediaType, docBlock, fileRow.original_filename || fileRow.storage_path);
       }
     }
 

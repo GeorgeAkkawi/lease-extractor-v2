@@ -37,7 +37,12 @@ export async function invokeFunction(name, body) {
     if (error.context?.status === 546) {
       message = 'The document took too long to read. Please try again — or if it’s a large scan, split the PDF or upload a smaller/lower-resolution copy.';
     }
-    throw new Error(message);
+    // Carry the HTTP status onto the thrown error so a caller can branch on it rather
+    // than string-matching the message. The "Review leases" sweep uses this to back off
+    // on a 429 instead of treating a rate limit as a permanent per-lease failure.
+    const err = new Error(message);
+    if (error.context?.status) err.status = error.context.status;
+    throw err;
   }
   return data;
 }

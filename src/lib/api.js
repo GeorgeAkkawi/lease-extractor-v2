@@ -298,6 +298,77 @@ export async function reviewLease(leaseId) {
   return ai_review;
 }
 
+// Below this a lease's stored transcript isn't a real document — it's a stub or
+// nothing. Mirrors MIN_USABLE_TEXT in the cache-lease-text edge function; the two are
+// the same judgement and must agree, or the sweep would send a lease for caching that
+// the function then declines to touch.
+export const MIN_USABLE_TEXT = 500;
+
+export const leaseNeedsText = (lease) => (lease?.lease_text || '').trim().length < MIN_USABLE_TEXT;
+
+// Fill leases.lease_text for a lease whose transcription never landed (the pre-2026-07-21
+// big-scan timeout). Writes only that column, refuses to overwrite a usable transcript,
+// and costs $0 when the file is a digital PDF or .docx — see the edge function's header.
+export const cacheLeaseText = (leaseId) => invokeFunction('cache-lease-text', { lease_id: leaseId });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Review a list of leases in one sweep, caching any lease's text first when it's missing
+// (a review over an empty document can only report "no text on file").
+//
+// Sequential ON PURPOSE. These are paid model reads and the per-user AI rate counter is
+// shared across every function (ai_rate_check, 0018 — keyed on user_id alone, no function
+// name), so firing 15 in parallel would trip the limit immediately and burn calls on
+// retries. One at a time also makes the progress line honest.
+//
+// Rate limits are retried, not failed: a 429 means "too fast", not "this lease can't be
+// reviewed". Any other error is recorded against that lease and the sweep carries on —
+// one unreadable document must never abandon the other fourteen.
+export async function reviewLeases(leases, { onProgress } = {}) {
+  const RATE_WAIT_MS = 20_000; // the limiter's window is 60s; a short wait clears a burst
+  const MAX_RATE_RETRIES = 3;
+  const results = [];
+
+  const call = async (fn) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (e?.status === 429 && attempt < MAX_RATE_RETRIES) {
+          await sleep(RATE_WAIT_MS);
+          continue;
+        }
+        throw e;
+      }
+    }
+  };
+
+  for (let i = 0; i < leases.length; i++) {
+    const lease = leases[i];
+    const name = lease.tenant_name || 'this lease';
+    onProgress?.({ done: i, total: leases.length, current: name });
+    let cached = false;
+    try {
+      if (leaseNeedsText(lease)) {
+        const res = await call(() => cacheLeaseText(lease.id));
+        cached = !res?.skipped;
+      }
+      const review = await call(() => reviewLease(lease.id));
+      results.push({
+        id: lease.id,
+        tenant_name: name,
+        ok: true,
+        cached,
+        flags: review.flags.length,
+      });
+    } catch (e) {
+      results.push({ id: lease.id, tenant_name: name, ok: false, cached, error: e?.message || String(e) });
+    }
+  }
+  onProgress?.({ done: leases.length, total: leases.length, current: null });
+  return results;
+}
+
 // Remove a tenant while preserving history: archive the lease into the
 // expired/renewed log with an outcome (Vacated/Terminated/Renewed), then delete
 // the active lease. The landlord keeps a complete record of past tenants.

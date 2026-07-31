@@ -11,6 +11,7 @@ import PropertyTabs from '../components/PropertyTabs';
 import { RowListSkeleton } from '../components/Skeleton';
 import LeaseTypeChip from '../components/LeaseTypeChip';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
+import ReviewLeasesButton from '../components/ReviewLeasesButton';
 import { money, psf, sf, fmtDate, approx } from '../lib/format';
 
 const CURRENT_YEAR = new Date().getFullYear();
@@ -130,6 +131,7 @@ export default function LeasesPage() {
         </div>
         <div className="head-actions">
           <button className="secondary" onClick={() => downloadRentRollXlsx({ leases, properties: [prop], fileLabel: prop?.name })} disabled={!leases.length || !prop}>⬇ Download rent roll</button>
+          <ReviewLeasesButton leases={leases} />
           <button className="secondary" onClick={() => setShowBldg((s) => !s)}>⛶ Building size</button>
           <button onClick={newLease}>+ Add tenant</button>
         </div>

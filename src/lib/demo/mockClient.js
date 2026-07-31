@@ -431,6 +431,15 @@ const functions = {
     if (name === 'review-lease') {
       return ok(demoReviewLease(body));
     }
+    if (name === 'cache-lease-text') {
+      // The seeded leases all carry lease_text, so the sweep never actually calls this
+      // in demo — it's here so a seed change (or a hand-cleared lease_text) degrades to
+      // a sensible answer instead of an unhandled-function error.
+      const lease = (db.leases || []).find((l) => l.id === body?.lease_id);
+      const text = String(lease?.lease_text || '').trim();
+      if (text.length >= 500) return ok({ skipped: 'already_cached', length: text.length });
+      return ok({ length: 0, source: 'transcription', tenant_name: lease?.tenant_name || null });
+    }
     if (name === 'extract-bank-statement') {
       // Canned PDF-lane transcription over the seeded tenants: clean deposits, a
       // garbled payee (the "always match" rule demo), tax/CAM withdrawals — two of

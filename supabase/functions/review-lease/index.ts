@@ -69,7 +69,17 @@ Deno.serve(async (req) => {
   const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
   try {
-    const limited = await enforceRateLimit(req, 10, 60);
+    // 30/min, matching ask-lease and ask-portfolio. Raised from 10 for the "Review
+    // leases" sweep, which reviews a whole property in one click and would otherwise
+    // trip its own limit partway down a 15-lease list.
+    //
+    // ⚠ The counter is SHARED per user across every AI function: ai_rate_check (0018)
+    // keys ai_rate_limit on (user_id, window_start) with no function name, so each
+    // function's `limit` argument is checked against one common count. The effective
+    // ceiling in a mixed sweep is therefore the LOWEST limit any participating function
+    // passes — which is why cache-lease-text carries 30 too. The client also backs off
+    // on a 429, so this is a cost guard, not the thing the sweep relies on.
+    const limited = await enforceRateLimit(req, 30, 60);
     if (limited) return limited;
 
     const { lease_id } = await req.json();

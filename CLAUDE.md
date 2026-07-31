@@ -181,6 +181,78 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting rounds 1+2: a lease whose text never cached can be repaired without re-uploading it, and one
+  confirmed click reviews every lease on a property** (George: *"okay lets start implementing the plan phase by phase"*, working
+  the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md`; rounds 1 and 2 were the two he green-lit
+  earlier with *"add the button but also cache the other 3 leases that arent cached"*). Deployed: NEW `cache-lease-text` edge fn,
+  `extract-lease` + `review-lease` redeployed, frontend Cloudflare version **`5e7b030f`**, demo worker `8a1769ce`.
+  **NO DB migration, no tenant emails, nothing destructive, no live-data change yet** (see the flag). Tests **1130/1130 across
+  127 files** (was 1119/126 — +11, one new suite).
+  - **The state, verified live before writing anything:** `ai_review` is null on **all 15 leases** — the ten-check red-flag
+    surface shipped 2026-07-29 and only fires automatically on *new* imports, so every existing lease predates it. Three have
+    `length(lease_text) = 0`: **Ricki's-Lyons** (Pershing Plaza), **Hair Salon** and **Vape Store** (Joliet). All three have a
+    stored file AND a complete `extraction_raw`, so their *fields* read fine at import and only the transcription came back
+    empty — the pre-2026-07-21 big-scan 546 wall-clock kill (Ricki's is named in the 07-02 log as the 12.9 MB / 36-page scan
+    that hit it). The parallel page-chunking fix landed *after* all three were imported, so re-running transcription now
+    simply succeeds.
+  - **1) `cache-lease-text` — the one missing step, and nothing else.** Re-uploading those leases would work but would also
+    re-run the paid analyst + form reads and re-open the review screen for terms that are already correct. The new function
+    takes a `lease_id`, resolves `leases.lease_file_id → lease_files.storage_path`, downloads under the **caller's own JWT**
+    (never the service role, so RLS scopes every read and the write), and **writes `lease_text` and nothing else** — no terms,
+    no rent, no dates, no `ai_review`. It can never move a billed figure.
+  - **Three refusals make it safe to re-run.** It won't overwrite a transcript that already looks usable (≥ 500 chars), so a
+    second click is a no-op rather than a paid re-read — with the deliberate consequence that a **partial** cache (the
+    pre-07-21 Busey shape, pages 16-36 with 1-15 missing) is left alone, because "don't destroy what's there" beats "might
+    improve it". It refuses cleanly when there's no document on record rather than inventing text. And an empty read is
+    **reported as a failure, never written** — writing `''` would leave the lease looking cached while the assistant still had
+    nothing to answer from, the exact silent-blank the 07-21 gap markers exist to prevent.
+  - **It tries the FREE path first**, exactly as `extract-lease` does: a digital PDF or a Word `.docx` carries its own text
+    layer, read locally with **no model call at all**. Only a real scan pays for transcription. So the quoted cost is a
+    ceiling, not a bill.
+  - **2) The transcription pipeline moved to `_shared/transcribe.ts`** — the 2026-07-21 parallel page-range chunking
+    (`CHUNK_PAGES 10`, `MAX_TRANSCRIBE_CHUNKS 9`, the bounded per-chunk retry, the `[Pages X-Y could not be read]` gap marker)
+    lifted out of `extract-lease` **verbatim** so both functions run one copy. Two copies of that would drift exactly like the
+    four copies of the estimate math did. §5 fan-out honoured: both importers redeployed in the same round, and a comment at
+    the old site says so.
+  - **3) ⚑ Review leases** — on every property's Leases page beside the rent-roll export. Confirm first, with the count and
+    the cost in the standard implications box (*"9 leases will be reviewed · 1 has no searchable text yet and will be read
+    first (free if the file is a digital PDF) · About 61¢ in total, one time · Nothing is written to any lease's terms — this
+    only fills the red-flag panel"*), then a live *"Reviewing 4 of 9…"* and a results line. Reuses `reviewLease` (`api.js`)
+    unchanged. A lease missing its text is **cached first, then reviewed** — order is load-bearing, since reviewing first would
+    report "no text on file" for a lease whose text we were about to fetch.
+  - **⚠ The constraint the plan didn't have, found in the SQL.** The plan flagged `review-lease`'s 10/min limit and said to
+    raise it. Reading `ai_rate_check` (0018) showed the sharper problem: it keys `ai_rate_limit` on **`(user_id, window_start)`
+    with no function name**, so the counter is **shared across every AI function per user** — each function's `limit` argument
+    is checked against one common count. The effective ceiling in a mixed sweep is therefore the **lowest** limit any
+    participating function passes, so raising only `review-lease` would have left `cache-lease-text` at 10 as the binding
+    constraint partway down the list. Both are now **30/min**, matching the Q&A functions.
+  - **A rate limit is retried, not failed.** `invokeFunction` swallowed the HTTP status, so a caller could only string-match
+    the message; it now carries `err.status`. The sweep waits 20s and retries the SAME lease on a 429 (up to 3 times) — a rate
+    limit means "too fast", never "this lease can't be reviewed". Any other error is recorded against that lease and the sweep
+    **carries on**: one unreadable document must never abandon the other fourteen. Sequential on purpose — these are paid reads
+    against a shared counter, so firing 15 in parallel would trip the limit immediately and burn calls on retries.
+  - **Files.** New: `supabase/functions/cache-lease-text/index.ts` · `supabase/functions/_shared/transcribe.ts` ·
+    `src/components/ReviewLeasesButton.js` · `src/lib/__tests__/reviewLeasesSweep.test.js` (11). Edited:
+    `supabase/functions/{extract-lease,review-lease}/index.ts` · `src/lib/{api,supabaseClient,demo/mockClient}.js` ·
+    `src/pages/LeasesPage.js`. **No** migration, view, RPC, CSS or demo-seed change.
+  - **Verified:** unit **1130/1130** (`vitest run`); `npm run build` compiles; all three edge fns deployed clean with unauth
+    POST → **401** on both new/changed ones; live bundle carries the backend ref and the button, demo bundle greps **free** of
+    it; 200s on all four URLs. **Driven in a real browser against the deployed demo:** the button reads *"About 8¢, one time"*,
+    the dialog states all four implications, the sweep runs to *"Reviewed 2 of 2 leases · 10 findings"*, and walking to a lease
+    shows **"Lease review · 5 points to look at"** populated. **Zero console errors.**
+  - **George: hard-refresh (Cmd+Shift+R), then click ⚑ Review leases on each property.** **Pershing Plaza** — 9 leases, 1 needs
+    its document read (Ricki's), ~61¢. **Joliet** — 5 leases, 2 need reading (Hair Salon, Vape Store), ~70¢. **401 S Main** —
+    1 lease, ~4¢. About **$1.35 for the whole portfolio**, one time. That fills the red-flag panel on all 15 and caches the
+    three missing lease texts in the same pass.
+  - **Flags:** ① **I could not run it on your live data from here, by design.** The sweep needs a signed-in user: `ai_rate_check`
+    returns false on a null `auth.uid()`, so a service-role token is correctly refused — which is the limiter working, not a
+    bug. The three clicks above are the live proof, and the read-back is `count(ai_review)` 0 → 15 and
+    `count(*) where length(lease_text) < 500` 3 → 0. ② **Acting on a flag is still out of scope** — in particular a
+    `cam_capped` lease still bills uncapped pro-rata, because a cap becoming a stored lease term feeding `billedComponents` is
+    a §2 choke-point change. Round 5 (the recoverability table) is where that surfaces. ③ A lease with a **partial** transcript
+    is deliberately left alone by the cache step; those carry a visible `[Pages X-Y could not be read]` marker and want a
+    re-upload instead.
+
 - **2026-07-31** — **A payee is learned by its NAME, not by the rail it arrived on — the importer had been remembering
   "PURCHASE VISA … ON" and "ELECTRONIC WITHDRAWAL"** (George: *"the learned payees system is not working its not
   assigning what i want it to figure out why"*). Deployed: frontend Cloudflare version **`f1d55ff1`**, demo worker
