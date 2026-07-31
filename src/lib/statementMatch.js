@@ -67,37 +67,66 @@ export function amountMatches(a, b) {
 }
 
 // Wording that names the payment RAIL, not the payee — it appears on every ACH /
-// wire / check line whoever sent the money. A noise token BREAKS a run exactly like
-// a digit does; it is never spliced out, because splicing would fuse two separate
+// wire / card / check line whoever sent the money. A noise token BREAKS a run exactly
+// like a digit does; it is never spliced out, because splicing would fuse two separate
 // runs into a phrase that matches neither line next month.
 //   "Online ACH Debit 9031521835 From Gustavo" → GUSTAVO (was "ONLINE ACH DEBIT",
 //   which every one of the landlord's ACH tenants also matched — so one rule
 //   swallowed six payees, last one saved wins).
+// Second round (2026-07-31, U.S. Bank): every bank writes its own rail vocabulary, and
+// this list only knew Chase's. "Electronic Withdrawal To WASTE MANAGEMENT" and "Debit
+// Purchase - VISA CITY OF*NAPERVIL On 012926" both hid the payee behind wording nothing
+// here broke on. `ON` earns its place because "On <date>" trails every card line — the
+// 3-character floor keeps it from ever being a pattern in its own right.
 const BANK_NOISE = new Set([
   'ORIG', 'CO', 'NAME', 'ID', 'DESC', 'DATE', 'ENTRY', 'DESCR', 'ACH', 'SEC',
   'CCD', 'PPD', 'WEB', 'TEL', 'TRACE', 'ONLINE', 'DEBIT', 'CREDIT', 'FROM', 'TO',
   'PMT', 'PAYMENT', 'PAYMENTS', 'DEPOSIT', 'DEPOSITS', 'TRANSFER', 'CHECK',
   'MOBILE', 'BANKING', 'EFT', 'XFER', 'REF', 'INDN', 'BANK', 'ACCT', 'ACCOUNT',
+  // U.S. Bank's wording, and the card/bill-pay rails generally.
+  'ELECTRONIC', 'WITHDRAWAL', 'WITHDRAWALS', 'PURCHASE', 'PURCHASES', 'PURCH',
+  'VISA', 'MASTERCARD', 'AMEX', 'POS', 'ATM', 'CARD', 'WIRE', 'ON',
+  'CHECKS', 'PRESENTED', 'CONVENTIONALLY', 'BUSINESS', 'BILL', 'PAY', 'ESS',
+  'PMTID', 'AUTOPAY', 'RECURRING', 'TRN', 'TRAN',
 ]);
 
-// The "always match {payee}" pattern suggested from one statement line: the longest
-// CONTIGUOUS run of tokens that are neither digits nor rail wording — contiguous
-// because matching is a plain `contains`, and check/reference numbers change every
-// month ("CHECK 1044 CITY DENTAL PC" → "CITY DENTAL PC" still matches CHECK 1045).
-// When only boilerplate survives, learn NOTHING (null) rather than a pattern that
-// would match every line on next month's statement.
-export function suggestRulePattern(description) {
-  const tokens = normalizeDesc(description).split(' ');
-  let best = [];
+// Every CONTIGUOUS run of tokens that are neither digits nor rail wording. Contiguous
+// because matching is a plain `contains`, and check/reference numbers change every month
+// ("CHECK 1044 CITY DENTAL PC" → "CITY DENTAL PC" still matches CHECK 1045).
+function payeeRuns(description) {
+  const out = [];
   let cur = [];
-  const flush = () => { if (cur.join(' ').length > best.join(' ').length) best = cur; cur = []; };
-  for (const t of tokens) {
+  const flush = () => { if (cur.length) out.push(cur.join(' ')); cur = []; };
+  for (const t of normalizeDesc(description).split(' ')) {
     if (!t || /\d/.test(t) || BANK_NOISE.has(t)) flush();
     else cur.push(t);
   }
   flush();
-  const pat = best.join(' ');
-  return pat.length >= 3 ? pat : null;
+  return out.filter((r) => r.length >= 3);
+}
+
+// The "always match {payee}" pattern suggested from one statement line. When only
+// boilerplate survives, learn NOTHING (null) rather than a pattern that would match
+// every line on next month's statement.
+//
+// `siblings` — every description on the SAME statement. This is the guarantee that does
+// NOT depend on the word list above, and it exists because the list has now been the bug
+// twice, one bank apart: the rail is what the statement's lines have in COMMON, and the
+// payee is what only its own line says. So the run present on the fewest lines wins, and
+// length only breaks a tie. A 1-arg call (no statement to compare against) keeps the
+// original longest-run behaviour exactly.
+export function suggestRulePattern(description, siblings = []) {
+  const runs = payeeRuns(description);
+  if (!runs.length) return null;
+  const others = (siblings || []).map((s) => normalizeDesc(s));
+  const hits = (run) => (others.length ? others.filter((d) => d.includes(run)).length : 0);
+  let best = null;
+  let bestHits = Infinity;
+  for (const run of runs) {
+    const h = hits(run);
+    if (h < bestHits || (h === bestHits && run.length > (best?.length || 0))) { best = run; bestHits = h; }
+  }
+  return best;
 }
 
 // The guarantee that doesn't depend on the word list above: a pattern is only a
@@ -106,11 +135,17 @@ export function suggestRulePattern(description) {
 //   candidates — [{ pattern, targetKey, ... }] the rules we'd like to learn
 //   lines      — [{ description, targetKey }] every line in the SAME statement that
 //                resolves to something (targetKey identifies the tenant/bucket)
+//   ownNames   — the landlord's OWN corporation names. A bank names the account holder
+//                on its own transfer lines, so a pattern that says "NASA Property LLC"
+//                is naming the landlord, not a payee — George's real statement learned
+//                exactly that as "always match → Ricki's-Lyons". One statement can't see
+//                the conflict (only one line carried it), so the screen needs telling.
 // A candidate whose pattern also appears on a line resolving to a DIFFERENT target
 // is boilerplate: learning it would point all of those lines at whichever saved
 // last. Reject it (and say so), keep the rest.
-export function screenRulePatterns(candidates = [], lines = []) {
+export function screenRulePatterns(candidates = [], lines = [], ownNames = []) {
   const norm = (lines || []).map((l) => ({ desc: normalizeDesc(l?.description), targetKey: l?.targetKey || null }));
+  const own = (ownNames || []).map((n) => normalizeDesc(n)).filter((n) => n.length >= 3);
   const keep = [];
   const rejected = new Map();
   for (const c of candidates || []) {
@@ -118,8 +153,9 @@ export function screenRulePatterns(candidates = [], lines = []) {
     if (pat.length < 3) continue;
     const hits = norm.filter((l) => l.desc.includes(pat));
     const conflicts = hits.filter((l) => l.targetKey && l.targetKey !== c.targetKey);
-    if (conflicts.length) {
-      if (!rejected.has(pat)) rejected.set(pat, { pattern: c.pattern, count: hits.length });
+    const isOwn = own.some((n) => pat.includes(n) || n.includes(pat));
+    if (conflicts.length || isOwn) {
+      if (!rejected.has(pat)) rejected.set(pat, { pattern: c.pattern, count: hits.length, own: isOwn });
     } else {
       keep.push(c);
     }

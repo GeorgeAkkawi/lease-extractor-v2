@@ -78,6 +78,16 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   // would CHANGE one), true/false = the landlord's explicit choice.
   const [estOverrides, setEstOverrides] = useState({});
 
+  // The payee a line will be remembered by. Bound to THIS statement's other descriptions,
+  // because the rail is what the lines have in common and the payee is what only one line
+  // says — a bank whose wording the stopword list doesn't know is caught by that alone.
+  // Every caller on this screen goes through it, so the "remembers X" hint on a row and
+  // the rule Save actually writes can never name two different things.
+  const payeeOf = useMemo(() => {
+    const descs = (parsed.transactions || []).map((t) => t.description);
+    return (d) => suggestRulePattern(d, descs);
+  }, [parsed.transactions]);
+
   // Draft rules from this session's "always" ticks re-apply to the OTHER lines of
   // this same import immediately (a garbled payee fixed once fixes the whole file).
   const draftRules = useMemo(() => {
@@ -86,14 +96,14 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       if (!ov?.always) continue;
       const txn = parsed.transactions[Number(i)];
       if (!txn) continue;
-      const pattern = suggestRulePattern(txn.description);
+      const pattern = payeeOf(txn.description);
       const resolved = resolvePick(ov.pick);
       // Stamp the statement's account hint so a same-session "always" fix outranks a
       // saved rule from a different account in the matcher's hint-preferred pass.
       if (pattern && resolved) out.push({ pattern, target_kind: resolved.kind, lease_id: resolved.lease_id || null, cam_label: resolved.label || null, property_id: expenseProp, account_hint: accountHint || null });
     }
     return out;
-  }, [overrides, parsed.transactions, expenseProp, accountHint]);
+  }, [overrides, parsed.transactions, expenseProp, accountHint, payeeOf]);
 
   const matched = useMemo(() => {
     if (!ctx) return null;
@@ -265,7 +275,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     const ruleByPattern = new Map();
     for (const r of resolved) {
       if (!r.checked) continue;
-      const pattern = suggestRulePattern(r.row.txn.description);
+      const pattern = payeeOf(r.row.txn.description);
       if (!pattern) continue;
       if (r.kind === 'tenant' && r.tenant) {
         ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, targetKey: targetKeyOf(r), property_id: r.tenant.property_id, target_kind: 'tenant', lease_id: r.tenant.lease_id, cam_label: null });
@@ -274,9 +284,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       }
     }
     const lines = resolved.map((r) => ({ description: r.row.txn.description, targetKey: targetKeyOf(r) }));
-    const { keep, rejected } = screenRulePatterns([...ruleByPattern.values()], lines);
+    const { keep, rejected } = screenRulePatterns([...ruleByPattern.values()], lines, ctx?.ownNames || []);
     return { keep: keep.map(({ targetKey, ...e }) => e), rejected };
-  }, [resolved, expenseProp]);
+  }, [resolved, expenseProp, payeeOf, ctx]);
 
   // CAM & tax estimates read from the statement: for each CHECKED tenant deposit tagged
   // to a month, back out CAM&tax = deposit − base − roof (deriveEstimateFromDeposit).
@@ -343,7 +353,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         } else if (r.kind === 'expense_other') {
           entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: r.label || 'Other', billable: false, hash: r.row.hash });
         } else if (r.kind === 'expense_tax') {
-          entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: taxLabel(r.row.txn.description), hash: r.row.hash });
+          entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: taxLabel(payeeOf(r.row.txn.description)), hash: r.row.hash });
         } else if (r.kind === 'expense_roof') {
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
         }
@@ -493,11 +503,11 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
 
       {monthGroups.map((g) => (
         <MonthGroup key={g.key} g={g} defaultOpen={monthGroups.length === 1 || g.needsReview > 0}>
-          <Group title={`Money in · ${g.moneyIn.length}`} rows={g.moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} onDraftLetter={draftShortfallLetter} />
-          <Group title={`Money out · ${g.moneyOut.length}`} rows={g.moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />
+          <Group title={`Money in · ${g.moneyIn.length}`} rows={g.moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} onDraftLetter={draftShortfallLetter} payeeOf={payeeOf} />
+          <Group title={`Money out · ${g.moneyOut.length}`} rows={g.moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} payeeOf={payeeOf} />
         </MonthGroup>
       ))}
-      {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />}
+      {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} payeeOf={payeeOf} />}
       {parsed.skippedLines.length > 0 && <SkippedGroup skipped={parsed.skippedLines} />}
 
       {(estimateSuggestions.length > 0 || grossDeposits.length > 0) && (
@@ -567,7 +577,10 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         )}
         {learned.rejected.length > 0 && (
           <div className="note-msg warn">
-            {learned.rejected.map((x) => `${x.count} lines share the wording “${x.pattern}”`).join('; ')} — that's your bank's own wording, not a payee, so it won't be remembered. These lines still import; name them individually under <strong>Learned payees</strong> if you want them matched automatically.
+            {learned.rejected.map((x) => (x.own
+              ? `“${x.pattern}” names your own company, not a payee`
+              : `${x.count} lines share the wording “${x.pattern}” — that's your bank's own wording, not a payee`)).join('; ')}
+            , so it won't be remembered. These lines still import; name them individually under <strong>Learned payees</strong> if you want them matched automatically.
           </div>
         )}
         {learned.keep.length > 0 && (
@@ -612,8 +625,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
 // The label a property-tax payment carries in the itemized list: the payee the bank
 // named, tidied ("COOK COUNTY TREASURER" → "Cook County Treasurer"), so three
 // instalments read as three recognizable lines instead of three identical rows.
-function taxLabel(description) {
-  const payee = suggestRulePattern(description);
+// Takes the already-resolved payee (from the screen's shared `payeeOf`) so the label and
+// the learned rule name the same thing.
+function taxLabel(payee) {
   if (!payee) return 'Property tax';
   return payee.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).slice(0, 60);
 }
@@ -683,7 +697,7 @@ function HeadRow() {
   );
 }
 
-function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket, onDraftLetter }) {
+function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket, onDraftLetter, payeeOf }) {
   if (!rows.length) return null;
   return (
     <div className="stmt-group">
@@ -692,7 +706,7 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, bucket
         <table className="stmt-table">
           <HeadRow />
           <tbody>
-            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} onDraftLetter={onDraftLetter} />)}
+            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} onDraftLetter={onDraftLetter} payeeOf={payeeOf} />)}
           </tbody>
         </table>
       </div>
@@ -700,14 +714,15 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, bucket
   );
 }
 
-function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = [], onNewBucket, onDraftLetter, dupe = false }) {
+function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = [], onNewBucket, onDraftLetter, payeeOf, dupe = false }) {
   const { row } = r;
   const txn = row.txn;
   const isIn = txn.direction === 'in';
   const txnMonth = monthOfDate(txn.date);
   // The wording this line would be remembered by, with the bank's rail words stripped —
-  // null when nothing distinctive survives, which the Always cell says out loud.
-  const payee = suggestRulePattern(txn.description);
+  // null when nothing distinctive survives. Resolved by the screen's shared `payeeOf`,
+  // so what the row says it remembers is exactly what Save writes.
+  const payee = payeeOf ? payeeOf(txn.description) : suggestRulePattern(txn.description);
   // The new-bucket mini-form, opened by picking "＋ New bucket…" in the dropdown.
   const [addingBucket, setAddingBucket] = useState(false);
   const [newName, setNewName] = useState('');
@@ -920,7 +935,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   );
 }
 
-function DupeGroup({ rows, ctx, year, closedYears, setOv, buckets, onNewBucket }) {
+function DupeGroup({ rows, ctx, year, closedYears, setOv, buckets, onNewBucket, payeeOf }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="stmt-group">
@@ -932,7 +947,7 @@ function DupeGroup({ rows, ctx, year, closedYears, setOv, buckets, onNewBucket }
           <table className="stmt-table">
             <HeadRow />
             <tbody>
-              {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={null} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} dupe />)}
+              {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={null} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} payeeOf={payeeOf} dupe />)}
             </tbody>
           </table>
         </div>

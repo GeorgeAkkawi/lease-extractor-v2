@@ -181,6 +181,76 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **A payee is learned by its NAME, not by the rail it arrived on — the importer had been remembering
+  "PURCHASE VISA … ON" and "ELECTRONIC WITHDRAWAL"** (George: *"the learned payees system is not working its not
+  assigning what i want it to figure out why"*). Deployed: frontend Cloudflare version **`f1d55ff1`**, demo worker
+  `32a42b7d`, plus a three-row live repair. **$0, NO DB migration, NO edge functions, no AI calls, no tenant emails,
+  nothing deleted** (the repair rewrites three learned patterns in place, guarded on the exact wrong value → a re-run
+  is a no-op). Tests **1119/1119 across 126 files** (was 1115/126 — +4).
+  - **The evidence, from his own import.** His January U.S. Bank statement (DT Naperville → 401 S Main) recorded
+    **nine** named buckets — Elevator service · Other · IL DPT REV · Comcast · Waste removal · HVAC service · Liana ·
+    Yazin, plus a tenant deposit — and the memory kept **three**. Six payees he named by hand were forgotten, and the
+    three that survived were the wrong string: **`PURCHASE VISA CITY OF NAPERVIL ON`**, **`PURCHASE VISA OTIS ELEVATOR
+    ON`**, **`BELLE HEATING AND COOL ON`**. Replayed against his real February and March statements: **zero of the
+    three fire on either month.** So both halves of "not assigning what I want" were real — it learned the wrong
+    things, and then those things never matched.
+  - **Root cause: `suggestRulePattern` keeps the LONGEST run of tokens that are neither digits nor rail wording, and
+    `BANK_NOISE` only knew Chase's vocabulary.** U.S. Bank writes a different rail, and it is *longer than the payee*:
+    `Electronic Withdrawal To WASTE MANAGEMENT …` → **"ELECTRONIC WITHDRAWAL" (21) beats "WASTE MANAGEMENT" (16)**.
+    The same 21 characters won on the Comcast and IL-Dept-of-Revenue lines too, so all three learned the identical
+    string — at which point `screenRulePatterns` did its job and **rejected** it as boilerplate. Correct refusal,
+    but the payee itself was never even a candidate. And where the rail has no break in it at all
+    (`Debit Purchase - VISA CITY OF*NAPERVIL On 012926`) the whole phrase came through as one run, so the pattern
+    carried the card wording — and February pays the *same* vendor by **ACH**, where that substring simply doesn't
+    exist. **This is the second time in eight days the word list has been the bug, one bank apart** (2026-07-23,
+    Chase's `ONLINE ACH DEBIT`), which is what decided the shape of the fix.
+  - **Fix 1 — the list is widened**, with the card / bill-pay / ACH wording this bank prints: `ELECTRONIC ·
+    WITHDRAWAL · PURCHASE · VISA · MASTERCARD · AMEX · POS · ATM · CARD · WIRE · ON · CHECKS · PRESENTED ·
+    CONVENTIONALLY · BUSINESS · BILL · PAY · ESS · PMTID · AUTOPAY · RECURRING · TRN · TRAN`. `ON` earns its place
+    because *"On 021326"* trails every card line; the existing 3-character floor is what stops it ever becoming a
+    pattern in its own right.
+  - **Fix 2 — and the guarantee that does NOT depend on any list**, because there is always a next bank.
+    `suggestRulePattern(description, siblings)` now reads the whole statement: **the rail is what the lines have in
+    common, the payee is what only one line says**, so the run present on the fewest sibling descriptions wins and
+    length is only a tiebreak. This is `screenRulePatterns`' own philosophy moved from *rejection* to *construction* —
+    instead of building a bad pattern and refusing it, build the right one. A 1-arg call is byte-identical to the old
+    longest-run behaviour, so nothing else in the codebase shifted. **Test-pinned on invented wording no stopword list
+    could know** (`ZZQQ TRANSFERRAL NOTICE … PAYEE ACME PLUMBING` → `PAYEE ACME PLUMBING`), and it does real work on
+    live data: February's Busey deposit reads **BUSEY** rather than **NAPERVILLE** *only* because the two City-of-
+    Naperville lines on the same statement carry "NAPERVILLE" inside their reference strings and Busey doesn't.
+  - **Fix 3 — the landlord's own company is not a payee.** `NASA PROPERTY LLC TRN` was live as *"always match →
+    Ricki's-Lyons"*: a bank names the **account holder** on its own transfer lines, which reads exactly like a payee,
+    and one statement can't see the conflict because only one line carried it. `screenRulePatterns` now takes
+    `ownNames` (the owner's corporation names, already fetched by `getStatementMatchContext`) and refuses a pattern
+    that names one — reported with its own wording in the footer, distinct from the bank's-boilerplate refusal.
+  - **One `payeeOf` on the review screen**, bound to that statement's descriptions and threaded to every caller —
+    the draft rules, the learned set, the tax line's label, and the row's own *"remembers X"* hint. So what a row
+    says it will remember is exactly what Save writes; they can no longer name two different things.
+  - **Files.** `src/lib/statementMatch.js` (`BANK_NOISE`, new `payeeRuns`, `suggestRulePattern` siblings,
+    `screenRulePatterns` ownNames) · `src/components/StatementReview.js` (`payeeOf` + threading + footer wording;
+    `taxLabel` now takes the resolved payee) · `src/lib/api.js` (`ownNames` on the match context) ·
+    `src/lib/__tests__/statementMatch.test.js` (+4, incl. his real nine January lines and the Jan→Feb match as named
+    regressions). **No** migration, edge function, view, CSS or demo-seed change.
+  - **Verified:** unit **1119/1119** (`vitest run`); `npm run build` compiles; live bundle carries the backend ref and
+    the demo bundle greps **free** of it; 200s on all four URLs. **Driven against his three real statements end to
+    end:** January now learns **6** payees (was 3) — IL DEPT OF REVEN · OTIS ELEVATOR · COMCAST XFINITY · WASTE
+    MANAGEMENT · CITY OF NAPERVIL · BELLE HEATING AND COOL — and those rules then fire on **4 of 9** February lines
+    and **5 of 8** March lines (**was 0 and 0**). Every remaining line is a genuinely new vendor (LoopNet, Foxvalley
+    Fire, Loss Prevention, Build Tech…), each of which learns itself on its own first import.
+  - **Live repair — three patterns, guarded.** `PURCHASE VISA CITY OF NAPERVIL ON` → **`CITY OF NAPERVIL`** ·
+    `PURCHASE VISA OTIS ELEVATOR ON` → **`OTIS ELEVATOR`** · `BELLE HEATING AND COOL ON` → **`BELLE HEATING AND
+    COOL`**. Targets, buckets and ids untouched, so no import's ↩ Undo is disturbed; read back clean.
+  - **George: hard-refresh (Cmd+Shift+R), then import February.** Otis, City of Naperville and Belle are already
+    recognized. The six payees January forgot — Comcast, Waste Management, IL Dept of Revenue and the rest — get
+    remembered the moment you tick them on this import, and March will sort itself.
+  - **Flags:** ① **One bad rule is still live and I did not delete it** — `NASA PROPERTY LLC TRN → Ricki's-Lyons` on
+    Pershing, your own company learned as a tenant. The new guard stops it happening again but doesn't remove what's
+    there. One click under **Learned payees** on Pershing's Ledger tab, or say the word and I'll drop it. ② **A check
+    line can never be learned.** *"Checks Presented Conventionally 1329"* names a check number, not a payee — that's
+    how Liana and Yazin were forgotten. They'll need picking by hand each time; the row now says nothing rather than
+    guessing. ③ A rule still matches on **any** property (one bank account serves the portfolio) — unchanged, and the
+    panel's footnote says so.
+
 - **2026-07-31** — **A statement that prints "Feb 12" instead of "02/12" now imports — the parser knew Chase's bare
   `06/01` but had never been taught a month NAME** (George: *"i uploaded the first statement and it worked perfectly
   but with the feburary statement it failed and couldnt list transactions can you find out why? this is for the BUSEY

@@ -3932,7 +3932,12 @@ export async function getStatementMatchContext(propertyId, year) {
   }
   const buckets = [...bucketMap.values()].sort((a, b) => a.label.localeCompare(b.label));
 
-  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory, buckets, businessByProperty };
+  // The landlord's own legal entities. A bank names the ACCOUNT HOLDER on its own
+  // transfer lines ("… NASA PROPERTY LLC TRN …"), which reads exactly like a payee — so
+  // the rule screen is told these names and refuses to learn one as a payee.
+  const ownNames = [...new Set((corporations || []).map((c) => String(c.name || '').trim()).filter(Boolean))];
+
+  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory, buckets, businessByProperty, ownNames };
 }
 
 // Write everything the user confirmed on the review screen — exactly once, and

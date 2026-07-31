@@ -79,6 +79,62 @@ describe('name matching', () => {
     });
   });
 
+  // U.S. Bank prints a different rail vocabulary than Chase, and the payee is BURIED in
+  // it: "Electronic Withdrawal To WASTE MANAGEMENT ..." puts a 21-char rail phrase ahead
+  // of a 16-char payee, so longest-run learned the rail; and "Debit Purchase - VISA CITY
+  // OF*NAPERVIL On 012926" has no break at all between rail and payee, so the pattern
+  // carried the card wording and stopped matching the moment the same payee arrived by
+  // ACH. These nine lines are George's real January statement (DT Naperville, 401 S Main).
+  describe("a payee is learned by its NAME, not the rail it arrived on (U.S. Bank)", () => {
+    const JAN = [
+      ['Electronic Deposit From BUSEY BANK', 'BUSEY'],
+      ['Electronic Withdrawal To IL DEPT OF REVEN 5555566257EDI PYMNTS00000513149168', 'IL DEPT OF REVEN'],
+      ['Debit Purchase - VISA OTIS ELEVATOR On 012226 860-233-1234 CT REF # 24707806030017022018968', 'OTIS ELEVATOR'],
+      ['Electronic Withdrawal To COMCAST-XFINITY 0000213249CABLE SVCS7584568', 'COMCAST XFINITY'],
+      ['Electronic Withdrawal To WASTE MANAGEMENT 9580653001PAYMENT 000113232233005', 'WASTE MANAGEMENT'],
+      ['Debit Purchase - VISA CITY OF*NAPERVIL On 012926 630-420-6111 IL REF # 24707806030017022018968', 'CITY OF NAPERVIL'],
+      ['Business Bill Pay ESS TO Belle heating and cool On 013026 PMTID 605400E0A4NM', 'BELLE HEATING AND COOL'],
+    ];
+    const descs = JAN.map(([d]) => d);
+
+    it('each line yields its own payee — never the rail wording', () => {
+      const learned = JAN.map(([d]) => suggestRulePattern(d, descs));
+      JAN.forEach(([, want], i) => expect(learned[i]).toBe(want));
+      expect(learned).not.toContain('ELECTRONIC WITHDRAWAL');
+      expect(new Set(learned).size).toBe(JAN.length);
+    });
+
+    // The February failure, replayed end to end: the SAME payees arrive over a different
+    // rail (ACH, not card), so a pattern carrying "PURCHASE VISA … ON" can never match.
+    it("January's rules fire on February, where the same payee arrives by a different rail", () => {
+      const FEB = [
+        ['Electronic Withdrawal REF=260420106837550N00 To CITY OF NAPERVIL 1911718107NAPERVILLEM81452865201', 'CITY OF NAPERVIL'],
+        ['Electronic Withdrawal REF=260510138475010N00 To COMCAST-XFINITY 0000213249CABLE SVCS7584568', 'COMCAST XFINITY'],
+        ['Electronic Withdrawal REF=260550131639440N00 To WASTE MANAGEMENT 9580653001PAYMENT 000113232233005', 'WASTE MANAGEMENT'],
+      ];
+      const rules = JAN.map(([d]) => ({ pattern: suggestRulePattern(d, descs), target_kind: 'expense_cam' }));
+      for (const [desc, want] of FEB) {
+        const hit = findMatchingRule(rules, { description: desc, direction: 'out' });
+        expect(hit?.pattern).toBe(want);
+      }
+    });
+
+    // Layer 2 — the guarantee that does NOT depend on the word list, since this is the
+    // second bank whose wording it under-covered. A run that shows up on other lines of
+    // the same statement is the rail; the payee is what only its own line says.
+    it('a rail phrase no stopword list knows still loses to the payee beside it', () => {
+      const lines = [
+        'ZZQQ TRANSFERRAL NOTICE 001 PAYEE ACME PLUMBING',
+        'ZZQQ TRANSFERRAL NOTICE 002 PAYEE BRIGHT ELECTRIC',
+        'ZZQQ TRANSFERRAL NOTICE 003 PAYEE ACME PLUMBING',
+      ];
+      expect(suggestRulePattern(lines[0], lines)).toBe('PAYEE ACME PLUMBING');
+      expect(suggestRulePattern(lines[1], lines)).toBe('PAYEE BRIGHT ELECTRIC');
+      // With no siblings there is nothing to compare against — longest still wins.
+      expect(suggestRulePattern(lines[0])).toBe('ZZQQ TRANSFERRAL NOTICE');
+    });
+  });
+
   // The guarantee that needs no word list: a pattern that can't tell two of your own
   // payees apart is not a payee, whatever the bank calls it.
   describe('screenRulePatterns — specificity within the same statement', () => {
@@ -93,7 +149,9 @@ describe('name matching', () => {
         lines
       );
       expect(keep.map((k) => k.pattern)).toEqual(['CITY DENTAL PC']);
-      expect(rejected).toEqual([{ pattern: 'ONLINE ACH DEBIT', count: 2 }]);
+      // `own` distinguishes the two reasons a pattern is refused — the bank's wording
+      // (here) vs the landlord's own company name — so the footer can say which.
+      expect(rejected).toEqual([{ pattern: 'ONLINE ACH DEBIT', count: 2, own: false }]);
     });
     it('two lines that are the SAME payee are not a conflict', () => {
       const same = [
@@ -110,6 +168,21 @@ describe('name matching', () => {
         [{ description: 'CHECK 1044 CITY DENTAL PC', targetKey: null }, ...lines]
       );
       expect(keep).toHaveLength(1);
+    });
+    // George's own corporation ended up learned as a tenant: the bank names the ACCOUNT
+    // HOLDER on its own transfer lines, so "NASA PROPERTY LLC TRN" was recorded as
+    // "always match → Ricki's-Lyons". It names the landlord, so it can't name a payee.
+    it("the landlord's own company name is never a payee", () => {
+      const own = ['NASA Property LLC'];
+      const { keep, rejected } = screenRulePatterns(
+        [{ pattern: 'NASA PROPERTY LLC TRN', targetKey: 'lease:r' }, { pattern: 'CITY DENTAL PC', targetKey: 'lease:c' }],
+        [{ description: 'ACH 55 NASA PROPERTY LLC TRN 9910', targetKey: 'lease:r' }, ...lines],
+        own
+      );
+      expect(keep.map((k) => k.pattern)).toEqual(['CITY DENTAL PC']);
+      expect(rejected.map((r) => r.pattern)).toEqual(['NASA PROPERTY LLC TRN']);
+      // A real tenant is untouched by the guard.
+      expect(screenRulePatterns([{ pattern: 'CITY DENTAL PC', targetKey: 'lease:c' }], lines, own).keep).toHaveLength(1);
     });
   });
   it('amountMatches allows ±$1 or ±1%', () => {
