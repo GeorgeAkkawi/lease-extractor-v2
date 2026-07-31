@@ -19,6 +19,7 @@ import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
 import { advanceDueDate } from './annualReports';
 import { isValidCategory, bucketKey, defaultCategoryFor, isCapitalProne } from './expenseCategories';
+import { lineCompleteness } from './dispositions';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -3976,6 +3977,39 @@ export async function listStatementImports(propertyId, year = null) {
   return [...scoped].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
 }
 
+// ── Slice 4a — the audit record ────────────────────────────────────────────────
+// One row per TRANSCRIBED line (0076), whether or not it wrote anything. Distinct
+// from statement_imports.applied, which is the UNDO record: `applied` says what to
+// reverse, these say what the statement contained and what we decided about it.
+
+export const listStatementLines = (importId) =>
+  rows(supabase.from('statement_lines').select('*').eq('import_id', importId));
+
+// The nag: money the statement showed that nobody has placed. Scoped to the fiscal
+// year the Ledger page follows, newest first. A line whose own date put it in another
+// year belongs to that year's list, not this one.
+export async function listUnplacedLines(propertyId, year = null) {
+  const list = await rows(
+    supabase.from('statement_lines').select('*')
+      .eq('property_id', propertyId)
+      .eq('disposition', 'unclassified')
+  );
+  const y = Number(year);
+  const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
+  return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
+}
+
+// Change a line's disposition after the fact. Today that means answering the nag —
+// "yes, leave this one out" — with an optional reason. Rounds 7 and 8 point it at
+// their new destinations. Deliberately does NOT write money: placing a line as an
+// expense or a payment has to go through the import path that also books the row.
+export const setLineDisposition = (id, disposition, ignoreReason = null) =>
+  one(
+    supabase.from('statement_lines')
+      .update({ disposition, ignore_reason: disposition === 'ignored' ? ignoreReason : null })
+      .eq('id', id).select().single()
+  );
+
 // Everything the matcher needs, assembled once per import: every property's
 // tenants with their year schedule + coverage (so deposits cross-match the WHOLE
 // portfolio), open reconciliation balances, the saved rules, the live import-hash
@@ -4132,7 +4166,7 @@ export async function getStatementMatchContext(propertyId, year) {
 //   { type:'tax'|'roof', property_id, year, amount, hash }
 // The duplicate hash guard is advisory and lives in MATCHING — apply never
 // re-runs it, so an "import anyway" override writes like any other row.
-export async function applyStatementImport({ propertyId, year, fileName, accountHint = null, storagePath = null, entries = [] }) {
+export async function applyStatementImport({ propertyId, year, fileName, accountHint = null, storagePath = null, entries = [], lines = [] }) {
   const imp = await one(
     supabase.from('statement_imports')
       .insert({ property_id: propertyId, year: Number(year) || null, file_name: fileName || null, account_hint: accountHint, storage_path: storagePath || null, applied: [], owner_id: await ownerId() })
@@ -4249,6 +4283,48 @@ export async function applyStatementImport({ propertyId, year, fileName, account
     }
   }
 
+  // The audit record: one row per line the statement CONTAINED, including every line
+  // that wrote nothing. Before this, an unrecognized line left untouched produced no
+  // write and no trace at all, so "did I ever book that Comcast bill?" was
+  // unanswerable inside the app.
+  //
+  // Written AFTER the entries loop so each line can name what it produced. The map is
+  // a QUEUE per hash, not a lookup: two byte-identical lines on one statement share a
+  // hash, and shifting gives the second its own payment rather than pointing both at
+  // the first. Best-effort as a whole — an audit row failing must never lose an import
+  // that has already written real money.
+  try {
+    if (lines.length) {
+      const byHash = new Map();
+      for (const a of applied) {
+        if (!a.hash) continue; // 'rule' records carry none — they aren't money lines
+        if (!byHash.has(a.hash)) byHash.set(a.hash, []);
+        byHash.get(a.hash).push(a);
+      }
+      const oid = await ownerId();
+      const rowsToWrite = lines.map((l) => {
+        const q = byHash.get(l.hash);
+        const ref = q && q.length ? q.shift() : null;
+        return {
+          owner_id: oid,
+          import_id: imp.id,
+          property_id: propertyId,
+          year: Number(l.year) || Number(year) || null,
+          txn_date: l.date || null,
+          description: l.description ? String(l.description).slice(0, 500) : null,
+          amount: Math.abs(Number(l.amount) || 0),
+          direction: l.direction === 'in' ? 'in' : 'out',
+          line_hash: l.hash || null,
+          disposition: l.disposition || 'unclassified',
+          ignore_reason: l.disposition === 'ignored' ? (l.ignore_reason || null) : null,
+          ref_kind: ref ? ref.kind : null,
+          ref_id: ref ? (ref.payment_id || ref.item_id || null) : null,
+        };
+      });
+      await rows(supabase.from('statement_lines').insert(rowsToWrite));
+    }
+  } catch { /* the import stands; the audit row is not worth losing money over */ }
+
   const updated = await one(
     supabase.from('statement_imports').update({ applied }).eq('id', imp.id).select().single()
   );
@@ -4259,7 +4335,13 @@ export async function applyStatementImport({ propertyId, year, fileName, account
   });
   return {
     import: updated,
-    summary: { paymentsCount, paymentsTotal, expensesCount, expensesTotal, crossProperty },
+    summary: {
+      paymentsCount, paymentsTotal, expensesCount, expensesTotal, crossProperty,
+      // The proof-of-completeness, returned so the results strip can state it at the
+      // one moment it reassures: right after saving. Derived from the same array that
+      // was just written, so it cannot claim more than the audit table holds.
+      completeness: lineCompleteness(lines),
+    },
   };
 }
 
@@ -4318,6 +4400,13 @@ export async function undoStatementImport(imp) {
       await resyncYearBillingToEstimate(a.lease_id, a.property_id, a.year);
     } catch { /* best-effort — never blocks the rest of the undo */ }
   }
+  // The audit rows go with the import: it didn't happen, so its lines didn't either,
+  // and leaving them would assert money was recorded that no longer is. 0076 declares
+  // ON DELETE CASCADE, but this delete is EXPLICIT on purpose — the demo mock has no
+  // foreign keys, so relying on the database to do it would leave the suite passing
+  // over behaviour that only works live. That is precisely the `not()` incident
+  // (mockClient.js:155). The cascade stays as the backstop.
+  await rows(supabase.from('statement_lines').delete().eq('import_id', imp.id));
   // Undo reverses the import's whole delta, and the statement copy is part of it —
   // there is no import left for it to belong to.
   await deleteDocumentsFor('statement_import', imp.id, [imp.storage_path]);

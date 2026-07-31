@@ -11,6 +11,8 @@ import {
   markMonthPaidAllTenants,
   markMonthsPaidAllTenants,
   listStatementImports,
+  listUnplacedLines,
+  setLineDisposition,
   undoStatementImport,
   listSnapshots,
   signDocUrl,
@@ -29,7 +31,8 @@ import LearnedPayeesPanel from '../components/LearnedPayeesPanel';
 import MutationError from '../components/MutationError';
 import { useConfirm } from '../components/ConfirmDialog';
 import LeaseTypeChip from '../components/LeaseTypeChip';
-import { money, money0, sf, fmtDate } from '../lib/format';
+import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
+import { IGNORE_REASONS, lineCompleteness } from '../lib/dispositions';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -94,6 +97,19 @@ export default function LedgerPage() {
   });
   const prevSnap = (snaps || []).find((s) => Number(s.year) === year - 1);
   const prevCollection = prevSnap ? snapshotCollectionSummary(prevSnap) : null;
+
+  // Slice 4a — money the statements showed that nobody has placed. Before 0076 these
+  // lines produced no write and no record at all, so this figure could not exist.
+  const { data: unplaced = [] } = useQuery({
+    queryKey: ['unplacedLines', propId, year],
+    queryFn: () => listUnplacedLines(propId, year),
+    enabled: isOn('ledger'),
+  });
+  const unplacedTotals = lineCompleteness(unplaced);
+  const leaveOut = useMutation({
+    mutationFn: ({ id, reason }) => setLineDisposition(id, 'ignored', reason || null),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] }),
+  });
 
   // Scoped invalidation after a write settles — this property's roll + the lease-page
   // invoices/payments panels; deliberately not a blanket sweep.
@@ -522,6 +538,49 @@ export default function LedgerPage() {
           onDismiss={() => setImported(null)}
         />
         <MutationError of={[undoImport]} />
+
+        {/* Slice 4a — money not yet placed. Every line a statement showed is on record
+            now (0076), so this is money the bank moved that no figure in Amlak counts
+            yet. It nags on purpose and it is never silently absorbed: money IN is
+            called out separately because an unplaced deposit may be rent that should
+            have settled a month, which makes a tenant read short on the grid above. */}
+        {unplaced.length > 0 && (
+          <div className="note-msg warn" style={{ marginTop: 14 }}>
+            <strong>Money not yet placed — {unplaced.length} line{unplaced.length === 1 ? '' : 's'}</strong>
+            {unplacedTotals.unplacedIn > 0 && <> · {money(unplacedTotals.unplacedIn)} in</>}
+            {unplacedTotals.unplacedOut > 0 && <> · {money(unplacedTotals.unplacedOut)} out</>}
+            <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
+              Your statements showed these and nothing has been decided about them.
+              {unplacedTotals.unplacedIn > 0 && ' Any of the money in that is rent should be recorded against a tenant — re-import that statement to place it.'}
+              {' '}Or leave one out for good, and say why.
+            </div>
+            <table style={{ minWidth: 0 }}>
+              <thead><tr><th>Date</th><th>Description</th><th className="num">Amount</th><th></th></tr></thead>
+              <tbody>
+                {unplaced.map((l) => (
+                  <tr key={l.id}>
+                    <td>{fmtShortDate(l.txn_date) || '—'}</td>
+                    <td style={{ fontSize: 12 }}>{l.description || '—'}</td>
+                    <td className="num">{l.direction === 'in' ? '+' : '−'}{money(Math.abs(Number(l.amount) || 0))}</td>
+                    <td className="num">
+                      <select
+                        className="text-input" style={{ maxWidth: 190, fontSize: 11 }}
+                        value=""
+                        disabled={leaveOut.isPending}
+                        onChange={(e) => { if (e.target.value) leaveOut.mutate({ id: l.id, reason: e.target.value }); }}
+                        title="Leave this line out of the ledger for good, with the reason recorded against it."
+                      >
+                        <option value="">Leave it out…</option>
+                        {IGNORE_REASONS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <MutationError of={[leaveOut]} />
+          </div>
+        )}
 
         {register.length > 0 && (
           <div style={{ marginTop: 14 }}>

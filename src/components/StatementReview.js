@@ -15,6 +15,7 @@ import {
   corroborateAmount, monthOfDate, deriveEstimateFromDeposit, CAM_KEYWORD_LABELS,
 } from '../lib/statementMatch';
 import { buildMonthGroups } from '../lib/statementMonths';
+import { dispositionForRow, lineCompleteness, completenessSentence, IGNORE_REASONS } from '../lib/dispositions';
 import { buildPaymentShortfallEmail } from '../lib/emailTemplates';
 import { DEMO_MODE } from '../lib/supabaseClient';
 import { money, money0, money4, fmtDate } from '../lib/format';
@@ -156,14 +157,28 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const alreadyPaid = !!(kind === 'tenant' && tenant && finalMonth && !toRecon
         && Number((tenant.owed || [])[finalMonth - 1]) > 0
         && Number((tenant.coverage || [])[finalMonth - 1]) >= Number(tenant.owed[finalMonth - 1]) - 0.05);
+      const isChecked = writable && checked && !(alreadyPaid && ov.checked === undefined);
       return {
         row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth,
-        checked: writable && checked && !(alreadyPaid && ov.checked === undefined),
+        checked: isChecked,
         ai: !!ov.ai, picked: ov.pick != null,
         monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
+        // Slice 4a — what Save will record about this line in the audit table, whether
+        // or not it writes any money. Derived here so the footer's counts and the row
+        // itself can never disagree with what actually gets stored.
+        disposition: dispositionForRow({ checked: isChecked, kind, picked: ov.pick != null, duplicate: row.duplicate }),
+        ignoreReason: ov.reason || (row.duplicate ? 'duplicate' : null),
       };
     });
   }, [matched, overrides, ctx]);
+
+  // The completeness tie-out, live as the landlord works: every transcribed line has a
+  // decision, or it is counted as unplaced. Money in and money out stay separate — a
+  // single netted figure would let an unplaced $5,000 deposit and an unplaced $5,000
+  // withdrawal report "$0 unplaced", which is exactly the silent loss this ends.
+  const completeness = useMemo(() => lineCompleteness(resolved.map((r) => ({
+    disposition: r.disposition, amount: r.row.txn.amount, direction: r.row.txn.direction,
+  }))), [resolved]);
 
   // Every bucket the dropdowns offer: the owner's saved buckets + the keyword
   // table's built-ins + any created in this session. First writer wins per name.
@@ -377,7 +392,16 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: payeeLabel(payeeOf(r.row.txn.description), 'Roof'), hash: r.row.hash });
         }
       }
-      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, storagePath, entries: [...estEntries, ...entries, ...learned.keep] });
+      // Every transcribed line rides along with its disposition — including the ones
+      // that wrote nothing, which is the entire point: an unrecognized line left
+      // untouched used to vanish without a trace.
+      const lines = resolved.map((r) => ({
+        hash: r.row.hash, year: r.row.year, date: r.row.txn.date,
+        description: r.row.txn.description, amount: r.row.txn.amount,
+        direction: r.row.txn.direction,
+        disposition: r.disposition, ignore_reason: r.ignoreReason,
+      }));
+      return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, storagePath, entries: [...estEntries, ...entries, ...learned.keep], lines });
     },
     onSuccess: (res) => onSaved(res),
   });
@@ -433,7 +457,10 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   const expTotal = willExpense.reduce((s, r) => s + r.row.txn.amount, 0);
   const payTenants = new Set(willPay.map((r) => r.tenant.lease_id)).size;
   const mismatchCount = willPay.filter((r) => r.mismatch && !r.mismatch.escalation).length;
-  const ignored = rows.filter((r) => !r.checked).length;
+  // "Ignored" used to mean "not ticked", which conflated a decision the landlord made
+  // with a line nobody had looked at — the exact ambiguity Slice 4a exists to end.
+  // Now they are counted apart: left out ON PURPOSE, versus not placed at all.
+  const leftOut = completeness.ignored;
   const alreadyPaidCount = rows.filter((r) => r.alreadyPaid && !r.checked && !r.row.duplicate).length;
   const nothingTicked = willPay.length === 0 && willExpense.length === 0;
   const reconciledCount = (recons || []).length;
@@ -613,13 +640,27 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             {unmatchedDeposits.length > 0 && <> If your bank abbreviated the payees, the <strong>🤖 helper</strong> above will name them for you.</>}
           </div>
         )}
+        {/* Slice 4a — the completeness statement. Every line of this statement is
+            recorded here whatever you decide, so this is the promise that nothing
+            went missing rather than a summary of what got ticked. Money IN nags
+            harder: an unplaced deposit may be rent that should have settled a month,
+            which makes a tenant read short on the Ledger. */}
+        {completeness.unplaced > 0 && (
+          <div className={`note-msg ${completeness.unplacedIn > 0 ? 'warn' : ''}`}>
+            <strong>{completenessSentence(completeness)}.</strong>{' '}
+            {completeness.unplacedIn > 0
+              ? <>Some of the money you haven’t placed came <strong>in</strong> — if any of it is rent, tick it now, or it will read as a month the tenant never paid.</>
+              : <>Unplaced lines are still recorded and will show under <strong>Money not yet placed</strong> on the Ledger, so nothing is lost — place them whenever you like.</>}
+          </div>
+        )}
         <MutationError of={[save]} />
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <div className="muted">
             <strong>{willPay.length}</strong> payment{willPay.length === 1 ? '' : 's'} to <strong>{payTenants}</strong> tenant{payTenants === 1 ? '' : 's'} · {money(payTotal)} in
             {mismatchCount > 0 && <> · <strong>{mismatchCount}</strong> ≠ projected</>}
             {' — '}<strong>{willExpense.length}</strong> expense{willExpense.length === 1 ? '' : 's'} · {money(expTotal)} out
-            {' — '}<strong>{ignored}</strong> ignored
+            {leftOut > 0 && <> — <strong>{leftOut}</strong> left out on purpose</>}
+            {completeness.unplaced > 0 && <> — <strong>{completeness.unplaced}</strong> not placed</>}
             {estToApply.length > 0 && <> — <strong>{estToApply.length}</strong> CAM &amp; tax estimate{estToApply.length === 1 ? '' : 's'}</>}
           </div>
           <button type="button" disabled={save.isPending || nothingTicked} onClick={() => save.mutate()}>
@@ -888,7 +929,32 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             <button type="button" className="ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setOv(r.i, { pick: undefined, checked: undefined })} title="Put this line back in play">
               ↩ Undo ignore
             </button>
-          ) : (
+          ) : null
+        )}
+        {/* Slice 4a — an exclusion gets to say why, and the reason is stored with the
+            line. Offered after the fact, never required: making it mandatory on the way
+            out just teaches people to pick the first option, and an unexplained
+            exclusion is still a decision.
+            The matcher bins MORTGAGE / LOAN / TRANSFER / DRAW by keyword, which is a
+            GUESS, not a decision — so those rows stay UNPLACED and this select is how
+            the landlord confirms it ("Leave it out…"). Picking a reason is the act of
+            deciding; on a row they already ignored by hand it just names the why. */}
+        {r.kind === 'ignore' && (
+          <select
+            className="text-input" style={{ maxWidth: 190, fontSize: 11, marginTop: 4 }}
+            value={r.ignoreReason || ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              setOv(r.i, v ? { pick: 'ignore', checked: false, reason: v } : { reason: undefined });
+            }}
+            title="Why this line is being left out. Recorded with the line so the register can explain itself later."
+          >
+            <option value="">{r.picked ? 'Why leave it out? (optional)' : 'Leave it out…'}</option>
+            {IGNORE_REASONS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
+          </select>
+        )}
+        {!isIn && (
+          r.kind === 'ignore' ? null : (
             <button type="button" className="ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setOv(r.i, { pick: 'ignore', checked: false })} title="Not an expense — leave this line out of the ledger entirely">
               ✕ Ignore
             </button>

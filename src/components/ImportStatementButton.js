@@ -3,6 +3,7 @@ import { uploadDoc, extractBankStatement } from '../lib/api';
 import { parseBankStatementCsv, normalizeStatementRows, applyBalanceCheck } from '../lib/statementParse';
 import { DEMO_MODE } from '../lib/supabaseClient';
 import { money } from '../lib/format';
+import { completenessSentence } from '../lib/dispositions';
 
 // The two forms a bank hands you a statement in. Enforced here rather than left to
 // the file input's `accept` (which browsers treat as a filter, not a rule) so the
@@ -221,6 +222,9 @@ export function settleStatementImport(qc) {
   qc.invalidateQueries({ queryKey: ['historyEvents'] });
   qc.invalidateQueries({ queryKey: ['statementImports'] });
   qc.invalidateQueries({ queryKey: ['statementContext'] });
+  // An import records every line it read, and an undo takes them away with it (0076
+  // cascades) — so the "money not yet placed" panel moves in both directions.
+  qc.invalidateQueries({ queryKey: ['unplacedLines'] });
   qc.invalidateQueries({ queryKey: ['reconciliations'] });
   // An import auto-learns payee rules (and undo un-learns them) — refresh the manager.
   qc.invalidateQueries({ queryKey: ['importRules'] });
@@ -242,6 +246,14 @@ export function ImportResultsStrip({ imported, onUndo, undoPending, onDismiss })
         {' · '}{s.expensesCount} expense{s.expensesCount === 1 ? '' : 's'} · {money(s.expensesTotal)} out
         {Object.keys(s.crossProperty || {}).length > 0 && (
           <> · {Object.values(s.crossProperty).reduce((n, c) => n + c, 0)} payment(s) posted to other properties' tenants — they show on those ledgers</>
+        )}
+        {/* Slice 4a — the completeness statement, at the moment it reassures: every
+            line the statement contained is now on record, whatever was decided about
+            it. Only shown when the audit rows were actually written (an import from
+            before 0076, or one whose audit write failed, states nothing rather than
+            claiming a total it can't back). */}
+        {s.completeness?.total > 0 && (
+          <> · <strong>{completenessSentence(s.completeness)}</strong></>
         )}
       </span>
       <button type="button" className="ghost btn-sm" disabled={undoPending} onClick={onUndo}>↩ Undo</button>

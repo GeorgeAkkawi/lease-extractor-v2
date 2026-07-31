@@ -81,7 +81,7 @@ happen to be editing**. The map below is what to check; every entry is code-veri
 ```
 leases (base_rent · est_*_annual · square_footage · share_override_pct ·
         roof_responsible · lease_start · lease_termination_date)
-expense_records + cam_line_items + tax_line_items · properties.building_sf
+expense_records + cam_line_items (kind = cam | tax | roof) · properties.building_sf
         │
         ├─→ v_tenant_shares / v_property_totals   (the split — SQL)
         │        │
@@ -146,7 +146,7 @@ Two implementations of one rule always drift unless changed in the same commit.
   tabs, route redirects, page sections, `buildAlerts`, `fetchAlertData`, the email sweep, the Ask
   facts, and the demo mock. `grep -rl "isOn('insurance')"` is the fastest way to see the full set.
 - **A new Ask Amlak fact** must bump the `snapshotFingerprint` version prefix (`portfolio.js:61`,
-  now `v4`) — otherwise every previously cached answer keeps serving the thinner summary.
+  now `v5`) — otherwise every previously cached answer keeps serving the thinner summary.
 
 ### 5. Deploy fan-out — a shared edge module makes its importers stale
 
@@ -180,6 +180,93 @@ omission, which is how the invoice drift above survived unnoticed.
 > **Standing instruction (George, 2026-06-30):** Every time George confirms a change
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
+
+- **2026-07-31** — **Accounting round 6 (Slice 4a): a bank line can no longer disappear — every line a statement showed is
+  now a record carrying a decision, and "nothing went missing" became a number you can read** (George: *"continue"*, working
+  the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase; the rule is his, from the
+  plan: *"a dollar that crossed the bank is either recorded somewhere or explicitly ignored with a reason. Never dropped."*).
+  Deployed: DB migration **`0076`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`7e7f3e01`**, demo worker
+  `fd28d528`. **$0 — no AI call anywhere; NO edge function, NO view, NO RPC; 0076 is ONE new owner-scoped table that alters
+  nothing, so NOT ONE STORED TOTAL MOVED** (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500).
+  Tests **1210/1210 across 133 files** (was 1186/131 — +24, two new suites).
+  - **What was actually broken, and it was worse than "unrecorded".** A line nothing recognized arrived unticked; saving
+    without touching it produced no write **and no record that the line had ever existed**. `statement_imports.applied`
+    stores every write an import MADE and **nothing about the lines it passed over** — so *"did I ever book that Comcast
+    bill?"* had no answer inside the app. The stored PDF was the only trace, and a PDF is not queryable. The money didn't
+    just go uncounted; it went **untraceable**.
+  - **The fix is a RECORD, not a new destination.** `statement_lines` (0076) holds one row per **transcribed** line — date,
+    description, amount, direction, the `import_hash` that already existed — each carrying a **disposition**. Rounds 7 and 8
+    add the destinations (owner draws, entity costs, transfers, non-rent income, deposits held); this round makes it
+    impossible for a line to vanish while they're being built.
+  - **It does NOT replace `applied`, and the distinction IS the design.** `applied` is the **undo** record — what to reverse,
+    keyed to live rows, replayed backwards. `statement_lines` is the **audit** record — what the statement said and what we
+    decided about it. Which is exactly why **`ref_id` is deliberately NOT a foreign key**: deleting a payment by hand later
+    must not rewrite history to claim the import never booked one.
+  - **⚠ THE JUDGEMENT THIS ROUND TURNS ON — and it's the difference between an honest figure and a flattering one.** The
+    matcher bins `MORTGAGE` / `LOAN` / `TRANSFER` / `DRAW` by keyword and hands the row over as `kind:'ignore'` with nobody
+    having chosen anything. Recording that as `ignored` would **credit the landlord with a decision they never made** — and
+    those are precisely the lines with no home in Amlak *yet*. So a matcher ignore stays **`unclassified` and keeps nagging**
+    until rounds 7–8 give it one. An unplaced figure that quietly absorbed them would be a lie that gets quieter over time.
+    Test-pinned in both directions.
+  - **Three other states, each decided on its own merits.** An ignore the landlord **picked** is `ignored` (their decision).
+    **Unticking is not excluding** — a row can arrive unticked because it needs review, and *"I'll deal with it later"* must
+    not be stored as *"leave it out forever"*, so it stays unplaced. And a **duplicate** is the one exclusion nobody has to
+    make: the guard already matched it to money booked by an earlier import, so it counts as accounted for without asking —
+    nagging about it would train George to ignore the nag.
+  - **A real usability hole found while testing my own design, and fixed.** A matcher-ignored row had **no way to confirm the
+    exclusion** — its only button was *"↩ Undo ignore"*. So the reason picker now shows on **every** ignore row, reading
+    **"Leave it out…"** on the matcher's guess (choosing a reason IS the decision, one click) and *"Why leave it out?
+    (optional)"* once it's theirs. **The reason is never required** — making it mandatory on the way out just teaches people
+    to pick the first option, and an unexplained exclusion is still a decision.
+  - **The tie-out keeps money in and out APART, and that refusal is load-bearing.** A single netted figure would let an
+    unplaced $5,000 deposit and an unplaced $5,000 withdrawal report **"$0 unplaced"** — perfect health on a statement where
+    $10,000 is unaccounted for, i.e. the exact silent loss this slice exists to end. Pinned as its own test, including that
+    the result carries no `unplacedNet` key at all. **Money IN nags harder** on purpose: an unplaced deposit may be rent that
+    should have settled a month, which makes a tenant read short on the Ledger grid.
+  - **Where it shows.** The review footer's old *"N ignored"* — which called every unticked row ignored, conflating a
+    decision with a blind spot — is replaced by **"N left out on purpose · M not placed"** plus a live sentence (*"2 of 3
+    lines placed · 1 not placed ($20,154.11 out)"*). The results strip states it at the moment it reassures, straight after
+    saving. And the Ledger tab grows a **"Money not yet placed"** panel listing each line with a one-click *"Leave it out…"*
+    that records the decision **without re-importing anything**.
+  - **⚠ An unknown disposition reads as UNPLACED, never as placed.** A row written by round 7 and read by an older cached
+    bundle must not be counted as accounted for — guessing "placed" hides money, which is the failure mode. Pinned.
+  - **The mock divergence closed BEFORE it could bite.** 0076 declares `on delete cascade`, but `undoStatementImport` deletes
+    the lines **explicitly** — the demo mock has no foreign keys, so a cascade-only design would have passed the whole suite
+    and left orphans live. That is precisely the `not()` incident (`mockClient.js:155`). The cascade stays as the backstop,
+    and a test pins the explicit delete so nobody "tidies it up".
+  - **The audit table can never cost anyone an import.** The line write is wrapped best-effort and runs AFTER the money
+    writes: an import that has already booked real payments must not be lost because an audit row failed. Test-pinned by
+    breaking the table mid-import — the payment and the expense still land.
+  - **Files.** New: `supabase/migrations/0076_statement_lines.sql` · `src/lib/dispositions.js` ·
+    `src/lib/__tests__/statementLines.test.js` (18) · `src/components/__tests__/statementCompleteness.test.js` (6). Edited:
+    `src/lib/api.js` (`listStatementLines` · `listUnplacedLines` · `setLineDisposition` · the `lines` write + `completeness`
+    on the summary · the explicit undo delete) · `src/components/{StatementReview,ImportStatementButton}.js` ·
+    `src/pages/LedgerPage.js`. **No** edge function, view, RPC, CSS or demo-seed change — `statement_lines` is a plain table
+    the demo mock auto-creates, so §3 carries no mirror obligation here (re-verified, not inherited).
+  - **Verified:** unit **1210/1210** (`vitest run`); `npm run build` compiles; migration applied clean and read back
+    (15 columns · `disposition` **NOT NULL default 'unclassified'** · both `owner_all` and `require_aal2` policies · 3
+    indexes · the import FK reads `confdeltype = 'c'` = cascade · **0 pre-existing rows**); **every stored expense total
+    identical before and after**; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free**
+    of it. Browser drive-through skipped per George's standing preference — the six render tests mount the **real**
+    StatementReview and the **real** LedgerPage against the demo mock and drive the actual flow, including settling a line
+    from the panel.
+  - **Two stale CLAUDE.md facts fixed in passing** (both flagged in the plan): §1's money spine listed a `tax_line_items`
+    table that has never existed (it is `cam_line_items` with `kind='tax'`, since 0067 — now also `'roof'`, since 0074), and
+    §4 said `snapshotFingerprint` was at `v4` when `portfolio.js:61` has read `v5` since 0073. Stale docs, not stale code.
+  - **George: hard-refresh (Cmd+Shift+R).** Import a statement and the footer now tells you **how many of its lines are
+    placed**, not just how many you ticked. Anything left over shows under **Money not yet placed** on that property's
+    Ledger tab — with a one-click way to leave it out for good, and say why.
+  - **Flags:** ① **Statements imported before today have no line records** — the panel only knows what it was told, so it
+    starts empty and fills from your next import. Nothing is lost; re-import a month if you want it audited.
+    ② **Expect the panel to be busy at first, and that is the point** — every mortgage, transfer and draw line the importer
+    has always binned will now sit there unplaced until rounds 7–8 give them real homes. Leaving one out with a reason
+    silences it in the meantime. ③ **The balance tie-out against the bank's own closing figure is deliberately NOT in this
+    round.** The extractor reads `period_start`/`period_end` and a per-line running balance but no summary-block totals, and
+    the last line's balance is **not** universally the closing balance (U.S. Bank prints a per-*day* summary — the 07-31
+    round). Doing it honestly needs two extractor fields and a redeploy; this round ships the **completeness** tie-out, which
+    is the guarantee you actually asked for: every line the statement showed is on record. ④ A follow-on this makes cheap:
+    the duplicate guard currently reads `payments.import_hash` only, so it covers deposits and not expenses —
+    `statement_lines` now holds every line's hash and could cover both.
 
 - **2026-07-31** — **Accounting round 5 (Slice 3): the recoverability table — for the first time the app can say what an
   expense actually COST you, after tenants pay their share** (George: *"continue"*, working the accounting direction doc
