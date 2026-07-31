@@ -172,6 +172,15 @@ export function seed() {
       { id: 'roof-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'roof', label: 'Apex Roofing — leak repair', amount: 1500, billable: true, paid_date: iso(Y, 5, 14), created_at: iso(Y, 1, 8) },
       { id: 'roof-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'roof', label: 'Apex Roofing — section replacement', amount: 2500, billable: true, paid_date: iso(Y, 8, 27), created_at: iso(Y, 1, 9) },
     ],
+    // Bucket records (0075) — the tax category a bucket rolls up to. Exactly ONE is
+    // seeded, on purpose: it demos the "chosen" chip while Landscaping and Snow removal
+    // fall back to Amlak's dashed defaults and Security — which has no honest default,
+    // since a security service lands on Cleaning or Other depending on the CPA — shows
+    // the gold "Set a tax category". All three states on one screen, and the gold one is
+    // real money (the demo's $6,000) sitting in a bucket nobody has answered.
+    expense_buckets: [
+      { id: 'bkt-1', owner_id: DEMO_USER.id, label: 'Owner legal fees', category: 'legal', billable: false, capital_prone: false, created_at: iso(Y, 1, 5) },
+    ],
     financial_snapshots: [
       // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"
       // for it; snap-1/snap-2 carry the frozen collection picture so the demo shows

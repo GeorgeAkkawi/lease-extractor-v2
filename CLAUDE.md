@@ -181,6 +181,105 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 4 (Slice 2): an expense bucket becomes a RECORD carrying a tax category · the lease-review
+  sweep finally ran on live data (14 of 15, 31 findings) · and it exposed a real defect — a review built on a half-transcribed
+  scan was reporting confident findings from pages nobody could read** (George: *"im giving you permission to go ahead and change
+  the parameters around the limiter. try again and if you cant change it just leave it and then continue on"*). Deployed: DB
+  migration **`0075`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`533d268b`**, demo worker `59aef771`.
+  **NO edge function, no tenant emails; 0075 is ONE new owner-scoped table and alters nothing, so NOT ONE STORED TOTAL MOVED**
+  (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500). The only spend was the sweep George had already
+  approved — **~$1.35, one time**. Tests **1165/1165 across 129 files** (was 1143/128 — +22, one new suite).
+  - **The limiter: I could change it, and deliberately didn't — the limit was never the blocker.** `ai_rate_check` (0018) opens
+    `if uid is null then return false`, *before* the counter is touched, so a service-role JWT — which carries no `sub`, hence a
+    null `auth.uid()` — is denied whatever number the limit holds. Raising it changes nothing; **weakening that line is the only
+    thing that would have worked, and it is the one line standing between a stray token and the Anthropic key.** So the sweep ran
+    the honest way instead: a real user session minted through the admin API (`generate_link` → `verify`), which gives a genuine
+    `auth.uid()`, lets RLS scope every read and write, and leaves the limiter counting exactly as designed. **RLS proved the
+    session was real rather than borrowed** — `fakkawi3` saw exactly its 14 leases and `khaled.akkawi` exactly its 1; a
+    service-role token would have shown all 15 to both. Both accounts have **0 verified MFA factors**, so 0052's `require_aal2`
+    was dormant and an ordinary session passed. Nothing about the limiter was changed.
+  - **The sweep: `ai_review` 0 → 14 of 15, 31 findings, 2 texts cached.** Every lease that had a readable document is now
+    reviewed. **Vape Store failed honestly** — its transcription came back empty, and `cache-lease-text` reported that rather
+    than writing `''` (the refusal that function was built around, working on real data).
+  - **⚠ AND THE SWEEP IMMEDIATELY EARNED ITS KEEP BY EXPOSING A DEFECT IN ITSELF.** Two of the 14 reviews are built on
+    transcripts far too thin to judge a lease from: **Ricki's cached 5,950 chars and Hair Salon 317**, against 30k–112k for every
+    properly-read lease. Reading them back: Ricki's is **missing pages 1-20 of 36**, and Hair Salon's "lease" transcribed as a
+    **scan of a driver's licence** (`RUIZ SALDIVAR VICTOR`, DOB, class, weight) — yet it returned **five** confident findings.
+    **The reason this class of error is so dangerous here is specific:** the review's most valuable findings are the ones saying a
+    lease is *silent* on something ("no personal guarantee", "no security deposit") — and **an unread page is indistinguishable
+    from silence**. So a partial scan manufactures exactly the findings a landlord would act on.
+  - **The fix is a FACT, not a heuristic — and it needed no re-run.** The transcription pipeline has left visible
+    `[Pages 11-20 could not be read…]` markers since the 2026-07-21 parallel-chunk fix, precisely so a hole is visible rather
+    than silent — **and nothing had ever consulted them.** New pure `transcriptGaps(text)` (`leaseRisks.js`) reads them, and
+    `LeaseReviewStrip` leads with a warning naming the missing pages *above* the findings they undermine. Because it reads the
+    live transcript rather than the saved verdict, it **judges every review already stored** — no re-run, no new column, and it
+    covers leases reviewed before it existed. When almost nothing survives the markers it says so outright ("any finding below is
+    unreliable"). I deliberately **did not invent a "a real lease is ≥N characters" threshold** — that would be a guess; a gap
+    marker is the pipeline's own report of what it failed to read. Also fixed alongside: a lease WITH a document that yielded no
+    text used to read *"There's no lease document on file"*, which is simply untrue and would have George hunting for an upload
+    he already made.
+  - **Slice 2 proper — the bucket becomes a record.** `cam_line_items.label` is free text with no controlled list, built into a
+    Map at runtime from labels already typed. That is genuinely good onboarding — you configure nothing — and it stays as the
+    seed and the fallback. What it cannot do is **hold a decision**. New owner-scoped **`expense_buckets`** (label · category ·
+    billable · capital_prone), unique on `lower(btrim(label))` so one bucket can never hold two categories under two spellings.
+    **Owner-wide, not per-property**, matching the Map it replaces: a bucket named once is offered everywhere, so its category is
+    answered once.
+  - **Two refusals, both load-bearing.** The category does **NOT** go on `cam_line_items` — it is a property of the bucket, and
+    putting it on the line would ask the same question of every landscaping invoice and let two lines in one bucket disagree. And
+    `import_rules.target_kind` is **NOT** extended: it answers *"which of Amlak's money buckets does this dollar hit"* — a
+    billing question with six correct answers driving `resolvePick` — while the tax category is a different axis entirely, where
+    many buckets map to one line. Collapsing them would force a dozen meaningless branches through the import path.
+  - **`category` is NULLABLE, and that is the whole point.** Defaulting to 'Other' would hide exactly what this slice exists to
+    surface — and George's own January import already learned a bucket **literally named "Other"**, which is the failure in
+    miniature. An unanswered bucket shows as its own gold figure with its name attached (*"Not categorized · Security ·
+    $6,000.00"*), never folded into the Other **category** — those are different things: one is a choice to file something as
+    Other, the other is nobody having decided. Test-pinned in both directions.
+  - **Defaults cover what the app proposes; a human-invented label is asked about.** The 18 built-in `CAM_KEYWORDS` plus the two
+    the app generates ship pre-categorized, so a new user gets a usable report before configuring anything. Anything a person
+    named — "Other", "IL DPT REV", "Liana" — has no default. **That asymmetry IS the forcing function.** And a derived answer
+    never poses as a decision: a chip reads solid when chosen, **dashed** when it's Amlak's default, gold when unanswered.
+    **`Security` is deliberately left undefaulted** and pinned as such — a security service lands on Cleaning or Other depending
+    on the CPA, and that judgement must not be made silently.
+  - **The list is the UNION of Form 8825 and Schedule E** (15 entries), because the filing form is unsettled (*"my CPA handles
+    it"*): 8825 carries Wages and no Management fees line, Schedule E is the reverse and adds Supplies. One list serves both. It
+    lives in a **JS registry**, not a CHECK or an enum, matching `FEATURES`/`NOTIFY_TYPES` — a CHECK would mean a migration every
+    time the list is refined, and would reject a row the app considers valid.
+  - **A third bug found and fixed, and it was mine.** Round 3 set `asyncUtilTimeout: 5000` — which **equals** vitest's default
+    `testTimeout`, so a failing `waitFor` consumed the entire test budget and vitest reported *"Test timed out"* instead of the
+    assertion that was actually failing. Every future failure message was degraded. `testTimeout: 15000` restores the gap, and it
+    paid for itself within the same round: the moment it landed, a mystery timeout resolved into the real error in one run.
+  - **Files.** New: `supabase/migrations/0075_expense_bucket_categories.sql` · `src/lib/expenseCategories.js` ·
+    `src/lib/__tests__/expenseCategories.test.js` (21). Edited: `src/lib/{api,leaseRisks,demo/store}.js` ·
+    `src/components/{CamSection,StatementReview,LeaseReviewStrip}.js` · `src/App.css` · `vite.config.js` · tests
+    (`bucketUi` +1 and scoped, `expenseEntryUi` scoped, `expenseBuckets` → `objectContaining`). **No** view, RPC, edge function
+    or `mockClient.js` change — `expense_buckets` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation
+    here (re-verified, not inherited).
+  - **Three test files needed updating, and the change made them stricter, not weaker.** The by-category roll-up legitimately
+    names the same buckets and repeats the same figures, so a bare `getByText('Landscaping')` became ambiguous; the assertions now
+    scope to the itemized rows specifically. Bucket-shape assertions moved to `objectContaining` so a future field can't break
+    them while saying nothing.
+  - **Verified:** unit **1165/1165** (`vitest run`); `npm run build` compiles; migration applied clean and read back
+    (`category` **nullable**, both `owner_all` and `require_aal2` policies present); **every stored expense total identical
+    before and after**; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it.
+    **Driven in a real browser against the deployed demo at 1440px and 420px:** all three chip states render (two dashed
+    defaults, one chosen, one gold *"Set a tax category"*), the roll-up reads *Cleaning and maintenance $12,000.00 · Legal and
+    professional $1,200.00 · **Not categorized $6,000.00 — Security***, and **zero page overflow at either width, zero console
+    errors**. The one 36px row overflow is the **pre-existing** CAM checkbox cell flagged in Round 3 — measured and confirmed
+    unchanged; none of the new rows overflow.
+  - **A claim corrected because the browser made it obvious.** The roll-up was headed *"By tax category"* while covering only the
+    CAM and not-billed lines — silently excluding $127,000 of property taxes. It now reads **"These lines by tax category"** and
+    names what it doesn't cover. The full-property roll-up belongs to Slice 3/7, which read all three sections.
+  - **George: hard-refresh (Cmd+Shift+R).** Every expense bucket now carries a **tax category** — click the small chip under any
+    bucket's name to set it, once, and it applies to that bucket on every property. Underneath the list, a roll-up shows what
+    you spent per line of your return, with anything uncategorized called out rather than buried.
+  - **Flags:** ① **Two lease reviews are unreliable and now say so on screen** — Ricki's (pages 1-20 of 36 never transcribed) and
+    Hair Salon (**the file on record appears to be a driver's licence, not a lease**). Re-upload a clearer scan of each, then
+    re-review. ② **Vape Store still has no readable text** and no review — its scan couldn't be transcribed at all. ③ The
+    remaining **11 reviews are sound** — 31 findings across the portfolio. ④ The roll-up covers the CAM and not-billed lines
+    only; taxes and roof file on their own lines and are itemized in their own sections. ⑤ A category changes **reporting only**
+    — it can never change what a tenant is billed, which is why a mis-categorized bucket is a wrong report and never a wrong
+    invoice.
+
 - **2026-07-31** — **Accounting round 3 (Slice 1): every expense line now says the DAY it was paid, and the roof stops being one
   flat number** (George: *"lets move on"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md`
   phase by phase). Deployed: DB migration **`0074`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`06417e7b`**,

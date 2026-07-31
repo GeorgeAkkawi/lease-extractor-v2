@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals, resyncPropertyBilling } from '../lib/api';
+import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals, resyncPropertyBilling, listExpenseBuckets, saveExpenseBucket } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
+import { EXPENSE_CATEGORIES, categoryFor, categoryLabel, summarizeByCategory, bucketKey } from '../lib/expenseCategories';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
@@ -41,6 +42,20 @@ export default function CamSection({ propId, year, expense }) {
   // query key the Financials page already warms, so this is a cache hit.
   const { data: totals } = useQuery({ queryKey: ['propertyTotals', propId, year], queryFn: () => getPropertyTotals(propId, year) });
   const rentBasis = Number(totals?.total_revenue) || 0;
+
+  // The saved bucket records (0075) — owner-wide, so this key carries no property or
+  // year: a category answered on one property is answered everywhere.
+  const { data: buckets = [] } = useQuery({ queryKey: ['expenseBuckets'], queryFn: listExpenseBuckets });
+  const [editCat, setEditCat] = useState(null); // the bucket label whose category is open
+  const saveCat = useMutation({
+    mutationFn: ({ label, category }) => saveExpenseBucket({ label, category: category || null }),
+    onSuccess: () => {
+      setEditCat(null);
+      // Owner-wide, and the import review reads the same records — refresh both.
+      qc.invalidateQueries({ queryKey: ['expenseBuckets'] });
+      qc.invalidateQueries({ queryKey: ['statementContext'] });
+    },
+  });
 
   const [label, setLabel] = useState('');
   const [amount, setAmount] = useState('');
@@ -161,7 +176,39 @@ export default function CamSection({ propId, year, expense }) {
   };
   const bucketLabels = [...new Set([...items.map((it) => String(it.label || '').trim()).filter(Boolean), ...CAM_KEYWORD_LABELS, FEE_LABEL])].sort();
 
-  const itemRow = (it, last) => (
+  // The bucket's tax category, shown once per bucket (on its first line) and editable
+  // in place. Three states, and the third is the whole point of this slice: a bucket
+  // nobody has categorized reads "Set a tax category" rather than being absorbed into
+  // "Other", so the money that needs an answer stays visible.
+  const catChip = (label) => {
+    const { category, source } = categoryFor(label, buckets);
+    if (editCat === bucketKey(label)) {
+      return (
+        <select
+          className="cam-input" autoFocus value={category || ''}
+          onChange={(e) => saveCat.mutate({ label, category: e.target.value })}
+          onBlur={() => setEditCat(null)}
+          style={{ fontSize: 11, marginTop: 3, padding: '2px 4px', maxWidth: 200 }}
+        >
+          <option value="">Not categorized</option>
+          {EXPENSE_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+        </select>
+      );
+    }
+    const title = source === 'saved'
+      ? `Tax category — you chose this. It applies to every "${label}" line, on every property.`
+      : source === 'default'
+        ? `Tax category — Amlak's default for "${label}". Click to confirm or change it; your CPA may file it differently.`
+        : `No tax category yet. "${label}" won't roll up to a tax line until you pick one — click to choose.`;
+    return (
+      <button type="button" className={`cat-chip${category ? (source === 'default' ? ' derived' : '') : ' none'}`}
+        onClick={() => setEditCat(bucketKey(label))} title={title}>
+        {category ? categoryLabel(category) : 'Set a tax category'}
+      </button>
+    );
+  };
+
+  const itemRow = (it, last, showCat) => (
     <div className={`cam-row${last ? ' last' : ''}`} key={it.id}>
       <div>
         {it.label}
@@ -172,6 +219,7 @@ export default function CamSection({ propId, year, expense }) {
             {Number(it.rent_pct)}% of {money(rentBasis)} base rent
           </div>
         )}
+        {showCat && <div>{catChip(String(it.label || '').trim())}</div>}
       </div>
       <div className="num">{money(it.amount)}</div>
       <div className="num muted" style={{ fontSize: 12 }} title={it.paid_date ? undefined : 'No date on file — entered by hand, or carried from a service contract, rather than read from a statement'}>{fmtShortDate(it.paid_date)}</div>
@@ -182,7 +230,7 @@ export default function CamSection({ propId, year, expense }) {
   );
   const groupRows = (list) =>
     groupsOf(list).flatMap((group, gi, groups) => {
-      const rows = group.map((it, i) => itemRow(it, gi === groups.length - 1 && i === group.length - 1 && group.length === 1));
+      const rows = group.map((it, i) => itemRow(it, gi === groups.length - 1 && i === group.length - 1 && group.length === 1, i === 0));
       if (group.length > 1) {
         const sub = group.reduce((s, it) => s + (Number(it.amount) || 0), 0);
         rows.push(
@@ -252,6 +300,41 @@ export default function CamSection({ propId, year, expense }) {
             Tracked for your records — never included in the CAM billed back through tenant shares.
           </div>
         </>
+      )}
+
+      {/* Where the year's spending lands on a tax return. Covers BOTH groups: a cost you
+          absorbed is still a deductible expense, even though no tenant reimburses it.
+          An uncategorized bucket appears as its own figure — never folded into "Other",
+          which is exactly how a miscellaneous line becomes a place to hide things. */}
+      {items.length > 0 && (
+        <div className="cat-summary">
+          <div className="cam-row cam-th" style={{ marginTop: 0 }}>
+            <div>These lines by tax category</div>
+            <div className="num">FY {year}</div>
+            <div className="num"></div>
+            <div></div>
+          </div>
+          {summarizeByCategory(items, buckets).map((c) => (
+            <div className={`cam-row${c.key ? '' : ' cat-none'}`} key={c.key || 'uncategorized'}>
+              <div>
+                {c.label}
+                <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                  {c.buckets.join(' · ')}
+                  {!c.key && ' — pick a category on the lines above'}
+                </div>
+              </div>
+              <div className="num">{money(c.total)}</div>
+              <div className="num"></div>
+              <div></div>
+            </div>
+          ))}
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            Which line of your return each bucket rolls up to — your CPA may file some differently.
+            Changing a category never changes what a tenant is billed. Covers the CAM and
+            not-billed lines above only; property taxes and roof work are itemized in their own
+            sections and file on their own lines.
+          </div>
+        </div>
       )}
 
       {/* add a line item */}

@@ -134,3 +134,33 @@ export function computeLeaseRisks({ lease, escalations, renewals, insurance, tod
 
   return out.sort((a, b) => (RANK[a.severity] ?? 3) - (RANK[b.severity] ?? 3));
 }
+
+// How much of the document the AI review was actually able to read.
+//
+// The transcription pipeline leaves a VISIBLE marker wherever a page range failed —
+// "[Pages 11-20 could not be read for search…]" — added by the 2026-07-21 parallel-chunk
+// fix precisely so a hole in the text is visible rather than silent. Until now nothing
+// consulted them, and that mattered: the red-flag review's most valuable findings are
+// the ones that say a lease is SILENT on something ("no personal guarantee", "no
+// security deposit"). Silence is exactly what an unread page looks like. So a review run
+// over a partial transcript reports missing protections that may simply be on a page
+// that never transcribed — a confident-sounding finding built on nothing.
+//
+// Found on live data: one lease had pages 1-20 of 36 missing, and another transcribed
+// only a scan of a driver's licence, yet returned five "the lease doesn't say" findings.
+//
+// Reads the stored text, so it judges reviews saved BEFORE this existed too — no
+// re-run, and no new column.
+const GAP_RE = /\[Pages?\s+[\d\s\-–—]+?\s+could not be read[^\]]*\]/gi;
+const PAGES_RE = /\[Pages?\s+([\d\s\-–—]+?)\s+could not be read/i;
+
+export function transcriptGaps(text) {
+  const t = String(text || '');
+  const markers = t.match(GAP_RE) || [];
+  const pages = markers.map((m) => (m.match(PAGES_RE)?.[1] || '').trim()).filter(Boolean);
+  // What survives once the markers themselves are removed — the text there was actually
+  // something to judge from. A transcript that is nothing BUT gap markers has a real
+  // length and no content, which is the case worth catching.
+  const readableLength = t.replace(GAP_RE, '').trim().length;
+  return { partial: markers.length > 0, pages, readableLength };
+}

@@ -18,6 +18,7 @@ import { contractCoversYear, contractAnnualCost } from './contracts';
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
 import { advanceDueDate } from './annualReports';
+import { isValidCategory, bucketKey, defaultCategoryFor, isCapitalProne } from './expenseCategories';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -1780,6 +1781,49 @@ const listExpenseLineItems = async (propertyId, year, kind) => {
 export const listCamLineItems = (propertyId, year) => listExpenseLineItems(propertyId, year, 'cam');
 export const listTaxLineItems = (propertyId, year) => listExpenseLineItems(propertyId, year, 'tax');
 export const listRoofLineItems = (propertyId, year) => listExpenseLineItems(propertyId, year, 'roof');
+
+// ── Expense buckets (0075) ────────────────────────────────────────────────────
+// A bucket's tax category, chosen once and applied to every line that bucket holds.
+// Owner-wide, NOT per-property: a bucket named once is offered on every property (the
+// runtime Map in getStatementMatchContext works that way), so its category is answered
+// once too. Nothing here bills anything — a category is reporting vocabulary; what a
+// tenant is charged is decided by cam_line_items.billable and the pro-rata share.
+export const listExpenseBuckets = () =>
+  rows(supabase.from('expense_buckets').select('*').order('label'));
+
+// Upsert by (owner, label) case-insensitively. The unique index is on
+// lower(btrim(label)), so a plain insert of an existing label raises 23505 and we
+// update the row already there — the same shape saveImportRule uses, and what keeps a
+// bucket from holding two different categories.
+export async function saveExpenseBucket({ label, category = null, billable, capital_prone }) {
+  const clean = String(label || '').trim();
+  if (!clean) throw new Error('A bucket needs a name.');
+  if (category != null && !isValidCategory(category)) throw new Error(`Unknown category: ${category}`);
+
+  const patch = {
+    ...(category !== undefined ? { category } : {}),
+    ...(billable !== undefined ? { billable } : {}),
+    ...(capital_prone !== undefined ? { capital_prone } : {}),
+  };
+  try {
+    return await one(
+      supabase.from('expense_buckets')
+        .insert({ label: clean, owner_id: await ownerId(), ...patch })
+        .select().single()
+    );
+  } catch (e) {
+    if (e?.code !== '23505') throw e;
+    // Already exists → update it in place, preserving its id so nothing referencing
+    // the bucket is disturbed.
+    const existing = (await listExpenseBuckets()).find(
+      (b) => bucketKey(b.label) === bucketKey(clean)
+    );
+    if (!existing) throw e;
+    return one(
+      supabase.from('expense_buckets').update(patch).eq('id', existing.id).select().single()
+    );
+  }
+}
 
 // Re-sum the line items and write the total into expense_records.cam_total,
 // preserving taxes/roof. This is the "adds everything up" step — pure code.
@@ -3929,7 +3973,7 @@ export async function listStatementImports(propertyId, year = null) {
 // portfolio), open reconciliation balances, the saved rules, the live import-hash
 // set (the duplicate guard), and the account→property memory.
 export async function getStatementMatchContext(propertyId, year) {
-  const [properties, rules, allImports, hashRows, reconRows, camItems, corporations, leaseRows] = await Promise.all([
+  const [properties, rules, allImports, hashRows, reconRows, camItems, corporations, leaseRows, savedBuckets] = await Promise.all([
     rows(supabase.from('properties').select('id,name,corporation_id')),
     listImportRules(),
     rows(supabase.from('statement_imports').select('*')),
@@ -3942,6 +3986,7 @@ export async function getStatementMatchContext(propertyId, year) {
     rows(supabase.from('cam_line_items').select('label,billable')),
     rows(supabase.from('corporations').select('*')),
     rows(supabase.from('leases').select('id,tenant_email,tenant_email_2,tenant_contact_name')),
+    listExpenseBuckets(),
   ]);
   const nameOf = Object.fromEntries((properties || []).map((p) => [p.id, p.name]));
   // Tenant contact identity (for the "payment didn't follow the escalation" letter) and
@@ -4025,16 +4070,40 @@ export async function getStatementMatchContext(propertyId, year) {
   // all properties, so a bucket named once is offered everywhere) plus the labels
   // saved on rules. billable=false labels form the "not billed to tenants" family.
   // The review screen merges these with the keyword table's built-in labels.
+  // Saved bucket RECORDS (0075) come first — they carry the tax category a human chose,
+  // and a bucket can legitimately exist before any line has landed in it. Emergent
+  // labels then fill in around them, so a label nobody has categorized still imports
+  // and still bills exactly as it did before this table existed.
+  const savedByKey = new Map((savedBuckets || []).map((b) => [bucketKey(b.label), b]));
+  const decorate = (label, billable) => {
+    const saved = savedByKey.get(bucketKey(label));
+    const category = (saved?.category && isValidCategory(saved.category)) ? saved.category : defaultCategoryFor(label);
+    return {
+      label,
+      billable: saved ? saved.billable !== false : billable,
+      category: category || null,
+      // 'saved' = a human chose it · 'default' = the built-in mapping for a label the
+      // app proposed · null = nobody has said, and the UI must show it as a figure
+      // rather than absorb it into "Other".
+      categorySource: saved?.category && isValidCategory(saved.category) ? 'saved' : (category ? 'default' : null),
+      capital_prone: saved ? saved.capital_prone === true : isCapitalProne(label),
+    };
+  };
+
   const bucketMap = new Map();
+  for (const b of savedBuckets || []) {
+    const label = String(b.label || '').trim();
+    if (label) bucketMap.set(bucketKey(label), decorate(label, b.billable !== false));
+  }
   for (const it of camItems || []) {
     const label = String(it.label || '').trim();
-    if (label) bucketMap.set(label.toLowerCase(), { label, billable: it.billable !== false });
+    if (label && !bucketMap.has(bucketKey(label))) bucketMap.set(bucketKey(label), decorate(label, it.billable !== false));
   }
   for (const r of rules || []) {
     const label = String(r.cam_label || '').trim();
-    if (!label || bucketMap.has(label.toLowerCase())) continue;
-    if (r.target_kind === 'expense_cam') bucketMap.set(label.toLowerCase(), { label, billable: true });
-    else if (r.target_kind === 'expense_other') bucketMap.set(label.toLowerCase(), { label, billable: false });
+    if (!label || bucketMap.has(bucketKey(label))) continue;
+    if (r.target_kind === 'expense_cam') bucketMap.set(bucketKey(label), decorate(label, true));
+    else if (r.target_kind === 'expense_other') bucketMap.set(bucketKey(label), decorate(label, false));
   }
   const buckets = [...bucketMap.values()].sort((a, b) => a.label.localeCompare(b.label));
 

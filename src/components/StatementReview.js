@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getStatementMatchContext,
   listReconciliations,
@@ -7,7 +7,9 @@ import {
   applyStatementImport,
   suggestExpenseBuckets,
   suggestTenantMatches,
+  saveExpenseBucket,
 } from '../lib/api';
+import { EXPENSE_CATEGORIES, defaultCategoryFor } from '../lib/expenseCategories';
 import {
   matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
   corroborateAmount, monthOfDate, deriveEstimateFromDeposit, CAM_KEYWORD_LABELS,
@@ -43,6 +45,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   // isError is read deliberately: without it a failed context load left the screen
   // on "Reading the statement…" forever, which reads as a hung AI even though the
   // transcript is already in hand. A failure must say so and offer a way out.
+  const qc = useQueryClient();
   const { data: ctx, isError: ctxFailed, error: ctxError, refetch: retryCtx } = useQuery({
     queryKey: ['statementContext', propertyId, year],
     queryFn: () => getStatementMatchContext(propertyId, year),
@@ -175,8 +178,22 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     for (const l of CAM_KEYWORD_LABELS) add(l, true);
     return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
   }, [ctx, sessionBuckets]);
-  const addSessionBucket = (label, billable) =>
-    setSessionBuckets((s) => (s.some((b) => b.label.toLowerCase() === label.toLowerCase()) ? s : [...s, { label, billable }]));
+  // A new bucket is offered to every row in THIS session, and its tax category is
+  // persisted straight away (0075). Saving it here rather than at import time is
+  // deliberate: a category is vocabulary, not money — it moves no figure and bills
+  // nothing — so the worst a cancelled review leaves behind is a named bucket with no
+  // lines in it, which is exactly what naming a bucket meant. Best-effort: failing to
+  // record the category must never block the import itself.
+  const addSessionBucket = (label, billable, category) => {
+    setSessionBuckets((s) => (
+      s.some((b) => b.label.toLowerCase() === label.toLowerCase())
+        ? s
+        : [...s, { label, billable, category: category || null }]
+    ));
+    saveExpenseBucket({ label, billable, category: category || null })
+      .then(() => qc.invalidateQueries({ queryKey: ['expenseBuckets'] }))
+      .catch(() => { /* the bucket still works this session; the category can be set on Financials */ });
+  };
 
   // 🤖 Suggest buckets — click-gated (~1–2¢), only for the money-out lines nothing
   // recognized. Suggestion-only: picks are set with an "AI" chip but stay UNCHECKED,
@@ -730,6 +747,10 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   const [addingBucket, setAddingBucket] = useState(false);
   const [newName, setNewName] = useState('');
   const [newBillable, setNewBillable] = useState(true);
+  // '' = follow the built-in default for whatever name is being typed; once the user
+  // picks, their choice sticks even if they keep editing the name.
+  const [newCategory, setNewCategory] = useState('');
+  const effectiveCategory = newCategory || defaultCategoryFor(newName) || '';
   const pickValue =
     r.kind === 'tenant' && r.leaseId ? `lease:${r.leaseId}`
       : r.kind === 'expense_cam' && r.label ? `cam:${r.label}`
@@ -751,11 +772,12 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   const confirmNewBucket = () => {
     const label = newName.trim();
     if (!label) return;
-    onNewBucket?.(label, newBillable);
+    onNewBucket?.(label, newBillable, effectiveCategory || null);
     setOv(r.i, { pick: newBillable ? `cam:${label}` : `other:${label}` });
     setAddingBucket(false);
     setNewName('');
     setNewBillable(true);
+    setNewCategory('');
   };
   return (
     <tr className={r.checked ? undefined : 'stmt-off'}>
@@ -843,6 +865,17 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
               <input type="checkbox" checked={newBillable} onChange={(e) => setNewBillable(e.target.checked)} />
               bill to tenants via CAM
             </label>
+            {/* Asked once, here, because this is the moment the bucket is born — and a
+                bucket nobody categorizes is money that won't roll up to any tax line. */}
+            <select
+              className="text-input" style={{ maxWidth: 175, fontSize: 12 }}
+              value={effectiveCategory}
+              onChange={(e) => setNewCategory(e.target.value)}
+              title="Which line of your tax return this bucket rolls up to. It changes reporting only — never what a tenant is billed."
+            >
+              <option value="">Tax category…</option>
+              {EXPENSE_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
             <button type="button" className="btn-sm" onClick={confirmNewBucket} disabled={!newName.trim()}>Add</button>
             <button type="button" className="ghost btn-sm" onClick={() => { setAddingBucket(false); setNewName(''); }}>Cancel</button>
           </div>

@@ -452,6 +452,18 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .cam-row.last{border-bottom:none}
 .cam-row.cam-total{border-bottom:none;border-top:1px solid var(--line);padding-top:12px;margin-top:2px}
 .cam-row.cam-total b{font-family:var(--display);font-size:18px;font-weight:600}
+/* Slice 2 — a bucket's tax category. Three states, and the weight is deliberate:
+   CHOSEN reads quiet (a settled fact), Amlak's DEFAULT is dashed so a derived answer
+   never poses as a decision, and NONE is gold — this app's "look here" — because an
+   uncategorized bucket is the one thing the whole section exists to surface. The
+   text-transform/letter-spacing resets are needed: the global button rule uppercases
+   everything, which turned an earlier click-to-edit into "＋ SET ESTIMATE". */
+.cat-chip{margin-top:3px;padding:1px 7px;border-radius:999px;border:1px solid var(--hair);background:var(--panel-2);color:var(--muted);font-size:10px;font-weight:600;text-transform:none;letter-spacing:0;cursor:pointer}
+.cat-chip:hover{border-color:var(--accent);color:var(--ink)}
+.cat-chip.derived{border-style:dashed}
+.cat-chip.none{border-color:var(--gold);color:var(--gold);background:transparent}
+.cat-summary{margin-top:18px;padding-top:4px;border-top:1px solid var(--line)}
+.cam-row.cat-none .num{color:var(--gold);font-weight:600}
 .cam-input{font-family:inherit;font-size:14px;padding:9px 11px;border:1px solid transparent;border-radius:var(--radius);background:var(--panel-2);color:var(--ink);width:100%;outline:none}
 .cam-input:hover{border-color:var(--border);background:#fff}
 .cam-input:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px var(--accent-soft)}

@@ -57,8 +57,11 @@ describe('expense buckets — billable vs not-billed', () => {
 
   it('the match context serves the owner buckets, both kinds', async () => {
     const ctx = await getStatementMatchContext('prop-1', Y);
-    expect(ctx.buckets).toContainEqual({ label: 'Landscaping', billable: true });
-    expect(ctx.buckets).toContainEqual({ label: 'Owner legal fees', billable: false });
+    // objectContaining, not an exact shape: a bucket also carries its tax category
+    // (0075) now, and pinning the whole object would break on every future field
+    // while saying nothing about the two that matter here.
+    expect(ctx.buckets).toContainEqual(expect.objectContaining({ label: 'Landscaping', billable: true }));
+    expect(ctx.buckets).toContainEqual(expect.objectContaining({ label: 'Owner legal fees', billable: false }));
   });
 
   it('an expense_other rule suggests the not-billed bucket with its label', async () => {
@@ -72,7 +75,7 @@ describe('expense buckets — billable vs not-billed', () => {
     const rule = await saveImportRule({ property_id: 'prop-1', pattern: 'WASTE MGMT', target_kind: 'expense_cam', cam_label: 'Garbage' });
     expect(rule.cam_label).toBe('Garbage');
     const ctx = await getStatementMatchContext('prop-1', Y);
-    expect(ctx.buckets).toContainEqual({ label: 'Garbage', billable: true });
+    expect(ctx.buckets).toContainEqual(expect.objectContaining({ label: 'Garbage', billable: true }));
     const { rows } = matchStatement({
       transactions: [{ date: `${Y}-04-02`, description: 'WASTE MGMT GARBAGE SVC 55021', amount: 380, direction: 'out', balance: null, line: 1 }],
       propertyId: 'prop-1', tenants: [], rules: ctx.rules, existingHashes: new Set(),

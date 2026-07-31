@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { reviewLease } from '../lib/api';
-import { computeLeaseRisks } from '../lib/leaseRisks';
+import { reviewLease, MIN_USABLE_TEXT } from '../lib/api';
+import { computeLeaseRisks, transcriptGaps } from '../lib/leaseRisks';
 import { fmtDate } from '../lib/format';
 
 // "Lease review" — the one place both halves of the red-flag read are shown.
@@ -42,6 +42,11 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
   });
 
   const hasText = !!lease?.lease_text;
+  // How much of the document the review could actually read. A finding that the lease is
+  // SILENT on something is indistinguishable from a page that never transcribed, so a
+  // partial read has to say so ABOVE the findings rather than let them stand unqualified.
+  const gaps = transcriptGaps(lease?.lease_text);
+  const barelyRead = gaps.readableLength < MIN_USABLE_TEXT;
   const highs = flags.filter((f) => f.severity === 'high').length;
   // The lease has changed since the AI read it — a rider may have fixed (or introduced)
   // something. Say so rather than presenting a stale read as current.
@@ -78,10 +83,24 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
 
       {!hasText && (
         <p className="muted review-note">
-          There’s no lease document on file for this tenant, so the AI has nothing to read. Upload or paste
-          the lease and the review becomes available. The checks below still run — they read your records,
-          not the document.
+          {lease?.lease_file_id
+            ? 'A document is on file for this tenant, but no searchable text could be read from it — it may be a photo of a photo, or too faint to transcribe. Re-upload a clearer scan and the review becomes available.'
+            : 'There’s no lease document on file for this tenant, so the AI has nothing to read. Upload or paste the lease and the review becomes available.'}
+          {' '}The checks below still run — they read your records, not the document.
         </p>
+      )}
+      {/* The findings most worth having are the ones that say a lease is SILENT on
+          something. An unread page looks exactly like silence, so when the transcript
+          has holes this has to be said BEFORE the list, not as a footnote after it. */}
+      {hasText && gaps.partial && (
+        <div className="note-msg warn">
+          <strong>Only part of this document could be read.</strong>{' '}
+          {gaps.pages.length > 0 && <>Pages {gaps.pages.join(', ')} didn’t transcribe. </>}
+          {barelyRead
+            ? 'Almost nothing usable came through, so any finding below is unreliable — it may be describing a page that was never read, or a document that isn’t the lease.'
+            : 'A finding that says the lease doesn’t mention something may just mean it’s on a page that wasn’t read.'}
+          {' '}Re-upload a clearer scan, then re-review.
+        </div>
       )}
       {run.isError && <div className="note-msg danger">{run.error?.message || 'The review couldn’t be completed — please try again.'}</div>}
       {stale && (

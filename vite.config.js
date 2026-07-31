@@ -36,5 +36,11 @@ export default defineConfig({
     // mode too, which would otherwise inject the real Supabase creds and flip the
     // suite off the mock client (the tests assert DEMO_MODE === true).
     env: { REACT_APP_SUPABASE_URL: '', REACT_APP_SUPABASE_ANON_KEY: '' },
+    // MUST stay above setupTests.js's asyncUtilTimeout (5s). They were equal, which
+    // meant a failing waitFor consumed the entire test budget and vitest reported
+    // "Test timed out" INSTEAD of the assertion that was actually failing — so a real
+    // regression arrived with its cause hidden. The gap is what lets waitFor give up
+    // first and report what it was waiting for.
+    testTimeout: 15000,
   },
 });

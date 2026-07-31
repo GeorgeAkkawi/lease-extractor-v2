@@ -4,7 +4,7 @@
 //    rent as that calcuation then it needs to be added to the expenses");
 //  • property taxes read like the CAM list — one line per payment.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import CamSection from '../CamSection';
 import TaxSection from '../TaxSection';
@@ -14,6 +14,10 @@ import { currentYear } from '../../lib/format';
 const Y = currentYear();
 const P = 'prop-1';
 const SEED = { taxes_total: 25000, cam_total: 18000, roof_total: 4000 };
+
+// Text in the itemized lists, excluding the by-category roll-up beneath them (which
+// legitimately names the same buckets and repeats the same figures).
+const inItems = (text) => screen.getAllByText(text).filter((el) => !el.closest('.cat-summary'));
 
 const wrap = (ui) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -30,7 +34,9 @@ afterEach(async () => {
 describe('CAM entry — a management fee is a percentage', () => {
   it('offers the percentage as soon as the label says so, and prices it off the rent', async () => {
     wrap(<CamSection propId={P} year={Y} expense={{ ...SEED }} />);
-    await waitFor(() => expect(screen.getByText('Landscaping')).toBeTruthy());
+    // The by-category roll-up (0075) names buckets and repeats their totals, so these
+    // assertions scope to the itemized rows — stricter than the bare getByText they replace.
+    await waitFor(() => expect(inItems('Landscaping').length).toBe(1));
 
     // A dollar field until the line is named like a fee.
     expect(document.querySelector('.cam-pre').textContent).toBe('$');
@@ -44,9 +50,11 @@ describe('CAM entry — a management fee is a percentage', () => {
 
     fireEvent.click(screen.getByTitle('Add expense item'));
     // It bills like any other component, and the row says what it was struck at.
-    await waitFor(() => expect(screen.getByText('Management fee')).toBeTruthy());
+    await waitFor(() => expect(inItems('Management fee').length).toBe(1));
     expect(screen.getByText('5% of $144,000.00 base rent')).toBeTruthy();
-    expect(screen.getByText('$25,200.00')).toBeTruthy(); // CAM total 18,000 + 7,200
+    expect(inItems('$25,200.00').length).toBe(1); // CAM total 18,000 + 7,200
+    // …and it rolls up to the Management fees line of the return, by default.
+    expect(within(document.querySelector('.cat-summary')).getByText('Management fees')).toBeTruthy();
   });
 });
 
