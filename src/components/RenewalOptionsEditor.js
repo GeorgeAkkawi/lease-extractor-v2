@@ -1,10 +1,14 @@
 import { useState, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRenewals, deleteRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail } from '../lib/api';
+import { listRenewals, deleteRenewal, updateRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail } from '../lib/api';
 import { money, money0, fmtDate } from '../lib/format';
-import { addMonths, optionLapseReason, renewalFirstYearRent, optionWindows, windowLabel } from '../lib/renewals';
+import {
+  addMonths, optionLapseReason, renewalFirstYearRent, optionWindows, windowLabel,
+  noticeDraftFrom, noticeLeadLabel, noticeDrift, resolveNotice,
+} from '../lib/renewals';
 import { cmpRenewal } from '../lib/leaseTerm';
 import NotificationEmailModal from './NotificationEmailModal';
+import NoticeByField from './NoticeByField';
 import RenewalOptionModal from './RenewalOptionModal';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
@@ -105,6 +109,9 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   // "Already renewed" on a lapsed option opens its own row to collect WHEN it happened:
   // { id, value }. The date is the whole point — it's a history entry, not a decision.
   const [histEntry, setHistEntry] = useState(null);
+  // Clicking the Notice-by cell opens the deadline for editing: { id, draft }. The draft
+  // is the lease's own rule ("180 days prior"), not a date — see NoticeByField.
+  const [noticeEntry, setNoticeEntry] = useState(null);
   // A friendly note when a renewal can't be applied yet (e.g. the lease has no term-end
   // date to roll forward from).
   const [notice, setNotice] = useState('');
@@ -120,6 +127,15 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
       .forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   };
   const remove = useMutation({ mutationFn: (id) => deleteRenewal(id), onSuccess: refresh });
+  // The notice date drives the bell prompt, the lapse rule and — through the
+  // renewal_options trigger (0002) — the reminder emails, so settle those too.
+  const saveNotice = useMutation({
+    mutationFn: ({ id, ...patch }) => updateRenewal(id, patch),
+    onSuccess: () => {
+      setNoticeEntry(null);
+      ['renewals', 'alerts', 'notifications'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+    },
+  });
   const confirm = useMutation({
     // acceptDecrease: the dialog below has already shown both figures, so the API's
     // below-current-rent guard doesn't need to stop us a second time.
@@ -210,7 +226,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
 
   return (
     <div>
-      <MutationError of={[remove, confirm, decline, restore]} />
+      <MutationError of={[remove, confirm, decline, restore, saveNotice]} />
       {notice && (
         <p className="note-msg warn" style={{ marginBottom: 12 }}>{notice}</p>
       )}
@@ -239,11 +255,28 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
           <table style={{ minWidth: 0 }}>
             <thead><tr><th>Option</th><th>Notice by</th><th title="The period the option covers — it picks up the day after the current term ends, and each option chains from the one before it. For an option not yet exercised this is the period it would cover.">Covers</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => { const reason = lapseReason(r); const lapsed = !!reason; const badge = statusBadge(r.status, reason); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); const covers = windowLabel(windows[r.id]); return (
+              {renewals.map((r) => { const reason = lapseReason(r); const lapsed = !!reason; const badge = statusBadge(r.status, reason); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); const covers = windowLabel(windows[r.id]); const lead = noticeLeadLabel(r.notice_lead_n, r.notice_lead_unit); const drift = noticeDrift(r, windows[r.id]); return (
                 <Fragment key={r.id}>
                 <tr>
                   <td>{r.option_label || '—'}</td>
-                  <td>{r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">—</span>}</td>
+                  {/* The deadline is editable in place, because it's a rule the lease
+                      states as a duration and the app can only guess at from an import.
+                      A settled option shows it as the record it now is. */}
+                  <td className="opt-notice">
+                    {r.status !== 'pending' ? (
+                      r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">—</span>
+                    ) : (
+                      <button type="button" className="notice-cell"
+                        title={drift
+                          ? `Notice is ${lead} the option period starts — but that period has moved since. Click to bring the date with it.`
+                          : 'Set when notice is due — as the lease states it ("180 days prior"), or a set date'}
+                        onClick={() => setNoticeEntry({ id: r.id, draft: noticeDraftFrom(r) })}>
+                        <div>{r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">＋ set</span>}</div>
+                        {lead && <div className="cell-sub">{lead}</div>}
+                        {drift && <div className="cell-sub notice-drift">period moved → {fmtDate(drift)}</div>}
+                      </button>
+                    )}
+                  </td>
                   {/* The period, with the stated length under it. A declined option has
                       no period — nothing will cover it — so it shows the length alone. */}
                   <td className="opt-covers">
@@ -341,6 +374,35 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                     </button>
                   </td>
                 </tr>
+                {noticeEntry?.id === r.id && (() => {
+                  const next = resolveNotice(noticeEntry.draft, windows[r.id]);
+                  const clears = !next.notice_by_date;
+                  const unchanged = (next.notice_by_date || null) === (r.notice_by_date || null)
+                    && (next.notice_lead_n || null) === (r.notice_lead_n || null);
+                  return (
+                  <tr>
+                    <td colSpan={7} style={{ background: 'var(--panel-2)' }}>
+                      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', padding: '4px 2px' }}>
+                        <div className="muted" style={{ fontSize: 12.5, flex: '1 1 240px', minWidth: 220 }}>
+                          When the tenant has to say whether they’re taking this option. A lease states
+                          it as a duration — “180 days prior to expiration” — so put that in and the
+                          date follows the period above.
+                          {r.notes ? <> This one says: <em>“{r.notes}”</em></> : ''}
+                        </div>
+                        <div style={{ flex: '0 1 300px', minWidth: 240 }}>
+                          <NoticeByField win={windows[r.id]} draft={noticeEntry.draft} autoFocus
+                            onChange={(draft) => setNoticeEntry({ id: r.id, draft })} />
+                        </div>
+                        <button type="button" disabled={saveNotice.isPending || unchanged}
+                          onClick={() => saveNotice.mutate({ id: r.id, ...next })}>
+                          {saveNotice.isPending ? 'Saving…' : clears ? 'Clear deadline' : 'Save'}
+                        </button>
+                        <button type="button" className="ghost" onClick={() => setNoticeEntry(null)}>Cancel</button>
+                      </div>
+                    </td>
+                  </tr>
+                  );
+                })()}
                 {renewEntry?.id === r.id && (
                   <tr>
                     <td colSpan={7} style={{ background: 'var(--gold-soft)' }}>
@@ -415,6 +477,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
       <ul className="muted" style={{ fontSize: 12, marginTop: 10, paddingLeft: 18, lineHeight: 1.6 }}>
         <li><strong>Renew</strong> extends the term + sets the new rent; <strong>Not renewing</strong> closes the option (both undoable).</li>
         <li>On a <strong>Lapsed</strong> option, <strong>Already renewed</strong> records that it was exercised back then — history only, no change to the term or rent.</li>
+        <li>Click <strong>Notice by</strong> on any open option to set its deadline the way the lease writes it — “180 days before”, “6 months before” — and the date is worked out for you.</li>
         <li>An option can carry its own year-by-year rents. They stay hidden until it’s renewed, then become real rent steps.</li>
         <li>If an option’s rent reads <strong>Not listed</strong>, the lease left it to be negotiated — you’ll enter the agreed new base rent when you click <strong>Renew</strong>.</li>
       </ul>

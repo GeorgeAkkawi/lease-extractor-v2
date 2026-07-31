@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createRenewal } from '../lib/api';
-import { addMonths, optionWindows, windowLabel } from '../lib/renewals';
+import { addMonths, optionWindows, windowLabel, resolveNotice } from '../lib/renewals';
 import { cmpRenewal } from '../lib/leaseTerm';
 import { money0, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
+import NoticeByField from './NoticeByField';
 
 // Writing a renewal option down, in one place.
 //
@@ -40,7 +41,10 @@ export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, ba
   const modalRef = useModalA11y(onClose);
   const qc = useQueryClient();
 
-  const [form, setForm] = useState({ option_label: '', notice_by_date: '', term_months: '', notes: '' });
+  const [form, setForm] = useState({ option_label: '', term_months: '', notes: '' });
+  // The notice deadline is entered as the lease states it — a duration back from the end
+  // of the term this option extends — and resolved against the window below.
+  const [notice, setNotice] = useState({ mode: 'months', n: '', date: '' });
   const [mode, setMode] = useState('flat');
   const [flat, setFlat] = useState('');
   const [pct, setPct] = useState('');
@@ -58,15 +62,13 @@ export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, ba
   // you agree to here is what the row will read afterwards.
   const win = useMemo(() => {
     if (!termEnd || !months) return null;
-    const draft = {
-      id: DRAFT,
-      status: 'pending',
-      option_label: form.option_label,
-      notice_by_date: form.notice_by_date || null,
-      term_months: months,
-    };
+    // Deliberately dateless: cmpRenewal orders by notice date, and the notice date is
+    // now derived FROM this window — feeding one into the other would close a loop. A
+    // new option chains onto the end, which is what adding one means, and a dateless
+    // draft is exactly what cmpRenewal sorts last.
+    const draft = { id: DRAFT, status: 'pending', option_label: form.option_label, notice_by_date: null, term_months: months };
     return optionWindows([...renewals, draft].sort(cmpRenewal), termEnd)[DRAFT] || null;
-  }, [renewals, termEnd, months, form.option_label, form.notice_by_date]);
+  }, [renewals, termEnd, months, form.option_label]);
 
   // Each option year's own start date, so a year-by-year rent is entered against the
   // date it takes effect rather than a bare row number.
@@ -95,7 +97,9 @@ export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, ba
       createRenewal({
         lease_id: leaseId,
         option_label: form.option_label.trim() || null,
-        notice_by_date: form.notice_by_date || null,
+        // The resolved date plus the rule that produced it (0072), so the row can say
+        // the rule back and re-date itself if the period it counts from ever moves.
+        ...resolveNotice(notice, win),
         term_months: months || null,
         notes: form.notes.trim() || null,
         // Exactly one rent shape is written; the others are explicitly nulled so an
@@ -146,10 +150,6 @@ export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, ba
               <span>Term (months)</span>
               <input className="text-input num" type="number" min="1" placeholder="60" value={form.term_months} onChange={set('term_months')} />
             </label>
-            <label className="form-field">
-              <span>Notice due by</span>
-              <input className="text-input" type="date" value={form.notice_by_date} onChange={set('notice_by_date')} />
-            </label>
           </div>
 
           {/* The period the option would cover, derived from the term. This is the fact a
@@ -161,6 +161,14 @@ export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, ba
                 ? 'Set this lease’s term-end date to see the period this option would cover.'
                 : 'Enter the term to see the period this option would cover.'}
           </p>
+
+          {/* Notice sits AFTER the period, because it is measured back from it — the
+              order reads as the sequence it actually is: what it's called, how long it
+              runs, the years that covers, and when the tenant has to decide. */}
+          <div className="form-field notice-field">
+            <span>Notice due by</span>
+            <NoticeByField win={win} draft={notice} onChange={setNotice} />
+          </div>
 
           <div className="fin-subhead" style={{ marginTop: 18 }}>Rent at renewal</div>
           <div className="seg" role="group" aria-label="How the option prices its rent" style={{ marginBottom: 12 }}>

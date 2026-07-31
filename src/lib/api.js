@@ -3476,7 +3476,13 @@ export async function reconcileRenewalOptions(lease, today = new Date()) {
       const m = /(\d+)\s*\)?\s*(day|month)s?\s*prior/i.exec(opt.notes || '');
       if (m && termEnd) {
         const n = Number(m[1]);
-        patch.notice_by_date = /month/i.test(m[2]) ? addMonths(termEnd, -n) : addDays(termEnd, -n);
+        const unit = /month/i.test(m[2]) ? 'months' : 'days';
+        patch.notice_by_date = unit === 'months' ? addMonths(termEnd, -n) : addDays(termEnd, -n);
+        // Keep the RULE the clause states, not just the date it works out to (0072), so
+        // an imported option reads back the same way a hand-entered one does — and can
+        // be re-dated from the same rule if the term it counts from ever moves.
+        patch.notice_lead_n = n;
+        patch.notice_lead_unit = unit;
       }
     }
     if (Object.keys(patch).length) await updateRenewal(opt.id, patch);

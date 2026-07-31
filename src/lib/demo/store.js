@@ -132,7 +132,10 @@ export function seed() {
       // hidden until the option is renewed, then become real dated rent steps. The
       // figures are the same 5%/yr climb the notes describe, so nothing about the
       // displayed rent or the confirm dialog moves.
-      { id: 'ren-1', owner_id: DEMO_USER.id, lease_id: 'lease-2', option_label: 'Option 1', notice_by_date: iso(2025, 11, 30), term_months: 60, new_rent: 90000, annual_escalation_pct: null, notes: 'Market-rate reset, then 5% annual increase.', status: 'pending',
+      // The notice deadline carries the RULE the lease states (0072) as well as the date
+      // it resolves to. Six months back from this lease's term end (2026-05-31) IS
+      // 2025-11-30, so the date shown is unchanged — the row just now says why.
+      { id: 'ren-1', owner_id: DEMO_USER.id, lease_id: 'lease-2', option_label: 'Option 1', notice_by_date: iso(2025, 11, 30), notice_lead_n: 6, notice_lead_unit: 'months', term_months: 60, new_rent: 90000, annual_escalation_pct: null, notes: 'Notice: six (6) months prior to expiration. Market-rate reset, then 5% annual increase.', status: 'pending',
         rent_schedule: [
           { months_from_option_start: 0, annual: 90000 },
           { months_from_option_start: 12, annual: 94500 },

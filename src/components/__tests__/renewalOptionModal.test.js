@@ -74,6 +74,36 @@ describe('The period the option would cover is derived while you type it', () =>
   });
 });
 
+describe('The notice deadline is entered the way the lease states it', () => {
+  it('derives the date from the duration and stores both', async () => {
+    renderEditor();
+    const dlg = await openDialog();
+    fireEvent.change(within(dlg).getByPlaceholderText("Option 1"), { target: { value: 'Option 1' } });
+    fireEvent.change(within(dlg).getByPlaceholderText("60"), { target: { value: '60' } });
+    fireEvent.change(within(dlg).getByLabelText('How far ahead notice is due'), { target: { value: '6' } });
+
+    // Counted back from the day the committed term runs out, not from the option start.
+    await waitFor(() => expect(dlg.querySelector('.notice-by-read').textContent)
+      .toMatch(/June 30, 2027 — counted back from December 31, 2027/));
+
+    fireEvent.change(dlg.querySelector('.opt-rent-block input'), { target: { value: '66000' } });
+    fireEvent.click(within(dlg).getByRole('button', { name: 'Add option' }));
+
+    await waitFor(async () => expect(await listRenewals('lease-1')).toHaveLength(1));
+    const [opt] = await listRenewals('lease-1');
+    expect(opt.notice_by_date).toBe('2027-06-30');
+    expect(opt.notice_lead_n).toBe(6);
+    expect(opt.notice_lead_unit).toBe('months');
+  });
+
+  it('asks for the term first rather than dating from a boundary it is guessing at', async () => {
+    renderEditor();
+    const dlg = await openDialog();
+    fireEvent.change(within(dlg).getByLabelText('How far ahead notice is due'), { target: { value: '6' } });
+    await waitFor(() => expect(dlg.querySelector('.notice-by-read').textContent).toMatch(/Give the option a term above/));
+  });
+});
+
 describe('Rent escalations as part of the option', () => {
   it('offers a row per option year, dated, and fills them forward from year 1', async () => {
     renderEditor();

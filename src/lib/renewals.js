@@ -177,3 +177,82 @@ export function optionWindows(ordered = [], termEnd) {
 // "Jun 1, 2030 → May 31, 2035". The same arrow form a rider's period uses
 // (coversLabel, ./riders.js), so a period on this page reads the same wherever it is.
 export const windowLabel = (w) => (w?.start && w?.end ? `${fmtDate(w.start)} → ${fmtDate(w.end)}` : null);
+
+// ─── The notice deadline, as the lease actually states it ────────────────────────────
+//
+// George, 2026-07-30: "make sure i can click into notice by and change the duration to
+// something specific like how many months before".
+//
+// A lease prints a DURATION, never a date: "180 days prior to the expiration of the
+// then-current term", "twelve (12) months prior". The date falls out of when that term
+// runs out. So the landlord enters the rule and the app does the arithmetic — the same
+// division of labour as the rent schedule, where the model reads raw figures and code
+// multiplies.
+//
+// The resolved date is still what gets stored in notice_by_date and what every consumer
+// reads (the lapse rule above, the bell prompt, apply_due_renewals(), the reminder
+// trigger). The lead is remembered alongside it (migration 0072) so the row can say the
+// rule back and re-date itself when the period it counts from moves.
+
+// The day notice is measured back FROM: the day the term this option would extend runs
+// out — i.e. the day before the option's own period starts. For the first pending option
+// that is exactly the lease's committed term end, which is what reconcileRenewalOptions
+// already counts back from when it reads "N days prior" out of an imported clause. For a
+// later option it is the end of the option before it, which is what "expiration of the
+// then-current term" means once one has been exercised.
+export const noticeAnchor = (win) => (win?.start ? addDays(win.start, -1) : null);
+
+// Resolve a lead against an option's period. Null when there's nothing to count back
+// from (no term stated, or an option whose chain stopped) — better no date than one
+// measured from a boundary we're guessing at.
+export function noticeDateFrom(win, n, unit) {
+  const anchor = noticeAnchor(win);
+  const k = Math.trunc(Number(n) || 0);
+  if (!anchor || !(k > 0)) return null;
+  return unit === 'days' ? addDays(anchor, -k) : addMonths(anchor, -k);
+}
+
+// "6 months before" / "180 days before" — the phrase the lease uses, singularized.
+export function noticeLeadLabel(n, unit) {
+  const k = Math.trunc(Number(n) || 0);
+  if (!(k > 0)) return null;
+  return `${k} ${unit === 'days' ? 'day' : 'month'}${k === 1 ? '' : 's'} before`;
+}
+
+// The draft the editor holds while you're typing: a mode plus whichever value that mode
+// takes. Kept as plain data (rather than component state) so the resolved date recomputes
+// from the CURRENT window on every render — type a term in the add dialog and the
+// deadline follows it, with no effect to keep in sync.
+export const noticeDraftFrom = (ren) => (
+  Number(ren?.notice_lead_n) > 0
+    ? { mode: ren.notice_lead_unit === 'days' ? 'days' : 'months', n: String(ren.notice_lead_n), date: ren.notice_by_date || '' }
+    : { mode: 'date', n: '', date: ren?.notice_by_date || '' }
+);
+
+// A draft + the option's period → the three columns to write. Exactly one shape is
+// stored: an explicit date carries no lead (nothing would re-date it, and nothing
+// should), and a lead that can't be resolved yet writes nothing at all rather than a
+// rule with no answer.
+export function resolveNotice(draft, win) {
+  const blank = { notice_by_date: null, notice_lead_n: null, notice_lead_unit: null };
+  if (!draft || draft.mode === 'date') return { ...blank, notice_by_date: draft?.date || null };
+  const n = Math.trunc(Number(draft.n) || 0);
+  const date = noticeDateFrom(win, n, draft.mode);
+  return n > 0 && date ? { notice_by_date: date, notice_lead_n: n, notice_lead_unit: draft.mode } : blank;
+}
+
+// The stored deadline no longer matches the rule it was written from — the option's
+// period has moved since (an earlier option was exercised, an addendum extended the
+// term, the term-end date was corrected). Returns the date the rule now gives, or null
+// when it already agrees or there's no rule to check against.
+//
+// Deliberately reported rather than applied: re-dating is a write, and a write that
+// happens because a screen rendered is exactly the kind of silent movement this codebase
+// keeps out of its money paths. The row shows it; one click in the editor settles it.
+export function noticeDrift(ren, win) {
+  if (!ren || ren.status !== 'pending') return null;
+  const n = Math.trunc(Number(ren.notice_lead_n) || 0);
+  if (!(n > 0) || !ren.notice_by_date) return null;
+  const should = noticeDateFrom(win, n, ren.notice_lead_unit);
+  return should && should !== String(ren.notice_by_date) ? should : null;
+}

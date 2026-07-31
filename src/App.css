@@ -958,8 +958,31 @@ tbody tr:last-child td{border-bottom:none}
 .opt-decide>button{width:100%;padding-left:8px;padding-right:8px}
 .opt-decide .opt-wide{grid-column:1/-1}
 
+/* The notice deadline is click-to-edit in the table — same affordance as the estimate
+   cell on Financials (dashed underline at rest, gold ring on hover), because it's the
+   same kind of thing: a figure the landlord owns, edited where it's read. */
+.notice-cell{display:block;width:100%;background:none;border:0;padding:3px 5px;margin:-3px 0 0 -5px;border-radius:5px;text-align:inherit;cursor:pointer;font:inherit;color:inherit;text-transform:none;letter-spacing:normal;transition:background .12s ease,box-shadow .12s ease}
+.notice-cell>div:first-child{text-decoration:underline;text-decoration-style:dashed;text-decoration-color:var(--faint);text-underline-offset:3px}
+.notice-cell:hover{background:var(--panel);box-shadow:0 0 0 1px var(--gold) inset}
+.notice-cell:hover>div:first-child{text-decoration-color:var(--gold)}
+.notice-cell:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+/* The rule was written against a period that has since moved. Gold, whose job here is
+   "look here" — not danger: the stored date is still exactly what was agreed. */
+.cell-sub.notice-drift{color:var(--gold);font-weight:600;white-space:normal}
+
+/* Entering a deadline the way a lease writes it: a count + a unit, with the resolved
+   date shown beneath rather than typed. Shared by the dialog and the inline row. */
+.notice-by-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.notice-by-row .text-input{width:auto}
+.notice-by-row select.text-input{min-width:136px}
+/* Qualified to beat `.notice-by-row .text-input` above — unqualified it loses on
+   specificity, and the count input stretches wide enough to push the unit to its own line. */
+.notice-by-row .notice-by-n{width:70px}
+.notice-by-read{margin:7px 0 0;font-size:12px;line-height:1.5;color:var(--ink);font-variant-numeric:tabular-nums}
+.notice-field{max-width:100%;margin:16px 0 0}
+
 /* --- Add-a-renewal-option dialog ------------------------------------------ */
-.opt-fields{display:grid;grid-template-columns:1fr 130px 170px;gap:14px}
+.opt-fields{display:grid;grid-template-columns:1fr 140px;gap:14px}
 .opt-fields .form-field{max-width:100%;margin-bottom:0}
 .opt-covers-note{margin:12px 0 0;font-size:12.5px;color:var(--ink)}
 .opt-covers-note.muted{color:var(--muted)}

@@ -181,6 +181,77 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **A renewal option's notice deadline is now entered the way the lease writes it — "180 days
+  before" — and the date is worked out for you** (George: *"for the renewal tab make sure i can click into notice
+  by and change the duration to something specific like how many months before"*). Deployed: DB migration `0072`
+  (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), frontend Cloudflare version **`1723a2a8`**,
+  demo worker `1c083c77`, plus a two-row guarded backfill. **$0, NO edge functions, no AI calls, no tenant emails;
+  0072 is two nullable columns + a guarded CHECK.** Tests **1043/1043 across 119 files** (was 1020/117 — +23
+  across 2 new suites).
+  - **A lease never prints a notice DATE.** It prints a duration — *"180 days prior to the expiration of the
+    then-current term"*, *"twelve (12) months prior"* — and the date falls out of when that term ends. The column
+    held only the resolved date, so the app could show **when** notice was due but had no idea what rule produced
+    it: George did the arithmetic by hand, and if the term later moved the stored date quietly stopped meaning what
+    the lease says. Same division of labour as the rent schedule: **the human states the rule, the code does the
+    arithmetic.**
+  - **What it counts back from is the load-bearing detail.** Not today, and not the option's own start — the day
+    the term **this option extends** runs out, i.e. the day before its period opens. For the first pending option
+    that is exactly the lease's committed term end, **which is precisely what `reconcileRenewalOptions` has always
+    counted back from** when it reads a "N days prior" clause out of an import — so the hand-entered and extracted
+    paths now resolve identically. For a *later* option it's the end of the option before it, which is what
+    "expiration of the then-current term" actually means once one has been exercised. All of it derives from the
+    `optionWindows` chain the Covers column already draws, so the deadline and the period can't disagree.
+  - **The circularity, avoided deliberately.** `cmpRenewal` orders options **by notice date**, and `optionWindows`
+    takes that ordered list — so deriving a notice date *from* a window computed *from* the notice dates would
+    close a loop. The add dialog's draft option is therefore explicitly **dateless**: a new option chains onto the
+    end (which is what adding one means), and a dateless draft is exactly what `cmpRenewal` sorts last.
+  - **`notice_by_date` is still the one answer everything reads** — the lapse rule (0068), `apply_due_renewals()`,
+    the `renewals_reminders` trigger (0002), `alerts.js`, `isRenewalDecisionDue`. The lead is stored **alongside**
+    it, never instead of it, so not one downstream consumer changed shape. A deadline typed as a plain date carries
+    **no** lead — nothing would re-date it, and nothing should.
+  - **When the period moves, the row says so — it doesn't silently re-date itself.** Extend the term by an
+    addendum and "6 months before" now means a different day; the cell shows the stored date with a gold
+    *"period moved → November 30, 2028"* beneath it, and one click in / one click Save settles it. **Reported
+    rather than applied on purpose:** re-dating is a write, and a write that happens because a screen rendered is
+    the exact class of silent movement this codebase keeps out of its money paths. Test-pinned in both directions,
+    including that a settled (applied/declined) option never flags — by then the date is a record.
+  - **The dialog reads as a sequence now.** Notice moved out of the three-across field row and **below** the
+    Covers line, because it is measured back from it: what it's called → how long it runs → the years that covers →
+    when the tenant has to decide. One shared `NoticeByField` serves both the dialog and the inline row, so the two
+    can't drift into asking the same question two ways.
+  - **Live backfill — two rows, and nothing moved.** Ricki's and Five Points both carry a "180 days prior" clause;
+    `reconcileRenewalOptions` had computed their dates from it but had nowhere to keep the rule. Guarded on the
+    stored date already equalling **term end − 180 days** *and* the option being the only pending one on its lease
+    (so the anchor is unambiguous), so it could only ever touch rows where the rule and the date already agree:
+    **2 rows updated, both dates byte-identical.** `reconcileRenewalOptions` now stores the lead as well as the
+    date, so future imports arrive self-describing.
+  - **A real CSS bug found in the browser, not the DOM.** `.notice-by-n{width:70px}` lost on specificity to
+    `.notice-by-row .text-input{width:auto}` directly above it, so the count input stretched to 183px and pushed
+    the unit dropdown onto its own line. Qualified and re-measured: **70px + 138px on one line** at both widths.
+  - **Files.** New: `supabase/migrations/0072_renewal_notice_lead.sql` · `src/components/NoticeByField.js` ·
+    tests `renewalNoticeLead` (15), `renewalNoticeEdit` (6). Edited: `src/lib/{renewals,api,demo/store}.js` ·
+    `src/components/{RenewalOptionsEditor,RenewalOptionModal}.js` · that suite's modal test (+2) · `src/App.css`.
+    **No** edge function or view change (migration-reviewer verified — no view selects `renewal_options.*`, and the
+    two PL/pgSQL readers use `select * into` a record, which re-resolves at call time).
+  - **Verified:** unit **1043/1043** (`vitest run`); `npm run build` compiles; migration applied clean and read
+    back (both columns nullable, CHECK present); live bundle confirmed to **carry** the backend ref and the demo
+    bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser at 1440px and 420px:** the
+    cell reads *November 30, 2025 · 6 months before*; clicking it opens on the **rule**, not a bare date, and
+    states *"counted back from May 31, 2026, when the term this option extends runs out"*; switching to
+    **180 days before** recomputes to **December 2, 2025** live and saves both; the dialog derives *Due June 30,
+    2027* while you type the term; at 420px the modal sits 395px inside the viewport with the notice controls still
+    on one line. **Zero console errors or warnings; zero horizontal overflow at either width.**
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, the **Notice by** column is now clickable. Four of your
+    pending options have no deadline at all (Card Pop, D&D Dental, Infinite Mobile, Vape Store) — click **＋ set**,
+    type the number the lease states, pick *months before* or *days before*, and the date is worked out from the
+    end of the term that option extends. Ricki's and Five Points now read *180 days before* under their dates.
+  - **Flags (no action needed):** ① A deadline entered as a **plain date** carries no rule, so nothing will ever
+    re-date it — that's deliberate. ② An option with **no term** can't be dated from a duration (there's no
+    boundary to count back from); the control says so and still takes a plain date. Infinite Mobile's option is the
+    one in this state. ③ The drift note only appears on **pending** options — on a settled one the date is history.
+    ④ AI-imported options only pick up the rule when the clause reads "N days/months prior"; anything phrased
+    differently still stores just a date, editable in two clicks.
+
 - **2026-07-30** — **Adding a renewal option moved into a dialog that can express a rent per YEAR of the option
   period (remembered hidden, written only when it's exercised) · the decision buttons became one shape on every
   row · AND the 299 MB of redundant storage copies were deleted** (George: *"go for the storage cleanup - and for
