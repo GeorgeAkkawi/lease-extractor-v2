@@ -979,6 +979,9 @@ tbody tr:last-child td{border-bottom:none}
    specificity, and the count input stretches wide enough to push the unit to its own line. */
 .notice-by-row .notice-by-n{width:70px}
 .notice-by-read{margin:7px 0 0;font-size:12px;line-height:1.5;color:var(--ink);font-variant-numeric:tabular-nums}
+/* Where the pre-filled figure came from, when it came from Settings rather than the
+   lease. Sits under the derived date and reads quieter than it. */
+.notice-by-default{margin:6px 0 0;font-size:11.5px;line-height:1.45}
 .notice-field{max-width:100%;margin:16px 0 0}
 
 /* --- Add-a-renewal-option dialog ------------------------------------------ */
@@ -1055,10 +1058,21 @@ textarea.text-input{resize:vertical;min-height:90px}
 /* Saved copies of an uploaded document — one list on every record that takes a file
    (lease, rider, insurance policy, service contract). Deliberately quiet: it's a
    filing drawer, not a feature. */
+/* One action zone for the whole "Lease document & assistant" panel.
+   George, 2026-07-30: "the open lease button should be in line with the lease open
+   button". The panel stacks three kinds of row — the lease itself, its saved copies,
+   its riders — and each had grown its own action layout, so three Open buttons ended at
+   three different x positions. One variable fixes the trailing column that holds each
+   row's SECOND control (a copy's ✕, a rider's Open file); the primary "Open …" sits
+   immediately before it, so every one of them shares a right edge whether or not that
+   row has a second control. Set on .doc-panel (DocAssistant's root) and inherited. */
+.doc-panel{--doc-act:78px}
+.doc-actions{display:inline-flex;align-items:center;gap:10px;margin-left:auto}
+.doc-act2{display:inline-flex;justify-content:flex-end;align-items:center;width:var(--doc-act);flex:0 0 auto}
+
 .doc-list{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 .doc-list-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
 /* (typography shared with .rider-head, below — declared once so they can't drift) */
-.doc-list-head button{margin-left:auto}
 .doc-list-empty{font-size:12.5px;margin:0}
 .doc-row{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:13px;border-bottom:1px solid var(--hair)}
 .doc-row:last-child{border-bottom:0}
@@ -1068,6 +1082,10 @@ textarea.text-input{resize:vertical;min-height:90px}
 @media (max-width:768px){
   .doc-row{flex-wrap:wrap}
   .doc-row-name{flex:1 0 100%}
+  /* No room to reserve a column on a phone — the rows wrap anyway, so the slot
+     collapses to whatever it actually holds and disappears when it holds nothing. */
+  .doc-panel{--doc-act:auto}
+  .doc-act2:empty{display:none}
 }
 
 /* Riders listed under "Open lease" — each opens its own cached text in the same box.
@@ -1080,9 +1098,8 @@ textarea.text-input{resize:vertical;min-height:90px}
 .rider-row{display:flex;align-items:center;gap:10px;font-size:13px;flex-wrap:wrap}
 .rider-row-name{flex:1;min-width:180px}
 .rider-row-dates{color:var(--muted);font-size:11.5px}
-/* Each action keeps its own column width whether or not it holds a button, so the
-   controls line up down the list rather than ending flush-right at three x positions. */
-.rider-act{display:inline-flex;justify-content:flex-end;min-width:78px}
+/* (a rider row's controls use the shared .doc-actions / .doc-act2 pair above, so
+   "Open rider" lines up with "Open lease" and the saved copies' "Open") */
 
 /* per-tenant lease document + AI assistant */
 .lease-doc{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:340px;overflow:auto;color:var(--ink);margin-bottom:16px}

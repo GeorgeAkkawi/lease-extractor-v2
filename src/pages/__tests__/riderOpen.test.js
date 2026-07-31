@@ -117,6 +117,49 @@ describe('Lease page — Open rider', () => {
     expect(within(list).getAllByRole('button', { name: 'Open' })).toHaveLength(2);
   });
 
+  it('lists the lease and its copies BEFORE the riders', async () => {
+    // George, 2026-07-30: "leases should be listed first on lease document and assistant
+    // then riders." Reads as the document, then its versions, then what amended it — and
+    // it puts the copies' Open buttons directly under "Open lease".
+    const { container } = mountLease();
+    await waitFor(() => expect(riderRows(container).length).toBe(2));
+    const copies = container.querySelector('.doc-list');
+    const riders = container.querySelector('.rider-group');
+    expect(copies).toBeTruthy();
+    expect(riders).toBeTruthy();
+    // DOCUMENT_POSITION_FOLLOWING (4) — the riders come after the copies.
+    expect(copies.compareDocumentPosition(riders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('gives every "Open …" the same trailing column, so they line up', async () => {
+    // George, 2026-07-30: "the open lease button should be in line with the lease open
+    // button." Alignment itself is CSS (a fixed .doc-act2 column, measured in the
+    // browser); what a render can pin is the structure that produces it — each primary
+    // Open sits in a .doc-actions group whose LAST child is that reserved slot, whether
+    // or not the row has a second control to put in it.
+    const { container } = mountLease();
+    await waitFor(() => expect(riderRows(container).length).toBe(2));
+
+    const groups = [...container.querySelectorAll('.doc-panel .doc-actions')];
+    // The lease's own Open, the copies list's ⬆ Add, its two rows, and the two riders.
+    expect(groups.length).toBeGreaterThanOrEqual(6);
+    groups.forEach((g) => {
+      expect(g.lastElementChild?.classList.contains('doc-act2')).toBe(true);
+    });
+
+    // …including the header's, which reserves an empty one so "Open lease" ends where
+    // the rows' buttons do rather than sitting flush against the panel edge.
+    const openLease = screen.getAllByRole('button', { name: /Open lease/i })[0];
+    const headGroup = openLease.closest('.doc-actions');
+    expect(headGroup).toBeTruthy();
+    expect(headGroup.querySelector('.doc-act2').childElementCount).toBe(0);
+
+    // A rider with a file puts it in that same slot; one without leaves it empty.
+    const rows = riderRows(container);
+    expect(within(rows[0].querySelector('.doc-act2')).getByRole('button', { name: 'Open file' })).toBeTruthy();
+    expect(rows[1].querySelector('.doc-act2').querySelector('button')).toBeNull();
+  });
+
   it('a lease with no riders shows no rider rows at all', async () => {
     // Bright Coffee (lease-1) has none — an empty "Open rider" heading would be noise.
     const { container } = mountLease('lease-1');

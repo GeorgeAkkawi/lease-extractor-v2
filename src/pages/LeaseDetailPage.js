@@ -620,12 +620,13 @@ export default function LeaseDetailPage() {
           canSave
           documents={
             <>
-              {/* Right under "Open lease", as asked — one row per rider, oldest first,
-                  each opening its own cached text in the same box. Passed in as the
-                  assistant's documents slot so everything openable sits together and
-                  the ask box is the last thing on the panel, rather than the rider
-                  rows and the file list landing beneath it. */}
-              <RiderDocs riders={addendums} />
+              {/* The lease and its own copies first, then the riders — George,
+                  2026-07-30: "leases should be listed first on lease document and
+                  assistant then riders". It reads as the document, then its versions,
+                  then what amended it; and it puts the copies' Open buttons directly
+                  under "Open lease", which is the column they line up with.
+                  Both lists are passed in as the assistant's documents slot so
+                  everything openable sits together and the ask box stays last. */}
               <DocumentsList
                 entityType="lease"
                 entityId={lease.id}
@@ -633,6 +634,7 @@ export default function LeaseDetailPage() {
                 addLabel="Add a copy"
                 emptyText="No file on file — this lease was entered by hand or pasted in. Add a copy to keep the original alongside it."
               />
+              <RiderDocs riders={addendums} />
             </>
           }
         />

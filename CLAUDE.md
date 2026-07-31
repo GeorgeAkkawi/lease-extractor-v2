@@ -181,6 +181,83 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **Housekeeping round: a renewal option's notice deadline now opens on the owner's Settings
+  default · the lease and its copies are listed above the riders, with every "Open" in one column · and the
+  over-let case George asked about is answered and pinned** (George: *"by the way for that lets say that there
+  are two leases changing its okay if for the time being the total square footage is over the total for the
+  building because that will be temporary and once the other lease in inputed or removed it will be fixed let me
+  know if that logic is in there. some other housekeeping : leases should be listed first on lease document and
+  assistant then riders and the open lease button should be in line with the lease open button - for the notice
+  by in the renewal options theres a default set by the settings so make sure thats the default set in the notice
+  by which can be changed by clicking in for specific tenants."*). Deployed: frontend Cloudflare version
+  **`4dd32065`**, demo worker `d37f9335`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions,
+  no AI calls, no tenant emails, nothing destructive.** Tests **1071/1071 across 122 files** (was 1057/121 —
+  +14, one new suite).
+  - **1) The over-let question — the answer is yes, and it's now a guarantee rather than my say-so.** Traced every
+    consumer of the leased total: `v_property_totals` computes `vacant_sf = greatest(0, building_sf − total_sf)`
+    (0049) so it **clamps at zero, never negative**; `tenantMix` does the same in JS and simply draws **no vacant
+    slice**; `occupancyByProperty` clamps `leased = min(total_sf, building)` so the Overview's leased-space bar
+    can't overflow its track. **Each tenant's own share is untouched** — `v_tenant_shares` divides that tenant's
+    SF by the building, so nobody is billed the wrong rate while the other lease is outstanding. The one visible
+    artifact is that the shares **add past 100%**, which is the honest arithmetic of the state, and it settles
+    itself the moment the other lease is entered or taken off. New `overLetProperty.test.js` pins all of it,
+    including **both** ways out (the outgoing tenant hands the space back, or the incoming lease is deleted) and
+    a regression guard that the ordinary under-let vacancy still renders.
+  - **What did need changing was the wording.** The per-tenant breakdown's footnote called it *"over-allocated
+    space — yours to reconcile"*, which reads as an accusation about a state George correctly describes as
+    normal and temporary. It now names the cause (*"one tenant expanded before the one giving the space back was
+    updated, or a replacement lease added before the old one was removed"*), says it settles itself, and says the
+    thing that actually matters: **no one is on the wrong rate meanwhile — only the total collected runs ahead of
+    what you spent until it balances.** The under-let branch is unchanged.
+  - **2) The notice deadline opens on the Settings default.** Settings → Notifications carries an *"Upcoming
+    renewal option"* lead (183 days shipped); nothing on a renewal option had ever read it, so four of George's
+    pending options sit with **no deadline at all** and an empty box. New pure `leadAsUnits(days)` (`notifyPrefs.js`)
+    turns a day count into the two units a lease actually states — 183 → **6 months**, 365 → **12 months**, 90 → 3
+    months — using **the same month test `formatLeadDays` uses**, so the Settings row and the Notice-by control
+    can never describe one lead two ways. **180 deliberately stays 180 days**: it isn't six months, and rounding
+    it would move the deadline.
+  - **A pre-fill, never a write — the distinction is load-bearing.** `noticeDraftFrom(ren, defaultDays)` reaches
+    the default **only** when the option carries neither a rule nor a date (a deadline already on the option is a
+    fact and is never overwritten), and it only seeds the editor: nothing is stored until Save. That is the same
+    line `noticeDrift` already draws — a deadline that appeared because a screen rendered is exactly the silent
+    movement this codebase keeps out of its money paths, and the bell, the lapse rule and `apply_due_renewals()`
+    all read the stored `notice_by_date` and nothing else. So the cell on an option with no deadline still reads
+    **＋ set**, with a muted **"default 6 months before"** underneath — the default named as a default, not as a
+    date the reminders know about. Clicking in opens it filled, with the derived date and a line saying where the
+    figure came from and that changing it moves this tenant only.
+  - **The add dialog opens on it too**, so a new option gets a sensible deadline written at creation — that write
+    is explicit and confirmed, which is what makes it legitimate there.
+  - **3) The document panel reads lease → copies → riders, and every "Open" is in one column.** The order swap is
+    George's; the alignment is what it exposed, with "Open lease" now sitting directly above the copies' Open
+    buttons. Three kinds of row had each grown their own action layout, so three Open buttons ended at three x
+    positions. One shared pair — `.doc-actions` + a fixed-width `.doc-act2` trailing slot holding each row's
+    SECOND control (a copy's ✕, a rider's Open file) — puts every primary Open at the same right edge whether or
+    not that row has a second control. `.rider-act` is deleted; its job is now the shared rule. On a phone the
+    reserved column collapses (`--doc-act:auto` + `.doc-act2:empty{display:none}`) since the rows wrap anyway.
+  - **Files.** New: `src/lib/__tests__/overLetProperty.test.js` (4). Edited: `src/lib/{notifyPrefs,renewals}.js` ·
+    `src/components/{NoticeByField,RenewalOptionModal,RenewalOptionsEditor,DocAssistant,DocumentsList,RiderDocs,
+    TenantShareTable}.js` · `src/pages/LeaseDetailPage.js` · `src/App.css` · tests `renewalNoticeLead` (+4),
+    `renewalNoticeEdit` (+3), `renewalOptionModal` (+1), `riderOpen` (+2). **No** migration, edge function, view
+    or demo-seed change.
+  - **Verified:** unit **1071/1071** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser
+    at 1440px and 420px:** all six Open controls in the panel share **exactly one right edge (x=1287)** with the
+    slot 78px wide on every row, the panel reads *Open lease → SAVED COPIES OF THE LEASE → RIDERS*, the add
+    dialog opens pre-filled at **6 months** with the Settings provenance line and resolves live to *"Due November
+    30, 2030 — counted back from May 31, 2031"* as the term is typed, and at 420px the reserved slots collapse to
+    0 with zero page or panel overflow. **Zero console errors or warnings.** (One deploy-propagation race hit and
+    waited out: the demo edge served a stale `index.html`.)
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, **＋ set** on a renewal option now opens on *6 months
+    before* with the date already worked out — change it there for that tenant, or change the default for
+    everything under Settings → Notifications. The lease document panel lists the lease's own copies above the
+    riders, with all the Open buttons in one line.
+  - **Flags (no action needed):** ① Adding an option through the dialog now **writes** a deadline by default
+    (the resolved date from your 6-month lead) — clear it in the dialog if a particular option genuinely has no
+    notice requirement. ② The Settings figure does double duty now: it's both how far ahead you're reminded and
+    the starting point for the deadline itself. Changing it moves the default for options you set **from then
+    on** — nothing already stored re-dates itself. ③ Nothing has been changed about the over-let case beyond the
+    wording; if you'd rather the breakdown showed a banner instead of a footnote line, say the word.
+
 - **2026-07-30** — **A rider that re-sizes the premises is finally read as one: the extractor already knew the
   square footage and threw it away, so a tenant's CAM and tax share went on billing the old size** (George:
   *"is there a way for the rider ai extraction to notice when the squarefootage of a property increaes or

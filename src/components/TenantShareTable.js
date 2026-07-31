@@ -450,11 +450,24 @@ export default function TenantShareTable({ propertyId, year }) {
         {noBuildingSf ? ' leased space' : ' whole building'} (or a per-lease
         override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}; roof is billed by PSF only
         to roof-responsible tenants and stays its own separate line, estimate and reconciliation included.
-        {buildingSf > 0 && tot.sf !== buildingSf && (
-          <> The leased total ({sf(tot.sf)}) differs from the building size ({sf(buildingSf)}) by {sf(Math.abs(buildingSf - tot.sf))} of
-          {buildingSf > tot.sf ? ' vacant' : ' over-allocated'} space{showVacant
+        {buildingSf > 0 && tot.sf < buildingSf && (
+          <> The leased total ({sf(tot.sf)}) differs from the building size ({sf(buildingSf)}) by {sf(buildingSf - tot.sf)} of
+          vacant space{showVacant
             ? ' — its slice of the expenses is the Vacant space line above, which no tenant is billed for'
             : ' — yours to reconcile'}.</>
+        )}
+        {/* More space let than the building holds. George, 2026-07-30: "lets say that
+            there are two leases changing its okay if for the time being the total square
+            footage is over the total for the building because that will be temporary."
+            So this states the cause and the cure rather than reading as a fault — and
+            says the one thing that matters, which is that nobody's own rate is wrong. */}
+        {buildingSf > 0 && tot.sf > buildingSf && (
+          <> The leased total ({sf(tot.sf)}) is {sf(tot.sf - buildingSf)} <strong>more</strong> than the building
+          size ({sf(buildingSf)}), so the shares above add past 100%. That's what a part-entered change looks
+          like — one tenant expanded before the one giving the space back was updated, or a replacement lease
+          added before the old one was removed — and it settles itself as soon as the other lease is entered or
+          taken off. Each tenant is still charged its own square footage over the building, so no one is on the
+          wrong rate meanwhile; only the total collected runs ahead of what you spent until it balances.</>
         )}
       </div>
       {emailDraft && (

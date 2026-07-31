@@ -46,7 +46,11 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
   }
 
   return (
-    <div>
+    // .doc-panel carries the one variable that lines every "Open …" in this panel up
+    // with this one — the lease, its saved copies, and each rider all end their primary
+    // action at the same x (George, 2026-07-30: "the open lease button should be in line
+    // with the lease open button"). See .doc-actions in App.css.
+    <div className="doc-panel">
       <div className="between" style={{ marginBottom: 12 }}>
         {/* State only. "Ask anything about it below" used to live here too, repeating
             what the panel heading and its intro paragraph already said — three
@@ -60,9 +64,15 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
               : `No ${label} on file.`}
         </span>
         {hasDoc && (
-          <button type="button" className="ghost" onClick={() => setOpenDoc((o) => !o)}>
-            {openDoc ? `Hide ${label}` : `Open ${label}`}
-          </button>
+          <span className="doc-actions">
+            <button type="button" className="ghost" onClick={() => setOpenDoc((o) => !o)}>
+              {openDoc ? `Hide ${label}` : `Open ${label}`}
+            </button>
+            {/* The trailing column every row below reserves for its second control
+                (a copy's ✕, a rider's Open file). Empty here, so this button ends
+                exactly where theirs do. */}
+            <span className="doc-act2" />
+          </span>
         )}
       </div>
 

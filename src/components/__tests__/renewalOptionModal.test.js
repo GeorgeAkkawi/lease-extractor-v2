@@ -96,6 +96,28 @@ describe('The notice deadline is entered the way the lease states it', () => {
     expect(opt.notice_lead_unit).toBe('months');
   });
 
+  it('opens on the owner’s Settings default, so a new option gets a deadline by itself', async () => {
+    // George, 2026-07-30: "theres a default set by the settings so make sure thats the
+    // default set in the notice by which can be changed by clicking in for specific
+    // tenants." The shipped renewal lead is 183 days — six months, as a lease would say.
+    renderEditor();
+    const dlg = await openDialog();
+    await waitFor(() => expect(within(dlg).getByLabelText('How far ahead notice is due').value).toBe('6'));
+    expect(within(dlg).getByLabelText('How the notice deadline is stated').value).toBe('months');
+    expect(dlg.querySelector('.notice-by-default').textContent).toMatch(/Settings/);
+
+    // Fill only the term and the rent — the deadline is already answered.
+    fireEvent.change(within(dlg).getByPlaceholderText('60'), { target: { value: '60' } });
+    fireEvent.change(dlg.querySelector('.opt-rent-block input'), { target: { value: '66000' } });
+    await waitFor(() => expect(dlg.querySelector('.notice-by-read').textContent).toMatch(/June 30, 2027/));
+    fireEvent.click(within(dlg).getByRole('button', { name: 'Add option' }));
+
+    await waitFor(async () => expect(await listRenewals('lease-1')).toHaveLength(1));
+    const [opt] = await listRenewals('lease-1');
+    expect(opt.notice_by_date).toBe('2027-06-30');
+    expect(opt.notice_lead_n).toBe(6);
+  });
+
   it('asks for the term first rather than dating from a boundary it is guessing at', async () => {
     renderEditor();
     const dlg = await openDialog();

@@ -49,21 +49,21 @@ export default function RiderDocs({ riders = [] }) {
                 {riderTitle(r)} <span className="rider-row-dates">· {coversLabel(r)}</span>
               </span>
               {/* A pasted rider has cached text but no file; an uploaded one usually
-                  has both. Neither button is invented when there's nothing behind it. */}
-              {/* Both action slots are always laid out, empty when there's nothing to
-                  put in them, so "Open rider" sits in the same column on every row
-                  instead of sliding right on the riders that have no file. */}
-              <span className="rider-act">
+                  has both. Neither button is invented when there's nothing behind it.
+                  The trailing slot is always laid out, empty when there's nothing to put
+                  in it, so "Open rider" ends in the same column as "Open lease" and the
+                  saved copies' "Open" above it. */}
+              <span className="doc-actions">
                 {hasText && (
                   <button type="button" className="ghost btn-sm" onClick={() => setOpenId(isOpen ? null : r.id)}>
                     {isOpen ? 'Hide rider' : 'Open rider'}
                   </button>
                 )}
-              </span>
-              <span className="rider-act">
-                {r.storage_path
-                  ? <button type="button" className="ghost btn-sm" onClick={() => openFile(r.storage_path)}>Open file</button>
-                  : !hasText && <span className="muted rider-row-dates">No copy on file</span>}
+                <span className="doc-act2">
+                  {r.storage_path
+                    ? <button type="button" className="ghost btn-sm" onClick={() => openFile(r.storage_path)}>Open file</button>
+                    : !hasText && <span className="muted rider-row-dates">No copy on file</span>}
+                </span>
               </span>
             </div>
           );

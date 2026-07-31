@@ -1,6 +1,7 @@
 import { useState, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRenewals, deleteRenewal, updateRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail } from '../lib/api';
+import { listRenewals, deleteRenewal, updateRenewal, confirmRenewal, declineRenewal, restoreRenewal, markRenewalRenewedHistoric, draftRenewalApproachingEmail, getNotifyLeadTimes } from '../lib/api';
+import { leadDaysFor, leadAsUnits } from '../lib/notifyPrefs';
 import { money, money0, fmtDate } from '../lib/format';
 import {
   addMonths, optionLapseReason, renewalFirstYearRent, optionWindows, windowLabel,
@@ -71,6 +72,20 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
+
+  // The owner's own default for how far ahead a renewal decision is due (Settings →
+  // Notifications, 183 days out of the box). It seeds the Notice-by control for any
+  // option that doesn't state a deadline of its own — George, 2026-07-30: "theres a
+  // default set by the settings so make sure thats the default set in the notice by
+  // which can be changed by clicking in for specific tenants." Same query key the
+  // dashboard already uses, so this is normally a cache hit.
+  const { data: leadPrefs = {} } = useQuery({ queryKey: ['notifyLeadTimes'], queryFn: getNotifyLeadTimes });
+  const defaultNoticeDays = leadDaysFor(leadPrefs, 'renewal');
+  const defaultUnits = leadAsUnits(defaultNoticeDays);
+  const defaultLead = defaultUnits ? noticeLeadLabel(defaultUnits.n, defaultUnits.unit) : null;
+  // Has this option a deadline of its own? If so the default is not in play, and saying
+  // where a default lives would be noise on a field that isn't using one.
+  const usesDefault = (r) => !(Number(r.notice_lead_n) > 0) && !r.notice_by_date;
 
   // A PENDING option "lapses" either because the term it would have extended has ended,
   // or because its notice window belonged to an earlier term the lease has since been
@@ -269,10 +284,16 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                       <button type="button" className="notice-cell"
                         title={drift
                           ? `Notice is ${lead} the option period starts — but that period has moved since. Click to bring the date with it.`
-                          : 'Set when notice is due — as the lease states it ("180 days prior"), or a set date'}
-                        onClick={() => setNoticeEntry({ id: r.id, draft: noticeDraftFrom(r) })}>
+                          : usesDefault(r) && defaultLead
+                            ? `No deadline on this option yet. Click to set one — it opens on your default of ${defaultLead}, and you can change it for this tenant.`
+                            : 'Set when notice is due — as the lease states it ("180 days prior"), or a set date'}
+                        onClick={() => setNoticeEntry({ id: r.id, draft: noticeDraftFrom(r, defaultNoticeDays) })}>
                         <div>{r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">＋ set</span>}</div>
                         {lead && <div className="cell-sub">{lead}</div>}
+                        {/* No deadline of its own — say what clicking in will offer. Worded
+                            as the DEFAULT, not as a date, because nothing is stored yet and
+                            the bell reads only what's stored. */}
+                        {!lead && usesDefault(r) && defaultLead && <div className="cell-sub">default {defaultLead}</div>}
                         {drift && <div className="cell-sub notice-drift">period moved → {fmtDate(drift)}</div>}
                       </button>
                     )}
@@ -391,6 +412,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                         </div>
                         <div style={{ flex: '0 1 300px', minWidth: 240 }}>
                           <NoticeByField win={windows[r.id]} draft={noticeEntry.draft} autoFocus
+                            defaultDays={usesDefault(r) ? defaultNoticeDays : null}
                             onChange={(draft) => setNoticeEntry({ id: r.id, draft })} />
                         </div>
                         <button type="button" disabled={saveNotice.isPending || unchanged}
@@ -477,7 +499,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
       <ul className="muted" style={{ fontSize: 12, marginTop: 10, paddingLeft: 18, lineHeight: 1.6 }}>
         <li><strong>Renew</strong> extends the term + sets the new rent; <strong>Not renewing</strong> closes the option (both undoable).</li>
         <li>On a <strong>Lapsed</strong> option, <strong>Already renewed</strong> records that it was exercised back then — history only, no change to the term or rent.</li>
-        <li>Click <strong>Notice by</strong> on any open option to set its deadline the way the lease writes it — “180 days before”, “6 months before” — and the date is worked out for you.</li>
+        <li>Click <strong>Notice by</strong> on any open option to set its deadline the way the lease writes it — “180 days before”, “6 months before” — and the date is worked out for you.{defaultLead ? <> It starts from your default of <strong>{defaultLead}</strong> (Settings → Notifications); changing it here affects only that tenant.</> : ''}</li>
         <li>An option can carry its own year-by-year rents. They stay hidden until it’s renewed, then become real rent steps.</li>
         <li>If an option’s rent reads <strong>Not listed</strong>, the lease left it to be negotiated — you’ll enter the agreed new base rent when you click <strong>Renew</strong>.</li>
       </ul>
@@ -488,6 +510,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
           renewals={renewals}
           termEnd={termEnd}
           baseRent={base}
+          defaultNoticeDays={defaultNoticeDays}
           onClose={() => setAdding(false)}
         />
       )}

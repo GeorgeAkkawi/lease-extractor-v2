@@ -1,5 +1,6 @@
 import { fmtDate } from '../lib/format';
-import { noticeAnchor, resolveNotice } from '../lib/renewals';
+import { noticeAnchor, resolveNotice, noticeLeadLabel } from '../lib/renewals';
+import { leadAsUnits } from '../lib/notifyPrefs';
 
 // When notice on a renewal option is due — said the way the lease says it.
 //
@@ -16,11 +17,15 @@ import { noticeAnchor, resolveNotice } from '../lib/renewals';
 // dialog's deadline follow the term while it's being typed, with no effect to keep in
 // sync — and it means this one control can serve both the dialog and the inline row on
 // the options table without the two drifting apart.
-export default function NoticeByField({ win, draft, onChange, autoFocus }) {
+export default function NoticeByField({ win, draft, onChange, autoFocus, defaultDays = null }) {
   const set = (patch) => onChange({ ...draft, ...patch });
   const isDate = draft.mode === 'date';
   const anchor = noticeAnchor(win);
   const { notice_by_date: resolved } = resolveNotice(draft, win);
+  // Where the figure in the box came from, when it came from the owner's Settings rather
+  // than the lease. Passed only when this option had no deadline of its own, so the line
+  // is provenance for what's sitting there — not a standing advert for Settings.
+  const fromDefault = leadAsUnits(defaultDays);
 
   return (
     <div className="notice-by">
@@ -50,6 +55,13 @@ export default function NoticeByField({ win, draft, onChange, autoFocus }) {
             : <span className="muted">{draft.n && Number(draft.n) > 0
               ? 'Give the option a term above — the deadline counts back from the end of the period it extends.'
               : 'How long before the option period starts is notice due?'}</span>}
+        </p>
+      )}
+
+      {fromDefault && (
+        <p className="notice-by-default muted">
+          Pre-filled from your default of <strong>{noticeLeadLabel(fromDefault.n, fromDefault.unit)}</strong> (Settings
+          → Notifications). Change it here for this tenant — it won’t move your default.
         </p>
       )}
     </div>

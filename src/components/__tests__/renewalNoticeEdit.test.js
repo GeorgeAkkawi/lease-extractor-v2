@@ -112,6 +112,70 @@ describe('Changing the duration', () => {
   });
 });
 
+// George, 2026-07-30: "theres a default set by the settings so make sure thats the
+// default set in the notice by which can be changed by clicking in for specific tenants."
+describe('An option with no deadline of its own', () => {
+  // Strip the seeded rule so this option is in the state four of George's live options
+  // are in: pending, with nothing in Notice by.
+  const clearNotice = () => supabase.from('renewal_options')
+    .update({ notice_by_date: null, notice_lead_n: null, notice_lead_unit: null }).eq('id', 'ren-1');
+
+  it('says what the default is, without pretending it is stored', async () => {
+    await clearNotice();
+    renderEditor();
+    const cell = await noticeCell();
+    // Nothing on file — so the cell still asks to be set, and the sub-line names the
+    // default rather than showing a date the bell would know nothing about.
+    expect(cell.textContent).toMatch(/＋ set/);
+    expect(cell.textContent).toMatch(/default 6 months before/);
+    expect(cell.textContent).not.toMatch(/2025/);
+  });
+
+  it('opens pre-filled from Settings, with the date already worked out', async () => {
+    await clearNotice();
+    renderEditor();
+    fireEvent.click(await noticeCell());
+    const row = await editorRow();
+
+    // The shipped renewal lead is 183 days, which a lease would state as six months.
+    expect(within(row).getByLabelText('How the notice deadline is stated').value).toBe('months');
+    expect(within(row).getByLabelText('How far ahead notice is due').value).toBe('6');
+    expect(row.querySelector('.notice-by-read').textContent).toMatch(/November 30, 2025/);
+    // …and it says where that figure came from, so it doesn't read as the lease's.
+    expect(row.querySelector('.notice-by-default').textContent).toMatch(/Settings/);
+
+    // Still only a pre-fill: nothing is written until Save.
+    expect((await listRenewals('lease-2'))[0].notice_by_date).toBeNull();
+    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+    await waitFor(async () => {
+      const [opt] = await listRenewals('lease-2');
+      expect(opt.notice_by_date).toBe('2025-11-30');
+      expect(opt.notice_lead_n).toBe(6);
+    });
+  });
+
+  it('can be changed for this tenant without touching the default', async () => {
+    await clearNotice();
+    renderEditor();
+    fireEvent.click(await noticeCell());
+    const row = await editorRow();
+    fireEvent.change(within(row).getByLabelText('How the notice deadline is stated'), { target: { value: 'days' } });
+    fireEvent.change(within(row).getByLabelText('How far ahead notice is due'), { target: { value: '180' } });
+    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+
+    await waitFor(async () => {
+      const [opt] = await listRenewals('lease-2');
+      expect(opt.notice_lead_n).toBe(180);
+      expect(opt.notice_lead_unit).toBe('days');
+    });
+    // The saved rule replaces the default on the row — the default is a starting point,
+    // not something the option keeps deferring to.
+    const cell = await noticeCell();
+    expect(cell.textContent).toMatch(/180 days before/);
+    expect(cell.textContent).not.toMatch(/default/);
+  });
+});
+
 describe('When the period moves under a stored rule', () => {
   it('flags the row rather than leaving a date that no longer means what the lease says', async () => {
     // Same option, but the lease term has since been carried to 2029 by an addendum.

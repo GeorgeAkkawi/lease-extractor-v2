@@ -2,6 +2,7 @@
 // choice and what rent confirming it books. (The tenant-email drafts live in
 // ./emailTemplates.js.)
 import { fmtDate } from './format';
+import { leadAsUnits } from './notifyPrefs';
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
@@ -219,15 +220,38 @@ export function noticeLeadLabel(n, unit) {
   return `${k} ${unit === 'days' ? 'day' : 'month'}${k === 1 ? '' : 's'} before`;
 }
 
+// The owner's Settings default, as a notice draft.
+//
+// George, 2026-07-30: "for the notice by in the renewal options theres a default set by
+// the settings so make sure thats the default set in the notice by which can be changed
+// by clicking in for specific tenants."
+//
+// Settings → Notifications carries a lead for "Upcoming renewal option" (183 days out of
+// the box). That is a number of days; a lease states a duration; leadAsUnits is the one
+// rule that turns one into the other, so the Settings row and this control always say the
+// same thing. Null in, null out — no default, no pre-fill.
+export const noticeDraftFromDays = (days) => {
+  const u = leadAsUnits(days);
+  return u ? { mode: u.unit, n: String(u.n), date: '' } : null;
+};
+
 // The draft the editor holds while you're typing: a mode plus whichever value that mode
 // takes. Kept as plain data (rather than component state) so the resolved date recomputes
 // from the CURRENT window on every render — type a term in the add dialog and the
 // deadline follows it, with no effect to keep in sync.
-export const noticeDraftFrom = (ren) => (
-  Number(ren?.notice_lead_n) > 0
-    ? { mode: ren.notice_lead_unit === 'days' ? 'days' : 'months', n: String(ren.notice_lead_n), date: ren.notice_by_date || '' }
-    : { mode: 'date', n: '', date: ren?.notice_by_date || '' }
-);
+//
+// `defaultDays` is only reached when the option carries NEITHER a rule nor a date — a
+// deadline already on the option is a fact and is never overwritten by a default. And
+// the default only ever pre-fills the editor: nothing is written until Save, because a
+// deadline that appeared because a screen rendered is exactly the silent movement
+// noticeDrift() below refuses to make.
+export const noticeDraftFrom = (ren, defaultDays = null) => {
+  if (Number(ren?.notice_lead_n) > 0) {
+    return { mode: ren.notice_lead_unit === 'days' ? 'days' : 'months', n: String(ren.notice_lead_n), date: ren.notice_by_date || '' };
+  }
+  if (ren?.notice_by_date) return { mode: 'date', n: '', date: ren.notice_by_date };
+  return noticeDraftFromDays(defaultDays) || { mode: 'date', n: '', date: '' };
+};
 
 // A draft + the option's period → the three columns to write. Exactly one shape is
 // stored: an explicit date carries no lead (nothing would re-date it, and nothing

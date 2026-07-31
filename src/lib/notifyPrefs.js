@@ -85,6 +85,22 @@ function plural(n, unit) {
   return `${r} ${unit}${r === 1 ? '' : 's'}`;
 }
 
+// The same lead said the way a LEASE states a notice deadline — { n, unit } where unit
+// is 'months' or 'days' ("6 months before", "180 days before").
+//
+// Deliberately only those two units: a lease writes "twelve (12) (months) prior", never
+// "1 year", and never weeks. It prefers months on exactly the day counts formatLeadDays
+// calls months, so the Settings row and the renewal option's Notice-by control can never
+// describe one lead two different ways. Null when there's no usable lead.
+export function leadAsUnits(days) {
+  const d = Math.round(Number(days) || 0);
+  if (!(d > 0)) return null;
+  if (d >= 27 && d <= 32) return { n: 1, unit: 'months' };
+  const months = Math.round(d / DAYS_PER_MONTH);
+  if (d >= 60 && months >= 1 && Math.abs(d - months * DAYS_PER_MONTH) < 2) return { n: months, unit: 'months' };
+  return { n: d, unit: 'days' };
+}
+
 // The resolved lead (in days) for a type: the owner's saved value when set, else the
 // default. `prefs` is the notify_lead_times map ({ key: days } or {}/null).
 export function leadDaysFor(prefs, key) {

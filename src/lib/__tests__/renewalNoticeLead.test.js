@@ -10,8 +10,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   optionWindows, noticeAnchor, noticeDateFrom, noticeLeadLabel,
-  noticeDraftFrom, resolveNotice, noticeDrift,
+  noticeDraftFrom, noticeDraftFromDays, resolveNotice, noticeDrift,
 } from '../renewals';
+import { leadAsUnits, formatLeadDays } from '../notifyPrefs';
 
 const TERM_END = '2027-12-31';
 const opt = (over = {}) => ({ id: 'o1', status: 'pending', term_months: 60, ...over });
@@ -68,6 +69,53 @@ describe('Saying the rule back', () => {
     expect(noticeDraftFrom({ notice_by_date: '2027-07-04' }))
       .toEqual({ mode: 'date', n: '', date: '2027-07-04' });
     expect(noticeDraftFrom(null)).toEqual({ mode: 'date', n: '', date: '' });
+  });
+});
+
+// George, 2026-07-30: "theres a default set by the settings so make sure thats the
+// default set in the notice by which can be changed by clicking in for specific tenants."
+describe('The Settings default', () => {
+  it('says a day count the way a lease states a deadline', () => {
+    // 183 is the shipped renewal lead. A lease says "six (6) months prior", so that is
+    // what the control offers — and it matches what the Settings row itself displays.
+    expect(leadAsUnits(183)).toEqual({ n: 6, unit: 'months' });
+    expect(formatLeadDays(183)).toBe('6 months');
+    expect(leadAsUnits(365)).toEqual({ n: 12, unit: 'months' });   // "twelve (12) months prior"
+    expect(leadAsUnits(90)).toEqual({ n: 3, unit: 'months' });
+    expect(leadAsUnits(31)).toEqual({ n: 1, unit: 'months' });
+    // 180 is NOT six months — it's the phrase leases actually print, and rounding it to
+    // months would move the deadline. Left in days.
+    expect(leadAsUnits(180)).toEqual({ n: 180, unit: 'days' });
+    expect(leadAsUnits(21)).toEqual({ n: 21, unit: 'days' });
+    expect(leadAsUnits(0)).toBeNull();
+    expect(leadAsUnits(null)).toBeNull();
+  });
+
+  it('pre-fills an option that has no deadline of its own', () => {
+    expect(noticeDraftFrom({}, 183)).toEqual({ mode: 'months', n: '6', date: '' });
+    expect(noticeDraftFromDays(180)).toEqual({ mode: 'days', n: '180', date: '' });
+    // No default configured → the old blank-date behaviour, unchanged.
+    expect(noticeDraftFromDays(null)).toBeNull();
+    expect(noticeDraftFrom({}, null)).toEqual({ mode: 'date', n: '', date: '' });
+  });
+
+  it('never overwrites a deadline the option already carries', () => {
+    // A rule the lease states wins…
+    expect(noticeDraftFrom({ notice_lead_n: 180, notice_lead_unit: 'days', notice_by_date: '2027-07-04' }, 183))
+      .toEqual({ mode: 'days', n: '180', date: '2027-07-04' });
+    // …and so does a plain date typed by hand. The default is a starting point for an
+    // EMPTY field, not a correction to a filled one.
+    expect(noticeDraftFrom({ notice_by_date: '2027-07-04' }, 183))
+      .toEqual({ mode: 'date', n: '', date: '2027-07-04' });
+  });
+
+  it('is only a pre-fill — resolving it still needs a period to count back from', () => {
+    // Nothing is stored by opening the editor; the date only exists once there's a
+    // window to measure against, and only Save writes it.
+    expect(resolveNotice(noticeDraftFromDays(183), null))
+      .toEqual({ notice_by_date: null, notice_lead_n: null, notice_lead_unit: null });
+    expect(resolveNotice(noticeDraftFromDays(183), winFor([opt()]).o1))
+      .toEqual({ notice_by_date: '2027-06-30', notice_lead_n: 6, notice_lead_unit: 'months' });
   });
 });
 

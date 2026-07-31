@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createRenewal } from '../lib/api';
-import { addMonths, optionWindows, windowLabel, resolveNotice } from '../lib/renewals';
+import { addMonths, optionWindows, windowLabel, resolveNotice, noticeDraftFromDays } from '../lib/renewals';
 import { cmpRenewal } from '../lib/leaseTerm';
 import { money0, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
@@ -37,14 +37,16 @@ const RENT_MODES = [
 
 const blankYears = (n) => Array.from({ length: n }, () => '');
 
-export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, baseRent = 0, onClose }) {
+export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, baseRent = 0, defaultNoticeDays = null, onClose }) {
   const modalRef = useModalA11y(onClose);
   const qc = useQueryClient();
 
   const [form, setForm] = useState({ option_label: '', term_months: '', notes: '' });
   // The notice deadline is entered as the lease states it — a duration back from the end
-  // of the term this option extends — and resolved against the window below.
-  const [notice, setNotice] = useState({ mode: 'months', n: '', date: '' });
+  // of the term this option extends — and resolved against the window below. It opens on
+  // the owner's Settings default so a new option gets a sensible deadline without anyone
+  // having to remember one; typing over it changes this option only.
+  const [notice, setNotice] = useState(() => noticeDraftFromDays(defaultNoticeDays) || { mode: 'months', n: '', date: '' });
   const [mode, setMode] = useState('flat');
   const [flat, setFlat] = useState('');
   const [pct, setPct] = useState('');
@@ -167,7 +169,7 @@ export default function RenewalOptionModal({ leaseId, renewals = [], termEnd, ba
               runs, the years that covers, and when the tenant has to decide. */}
           <div className="form-field notice-field">
             <span>Notice due by</span>
-            <NoticeByField win={win} draft={notice} onChange={setNotice} />
+            <NoticeByField win={win} draft={notice} onChange={setNotice} defaultDays={defaultNoticeDays} />
           </div>
 
           <div className="fin-subhead" style={{ marginTop: 18 }}>Rent at renewal</div>

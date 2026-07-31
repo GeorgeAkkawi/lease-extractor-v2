@@ -80,9 +80,12 @@ export default function DocumentsList({
     <div className="doc-list">
       <div className="doc-list-head">
         <strong>{title}</strong>
-        <button type="button" className="ghost btn-sm" disabled={busy} onClick={() => fileRef.current?.click()}>
-          {busy ? 'Saving…' : `⬆ ${addLabel}`}
-        </button>
+        <span className="doc-actions">
+          <button type="button" className="ghost btn-sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+            {busy ? 'Saving…' : `⬆ ${addLabel}`}
+          </button>
+          <span className="doc-act2" />
+        </span>
         <input ref={fileRef} type="file" accept={accept} style={{ display: 'none' }} onChange={onFile} aria-label={`Add a document to this ${entityType.replace(/_/g, ' ')}`} />
       </div>
 
@@ -103,7 +106,9 @@ export default function DocumentsList({
           <span className="muted doc-row-meta">
             {[humanBytes(d.bytes), fmtDate(d.created_at)].filter(Boolean).join(' · ')}
           </span>
-          <button type="button" className="ghost btn-sm" onClick={() => open(d.storage_path)}>Open</button>
+          <span className="doc-actions">
+            <button type="button" className="ghost btn-sm" onClick={() => open(d.storage_path)}>Open</button>
+            <span className="doc-act2">
           <button
             type="button" className="icon-btn danger-btn" title="Delete this copy"
             disabled={remove.isPending}
@@ -121,6 +126,8 @@ export default function DocumentsList({
               })) remove.mutate(d.id);
             }}
           >✕</button>
+            </span>
+          </span>
         </div>
       ))}
     </div>
