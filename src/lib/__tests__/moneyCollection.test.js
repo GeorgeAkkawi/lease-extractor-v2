@@ -173,4 +173,35 @@ describe('invoice template', () => {
     const dueLine = text.split('\n').find((l) => l.startsWith('AMOUNT DUE'));
     expect(dueLine).toContain('$12,800.00'); // 12,000 + 1,200 + 600 − 1,000
   });
+
+  // 0073 — a gross lease is BILLED as one all-in figure even though the components are
+  // stored carved (the ledger reads them back to split each month). Itemizing them on
+  // the document would invite the tenant to query charges they were never separately
+  // billed, so the printed bill reads the way their lease does.
+  it('prints a gross lease as ONE rent line, with the same amount due', () => {
+    const facts = {
+      business: null, tenant: 'Card Pop', year: Y, tax_year: Y - 1,
+      square_footage: 1800, lease_type: 'gross',
+      // Carved: 32,000 base + 10,000 of expenses = the 42,000 flat rent.
+      base_rent_annual: 32000, cam_annual: 10000, tax_annual: 0, roof_annual: 0,
+      abatement_annual: 0, estimated: { cam: false, tax: false, roof: false },
+      today: `${Y}-01-01`, due: `${Y}-01-31`,
+    };
+    const text = buildInvoice(facts);
+    expect(text).toContain('Rent (gross lease — property taxes & CAM included)');
+    // The carved components are NOT itemized on the document…
+    expect(text).not.toContain('CAM & property tax');
+    expect(text).not.toContain('$32,000.00');
+    // …and no "est." reconciliation footnote, since nothing was estimated.
+    expect(text).not.toContain('reconciled against the actual expenses');
+    // The one figure the tenant owes is the flat rent, to the penny.
+    const dueLine = text.split('\n').find((l) => l.startsWith('AMOUNT DUE'));
+    expect(dueLine).toContain('$42,000.00');
+    expect(text).toContain('$3,500.00/mo');
+
+    // The same figures on a NET lease still itemize — the flag is what switches it.
+    const net = buildInvoice({ ...facts, lease_type: null });
+    expect(net).toContain('CAM & property tax');
+    expect(net.split('\n').find((l) => l.startsWith('AMOUNT DUE'))).toContain('$42,000.00');
+  });
 });

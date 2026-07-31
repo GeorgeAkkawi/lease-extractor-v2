@@ -35,7 +35,8 @@ describe('billedComponents — estimate-preferred, CAM & tax combined', () => {
     // Only the CAM estimate typed — the known tax + roof bill from actuals; the
     // combined CAM & tax figure the tenant sees is cam + tax = 16,500.
     const b = billedComponents({ ...brightCoffeeShare, est_tax_annual: null, est_roof_annual: null });
-    expect(b).toEqual({ cam: 6500, tax: 10000, camTax: 16500, roof: 1600, anyEstimate: true });
+    // toMatchObject, not toEqual: 0073 added base/total/gross/clamped alongside these.
+    expect(b).toMatchObject({ cam: 6500, tax: 10000, camTax: 16500, roof: 1600, anyEstimate: true, gross: false });
   });
 
   it('reads a combined estimate stored as est_cam with est_tax = 0', () => {
@@ -48,13 +49,80 @@ describe('billedComponents — estimate-preferred, CAM & tax combined', () => {
 
   it('with no estimates it bills the actuals exactly as before', () => {
     const b = billedComponents({ ...brightCoffeeShare, est_cam_annual: null, est_tax_annual: null, est_roof_annual: null });
-    expect(b).toEqual({ cam: 7200, tax: 10000, camTax: 17200, roof: 1600, anyEstimate: false });
+    expect(b).toMatchObject({ cam: 7200, tax: 10000, camTax: 17200, roof: 1600, anyEstimate: false, gross: false });
   });
 
   it('never bills roof to a non-roof-responsible tenant, estimate or not', () => {
     const b = billedComponents({ ...brightCoffeeShare, roof_responsible: false });
     expect(b.roof).toBe(0);
     expect(b.anyEstimate).toBe(true); // cam/tax estimates still count
+  });
+});
+
+// George, 2026-07-30, on Card Pop: "if the actual was ten thousand, it would show that
+// there's a difference of ten thousand … you would subtract ten thousand from the forty
+// two thousand to get thirty two thousand, and then thirty two thousand per year would
+// be the new base rent."
+describe('billedComponents — a GROSS lease carves expenses OUT of the flat rent', () => {
+  // Card Pop's real shape: 1,800 SF at Joliet on a flat $3,500/mo.
+  const cardPop = {
+    lease_id: 'cp', tenant_name: 'Card Pop', lease_type: 'gross',
+    base_rent: 42000, square_footage: 1800, roof_responsible: false,
+    cam_amount: 6000, tax_amount: 4000, roof_amt: 0,
+  };
+
+  it('is George’s arithmetic exactly: $42,000 flat − $10,000 share = $32,000 base', () => {
+    const b = billedComponents(cardPop);
+    expect(b.camTax).toBe(10000);
+    expect(b.base).toBe(32000);
+    expect(b.total).toBe(42000);
+    expect(b.gross).toBe(true);
+  });
+
+  it('holds the total steady as the actuals move — only the split shifts', () => {
+    // The whole point: the tenant pays the same flat figure whatever the expenses turn
+    // out to be, so a $3,500 deposit settles its month at every stage of the year.
+    for (const [cam, tax] of [[0, 0], [3000, 2000], [9000, 6000]]) {
+      const b = billedComponents({ ...cardPop, cam_amount: cam, tax_amount: tax });
+      expect(b.total).toBe(42000);
+      expect(b.base + b.camTax + b.roof).toBeCloseTo(42000, 2);
+    }
+  });
+
+  it('IGNORES a stale estimate left on the lease', () => {
+    // A lease flipped to gross may still carry est_* from when it billed net. Reading it
+    // would bill an estimate on top of a rent that already includes the expenses.
+    const b = billedComponents({ ...cardPop, est_cam_annual: 25000, est_tax_annual: 0 });
+    expect(b.camTax).toBe(10000);   // the ACTUAL share, not the 25,000 estimate
+    expect(b.base).toBe(32000);
+    expect(b.anyEstimate).toBe(false); // → Difference dormant, ⚖ Reconcile hidden
+  });
+
+  it('carves roof out too, on a roof-responsible gross tenant', () => {
+    const b = billedComponents({ ...cardPop, roof_responsible: true, roof_amt: 1200 });
+    expect(b.roof).toBe(1200);
+    expect(b.camTax).toBe(10000);
+    expect(b.base).toBe(30800);
+    expect(b.total).toBe(42000);
+  });
+
+  it('clamps at $0 base when the share exceeds the flat rent, and says so', () => {
+    // The flat rent is the ceiling — the landlord absorbs the excess. Base must never
+    // go negative or the base+camTax+roof === owed invariant breaks downstream.
+    const b = billedComponents({ ...cardPop, cam_amount: 40000, tax_amount: 15000 });
+    expect(b.base).toBe(0);
+    expect(b.camTax).toBe(42000);
+    expect(b.total).toBe(42000);
+    expect(b.clamped).toBe(true);
+  });
+
+  it('leaves a net lease completely untouched', () => {
+    const net = billedComponents({ ...cardPop, lease_type: 'net' });
+    const legacy = billedComponents({ ...cardPop, lease_type: null });
+    expect(net.base).toBe(42000);          // the rent itself
+    expect(net.total).toBe(52000);         // + the share billed on top
+    expect(net.gross).toBe(false);
+    expect(legacy).toEqual(net);           // null reads as net — every existing row
   });
 });
 

@@ -58,8 +58,9 @@ export function snapshotFingerprint({
   // module was ON can't be served after it's turned OFF (and vice-versa).
   const feat = features == null ? 'all' : [...features].sort().join(',');
   return [
-    'v4', // bumped from v3: the summary now carries far more facts — every v3-era
-          // cached answer (built on the thinner summary) must stop matching.
+    'v5', // bumped from v4 (0073): a gross lease's total annual bill used to be
+          // reported as rent PLUS its expense share — overstating what the tenant
+          // actually pays. Every v4-era cached answer must stop matching.
     `L${leases.length}:${maxStamp(leases)}`,
     `I${insurance.length}:${maxStamp(insurance)}`,
     `C${contracts.length}:${maxStamp(contracts)}`,
@@ -205,9 +206,15 @@ export function buildPortfolioSnapshot({
           const tax = sh ? num(sh.tax_amount) : null;
           const roof = sh ? num(sh.roof_amt) : null;
           const base = num(l.base_rent);
-          const total = sh
-            ? (base || 0) + (cam || 0) + (tax || 0) + (roof || 0)
-            : null;
+          // A GROSS lease's flat rent already INCLUDES taxes & CAM (0073), so adding
+          // the share on top would overstate what the tenant is billed — for Card Pop
+          // that's $42,000 reported as ~$61,000. The share is carved out instead.
+          const gross = l.lease_type === 'gross';
+          const total = gross
+            ? base
+            : sh
+              ? (base || 0) + (cam || 0) + (tax || 0) + (roof || 0)
+              : null;
           const step = nextStepByLease[l.id] || null;
           const fr = freeRentByLease[l.id] || null;
           return {
@@ -222,6 +229,7 @@ export function buildPortfolioSnapshot({
             lease_start: l.lease_start || null,
             lease_end: l.lease_termination_date || null,
             has_renewal_option: hasRenewal.has(l.id),
+            gross_lease: gross,
             roof_billed: !!l.roof_responsible,
             lease_terms: txt(l.lease_terms) || null,
             contact_name: txt(l.tenant_contact_name) || null,
@@ -367,13 +375,18 @@ export function snapshotToText(snapshot) {
         );
         // Line 2: who-pays-what facts (roof, lease type, this year's CAM/tax bill, next step, free rent).
         const parts2 = [`Roof expenses billed to tenant: ${t.roof_billed ? 'YES' : 'no'}.`];
+        parts2.push(t.gross_lease
+          ? 'Expense recovery: GROSS lease — taxes & CAM are INCLUDED in the flat rent, never billed on top.'
+          : 'Expense recovery: net — tenant is billed its share of taxes & CAM on top of base rent.');
         if (t.lease_terms) parts2.push(`Lease type/notes: ${t.lease_terms}.`);
         if (t.billed_total != null) {
           const comps = [];
           if (t.billed_cam != null) comps.push(`CAM ${money(t.billed_cam)}`);
           if (t.billed_tax != null) comps.push(`tax ${money(t.billed_tax)}`);
           if (t.billed_roof) comps.push(`roof ${money(t.billed_roof)}`);
-          parts2.push(`This year's additional-rent share: ${comps.join(' + ') || '—'}; total annual bill ${money(t.billed_total)}.`);
+          parts2.push(t.gross_lease
+            ? `This year's expense share (carved OUT of the flat rent, not added): ${comps.join(' + ') || '—'}; total annual bill ${money(t.billed_total)} — the flat rent.`
+            : `This year's additional-rent share: ${comps.join(' + ') || '—'}; total annual bill ${money(t.billed_total)}.`);
         }
         if (t.next_step) parts2.push(`Next rent step: ${date(t.next_step.date)}${t.next_step.amount != null ? ` → ${money(t.next_step.amount)}/yr` : ''}.`);
         if (t.free_rent) parts2.push(`${t.free_rent.kind === 'free' ? 'Free' : 'Reduced'} rent ${t.free_rent.active ? '(active)' : '(upcoming)'} ${date(t.free_rent.start)} to ${date(t.free_rent.end)}.`);

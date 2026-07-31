@@ -47,6 +47,21 @@ describe('parseAnalystVerdicts', () => {
     expect(Number.isFinite(Number(v.escalation_pct))).toBe(false);
   });
 
+  // 0073 — net vs gross rides the verdicts line rather than the form schema, which is
+  // AT Anthropic's 16-union ceiling. The parser is generic key=value, so this needed no
+  // parser change; the test is what pins that the key survives it.
+  test('captures expense_recovery (net | gross | unclear) for the lease-type flag', () => {
+    const line = (v) =>
+      `VERDICTS: escalation=no; escalation_pct=none; escalation_stop_months=none; renewal_options=no; abatement=no; start_date=stated; expense_recovery=${v}`;
+    expect(parseAnalystVerdicts(line('gross')).expense_recovery).toBe('gross');
+    expect(parseAnalystVerdicts(line('net')).expense_recovery).toBe('net');
+    expect(parseAnalystVerdicts(line('unclear')).expense_recovery).toBe('unclear');
+    // An older brief (before the key existed) simply has no value — the extractor
+    // leaves lease_type null, which the app reads as net: today's behavior.
+    const old = 'VERDICTS: escalation=no; renewal_options=no; abatement=no; start_date=stated';
+    expect(parseAnalystVerdicts(old).expense_recovery).toBeUndefined();
+  });
+
   test('returns {} when there is no VERDICTS line, or on junk input', () => {
     expect(parseAnalystVerdicts('a brief with no verdict line')).toEqual({});
     expect(parseAnalystVerdicts('')).toEqual({});

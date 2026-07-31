@@ -189,6 +189,11 @@ export function initialFromExtraction(ex) {
     lease_terms: val(ex.lease_terms),
     share_override_pct: '',
     est_cam_tax: estCamTaxRate,
+    // Net vs gross comes off the analyst's VERDICTS line as a RAW string (it isn't a
+    // field()-shaped read), so it deliberately carries no confidence badge — the form
+    // says where it came from in words instead. An unclear/absent verdict leaves this
+    // blank, which the form treats as net.
+    lease_type: ex?.lease_type === 'gross' ? 'gross' : ex?.lease_type === 'net' ? 'net' : '',
   };
 }
 function buildAiConfidence(ex) {
@@ -250,6 +255,16 @@ function SchedulePreview({ ex }) {
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
         The form above shows the lease's <strong>starting</strong> rent. On save it rolls forward to today through the step-ups below.
       </div>
+      {/* Net vs gross decides whether the tenant's taxes & CAM are billed on top of that
+          rent or already inside it — a big enough difference in what they'll be charged
+          to state before saving, not just leave sitting in a toggle above. */}
+      {ex.lease_type === 'gross' && (
+        <p className="note-msg" style={{ marginBottom: 8 }}>
+          Read as a <strong>gross lease</strong> — the rent above is all-in, so this tenant won't be billed
+          taxes &amp; CAM on top. Their share is carved out of the rent on the Financials breakdown instead.
+          Switch <strong>Expenses</strong> to Net above if that's wrong.
+        </p>
+      )}
       {mismatches.length > 0 && (
         <p className="note-msg warn" style={{ marginBottom: 8 }}>
           ⚠ The AI analyst read the full document and found{' '}

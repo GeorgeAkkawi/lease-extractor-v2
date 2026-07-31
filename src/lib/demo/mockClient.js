@@ -4,6 +4,7 @@
 import { seed, DEMO_USER } from './store';
 import { effectiveRent, occupancyStart, monthlyBases } from '../escalations';
 import { monthlyScheduleForYear } from '../abatement';
+import { billedComponents } from '../reconciliation';
 import { fmtDate } from '../format';
 // The same flag definitions the live edge functions use, so the demo's canned review
 // carries the real titles/notes/severities rather than a second set that could drift.
@@ -120,6 +121,10 @@ function tenantShares(propertyId, year) {
       est_cam_annual: l.est_cam_annual ?? null, est_tax_annual: l.est_tax_annual ?? null, est_roof_annual: l.est_roof_annual ?? null,
       // est_confirmed_year appended by 0065 — drives the carried-over estimate note.
       est_confirmed_year: l.est_confirmed_year ?? null,
+      // lease_type appended by 0073 — 'gross' carves the share OUT of the flat rent
+      // instead of billing it on top. The share arithmetic above is unchanged, exactly
+      // as in the SQL: only how it's SPENT differs.
+      lease_type: l.lease_type ?? null,
     };
   });
 }
@@ -514,12 +519,14 @@ function demoInvoiceFacts(body) {
   const now = new Date();
   const due = new Date(now.getTime() + 30 * 86400000);
   // Estimate-preferred per component (0060) — mirrors the real draft-invoice edge fn:
-  // a typed estimate bills; a blank one falls back to the actual share.
-  const cam = share ? (share.est_cam_annual != null ? Number(share.est_cam_annual) : share.cam_amount) : 0;
-  const tax = share ? (share.est_tax_annual != null ? Number(share.est_tax_annual) : share.tax_amount) : 0;
-  const roof = share && share.roof_responsible
-    ? (share.est_roof_annual != null ? Number(share.est_roof_annual) : share.roof_amt)
-    : 0; // separate roof line
+  // a typed estimate bills; a blank one falls back to the actual share. On a GROSS
+  // lease (0073) the flat rent already includes taxes & CAM, so the share is carved
+  // OUT of it below rather than added on top. Read from the shared pure helper (the
+  // leaseFlags precedent) so the demo can't drift from the billing math it mimics.
+  const billed = share ? billedComponents(share) : { cam: 0, tax: 0, roof: 0, gross: false };
+  const cam = billed.cam;
+  const tax = billed.tax;
+  const roof = billed.roof; // separate roof line
   // Term-aware proration (mirrors the real draft-invoice edge fn): a mid-year lease start
   // bills only the months it covers. Reuse the same pure helpers the app runtime uses.
   const escs = escFor(body?.lease_id);
@@ -527,7 +534,7 @@ function demoInvoiceFacts(body) {
   const grossBase = share ? share.base_rent : (lease?.base_rent || 0);
   const occ = occupancyStart({ lease_start: share?.lease_start ?? lease?.lease_start }, escs);
   const bases = monthlyBases(escs, grossBase, year);
-  const sched = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: cam + tax + roof, abatements, occupancyStartIso: occ, monthlyBases: bases });
+  const sched = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: billed.gross ? 0 : cam + tax + roof, abatements, occupancyStartIso: occ, monthlyBases: bases });
   const months = Object.values(sched);
   const inTerm = months.filter((c) => !c.outsideTerm).length;
   const ratio = inTerm / 12;
@@ -550,14 +557,19 @@ function demoInvoiceFacts(body) {
     year,
     tax_year: year - 1, // taxes lag a year — used for the tax line label + note
     square_footage: share?.square_footage || lease?.square_footage || 0,
-    base_rent_annual: r2(proratedBaseGross),
+    // Gross: the components come OUT of the prorated flat rent, so they still sum to
+    // the flat figure the tenant pays.
+    base_rent_annual: billed.gross
+      ? r2(proratedBaseGross - r2(cam * ratio) - r2(tax * ratio) - r2(roof * ratio))
+      : r2(proratedBaseGross),
     cam_annual: r2(cam * ratio),
     tax_annual: r2(tax * ratio),
     roof_annual: r2(roof * ratio),
     abatement_annual: r2(proratedAbatement),
     occupancy_start: occ,
     months_billed: inTerm,
-    estimated: {
+    lease_type: share?.lease_type ?? lease?.lease_type ?? null,
+    estimated: billed.gross ? { cam: false, tax: false, roof: false } : {
       cam: share?.est_cam_annual != null,
       tax: share?.est_tax_annual != null,
       roof: !!share?.roof_responsible && share?.est_roof_annual != null,

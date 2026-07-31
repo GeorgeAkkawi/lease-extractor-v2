@@ -75,11 +75,30 @@ Deno.serve(async (req) => {
     // enters only the CAM estimate and lets the known tax figure bill as-is), so a
     // lease with no estimates bills exactly as before. Year-end reconciliation
     // settles estimate-vs-actual separately (kind='reconciliation' invoices).
-    const cam = cur.est_cam_annual != null ? Number(cur.est_cam_annual) : Number(cur.cam_amount || 0);
-    const tax = cur.est_tax_annual != null ? Number(cur.est_tax_annual) : Number(cur.tax_amount || 0);
-    const roof = cur.roof_responsible
-      ? (cur.est_roof_annual != null ? Number(cur.est_roof_annual) : Number(cur.roof_amt || 0))
-      : 0; // separate roof line, roof-responsible tenants only
+    //
+    // GROSS LEASE (0073) — the flat rent already INCLUDES taxes & CAM, so the tenant's
+    // pro-rata share is carved OUT of the rent instead of billed on top: the total the
+    // tenant owes is the flat rent, always. Mirrors billedComponents() in
+    // src/lib/reconciliation.js — the two must move in the same commit.
+    const isGross = cur.lease_type === 'gross';
+    const flatAnnual = round(Number(cur.base_rent || 0));
+    const grossRoofA = cur.roof_responsible ? round(Number(cur.roof_amt || 0)) : 0;
+    const grossCamA = round(Number(cur.cam_amount || 0) + Number(cur.tax_amount || 0));
+    // The flat rent is the ceiling — clamp so the carved base floors at 0.
+    const grossRoof = Math.min(grossRoofA, flatAnnual);
+    const grossCamTax = Math.min(grossCamA, round(flatAnnual - grossRoof));
+
+    const cam = isGross
+      ? grossCamTax
+      : (cur.est_cam_annual != null ? Number(cur.est_cam_annual) : Number(cur.cam_amount || 0));
+    const tax = isGross
+      ? 0 // combined into the CAM line, the same convention the estimate editor stores
+      : (cur.est_tax_annual != null ? Number(cur.est_tax_annual) : Number(cur.tax_amount || 0));
+    const roof = isGross
+      ? grossRoof
+      : cur.roof_responsible
+        ? (cur.est_roof_annual != null ? Number(cur.est_roof_annual) : Number(cur.roof_amt || 0))
+        : 0; // separate roof line, roof-responsible tenants only
 
     // --- Term-aware proration (mirrors occupancyStart + monthlyBases + monthlyScheduleForYear
     // in src/lib/{escalations,abatement}.js, so the invoice total ties to the monthly tracker's
@@ -163,6 +182,16 @@ Deno.serve(async (req) => {
     }
     const ratio = inTerm / 12;
 
+    // Gross: the components come OUT of the prorated flat rent, so base + cam + tax +
+    // roof still sums to the flat figure the tenant actually pays. Net: base is the
+    // rent and the components ride on top, exactly as before.
+    const camA = round(cam * ratio);
+    const taxA = round(tax * ratio);
+    const roofA = round(roof * ratio);
+    const baseA = isGross
+      ? round(proratedBaseGross - camA - taxA - roofA)
+      : round(proratedBaseGross);
+
     const facts = {
       business,
       tenant: cur.tenant_name,
@@ -173,16 +202,22 @@ Deno.serve(async (req) => {
       year: Number(year),
       tax_year: priorYear, // taxes lag a year — used for the tax line label + note
       square_footage: cur.square_footage,
-      base_rent_annual: round(proratedBaseGross),        // gross base for the months the lease covers
-      cam_annual: round(cam * ratio),
-      tax_annual: round(tax * ratio),
-      roof_annual: round(roof * ratio),
+      base_rent_annual: baseA,                           // gross: flat rent MINUS the carved share
+      cam_annual: camA,
+      tax_annual: taxA,
+      roof_annual: roofA,
       abatement_annual: round(proratedAbatement),        // free/reduced base rent credited off this year's bill
       // Proration transparency for the invoice document (a "lease begins {date}" note when < 12).
       occupancy_start: occIso,
       months_billed: inTerm,
-      // which lines are estimates (drives the "est." labels + reconciliation note)
-      estimated: {
+      // Drives the invoice document's single "Rent (gross lease — property taxes & CAM
+      // included)" line: the stored components stay carved (the ledger reads them back
+      // to split each month), but the printed bill reads the way the lease does.
+      lease_type: cur.lease_type ?? null,
+      // which lines are estimates (drives the "est." labels + reconciliation note).
+      // A gross lease bills no estimate at all — nothing is labelled "est." and the
+      // year-end reconciliation footnote is suppressed.
+      estimated: isGross ? { cam: false, tax: false, roof: false } : {
         cam: cur.est_cam_annual != null,
         tax: cur.est_tax_annual != null,
         roof: cur.roof_responsible && cur.est_roof_annual != null,

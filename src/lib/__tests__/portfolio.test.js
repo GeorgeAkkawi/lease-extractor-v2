@@ -158,6 +158,26 @@ describe('buildPortfolioSnapshot — enriched facts', () => {
     expect(city.billed_roof).toBe(500);
     // total = base 48000 + cam 3000 + tax 2000 + roof 500
     expect(city.billed_total).toBe(53500);
+    expect(city.gross_lease).toBe(false);
+  });
+
+  // 0073 — before this, Ask Amlak reported a gross tenant's annual bill as rent PLUS
+  // its expense share. On George's Card Pop that answered ~$52,000 for a tenant who
+  // pays $42,000, because the flat rent already includes the expenses.
+  test('a GROSS lease reports its flat rent as the total, not rent + share', () => {
+    const d = rich();
+    d.leases = d.leases.map((l) => (l.tenant_name === 'City Dental' ? { ...l, lease_type: 'gross' } : l));
+    const city = tenant(buildPortfolioSnapshot(d), 'City Dental');
+    expect(city.gross_lease).toBe(true);
+    expect(city.billed_total).toBe(48000); // the flat rent — NOT 53,500
+    // The share itself is still reported (it's real, and it's what got carved out).
+    expect(city.billed_cam).toBe(3000);
+
+    const text = snapshotToText(buildPortfolioSnapshot(d));
+    expect(text).toContain('GROSS lease — taxes & CAM are INCLUDED in the flat rent');
+    expect(text).toContain('carved OUT of the flat rent, not added');
+    // A net tenant on the same portfolio still reads the old way.
+    expect(text).toContain('Expense recovery: net');
   });
 
   test('next scheduled rent step respects the committed term end', () => {
@@ -247,8 +267,11 @@ describe('snapshotFingerprint — flips when the portfolio changes', () => {
     );
   });
 
-  test('bumped to v4 (kills every v3-era cached answer)', () => {
-    expect(snapshotFingerprint({}).startsWith('v4|')).toBe(true);
+  // 0073 bumped v4 → v5: a gross lease's total annual bill used to be reported as rent
+  // PLUS its expense share, overstating what the tenant actually pays. Every cached
+  // answer built on the old arithmetic has to stop matching.
+  test('bumped to v5 (kills every v4-era cached answer)', () => {
+    expect(snapshotFingerprint({}).startsWith('v5|')).toBe(true);
   });
 
   test('flips when a new source changes — escalation, abatement, annual report, or expense', () => {

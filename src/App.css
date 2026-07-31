@@ -477,6 +477,10 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .field-value:hover{border-color:var(--border);background:#fff}
 .field-value .edit-pencil{opacity:0;color:var(--muted);font-size:11px;margin-left:auto}
 .field-value:hover .edit-pencil{opacity:1}
+/* A field whose value is a FACT, not an input — same shape as .field-value so the grid
+   still reads evenly, but muted and inert so it never invites a click that does nothing
+   (the gross-lease estimate field, which has no figure to enter). */
+.field-static{font-size:16px;font-weight:600;padding:9px 11px;border:1px solid transparent;border-radius:var(--radius);display:flex;align-items:center;gap:6px;background:var(--panel-2);color:var(--muted);font-style:italic}
 .field-input{font-family:inherit;font-size:16px;font-weight:600;padding:9px 11px;border:1px solid var(--accent);border-radius:var(--radius);background:#fff;color:var(--ink);width:100%;outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
 .field-review .field-value{background:var(--gold-soft);border-color:#dcc89a}
 .field-hint{font-size:11.5px}
@@ -552,6 +556,9 @@ tbody tr:last-child td{border-bottom:none}
 /* SF made more noticeable (George) — the square footage reads as a real figure, not
    fine print, so a tenant's size is easy to scan. */
 .ledger-sf{font-weight:700;color:var(--ink);font-size:12.5px}
+/* Names the one thing that makes this row read differently from the ones around it:
+   its expenses come OUT of the rent. Quiet — it's a property of the lease, not a fault. */
+.gross-chip{color:var(--accent);font-weight:600}
 /* Estimated vs actual CAM & tax as a clearly distinct pair: the estimated column is
    warm-tinted (what you bill during the year), the actual column green-tinted (the
    real figures as expenses land) — so the two never blur together. */

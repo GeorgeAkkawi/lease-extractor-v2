@@ -69,4 +69,15 @@ describe('review-form prefill — ONE combined CAM & tax $/SF rate that round-tr
     const none = initialFromExtraction({ square_footage: field(2000) });
     expect(none.est_cam_tax).toBe('');
   });
+
+  // 0073 — net vs gross rides the analyst's VERDICTS line as a RAW string, not a
+  // field()-shaped read, because the main extraction schema is at Anthropic's 16-union
+  // ceiling. An unclear/absent verdict must leave it blank so the form defaults to net
+  // (today's behavior) rather than silently changing how a lease bills.
+  it('maps the analyst’s expense-recovery verdict onto the form, defaulting to net', () => {
+    expect(initialFromExtraction({ lease_type: 'gross' }).lease_type).toBe('gross');
+    expect(initialFromExtraction({ lease_type: 'net' }).lease_type).toBe('net');
+    expect(initialFromExtraction({ lease_type: 'unclear' }).lease_type).toBe('');
+    expect(initialFromExtraction({}).lease_type).toBe('');
+  });
 });

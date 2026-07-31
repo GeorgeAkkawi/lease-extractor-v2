@@ -31,7 +31,10 @@ import { sf, pct, psf, money, fmtDate } from '../lib/format';
 // that set the tenant's share of taxes/CAM/roof, and the term end (which decides how
 // many months the year bills). Editing one of these has to carry through to the stored
 // invoice; editing a name, contact or note must not.
-const BILLING_FIELDS = new Set(['base_rent', 'square_footage', 'share_override_pct', 'lease_termination_date']);
+// (lease_type is here as defense — it changes whether the share is billed on top of
+// the rent or carved out of it. The toggle below carries through via its own mutation,
+// since it isn't edited through saveField.)
+const BILLING_FIELDS = new Set(['base_rent', 'square_footage', 'share_override_pct', 'lease_termination_date', 'lease_type']);
 
 export default function LeaseDetailPage() {
   const { corpId, propId, leaseId } = useParams();
@@ -153,6 +156,21 @@ export default function LeaseDetailPage() {
   const setRoof = useMutation({
     mutationFn: async (v) => {
       const out = await updateLease(leaseId, { roof_responsible: v });
+      await resyncLeaseBilling(leaseId, propId, new Date().getFullYear());
+      return out;
+    },
+    onSuccess: () => {
+      invalidate();
+      settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
+    },
+  });
+  // Net ⇄ gross flips whether the tenant's share of taxes/CAM is billed ON TOP of the
+  // rent or CARVED OUT of it — on a property with expenses entered that changes the
+  // invoice total outright, so the resync is what makes the toggle safe (not
+  // BILLING_FIELDS, which only routes saveField edits).
+  const setLeaseType = useMutation({
+    mutationFn: async (v) => {
+      const out = await updateLease(leaseId, { lease_type: v });
       await resyncLeaseBilling(leaseId, propId, new Date().getFullYear());
       return out;
     },
@@ -489,19 +507,47 @@ export default function LeaseDetailPage() {
           <EditField label="Lease start" type="date" value={lease.lease_start || ''} onCommit={(raw) => anchorStart.mutate(raw)} conf={conf('lease_start')} hint="dates the rent schedule" />
           <EditField label="Lease termination" type="date" value={lease.lease_termination_date || ''} onCommit={commit('lease_termination_date')} conf={conf('lease_termination_date')} />
           <EditField label="Tax/CAM share override (%)" type="number" value={lease.share_override_pct != null ? Math.round(lease.share_override_pct * 1000) / 10 : ''} onCommit={commit('share_override_pct')} hint="blank = pro-rata by SF" />
-          <EditField
-            label={estPerSf ? 'Est. CAM & tax ($/SF/yr)' : 'Est. CAM & tax (annual)'}
-            type="number"
-            prefix="$"
-            value={estValue(estCamTaxAnnual)}
-            onCommit={commitEstCamTax}
-            hint={`${estHint(estCamTaxAnnual)}${estCamTaxAnnual == null && statedCamTax > 0 ? `the lease states ${money(statedCamTax)}/yr — enter it to start billing it; ` : ''}CAM + tax combined — what the tenant pays during the year, reconciled at year end; blank = bill actuals`}
-          />
+          {/* A gross lease never bills an estimate — the flat rent already includes CAM
+              & tax, so there is nothing to estimate ahead of the actual. The field
+              becomes a plain statement of that rather than an input that would write a
+              figure nothing reads. */}
+          {lease.lease_type === 'gross' ? (
+            <div className="field">
+              <span className="field-label">Est. CAM & tax</span>
+              <div className="field-static">Included in the rent</div>
+              <span className="field-hint muted">Gross lease — this tenant’s share of taxes &amp; CAM comes out of the flat rent, so there is no estimate to bill or reconcile.</span>
+            </div>
+          ) : (
+            <EditField
+              label={estPerSf ? 'Est. CAM & tax ($/SF/yr)' : 'Est. CAM & tax (annual)'}
+              type="number"
+              prefix="$"
+              value={estValue(estCamTaxAnnual)}
+              onCommit={commitEstCamTax}
+              hint={`${estHint(estCamTaxAnnual)}${estCamTaxAnnual == null && statedCamTax > 0 ? `the lease states ${money(statedCamTax)}/yr — enter it to start billing it; ` : ''}CAM + tax combined — what the tenant pays during the year, reconciled at year end; blank = bill actuals`}
+            />
+          )}
           {/* No roof-estimate field here (George: "take out estimated roof box on lease
               terms"). Roof is billed off the actual expense by default; the estimate,
               when a lease states one, is set beside the tenant's other figures in
               Financials → per-tenant breakdown. */}
           <EditField label="Lease terms / notes" value={lease.lease_terms || ''} onCommit={commit('lease_terms')} conf={conf('lease_terms')} />
+        </div>
+
+        {/* Net vs gross — which side of the rent the tenant's expenses sit on. The AI
+            analyst pre-sets it from the lease's own expense language; this is the
+            override, and the only control for a hand-entered lease. */}
+        <div className="field" style={{ marginTop: 20 }}>
+          <span className="field-label">Gross lease</span>
+          <div className="seg">
+            <button className={`seg-btn${lease.lease_type === 'gross' ? ' on' : ''}`} onClick={() => setLeaseType.mutate('gross')} disabled={setLeaseType.isPending}>On</button>
+            <button className={`seg-btn${lease.lease_type !== 'gross' ? ' on' : ''}`} onClick={() => setLeaseType.mutate('net')} disabled={setLeaseType.isPending}>Off</button>
+          </div>
+          <span className="field-hint muted">
+            {lease.lease_type === 'gross'
+              ? 'Flat rent — taxes & CAM are INCLUDED. This tenant’s share is carved out of the rent on the breakdown, never billed on top, so the total stays the rent.'
+              : 'Triple net — this tenant is billed its share of taxes & CAM on top of the base rent. Turn on for a flat all-in rent.'}
+          </span>
         </div>
 
         <div className="field" style={{ marginTop: 20 }}>

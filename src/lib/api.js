@@ -243,7 +243,7 @@ export const updateProperty = (id, patch) =>
 // text, so property/tenant lists and the Overview prefetch stay light. getLease
 // (below) keeps select('*') for the detail page.
 const LEASE_LIST_COLS =
-  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,premises_address,est_cam_annual,est_tax_annual,est_roof_annual';
+  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,premises_address,est_cam_annual,est_tax_annual,est_roof_annual,lease_type';
 
 export const listLeases = async (propertyId) => {
   const all = await rows(supabase.from('leases').select(LEASE_LIST_COLS).eq('property_id', propertyId).order('tenant_name'));
@@ -746,7 +746,7 @@ export async function fetchPortfolioSnapshot(features) {
     await Promise.all([
       rows(supabase.from('corporations').select('id,name,address')),
       rows(supabase.from('properties').select('id,name,address,corporation_id,building_sf')),
-      rows(supabase.from('leases').select('id,tenant_name,tenant_email,tenant_contact_name,premises_address,property_id,square_footage,base_rent,lease_start,lease_termination_date,is_active,roof_responsible,lease_terms,updated_at,created_at')),
+      rows(supabase.from('leases').select('id,tenant_name,tenant_email,tenant_contact_name,premises_address,property_id,square_footage,base_rent,lease_start,lease_termination_date,is_active,roof_responsible,lease_terms,lease_type,updated_at,created_at')),
       rows(supabase.from('insurance_policies').select('id,party,property_id,lease_id,insurer,expiry_date,additional_insured,archived_at,updated_at,created_at').is('archived_at', null)),
       rows(supabase.from('service_contracts').select('id,property_id,service_type,vendor,amount,frequency,end_date,updated_at,created_at')),
       rows(supabase.from('renewal_options').select('lease_id,status')),
@@ -2023,8 +2023,10 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
 
   const grossBase = Number(share.base_rent || 0);
   const billed = billedComponents(share); // estimate-preferred per component
+  // A GROSS lease's expenses are already inside the flat rent, so nothing is added on
+  // top: the month owes the flat figure and the components below are carved out of it.
   const { schedule } = buildLeaseSchedule({
-    year, grossBase, otherAnnual: billed.cam + billed.tax + billed.roof,
+    year, grossBase, otherAnnual: billed.gross ? 0 : billed.cam + billed.tax + billed.roof,
     abatements, escalations, leaseStart: share.lease_start,
   });
 
@@ -2044,10 +2046,15 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
     proratedAbatement += Number(schedule[m]?.credit) || 0;
   }
   const ratio = inTerm / 12;
-  const invBase = round2(proratedBaseGross);
   const invCam = round2(billed.cam * ratio);
   const invTax = round2(billed.tax * ratio);
   const invRoof = round2(billed.roof * ratio);
+  // Gross: the components come OUT of the prorated flat rent, so the stored figures
+  // still sum to the same total the schedule owes (the ledger reads them back to split
+  // each month). Net: base is the rent and the components ride on top, as before.
+  const invBase = billed.gross
+    ? round2(proratedBaseGross - invCam - invTax - invRoof)
+    : round2(proratedBaseGross);
   const invAbate = round2(proratedAbatement);
   const total = Math.max(0, invBase + invCam + invTax + invRoof - invAbate);
   const { invoice } = await upsertYearInvoice({
@@ -2186,7 +2193,11 @@ export async function getMonthlyRent(leaseId, year) {
     grossBase = Number(invoice.base_rent_annual || 0);
     billed = { cam: Number(invoice.cam_annual || 0), tax: Number(invoice.tax_annual || 0), roof: Number(invoice.roof_annual || 0) };
   }
-  const other = billed.cam + billed.tax + billed.roof;
+  // Gross lease: the flat rent already contains CAM/tax/roof, so they add nothing on
+  // top — the month owes the flat figure and the components are carved out of it.
+  // (The invoice-fallback branch above needs no such test: its stored figures were
+  // already carved when the invoice was written, so they still sum to the flat total.)
+  const other = billed.gross ? 0 : billed.cam + billed.tax + billed.roof;
   const { schedule, annual, owedMonths, occupancyStartIso: occ, factor } = buildLeaseSchedule({
     year, grossBase, otherAnnual: other, abatements, escalations, leaseStart: share?.lease_start,
   });
@@ -2237,7 +2248,9 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
     const grossBase = share ? Number(share.base_rent || 0) : Number(invoice.base_rent_annual || 0);
     const billed = share ? billedComponents(share) : { cam: Number(invoice.cam_annual || 0), tax: Number(invoice.tax_annual || 0), roof: Number(invoice.roof_annual || 0) };
     const { schedule: sched } = buildLeaseSchedule({
-      year, grossBase, otherAnnual: billed.cam + billed.tax + billed.roof, abatements, escalations,
+      // Gross: expenses are inside the flat rent, so nothing rides on top (the invoice
+      // fallback is already carved, hence no test on that branch).
+      year, grossBase, otherAnnual: billed.gross ? 0 : billed.cam + billed.tax + billed.roof, abatements, escalations,
       leaseStart: share?.lease_start,
     });
     amount = sched[m]?.owed ?? (Number(invoice.total_amount || 0) / 12);
@@ -2362,7 +2375,9 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
     // matches what the invoice will bill.
     const grossBase = Number(s.base_rent || 0);
     const billed = billedComponents(s);
-    const other = billed.cam + billed.tax + billed.roof;
+    // Gross lease: CAM/tax/roof are already inside the flat rent, so the month owes the
+    // flat figure and componentizeSchedule carves the split out of it.
+    const other = billed.gross ? 0 : billed.cam + billed.tax + billed.roof;
     const abatements = abByLease[s.lease_id] || [];
     const escalations = escByLease[s.lease_id] || [];
     const { schedule, annual, owedMonths, occupancyStartIso: occ, factor } = buildLeaseSchedule({
@@ -2375,7 +2390,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
       if (!m) continue;
       (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
     }
-    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage, base_rent: Number(s.base_rent || 0), premises_address: s.premises_address || null, anyEstimate: billed.anyEstimate };
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage, base_rent: Number(s.base_rent || 0), premises_address: s.premises_address || null, anyEstimate: billed.anyEstimate, gross: billed.gross };
   });
 }
 
@@ -2404,6 +2419,11 @@ export async function reconcileCamTax(leaseId, propertyId, year) {
   const shares = await getTenantShares(propertyId, year);
   const share = (shares || []).find((s) => s.lease_id === leaseId);
   if (!share) throw new Error('No financial data for this tenant/year.');
+  // A gross lease never bills an estimate, so there is no estimate-vs-actual to settle
+  // (the UI hides ⚖ Reconcile for one; this is the belt-and-braces refusal).
+  if (share.lease_type === 'gross') {
+    throw new Error('Gross lease — CAM & taxes are included in the rent; there is nothing to reconcile.');
+  }
 
   // Settle against the tenant's current estimate — the same figure the Finances
   // "Estimated" column and live Difference show — so the reconciliation the landlord
@@ -3869,6 +3889,9 @@ export async function getStatementMatchContext(propertyId, year) {
         square_footage: Number(r.square_footage) || 0,
         camTaxAnnual: Number(r.camTaxAnnual) || 0,
         anyEstimate: !!r.anyEstimate,
+        // A gross tenant's deposit IS the flat rent, so "deposit − base" is its carved
+        // expense share, not an estimate to propose. The importer skips it entirely.
+        gross: !!r.gross,
         invoiceTotal: r.annual,
         invoiceBalance: r.balance != null ? Number(r.balance) : null,
         reconInvoiceId: recon?.id || null,

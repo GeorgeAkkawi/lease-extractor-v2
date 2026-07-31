@@ -328,6 +328,12 @@ export function depositProjectionDelta(amount, tenant, month) {
 export function deriveEstimateFromDeposit(amount, tenant, month) {
   const m = Number(month);
   if (!tenant || !(m >= 1 && m <= 12)) return null;
+  // A GROSS lease (0073) never bills an estimate — the flat rent already includes CAM
+  // & tax, and its base line is that rent MINUS the carved share. So "deposit − base"
+  // returns the share we just carved out and would propose it as a brand-new estimate
+  // to bill on top. Refused outright rather than left to the <$1 heuristic below,
+  // which only holds while the property has no expenses entered.
+  if (tenant.gross) return null;
   const base = round2(Number((tenant.baseByMonth || [])[m - 1]) || 0);
   if (base <= DUST) return null; // the month bills no base rent — nothing to derive from
   const roof = round2(Number((tenant.roofByMonth || [])[m - 1]) || 0);

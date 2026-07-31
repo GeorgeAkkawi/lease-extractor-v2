@@ -13,6 +13,7 @@ const EMPTY = {
   lease_terms: '',
   share_override_pct: '',
   est_cam_tax: '',
+  lease_type: '', // '' = net (the default); 'gross' = flat rent incl. taxes & CAM
 };
 
 // Reusable lease form (create + edit). `extracted` is an optional map of
@@ -61,10 +62,14 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
       lease_termination_date: form.lease_termination_date || null,
       lease_terms: form.lease_terms || null,
       share_override_pct: form.share_override_pct === '' ? null : Number(form.share_override_pct) / 100,
+      // Net (or unspecified → null, which the app reads as net) vs gross. A gross lease
+      // has no estimate to bill, so any figure typed before the toggle was flipped is
+      // dropped rather than stored where nothing would read it.
+      lease_type: form.lease_type === 'gross' ? 'gross' : form.lease_type === 'net' ? 'net' : null,
       // ONE combined CAM & tax estimate → the combined convention (whole figure in
       // est_cam_annual, est_tax_annual = 0). Stamp est_confirmed_year so a brand-new
       // lease's estimate reads as confirmed, not "carried over".
-      ...combinedEst(estAnnual(form.est_cam_tax)),
+      ...combinedEst(form.lease_type === 'gross' ? null : estAnnual(form.est_cam_tax)),
     });
   }
 
@@ -118,9 +123,26 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
         <Field label="Tax/CAM share override (%)" field="share_override_pct" extracted={extracted} hint="Blank = pro-rata by SF">
           <input className="text-input num" type="number" step="any" placeholder="auto (pro-rata)" value={form.share_override_pct} onChange={set('share_override_pct')} />
         </Field>
-        <Field label="Est. CAM & tax ($/SF/yr)" field="est_cam_tax" extracted={extracted} hint="CAM + tax combined — what the tenant pays during the year, per SF of the space above (saved × SF as the annual estimate); reconciled against actuals at year end. Blank = bill actuals.">
-          <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_cam_tax} onChange={set('est_cam_tax')} />
+        {/* Which side of the rent this tenant's expenses sit on. A gross lease has no
+            estimate to enter, so the field is replaced rather than left to be filled
+            with a figure that would never be billed. */}
+        <Field label="Expenses" field="lease_type" hint={form.lease_type === 'gross'
+          ? 'Gross — the rent above is all-in. This tenant’s share of taxes & CAM is carved out of it on the Financials breakdown, never billed on top.'
+          : `Triple net — billed its share of taxes & CAM on top of the base rent.${extracted?.lease_type ? ' Pre-set by the AI analyst from the lease’s expense language — confirm against the lease.' : ''}`}>
+          <div className="seg">
+            <button type="button" className={`seg-btn${form.lease_type !== 'gross' ? ' on' : ''}`} onClick={() => setForm((f) => ({ ...f, lease_type: 'net' }))}>Net</button>
+            <button type="button" className={`seg-btn${form.lease_type === 'gross' ? ' on' : ''}`} onClick={() => setForm((f) => ({ ...f, lease_type: 'gross' }))}>Gross</button>
+          </div>
         </Field>
+        {form.lease_type === 'gross' ? (
+          <Field label="Est. CAM & tax" hint="A gross lease bills one flat rent, so there is no estimate to set or reconcile.">
+            <div className="field-static">Included in rent</div>
+          </Field>
+        ) : (
+          <Field label="Est. CAM & tax ($/SF/yr)" field="est_cam_tax" extracted={extracted} hint="CAM + tax combined — what the tenant pays during the year, per SF of the space above (saved × SF as the annual estimate); reconciled against actuals at year end. Blank = bill actuals.">
+            <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_cam_tax} onChange={set('est_cam_tax')} />
+          </Field>
+        )}
       </div>
       <div className="form-field" style={{ maxWidth: '100%', marginTop: 16 }}>
         <span>Lease terms / notes</span>

@@ -35,6 +35,9 @@ export function buildLeaseAskContext({ lease, renewals = [], addendums = [], esc
     `- Committed term: ${fmtDate(lease.lease_start)} – ${fmtDate(lease.lease_termination_date)}`,
     `- Current rent period: ${fmtDate(ph.phaseStart)} – ${fmtDate(ph.termEnd)}`,
     `- Current annual base rent: ${money(ph.rent)}`,
+    lease.lease_type === 'gross'
+      ? '- Expense recovery: GROSS lease — the rent above is a flat, all-in figure that INCLUDES property taxes & CAM. The tenant is not billed a separate share on top; the app carves their share out of this rent.'
+      : '- Expense recovery: net — the tenant is billed its pro-rata share of property taxes & CAM on top of the base rent above.',
     ph.nextStep ? `- Next scheduled rent step: ${money(ph.nextStep.rent)} effective ${fmtDate(ph.nextStep.date)}` : null,
     ph.abatement ? `- Rent abatement ACTIVE now: ${abatementKindLabel(ph.abatement)} through ${fmtDate(ph.abatement.end_date)} (base rent free/reduced; CAM & taxes still apply)` : null,
     (abatements || []).length ? `- Rent abatement windows on file: ${(abatements || []).map((a) => `${fmtDate(a.start_date)}–${fmtDate(a.end_date)} (${abatementKindLabel(a)})`).join('; ')}` : null,

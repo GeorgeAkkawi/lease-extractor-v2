@@ -214,7 +214,7 @@ const ANALYST_SYSTEM =
   'FINAL LINES — MACHINE-READABLE. After all the bullets, end your brief with TWO final ' +
   'lines — the VERDICTS line then the FLAGS line — in EXACTLY these formats (nothing after ' +
   'them):\n' +
-  'VERDICTS: escalation=<yes|no|unclear>; escalation_pct=<number|none>; escalation_stop_months=<number|none>; renewal_options=<yes|no|unclear>; abatement=<yes|no|unclear>; start_date=<stated|not_stated>\n' +
+  'VERDICTS: escalation=<yes|no|unclear>; escalation_pct=<number|none>; escalation_stop_months=<number|none>; renewal_options=<yes|no|unclear>; abatement=<yes|no|unclear>; start_date=<stated|not_stated>; expense_recovery=<net|gross|unclear>\n' +
   LEASE_FLAG_LINE_SPEC + '\n' +
   'On the FLAGS line, remember: yes = the concern APPLIES. ' +
   'Set escalation=yes ONLY if the lease actually states a base-rent increase (a rent table ' +
@@ -229,7 +229,16 @@ const ANALYST_SYSTEM =
   'dollar table (not a percent formula) or there is no base-rent escalation. renewal_options=yes ' +
   'only if the lease grants an option to renew/extend (an explicit "Option to Extend: None" is ' +
   'renewal_options=no). abatement=yes only if a free/reduced base-rent period is granted. ' +
-  'start_date=stated only if a real commencement calendar date is printed. Use "unclear" only ' +
+  'start_date=stated only if a real commencement calendar date is printed. ' +
+  'expense_recovery describes WHO BEARS the property taxes and operating/CAM expenses: ' +
+  'set it to net when the tenant reimburses any share of them — a "proportionate share", ' +
+  '"pro rata share", "additional rent", "operating expense" or "real estate tax" ' +
+  'reimbursement clause, an expense stop, or a base year — which is the usual case. ' +
+  'Set it to gross ONLY when the rent is stated as INCLUSIVE of taxes and operating ' +
+  'expenses (e.g. "the rent includes all real estate taxes and common area charges"), or ' +
+  'the landlord expressly bears them, AND the lease contains NO tenant reimbursement of ' +
+  'either. A single flat rent figure alone is NOT enough — look for the expense language. ' +
+  'Use "unclear" only ' +
   'when you genuinely cannot tell. This line is parsed by software — keep the exact keys, ' +
   'values and punctuation.';
 
@@ -695,6 +704,17 @@ Deno.serve(async (req) => {
       const n = Number(x);
       return isFinite(n) && n > 0 ? n : null; // "none"/"unclear"/"" → null
     };
+
+    // Net vs gross (0073) — whether the tenant reimburses taxes/CAM on top of the rent
+    // or the rent already includes them. It lives on the analyst's verdicts line rather
+    // than in the form schema because the main SCHEMA is AT Anthropic's 16-union
+    // structured-output ceiling: a 17th union-typed field 400s every extraction. Reading
+    // it here costs no schema budget and no extra model call, and the stronger Sonnet
+    // read is the better judge of expense-recovery language anyway. Only a confident
+    // verdict is recorded — "unclear"/absent leaves it null, which the app treats as net
+    // (today's behavior), so an uncertain read never silently changes how a lease bills.
+    const recovery = String((verdicts as any).expense_recovery || '').toLowerCase();
+    if (recovery === 'gross' || recovery === 'net') (parsed as any).lease_type = recovery;
 
     // Supplement (contact + emails + raw rent basis) merges into the main extraction.
     // If it failed (null), the lease still returns; contacts stay blank and base_rent

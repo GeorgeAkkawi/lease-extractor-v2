@@ -246,19 +246,23 @@ export default function TenantShareTable({ propertyId, year }) {
   const tot = rowsData.reduce(
     (a, { share: s, fig, billed }) => ({
       sf: a.sf + (Number(s.square_footage) || 0),
-      base: a.base + (Number(s.base_rent) || 0),
+      // billed.base is the rent as BILLED: the lease's base for a net tenant, and the
+      // flat rent minus the carved expense share for a gross one — so the column and
+      // its total describe the same thing on every row.
+      base: a.base + billed.base,
       est: a.est + (billed.anyEstimate ? fig.estTotal : 0),
       tax: a.tax + (Number(s.tax_amount) || 0),
       cam: a.cam + (Number(s.cam_amount) || 0),
       roof: a.roof + (Number(s.roof_amt) || 0),
-      // Total = base + billed CAM & tax (estimate-preferred) + roof — the figure the
-      // tenant is actually invoiced. Matches the Leases-page Total column.
-      total: a.total + (Number(s.base_rent) || 0) + billed.camTax + billed.roof,
+      // Total = what the tenant is actually invoiced (net: base + billed CAM & tax +
+      // roof; gross: the flat rent). Matches the Leases-page Total column.
+      total: a.total + billed.total,
       diff: a.diff + (billed.anyEstimate ? fig.diff : 0),
       anyEst: a.anyEst || billed.anyEstimate,
       anyCarried: a.anyCarried || isCarried(s, billed.anyEstimate),
+      anyGross: a.anyGross || billed.gross,
     }),
-    { sf: 0, base: 0, est: 0, tax: 0, cam: 0, roof: 0, total: 0, diff: 0, anyEst: false, anyCarried: false }
+    { sf: 0, base: 0, est: 0, tax: 0, cam: 0, roof: 0, total: 0, diff: 0, anyEst: false, anyCarried: false, anyGross: false }
   );
 
   // The vacant space's slice of taxes + CAM. Shares are billed per SF of the WHOLE
@@ -316,13 +320,19 @@ export default function TenantShareTable({ propertyId, year }) {
         const hasSf = Number(s.square_footage) > 0;
         const camTaxActual = Number(s.cam_amount || 0) + Number(s.tax_amount || 0);
         const roofBilled = s.roof_responsible && s.roof_amt > 0;
-        const rowTotal = Number(s.base_rent || 0) + row.billed.camTax + row.billed.roof;
+        const gross = row.billed.gross;
+        // Net: base + what's billed on top. Gross: the flat rent, always — the expenses
+        // are already inside it, which is why the total can't move as actuals land.
+        const rowTotal = row.billed.total;
         const carried = isCarried(s, row.billed.anyEstimate);
         return (
           <div className="ledger-grid ledger-row" key={s.lease_id}>
             <div className="ledger-id">
               <div className="ledger-name">{s.tenant_name}</div>
-              <div className="ledger-meta"><span className="ledger-sf">{sf(s.square_footage)}</span> · {pct(s.share_pct)} share</div>
+              <div className="ledger-meta">
+                <span className="ledger-sf">{sf(s.square_footage)}</span> · {pct(s.share_pct)} share
+                {gross && <span className="gross-chip" title="Flat rent — taxes & CAM are included in it. This tenant's share is carved out of the rent below, never added on top."> · gross — expenses included</span>}
+              </div>
               <div className="ledger-actions">
                 <ReconcileAction
                   row={row}
@@ -347,10 +357,21 @@ export default function TenantShareTable({ propertyId, year }) {
                 )}
               </div>
             </div>
+            {/* On a gross lease this is the carve George described: the flat rent less
+                the tenant's actual expense share, which IS the rent they're paying for
+                the space. It moves as the year's actuals are entered — the total above
+                it doesn't. */}
             <Stat
-              label="Base rent"
-              main={money(s.base_rent)}
-              sub={<><PerMo annual={s.base_rent} />{hasSf && <> · <SfRate annual={s.base_rent} area={s.square_footage} /></>}</>}
+              label={gross ? 'Base rent · rent less expenses' : 'Base rent'}
+              main={money(row.billed.base)}
+              sub={gross ? (
+                <>
+                  flat {money(s.base_rent)} − {money(row.billed.camTax + row.billed.roof)} expenses
+                  {row.billed.clamped && <><br /><span className="danger">expense share exceeds the flat rent — capped at $0 base</span></>}
+                </>
+              ) : (
+                <><PerMo annual={s.base_rent} />{hasSf && <> · <SfRate annual={s.base_rent} area={s.square_footage} /></>}</>
+              )}
             />
             <EstimateStat
               share={s}
@@ -364,7 +385,7 @@ export default function TenantShareTable({ propertyId, year }) {
             <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? <SfRate annual={s.roof_amt} area={s.square_footage} /> : ''} />
             <Stat
               className="ledger-total"
-              label="Total · base + CAM & tax + roof"
+              label={gross ? 'Total · flat rent, all in' : 'Total · base + CAM & tax + roof'}
               main={money(rowTotal)}
               sub={<><PerMo annual={rowTotal} />{hasSf && <> · <SfRate annual={rowTotal} area={s.square_footage} /></>}</>}
             />
@@ -450,6 +471,12 @@ export default function TenantShareTable({ propertyId, year }) {
         {noBuildingSf ? ' leased space' : ' whole building'} (or a per-lease
         override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}; roof is billed by PSF only
         to roof-responsible tenants and stays its own separate line, estimate and reconciliation included.
+        {tot.anyGross && (
+          <> A <strong>gross</strong> tenant pays one flat rent that already includes taxes &amp; CAM, so its share is
+          subtracted from that rent rather than added to it: the Base rent column shows what's left after expenses
+          and moves as they're entered, while the Total stays the rent. You still recover their share — out of the
+          rent instead of on top of it — so the actuals above still reconcile to what you spent.</>
+        )}
         {buildingSf > 0 && tot.sf < buildingSf && (
           <> The leased total ({sf(tot.sf)}) differs from the building size ({sf(buildingSf)}) by {sf(buildingSf - tot.sf)} of
           vacant space{showVacant
@@ -513,6 +540,18 @@ function EstimateStat({ share, billed, editing, carried, priorBilled, onToggle }
   const psfSub = sfNum > 0 ? <SfRate annual={estCamTax} area={sfNum} /> : '';
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
   const lastYear = priorBilled != null && priorBilled > 0 ? priorBilled : estCamTax;
+  // A gross lease bills no estimate — the flat rent already includes CAM & tax. The
+  // cell says so and stays inert: opening the editor here would let a figure be typed
+  // that nothing in the billing path would ever read.
+  if (billed.gross) {
+    return (
+      <div className="ledger-stat lg-est">
+        <span className="stat-label">CAM &amp; tax · estimated · billed to tenant</span>
+        <div className="cell-main muted" style={{ fontStyle: 'italic' }}>included in rent</div>
+        <div className="cell-sub">gross lease — nothing billed ahead</div>
+      </div>
+    );
+  }
   return (
     <div className="ledger-stat lg-est">
       <span className="stat-label">CAM & tax · estimated · billed to tenant</span>
@@ -646,6 +685,12 @@ function EstimateEditor({ share, onSave, onCancel, saving }) {
 function ReconcileAction({ row, invById, onReconcile, onStatement, onRefunded, onUndo, busy }) {
   const { recon } = row;
   if (!recon) {
+    // A gross lease has no estimate-vs-actual gap by construction — whatever the
+    // expenses turn out to be, they came out of a rent that never moved. Say so
+    // rather than leaving an empty slot where every other row offers an action.
+    if (row.billed.gross) {
+      return <span className="recon-note">gross — expenses included in rent</span>;
+    }
     // Reconciliation only applies once an estimate is set — with none, the tenant is
     // simply billed its actual share and there's nothing to true up.
     if (!row.billed.anyEstimate) return null;

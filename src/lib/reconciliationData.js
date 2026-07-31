@@ -45,7 +45,10 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
   const fig = reconcileFigures({ share });
   const est = billedComponents(share);
   const actual = actualComponents(share);
-  const baseAnnual = Number(share.base_rent) || 0;
+  // The rent as BILLED: the lease's base for a net tenant; on a gross lease the flat
+  // rent LESS the expense share carved out of it, so base + expenses still totals the
+  // flat rent the tenant actually pays (est.base is that carve).
+  const baseAnnual = est.base;
 
   // Monthly base — escalation-aware from the ledger's own schedule when we have it.
   let monthlyBase = Array(12).fill(round2(baseAnnual / 12));
@@ -100,6 +103,11 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
     if (share.roof_responsible && Math.abs(actualRoof - estRoof) > 0.5) {
       const rd = round2(actualRoof - estRoof);
       insights.push(`Roof: billed ${money(estRoof)} estimated vs ${money(actualRoof)} actual (${rd < 0 ? money(Math.abs(rd)) + ' under' : money(rd) + ' over'}).`);
+    }
+  } else if (est.gross) {
+    insights.push(`Gross lease — CAM & taxes are included in the flat rent of ${money(Number(share.base_rent) || 0)}. The itemized share below is carved OUT of that rent, not billed on top, so there is nothing to settle at year end.`);
+    if (est.clamped) {
+      insights.push('This tenant’s expense share exceeds the flat rent — the rent is the ceiling, so the excess is absorbed by the landlord and the base rent shows as $0.');
     }
   } else {
     insights.push('No CAM & tax estimate was set for this tenant — the actual share below is what they owe for the year.');

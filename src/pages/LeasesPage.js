@@ -58,16 +58,21 @@ export default function LeasesPage() {
   for (const l of leases) {
     // The share row carries actuals + estimates; before it loads (or in demo with no
     // expense record) the lease's own estimate fields still bill.
+    // base_rent + lease_type ride along too: on a gross lease the carve is computed
+    // FROM the rent, so a fallback row missing it would carve from $0 and read as a
+    // negative base until the shares landed.
     const s = shareByLease[l.id] || {
       cam_amount: 0, tax_amount: 0, roof_amt: 0,
       roof_responsible: l.roof_responsible,
+      base_rent: l.base_rent, lease_type: l.lease_type,
       est_cam_annual: l.est_cam_annual, est_tax_annual: l.est_tax_annual, est_roof_annual: l.est_roof_annual,
     };
     const billed = billedComponents(s);
     const camTax = billed.cam + billed.tax;
-    const total = Number(l.base_rent || 0) + camTax + billed.roof;
+    // Gross: the flat rent, all in. Net: base plus what's billed on top.
+    const total = billed.gross ? billed.total : Number(l.base_rent || 0) + camTax + billed.roof;
     const sqft = Number(l.square_footage) || 0;
-    totals[l.id] = { camTax, roof: billed.roof, total, totalPsf: sqft ? total / sqft : null, isEstimate: billed.anyEstimate };
+    totals[l.id] = { camTax, roof: billed.roof, total, totalPsf: sqft ? total / sqft : null, isEstimate: billed.anyEstimate, gross: billed.gross, base: billed.base };
   }
 
   const mode = leaseSort.mode || 'term_end';
@@ -228,6 +233,7 @@ function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, on
   const brPsf = lease.square_footage > 0 ? lease.base_rent / lease.square_footage : null;
   const camTax = totals?.camTax || 0;
   const hasCamTax = camTax > 0;
+  const gross = !!totals?.gross;
   const warm = () => pf.leaseDetail(lease.id);
 
   return (
@@ -250,20 +256,27 @@ function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, on
       </span>
       <span className="lease-col">
         <span className="muted">Base rent</span>
-        <b>{money(lease.base_rent)}</b>
-        <span className="psf-sub">{brPsf == null ? '' : approx(lease.base_rent, lease.square_footage) + psf(brPsf)}</span>
+        {/* Gross: the rent left after this tenant's expense share is carved out of the
+            flat figure — the same number the per-tenant breakdown shows. */}
+        <b title={gross ? `Gross lease — ${money(lease.base_rent)} flat rent less ${money(camTax + (totals?.roof || 0))} of taxes & CAM included in it` : undefined}>
+          {money(gross ? (totals?.base ?? lease.base_rent) : lease.base_rent)}
+        </b>
+        <span className="psf-sub">{gross ? 'after expenses' : brPsf == null ? '' : approx(lease.base_rent, lease.square_footage) + psf(brPsf)}</span>
       </span>
       <span className="lease-col">
         <span className="muted">CAM + tax</span>
         <b
           title={
-            totals?.isEstimate
-              ? 'Estimated CAM & tax — what the tenant pays during the year; reconciled against the actual figures at year end (Finances page)'
-              : hasCamTax ? undefined : 'No expenses entered for this year yet — add them on the Finances page'
+            gross
+              ? 'Included in the flat rent — this tenant’s share comes out of the rent, not on top of it'
+              : totals?.isEstimate
+                ? 'Estimated CAM & tax — what the tenant pays during the year; reconciled against the actual figures at year end (Finances page)'
+                : hasCamTax ? undefined : 'No expenses entered for this year yet — add them on the Finances page'
           }
         >
           {hasCamTax ? money(camTax) : '—'}
-          {totals?.isEstimate && hasCamTax && <span className="est-tag"> est.</span>}
+          {gross && hasCamTax && <span className="est-tag"> incl.</span>}
+          {!gross && totals?.isEstimate && hasCamTax && <span className="est-tag"> est.</span>}
         </b>
       </span>
       <span className="lease-col">

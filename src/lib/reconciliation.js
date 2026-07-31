@@ -28,6 +28,34 @@ const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 // separately still sum correctly.) Roof stays its own separate line and only ever
 // bills to a roof-responsible tenant, estimate or not.
 export function billedComponents(share) {
+  // GROSS LEASE (0073) — the flat rent already INCLUDES taxes & CAM, so the tenant's
+  // share is carved OUT of it rather than added on top. George's rule: the actual
+  // pro-rata share IS their CAM & tax; base = flat rent − that share; the total is
+  // the flat rent, always. So as the year's actuals are entered the split shifts but
+  // the figure the tenant pays never moves — the flat deposit keeps settling exactly.
+  // Estimates are never read here: an estimate answers "what should we bill ahead of
+  // the actual?", which a gross lease never asks.
+  if (share.lease_type === 'gross') {
+    const flat = round2(share.base_rent || 0);
+    const roofA = share.roof_responsible ? round2(share.roof_amt || 0) : 0;
+    const camA = round2(Number(share.cam_amount || 0) + Number(share.tax_amount || 0));
+    // The flat rent is the ceiling. If the share ever exceeds it the landlord is
+    // absorbing the excess — components clamp so base floors at 0 instead of going
+    // negative (which would break the base + camTax + roof === owed invariant).
+    const roof = Math.min(roofA, flat);
+    const camTax = Math.min(camA, round2(flat - roof));
+    const base = round2(flat - camTax - roof);
+    return {
+      cam: round2(camTax), tax: 0, camTax: round2(camTax), roof: round2(roof),
+      base, total: flat,
+      // Dormant by construction: no estimate is billed, so the Difference column,
+      // ⚖ Reconcile and the carried-over banner all stay quiet even if stale est_*
+      // values are still sitting on the row.
+      anyEstimate: false,
+      gross: true,
+      clamped: round2(camA + roofA) > flat + RECON_DUST,
+    };
+  }
   const cam = share.est_cam_annual != null ? Number(share.est_cam_annual) : Number(share.cam_amount || 0);
   const tax = share.est_tax_annual != null ? Number(share.est_tax_annual) : Number(share.tax_amount || 0);
   const roof = share.roof_responsible
@@ -37,7 +65,12 @@ export function billedComponents(share) {
     share.est_cam_annual != null ||
     share.est_tax_annual != null ||
     (!!share.roof_responsible && share.est_roof_annual != null);
-  return { cam: round2(cam), tax: round2(tax), camTax: round2(cam + tax), roof: round2(roof), anyEstimate };
+  const base = round2(share.base_rent || 0);
+  return {
+    cam: round2(cam), tax: round2(tax), camTax: round2(cam + tax), roof: round2(roof),
+    base, total: round2(base + cam + tax + roof),
+    anyEstimate, gross: false, clamped: false,
+  };
 }
 
 // The tenant's ACTUAL share of the year's expenses (what reconciliation trues up to).

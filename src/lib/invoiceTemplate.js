@@ -56,11 +56,18 @@ export function buildInvoice(facts) {
   // year-end reconciliation note. CAM keeps its "est." tag either way (billed in
   // advance, it is inherently an estimate of the year).
   const est = facts.estimated || {};
-  const items = [
-    { label: 'Base rent', v: base },
-    { label: `CAM & property tax (${facts.year} est.)`, v: camTax },
-  ];
-  if (roof) items.push({ label: `Roof (${facts.year}${est.roof ? ' est.' : ''})`, v: roof });
+  // A GROSS lease bills ONE all-in figure. The stored components stay carved (the
+  // ledger reads them back to split each month), but itemizing them on the bill would
+  // invite the tenant to query charges they were never separately billed — so the
+  // document reads the way their lease does: one rent line, expenses named as included.
+  const isGross = facts.lease_type === 'gross';
+  const items = isGross
+    ? [{ label: 'Rent (gross lease — property taxes & CAM included)', v: per(Number(facts.base_rent_annual || 0) + Number(facts.cam_annual || 0) + Number(facts.tax_annual || 0) + Number(facts.roof_annual || 0)) }]
+    : [
+        { label: 'Base rent', v: base },
+        { label: `CAM & property tax (${facts.year} est.)`, v: camTax },
+      ];
+  if (roof && !isGross) items.push({ label: `Roof (${facts.year}${est.roof ? ' est.' : ''})`, v: roof });
   if (abatement) items.push({ label: 'Rent abatement (credit)', v: abatement });
 
   const totalAnnual = items.reduce((s, it) => s + it.v.a, 0);

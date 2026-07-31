@@ -181,6 +181,111 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **A lease can now be GROSS: a flat rent that already includes taxes & CAM, with the tenant's
+  share carved OUT of it instead of billed on top** (George: *"There needs to be a gross lease option button in
+  each lease's page in lease terms. The AI extractor should be able to read if a lease is gross or triple net and
+  toggle that but also make it manual. And if a lease is gross … to calculate the actual CAM and tax being paid,
+  it needs to take the difference, which is gonna show what portion of CAM and tax they owe, and then subtract it
+  by the annual base rent … So for CardPop, if the actual was ten thousand … you would subtract ten thousand from
+  the forty two thousand to get thirty two thousand, and then thirty two thousand per year would be the new base
+  rent."*). Deployed: DB migration `0073` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), edge
+  fns **`extract-lease`** + **`draft-invoice`**, frontend Cloudflare version **`ed8fffaf`**, demo worker
+  `060fd091`, plus a one-row live repair. **$0 — the gross/net read rides the EXISTING Sonnet analyst call, so no
+  new AI call and no new per-lease cost; no tenant emails; 0073 is one nullable column + a guarded CHECK + an
+  append-only view recreate.** Tests **1103/1103 across 125 files** (was 1079/123 — +24 across 2 new suites).
+  - **The problem, and why nothing looked broken yet.** Card Pop (Joliet, 1,800 SF) pays a flat **$3,500/mo =
+    $42,000/yr** with no expense-reimbursement clause — a gross lease. Amlak had no concept of one: **every** lease
+    billed base rent PLUS a pro-rata share of taxes/CAM. It was invisible only because **Joliet has no 2026
+    expenses entered** (verified: `exp_2026 = 0` on all five leases). The moment George enters them, Card Pop
+    would have been billed its 12.775% share (~$1,600/mo) **on top of** the flat rent, every $3,500 deposit would
+    have read short forever, and — because the building is 100% let — there'd be no vacancy line to absorb it.
+    The statement importer would then have derived a phantom CAM & tax estimate from the flat deposit and offered
+    to bill *that* too.
+  - **George's model, implemented exactly as dictated.** The tenant's actual pro-rata share is still computed
+    exactly as today — that IS their CAM & tax. The displayed/billed **base = flat rent − that share**; the
+    **total = the flat rent, always**. So as the year's actuals are entered the split shifts but the figure the
+    tenant pays never moves, and the flat deposit keeps settling its month to the penny. The property still
+    *recovers* the gross tenant's share — out of the rent rather than on top of it — which is why the breakdown's
+    vacancy tie-out (`recovered + vacant = entered`) keeps balancing with **no view-math change**.
+  - **The load-bearing invariant: `base_rent` still stores the FLAT figure.** The split is DERIVED everywhere.
+    Writing the carved base back would lose the flat total and re-corrupt on the very next expense edit — the
+    figure would drift a little further from the lease every time George typed a CAM line.
+  - **Data (`0073`).** `leases.lease_type` (`null | 'net' | 'gross'`, **null = net → zero behaviour change for
+    every existing row**) + `v_tenant_shares` recreated appending it as **column 24** (1–23 byte-identical to
+    0065; `security_invoker` re-asserted). **`cam_amount`/`tax_amount`/`roof_amt` are deliberately UNCHANGED** —
+    a gross tenant's share stays pro-rata and **no other tenant re-prices**. `create_lease_tx` needed no change
+    (`jsonb_populate_record`, 0053). **The migration-reviewer caught an off-by-one in my own header comment** —
+    I'd written "column 23", but 0065 already ended at 23, so `lease_type` lands at **24**; fixed before applying
+    so a future reviewer isn't told a taken slot is free.
+  - **ONE branch, then four mirrors moved in the same commit** (rule #3): the canonical gross branch lives in
+    `billedComponents` (`reconciliation.js`), mirrored into `draft-invoice/index.ts`, `resyncYearBillingToEstimate`
+    (`api.js`) and the demo mock. The mock now **imports `billedComponents` directly** (the `leaseFlags`
+    precedent) rather than hand-copying the math — so this round left **three** mirrors where it found four.
+  - **`anyEstimate: false` is the single bit that does the UI work.** A gross lease bills no estimate, so that one
+    flag makes the Difference column dormant, hides ⚖ Reconcile, keeps the Totals est/diff sums clean, suppresses
+    the carried-over banner, and drops the Leases page's " est." tag — **even when stale `est_*` values are still
+    sitting on the row** (they routinely are, on a lease flipped from net). Test-pinned: a $25,000 leftover
+    estimate is ignored while gross, and becomes live again the moment it's switched back — which is exactly why
+    the branch **ignores** it rather than deleting it.
+  - **Where the two figures would have been billed twice, each refused rather than left to luck.** The statement
+    importer's `deriveEstimateFromDeposit` gets an explicit `if (tenant.gross) return null` **first** — its
+    existing "remainder < $1" heuristic only holds while the property has no expenses, so relying on it would have
+    failed on the exact day the feature matters. And `reconcileCamTax` throws outright. **Ask Amlak was actively
+    wrong** and is fixed: it reported a gross tenant's annual bill as rent + share (~$52,000 for a tenant paying
+    $42,000); `snapshotFingerprint` bumped **v4 → v5** so every cached answer built on that arithmetic stops
+    matching.
+  - **The toggle carries through because it has its OWN mutation**, cloned from `setRoof` — `updateLease` →
+    `resyncLeaseBilling` → `settleBillingChange`. `BILLING_FIELDS` alone would NOT have fired it (it only routes
+    `saveField` edits); `'lease_type'` is added there as defense, not as the mechanism.
+  - **Extractor: zero schema cost, zero new calls.** The main SCHEMA is **AT** Anthropic's 16-union ceiling, so a
+    17th union-typed field would 400 every extraction. Net-vs-gross rides the Sonnet analyst's **VERDICTS line**
+    instead (`expense_recovery=<net|gross|unclear>`) — free, and the stronger reader is the better judge of
+    expense-recovery language anyway. `parseAnalystVerdicts` is generic key=value, so **no parser change**. Only a
+    confident verdict is recorded; `unclear`/absent leaves it null → net → today's behaviour, so an uncertain read
+    can never silently change how a lease bills.
+  - **The invoice stores carved but PRINTS one line.** The stored components must stay carved (the ledger reads
+    them back to split each month), but itemizing them on the document would invite a tenant to query charges
+    they were never separately billed — so the bill reads the way their lease does: *"Rent (gross lease — property
+    taxes & CAM included) — $3,500.00/mo · $42,000.00/yr"*, with the est-reconciliation footnote suppressed.
+  - **Files.** New: `supabase/migrations/0073_gross_leases.sql` · tests `grossLease` (9), `grossShareTable` (5).
+    Edited: `src/lib/{reconciliation,api,statementMatch,portfolio,leaseContext,invoiceTemplate,reconciliationData,
+    demo/mockClient}.js` · `src/components/{TenantShareTable,LeaseForm}.js` ·
+    `src/pages/{LeaseDetailPage,LeaseNewPage,LeasesPage}.js` · `src/App.css` ·
+    `supabase/functions/{extract-lease,draft-invoice}/index.ts` · tests `reconciliation` (+6), `portfolio` (+1),
+    `analystVerdicts` (+1), `moneyCollection` (+1), `expenseEstimates` (+1). **No demo-seed change** — every
+    candidate lease feeds pinned figures in other suites (Sunrise 6, Northwind 10, prop-1 ~50), and a new lease
+    would over-let a fully-let seed building; the suites flip a lease inside the test instead and put it back.
+  - **Verified:** unit **1103/1103** (`vitest run`); `npm run build` compiles; migration applied clean and read
+    back (column 24, nullable, CHECK present, `security_invoker=on`, **0 of 15 leases flagged** → nothing moved);
+    both edge fns deployed clean with unauth POST → **401**; live bundle confirmed to **carry** the backend ref
+    and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser against the
+    deployed demo:** flipping Sunrise Yoga to gross turns its breakdown row into **base $24,333.33** with the
+    sub-line *"flat $36,000.00 − $11,666.67 expenses"*, the estimate cell inert at *"included in rent"*, actual
+    **$11,666.67** unchanged, **Total $36,000.00** ("flat rent, all in"), Difference **—**, and *"gross — expenses
+    included in rent"* where ⚖ Reconcile sits; the Ledger owes the flat **$3,000.00/mo = $2,027.78 base ·
+    $972.22 CAM&tax** over 6 in-term months = **$18,000 billed** (the penny invariant holding per month); and
+    **Northwind Books on the same property is byte-identical** ($125,000 base, $153,000 total). **Zero console
+    errors or warnings.** (One deploy-propagation race hit and waited out: the demo edge served a stale
+    `index.html`.) Worth recording for the next session: **the demo mock is in-memory, so a full page navigation
+    resets it to seed** — a cross-page flow has to be driven through the app's own router, not `page.goto`.
+  - **Live repair — one row, guarded, and nothing moved.** Card Pop → `lease_type = 'gross'` (guarded on the
+    property, tenant, $42,000 rent, 1,800 SF and a null flag, so a re-run is a no-op): **UPDATE 1**. Read back:
+    Card Pop reads gross, the other four Joliet leases read null. Because Joliet has no 2026 expenses the carve is
+    $42,000 − $0, so **its existing base-only invoice re-totals unchanged**. The flag is what makes the **next**
+    expense entry carve instead of add.
+  - **George: hard-refresh (Cmd+Shift+R).** Card Pop is already marked gross. Any lease now has a **Gross lease**
+    On/Off toggle under its lease terms — turn it on for a tenant who pays one flat all-in rent, and the
+    Financials breakdown will show their taxes & CAM coming *out* of that rent instead of being added to it.
+  - **Flags (no action needed):** ① **Check Hair Salon and Vape Store.** Their Joliet leases show no expense-
+    sharing clause either (Denny's and Eye 2 Eye clearly do), so they may be gross too — one click each on the new
+    toggle, or re-upload for the AI to judge. ② **If a gross tenant's share ever exceeds the flat rent** the carve
+    caps at $0 base with a warning on the row — the rent is the ceiling and you'd be absorbing the excess.
+    ③ **One chain I deliberately left short, and it's cosmetic:** `owedByMonthForInvoice` (the AR "months behind"
+    path) mixes flat-era escalation figures with the carved current base before scaling to the invoice total —
+    so the **total is exact** but the intra-year *shape* is approximate for a gross lease that has applied
+    historical rent steps. No bill or balance is affected; only which month an arrears is attributed to. Say the
+    word and I'll finish it. ④ Existing net leases are untouched — `null` reads as net, so nothing re-priced.
+
 - **2026-07-30** — **A bank statement can be dragged straight onto the ledger — the whole panel takes the drop,
   through the same pipeline the button uses** (George: *"make the import statements on the ledger able to
   recieve a drag and drop."*). Deployed: frontend Cloudflare version **`f8887f62`**, demo worker `a46361f0`.
