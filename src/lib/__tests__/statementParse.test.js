@@ -200,4 +200,96 @@ describe('normalizeStatementRows — the shared gate both lanes pass', () => {
     const checked = applyBalanceCheck(transactions);
     expect(checked.warnings.length).toBe(1);
   });
+
+  // Regression (2026-07-31): Khaled's U.S. Bank statements print every line as
+  // "Feb 12" — a month NAME, with the year stated once in the period header.
+  // toIsoDate knew "06/01" but not "Feb 12", so all 11 lines were skipped "no
+  // valid date" and the review screen showed "0 lines parsed · 11 skipped".
+  //
+  // The tell was that the SAME bank's January statement imported perfectly: the
+  // model had normalized that one to "01/05" while transcribing February
+  // verbatim, exactly as the prompt asks. Whether an import worked came down to
+  // which rendering the model happened to pick — so the fix is in the parser,
+  // where it's deterministic, not in the prompt.
+  //
+  // These are the real 11 rows the deployed extract-bank-statement returned for
+  // the February statement.
+  it('resolves month-name "MMM D" lines from the statement period (U.S. Bank shape)', () => {
+    const usbank = [
+      { date: 'Feb 2', description: 'Mobile Banking Transfer From Account 199356628966', amount: '20,154.11', direction: 'in', balance: '' },
+      { date: 'Feb 3', description: 'Electronic Deposit From BUSEY BANK', amount: '40,985.76', direction: 'in', balance: '' },
+      { date: 'Feb 2', description: 'Debit Purchase - VISA BMI BORNSTEIN LL', amount: '185.52', direction: 'out', balance: '' },
+      { date: 'Feb 17', description: 'Debit Purchase - VISA LOOPNET', amount: '88.55', direction: 'out', balance: '' },
+      { date: 'Feb 12', description: 'Electronic Withdrawal To CITY OF NAPERVIL', amount: '3,613.50', direction: 'out', balance: '' },
+      { date: 'Feb 12', description: 'Electronic Withdrawal To CITY OF NAPERVIL', amount: '6,705.26', direction: 'out', balance: '' },
+      { date: 'Feb 23', description: 'Electronic Withdrawal To COMCAST-XFINITY', amount: '92.16', direction: 'out', balance: '' },
+      { date: 'Feb 23', description: 'Business Bill Pay ESS TO Foxvalley fire and saf', amount: '362.00', direction: 'out', balance: '' },
+      { date: 'Feb 25', description: 'Electronic Withdrawal To WASTE MANAGEMENT', amount: '119.78', direction: 'out', balance: '' },
+      { date: 'Feb 27', description: 'Electronic Withdrawal To LOSS PREVENTION', amount: '345.00', direction: 'out', balance: '' },
+      { date: 'Feb 6', description: 'Check 1331', amount: '70,000.00', direction: 'out', balance: '' },
+    ];
+    const { transactions, skippedLines } = normalizeStatementRows(usbank, {
+      periodStart: '02/02/2026', periodEnd: '02/28/2026',
+    });
+    expect(skippedLines).toHaveLength(0);
+    expect(transactions).toHaveLength(11);
+    expect(transactions[0]).toMatchObject({ date: '2026-02-02', amount: 20154.11, direction: 'in' });
+    expect(transactions[4]).toMatchObject({ date: '2026-02-12', amount: 3613.5, direction: 'out' });
+    expect(transactions[10]).toMatchObject({ date: '2026-02-06', amount: 70000, direction: 'out' });
+    // The two figures that must survive: the rent deposit in, the big check out.
+    expect(transactions.filter((t) => t.direction === 'in').reduce((s, t) => s + t.amount, 0)).toBe(61139.87);
+  });
+
+  // The same bank's January statement, which the model DID normalize — it has to
+  // keep working, so both renderings now land on the same date.
+  it('the numeric rendering of the same statement is unchanged', () => {
+    const { transactions, skippedLines } = normalizeStatementRows([
+      { date: '01/05', description: 'Electronic Deposit From BUSEY BANK', amount: '40985.76', direction: 'in', balance: '' },
+      { date: '01/30', description: 'Business Bill Pay', amount: '1089.45', direction: 'out', balance: '' },
+    ], { periodStart: '01/02/2026', periodEnd: '01/31/2026' });
+    expect(skippedLines).toHaveLength(0);
+    expect(transactions.map((t) => t.date)).toEqual(['2026-01-05', '2026-01-30']);
+  });
+
+  it('a month-name statement straddling New Year splits the years too', () => {
+    const { transactions } = normalizeStatementRows([
+      { date: 'Dec 28', description: 'DEC RENT', amount: '1000', direction: 'in' },
+      { date: 'Jan 3', description: 'JAN RENT', amount: '1000', direction: 'in' },
+    ], { periodStart: '12/15/2025', periodEnd: '01/14/2026' });
+    expect(transactions.map((t) => t.date)).toEqual(['2025-12-28', '2026-01-03']);
+  });
+
+  it('a year-less month-name date says exactly why it was skipped', () => {
+    const { skippedLines } = normalizeStatementRows([
+      { date: 'Feb 12', description: 'A', amount: '100', direction: 'in' },
+    ]);
+    expect(skippedLines[0].reason).toBe('the date "Feb 12" has no year, and the statement period wasn\'t captured');
+  });
+});
+
+describe('toIsoDate — month-name dates', () => {
+  it('parses the shapes banks actually print, with or without a year', () => {
+    expect(toIsoDate('Feb 12, 2026')).toBe('2026-02-12');
+    expect(toIsoDate('Feb 12 2026')).toBe('2026-02-12');
+    expect(toIsoDate('February 2, 2026')).toBe('2026-02-02');
+    expect(toIsoDate('Sept 3, 2026')).toBe('2026-09-03');
+    expect(toIsoDate('Jan. 5, 2026')).toBe('2026-01-05');
+    expect(toIsoDate('2 Feb 2026')).toBe('2026-02-02');
+    expect(toIsoDate('12th Feb 2026')).toBe('2026-02-12');
+    expect(toIsoDate('Feb 12', { fallbackYear: 2026 })).toBe('2026-02-12');
+  });
+
+  it('a bare month-name date still never parses without context — CSV column inference relies on it', () => {
+    expect(toIsoDate('Feb 12')).toBe(null);
+    expect(toIsoDate('Feb 2')).toBe(null);
+  });
+
+  it('refuses things that only look like a date', () => {
+    expect(toIsoDate('Feb 30, 2026')).toBe(null);   // not a real day
+    expect(toIsoDate('Foo 12, 2026')).toBe(null);   // not a month
+    expect(toIsoDate('Janitor 12, 2026')).toBe(null); // a prefix match must not be enough
+    expect(toIsoDate('Jan 2026')).toBe(null);       // a month + year is not a date
+    expect(toIsoDate('May', { fallbackYear: 2026 })).toBe(null);
+    expect(toIsoDate('Rent Feb 12, 2026')).toBe(null); // a description is not a date
+  });
 });

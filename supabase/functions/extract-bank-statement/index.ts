@@ -60,7 +60,10 @@ const SYSTEM =
   'statement states none. date = the posting date EXACTLY as printed on the line — many ' +
   'statements print only month and day ("06/01") because the year is stated once in the ' +
   'period header; copy the bare "06/01" and do NOT add a year, the app resolves it from ' +
-  'the period. description = the payee/memo text as printed. amount = the positive dollar ' +
+  'the period. A month-NAME date is copied the same way — "Feb 12" stays "Feb 12", never ' +
+  'rewritten as "02/12" and never given a year. (The app parses both, but transcribing ' +
+  'rather than converting is what keeps the same statement reading the same way twice.) ' +
+  'description = the payee/memo text as printed. amount = the positive dollar ' +
   'figure as printed. direction = "in" for money INTO this account, "out" for money out. ' +
   'Decide direction from the section heading the line is printed under ("Deposits and ' +
   'Additions" -> in; "Electronic Withdrawals", "Checks Paid", "Fees" -> out). The words ' +

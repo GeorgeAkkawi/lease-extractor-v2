@@ -71,28 +71,56 @@ export function yearForMonthDay(m, d, { periodStart = null, periodEnd = null, fa
   return best;
 }
 
-// "MM/DD/YYYY", "M/D/YY", "YYYY-MM-DD" → "YYYY-MM-DD", or null. US month-first
-// (the bank-export norm here); ISO passes through. A year-less "MM/DD" resolves
-// only when the caller passes a year context — with none we still return null
-// rather than guess, which is what keeps the CSV lane's column inference from
-// reading a stray "1/2" as a date.
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december'];
+
+// A month word → 1-12, or null. Accepts the full name or the 3-4 letter
+// abbreviation banks print ("Feb", "Sept", "Jan."), and nothing longer — a
+// prefix match alone would read "Janitor" as January, and toIsoDate is used to
+// tell a date column from a description one.
+function monthFromName(word) {
+  const k = String(word).toLowerCase().replace(/\.$/, '');
+  if (k.length < 3) return null;
+  const i = MONTH_NAMES.findIndex((n) => n === k || (k.length <= 4 && n.startsWith(k)));
+  return i === -1 ? null : i + 1;
+}
+
+// "MM/DD/YYYY", "M/D/YY", "YYYY-MM-DD", and the month-name shapes banks print
+// ("Feb 12", "Feb 12, 2026", "2 Feb 2026") → "YYYY-MM-DD", or null. US
+// month-first (the bank-export norm here); ISO passes through.
+//
+// A date printed with NO year — "06/01" (Chase) or "Feb 12" (U.S. Bank), where
+// the year is stated once in the period header — resolves only when the caller
+// passes a year context. With none we still return null rather than guess,
+// which is what keeps the CSV lane's column inference from reading a stray
+// "1/2" as a date.
 export function toIsoDate(raw, yearCtx = null) {
   if (raw == null) return null;
   const s = String(raw).trim();
-  let y, m, d;
+  let y = null;
+  let m = null;
+  let d = null;
   let mt = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (mt) { y = +mt[1]; m = +mt[2]; d = +mt[3]; }
   else if ((mt = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/))) {
     m = +mt[1]; d = +mt[2]; y = +mt[3];
-    if (y < 100) y += 2000;
   } else if ((mt = s.match(/^(\d{1,2})[/-](\d{1,2})$/))) {
-    if (!yearCtx) return null;
     m = +mt[1]; d = +mt[2];
-    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  // "Feb 12" / "Feb 12, 2026" / "February 2 2026". The year and its separator
+  // are ONE optional unit, so "Jan 2026" (a month and a year, not a date) can't
+  // be read as the 20th with a 2-digit year.
+  } else if ((mt = s.match(/^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:(?:\s*,\s*|\s+)(\d{2,4}))?$/))) {
+    m = monthFromName(mt[1]); d = +mt[2]; y = mt[3] ? +mt[3] : null;
+  } else if ((mt = s.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?(?:(?:\s*,\s*|\s+)(\d{2,4}))?$/))) {
+    m = monthFromName(mt[2]); d = +mt[1]; y = mt[3] ? +mt[3] : null;
+  } else return null;
+  if (m == null || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  if (y == null) {
+    if (!yearCtx) return null;
     y = yearForMonthDay(m, d, yearCtx);
     if (y == null) return null;
-  } else return null;
-  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1990 || y > 2100) return null;
+  } else if (y < 100) y += 2000;
+  if (y < 1990 || y > 2100) return null;
   const dt = new Date(y, m - 1, d, 12);
   if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
   return `${y}-${pad2(m)}-${pad2(d)}`;
@@ -349,8 +377,13 @@ function commonYearIn(rows) {
 // dumped JSON blob doesn't tell a landlord anything.
 function dateSkipReason(raw) {
   const s = String(raw ?? '').trim();
-  if (s && /^\d{1,2}[/-]\d{1,2}$/.test(s)) return `the date "${s}" has no year, and the statement period wasn't captured`;
-  return s ? `no valid date ("${s}")` : 'no date';
+  if (!s) return 'no date';
+  // Parses the moment a year is supplied → it IS a date ("06/01", "Feb 12"),
+  // just a year-less one whose statement period we never captured. Asking
+  // toIsoDate rather than re-listing its formats here keeps the two from
+  // drifting as more shapes are accepted.
+  if (toIsoDate(s, { fallbackYear: 2000 })) return `the date "${s}" has no year, and the statement period wasn't captured`;
+  return `no valid date ("${s}")`;
 }
 
 function describeRow(r) {

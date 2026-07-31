@@ -181,6 +181,59 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **A statement that prints "Feb 12" instead of "02/12" now imports — the parser knew Chase's bare
+  `06/01` but had never been taught a month NAME** (George: *"i uploaded the first statement and it worked perfectly
+  but with the feburary statement it failed and couldnt list transactions can you find out why? this is for the BUSEY
+  bank khaled akkawi account"*). Deployed: `extract-bank-statement` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`),
+  frontend Cloudflare version **`4b5dcf06`**. **NO DB migration, no tenant emails, no demo change, nothing
+  destructive — one pure function + a prompt sentence.** Tests **1115/1115 across 126 files** (was 1108/126 — +7).
+  - **The AI never failed. Every read returned 200.** The edge log shows George's three February attempts at
+    **12.5s / 13.0s / 10.6s, all 200** — longer than January's successful 8.8s, which is exactly what transcribing
+    *more* lines looks like (11 vs 9). So the transcription was fine and the loss was downstream, in the client gate.
+  - **Reproduced against the deployed function, both months side by side.** January came back with dates
+    **`01/05` `01/22` `01/30`** — the model had *normalized* them. February came back **`Feb 2` `Feb 17` `Feb 12`** —
+    transcribed **verbatim**, which is precisely what the prompt asks for (*"the posting date EXACTLY as printed"*).
+    `toIsoDate` (`statementParse.js`) accepted `YYYY-MM-DD`, `M/D/YYYY` and a bare `M/D`, and had **no branch for a
+    month name** → all 11 rows returned null → `skippedLines` → **"0 lines parsed · 11 skipped"**, every reason
+    reading `no valid date ("Feb 2")`. Replayed on the real payload before touching anything: **0 parsed / 11 skipped.**
+  - **The same class of bug as the 2026-07-23 Chase round, one format over** — and this time the tell was that the
+    *same bank's* January statement worked. Whether an import succeeded came down to which rendering the model
+    happened to pick that run, so **the fix belongs in the parser, where it's deterministic**, not in the prompt.
+  - **`toIsoDate` now reads the shapes banks actually print:** `Feb 12` · `Feb 12, 2026` · `Feb 12 2026` ·
+    `February 2, 2026` · `Sept 3, 2026` · `Jan. 5, 2026` · `2 Feb 2026` · `12th Feb 2026`. Two guards carry the
+    weight: **`monthFromName` accepts a full name or a 3–4 letter abbreviation and nothing longer**, so a prefix
+    match can't read *"Janitor"* as January (`toIsoDate` is also how the CSV lane tells a date column from a
+    description one); and **the year and its separator are ONE optional unit**, so `Jan 2026` — a month and a year,
+    not a date — can't be read as the 20th with a 2-digit year. Both pinned by tests.
+  - **The load-bearing invariant is preserved:** a bare `Feb 12` with **no** year context still returns null, exactly
+    like a bare `06/01` — that's what stops the CSV lane's column inference reading a stray `1/2` as a date. A
+    year-less month-name date now also gets the honest skip reason, and `dateSkipReason` asks `toIsoDate` rather than
+    re-listing its formats, so the two can't drift as more shapes are accepted.
+  - **Prompt: one sentence, and it says COPY, not convert** — *"A month-NAME date is copied the same way — 'Feb 12'
+    stays 'Feb 12', never rewritten as '02/12'."* Now that the parser handles both renderings this is safe, and it
+    removes the contradiction that had the model flip-flopping between two statements from one bank. The house rule
+    holds: **the model transcribes, code does the date math.**
+  - **Files.** `src/lib/statementParse.js` (`MONTH_NAMES` + `monthFromName`, two `toIsoDate` branches,
+    `dateSkipReason`) · `supabase/functions/extract-bank-statement/index.ts` (the prompt sentence) ·
+    `src/lib/__tests__/statementParse.test.js` (+7, incl. the real 11 February rows as a named regression).
+    **No** migration, view, api, component, CSS or demo-seed change.
+  - **Verified:** unit **1115/1115** (`vitest run`); `npm run build` compiles and the deployed bundle
+    (`assets/index-Cfco5r46.js`) greps positive for the new parser; edge fn deployed clean with unauth POST → **401**;
+    200s on all three URLs. **Driven end to end against the LIVE deployed function on real statements:** February
+    **11 parsed · 0 skipped**, January **9 · 0** (unchanged), and — the generalization check — the untouched **March**
+    statement, which prints `Mar 3` / `Mar 11` and **would have failed identically**, now reads **9 · 0**. Every month
+    ties to the bank's own printed totals **to the penny**: Feb in **$61,139.87** = "Total Other Deposits", Feb out
+    **$81,511.77** = 274.07 card + 11,237.70 other + 70,000.00 checks; Jan in **$40,985.76**, out **$42,689.26**.
+  - **George: hard-refresh (Cmd+Shift+R), then re-import the February statement** — it opens the review screen with
+    all 11 lines. March will import too.
+  - **Flags (no action needed):** ① **U.S. Bank prints a per-DAY balance summary, not a per-line running balance**, so
+    when the read maps a day's ending balance onto each of that day's lines the self-check sees a zero delta and marks
+    them *needs review* (4 lines on January, 2 on March, 0 on February). Cosmetic — the rows still import and the
+    money is right — but say the word and I'll teach the balance check to skip same-day repeats. ② February's first
+    deposit is a **$20,154.11 internal "Mobile Banking Transfer From Account …8966"**, not tenant rent — it won't
+    match a tenant and will sit unticked, which is the correct behaviour; leave it or mark it ignored. ③ Diagnosing
+    this spent **4 transcription reads (~40–60¢)** — two to reproduce Jan vs Feb, two to verify Feb + Mar live.
+
 - **2026-07-31** — **Follow-up: NNN and Gross now wear the SAME chip — the word is the whole difference** (George,
   reviewing the round below: *"gross is not the same format as NNN on the per tenant break down"*). Deployed: frontend
   Cloudflare version **`9e517a64`**, demo worker `f6e49dee`. **One component + one CSS rule — $0, NO DB migration, NO
