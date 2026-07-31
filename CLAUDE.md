@@ -181,6 +181,65 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-30** — **A bank statement can be dragged straight onto the ledger — the whole panel takes the drop,
+  through the same pipeline the button uses** (George: *"make the import statements on the ledger able to
+  recieve a drag and drop."*). Deployed: frontend Cloudflare version **`f8887f62`**, demo worker `a46361f0`.
+  **Frontend + CSS only — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing
+  destructive.** Tests **1079/1079 across 123 files** (was 1071/122 — +8, one new suite).
+  - **One pipeline, two doors.** The reading logic came out of the button into a shared
+    `readStatementFile(file)` (`ImportStatementButton.js`) — CSV parsed in the browser ($0, no AI), PDF through
+    the one transcription read, both landing on the identical `onReady` payload. The button and the drop zone
+    call it, so what you get by dropping is exactly what you get by clicking; there is no second lane to drift.
+    The one asymmetry it had to preserve is the CSV storage-save failure, which must warn without stopping an
+    import — it now rides back as `saveWarning` rather than reaching for the button's own `setErr`.
+  - **The target is the PANEL, not a box.** New `StatementDropZone` takes the host's own `className`, so it IS
+    the `.panel` rather than another div inside it — one element, no reindentation of 300 lines of ledger, and
+    the veil covers exactly the panel it belongs to (browser-measured: veil box == panel box at 1440px and
+    420px). Mounted on the Ledger's grid panel and the Financials **Expense entry** panel — the two places the
+    ⬆ Import statement button already lives. Verified on Financials that the property-summary panel above it is
+    **not** a target: exactly one drop zone per page.
+  - **Nothing is drawn at rest, deliberately.** A permanent dashed box would cost real height on two screens
+    that are already dense, and there is nothing to look at until a file is actually over the page — so the veil
+    exists only while a file is over it or being read (`.stmt-drop-veil`, `inset:-1px` so the dashed edge covers
+    the panel's own border and reads as one shape). Discoverability rides the button's tooltip instead, which
+    now ends *"You can also drag the file straight onto this panel."*
+  - **The counter is the load-bearing detail.** `dragenter`/`dragleave` fire again for every child the cursor
+    crosses, so a boolean flickers off the moment you move over a tenant row — on a panel that is one big table
+    that is every mouse movement. Enters and leaves are counted instead. **Proved in the browser step by step:**
+    over the panel → shown · onto a tenant row → still shown · panel fires its own leave while the row is still
+    under the cursor → **still shown** · off the panel entirely → cleared.
+  - **Three ways a drop can be wrong, each answered rather than swallowed.** A non-file drag (selected text, a
+    link, one of the app's own draggable rows) is ignored outright — the veil never appears. A file that isn't a
+    statement is refused **before the PDF lane can upload it and spend a read**, naming the file: *"Denny's
+    Lease.docx" isn't a bank statement. Export the month as CSV from your bank, or use the PDF statement
+    itself.* And several files at once are refused — *"3 files were dropped — import one statement at a time"* —
+    because quietly reading the first of five would look like all five had been imported.
+  - **The veil says what happens next**, since a drop is otherwise an irreversible-feeling act: *"CSV or PDF —
+    it opens for you to review before anything is recorded."* True by construction — both hosts swap the page
+    for `StatementReview` and nothing writes until Save. While the PDF read is running it becomes *"Reading
+    {filename}…"* rather than sitting on an instruction that has already been followed.
+  - **Files.** New: `src/components/__tests__/statementDrop.test.js` (8). Edited:
+    `src/components/ImportStatementButton.js` (`readStatementFile` + `StatementDropZone`) ·
+    `src/pages/{LedgerPage,PropertyFinancialsPage}.js` (the panel becomes the zone) · `src/App.css`
+    (`.stmt-drop`, `.stmt-drop-veil`, `veilIn`, a reduced-motion opt-out). **No** migration, edge function, view
+    or demo-seed change.
+  - **Verified:** unit **1079/1079** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real
+    browser against the deployed demo:** a real `DataTransfer` carrying a real `File` dropped on the ledger
+    opens *"reviewing march-statement.csv"* with **2 lines parsed · 0 skipped**, the deposit matched to **City
+    Dental (100%)** and tagged **Mar**, the withdrawal classified **Landscaping** — i.e. the dropped file went
+    through the whole matcher, not a shortcut. Both refusals render their message and stay on the ledger; at
+    420px the veil sits inside the viewport with **zero** page overflow. **Zero console errors or warnings.**
+    (jsdom ships no `Blob.text()`, which every browser has had since 2019 — shimmed in the test so it exercises
+    the real CSV lane rather than the environment's gap.)
+  - **George: hard-refresh (Cmd+Shift+R).** On a property's **Ledger** tab — or the **Expense entry** panel on
+    Financials — drag a statement file anywhere onto the panel and let go. It reads it and opens the same review
+    screen the button does. The button hasn't moved.
+  - **Flags (no action needed):** ① Only **CSV and PDF** are accepted; anything else is refused by name rather
+    than uploaded and read. ② **One file at a time** — each statement is reviewed and posted on its own. ③ A
+    dropped **PDF** spends the transcription read (~5–15¢) as soon as it lands, same as the button; a CSV is
+    free. ④ Dropping outside those two panels does whatever your browser normally does with a file.
+
 - **2026-07-30** — **Housekeeping round: a renewal option's notice deadline now opens on the owner's Settings
   default · the lease and its copies are listed above the riders, with every "Open" in one column · and the
   over-let case George asked about is answered and pinned** (George: *"by the way for that lets say that there

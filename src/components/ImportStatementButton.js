@@ -4,6 +4,57 @@ import { parseBankStatementCsv, normalizeStatementRows, applyBalanceCheck } from
 import { DEMO_MODE } from '../lib/supabaseClient';
 import { money } from '../lib/format';
 
+// The two forms a bank hands you a statement in. Enforced here rather than left to
+// the file input's `accept` (which browsers treat as a filter, not a rule) so the
+// button and the drop zone refuse the same things — a dropped .docx would otherwise
+// upload and spend an AI read before failing.
+const STATEMENT_FILE = /\.(csv|pdf)$/i;
+
+// Reading a statement file — the ONE pipeline, shared by both doors (the button and
+// the drop zone) so what you get by dropping is what you get by clicking. Resolves to
+// the payload each host hands to StatementReview, plus an optional `saveWarning` for
+// the one failure that shouldn't stop an import. Throws on anything unreadable.
+export async function readStatementFile(file) {
+  if (!STATEMENT_FILE.test(file?.name || '')) {
+    throw new Error(`“${file?.name || 'That file'}” isn’t a bank statement. Export the month as CSV from your bank, or use the PDF statement itself.`);
+  }
+  if (/\.csv$/i.test(file.name)) {
+    // CSV lane — parsed right here, $0, no AI. The file itself is still kept: the
+    // ledger should be able to show you the statement a figure came from, and a
+    // CSV is a few KB. Best-effort — a storage hiccup must never block the import.
+    const parsed = parseBankStatementCsv(await file.text(), { fileName: file.name });
+    // Until migration 0070 this ALWAYS failed and the catch swallowed it: 'csv' was
+    // in neither the client allowlist nor the bucket's, so validateUploadFile threw
+    // and every CSV statement was silently discarded despite the comment above.
+    let saveWarning = '';
+    const path = await uploadDoc(file, { entityType: 'statement_import' }).catch((e) => {
+      saveWarning = `Imported fine, but the statement file couldn’t be saved (${e.message || e}).`;
+      return null;
+    });
+    return { fileName: file.name, accountHint: parsed.accountHint, parsed, storagePath: path, pdfLane: false, saveWarning };
+  }
+  // PDF lane — one transcription read (~5–15¢); the transcript still passes
+  // the same validation gate + balance check the CSV lane gets.
+  const path = await uploadDoc(file, { entityType: 'statement_import' });
+  const res = await extractBankStatement({ path });
+  // Statement lines are frequently dated "06/01" with the year stated once in
+  // the period header — pass the period so the gate can resolve them instead
+  // of skipping every line for "no valid date".
+  const gate = normalizeStatementRows(res?.transactions || [], {
+    periodStart: res?.period_start || null,
+    periodEnd: res?.period_end || null,
+  });
+  const checked = applyBalanceCheck(gate.transactions);
+  return {
+    fileName: file.name,
+    accountHint: null,
+    parsed: { transactions: checked.transactions, skippedLines: gate.skippedLines, warnings: checked.warnings },
+    storagePath: path,
+    pdfLane: true,
+    saveWarning: '',
+  };
+}
+
 // The statement-import entry point, shared by the Ledger tab and the Financials
 // page's Expense entry — two doors, one pipeline. Reads the file (CSV parsed right
 // here, $0, never uploaded; PDF through one transcription read ~5–15¢) and hands
@@ -19,40 +70,9 @@ export default function ImportStatementButton({ onReady }) {
     setErr('');
     setBusy(true);
     try {
-      if (/\.csv$/i.test(file.name)) {
-        // CSV lane — parsed right here, $0, no AI. The file itself is still kept: the
-        // ledger should be able to show you the statement a figure came from, and a
-        // CSV is a few KB. Best-effort — a storage hiccup must never block the import.
-        const parsed = parseBankStatementCsv(await file.text(), { fileName: file.name });
-        // Until migration 0070 this ALWAYS failed and the catch swallowed it: 'csv' was
-        // in neither the client allowlist nor the bucket's, so validateUploadFile threw
-        // and every CSV statement was silently discarded despite the comment above.
-        const path = await uploadDoc(file, { entityType: 'statement_import' }).catch((e) => {
-          setErr(`Imported fine, but the statement file couldn’t be saved (${e.message || e}).`);
-          return null;
-        });
-        onReady({ fileName: file.name, accountHint: parsed.accountHint, parsed, storagePath: path, pdfLane: false });
-      } else {
-        // PDF lane — one transcription read (~5–15¢); the transcript still passes
-        // the same validation gate + balance check the CSV lane gets.
-        const path = await uploadDoc(file, { entityType: 'statement_import' });
-        const res = await extractBankStatement({ path });
-        // Statement lines are frequently dated "06/01" with the year stated once in
-        // the period header — pass the period so the gate can resolve them instead
-        // of skipping every line for "no valid date".
-        const gate = normalizeStatementRows(res?.transactions || [], {
-          periodStart: res?.period_start || null,
-          periodEnd: res?.period_end || null,
-        });
-        const checked = applyBalanceCheck(gate.transactions);
-        onReady({
-          fileName: file.name,
-          accountHint: null,
-          parsed: { transactions: checked.transactions, skippedLines: gate.skippedLines, warnings: checked.warnings },
-          storagePath: path,
-          pdfLane: true,
-        });
-      }
+      const ready = await readStatementFile(file);
+      if (ready.saveWarning) setErr(ready.saveWarning);
+      onReady(ready);
     } catch (e) {
       setErr(e?.message || 'Could not read that statement.');
     } finally {
@@ -88,13 +108,98 @@ export default function ImportStatementButton({ onReady }) {
           Try a sample statement
         </button>
       )}
-      <button type="button" className="secondary btn-sm" disabled={busy} onClick={() => fileRef.current?.click()} title="Import a bank statement — CSV reads instantly and free; a PDF uses one AI transcription read (~5–15¢)">
+      <button type="button" className="secondary btn-sm" disabled={busy} onClick={() => fileRef.current?.click()} title="Import a bank statement — CSV reads instantly and free; a PDF uses one AI transcription read (~5–15¢). You can also drag the file straight onto this panel.">
         {busy ? 'Reading…' : '⬆ Import statement'}
       </button>
       <input ref={fileRef} type="file" accept=".csv,.pdf" style={{ display: 'none' }}
         onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) openStatementFile(f); }} />
       {err && <span className="note-msg danger">{err}</span>}
     </>
+  );
+}
+
+// Drag a statement straight onto the panel that carries the import button.
+//
+// George, 2026-07-30: "make the import statements on the ledger able to recieve a
+// drag and drop."
+//
+// Nothing is drawn at rest — a permanent dashed box would cost real height on two
+// screens that are already dense, and there is nothing to look at until a file is
+// actually over the page. The target announces itself at the only moment it matters.
+// The button stays exactly as it was: dragging is a second door, not a replacement.
+export function StatementDropZone({ onReady, className = '', children }) {
+  // dragenter/dragleave fire again for every child the cursor crosses, so a boolean
+  // flickers off the moment you move over a table row. Counting enters and leaves is
+  // what makes the veil hold steady across a panel full of elements.
+  const depth = useRef(0);
+  const [over, setOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState('');
+  const [err, setErr] = useState('');
+
+  // Only react to a FILE drag. Dragging selected text, a link, or one of the app's
+  // own draggable rows must leave the panel alone.
+  const isFileDrag = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+
+  function onDragEnter(e) {
+    if (!isFileDrag(e)) return;
+    depth.current += 1;
+    setOver(true);
+  }
+  function onDragLeave(e) {
+    if (!isFileDrag(e)) return;
+    depth.current = Math.max(0, depth.current - 1);
+    if (depth.current === 0) setOver(false);
+  }
+  function onDragOver(e) {
+    // Without this the browser opens the dropped file instead of handing it over.
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+  async function onDrop(e) {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    depth.current = 0;
+    setOver(false);
+    if (busy) return;
+    const files = Array.from(e.dataTransfer.files || []);
+    if (!files.length) return;
+    // One statement at a time — each is reviewed and posted on its own, and silently
+    // reading the first of five would look like the other four had been imported too.
+    if (files.length > 1) {
+      setErr(`${files.length} files were dropped — import one statement at a time.`);
+      return;
+    }
+    setErr('');
+    setName(files[0].name);
+    setBusy(true);
+    try {
+      const ready = await readStatementFile(files[0]);
+      if (ready.saveWarning) setErr(ready.saveWarning);
+      onReady(ready);
+    } catch (ex) {
+      setErr(ex?.message || 'Could not read that statement.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    // Takes the host's own class (the panel) rather than nesting inside it — one
+    // element, so the veil covers exactly the panel it belongs to.
+    <div className={`stmt-drop ${className}`.trim()} onDragEnter={onDragEnter} onDragLeave={onDragLeave} onDragOver={onDragOver} onDrop={onDrop}>
+      {children}
+      {(over || busy) && (
+        // pointer-events:none in the CSS — the veil must never become the drag target
+        // itself, or entering it would read as leaving the panel and the count would lie.
+        <div className="stmt-drop-veil" aria-hidden="true">
+          <strong>{busy ? `Reading ${name}…` : 'Drop to import this statement'}</strong>
+          <span>{busy ? 'One moment.' : 'CSV or PDF — it opens for you to review before anything is recorded.'}</span>
+        </div>
+      )}
+      {err && <p className="note-msg danger" style={{ marginTop: 10 }}>{err}</p>}
+    </div>
   );
 }
 

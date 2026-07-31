@@ -24,7 +24,7 @@ import { useFeatures } from '../lib/features';
 import FinancialsTabs from '../components/FinancialsTabs';
 import StatementReview from '../components/StatementReview';
 import TenantSortBar from '../components/TenantSortBar';
-import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
+import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
 import LearnedPayeesPanel from '../components/LearnedPayeesPanel';
 import MutationError from '../components/MutationError';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -268,7 +268,9 @@ export default function LedgerPage() {
 
       <FinancialsTabs corpId={corpId} propId={propId} />
 
-      <div className="panel">
+      {/* The whole ledger is the drop target — a statement can be dragged anywhere
+          onto it, not just onto the button. */}
+      <StatementDropZone className="panel" onReady={setImportDoc}>
         <div className="panel-head">
           <strong>Ledger · FY {year}</strong>
           <span className="row" style={{ gap: 8 }}>
@@ -578,7 +580,7 @@ export default function LedgerPage() {
         )}
 
         <LearnedPayeesPanel propId={propId} year={year} />
-      </div>
+      </StatementDropZone>
     </div>
   );
 }

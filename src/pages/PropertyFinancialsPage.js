@@ -18,7 +18,7 @@ import CamSection from '../components/CamSection';
 import TaxSection from '../components/TaxSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
-import ImportStatementButton, { ImportResultsStrip, settleStatementImport } from '../components/ImportStatementButton';
+import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
 import ExportReconciliationModal from '../components/ExportReconciliationModal';
 import MutationError from '../components/MutationError';
 import UndoStrip from '../components/UndoStrip';
@@ -144,7 +144,9 @@ export default function PropertyFinancialsPage() {
         </div>
       </div>
 
-      <div className="panel">
+      {/* Same drop target as the Ledger's — a statement can be dragged anywhere onto
+          the panel it belongs to, not just onto the button. */}
+      <StatementDropZone className="panel" onReady={setImportDoc}>
         <div className="panel-head">
           <strong>Expense entry · FY {year}</strong>
           <span className="row" style={{ gap: 8, alignItems: 'center' }}>
@@ -183,7 +185,7 @@ export default function PropertyFinancialsPage() {
           </div>
           <CamSection propId={propId} year={year} expense={expense} />
         </div>
-      </div>
+      </StatementDropZone>
 
       <div className="page-head" style={{ marginTop: 8 }}>
         <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>
