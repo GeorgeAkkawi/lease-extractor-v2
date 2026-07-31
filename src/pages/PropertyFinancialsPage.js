@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
@@ -6,22 +6,20 @@ import {
   getProperty,
   getPropertyTotals,
   getExpenseRecord,
-  upsertExpenseRecord,
   undoStatementImport,
-  resyncPropertyBilling, discardDocument,
+  discardDocument,
 } from '../lib/api';
-import { settleBillingChange } from '../lib/invalidate';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import FinancialsTabs from '../components/FinancialsTabs';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import TaxSection from '../components/TaxSection';
+import RoofSection from '../components/RoofSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
 import ExportReconciliationModal from '../components/ExportReconciliationModal';
 import MutationError from '../components/MutationError';
-import UndoStrip from '../components/UndoStrip';
 import { money, psf, sf } from '../lib/format';
 
 // whole-dollar money (no cents) for the compact roof billed/absorbed line
@@ -150,7 +148,7 @@ export default function PropertyFinancialsPage() {
         <div className="panel-head">
           <strong>Expense entry · FY {year}</strong>
           <span className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <span className="muted">Roof below; taxes and CAM are itemized.</span>
+            <span className="muted">Taxes, CAM and roof are each itemized.</span>
             <ImportStatementButton onReady={setImportDoc} />
           </span>
         </div>
@@ -162,7 +160,6 @@ export default function PropertyFinancialsPage() {
         />
         <MutationError of={[undoImport]} />
         <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} year={year} />
-        <ExpenseForm propId={propId} year={year} expense={expense} qc={qc} />
         <div className="cam-block">
           <div className="cam-head">
             <div>
@@ -184,6 +181,17 @@ export default function PropertyFinancialsPage() {
             </div>
           </div>
           <CamSection propId={propId} year={year} expense={expense} />
+        </div>
+        <div className="cam-block">
+          <div className="cam-head">
+            <div>
+              <strong>Roof — itemized</strong>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                One line per roof payment. The total is billed in full to the tenants whose leases make them responsible for the roof — everything else you absorb.
+              </div>
+            </div>
+          </div>
+          <RoofSection propId={propId} year={year} expense={expense} />
         </div>
       </StatementDropZone>
 
@@ -217,85 +225,3 @@ function StatCard({ label, main, footValue, footCap, note }) {
   );
 }
 
-// Roof only — property taxes moved into their own itemized list (TaxSection), so this
-// form must PRESERVE taxes_total rather than write it.
-function ExpenseForm({ propId, year, expense, qc }) {
-  const [roof, setRoof] = useState('');
-  // The post-save ↩ Undo: { label, undo } where undo restores the pre-save figure.
-  const [saved, setSaved] = useState(null);
-  useEffect(() => {
-    setRoof(expense?.roof_total ?? '');
-  }, [expense, year]);
-  useEffect(() => setSaved(null), [year]); // never show a strip under another year's figures
-
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
-    settleBillingChange(qc, { propertyId: propId, year });
-  };
-
-  // The roof total is billed to the roof-responsible tenants, so the year's stored
-  // invoices follow it — the breakdown and the Ledger rebuild from the live expense
-  // record, the invoice is a frozen copy that would otherwise go stale.
-  const carryThrough = () => resyncPropertyBilling(propId, year);
-
-  const save = useMutation({
-    // `prev` (the pre-save roof figure, or null on a first-ever save) rides along for the undo.
-    mutationFn: async (_prev) => {
-      const out = await upsertExpenseRecord({
-        property_id: propId,
-        year,
-        taxes_total: expense?.taxes_total ?? 0, // preserved; maintained by the tax section
-        cam_total: expense?.cam_total ?? 0,     // preserved; maintained by the CAM section
-        roof_total: Number(roof) || 0,
-      });
-      await carryThrough();
-      return out;
-    },
-    onSuccess: (_data, prev) => {
-      invalidate();
-      setSaved({
-        label: 'roof saved',
-        // Undo restores the previous roof figure (zero on a first-ever save) but
-        // re-reads the record at undo time so taxes/CAM the itemized sections
-        // synced meanwhile are never clobbered.
-        undo: async () => {
-          const cur = await getExpenseRecord(propId, year);
-          await upsertExpenseRecord({
-            property_id: propId,
-            year,
-            taxes_total: Number(cur?.taxes_total) || 0,
-            cam_total: Number(cur?.cam_total) || 0,
-            roof_total: prev ? prev.roof : 0,
-          });
-          await carryThrough();
-        },
-      });
-    },
-  });
-
-  const undoMut = useMutation({ mutationFn: (p) => p.undo(), onSuccess: invalidate });
-
-  return (
-    <>
-      <form className="row" onSubmit={(e) => {
-        e.preventDefault();
-        save.mutate(expense ? { roof: Number(expense.roof_total) || 0 } : null);
-      }} style={{ alignItems: 'flex-end' }}>
-        <label className="form-field" style={{ marginBottom: 0, maxWidth: 180 }}>
-          <span>Roof ($) — separate</span>
-          <input className="text-input num" type="number" step="any" value={roof} onChange={(e) => setRoof(e.target.value)} />
-        </label>
-        <button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save roof'}</button>
-        {saved && (
-          <UndoStrip
-            label={saved.label}
-            busy={undoMut.isPending}
-            onUndo={() => { const p = saved; setSaved(null); undoMut.mutate(p); }}
-            onDismiss={() => setSaved(null)}
-          />
-        )}
-      </form>
-      <MutationError of={[save, undoMut]} />
-    </>
-  );
-}

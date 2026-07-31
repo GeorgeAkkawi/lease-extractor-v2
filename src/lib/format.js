@@ -55,4 +55,14 @@ export const fmtDate = (d) => {
   return new Date(s).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 };
 
+// "Mar 14" — for a column inside a list that is already scoped to one fiscal year, where
+// repeating the year on every row would just be noise. Same local-noon parse as fmtDate,
+// so a date-only string can't shift back a day west of UTC. Falls back to an em dash: an
+// expense typed by hand has no known day, and that absence is a real, sayable state.
+export const fmtShortDate = (d) => {
+  if (!d) return '—';
+  const s = typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T12:00:00` : d;
+  return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
 export const currentYear = () => new Date().getFullYear();

@@ -348,14 +348,16 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             amount: r.row.txn.amount, date: r.row.txn.date, description: r.row.txn.description,
             period_month: r.month || null, reconInvoiceId: r.toRecon ? r.tenant.reconInvoiceId : null, hash: r.row.hash,
           });
+        // Every expense line carries the day the bank printed on it (0074) — the same
+        // `txn.date` the payment branch above has always passed through.
         } else if (r.kind === 'expense_cam') {
-          entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: r.label || 'Imported expense', billable: true, hash: r.row.hash });
+          entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: r.label || 'Imported expense', billable: true, hash: r.row.hash });
         } else if (r.kind === 'expense_other') {
-          entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: r.label || 'Other', billable: false, hash: r.row.hash });
+          entries.push({ type: 'cam', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: r.label || 'Other', billable: false, hash: r.row.hash });
         } else if (r.kind === 'expense_tax') {
-          entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, label: taxLabel(payeeOf(r.row.txn.description)), hash: r.row.hash });
+          entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: payeeLabel(payeeOf(r.row.txn.description), 'Property tax'), hash: r.row.hash });
         } else if (r.kind === 'expense_roof') {
-          entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash });
+          entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: payeeLabel(payeeOf(r.row.txn.description), 'Roof'), hash: r.row.hash });
         }
       }
       return applyStatementImport({ propertyId: expenseProp, year, fileName, accountHint, storagePath, entries: [...estEntries, ...entries, ...learned.keep] });
@@ -622,13 +624,14 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   );
 }
 
-// The label a property-tax payment carries in the itemized list: the payee the bank
+// The label a tax or roof payment carries in its itemized list: the payee the bank
 // named, tidied ("COOK COUNTY TREASURER" → "Cook County Treasurer"), so three
 // instalments read as three recognizable lines instead of three identical rows.
 // Takes the already-resolved payee (from the screen's shared `payeeOf`) so the label and
-// the learned rule name the same thing.
-function taxLabel(payee) {
-  if (!payee) return 'Property tax';
+// the learned rule name the same thing, and the fallback the list uses when the bank
+// named nobody recognizable.
+function payeeLabel(payee, fallback) {
+  if (!payee) return fallback;
   return payee.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).slice(0, 60);
 }
 

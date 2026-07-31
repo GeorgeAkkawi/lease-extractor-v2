@@ -150,13 +150,27 @@ export function seed() {
       { id: 'exp-3', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y, taxes_total: 40000, cam_total: 30000, roof_total: 12000 },
       { id: 'exp-4', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y - 1, taxes_total: 36000, cam_total: 27000, roof_total: 10000 },
     ],
+    // Three itemized lists share this table (0067 `kind`, widened by 0074): cam, tax,
+    // roof. The roof lines re-sum to exactly the seeded expense_records figure above
+    // (1,500 + 2,500 = 4,000), so the demo shows itemization WITHOUT moving a single
+    // pinned total or tenant bill. TAXES are deliberately left un-itemized here: that
+    // is the state the carry-forward guard exists for, it is what the demo's tax
+    // section should show first, and expenseEntry.test.js pins it.
+    // paid_date (0074) is set on most rows so the date column and the chronological
+    // sort are visible; 'Security' is deliberately left undated to demo the honest
+    // "—" a hand-typed figure gets, and that an undated line sorts last rather than
+    // posing as January.
     cam_line_items: [
-      { id: 'cam-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Landscaping', amount: 8000, billable: true, created_at: iso(Y, 1, 2) },
-      { id: 'cam-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Snow removal', amount: 4000, billable: true, created_at: iso(Y, 1, 3) },
-      { id: 'cam-3', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Security', amount: 6000, billable: true, created_at: iso(Y, 1, 4) },
+      { id: 'cam-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'cam', label: 'Landscaping', amount: 8000, billable: true, paid_date: iso(Y, 4, 18), created_at: iso(Y, 1, 2) },
+      { id: 'cam-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'cam', label: 'Snow removal', amount: 4000, billable: true, paid_date: iso(Y, 1, 22), created_at: iso(Y, 1, 3) },
+      { id: 'cam-3', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'cam', label: 'Security', amount: 6000, billable: true, created_at: iso(Y, 1, 4) },
       // A "not billed to tenants" bucket (0064): itemized for the landlord's own
       // records, EXCLUDED from the CAM total — demos the second bucket family.
-      { id: 'cam-4', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, label: 'Owner legal fees', amount: 1200, billable: false, created_at: iso(Y, 1, 5) },
+      { id: 'cam-4', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'cam', label: 'Owner legal fees', amount: 1200, billable: false, paid_date: iso(Y, 2, 9), created_at: iso(Y, 1, 5) },
+      // The roof, itemized (0074) — one repair and one replacement rather than the
+      // single flat $4,000 that hid which was which.
+      { id: 'roof-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'roof', label: 'Apex Roofing — leak repair', amount: 1500, billable: true, paid_date: iso(Y, 5, 14), created_at: iso(Y, 1, 8) },
+      { id: 'roof-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'roof', label: 'Apex Roofing — section replacement', amount: 2500, billable: true, paid_date: iso(Y, 8, 27), created_at: iso(Y, 1, 9) },
     ],
     financial_snapshots: [
       // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"

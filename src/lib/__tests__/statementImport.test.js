@@ -1,19 +1,21 @@
 // Statement import end-to-end against the demo mock (DEMO mode forced by the test
 // env): context assembly → matching → apply → the dedupe guard on a re-upload →
-// the "import anyway" override → undo restoring exactly (including the clamped
-// expense decrement and the hand-deleted-payment tolerance) → re-apply landing the
-// same figures once. Also the recon-invoice path (no month tag, monthly coverage
+// the "import anyway" override → undo restoring exactly (re-summing an itemized
+// expense from the lines that survive, and tolerating a hand-deleted payment) →
+// re-apply landing the same figures once. Also the recon-invoice path (no month tag, monthly coverage
 // untouched) and the import_rules 23505 reuse.
 //
 // Demo seed (store.js), year Y: prop-1 Maple Plaza — Bright Coffee (lease-1,
 // inv-1 settled by an untagged lump) + City Dental (lease-2, inv-2 $98,500 with
 // Jan/Feb tagged and a $4,000 untagged partial pooling onto March). Expense
-// record exp-1 (prop-1, Y): taxes 25,000 · CAM 18,000 (3 items) · roof 4,000.
+// record exp-1 (prop-1, Y): taxes 25,000 (flat, un-itemized) · CAM 18,000
+// (4 items, one not-billed) · roof 4,000 (2 items, 0074).
 import { describe, it, expect } from 'vitest';
 import {
   getStatementMatchContext, applyStatementImport, undoStatementImport,
   listStatementImports, saveImportRule, listImportRules, deleteImportRule,
-  getExpenseRecord, listCamLineItems, listPayments, deletePayment,
+  getExpenseRecord, listCamLineItems, listRoofLineItems, deleteRoofLineItem,
+  listPayments, deletePayment,
   createInvoice, listInvoices, getPropertyMonthlyRoll,
 } from '../api';
 import { matchStatement, lineHash } from '../statementMatch';
@@ -136,7 +138,12 @@ describe('statement import — apply / dedupe / override / undo', () => {
     await undoStatementImport(b.import);
   });
 
-  it('undo tolerates a hand-deleted payment and clamps an edited-down expense at $0 with a note', async () => {
+  // Was: "…clamps an edited-down expense at $0 with a note". 0074 made the roof an
+  // itemized list, so undo now DELETES the row it created and re-sums the year from the
+  // rows that survive — which is a better answer than subtracting from a figure someone
+  // has since moved by hand, and it is what retired the clamp for new imports. The
+  // clamp itself lives on for pre-0074 records and is pinned in expenseDatesAndRoof.
+  it('undo tolerates a hand-deleted payment, and re-sums the roof from the lines that survive', async () => {
     const res = await applyStatementImport({
       propertyId: 'prop-2', year: Y, fileName: 'oak.csv',
       entries: [
@@ -153,9 +160,16 @@ describe('statement import — apply / dedupe / override / undo', () => {
     const { upsertExpenseRecord } = await import('../api');
     const cur = await getExpenseRecord('prop-2', Y);
     await upsertExpenseRecord({ property_id: 'prop-2', year: Y, taxes_total: Number(cur.taxes_total), cam_total: Number(cur.cam_total), roof_total: 4000 });
-    const { notes } = await undoStatementImport(res.import);
-    expect(notes.some((n) => n.includes('clamped'))).toBe(true);
-    expect(Number((await getExpenseRecord('prop-2', Y)).roof_total)).toBe(0); // clamped, not −5,000
+    await undoStatementImport(res.import);
+    // The import's own line is gone; what's left is the $12,000 that was on the year
+    // before the import, carried into its own line by the first itemization. So the
+    // year returns to 12,000 — derived from real rows, never negative, and never the
+    // 4,000 someone typed over the top of it.
+    expect(Number((await getExpenseRecord('prop-2', Y)).roof_total)).toBe(12000);
+    const roofLines = await listRoofLineItems('prop-2', Y);
+    expect(roofLines.map((r) => r.label)).toEqual(['Entered by hand']);
+    for (const r of roofLines) await deleteRoofLineItem(r.id, 'prop-2', Y);
+    await upsertExpenseRecord({ property_id: 'prop-2', year: Y, taxes_total: 40000, cam_total: 30000, roof_total: 12000 });
   });
 
   it('a reconciliation-invoice payment carries no month tag and leaves monthly coverage untouched', async () => {

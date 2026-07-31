@@ -181,6 +181,72 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 3 (Slice 1): every expense line now says the DAY it was paid, and the roof stops being one
+  flat number** (George: *"lets move on"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md`
+  phase by phase). Deployed: DB migration **`0074`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`06417e7b`**,
+  demo worker `b9e7696a`. **$0 — no AI call anywhere in this round; NO edge function; no tenant emails; 0074 is one nullable column
+  + a widened CHECK, and NOT ONE STORED TOTAL MOVED** (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500).
+  Tests **1143/1143 across 128 files** (was 1130/127 — +13, one new suite).
+  - **Why this is the enabler the whole accounting arc waits on.** `cam_line_items` has carried `year int` and nothing finer since
+    0004 — so an expense had a *year* and no *day*. There was no monthly trend, no seasonality, no answer to "why was March
+    expensive," and no honest cash-basis anything. **The importer has always known each line's real date** — `statementMatch`
+    derives the fiscal year FROM it — and then threw it away. This is the column it was missing. Nothing downstream reads a date
+    yet, deliberately: the point of shipping it first is that a T-12, a monthly chart and a cash/accrual switch all need dates ON
+    FILE before they can exist, and no later cleverness can invent a date nobody recorded.
+  - **`paid_date` is nullable and is NOT backfilled.** An expense typed by hand legitimately has no day, and stamping Dec 31 on it
+    would be a lie that looks like a real date forever. An undated line reads **"—"**, and — the detail that matters — sorts
+    **last**, not first: floating undated rows to the top of a year would read as "paid in January", which is the same invention
+    one step removed. Anything that later reports on dates has to say how many dollars it couldn't date.
+  - **The roof becomes the third itemized list**, in the exact shape 'tax' took in 0067 (`kind` CHECK widened `('cam','tax')` →
+    `+'roof'`). A roof is replaced once and repaired several times; one accumulating figure hid which payment was which — George's
+    own complaint about taxes, one bucket over. Roof rows re-sum into `roof_total` the way tax rows re-sum into `taxes_total`, so
+    the roof PSF, the recovered/absorbed split in `v_property_totals`, roof-responsible tenant shares and invoices all keep working
+    **untouched**. New `RoofSection.js` on the Financials page; the old roof-only `ExpenseForm` is gone, its flat-entry job absorbed
+    as the section's own fallback — exactly what happened to the tax form in 0067.
+  - **⚠ The guard that is not optional, and why the roof's version is sharper than the tax one.** `carryFlatTaxesIntoItems` exists
+    because the first itemized instalment would otherwise re-sum the year DOWN to that instalment. The roof carries the identical
+    hazard **and bills back at 100%** to roof-responsible tenants rather than pro-rata — so a $12,000 roof year re-summed to a
+    $2,000 repair would under-bill those tenants by the whole $10,000, silently, with nothing erroring. It is now one shared
+    `carryFlatIntoItems(property_id, year, kind)` serving both, and the test that proves it is the first one in the new suite.
+  - **A wart retired.** The importer's roof branch used to increment a running total, so **undo reversed a subtraction** — which is
+    where the clamp-at-zero-with-a-note behaviour came from. It now books its own row and undo deletes it, re-summing from the rows
+    that survive. That is a better answer than subtracting from a figure someone has since edited by hand: it can't go negative and
+    can't be thrown off by the edit. `statementImport.test.js`'s clamp assertion was **rewritten rather than deleted** to pin the
+    new behaviour, and the clamp itself lives on for **pre-0074 records** — an old statement's ↩ Undo has to keep working forever,
+    and that path is now pinned in the new suite.
+  - **Three sections, one grid, no layout rebuild.** Column 3 of `.cam-row` has been an empty spacer in every data row since 0064;
+    the date went there. Only change: `110px → 132px`, what a native date input needs for mm/dd/yyyy. **A real bug found in the
+    browser and fixed:** a native date input carries an intrinsic minimum wider than that column once the phone breakpoint narrows
+    it, and pushed the row sideways instead of shrinking — `min-width:0` on it and on the row's cells; re-measured, the roof and tax
+    add-forms now overflow by **zero** at 420px.
+  - **Files.** New: `supabase/migrations/0074_expense_dates_and_roof_items.sql` · `src/components/RoofSection.js` ·
+    `src/lib/__tests__/expenseDatesAndRoof.test.js` (13). Edited: `src/lib/{api,format,demo/store}.js` ·
+    `src/components/{CamSection,TaxSection,StatementReview}.js` · `src/pages/PropertyFinancialsPage.js` · `src/App.css` ·
+    test `statementImport` (the clamp case re-pinned). **No** view, RPC, edge function or `mockClient.js` change — `cam_line_items`
+    is a plain table the demo mock auto-creates, so §3 carries no mirror obligation here (re-verified, not inherited).
+  - **Demo seed:** prop-1's roof is now two dated lines (1,500 + 2,500) summing to **exactly** the seeded 4,000, and most CAM rows
+    carry dates with 'Security' left undated on purpose to demo the honest "—". **Taxes are deliberately left un-itemized** — that
+    is the state the carry-forward guard exists for, and `expenseEntry.test.js` pins it (my first attempt seeded tax rows and broke
+    that regression; the seed lost them rather than the test losing its teeth).
+  - **Verified:** unit **1143/1143** (`vitest run`); `npm run build` compiles; migration applied clean and read back (`paid_date`
+    date/nullable, CHECK now `('cam','tax','roof')`, **12 existing rows correctly left undated**, every stored total unchanged); live
+    200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it. **Driven in a real browser against
+    the deployed demo at 1440px and 420px:** three itemized sections each headed **Date paid**, the roof reading *Apex Roofing — leak
+    repair $1,500.00 May 14* / *section replacement $2,500.00 Aug 27* / **Roof $4,000.00**, the Roof stat card **still $4,000.00 ·
+    $1,600 billed / $2,400 absorbed** (the "no tenant bill moved" proof, live), CAM sorting **Jan 22 → Apr 18 → undated last** (the
+    new order — Snow removal now precedes Landscaping despite being created later), and Oak Center correctly showing the
+    un-itemized flat state at *current: $12,000.00*. **Zero horizontal page overflow at either width; zero console errors.** (One
+    demo-edge propagation race hit and waited out, twice — the documented stale `index.html`.)
+  - **George: hard-refresh (Cmd+Shift+R).** On any property's **Expense entry**, every line now has a **Date paid** column, and the
+    roof has its own itemized list like taxes and CAM. Import a statement and each expense keeps the day the bank printed on it.
+  - **Flags:** ① **Existing expense lines have no date** and will read "—" until you type one or re-import the statement — that's
+    deliberate, not a gap to be filled with a guess. ② **The first roof line you add to a property carries its existing roof total
+    in as an "Entered by hand" line** — rename, split or delete it once the real invoices are in; the year is the sum from then on.
+    ③ **Nothing reads the dates yet.** They exist so the monthly trend, the T-12 and the cash-basis view later in this arc can be
+    built on real data; this round is the foundation, and the visible payoff arrives with them. ④ A pre-existing cosmetic overflow
+    at phone width on the **CAM** add-form's *% of rent* / *not billed* labels (34px cell, ~70px of nowrap text) is unrelated to
+    this round and deliberately left alone — the page itself has zero horizontal overflow. Say the word and I'll tidy it.
+
 - **2026-07-31** — **Accounting rounds 1+2: a lease whose text never cached can be repaired without re-uploading it, and one
   confirmed click reviews every lease on a property** (George: *"okay lets start implementing the plan phase by phase"*, working
   the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md`; rounds 1 and 2 were the two he green-lit

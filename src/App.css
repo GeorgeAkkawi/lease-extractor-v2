@@ -444,7 +444,9 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .cam-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px}
 .cam-head strong{font-family:var(--display);font-size:19px;font-weight:600}
 .cam-table{display:flex;flex-direction:column}
-.cam-row{display:grid;grid-template-columns:1fr 170px 110px 34px;gap:14px;align-items:center;padding:7px 0;border-bottom:1px solid var(--hair)}
+/* col 3 was an unused spacer until 0074 gave every expense line a paid date — 132px is
+   what a native date input needs to print mm/dd/yyyy without clipping. */
+.cam-row{display:grid;grid-template-columns:1fr 170px 132px 34px;gap:14px;align-items:center;padding:7px 0;border-bottom:1px solid var(--hair)}
 .cam-row.cam-th{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .cam-row.cam-th .num,.cam-row .num{text-align:right}
 .cam-row.last{border-bottom:none}
@@ -454,6 +456,12 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .cam-input:hover{border-color:var(--border);background:#fff}
 .cam-input:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
 .cam-input.num{text-align:right;font-variant-numeric:tabular-nums}
+/* A native date input carries an intrinsic minimum width (wide enough for mm/dd/yyyy
+   plus the picker) that is larger than this row's date column once the phone
+   breakpoint narrows it — without this it pushes the whole row sideways instead of
+   shrinking. The flex wrapper the CAM add-form puts it in needs the same release. */
+.cam-row input[type="date"]{min-width:0}
+.cam-row > div{min-width:0}
 .cam-amt{display:flex;align-items:center;position:relative}
 .cam-amt .cam-pre{position:absolute;left:11px;color:var(--muted);font-size:14px;pointer-events:none}
 .cam-amt .cam-input{padding-left:21px}

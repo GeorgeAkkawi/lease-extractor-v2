@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals, resyncPropertyBilling } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
-import { money } from '../lib/format';
+import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
 
@@ -47,6 +47,7 @@ export default function CamSection({ propId, year, expense }) {
   const [pct, setPct] = useState('');
   const [pctMode, setPctMode] = useState(false);
   const [notBilled, setNotBilled] = useState(false);
+  const [paidDate, setPaidDate] = useState('');
   const [flat, setFlat] = useState('');
   // Offer the percentage the moment the label starts reading like a management fee —
   // once, so turning it back off sticks while the label still says "management".
@@ -83,12 +84,13 @@ export default function CamSection({ propId, year, expense }) {
         amount: pctMode ? feeAmount : Number(amount) || 0,
         rent_pct: pctMode ? Number(pct) || 0 : null,
         billable: !notBilled,
+        paid_date: paidDate || null,
       });
       if (item.billable !== false) await carryThrough();
       return item;
     },
     onSuccess: (item) => {
-      setLabel(''); setAmount(''); setPct(''); setPctMode(false); setNotBilled(false); invalidate();
+      setLabel(''); setAmount(''); setPct(''); setPctMode(false); setNotBilled(false); setPaidDate(''); invalidate();
       setSaved({
         label: `added ${item.label}`,
         undo: async () => { await deleteCamLineItem(item.id, propId, year); if (item.billable !== false) await carryThrough(); },
@@ -107,7 +109,7 @@ export default function CamSection({ propId, year, expense }) {
       setSaved({
         label: `removed ${it.label}`,
         undo: async () => {
-          await addCamLineItem({ property_id: propId, year, label: it.label, amount: it.amount, rent_pct: it.rent_pct ?? null, billable: it.billable !== false });
+          await addCamLineItem({ property_id: propId, year, label: it.label, amount: it.amount, rent_pct: it.rent_pct ?? null, billable: it.billable !== false, paid_date: it.paid_date || null });
           if (it.billable !== false) await carryThrough();
         },
       });
@@ -172,7 +174,7 @@ export default function CamSection({ propId, year, expense }) {
         )}
       </div>
       <div className="num">{money(it.amount)}</div>
-      <div className="num"></div>
+      <div className="num muted" style={{ fontSize: 12 }} title={it.paid_date ? undefined : 'No date on file — entered by hand, or carried from a service contract, rather than read from a statement'}>{fmtShortDate(it.paid_date)}</div>
       {it.contract_id
         ? <span className="muted" title="Managed by the service contract — edit it in Contracts" style={{ fontSize: 11 }}>auto</span>
         : <button className="icon-btn danger-btn" onClick={() => remove.mutate(it)}>✕</button>}
@@ -200,7 +202,7 @@ export default function CamSection({ propId, year, expense }) {
       <div className="cam-row cam-th">
         <div>Component</div>
         <div className="num">Annual cost</div>
-        <div className="num"></div>
+        <div className="num">Date paid</div>
         <div></div>
       </div>
 
@@ -236,7 +238,7 @@ export default function CamSection({ propId, year, expense }) {
           <div className="cam-row cam-th" style={{ marginTop: 14 }}>
             <div>Other expenses — not billed to tenants</div>
             <div className="num">Annual cost</div>
-            <div className="num"></div>
+            <div className="num">Date paid</div>
             <div></div>
           </div>
           {groupRows(otherItems)}
@@ -264,6 +266,7 @@ export default function CamSection({ propId, year, expense }) {
           <div className="cam-amt"><span className="cam-pre">$</span><input className="cam-input num" type="number" step="any" placeholder="0" value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <input className="cam-input" type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} title="The day it was paid — optional" style={{ fontSize: 12, padding: '5px 7px' }} />
           <label className="muted" style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title="Price this line as a percentage of the property's annual base rent — the usual way a management fee is set. The dollar figure is worked out for you and follows the rent.">
             <input type="checkbox" checked={pctMode} onChange={(e) => setPctMode(e.target.checked)} />
             % of rent
