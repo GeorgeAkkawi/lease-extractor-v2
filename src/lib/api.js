@@ -251,6 +251,14 @@ export const listLeases = async (propertyId) => {
   return (all || []).sort(byTermEnd);
 };
 
+// Just the saved AI reviews for a property's leases. Deliberately NOT folded into
+// LEASE_LIST_COLS: that column list feeds every lease list in the app, and ai_review is
+// a blob only two screens read — adding it there would download every review on every
+// tenant list forever. Filtering server-side keeps this to the handful of reviewed rows.
+export const listLeaseReviews = (propertyId) =>
+  rows(supabase.from('leases').select('id,tenant_name,ai_review')
+    .eq('property_id', propertyId).not('ai_review', 'is', null));
+
 // Bulk: every lease for a set of properties in ONE query, grouped by property_id.
 // Lets a property list load all its cards' leases at once (no per-card waterfall).
 // Returns a map { [propertyId]: lease[] } with an entry for every id passed in.

@@ -463,6 +463,31 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .cat-chip.derived{border-style:dashed}
 .cat-chip.none{border-color:var(--gold);color:var(--gold);background:transparent}
 .cat-summary{margin-top:18px;padding-top:4px;border-top:1px solid var(--line)}
+/* Slice 3 — "What it cost you". Its own grid rather than .cam-row's: the four columns
+   here mean something different (category | spent | recovered | net) and the expense
+   entry's 34px action slot has no counterpart. Same type treatment throughout so the
+   two read as one page. */
+.recov-table{display:flex;flex-direction:column}
+.recov-row{display:grid;grid-template-columns:1fr 130px 170px 150px;gap:14px;align-items:center;padding:9px 0;border-bottom:1px solid var(--hair)}
+.recov-row .num{text-align:right;font-variant-numeric:tabular-nums}
+.recov-row.recov-th{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;padding-bottom:10px;border-bottom:1px solid var(--line)}
+/* The net column is the answer the table exists to give, so it carries the weight —
+   the same treatment the per-tenant breakdown gives its closing Difference figure. */
+.recov-row .recov-net{font-weight:600;color:var(--ink)}
+.recov-row .recov-back{color:var(--muted)}
+.recov-row.recov-total{border-bottom:none;border-top:1px solid var(--line);padding-top:12px;margin-top:2px}
+.recov-row.recov-total b{font-family:var(--display);font-size:17px;font-weight:600}
+/* Gold on an uncategorized row, matching the chip that sets it — this app's "look here". */
+.recov-row.cat-none .num{color:var(--gold)}
+@media (max-width:880px){
+  /* Four money columns don't survive a phone. Exactly the ledger grid's reflow: the
+     header band hides, the category takes a full-width line, and the three figures wrap
+     3-across self-labelled by the shared .stat-label (visible only at this width). */
+  .recov-row{grid-template-columns:repeat(3,1fr);gap:10px 14px}
+  .recov-row.recov-th{display:none}
+  .recov-row > div:first-child{grid-column:1/-1}
+  .recov-row .num{text-align:left}
+}
 .cam-row.cat-none .num{color:var(--gold);font-weight:600}
 .cam-input{font-family:inherit;font-size:14px;padding:9px 11px;border:1px solid transparent;border-radius:var(--radius);background:var(--panel-2);color:var(--ink);width:100%;outline:none}
 .cam-input:hover{border-color:var(--border);background:#fff}

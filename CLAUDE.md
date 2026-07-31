@@ -181,6 +181,101 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 5 (Slice 3): the recoverability table — for the first time the app can say what an
+  expense actually COST you, after tenants pay their share** (George: *"continue"*, working the accounting direction doc
+  `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: frontend Cloudflare version **`00bdd480`**,
+  demo worker `e80f1edc`. **$0 — no AI call anywhere; NO migration, NO edge function, NO view, NO new table; not one
+  figure is written and not one tenant's bill can move, because every number is DERIVED.** Tests **1186/1186 across 131
+  files** (was 1165/129 — +21, two new suites).
+  - **The gap this closes, stated precisely.** `v_property_totals` has carried `roof_recovered` / `roof_unrecovered`
+    since migration **0005** — for exactly ONE bucket, because the roof is the one expense with a per-lease
+    responsibility flag. For CAM and taxes it *looks* like recovered equals spent, and it doesn't: vacancy, a share
+    override, and a line marked *not billed to tenants* each break it silently. So the single most important number for
+    a net-lease landlord — what he spent LESS what came back — existed for the roof and nowhere else. **This is the
+    one-off generalized**, and the roof row is now a free cross-check against SQL that predates it by seventy migrations.
+  - **It needed no schema at all, which is the point.** The recovered figure is read out of `v_tenant_shares` (which the
+    per-tenant breakdown on the same page already renders) and the spent figure out of `cam_line_items` (which the three
+    itemized sections above it already render) — **through their own React Query keys**, so it is a cache hit, it
+    repaints on every existing invalidation with no new plumbing, and it **cannot disagree with the page it sits on**.
+  - **Live, on George's real data, the cross-check holds to the cent:** Pershing FY2026 `v_property_totals.roof_recovered`
+    reads **30.36** and this table derives **30.36**. Two independent implementations, one in SQL since 0005 and one in
+    JS today, landing on the same number — pinned by a test that will fail if they ever diverge.
+  - **What Pershing FY2026 now reads:** taxes spent **$127,000** · recovered **$118,853.53** · **net $8,146.47** ·
+    CAM $24,200 / $22,647.68 · roof $500 / $30.36 / **net $469.64** (only Infinite Mobile is roof-responsible).
+    **≈$10,168 carried** — a figure that did not exist in the app this morning.
+  - **⚠ AND IT IMMEDIATELY SURFACED $40,843 THAT HAS NEVER REACHED ANY FIGURE AMLAK COMPUTES.** 401 S Main FY2026 carries
+    **Liana $20,000 · IL DPT REV $10,000 · Yazin $10,000 · Other $843**, all marked not-billed — so `syncCamTotal`
+    (which sums `billable !== false`) never counts them, therefore `total_expenses` doesn't, therefore **NOI doesn't**.
+    That was a deliberate 2026-07-21 decision (*"folding them into NOI = v2"*), and the money has been visible on the
+    page and absent from every figure derived from the page ever since. **This table is the first thing that counts it.**
+    **⚠ And some of it probably isn't an expense at all** — "Liana" and "Yazin" are check payees and read like owner
+    draws, which reduce equity and must never touch a P&L. Slice 4 is what gives a draw a home; until then a not-billed
+    line is counted as an expense because that is what the app was told it is. **Flagged, not papered over.**
+  - **`recovered` is the ACTUAL pro-rata share, not the estimate — and that is the honest choice.** A tenant pays an
+    estimate all year and the difference is settled at reconciliation, so what the landlord is *entitled to collect* for
+    the year is the actual share, whatever the estimate happened to be. It is also why the figure ties to the roof
+    numbers the view has computed for months. **A gross lease still recovers** (0073): its share is carved out of the
+    flat rent rather than billed on top, and `cam_amount`/`tax_amount`/`roof_amt` are deliberately unchanged for it — so
+    **no gross branch was needed anywhere**.
+  - **Two refusals, both load-bearing.** ① **`null`, never 0, for a kind with no spend** — "nothing was spent" and
+    "nothing came back" are different claims, and a 0 would multiply into a recovered column that looks like a finding.
+    ② **An un-itemized kind gets its own row rather than vanishing.** A kind either has lines that sum to its total
+    (`syncKindTotal` re-sums from the rows whenever any exist) or has no lines and one flat figure — so Pershing's
+    **$127,000 of taxes, which nobody has split into instalments, appears as "Property taxes — entered as one figure,
+    not itemized"** instead of being silently absent from a table headed *what it cost you*.
+  - **The section a line was entered in is itself information.** Category resolution is **saved bucket → label registry →
+    what the section means → uncategorized**: a row in the property-taxes list IS a real-estate-tax line and a roof line
+    IS roof work — not a guess, just what the section is for. Only **CAM** is genuinely ambiguous, which is exactly where
+    the gold uncategorized nag belongs. That also meant no chips had to be added to the tax and roof sections this round.
+  - **Every row ties as displayed.** `spent = recovered + net` to the cent (net is derived FROM the rounded pair, never
+    from the raw figures), and the totals line is the **sum of the rows shown**, never a second derivation — a table
+    whose columns don't add up is worse than no table. Both pinned.
+  - **Ranked by NET COST, not by spend** — the roof you absorbed in full outranks a larger tax bill that came back
+    whole, because that is the question. **Uncategorized is pinned last regardless**, so the sort can neither bury the
+    nag nor promote it above real categories (pinned in both directions).
+  - **⚠ THE CAM-CAP CAVEAT — and Slice 3 is what finally answered the question that started this whole plan.** The
+    ten-check review flags `cam_capped`, and grep found the key nowhere in the billing math: Amlak bills uncapped
+    pro-rata regardless, so the recovered column would report money the landlord isn't entitled to collect. Round 4's
+    sweep made this answerable for the first time, and the answer is **exactly one lease — Tobacco, Pershing Plaza.**
+    Making a cap a stored lease term feeding `billedComponents` is a §2 choke-point change and is **deliberately not
+    done here**; the table names the lease, links to it, **and quotes the clause the flag came from**. That quote is the
+    design: **Tobacco's own quote describes an ESTIMATE with a true-up the tenant "unconditionally agrees" to — which is
+    close to the opposite of a cap**, so this one reads as a likely false positive. A caveat you can check beats one you
+    can only believe.
+  - **Slice 2's CAM-only roll-up is DELETED, as Round 4 said it would be.** It covered one of three sections and said so
+    in its own footnote; this covers all three and adds the column worth reading, so keeping both would put two roll-ups
+    on one page disagreeing about scope. `summarizeByCategory` went with it — `recoverabilityRows` is a strict superset,
+    and two implementations of one grouping rule is precisely what §3 says always drifts. **Its invariants moved rather
+    than died**, including THE refusal (uncategorized is never folded into "Other"), now pinned BOTH as a unit test and
+    **in the DOM** against the component that actually ships. Setting a category still happens on the chip in
+    `CamSection` — that is its job and it stays.
+  - **`listLeaseReviews` is deliberately NOT `ai_review` on `LEASE_LIST_COLS`.** That column list feeds every lease list
+    in the app; adding a review blob there would download every review on every tenant list forever. Server-side
+    filtering keeps it to the handful of reviewed rows.
+  - **Files.** New: `src/lib/recoverability.js` · `src/components/RecoverabilityTable.js` ·
+    `src/lib/__tests__/recoverability.test.js` (17) · `src/components/__tests__/recoverabilityUi.test.js` (4). Edited:
+    `src/lib/{api,leaseRisks,expenseCategories}.js` · `src/components/CamSection.js` ·
+    `src/pages/PropertyFinancialsPage.js` · `src/App.css` · tests (`expenseCategories` −5 moved, `bucketUi` retargeted
+    to the chips, `expenseEntryUi` repointed off the removed roll-up). **No** migration, view, RPC, edge function or
+    `mockClient.js` change — nothing new is stored, so §3 carries no mirror obligation here (re-verified, not inherited).
+  - **Verified:** unit **1186/1186** (`vitest run`); `npm run build` compiles; live 200s on all four URLs; live bundle
+    carries the backend ref, demo bundle greps **free** of it; **live read-back confirms the roof cross-check (30.36 =
+    30.36) and that no stored total moved — nothing in this round writes.** **Driven in a real browser against the
+    deployed demo at 1440px and 420px:** the table reads *Repairs $4,000.00 / $1,600.00 / **$2,400.00*** at the top,
+    *Legal and professional $1,200.00 / — / $1,200.00*, *Real estate taxes $25,000.00* flagged un-itemized, *Not
+    categorized $6,000.00* last, and **Total $48,200.00 / $44,600.00 / $3,600.00 — "Tenants cover 92.5% of what you
+    spend"**; at 420px the header band hides and every figure self-labels via the shared `.stat-label`; **zero page
+    overflow at either width, zero console errors**, and the old CAM roll-up confirmed gone.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now carries **"What it cost you"** under the
+    expense entry: what you spent, what your tenants pay back, and what you carry — by the line of your return each
+    bucket rolls up to.
+  - **Flags:** ① **401 S Main will show ~$40,843 of net cost you have never seen in the app** — that is real money you
+    spent, previously counted nowhere. Some of it is probably an owner draw rather than an expense; Slice 4 is what
+    separates those. ② **Tobacco (Pershing) carries a CAM-cap warning** under the table — read the quoted clause; on my
+    reading it doesn't actually cap anything, in which case the figure stands as shown. ③ **Nothing on this page writes.**
+    A wrong category makes a wrong report and can never make a wrong invoice. ④ Pershing's **$127,000 of taxes is one
+    flat figure** — itemize the instalments (Slice 1 gave taxes their own list) and the table gets sharper by payment.
+
 - **2026-07-31** — **Accounting round 4 (Slice 2): an expense bucket becomes a RECORD carrying a tax category · the lease-review
   sweep finally ran on live data (14 of 15, 31 findings) · and it exposed a real defect — a review built on a half-transcribed
   scan was reporting confident findings from pages nobody could read** (George: *"im giving you permission to go ahead and change

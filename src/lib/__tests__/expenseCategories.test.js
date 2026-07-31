@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   EXPENSE_CATEGORIES, categoryLabel, isValidCategory, bucketKey,
-  defaultCategoryFor, isCapitalProne, categoryFor, summarizeByCategory,
+  defaultCategoryFor, isCapitalProne, categoryFor,
 } from '../expenseCategories';
 import { transcriptGaps } from '../leaseRisks';
 
@@ -96,55 +96,9 @@ describe('a saved choice outranks a default, and says which it is', () => {
   });
 });
 
-describe('the roll-up', () => {
-  const items = [
-    { label: 'Landscaping', amount: 1000 },
-    { label: 'Snow removal', amount: 500 },
-    { label: 'HVAC service', amount: 4000 },
-    { label: 'Other', amount: 250 },
-    { label: 'Liana', amount: 900 },
-  ];
-
-  it('groups by category, biggest first, and sums to the input', () => {
-    const out = summarizeByCategory(items, []);
-    expect(out[0]).toMatchObject({ key: 'repairs', total: 4000 });
-    expect(out[1]).toMatchObject({ key: 'cleaning', total: 1500 });
-    expect(out.reduce((s, c) => s + c.total, 0)).toBe(6650);
-  });
-
-  // THE refusal. Uncategorized money is its own visible figure, always last, and is
-  // never added to the "Other" category — those are different things: one is a CHOICE
-  // to file something as Other, the other is nobody having decided yet.
-  it('keeps uncategorized money separate from the "Other" category, and puts it last', () => {
-    const out = summarizeByCategory(items, []);
-    const last = out[out.length - 1];
-    expect(last.key).toBe(null);
-    expect(last.total).toBe(1150);              // Other 250 + Liana 900
-    expect(last.buckets).toEqual(['Liana', 'Other']);
-    expect(out.some((c) => c.key === 'other')).toBe(false); // nothing was filed AS Other
-  });
-
-  it('drops the uncategorized entry entirely once every bucket is answered', () => {
-    const saved = [{ label: 'Other', category: 'other' }, { label: 'Liana', category: 'legal' }];
-    const out = summarizeByCategory(items, saved);
-    expect(out.some((c) => c.key === null)).toBe(false);
-    expect(out.find((c) => c.key === 'other').total).toBe(250);
-    expect(out.find((c) => c.key === 'legal').total).toBe(900);
-  });
-
-  it('flags a group that is riding on defaults rather than choices', () => {
-    expect(summarizeByCategory(items, []).find((c) => c.key === 'repairs').anyDefault).toBe(true);
-    const saved = [{ label: 'HVAC service', category: 'repairs' }];
-    expect(summarizeByCategory(items, saved).find((c) => c.key === 'repairs').anyDefault).toBe(false);
-  });
-
-  it('is pure and handles an empty year', () => {
-    const before = JSON.stringify(items);
-    summarizeByCategory(items, []);
-    expect(JSON.stringify(items)).toBe(before);
-    expect(summarizeByCategory([], [])).toEqual([]);
-  });
-});
+// The roll-up moved to recoverability.test.js — Slice 3's recoverabilityRows subsumes
+// summarizeByCategory (same grouping, same uncategorized refusal, plus the recovered
+// column), so its invariants are now pinned against the function that actually ships.
 
 // ── The transcript-gap rule ───────────────────────────────────────────────────
 // Found by running the review sweep on live data: a review's most valuable findings say

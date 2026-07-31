@@ -164,3 +164,32 @@ export function transcriptGaps(text) {
   const readableLength = t.replace(GAP_RE, '').trim().length;
   return { partial: markers.length > 0, pages, readableLength };
 }
+
+/**
+ * Leases the AI review flagged as CAPPING the tenant's operating-expense share.
+ *
+ * Slice 3's recovery figure divides each expense by pro-rata share and assumes the whole
+ * share is collectable. A cap breaks that assumption — a capped tenant reimburses less
+ * than their share, so the recovered column would report money the landlord is not
+ * entitled to collect. Making a cap a stored lease term feeding billedComponents is a
+ * choke-point change (CLAUDE.md §2) and is deliberately NOT done here; the table names
+ * the lease instead, and quotes the clause the flag came from so it can be judged rather
+ * than merely believed. A flag whose own quote doesn't describe a cap is a flag to argue
+ * with, and the quote is what makes that possible.
+ */
+export function cappedLeases(leases = []) {
+  const out = [];
+  for (const l of leases) {
+    const flags = Array.isArray(l?.ai_review?.flags) ? l.ai_review.flags : [];
+    const flag = flags.find((f) => f?.key === 'cam_capped');
+    if (flag) {
+      out.push({
+        id: l.id,
+        tenant_name: String(l.tenant_name || '').trim() || 'This tenant',
+        title: flag.title || null,
+        quote: flag.quote || null,
+      });
+    }
+  }
+  return out.sort((a, b) => a.tenant_name.localeCompare(b.tenant_name));
+}

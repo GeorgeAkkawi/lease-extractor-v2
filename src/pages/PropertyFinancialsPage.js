@@ -15,6 +15,7 @@ import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import TaxSection from '../components/TaxSection';
 import RoofSection from '../components/RoofSection';
+import RecoverabilityTable from '../components/RecoverabilityTable';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
@@ -194,6 +195,8 @@ export default function PropertyFinancialsPage() {
           <RoofSection propId={propId} year={year} expense={expense} />
         </div>
       </StatementDropZone>
+
+      <RecoverabilityTable propId={propId} corpId={corpId} year={year} />
 
       <div className="page-head" style={{ marginTop: 8 }}>
         <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>

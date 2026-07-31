@@ -106,45 +106,8 @@ export function categoryFor(label, buckets = []) {
   return def ? { category: def, source: 'default' } : { category: null, source: null };
 }
 
-/**
- * Roll a list of expense line items up by tax category.
- *
- * Returns one entry per category that has money in it, biggest first, plus — always
- * last, and only when it has money — a single `uncategorized` entry carrying its own
- * bucket labels so the UI can name exactly what needs answering.
- *
- * Pure: takes the rows and the saved buckets, reads no clock and no network.
- */
-export function summarizeByCategory(items = [], buckets = []) {
-  const byCat = new Map();
-  let uncategorized = null;
-
-  for (const it of items) {
-    const amount = Number(it.amount) || 0;
-    const label = String(it.label || '').trim() || '—';
-    const { category, source } = categoryFor(label, buckets);
-
-    if (!category) {
-      uncategorized ||= { key: null, label: 'Not categorized', total: 0, buckets: [], anyDefault: false };
-      uncategorized.total += amount;
-      if (!uncategorized.buckets.includes(label)) uncategorized.buckets.push(label);
-      continue;
-    }
-    let e = byCat.get(category);
-    if (!e) {
-      e = { key: category, label: categoryLabel(category), total: 0, buckets: [], anyDefault: false };
-      byCat.set(category, e);
-    }
-    e.total += amount;
-    if (source === 'default') e.anyDefault = true;
-    if (!e.buckets.includes(label)) e.buckets.push(label);
-  }
-
-  const out = [...byCat.values()].sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
-  out.forEach((e) => e.buckets.sort((a, b) => a.localeCompare(b)));
-  if (uncategorized) {
-    uncategorized.buckets.sort((a, b) => a.localeCompare(b));
-    out.push(uncategorized);
-  }
-  return out;
-}
+// The roll-up itself lives in recoverability.js (Slice 3). It began here as a
+// spent-only `summarizeByCategory`, and Slice 3's version is a strict superset — same
+// grouping, same "uncategorized is never Other" refusal, plus what tenants paid back.
+// Keeping both would be two implementations of one grouping rule, which CLAUDE.md §3
+// says always drift; the invariants moved to that suite rather than being dropped.

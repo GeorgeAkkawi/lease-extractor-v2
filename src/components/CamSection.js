@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals, resyncPropertyBilling, listExpenseBuckets, saveExpenseBucket } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
-import { EXPENSE_CATEGORIES, categoryFor, categoryLabel, summarizeByCategory, bucketKey } from '../lib/expenseCategories';
+import { EXPENSE_CATEGORIES, categoryFor, categoryLabel, bucketKey } from '../lib/expenseCategories';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
@@ -302,40 +302,12 @@ export default function CamSection({ propId, year, expense }) {
         </>
       )}
 
-      {/* Where the year's spending lands on a tax return. Covers BOTH groups: a cost you
-          absorbed is still a deductible expense, even though no tenant reimburses it.
-          An uncategorized bucket appears as its own figure — never folded into "Other",
-          which is exactly how a miscellaneous line becomes a place to hide things. */}
-      {items.length > 0 && (
-        <div className="cat-summary">
-          <div className="cam-row cam-th" style={{ marginTop: 0 }}>
-            <div>These lines by tax category</div>
-            <div className="num">FY {year}</div>
-            <div className="num"></div>
-            <div></div>
-          </div>
-          {summarizeByCategory(items, buckets).map((c) => (
-            <div className={`cam-row${c.key ? '' : ' cat-none'}`} key={c.key || 'uncategorized'}>
-              <div>
-                {c.label}
-                <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                  {c.buckets.join(' · ')}
-                  {!c.key && ' — pick a category on the lines above'}
-                </div>
-              </div>
-              <div className="num">{money(c.total)}</div>
-              <div className="num"></div>
-              <div></div>
-            </div>
-          ))}
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            Which line of your return each bucket rolls up to — your CPA may file some differently.
-            Changing a category never changes what a tenant is billed. Covers the CAM and
-            not-billed lines above only; property taxes and roof work are itemized in their own
-            sections and file on their own lines.
-          </div>
-        </div>
-      )}
+      {/* Slice 2's CAM-only roll-up lived here and is DELIBERATELY GONE. It covered one of
+          the three itemized sections and said so in its own footnote; Slice 3's
+          "What it cost you" table below the expense entry covers all three AND adds the
+          recovered column, so keeping both would put two roll-ups on one page disagreeing
+          about scope. Setting a category still happens here, on the chip beside each
+          bucket — that is this section's job and it stays. */}
 
       {/* add a line item */}
       <form className="cam-row" onSubmit={(e) => { e.preventDefault(); if (label.trim()) add.mutate(); }} style={{ borderBottom: 'none', marginTop: 8 }}>
