@@ -67,7 +67,8 @@ describe('TenantShareTable — a gross lease carves, and says so', () => {
     expect(within(r).getByText('$60,000.00')).toBeTruthy();
     expect(within(r).queryByText('$78,800.00')).toBeNull();
     // The row names itself so it doesn't read as a mis-priced net tenant.
-    expect(r.querySelector('.gross-chip').textContent).toMatch(/gross — expenses included/);
+    expect(r.querySelector('.lease-type-chip').textContent).toBe('Gross');
+    expect(r.querySelector('.lease-type-chip').className).toContain('gross');
   });
 
   it('makes the estimate un-editable and hides ⚖ Reconcile', async () => {
@@ -105,7 +106,10 @@ describe('TenantShareTable — a gross lease carves, and says so', () => {
     const r = await row('Bright Coffee Co.', null);
     expect(within(r).getByText('$60,000.00')).toBeTruthy();      // base is the rent again
     expect(within(r).getByText('$16,500.00')).toBeTruthy();      // the estimate bills again
-    expect(r.querySelector('.gross-chip')).toBeNull();
+    // Back to NNN — labeled, not blank: an unlabeled row would be ambiguous between
+    // "triple net" and "nobody has recorded which this is".
+    expect(r.querySelector('.lease-type-chip').textContent).toBe('NNN');
+    expect(r.querySelector('.lease-type-chip').className).not.toContain('gross');
     expect(within(r).queryByText(/flat \$60,000\.00 −/)).toBeNull();
   });
 });

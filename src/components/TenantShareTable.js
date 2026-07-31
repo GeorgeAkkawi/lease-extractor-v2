@@ -24,6 +24,7 @@ import EmailComposeModal from './EmailComposeModal';
 import TenantSortBar from './TenantSortBar';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
+import LeaseTypeChip from './LeaseTypeChip';
 
 const NBSP = ' ';
 
@@ -331,7 +332,7 @@ export default function TenantShareTable({ propertyId, year }) {
               <div className="ledger-name">{s.tenant_name}</div>
               <div className="ledger-meta">
                 <span className="ledger-sf">{sf(s.square_footage)}</span> · {pct(s.share_pct)} share
-                {gross && <span className="gross-chip" title="Flat rent — taxes & CAM are included in it. This tenant's share is carved out of the rent below, never added on top."> · gross — expenses included</span>}
+                <LeaseTypeChip gross={gross} />
               </div>
               <div className="ledger-actions">
                 <ReconcileAction

@@ -9,6 +9,7 @@ import { billedComponents } from '../lib/reconciliation';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import PropertyTabs from '../components/PropertyTabs';
 import { RowListSkeleton } from '../components/Skeleton';
+import LeaseTypeChip from '../components/LeaseTypeChip';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 import { money, psf, sf, fmtDate, approx } from '../lib/format';
 
@@ -251,7 +252,9 @@ function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, on
     >
       <span className="lease-name">
         <strong>{lease.tenant_name}</strong>
-        <span className="muted">{sf(lease.square_footage)}</span>
+        {/* Sits on the size line rather than its own row (.lease-name is a flex column),
+            so the list reads "2,000 SF · NNN" without growing every row's height. */}
+        <span className="muted">{sf(lease.square_footage)}<LeaseTypeChip gross={!!totals?.gross} /></span>
         {lease.is_active === false && <span className="badge danger" style={{ marginTop: 4, alignSelf: 'flex-start' }}>Outdated — needs extension</span>}
       </span>
       <span className="lease-col">

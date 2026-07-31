@@ -28,6 +28,7 @@ import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleSta
 import LearnedPayeesPanel from '../components/LearnedPayeesPanel';
 import MutationError from '../components/MutationError';
 import { useConfirm } from '../components/ConfirmDialog';
+import LeaseTypeChip from '../components/LeaseTypeChip';
 import { money, money0, sf, fmtDate } from '../lib/format';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -337,6 +338,10 @@ export default function LedgerPage() {
                   <tr key={r.lease_id}>
                     <td>
                       <Link to={`/leases/${corpId}/${propId}/${r.lease_id}`} className="rr-tenant">{r.tenant_name}</Link>
+                      {/* How this tenant's expenses are recovered — the same chip the
+                          per-tenant breakdown shows, so the two surfaces agree. It's what
+                          explains why a gross row's base is lower than its lease rent. */}
+                      <LeaseTypeChip gross={!!r.gross} />
                       {heldOver && (
                         <div>
                           <span className="badge warn" style={{ marginTop: 3 }} title="This lease has expired but the tenant is being held over — rent still collects until you remove or extend the lease.">

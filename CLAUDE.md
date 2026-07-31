@@ -181,6 +181,54 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Follow-up: every tenant row now STATES its expense structure — NNN or Gross — on the
+  per-tenant breakdown, the Rent Ledger and the Leases list** (George, reviewing the round below: *"did you add
+  the gross lease vs NNN lease toggle that the ai extractor is connected to when it reads the leases? and on the
+  per tenant break down and the ledger it should say whether each tenant is NNN or G"*). Deployed: frontend
+  Cloudflare version **`5d203025`**, demo worker `4ab2f7e8`. **One new component + CSS — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, zero billing-math change.** Tests **1104/1104 across 125 files**
+  (was 1103/125 — +1).
+  - **Half of what he asked for already shipped, half hadn't.** The toggle and its AI wiring were done (analyst
+    VERDICTS `expense_recovery` → `parsed.lease_type` → `initialFromExtraction` → the review form's Net/Gross
+    segmented control → the lease page's Gross lease toggle). What was missing is the part he's pointing at: the
+    breakdown marked **only** gross rows, and the Ledger said nothing at all. Absence-of-label is not a label — a
+    blank row reads as ambiguous between *triple net* and *nobody has recorded which this is*, which is exactly
+    the ambiguity the flag exists to kill. So **both** states are now labeled, on every row.
+  - **One chip, declared once.** New `LeaseTypeChip.js` is the single definition of how the fact is named, imported
+    by all three tenant lists — the mirror rule (§3), applied before the drift rather than after it. Two states,
+    never three: `lease_type` is null on every pre-0073 lease and null reads as NET app-wide, so a null row is
+    labeled **NNN**, not left blank.
+  - **The visual weight goes where the money changes.** Gross is a filled accent chip; NNN is a quiet outline chip,
+    being the default nearly every row is. So a scan down a property finds the exception, and the exception is the
+    row whose base is lower than its lease rent — which is precisely the figure that would otherwise read as a
+    mis-priced net tenant. The old `.gross-chip` (accent text, gross-only) is deleted with the conditional it
+    styled; its trailing *"· gross — expenses included"* wording moves into the tooltip, since the row already
+    says it twice more (the base sub-line's *flat $X − $Y expenses* and the Reconcile slot's note).
+  - **Placement is per-surface, so no row grows.** Breakdown → on the identity meta line after the share
+    percentage. Ledger → inline after the tenant-name link (a badge on its own line would add height to every row
+    of a 12-month grid). Leases page → on the size line, because `.lease-name` is a flex **column** and a bare
+    child would take a whole row. **Leases wasn't in his ask** — added because it's the third tenant list and the
+    same question gets asked standing in front of it; it already differentiated gross implicitly ("incl." /
+    "after expenses") but never named it.
+  - **Files.** New: `src/components/LeaseTypeChip.js`. Edited: `src/components/TenantShareTable.js` ·
+    `src/pages/{LedgerPage,LeasesPage}.js` · `src/App.css` (`.lease-type-chip`; `.gross-chip` removed) · tests
+    `ledgerPage` (+1), `grossShareTable` (the two chip assertions now pin **both** states). **No** migration, edge
+    function, view, api or demo-seed change.
+  - **Verified:** unit **1104/1104** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser
+    against the deployed demo at 1440px and 420px** — and driven through the app's OWN router, since a full page
+    load resets the in-memory mock: all-net seed → both breakdown rows read **NNN** with the Totals band correctly
+    unlabeled; flipping Bright Coffee gross on its lease page then walking to Financials → **Gross** on that row
+    with City Dental still **NNN**; the Ledger shows the same pair, Bright's split reading **$5,000.00/mo =
+    $3,433.34 base · $1,433.33 CAM&tax · $133.33 roof** (the flat rent to the penny) against City Dental's net
+    **$9,150.00/mo = $7,000.00 base · $2,150.00 CAM&tax**; the Leases list reads *2,000 SF · Gross* / *3,000 SF ·
+    NNN*. **Zero horizontal overflow at either width; zero console errors or warnings.**
+  - **George: hard-refresh (Cmd+Shift+R).** Every tenant on the Financials breakdown, the Ledger and the Leases
+    list now carries an **NNN** or **Gross** tag. Card Pop reads Gross; everything else reads NNN until you flip it.
+  - **Flag (no action needed):** the tag reflects the stored flag, so a lease nobody has judged reads **NNN** —
+    that's the app's actual billing behaviour for it, not a claim that the lease was read. Flip any that are
+    wrong with the toggle on the lease page.
+
 - **2026-07-31** — **A lease can now be GROSS: a flat rent that already includes taxes & CAM, with the tenant's
   share carved OUT of it instead of billed on top** (George: *"There needs to be a gross lease option button in
   each lease's page in lease terms. The AI extractor should be able to read if a lease is gross or triple net and

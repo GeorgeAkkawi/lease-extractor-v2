@@ -558,7 +558,16 @@ tbody tr:last-child td{border-bottom:none}
 .ledger-sf{font-weight:700;color:var(--ink);font-size:12.5px}
 /* Names the one thing that makes this row read differently from the ones around it:
    its expenses come OUT of the rent. Quiet — it's a property of the lease, not a fault. */
-.gross-chip{color:var(--accent);font-weight:600}
+/* Every tenant row states how its expenses are recovered — NNN (share billed on top of
+   the rent) or Gross (share carved out of a flat rent). BOTH are labeled: an unlabeled
+   row would read as ambiguous between "triple net" and "nobody recorded which". Gross is
+   filled with the accent because it's the one that changes how the money reads; NNN is a
+   quiet outline chip, being the default nearly every row is. */
+.lease-type-chip{display:inline-block;margin-left:7px;padding:1px 5px;border-radius:2px;
+  border:1px solid var(--hair);background:transparent;color:var(--muted);
+  font-size:9.5px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;white-space:nowrap;vertical-align:1px}
+.lease-type-chip.gross{background:var(--accent-soft);color:var(--accent);border-color:transparent}
 /* Estimated vs actual CAM & tax as a clearly distinct pair: the estimated column is
    warm-tinted (what you bill during the year), the actual column green-tinted (the
    real figures as expenses land) — so the two never blur together. */

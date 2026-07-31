@@ -66,6 +66,27 @@ describe('LedgerPage — the rent ledger grid', () => {
     expect(screen.getAllByText(/base · .*CAM&tax/).length).toBeGreaterThan(0);
   });
 
+  // 0073 — every tenant states how its expenses are recovered, so a gross row's lower
+  // base doesn't read as a mis-priced net one. BOTH states are labeled: leaving net rows
+  // blank would make "no chip" ambiguous between triple net and never-recorded.
+  it('labels every tenant NNN or Gross, and the label follows the toggle', async () => {
+    renderLedger();
+    await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
+    const chips = [...document.querySelectorAll('.lease-type-chip')];
+    expect(chips.length).toBe(2);                                   // one per tenant row
+    expect(chips.every((c) => c.textContent === 'NNN')).toBe(true); // the seed is all net
+
+    cleanup();
+    await updateLease('lease-1', { lease_type: 'gross' });
+    renderLedger();
+    await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
+    const bright = screen.getByText('Bright Coffee Co.').closest('tr');
+    const dental = screen.getByText('City Dental').closest('tr');
+    expect(bright.querySelector('.lease-type-chip').textContent).toBe('Gross');
+    expect(dental.querySelector('.lease-type-chip').textContent).toBe('NNN'); // unaffected
+    await updateLease('lease-1', { lease_type: null });
+  });
+
   it('flags a held-over (expired-term) tenant on the ledger', async () => {
     await updateLease('lease-2', { is_active: false });
     renderLedger();
