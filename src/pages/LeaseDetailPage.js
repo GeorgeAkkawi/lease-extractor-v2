@@ -536,17 +536,22 @@ export default function LeaseDetailPage() {
 
         {/* Net vs gross — which side of the rent the tenant's expenses sit on. The AI
             analyst pre-sets it from the lease's own expense language; this is the
-            override, and the only control for a hand-entered lease. */}
+            override, and the only control for a hand-entered lease.
+
+            You pick the type, you don't switch a feature on: an On/Off pair made NNN
+            the unnamed absence of Gross, which is the same ambiguity the row chips
+            exist to kill. Same two words as the chips and the import review, in the
+            same order, so the fact is named identically everywhere it appears. */}
         <div className="field" style={{ marginTop: 20 }}>
-          <span className="field-label">Gross lease</span>
+          <span className="field-label">Expenses</span>
           <div className="seg">
-            <button className={`seg-btn${lease.lease_type === 'gross' ? ' on' : ''}`} onClick={() => setLeaseType.mutate('gross')} disabled={setLeaseType.isPending}>On</button>
-            <button className={`seg-btn${lease.lease_type !== 'gross' ? ' on' : ''}`} onClick={() => setLeaseType.mutate('net')} disabled={setLeaseType.isPending}>Off</button>
+            <button className={`seg-btn${lease.lease_type !== 'gross' ? ' on' : ''}`} onClick={() => setLeaseType.mutate('net')} disabled={setLeaseType.isPending}>NNN</button>
+            <button className={`seg-btn${lease.lease_type === 'gross' ? ' on' : ''}`} onClick={() => setLeaseType.mutate('gross')} disabled={setLeaseType.isPending}>Gross</button>
           </div>
           <span className="field-hint muted">
             {lease.lease_type === 'gross'
               ? 'Flat rent — taxes & CAM are INCLUDED. This tenant’s share is carved out of the rent on the breakdown, never billed on top, so the total stays the rent.'
-              : 'Triple net — this tenant is billed its share of taxes & CAM on top of the base rent. Turn on for a flat all-in rent.'}
+              : 'Triple net — this tenant is billed its share of taxes & CAM on top of the base rent. Pick Gross for a flat all-in rent.'}
           </span>
         </div>
 

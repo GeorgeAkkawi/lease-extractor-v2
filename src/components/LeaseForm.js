@@ -130,7 +130,9 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
           ? 'Gross — the rent above is all-in. This tenant’s share of taxes & CAM is carved out of it on the Financials breakdown, never billed on top.'
           : `Triple net — billed its share of taxes & CAM on top of the base rent.${extracted?.lease_type ? ' Pre-set by the AI analyst from the lease’s expense language — confirm against the lease.' : ''}`}>
           <div className="seg">
-            <button type="button" className={`seg-btn${form.lease_type !== 'gross' ? ' on' : ''}`} onClick={() => setForm((f) => ({ ...f, lease_type: 'net' }))}>Net</button>
+            {/* "NNN", not "Net" — the same word the row chips and the lease page use,
+                so the fact is named once across every surface that states it. */}
+            <button type="button" className={`seg-btn${form.lease_type !== 'gross' ? ' on' : ''}`} onClick={() => setForm((f) => ({ ...f, lease_type: 'net' }))}>NNN</button>
             <button type="button" className={`seg-btn${form.lease_type === 'gross' ? ' on' : ''}`} onClick={() => setForm((f) => ({ ...f, lease_type: 'gross' }))}>Gross</button>
           </div>
         </Field>

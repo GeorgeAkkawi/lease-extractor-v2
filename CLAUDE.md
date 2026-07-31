@@ -181,6 +181,53 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **The expense structure is now PICKED (NNN / Gross), not switched on — and the statement importer
+  says out loud why it read no estimate for a gross tenant** (George, reviewing the round below: *"is it connected to
+  bank statement import as well so the import knows which tenants are gross? it shouldnt say gross lease on or off it
+  should just say gross/NNN and select the box"*). Deployed: frontend Cloudflare version **`46079c8a`**, demo worker
+  `603f6f2c`. **Two components + one label — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails,
+  zero billing-math change.** Tests **1108/1108 across 126 files** (was 1104/125 — +4, one new suite).
+  - **The import answer is yes, and it was already load-bearing.** `getStatementMatchContext` puts `gross: !!r.gross`
+    on every tenant (`api.js:3894`, off the gross-aware roll), and `deriveEstimateFromDeposit` opens with
+    `if (tenant.gross) return null` (`statementMatch.js:336`) — **before** its "remainder < $1" heuristic, which only
+    holds while the property has no expenses entered. The matching itself needs no gross branch: a gross tenant's owed
+    IS the flat rent, so its deposit corroborates the month exactly and can never read short.
+  - **What was wrong was the SILENCE.** The estimates section did `if (!derived) continue` — so a gross tenant's
+    deposit produced no row and no reason, which reads as the importer having missed it. Worse, when *every* checked
+    deposit is gross the section didn't render at all: the blank was most confusing exactly where it was most total.
+    Now the section states it by name — *"No estimate is read for Card Pop — that lease is gross, so the deposit is
+    the whole rent with taxes & CAM already inside it. Their share is carved out of that rent on the Financials
+    breakdown instead, never billed on top."* — and stands alone with no table when there's nothing to propose.
+    Names capped at three then "and N more" (the alerts feed's convention), so a fully-gross property can't run the
+    line long. **Refusing and not saying so is the same failure mode as the unlabeled row this round's predecessor
+    fixed** — the absence carries no information.
+  - **The control names the fact instead of switching a feature on.** `Gross lease · On/Off` → **`Expenses · NNN |
+    Gross`**. On/Off made NNN the *unnamed absence of Gross*, which is precisely the ambiguity the row chips were
+    added to kill — reproduced on the control that sets it. Same two words, same order, as the chips and the import
+    review. **The roof toggle beside it deliberately stays On/Off**: you switch a charge on; you don't switch a lease
+    type on. The hint's "Turn on for a flat all-in rent" → "Pick Gross for…".
+  - **The import review's own control moved to the same word:** its segmented pair read **Net** | Gross while every
+    other surface says NNN. One vocabulary across all four places the fact is stated (chip · lease page · import
+    review · analyst read) — the mirror rule applied to wording, not just math.
+  - **Files.** New: `src/pages/__tests__/leaseTypeToggle.test.js` (2). Edited:
+    `src/pages/LeaseDetailPage.js` · `src/components/{LeaseForm,StatementReview}.js` · test `statementEstimate` (+2).
+    **No** migration, edge function, view, api, CSS or demo-seed change.
+  - **Verified:** unit **1108/1108** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser against
+    the deployed demo at 1440px and 420px, through the app's OWN router:** the lease page reads *Expenses · **NNN**
+    [selected] | Gross* with *Charge roof PSF · **On** | Off* untouched beside it; picking Gross moves the selection
+    and swaps the estimate input for *"Included in the rent"*; walking to the Ledger shows **Bright Coffee Co. →
+    Gross** / **City Dental → NNN**; and the sample statement's review renders the standalone gross note naming Bright
+    Coffee. **Zero horizontal overflow at either width; zero console errors or warnings.** (One deploy-propagation
+    race hit and waited out: the demo edge briefly served a stale `index.html`; re-checked and the served hash now
+    matches the built asset.)
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, **Expenses** is now a straight **NNN / Gross** pick. And
+    when you import a statement, a gross tenant no longer just quietly produces nothing — the review says it read no
+    estimate for them, and why.
+  - **Flag (no action needed):** the importer still **learns the payee** from a gross tenant's deposit and books the
+    payment exactly as before — the only thing it refuses is proposing a CAM & tax estimate from it. That's the
+    correct split: the money is real, the derived estimate would be double-billing.
+
 - **2026-07-31** — **Follow-up: every tenant row now STATES its expense structure — NNN or Gross — on the
   per-tenant breakdown, the Rent Ledger and the Leases list** (George, reviewing the round below: *"did you add
   the gross lease vs NNN lease toggle that the ai extractor is connected to when it reads the leases? and on the

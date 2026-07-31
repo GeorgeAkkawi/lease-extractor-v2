@@ -31,6 +31,14 @@ const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', ex
 const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info', ai: 'info' };
 const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
+// Names in prose, capped so a property full of gross tenants can't run the line long
+// (the alerts feed's three-then-"and N more" convention).
+function listNames(names, max = 3) {
+  if (names.length > max) return `${names.slice(0, max).join(', ')} and ${names.length - max} more`;
+  if (names.length <= 1) return names[0] || '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
 export default function StatementReview({ propertyId, year, fileName, accountHint, parsed, storagePath = null, pdfLane = false, onCancel, onSaved }) {
   // isError is read deliberately: without it a failed context load left the screen
   // on "Reading the statement…" forever, which reads as a hung AI even though the
@@ -290,6 +298,22 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     return [...byLease.values()].sort((a, b) => a.tenant.tenant_name.localeCompare(b.tenant.tenant_name));
   }, [ctx, resolved]);
 
+  // The gross leases the pass above deliberately skipped (deriveEstimateFromDeposit
+  // refuses one outright): a gross deposit IS the whole flat rent, so "deposit − base"
+  // hands back the expense share the breakdown just carved OUT of that rent — proposing
+  // it as an estimate would bill the same money a second time. Named here on exactly
+  // the same conditions the suggestions use, because an unexplained absence reads as
+  // the importer having simply missed those tenants.
+  const grossDeposits = useMemo(() => {
+    if (!ctx) return [];
+    const names = new Set();
+    for (const r of resolved) {
+      if (!r.checked || r.kind !== 'tenant' || !r.tenant || r.toRecon || !r.month || r.row.duplicate) continue;
+      if (r.tenant.gross) names.add(r.tenant.tenant_name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [ctx, resolved]);
+
   // Smart pre-tick (George): a NEW estimate is pre-ticked; a change to an EXISTING one
   // arrives unticked, so a short deposit can never quietly lower a good estimate.
   const estChecked = (s) => {
@@ -476,15 +500,18 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} />}
       {parsed.skippedLines.length > 0 && <SkippedGroup skipped={parsed.skippedLines} />}
 
-      {estimateSuggestions.length > 0 && (
+      {(estimateSuggestions.length > 0 || grossDeposits.length > 0) && (
         <div className="stmt-group stmt-estimates">
           <div className="fin-subhead">CAM &amp; tax estimates read from this statement</div>
+          {estimateSuggestions.length > 0 && (
           <p className="muted" style={{ fontSize: 12, marginTop: -4, marginBottom: 8 }}>
             The base rent is exact from each lease, so a deposit minus the base is the tenant's CAM &amp; tax. Tick to
             store it as the tenant's estimate — it then bills all year and the actual settles it at year end. A new
             estimate is pre-ticked; a change to one you've already set arrives unticked, so a short deposit can't quietly
             lower it.
           </p>
+          )}
+          {estimateSuggestions.length > 0 && (
           <div className="table-wrap">
             <table className="stmt-table">
               <thead><tr><th title="Tick to store this as the tenant's CAM & tax estimate">Set</th><th>Tenant</th><th>Read from the statement</th></tr></thead>
@@ -511,6 +538,14 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
               </tbody>
             </table>
           </div>
+          )}
+          {grossDeposits.length > 0 && (
+            <p className="muted" style={{ fontSize: 12, marginTop: estimateSuggestions.length > 0 ? 10 : -4, marginBottom: 0 }}>
+              No estimate is read for <strong>{listNames(grossDeposits)}</strong> — {grossDeposits.length > 1 ? 'those leases are' : 'that lease is'} gross,
+              so the deposit is the whole rent with taxes &amp; CAM already inside it. Their share is carved out of that rent
+              on the Financials breakdown instead, never billed on top.
+            </p>
+          )}
         </div>
       )}
 
