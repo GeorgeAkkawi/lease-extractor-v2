@@ -275,7 +275,7 @@ omission, which is how the invoice drift above survived unnoticed.
   - **Flags:** ① **Two lease reviews are unreliable and now say so on screen** — Ricki's (pages 1-20 of 36 never transcribed) and
     Hair Salon (**the file on record appears to be a driver's licence, not a lease**). Re-upload a clearer scan of each, then
     re-review. ② **Vape Store still has no readable text** and no review — its scan couldn't be transcribed at all. ③ The
-    remaining **11 reviews are sound** — 31 findings across the portfolio. ④ The roll-up covers the CAM and not-billed lines
+    remaining **12 reviews are sound** (14 reviewed − the 2 thin ones) — 31 findings across the portfolio. ④ The roll-up covers the CAM and not-billed lines
     only; taxes and roof file on their own lines and are itemized in their own sections. ⑤ A category changes **reporting only**
     — it can never change what a tenant is billed, which is why a mis-categorized bucket is a wrong report and never a wrong
     invoice.
