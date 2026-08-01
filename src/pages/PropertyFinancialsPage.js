@@ -17,6 +17,7 @@ import TaxSection from '../components/TaxSection';
 import RoofSection from '../components/RoofSection';
 import RecoverabilityTable from '../components/RecoverabilityTable';
 import EntityLedgerSection from '../components/EntityLedgerSection';
+import OtherIncomeSection from '../components/OtherIncomeSection';
 import WhatStayedStrip from '../components/WhatStayedStrip';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
@@ -202,6 +203,11 @@ export default function PropertyFinancialsPage() {
       </StatementDropZone>
 
       <RecoverabilityTable propId={propId} corpId={corpId} year={year} />
+
+      {/* Money IN that isn't rent, directly above its mirror. The two read as a pair:
+          what came in that no invoice knows about, then what went out that no expense
+          total knows about. */}
+      <OtherIncomeSection propId={propId} year={year} />
 
       {/* Below the expense sections, because it is deliberately NOT one of them:
           nothing here is an expense of this building. */}

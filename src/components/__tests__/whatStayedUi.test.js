@@ -47,9 +47,21 @@ describe('What actually stayed', () => {
     expect(within(rowFor('Owner draws')).getByText('$24,000.00')).toBeTruthy();
     expect(within(rowFor('Entity costs')).getByText('$1,750.00')).toBeTruthy();
     expect(within(rowFor('Owner contributions')).getByText('$5,000.00')).toBeTruthy();
+    // Slice 4c filled the `otherIncome` slot this strip was built with and left empty:
+    // $250 late fee + $1,800 parking + $640 utility reimbursement, none of which rode
+    // an invoice, so NOI has never counted a penny of it.
+    expect(within(rowFor('Other income')).getByText('$2,690.00')).toBeTruthy();
 
-    // 100,000 − 1,200 − 1,750 − 24,000 + 5,000 = 78,050
-    expect(within(rowFor('What actually stayed')).getByText('$78,050.00')).toBeTruthy();
+    // 100,000 + 2,690 + 5,000 − 1,200 − 1,750 − 24,000 = 80,740
+    expect(within(rowFor('What actually stayed')).getByText('$80,740.00')).toBeTruthy();
+    // Every sign is load-bearing: the two money-IN lines add and the three money-OUT
+    // lines subtract. A sign flip here would be an arithmetically tidy lie.
+    const signs = [...document.querySelectorAll('.stayed-row')]
+      .map((r) => [r.textContent.replace(/\s+/g, ' ').trim(), r.querySelector('.stayed-op')?.textContent])
+      .filter(([, op]) => op);
+    expect(signs.find(([t]) => t.startsWith('+Other income'))?.[1]).toBe('+');
+    expect(signs.find(([t]) => t.startsWith('+Owner contributions'))?.[1]).toBe('+');
+    expect(signs.find(([t]) => t.startsWith('−Owner draws'))?.[1]).toBe('−');
   });
 
   it('says nothing at all when there is nothing to reconcile', async () => {

@@ -108,7 +108,7 @@ export function seed() {
       // (est 9,000 + 7,500 + 1,600 = 18,100) vs the actual share (7,200 + 10,000 + 1,600
       // = 18,800) → a live "+$700 tenant owes", demoing the Reconcile flow. City Dental
       // stays estimate-free to demo the bill-actuals fallback.
-      { id: 'lease-1', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'Bright Coffee Co.', tenant_email: 'sam@brightcoffee.example', tenant_contact_name: 'Sam Rivera', premises_address: '100 Maple St — Suite 120', square_footage: 2000, base_rent: 60000, lease_start: iso(Y - 2, 1, 1), lease_termination_date: iso(Y + 1, 12, 31), lease_terms: 'NNN lease, 5 year term.', share_override_pct: null, roof_responsible: true, no_renewal_option: false, est_cam_annual: 6500, est_tax_annual: 10000, est_roof_annual: 1500, est_confirmed_year: Y - 1, lease_text: leaseText['lease-1'], source: 'manual', extraction_status: 'reviewed' },
+      { id: 'lease-1', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'Bright Coffee Co.', tenant_email: 'sam@brightcoffee.example', tenant_contact_name: 'Sam Rivera', premises_address: '100 Maple St — Suite 120', square_footage: 2000, base_rent: 60000, lease_start: iso(Y - 2, 1, 1), lease_termination_date: iso(Y + 1, 12, 31), lease_terms: 'NNN lease, 5 year term.', share_override_pct: null, security_deposit: 10000, roof_responsible: true, no_renewal_option: false, est_cam_annual: 6500, est_tax_annual: 10000, est_roof_annual: 1500, est_confirmed_year: Y - 1, lease_text: leaseText['lease-1'], source: 'manual', extraction_status: 'reviewed' },
       { id: 'lease-2', owner_id: DEMO_USER.id, property_id: 'prop-1', tenant_name: 'City Dental', tenant_email: 'billing@citydental.example', tenant_email_2: 'dana.lee@citydental.example', tenant_contact_name: 'Dana Lee', premises_address: '100 Maple St — Suite 30', square_footage: 3000, base_rent: 84000, lease_start: iso(Y - 1, 6, 1), lease_termination_date: iso(2026, 5, 31), lease_terms: 'Includes one 5-year renewal option.', share_override_pct: null, roof_responsible: false, no_renewal_option: false, lease_text: leaseText['lease-2'], source: 'manual', extraction_status: 'reviewed', lease_file_id: 'lf-1' },
       // Ends soon with no renewal option on file → demonstrates the "lease ending —
       // no renewal" reminder, and the manual no-renewal flag set to confirmed.
@@ -191,6 +191,15 @@ export function seed() {
       { id: 'ent-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'draw', category: null, label: 'Owner distribution', amount: 24000, txn_date: iso(Y, 3, 15), note: null, import_id: null, line_hash: null, created_at: iso(Y, 3, 15) },
       { id: 'ent-2', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'cost', category: null, label: 'Illinois franchise tax', amount: 1750, txn_date: iso(Y, 2, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 2, 1) },
       { id: 'ent-3', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'contribution', category: null, label: 'Capital call — roof work', amount: 5000, txn_date: iso(Y, 5, 20), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 20) },
+    ],
+    // Slice 4c — income the property really received that no invoice knows about.
+    // Three categories so the panel demos its grouping, and one row NAMES its tenant
+    // (inc-1, City Dental's late fee) — the case the whole table exists for:
+    // attribution without billing. City Dental's Ledger months must not move.
+    other_income: [
+      { id: 'inc-1', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: 'lease-2', year: Y, category: 'late_fee', label: 'Late fee — March rent', amount: 250, txn_date: iso(Y, 3, 12), note: null, import_id: null, line_hash: null, created_at: iso(Y, 3, 12) },
+      { id: 'inc-2', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: null, year: Y, category: 'parking', label: 'Lot 2 monthly permits', amount: 1800, txn_date: iso(Y, 4, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 4, 1) },
+      { id: 'inc-3', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: null, year: Y, category: 'utility', label: 'Water reimbursement', amount: 640, txn_date: iso(Y, 5, 9), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 9) },
     ],
     financial_snapshots: [
       // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"

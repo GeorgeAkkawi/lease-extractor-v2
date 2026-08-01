@@ -4078,15 +4078,103 @@ export const deleteEntityLedgerEntry = (id) =>
 export const setEntityLedgerCategory = (id, category) =>
   one(supabase.from('entity_ledger').update({ category: category || null }).eq('id', id).select().single());
 
+// ---- Other income (Slice 4c) -------------------------------------------------
+// Income the property really received that is not tenant rent. See
+// src/lib/otherIncome.js for why it needs its own home rather than the nearest lease.
+//
+// ⚠ Same safety property as the entity ledger, in the opposite direction: nothing
+// here touches `payments`, so a late fee can never credit a tenant's invoice and make
+// the Ledger read the month over-paid. `lease_id` records WHO it came from without
+// billing anything — attribution and billing are different questions, and this table
+// answers only the first.
+export async function listOtherIncome(propertyId, year = null) {
+  const list = await rows(supabase.from('other_income').select('*').eq('property_id', propertyId));
+  const y = Number(year);
+  const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
+  return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
+}
+
+export async function addOtherIncomeEntry(entry) {
+  return one(
+    supabase.from('other_income')
+      .insert({
+        property_id: entry.property_id,
+        lease_id: entry.lease_id || null,
+        year: Number(entry.year) || null,
+        category: entry.category || 'other',
+        label: entry.label || null,
+        amount: Math.abs(Number(entry.amount) || 0),
+        txn_date: entry.txn_date || null,
+        note: entry.note || null,
+        import_id: entry.import_id || null,
+        line_hash: entry.line_hash || null,
+        owner_id: await ownerId(),
+      })
+      .select().single()
+  );
+}
+
+export const deleteOtherIncomeEntry = (id) =>
+  rows(supabase.from('other_income').delete().eq('id', id));
+
+export const setOtherIncomeCategory = (id, category) =>
+  one(supabase.from('other_income').update({ category: category || 'other' }).eq('id', id).select().single());
+
+// ---- Security deposits (Slice 4c) --------------------------------------------
+// What the LEASE says is held lives on the lease (`security_deposit`). What the BANK
+// showed arriving is a 0076 line whose disposition is 'deposit_held' and whose ref
+// points at that lease — so there is deliberately no third table, and therefore no
+// third figure that can start disagreeing with the other two.
+export const listDepositLinesForLease = (leaseId) =>
+  rows(
+    supabase.from('statement_lines').select('*')
+      .eq('disposition', 'deposit_held')
+      .eq('ref_id', leaseId)
+  );
+
+// The deposit is a lease TERM, so saving it is a lease edit — and deliberately NOT
+// routed through BILLING_FIELDS/resyncLeaseBilling: a deposit changes no rent, no
+// share and no invoice, so re-billing the year on the back of it would be a write
+// with no cause.
+export const setLeaseSecurityDeposit = (leaseId, amount) =>
+  one(
+    supabase.from('leases')
+      .update({ security_deposit: amount === '' || amount == null ? null : Math.abs(Number(amount) || 0) })
+      .eq('id', leaseId).select().single()
+  );
+
 // Answer the "money not yet placed" nag by giving the line a real home, without
 // re-importing the statement it came from. Writes the ledger row FIRST, then stamps
 // the line — so an interruption leaves a recorded draw with a still-nagging line
 // (visible, fixable) rather than a placed line with no money behind it (invisible).
-export async function placeUnplacedLine(line, { kind, corporationId, category = null }) {
+export async function placeUnplacedLine(line, { kind, corporationId, category = null, leaseId = null }) {
   if (kind === 'transfer') {
     // A transfer writes nothing — the disposition IS the record, exactly as an
     // ignore's is. There is no row to create and none to reverse.
     return { line: await setLineDisposition(line.id, 'transfer'), entry: null };
+  }
+  // Slice 4c — a security deposit writes nothing either, and that is the design.
+  // What is HELD is a lease term; this line is the evidence money arrived. Writing
+  // the bank figure onto `leases.security_deposit` would overwrite what the lease
+  // says with what the bank shows, collapsing the two independent sources into one
+  // and destroying the only cross-check that makes either trustworthy.
+  if (kind === 'deposit') {
+    return { line: await setLineDisposition(line.id, 'deposit_held', null, { kind: 'lease', id: leaseId }), entry: null };
+  }
+  if (kind === 'income') {
+    const row = await addOtherIncomeEntry({
+      property_id: line.property_id,
+      lease_id: leaseId,
+      year: line.year || null,
+      category: category || 'other',
+      label: line.description ? String(line.description).slice(0, 200) : null,
+      amount: line.amount,
+      txn_date: line.txn_date || null,
+      import_id: line.import_id || null,
+      line_hash: line.line_hash || null,
+    });
+    const updated = await setLineDisposition(line.id, 'other_income', null, { kind: 'income', id: row.id });
+    return { line: updated, entry: row };
   }
   const entry = await addEntityLedgerEntry({
     corporation_id: corporationId,
@@ -4122,7 +4210,10 @@ export async function getStatementMatchContext(propertyId, year) {
     rows(supabase.from('v_invoice_balances').select('*').eq('kind', 'reconciliation')),
     rows(supabase.from('cam_line_items').select('label,billable')),
     rows(supabase.from('corporations').select('*')),
-    rows(supabase.from('leases').select('id,tenant_email,tenant_email_2,tenant_contact_name')),
+    // security_deposit rides this existing per-lease read rather than being appended
+    // to v_tenant_shares — a view rebuild is a permanent mockClient.js obligation
+    // (CLAUDE.md §3) and this costs nothing.
+    rows(supabase.from('leases').select('id,tenant_email,tenant_email_2,tenant_contact_name,security_deposit')),
     listExpenseBuckets(),
   ]);
   const nameOf = Object.fromEntries((properties || []).map((p) => [p.id, p.name]));
@@ -4168,6 +4259,10 @@ export async function getStatementMatchContext(propertyId, year) {
         tenant_email: info.tenant_email || null,
         tenant_email_2: info.tenant_email_2 || null,
         contact_name: info.tenant_contact_name || null,
+        // What the LEASE says is held. The matcher uses it to recognize a deposit
+        // that would otherwise pre-match as rent — the one case where booking a
+        // deposit against the lease corrupts the Ledger rather than merely omitting.
+        securityDeposit: info.security_deposit != null ? Number(info.security_deposit) : null,
         monthly: r.monthly,
         owed: alloc.owed,
         coverage: alloc.coverage,
@@ -4278,6 +4373,10 @@ export async function applyStatementImport({ propertyId, year, fileName, account
   let paymentsCount = 0, paymentsTotal = 0, expensesCount = 0, expensesTotal = 0;
   // Entity-level money is counted apart from expenses, because it IS apart from them.
   let entityOutCount = 0, entityOutTotal = 0, entityInCount = 0, entityInTotal = 0;
+  // Money IN that is not rent, likewise counted apart from payments: folding a late
+  // fee into paymentsTotal would report rent collection that never happened, which is
+  // the exact misstatement this slice exists to prevent — one screen earlier.
+  let incomeCount = 0, incomeTotal = 0, depositCount = 0, depositTotal = 0;
   const crossProperty = {};
   // Auto-learn payee rules ride the import too (a checked tenant deposit is remembered
   // automatically; an expense only when "Always" is ticked). Loaded once, lazily, so an
@@ -4350,6 +4449,37 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       applied.push({ kind: 'entity', entry_id: row.id, entity_kind: e.kind, corporation_id: e.corporation_id, property_id: e.property_id || propertyId, year: e.year, amount: Number(e.amount), hash: e.hash });
       if (e.kind === 'contribution') { entityInCount++; entityInTotal += Number(e.amount); }
       else { entityOutCount++; entityOutTotal += Number(e.amount); }
+    } else if (e.type === 'income') {
+      // Slice 4c — real income of the property that is not rent.
+      //
+      // ⚠ Deliberately NOT a payment. Booking a late fee against the tenant who paid
+      // it would credit their annual invoice, so allocatePayments reads the month
+      // over-paid and the Ledger's Collected column reports rent that never arrived.
+      // `lease_id` records who it came from; nothing bills anything.
+      const row = await addOtherIncomeEntry({
+        property_id: e.property_id || propertyId,
+        lease_id: e.lease_id || null,
+        year: e.year,
+        category: e.category || 'other',
+        label: e.label || (e.description ? String(e.description).slice(0, 200) : null),
+        amount: Number(e.amount),
+        txn_date: e.date || null,
+        import_id: imp.id,
+        line_hash: e.hash || null,
+      });
+      applied.push({ kind: 'income', entry_id: row.id, property_id: e.property_id || propertyId, year: e.year, amount: Number(e.amount), hash: e.hash });
+      incomeCount++; incomeTotal += Number(e.amount);
+    } else if (e.type === 'deposit') {
+      // A security deposit received. It writes NO row on purpose: what is HELD is a
+      // lease term, and this line is the evidence money arrived. Stamping the bank
+      // figure onto leases.security_deposit would overwrite what the lease says with
+      // what the bank shows and destroy the cross-check between them. The line's own
+      // disposition + ref IS the record (0076), so `applied` carries nothing to undo
+      // beyond the line itself, which undo deletes wholesale. The applied record
+      // exists purely so the audit LINE learns which lease it belongs to — that ref
+      // is what the cross-check reads back.
+      applied.push({ kind: 'deposit', lease_id: e.lease_id || null, property_id: e.property_id || propertyId, year: e.year, amount: Number(e.amount), hash: e.hash });
+      depositCount++; depositTotal += Number(e.amount);
     } else if (e.type === 'estimate') {
       // A CAM & tax estimate read from a deposit (Feature: deriveEstimateFromDeposit).
       // Processed FIRST (the review puts estimate entries ahead of payments in the
@@ -4441,7 +4571,10 @@ export async function applyStatementImport({ propertyId, year, fileName, account
           disposition: l.disposition || 'unclassified',
           ignore_reason: l.disposition === 'ignored' ? (l.ignore_reason || null) : null,
           ref_kind: ref ? ref.kind : null,
-          ref_id: ref ? (ref.payment_id || ref.item_id || null) : null,
+          // entry_id covers the entity ledger (0077) and other income (0078);
+          // lease_id covers a security deposit, which writes no row of its own and
+          // whose whole record IS this pointer back to the lease it belongs to.
+          ref_id: ref ? (ref.payment_id || ref.item_id || ref.entry_id || ref.lease_id || null) : null,
         };
       });
       await rows(supabase.from('statement_lines').insert(rowsToWrite));
@@ -4461,6 +4594,7 @@ export async function applyStatementImport({ propertyId, year, fileName, account
     summary: {
       paymentsCount, paymentsTotal, expensesCount, expensesTotal, crossProperty,
       entityOutCount, entityOutTotal, entityInCount, entityInTotal,
+      incomeCount, incomeTotal, depositCount, depositTotal,
       // The proof-of-completeness, returned so the results strip can state it at the
       // one moment it reassures: right after saving. Derived from the same array that
       // was just written, so it cannot claim more than the audit table holds.
@@ -4514,6 +4648,16 @@ export async function undoStatementImport(imp) {
       // backstop, but this is explicit for the same reason statement_lines' delete
       // is — the demo mock has no foreign keys (mockClient.js:155).
       await deleteEntityLedgerEntry(a.entry_id);
+    } else if (a.kind === 'income') {
+      // Same reasoning as the entity row above: 0078 cascades, this is explicit
+      // because the mock has no FKs and a cascade-only design would pass the whole
+      // suite while orphaning rows live. (A deposit records no row at all — its
+      // evidence is the statement line, which undo deletes wholesale.)
+      await deleteOtherIncomeEntry(a.entry_id);
+    } else if (a.kind === 'deposit') {
+      // Nothing to reverse: a deposit wrote no row, only the audit line's pointer at
+      // its lease — and undo deletes every one of this import's lines wholesale. The
+      // lease's stated deposit is untouched because the import never wrote it.
     } else if (a.kind === 'rule') {
       // Reverse the learning: a rule that overwrote a prior target restores it; a
       // brand-new rule is deleted. Best-effort — never blocks the rest of the undo.

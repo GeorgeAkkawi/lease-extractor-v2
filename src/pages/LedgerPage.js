@@ -35,6 +35,7 @@ import LeaseTypeChip from '../components/LeaseTypeChip';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness } from '../lib/dispositions';
 import { entityKindsFor } from '../lib/entityLedger';
+import { INCOME_CATEGORIES } from '../lib/otherIncome';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -116,11 +117,20 @@ export default function LedgerPage() {
   // statement it came from. Writes to entity_ledger only, so answering the nag can
   // never move a tenant's bill or this property's expenses.
   const place = useMutation({
-    mutationFn: ({ line, kind }) => placeUnplacedLine(line, { kind, corporationId: prop?.corporation_id || corpId }),
+    // The pick encodes its own sub-destination: `income:<category>` and
+    // `deposit:<leaseId>` (Slice 4c), everything else is a bare entity kind.
+    mutationFn: ({ line, kind }) => placeUnplacedLine(line, {
+      kind: kind.startsWith('income:') ? 'income' : kind.startsWith('deposit:') ? 'deposit' : kind,
+      corporationId: prop?.corporation_id || corpId,
+      category: kind.startsWith('income:') ? kind.slice(7) : null,
+      leaseId: kind.startsWith('deposit:') ? kind.slice(8) : null,
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] });
       qc.invalidateQueries({ queryKey: ['entityLedger'] });
       qc.invalidateQueries({ queryKey: ['entityLedgerByCorps'] });
+      qc.invalidateQueries({ queryKey: ['otherIncome'] });
+      qc.invalidateQueries({ queryKey: ['depositLines'] });
     },
   });
 
@@ -590,6 +600,24 @@ export default function LedgerPage() {
                         {entityKindsFor(l.direction === 'in' ? 'in' : 'out').map((k) => (
                           <option key={k.key} value={k.key}>{k.label}</option>
                         ))}
+                        {/* Slice 4c — money in that isn't rent. Income carries its
+                            category; a deposit carries the tenant it belongs to,
+                            because reconciling it against the lease is the whole
+                            point of recording it at all. */}
+                        {l.direction === 'in' && (
+                          <optgroup label="Other income — not rent">
+                            {INCOME_CATEGORIES.map((c) => (
+                              <option key={c.key} value={`income:${c.key}`}>{c.label}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {l.direction === 'in' && derived.length > 0 && (
+                          <optgroup label="Security deposit from…">
+                            {derived.map((t) => (
+                              <option key={t.lease_id} value={`deposit:${t.lease_id}`}>{t.tenant_name}</option>
+                            ))}
+                          </optgroup>
+                        )}
                         <option value="transfer">Transfer between my own accounts</option>
                       </select>
                       <select

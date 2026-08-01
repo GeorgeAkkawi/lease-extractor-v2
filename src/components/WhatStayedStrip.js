@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { listCamLineItems, listEntityLedger } from '../lib/api';
+import { listCamLineItems, listEntityLedger, listOtherIncome } from '../lib/api';
 import { summarizeEntityLedger, absorbedFromItems, whatStayed } from '../lib/entityLedger';
+import { summarizeOtherIncome } from '../lib/otherIncome';
 import { money } from '../lib/format';
 
 // Slice 4b — the first time the app can show the gap between NOI and what is actually
@@ -28,11 +29,20 @@ export default function WhatStayedStrip({ propId, year, noi }) {
     queryFn: () => listEntityLedger({ propertyId: propId, year }),
   });
 
+  // Slice 4c fills the slot round 7 built and left empty: income the property really
+  // received that NOI has never counted, because it never rode an invoice.
+  const { data: income = [] } = useQuery({
+    queryKey: ['otherIncome', propId, year],
+    queryFn: () => listOtherIncome(propId, year),
+  });
+
   const absorbed = absorbedFromItems(camItems);
   const sum = summarizeEntityLedger(entries);
+  const inc = summarizeOtherIncome(income);
   const { lines, stayed } = whatStayed({
     noi,
     absorbed: absorbed.total,
+    otherIncome: inc.total,
     draws: sum.draws,
     contributions: sum.contributions,
     entityCosts: sum.costs,
@@ -65,6 +75,7 @@ export default function WhatStayedStrip({ propId, year, noi }) {
           Everything under it is real money that NOI has never known about
           {absorbed.count > 0 && <>, including {absorbed.count} expense line{absorbed.count === 1 ? '' : 's'} you entered and chose not to bill back</>}.
           {sum.draws > 0 && ' A draw is not an expense — it reduces your equity, so it is subtracted here and nowhere else.'}
+          {inc.count > 0 && ` Other income is real money in, but it never rode a tenant's invoice — so no Collected figure includes it.`}
         </div>
       </div>
     </div>

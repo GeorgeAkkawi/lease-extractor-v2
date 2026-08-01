@@ -10,6 +10,7 @@ import {
   saveExpenseBucket,
 } from '../lib/api';
 import { EXPENSE_CATEGORIES, defaultCategoryFor } from '../lib/expenseCategories';
+import { INCOME_CATEGORIES, incomeCategoryLabel } from '../lib/otherIncome';
 import {
   matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
   corroborateAmount, monthOfDate, deriveEstimateFromDeposit, CAM_KEYWORD_LABELS,
@@ -30,7 +31,7 @@ import MutationError from './MutationError';
 // top (deposits self-route to their tenant's own property regardless), with a
 // switch banner when the deposits vote for a different property.
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —', owner_draw: 'Owner draw', owner_contribution: 'Owner contribution', entity_cost: 'Entity cost', transfer: 'Transfer' };
+const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —', owner_draw: 'Owner draw', owner_contribution: 'Owner contribution', entity_cost: 'Entity cost', transfer: 'Transfer', other_income: 'Other income', deposit_held: 'Security deposit' };
 const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info', ai: 'info' };
 const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
@@ -131,8 +132,14 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const label = pick ? pick.label || null : row.label || null;
       const leaseId = pick ? pick.lease_id : row.candidate?.lease_id || null;
       const tenant = leaseId ? ctx.tenants.find((t) => t.lease_id === leaseId) : null;
-      // Recompute recon routing when the user re-picked the tenant by hand.
-      const toRecon = !pick ? !!row.candidate?.toRecon : !!(tenant?.reconBalance > 0 && Math.abs(tenant.reconBalance - row.txn.amount) <= Math.max(1, 0.01 * tenant.reconBalance));
+      // Slice 4c — the income category, carried through from the pick.
+      const category = pick ? pick.category || null : null;
+      // Recompute recon routing when the user re-picked the tenant by hand. Only ever
+      // for RENT: a deposit or a late fee names a tenant without paying an invoice, so
+      // routing one to an open reconciliation would settle a bill it never paid.
+      const toRecon = kind !== 'tenant' ? false
+        : !pick ? !!row.candidate?.toRecon
+        : !!(tenant?.reconBalance > 0 && Math.abs(tenant.reconBalance - row.txn.amount) <= Math.max(1, 0.01 * tenant.reconBalance));
       // Re-date on re-pick. row.month was computed against whoever the MATCHER named;
       // once the landlord names a different tenant that answer is about someone else,
       // and inheriting it is how a hand-corrected line saved with no month at all.
@@ -141,7 +148,10 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         ? corroborateAmount(row.txn.amount, tenant, monthOfDate(row.txn.date)).month
         : row.month;
       const month = ov.month !== undefined ? (ov.month === '' ? null : Number(ov.month)) : autoMonth;
-      const finalMonth = toRecon ? null : month;
+      // A month tag means "this settles that month's rent". Income and deposits settle
+      // no month by definition, so they never carry one — which is also what keeps
+      // them out of the estimate-derivation and the ledger's coverage arithmetic.
+      const finalMonth = (toRecon || kind === 'other_income' || kind === 'deposit_held') ? null : month;
       const defaultChecked = row.checked && !row.txn.needsReview;
       const checked = ov.checked !== undefined ? ov.checked : defaultChecked;
       // An ignored/unresolved line writes nothing, whatever the checkbox says.
@@ -149,8 +159,12 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       // contribution or entity cost writes an entity_ledger row and needs a
       // corporation to belong to; a transfer writes nothing at all (its disposition
       // IS the record), so it is deliberately not writable and needs no tick.
+      // Slice 4c: other income always writes a row; a deposit writes no row but DOES
+      // record which lease it belongs to, so it needs a tenant to be worth ticking.
       const writable = kind === 'tenant'
         ? !!(leaseId && tenant)
+        : kind === 'other_income' ? true
+        : kind === 'deposit_held' ? !!(leaseId && tenant)
         : kind.startsWith('expense_') || (!!ENTITY_KIND_FOR[kind] && !!ctx.corporationId);
       // Does the deposit match what the ledger projects for the month it's applied to?
       // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
@@ -165,7 +179,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         && Number((tenant.coverage || [])[finalMonth - 1]) >= Number(tenant.owed[finalMonth - 1]) - 0.05);
       const isChecked = writable && checked && !(alreadyPaid && ov.checked === undefined);
       return {
-        row, i, kind, label, leaseId, tenant, toRecon, month: finalMonth,
+        row, i, kind, label, category, leaseId, tenant, toRecon, month: finalMonth,
         checked: isChecked,
         ai: !!ov.ai, picked: ov.pick != null,
         monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
@@ -320,6 +334,13 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       } else if (r.kind.startsWith('expense_')) {
         ruleByPattern.set(pattern.toUpperCase(), { type: 'rule', pattern, targetKey: targetKeyOf(r), property_id: expenseProp, target_kind: r.kind, lease_id: null, cam_label: (r.kind === 'expense_cam' || r.kind === 'expense_other') ? (r.label || null) : null });
       }
+      // ⚠ Slice 4c learns NEITHER other income NOR a security deposit, on purpose.
+      // A rule fires on the payee, and a tenant's payee string is identical whether
+      // they are paying rent, a late fee or a deposit — so learning "PAYEE → security
+      // deposit" would reclassify every future rent payment from that tenant as a
+      // deposit, silently, in the direction that corrupts the Ledger. The recurring-
+      // payee argument that justifies learning a vendor is at its weakest here: a late
+      // fee happens when someone is late, and a deposit happens once per tenancy.
     }
     const lines = resolved.map((r) => ({ description: r.row.txn.description, targetKey: targetKeyOf(r) }));
     const { keep, rejected } = screenRulePatterns([...ruleByPattern.values()], lines, ctx?.ownNames || []);
@@ -401,6 +422,23 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         // cam_total, so no tenant's bill can move because of it. An entity cost
         // arrives with no category on purpose (0075's rule — a defaulted 'Other'
         // would hide exactly what wants surfacing); it is set on the Financials panel.
+        } else if (r.kind === 'other_income') {
+          entries.push({
+            type: 'income', property_id: expenseProp, lease_id: r.leaseId || null,
+            year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date,
+            category: r.category || 'other',
+            label: payeeLabel(payeeOf(r.row.txn.description), incomeCategoryLabel(r.category)),
+            description: r.row.txn.description, hash: r.row.hash,
+          });
+        } else if (r.kind === 'deposit_held') {
+          // Records that the deposit ARRIVED. Writes no row and never touches
+          // leases.security_deposit — what is held is what the lease says, and
+          // overwriting it with the bank figure would collapse the two independent
+          // sources into one and destroy the cross-check between them.
+          entries.push({
+            type: 'deposit', property_id: expenseProp, lease_id: r.leaseId,
+            year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash,
+          });
         } else if (ENTITY_KIND_FOR[r.kind]) {
           entries.push({
             type: 'entity', kind: ENTITY_KIND_FOR[r.kind], corporation_id: ctx.corporationId,
@@ -725,6 +763,11 @@ function targetKeyOf(r) {
   if (r.kind === 'tenant' && r.tenant) return `lease:${r.tenant.lease_id}`;
   if (r.kind === 'expense_cam' || r.kind === 'expense_other') return `${r.kind}:${(r.label || '').toLowerCase()}`;
   if (r.kind === 'expense_tax' || r.kind === 'expense_roof') return r.kind;
+  // Slice 4c — these two are deliberately NOT learned as rules (see the note in the
+  // draft-rule builder), but they still resolve to a target, so a pattern that hits an
+  // income line AND a rent line is correctly seen as boilerplate rather than a payee.
+  if (r.kind === 'other_income') return `income:${r.category || 'other'}`;
+  if (r.kind === 'deposit_held') return `deposit:${r.leaseId || ''}`;
   // A draw, a transfer or an entity cost is as much a "payee" as a vendor is — and
   // learning it is the whole point, since the same distribution line recurs monthly.
   // These keys are also what OWN_NAME_TARGETS (statementMatch.js) checks against, so
@@ -745,6 +788,11 @@ export function resolvePick(pick) {
   // Slice 4b — money that crossed the bank but is not this building's income or
   // expense. These write to entity_ledger, never to expense_records.
   if (ENTITY_PICKS.has(pick)) return { kind: pick };
+  // Slice 4c — money IN that is not rent. Income carries its category; a deposit
+  // carries its LEASE, because "whose deposit is it" is the whole question and a
+  // deposit with no tenant reconciles against nothing.
+  if (pick.startsWith('income:')) return { kind: 'other_income', category: pick.slice(7) };
+  if (pick.startsWith('deposit:')) return { kind: 'deposit_held', lease_id: pick.slice(8) };
   return null;
 }
 
@@ -835,6 +883,10 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
     r.kind === 'tenant' && r.leaseId ? `lease:${r.leaseId}`
       : r.kind === 'expense_cam' && r.label ? `cam:${r.label}`
       : r.kind === 'expense_other' ? `other:${r.label || 'Other'}`
+      // Slice 4c — the matcher can SUGGEST a deposit, so the select has to be able to
+      // show one it wasn't told about; the lease is what identifies it.
+      : r.kind === 'deposit_held' && r.leaseId ? `deposit:${r.leaseId}`
+      : r.kind === 'other_income' ? `income:${r.category || 'other'}`
       : r.kind === 'unmatched' ? '' : r.kind;
   const candidateIds = new Set((row.candidates || []).map((c) => c.lease_id));
   // Standing in Pershing Plaza, the list should BE Pershing Plaza's tenants — the rest
@@ -843,6 +895,14 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   const pickable = ctx.tenants.filter((t) => !candidateIds.has(t.lease_id));
   const homeTenants = homeName ? pickable.filter((t) => t.property_id === expenseProp) : pickable;
   const otherTenants = homeName ? pickable.filter((t) => t.property_id !== expenseProp) : [];
+  // The deposit list is built from ALL of this property's tenants, not `pickable` —
+  // the matcher suggests a deposit for the tenant it RECOGNIZED, and that tenant is a
+  // candidate, so filtering candidates out would leave the select with no option
+  // matching its own value and render blank. (The same trap the label comment above
+  // guards against, one optgroup over.)
+  const depositTenants = expenseProp
+    ? ctx.tenants.filter((t) => t.property_id === expenseProp)
+    : ctx.tenants;
   // Make sure the row's CURRENT label always appears in its optgroup, even when
   // it isn't (yet) one of the shared buckets.
   const billableBuckets = [...buckets.filter((b) => b.billable)];
@@ -915,6 +975,26 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                   against a lease would credit that tenant's invoice and make the
                   Ledger read the month over-paid, which is why they need their own
                   home rather than the nearest lease. */}
+              {/* Slice 4c — income the property really received that is not rent.
+                  Booking a late fee against the tenant who paid it credits their
+                  annual invoice, so the Ledger reads the month over-paid and the
+                  Collected column reports rent that never arrived. */}
+              <optgroup label="Other income — not rent">
+                {INCOME_CATEGORIES.map((c) => (
+                  <option key={c.key} value={`income:${c.key}`}>{c.label}</option>
+                ))}
+              </optgroup>
+              {/* A deposit belongs to a TENANT — that is the whole question, so the
+                  pick carries the lease rather than asking twice. Scoped to this
+                  property's tenants: a deposit is from a tenant of the building whose
+                  statement you are importing. */}
+              {depositTenants.length > 0 && (
+                <optgroup label="Security deposit from…">
+                  {depositTenants.map((t) => (
+                    <option key={t.lease_id} value={`deposit:${t.lease_id}`}>{t.tenant_name}</option>
+                  ))}
+                </optgroup>
+              )}
               <optgroup label="Not tenant rent">
                 {ctx.corporationId && <option value="owner_contribution">Owner contribution — money you put in</option>}
                 <option value="transfer">Transfer between my own accounts</option>

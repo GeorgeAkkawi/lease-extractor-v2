@@ -66,6 +66,9 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
       // has no estimate to bill, so any figure typed before the toggle was flipped is
       // dropped rather than stored where nothing would read it.
       lease_type: form.lease_type === 'gross' ? 'gross' : form.lease_type === 'net' ? 'net' : null,
+      // A held deposit, in dollars as stated (never $/SF — a deposit is a lump sum).
+      // 0 is stored as null: "no deposit" and "a deposit of zero" are the same fact.
+      security_deposit: numOrNull(form.security_deposit) > 0 ? numOrNull(form.security_deposit) : null,
       // ONE combined CAM & tax estimate → the combined convention (whole figure in
       // est_cam_annual, est_tax_annual = 0). Stamp est_confirmed_year so a brand-new
       // lease's estimate reads as confirmed, not "carried over".
@@ -145,6 +148,13 @@ export default function LeaseForm({ initial, extracted, onSubmit, submitLabel = 
             <input className="text-input num" type="number" step="any" placeholder="blank = bill actuals" value={form.est_cam_tax} onChange={set('est_cam_tax')} />
           </Field>
         )}
+        {/* Slice 4c — a lease TERM, not a transaction. Applies to gross and net alike:
+            a deposit is held whatever the expense structure is. When a deposit arrives
+            in the bank it is recorded against this figure and the two are cross-checked
+            — never derived from each other. */}
+        <Field label="Security deposit" field="security_deposit" extracted={extracted} hint="What the lease says you hold. It is the tenant’s money — a liability, never income — so it is never credited against their rent.">
+          <input className="text-input num" type="number" step="0.01" placeholder="none stated" value={form.security_deposit ?? ''} onChange={set('security_deposit')} />
+        </Field>
       </div>
       <div className="form-field" style={{ maxWidth: '100%', marginTop: 16 }}>
         <span>Lease terms / notes</span>

@@ -59,6 +59,28 @@ export const DISPOSITIONS = [
     placed: true,
     hint: 'Real money movement, but neither income nor expense — it never left your hands.',
   },
+  // Slice 4c — money IN that is not rent. Both are PLACED, and they sit on opposite
+  // sides of the one line that matters: other income IS the property's income and
+  // belongs in what actually stayed; a security deposit is the TENANT's money held,
+  // and belongs in no income figure anywhere. Booking either against a lease as rent —
+  // their only possible home before round 8 — credits that tenant's invoice and makes
+  // the Ledger read the month over-paid.
+  {
+    key: 'other_income',
+    label: 'Other income',
+    short: 'Income',
+    dir: 'in',
+    placed: true,
+    hint: 'Real income the property received that isn’t rent — a late fee, parking, a utility reimbursement.',
+  },
+  {
+    key: 'deposit_held',
+    label: 'Security deposit held',
+    short: 'Deposit',
+    dir: 'in',
+    placed: true,
+    hint: 'The tenant’s money, held. A liability — never income, and never credited against their rent.',
+  },
   {
     key: 'ignored',
     label: 'Deliberately left out',
@@ -172,6 +194,12 @@ export function dispositionForRow({ checked, kind, picked, duplicate }) {
   // keeps nagging (the same judgement round 6 made about keyword ignores).
   if (checked && (kind === 'owner_draw' || kind === 'owner_contribution')) return 'owner';
   if (checked && kind === 'entity_cost') return 'entity';
+  // Slice 4c. Both WRITE something — other income writes a row, a deposit writes the
+  // lease's held figure — so both need the tick, same rule as an expense. A deposit
+  // pick carries its lease in the pick itself (`deposit:<leaseId>`), because "whose
+  // deposit is it" is the entire question.
+  if (checked && kind === 'other_income') return 'other_income';
+  if (checked && kind === 'deposit_held') return 'deposit_held';
   // A transfer is the exception, and for the same reason an ignore is: it writes
   // nothing, so the PICK is the entire decision and there is no tick to wait for.
   if (picked && kind === 'transfer') return 'transfer';

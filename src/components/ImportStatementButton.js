@@ -230,6 +230,11 @@ export function settleStatementImport(qc) {
   // they ride this set rather than settleBillingChange's.
   qc.invalidateQueries({ queryKey: ['entityLedger'] });
   qc.invalidateQueries({ queryKey: ['entityLedgerByCorps'] });
+  // Slice 4c — the same for money IN that isn't rent. `depositLines` is the lease
+  // page's half of the deposit cross-check, so it has to move when an import records
+  // one (and back again on undo).
+  qc.invalidateQueries({ queryKey: ['otherIncome'] });
+  qc.invalidateQueries({ queryKey: ['depositLines'] });
   qc.invalidateQueries({ queryKey: ['reconciliations'] });
   // An import auto-learns payee rules (and undo un-learns them) — refresh the manager.
   qc.invalidateQueries({ queryKey: ['importRules'] });
@@ -249,6 +254,10 @@ export function ImportResultsStrip({ imported, onUndo, undoPending, onDismiss })
       <span>
         saved · Imported {imported.fileName} — {s.paymentsCount} payment{s.paymentsCount === 1 ? '' : 's'} · {money(s.paymentsTotal)} in
         {' · '}{s.expensesCount} expense{s.expensesCount === 1 ? '' : 's'} · {money(s.expensesTotal)} out
+        {/* Slice 4c — stated APART from payments, never folded into them. A late fee
+            counted as a payment would report rent collection that never happened. */}
+        {s.incomeCount > 0 && <> · {s.incomeCount} other income · {money(s.incomeTotal)}</>}
+        {s.depositCount > 0 && <> · {s.depositCount} security deposit{s.depositCount === 1 ? '' : 's'} · {money(s.depositTotal)} held</>}
         {Object.keys(s.crossProperty || {}).length > 0 && (
           <> · {Object.values(s.crossProperty).reduce((n, c) => n + c, 0)} payment(s) posted to other properties' tenants — they show on those ledgers</>
         )}

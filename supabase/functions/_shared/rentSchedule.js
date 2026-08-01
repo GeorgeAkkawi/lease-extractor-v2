@@ -88,6 +88,36 @@ export function estimateAnnualsFrom(estimates, sqft) {
   return out;
 }
 
+// Slice 4c — the security deposit the lease states is held.
+//
+// Same never-let-the-model-multiply rule as everything else here: the model reads the
+// figure EXACTLY as printed plus how it is expressed, and we do the arithmetic. Leases
+// state a deposit two ways — a plain dollar figure ("a security deposit of $5,000") or
+// a multiple of rent ("a deposit equal to two (2) months' Base Rent"), and the second
+// is why this needs code at all.
+//
+// `monthlyRent` is the base rent per month at the START of the term (the first period
+// of the rebuilt schedule) — a deposit set at "two months' rent" is fixed at signing
+// and does NOT climb with the escalations, so using a later step's rent would inflate
+// it. Returns { amount, quote } or null when nothing usable was stated — better no
+// figure than a wrong one, since this is the number the bank line reconciles against.
+export function depositAmountFrom(entries, monthlyRent) {
+  for (const r of Array.isArray(entries) ? entries : []) {
+    if (!r || typeof r !== 'object') continue;
+    const raw = Number(r.amount);
+    if (!isFinite(raw) || raw <= 0) continue;
+    if (r.basis === 'months_rent') {
+      const mo = Number(monthlyRent);
+      if (!isFinite(mo) || mo <= 0) continue; // can't resolve it — say nothing
+      return { amount: Math.round(raw * mo * 100) / 100, quote: r.quote || '' };
+    }
+    if (r.basis === 'dollars') {
+      return { amount: Math.round(raw * 100) / 100, quote: r.quote || '' };
+    }
+  }
+  return null;
+}
+
 // A renewal/EXTENSION option that prices its term with a year-by-year rent table (e.g.
 // Busey's Exhibit D: five monthly installments stepping up over the 5-year option). The
 // model reads each period's RAW figure + basis (same never-let-the-model-multiply rule as

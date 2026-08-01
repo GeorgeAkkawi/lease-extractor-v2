@@ -1,7 +1,8 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit } from '../lib/api';
+import { depositReconciliation } from '../lib/deposits';
 import { settleBillingChange } from '../lib/invalidate';
 import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
@@ -66,6 +67,9 @@ export default function LeaseDetailPage() {
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
   const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
   const { data: abatements = [] } = useQuery({ queryKey: ['abatements', leaseId], queryFn: () => listAbatements(leaseId) });
+  // Bank lines placed as this tenant's security deposit (0076 + 0078). The other half
+  // of the cross-check; empty is the normal case for a deposit taken before Amlak.
+  const { data: depositLines = [] } = useQuery({ queryKey: ['depositLines', leaseId], queryFn: () => listDepositLinesForLease(leaseId) });
   // Dated trail of certificate-of-insurance requests sent from here (newest first),
   // so the Insurance panel can show when the tenant was last asked.
   const { data: insReqs = [] } = useQuery({ queryKey: ['insuranceRequests', leaseId], queryFn: () => listInsuranceRequests(leaseId), enabled: insuranceOn });
@@ -184,6 +188,15 @@ export default function LeaseDetailPage() {
   // same shape the Financials editor uses, so the two stay in sync (invalidate() hits
   // ['tenantShares']). Stamps est_confirmed_year so the Financials carried-over note
   // clears. Roof stays its own field.
+  // A deposit moves no billed figure, so this is a plain lease edit — deliberately NOT
+  // routed through resyncYearBillingToEstimate / settleBillingChange the way an
+  // estimate is. Re-billing a year because a liability was recorded would be a write
+  // with no cause.
+  const saveDeposit = useMutation({
+    mutationFn: (raw) => setLeaseSecurityDeposit(leaseId, raw),
+    onSuccess: () => { invalidate(); qc.invalidateQueries({ queryKey: ['depositLines', leaseId] }); },
+  });
+
   const saveEstCamTax = useMutation({
     mutationFn: async (annual) => {
       const year = new Date().getFullYear();
@@ -292,6 +305,10 @@ export default function LeaseDetailPage() {
       ? Number(lease.est_cam_annual || 0) + Number(lease.est_tax_annual || 0)
       : null;
   const statedCamTax = (statedEst('est_cam_annual') || 0) + (statedEst('est_tax_annual') || 0);
+  // Slice 4c — the deposit cross-check. What the LEASE says is held, against what the
+  // BANK showed arriving (0076 lines placed as 'deposit_held' pointing at this lease).
+  // Neither is derived from the other; that is what makes the disagreement meaningful.
+  const depositRecon = depositReconciliation({ stated: lease.security_deposit, lines: depositLines });
   const commitEstCamTax = (raw) => {
     const n = raw == null || raw === '' ? null : Number(raw);
     const sqft = Number(lease.square_footage) || 0;
@@ -527,6 +544,20 @@ export default function LeaseDetailPage() {
               hint={`${estHint(estCamTaxAnnual)}${estCamTaxAnnual == null && statedCamTax > 0 ? `the lease states ${money(statedCamTax)}/yr — enter it to start billing it; ` : ''}CAM + tax combined — what the tenant pays during the year, reconciled at year end; blank = bill actuals`}
             />
           )}
+          {/* Slice 4c — the security deposit. A lease TERM, so it belongs here with the
+              other terms rather than among the money screens. Editing it is deliberately
+              NOT routed through the billing carry-through: a deposit changes no rent, no
+              share and no invoice, so re-billing the year on the back of it would be a
+              write with no cause. */}
+          <EditField
+            label="Security deposit"
+            type="number"
+            prefix="$"
+            value={lease.security_deposit ?? ''}
+            onCommit={(raw) => saveDeposit.mutate(raw)}
+            conf={conf('security_deposit')}
+            hint={depositRecon.sentence || 'what the lease says you hold — the tenant’s money, never income'}
+          />
           {/* No roof-estimate field here (George: "take out estimated roof box on lease
               terms"). Roof is billed off the actual expense by default; the estimate,
               when a lease states one, is set beside the tenant's other figures in

@@ -189,6 +189,10 @@ export function initialFromExtraction(ex) {
     lease_terms: val(ex.lease_terms),
     share_override_pct: '',
     est_cam_tax: estCamTaxRate,
+    // Slice 4c — already resolved to dollars by the edge fn (a "two months' rent"
+    // deposit is multiplied there, against the rent at the START of the term), so it
+    // prefills directly rather than through a $/SF quotient.
+    security_deposit: val(ex.security_deposit) ?? '',
     // Net vs gross comes off the analyst's VERDICTS line as a RAW string (it isn't a
     // field()-shaped read), so it deliberately carries no confidence badge — the form
     // says where it came from in words instead. An unclear/absent verdict leaves this
@@ -198,7 +202,7 @@ export function initialFromExtraction(ex) {
 }
 function buildAiConfidence(ex) {
   const map = {};
-  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms', 'est_cam_annual', 'est_tax_annual'].forEach((f) => {
+  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms', 'est_cam_annual', 'est_tax_annual', 'security_deposit'].forEach((f) => {
     if (ex[f] && ex[f].confidence != null) map[f] = ex[f].confidence;
   });
   return Object.keys(map).length ? map : null;

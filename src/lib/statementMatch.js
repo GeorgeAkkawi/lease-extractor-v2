@@ -473,6 +473,40 @@ export function rankDepositCandidates(txn, tenants = []) {
   return out;
 }
 
+// Slice 4c — is this deposit a SECURITY DEPOSIT rather than rent?
+//
+// The stakes are asymmetric, which is what justifies guessing at all. A security
+// deposit booked as rent credits that tenant's annual invoice, so allocatePayments
+// reads the month over-paid and the Ledger's Collected column reports rent that never
+// arrived — it corrupts a figure rather than omitting one. Amlak is the only tool that
+// can catch it, because it holds the lease AND the bank line.
+//
+// ⚠ "DEPOSIT" ALONE IS NOT A SIGNAL and must never be treated as one. Every bank in
+// America prints it on ordinary rent lines ("MOBILE DEPOSIT", "REMOTE DEPOSIT 4471"),
+// so matching the bare word would reclassify a property's entire rent roll. Only the
+// whole PHRASE counts — the same word-boundary lesson round 7 learned the hard way
+// when "WITHDRAWAL" matched "DRAW".
+const DEPOSIT_PHRASES = [/SECURITY\s+DEPOSIT/, /DAMAGE\s+DEPOSIT/, /\bSEC\s+DEP\b/];
+const money2 = (n) => `$${round2(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+export function looksLikeSecurityDeposit(txn, cand, tenant) {
+  if (!txn || txn.direction !== 'in' || !cand || !tenant) return null;
+  const desc = String(txn.description || '').toUpperCase();
+  // The strong signal: the bank line says so in words.
+  if (DEPOSIT_PHRASES.some((re) => re.test(desc))) {
+    return { lease_id: cand.lease_id, reason: 'the line says security deposit' };
+  }
+  // The quiet signal: it is exactly what this lease says is held, and it settles no
+  // month the tenant owes. Both halves are required — an amount that corroborates a
+  // billed month is rent that happens to resemble the deposit, which is common when
+  // the deposit was set at one month's rent.
+  const stated = Number(tenant.securityDeposit);
+  if (!isFinite(stated) || stated <= 0) return null;
+  if (cand.corroborated || cand.toRecon) return null;
+  if (!amountMatches(txn.amount, stated)) return null;
+  return { lease_id: cand.lease_id, reason: `matches the ${money2(stated)} deposit stated in this lease` };
+}
+
 const confidenceOf = (cand) => {
   if (!cand) return 'none';
   if (cand.score >= 0.8 && cand.corroborated) return 'high';
@@ -520,17 +554,27 @@ export function matchStatement({ transactions = [], propertyId = null, tenants =
       const candidates = rankDepositCandidates(txn, tenants);
       const top = candidates[0] || null;
       const confidence = confidenceOf(top);
+      // Slice 4c — before calling it rent, ask whether it is the security deposit.
+      // Only when a tenant was actually recognized: a deposit has to belong to
+      // somebody, and guessing the tenant as well as the kind would be two guesses
+      // stacked. Suggestion only — it lands UNTICKED like everything else.
+      const asDeposit = confidence !== 'none' && top
+        ? looksLikeSecurityDeposit(txn, top, tenants.find((x) => x.lease_id === top.lease_id))
+        : null;
       rows.push({
         txn, hash, year, duplicate,
-        kind: top && confidence !== 'none' ? 'tenant' : 'unmatched',
+        kind: asDeposit ? 'deposit_held' : (top && confidence !== 'none' ? 'tenant' : 'unmatched'),
         candidate: confidence !== 'none' ? top : null,
         candidates: candidates.slice(0, 4),
         label: null,
-        reason: null,
-        month: confidence !== 'none' && top ? top.month : null,
+        reason: asDeposit ? asDeposit.reason : null,
+        month: !asDeposit && confidence !== 'none' && top ? top.month : null,
         confidence,
-        checked: confidence === 'high' && !duplicate && !top.collision,
-        collision: !!top?.collision && confidence !== 'none',
+        // Never auto-ticked. Money that is not rent must be confirmed by a human even
+        // when the line says so in words — the cost of being wrong is a corrupted
+        // Ledger, and there is no cheap way back from one.
+        checked: !asDeposit && confidence === 'high' && !duplicate && !top.collision,
+        collision: !asDeposit && !!top?.collision && confidence !== 'none',
       });
     } else {
       const cls = classifyWithdrawal(txn.description, tenants);

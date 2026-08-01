@@ -13,7 +13,7 @@ import { extractPdfText } from '../_shared/pdf.ts';
 import { transcribeScan } from '../_shared/transcribe.ts';
 import { extractDocxText } from '../_shared/docx.ts';
 import { enforceRateLimit } from '../_shared/ratelimit.ts';
-import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom, annualizeOptionSchedule } from '../_shared/rentSchedule.js';
+import { rebuildRentSchedule, percentEscalations, estimateAnnualsFrom, annualizeOptionSchedule, depositAmountFrom } from '../_shared/rentSchedule.js';
 import { parseAnalystVerdicts, extractionMismatches } from '../_shared/analystVerdicts.js';
 import { LEASE_FLAG_INSTRUCTION, LEASE_FLAG_LINE_SPEC, parseAnalystFlags, flagsFromVerdicts, buildReviewRecord } from '../_shared/leaseFlags.js';
 
@@ -296,7 +296,7 @@ async function analystRead(content: Block[]): Promise<string | null> {
 const SUPPLEMENT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'term_months', 'execution_date', 'escalation_pct', 'escalation_stop_months', 'rent_schedule', 'abatements', 'expense_estimates'],
+  required: ['tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'term_months', 'execution_date', 'escalation_pct', 'escalation_stop_months', 'rent_schedule', 'abatements', 'expense_estimates', 'security_deposit'],
   properties: {
     tenant_contact_name: field(['string']),
     tenant_email: field(['string']),
@@ -376,6 +376,24 @@ const SUPPLEMENT_SCHEMA = {
           period: { type: 'string', enum: ['per_month', 'per_year', 'per_sqft_year', 'per_sqft_month', 'unknown'] },
           confidence: { type: 'number' },
           source_quote: { type: 'string' },
+        },
+      },
+    },
+    // Slice 4c — the SECURITY DEPOSIT the lease says is held. Read RAW + basis, so a
+    // deposit written as "two months' Base Rent" comes back as 2 + 'months_rent' and
+    // the multiplication happens in code (depositAmountFrom). Every item field is
+    // REQUIRED, so — exactly like expense_estimates — this whole array costs ZERO of
+    // the 16 union-typed-parameter budget. The schema stays at 15/16.
+    security_deposit: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['amount', 'basis', 'quote'],
+        properties: {
+          amount: { type: 'number' },  // the figure EXACTLY as written — never multiplied
+          basis: { type: 'string', enum: ['dollars', 'months_rent'] },
+          quote: { type: 'string' },
         },
       },
     },
@@ -468,7 +486,17 @@ const SUPPLEMENT_SYSTEM =
   'annualize it); period = how it is expressed, same choices as rent_schedule; source_quote = ' +
   'the exact wording. ONLY capture a stated dollar or $/SF figure — a pro-rata percentage or ' +
   'share formula with no dollar figure is NOT an estimate (skip it), and base rent NEVER goes ' +
-  'here. If the lease states no such figure, return an empty array.';
+  'here. If the lease states no such figure, return an empty array.\n\n' +
+  'SECURITY DEPOSIT — READ IT, DON\'T MULTIPLY IT. security_deposit captures the deposit the ' +
+  'lease says the LANDLORD HOLDS, e.g. "Tenant shall deposit with Landlord the sum of $5,000 ' +
+  'as a security deposit" → amount 5000, basis "dollars"; "a security deposit equal to two (2) ' +
+  'months\' Base Rent" → amount 2, basis "months_rent" (return the NUMBER OF MONTHS — never ' +
+  'multiply it by the rent yourself; we do that). quote = the exact wording. Capture the ' +
+  'SECURITY / DAMAGE deposit only: the FIRST MONTH\'S or LAST MONTH\'S RENT paid at signing is ' +
+  'rent, NOT a deposit, and neither is an application fee, a key deposit, a utility deposit ' +
+  'paid to a utility company, or a letter of credit. If the lease requires no security deposit, ' +
+  'or only says one "may be required" without stating an amount, return an empty array — never ' +
+  'guess a figure.';
 
 // Best-effort supplement. Runs as its OWN call so it can never bloat the main lease
 // schema or fail the whole extraction — returns null on ANY error.
@@ -694,6 +722,21 @@ Deno.serve(async (req) => {
             page: null,
           };
         }
+      }
+
+      // Slice 4c — the security deposit. Resolved against the rent at the START of the
+      // term (rebuilt.baseRent ÷ 12), because a deposit set at "two months' rent" is
+      // fixed at signing and does not climb with the escalations. A deposit we cannot
+      // resolve is left null rather than guessed: it is the figure a bank line will be
+      // reconciled against, so a wrong one is worse than none.
+      const startMonthly = Number((rebuilt as any)?.baseRent) > 0
+        ? Number((rebuilt as any).baseRent) / 12
+        : (Number((parsed as any)?.base_rent?.value) || 0) / 12;
+      const dep = depositAmountFrom((supp as any).security_deposit, startMonthly);
+      if (dep) {
+        (parsed as any).security_deposit = {
+          value: dep.amount, confidence: null, source_quote: dep.quote || '', page: null,
+        };
       }
     }
 

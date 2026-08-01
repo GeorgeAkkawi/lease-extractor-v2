@@ -181,6 +181,114 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 8 (Slice 4c): a deposit that isn't rent can no longer be booked as rent — other income
+  gets a home, and the security deposit becomes a lease term that the bank line is checked AGAINST** (George: *"continue"*,
+  working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB
+  migration **`0078`** (Supabase `awgrjmbcghdjgnqeiqkt`), edge fns **`extract-lease` + `extract-addendum`** (§5 — both import
+  `_shared/rentSchedule.js`), frontend Cloudflare version **`de0001af`**, demo worker `97f6f911`. **$0 recurring — the deposit
+  read rides the EXISTING supplement call (one extra all-required array = ZERO of the 16-union budget), so no new AI call and
+  no new per-lease cost; NO view, NO RPC; 0078 adds ONE table + ONE nullable lease column + widens ONE CHECK, so NOT ONE STORED
+  TOTAL MOVED** (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26). Tests
+  **1263/1263 across 137 files** (was 1231/135 — +32, two new suites).
+  - **⚠ THE ASYMMETRY THAT MAKES THIS THE MORE DANGEROUS HALF OF SLICE 4, and it is the whole argument for the round.** Round
+    7's gap OMITTED a figure — a distribution went unrecorded. This one **CORRUPTS** one. A deposit on a bank statement had
+    exactly two destinations: a tenant lease, or Ignore. So a $75 late fee, a $5,000 security deposit, a utility reimbursement
+    or an insurance payout had to be booked **against a lease** — which credits it toward that tenant's ANNUAL INVOICE, so
+    `allocatePayments` reads the month over-paid and the Ledger's **Collected column reports rent that never arrived** — or
+    dropped entirely. A landlord can spot a missing number; nobody spots a rent-collection figure that is quietly too high.
+  - **TWO CONCEPTS, TWO SHAPES, AND DELIBERATELY NOT ONE TABLE — the opposite call to round 7's, on purpose.** Round 7 folded
+    three kinds into `entity_ledger` because a draw, a contribution and an entity cost all mean *"not the property's operating
+    result."* Here the two halves fall on **opposite sides of that line**: other income **IS** the property's income (a plus in
+    what actually stayed), while a security deposit is a **LIABILITY** — the tenant's money, held — belonging to no income
+    figure anywhere, ever. One table with a `kind` would put "sum the income" one forgotten filter away from counting held
+    deposits as revenue. Two tables makes that mistake structurally impossible rather than merely avoided — the identical
+    argument round 7 made for keeping draws out of `expense_records`, applied one level down.
+  - **⚠ AND THE DEPOSIT NEEDED NO TABLE AT ALL.** What is HELD is a lease term, so it lives on the lease (`security_deposit`).
+    What ARRIVED is a bank line — and 0076 already records every line with a disposition and a `ref`, so a deposit line
+    pointing at its lease **IS** the corroboration. Creating a third place a deposit figure can live is precisely how two of
+    them start disagreeing. **Neither is derived from the other, and that refusal is the feature:** *the lease says $5,000 is
+    held; the bank shows $5,000 received.* Amlak holds the document AND the money — QuickBooks has the money and not the lease;
+    a lease-abstraction tool has the lease and not the money. Test-pinned that an import **never** writes the bank figure onto
+    `leases.security_deposit`, because collapsing the two sources into one destroys the only check that makes either
+    trustworthy.
+  - **Disagreement is NOT automatically a problem, and reporting it as one would train George to ignore it.** A deposit taken
+    in 2019 has no bank line in Amlak and never will — the overwhelmingly common case — so `stated_only` reads as a plain
+    statement of fact with **tone `null`**, not a warning. The genuinely interesting case is the reverse: **money arrived and
+    the lease records no deposit** (`received_only`, warn) — either the term was never captured, or that money is not a deposit
+    and is now sitting in no income figure at all. Both pinned, in both directions.
+  - **The matcher now recognizes a deposit BEFORE it books as rent.** Two signals: the line says so in words, or it equals what
+    the lease states AND settles no month the tenant owes. **Both halves of the second are required** — a deposit is often set
+    at one month's rent, so an amount that *corroborates* a billed month is rent that merely resembles the deposit.
+    **⚠ AND THE BARE WORD "DEPOSIT" IS NEVER A SIGNAL** — every bank in America prints it on ordinary rent lines ("MOBILE
+    DEPOSIT", "REMOTE DEPOSIT 4471"), so matching it would reclassify a property's entire rent roll. Only the whole PHRASE
+    counts (`SECURITY DEPOSIT` · `DAMAGE DEPOSIT` · `SEC DEP`) — the same word-boundary lesson round 7 learned when
+    "WITH**DRAW**AL" matched "DRAW", applied *before* it could bite this time. Pinned as a named regression.
+  - **Nothing that isn't rent is ever auto-ticked**, even when the line says so in words. The cost of being wrong here is a
+    corrupted Ledger and there is no cheap way back from one, so it is always a suggestion a human confirms.
+  - **⚠ NEITHER NEW DESTINATION LEARNS A PAYEE RULE, and that refusal is load-bearing.** A rule fires on the payee, and a
+    tenant's payee string is **identical** whether they are paying rent, a late fee or a deposit — so learning "PAYEE →
+    security deposit" would reclassify every future rent payment from that tenant as a deposit, silently, in the direction that
+    corrupts. The recurring-payee argument that justifies learning a vendor is at its weakest here: a late fee happens when
+    someone is late, and a deposit happens once per tenancy. (Both still resolve to a `targetKeyOf`, so a pattern hitting an
+    income line AND a rent line is still correctly screened as boilerplate.)
+  - **`lease_id` on `other_income` is the column that makes attribution safe.** A late fee genuinely comes FROM a tenant and
+    recording that is real information — but it must never reach `payments`. So who-paid-it lives in a table **no billing code
+    reads**: the panel shows *"Late fee — March rent · from City Dental"* while City Dental's invoice, payments, monthly
+    schedule and every tenant's share read byte-identical. That is the round's headline test.
+  - **A deposit is read from the lease with ZERO schema cost.** `SUPPLEMENT_SCHEMA` gains `security_deposit` as an
+    all-required array (the `expense_estimates` precedent), so the supplement stays at **15/16** unions and the main SCHEMA —
+    at its 16/16 ceiling — is untouched. Read RAW + basis: *"a deposit equal to two (2) months' Base Rent"* comes back as
+    `2 + months_rent` and the shared pure `depositAmountFrom` multiplies **in code**, against the rent at the **START** of the
+    term (a deposit is fixed at signing and does not climb with the escalations). The prompt refuses first/last month's rent, an
+    application fee, a key deposit and a letter of credit by name, and an unresolvable deposit returns **null rather than a
+    guess** — it is the figure a bank line reconciles against, so a wrong one is worse than none.
+  - **Where it shows.** A new **"Other income"** panel on every property's Financials page, directly above "Owner & entity
+    money" — the two read as a pair: what came in that no invoice knows about, then what went out that no expense total knows
+    about. It is `CamSection` with the sign flipped and the billable axis removed (nobody bills a late fee back), and unlike an
+    expense bucket **every row already carries a category**, so there is no gold "nobody decided" state — the pick is made when
+    the money is placed. The **"What actually stayed"** strip fills the `otherIncome` slot round 7 built and left empty. The
+    lease page gains a **Security deposit** field carrying the cross-check verdict as its hint. The review screen's money-in
+    dropdown gains *"Other income — not rent"* (six categories) and *"Security deposit from…"*, and the Ledger's **"Money not
+    yet placed"** panel offers both.
+  - **A trap caught in test, and it is the one the file already warns about.** The matcher suggests a deposit for the tenant it
+    RECOGNIZED — and that tenant is a *candidate*, so a deposit list built from `pickable` (which filters candidates out) would
+    leave the `<select>` with no option matching its own value and **render blank**. Built from all of the property's tenants
+    instead; pinned.
+  - **Editing a deposit deliberately does NOT run the billing carry-through.** It changes no rent, no share and no invoice, so
+    routing it through `resyncYearBillingToEstimate` / `settleBillingChange` would be a write with no cause — the §1 rule read
+    in the direction that says *don't*.
+  - **Files.** New: `supabase/migrations/0078_other_income_and_deposits.sql` · `src/lib/{otherIncome,deposits}.js` ·
+    `src/components/OtherIncomeSection.js` · `src/lib/__tests__/otherIncome.test.js` (25) ·
+    `src/components/__tests__/otherIncomeUi.test.js` (7). Edited: `src/lib/{api,dispositions,statementMatch,demo/store}.js` ·
+    `src/components/{StatementReview,WhatStayedStrip,ImportStatementButton,LeaseForm}.js` ·
+    `src/pages/{PropertyFinancialsPage,LedgerPage,LeaseDetailPage,LeaseNewPage}.js` ·
+    `supabase/functions/extract-lease/index.ts` · `supabase/functions/_shared/rentSchedule.js`. **No** view, RPC or mock change
+    — `other_income` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation (re-verified, not
+    inherited). **Rule #7 re-checked and it mattered this time:** `v_tenant_shares` selects explicit `l.` columns (ending at
+    `l.lease_type`, 0073) and `v_property_totals` reaches leases only through `effective_rent(l.id, …)` — neither uses `l.*`,
+    so adding a lease column rebuilds no view. `create_lease_tx` needs no change either (`jsonb_populate_record`, 0053).
+  - **One existing assertion updated, and it got stricter.** Round 7's strip test pinned `$78,050`; the seed now carries $2,690
+    of income, so it reads **$80,740** — and the test gained a check that every **sign** is right (the two money-IN lines add,
+    the three money-OUT lines subtract), because a sign flip there would be an arithmetically tidy lie.
+  - **Verified:** unit **1263/1263** (`vitest run`); `npm run build` compiles; migration applied clean and read back (13
+    columns · `property_id` **NOT NULL**, `lease_id` **nullable** · both `owner_all` and `require_aal2` policies · 4 indexes ·
+    **0 pre-existing rows** · `leases.security_deposit` nullable with **0 leases carrying one** · the widened CHECK carrying all
+    12 target kinds); **every stored expense total identical before and after**; both edge fns deployed clean with unauth POST →
+    **401** (RLS-gated, *not* a schema 500 — proof the new schema was accepted); live 200s on all four URLs; live bundle carries
+    the backend ref and `other_income`, demo bundle greps **free** of it. Browser drive-through skipped per George's standing
+    preference — the seven render tests mount the **real** panel, the **real** strip and the **real** StatementReview and drive
+    the actual flow, including re-reading City Dental's invoice and payments around a late fee.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now carries an **"Other income"** panel above
+    "Owner & entity money". On any lease, **Security deposit** sits with the other terms. Import a statement and a deposit that
+    isn't rent — a late fee, parking, a security deposit — finally has somewhere to go instead of having to be filed as rent.
+  - **Flags:** ① **No lease in your portfolio has a security deposit recorded** (verified: 0 of 15) — the field starts empty and
+    fills as you type them in or re-upload a lease, which now reads the clause. ② **Re-uploading a lease is what captures the
+    deposit**; existing leases keep null until then. ③ A deposit **returned or applied at move-out** is deliberately not
+    automated — that is a decision (was it returned, or applied to unpaid rent?), and Amlak should not guess it. ④ **Neither
+    other income nor a deposit is remembered as a payee rule**, on purpose — see above; you pick them each time, which for a
+    late fee is the right cadence anyway. ⑤ Round 7's flag still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401
+    S Main are still recorded as not-billed **expenses**.
+
 - **2026-07-31** — **Accounting round 7 (Slice 4b): a draw, an entity cost and a transfer finally have somewhere to go — and
   the app can say what actually STAYED in the account, not just what NOI says** (George: *"continue"*, working the accounting
   direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0077`** (Supabase
