@@ -39,6 +39,12 @@ const colLetter = (n) => {
   return s;
 };
 
+// Exported for the 1099 worksheet (form1099Excel.js) so the two workbooks share ONE
+// writer and one palette. §3's rule read forward: two implementations of one layout
+// drift, and the second one would drift silently because nothing compares them.
+export const XLSX_PALETTE = { OLIVE, CREAM, INK, MUTED, GOLD_BG, GOLD_INK, NEUTRAL_BG, SUMMARY_BG, CUR };
+export { sheet as xlsxSheet, pen as xlsxPen };
+
 function sheet(wb, name, widths, opts = {}) {
   const ws = wb.addWorksheet(name, {
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } },

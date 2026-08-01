@@ -181,6 +181,91 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 13 (Slice 7b): the vendors who may need a 1099 — the list and the question, never the
+  filing** (George: *"continue"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by
+  phase). Deployed: frontend Cloudflare version **`ca62cc8c`**, demo worker `2c5fdf0b`. **$0 — no AI call anywhere; NO migration,
+  NO edge function, NO view, NO RPC, NO new table, and NOTHING IS STORED. Nothing in this round writes, so NOT ONE STORED TOTAL
+  MOVED** (read back live after: 401 S Main FY2026 CAM 1,846.26; Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027
+  CAM 13,596 — byte-identical). Tests **1426/1426 across 148 files** (was 1394/146 — +32, two new suites).
+  - **The obligation, stated plainly.** A landlord must issue a **1099-NEC to any unincorporated vendor paid for SERVICES** above
+    the threshold in a calendar year — to the vendor AND the IRS by **January 31**, e-filed once there are **ten or more**
+    returns, with penalties of roughly **$60–$680 per form**. Amlak already knows every vendor payment by payee and by date, so
+    the candidate list costs nothing.
+  - **⚠ THE REFUSALS POINT THE OPPOSITE WAY TO ROUND 11, AND THAT ASYMMETRY IS THE DESIGN.** The closing-statement reader treats
+    an unclassifiable charge as **not basis**, because guessing toward basis overstates what you own for thirty-nine years. Here
+    the expensive direction is reversed: a vendor left OFF is a form never filed and a penalty per form, while a vendor listed in
+    error costs one question. So **anything Amlak cannot rule out stays a CANDIDATE** — an unknown tax category produces a listed
+    vendor marked *"needs a category"*, not an exclusion. The two modules refuse in opposite directions because their costs do,
+    and both are pinned.
+  - **⚠ AND IT NEVER ASSERTS THE ONE FACT THAT DECIDES THE FILING.** A C or S corp is generally exempt, and only a **W-9**
+    answers whether a vendor is one. So the worksheet names candidates and asks; the **W-9 column is deliberately blank**, to be
+    filled in with the accountant. That is also why this round **stores nothing and has no schema** — the answer is not Amlak's
+    to hold, and a remembered guess is worse than a blank box.
+  - **⚠ THE EXCLUSION NOBODY REMEMBERS, AND IT DOUBLE-REPORTS THE VENDOR WHEN MISSED.** A payment by **credit card, debit card or
+    a payment app** is reported by the PROCESSOR on a 1099-K; putting it on your 1099-NEC as well reports the same money twice
+    against that vendor. So only the **non-card portion counts toward the threshold** — pinned as the headline test: $3,000 paid
+    with $1,200 by card is **$1,800 reportable**, which does **not** cross $2,000 even though $3,000 would. Detection is
+    word-boundary matched (round 7's lesson — a substring match reads *CARDINAL Plumbing* as a card), and deliberately does NOT
+    share `statementMatch`'s `BANK_NOISE`: that list answers *"is this token part of a payee name"* and this one answers *"did
+    this ride a card network"* — VISA is in both for opposite reasons, and merging them would tie two unrelated rules together.
+  - **⚠ THE MOST COMMONLY MISSED 1099 THERE IS, and the tax-category registry from round 4 is what catches it.** An **attorney is
+    reported even if the firm IS incorporated** — the exemption every other corporation gets does not apply. A `legal` category
+    therefore resolves to `always` rather than `ask`, renders gold, and states the rule on its own row. Every other category
+    resolves too: utilities and freight are excluded **by regulation whoever the vendor is**, supplies are merchandise, taxes are
+    a government body, interest is Form 1098's job not yours, wages are a W-2, depreciation is not a payment at all. **A vendor
+    paid into two buckets takes the MORE reportable of them** — half a reportable relationship is still reportable.
+  - **⚠ THE THRESHOLD MOVED, AND NOTHING IS HIDDEN BEHIND EITHER FIGURE.** $600 stood for decades; the July 2025 law raised it to
+    **$2,000 for payments made from 2026**, indexed after. Getting it wrong is costly both ways — too high misses a filing, too
+    low buries the real candidates — so the threshold is a **line across the list, never a gate on it**: every vendor is
+    returned, the ones below are still listed and counted, and the sheet says why. Pinned.
+  - **⚠ AMLAK DOES NOT RELIABLY KNOW THE PAYEE, AND EVERY ROW SAYS SO.** `cam_line_items` carries a bucket **label**, not a payee
+    — "Repairs" can cover three contractors, and a bucket named "Comcast" is a payee only by luck. So each row states where its
+    name came from and how far to trust it: **a service contract's vendor** and **a learned payee** (round 7's `import_rules`,
+    joined by `cam_label`) are precise and outrank a **bucket label**, which is marked *"not a payee"* on the row and counted in
+    the flags. A **tenant** rule is never a vendor — it names who paid YOU. Pinned in both directions.
+  - **Three things deliberately left off, each named with its reason** — round 6's rule applied to vendors instead of bank lines.
+    ① An **amortized capital cost** is a book entry: the money left in the year the asset was bought and was reportable *then*,
+    so counting it again every year of its life would invent a payment that never happened. ② A **draw or contribution** is not a
+    payment for services (round 7's distinction, carried onto the form). ③ **An un-itemized yearly figure has no payee attached
+    to any part of it**, so it cannot be tested against the threshold at all — silence would read as *"nothing to report"* when
+    the truth is *"nobody knows"* (round 5's rule, reused; on live data that is Pershing's **$127,000** of taxes).
+  - **A double-count avoided:** `syncContractCamItems` writes a derived line per covering contract, so summing the contract's own
+    annual cost on top would bill the vendor twice. The contract is the **name** source and its line is the **amount** source —
+    with the contract still listed on its own if its year was never opened. Pinned both ways.
+  - **Its own control rather than a sheet inside the tax package**, and the argument is the calendar: 1099s are due **January 31**
+    and the return is not, so finding out in March that you needed a W-9 is finding out late **by construction**. The candidates
+    render **on screen** for the same reason — the action this produces is *"go and collect a W-9"*, and a list you must open a
+    spreadsheet to read is a list you read in March. The download is two sheets: **Worksheet** (with the blank W-9 column) and
+    **Not on this worksheet**.
+  - **One change to a shipped module, additive:** `cpaExcel.js` now exports its writer and palette (`xlsxSheet` / `xlsxPen` /
+    `XLSX_PALETTE`) so both workbooks share ONE layout implementation — §3's rule read forward, since a second copy would drift
+    silently with nothing comparing them.
+  - **Files.** New: `src/lib/form1099.js` · `src/lib/form1099Excel.js` · `src/components/Export1099Modal.js` ·
+    `src/lib/__tests__/form1099.test.js` (22) · `src/components/__tests__/form1099Ui.test.js` (10). Edited:
+    `src/lib/cpaExcel.js` (three exports, no behaviour change) · `src/pages/CorporationsPage.js` · `src/App.css`. **No**
+    migration, edge function, view, RPC, mock or demo-seed change — the seed already carried every case it needed. **§5 fans out
+    to nothing** (no `_shared` module touched). **No existing assertion changed.**
+  - **Verified:** unit **1426/1426** (`vitest run`); `npm run build` compiles with ExcelJS still lazily chunked; **every stored
+    expense total identical before and after**; live 200s on all four URLs; live bundle carries the backend ref **and** the new
+    worksheet, demo bundle greps **free** of it. Browser drive-through skipped per George's standing preference — the ten render
+    tests mount the **real** corporation grid and the **real** modal, and one drives the actual Download button through ExcelJS
+    to a real workbook buffer, which is the only thing that proves both sheets build.
+  - **George: hard-refresh (Cmd+Shift+R).** Every corporation card on **Financials** now carries **1099s** beside Tax package. It
+    lists the vendors that may need a form, what counts toward the threshold, and everything it deliberately left off — then
+    asks the one question it refuses to answer for you.
+  - **Flags:** ① **Every candidate will read "no record of how they were paid"**, because round 6's line records are forward-only
+    and you have **0 of them** so far — so the card check cannot run on anything imported before that round. It starts working
+    from your next import; until then, check by hand whether any of these went on a card. ② **Most names come from an expense
+    bucket, not a payee** — live, only **3 of your 12 learned rules** are vendor rules (Otis Elevator · Belle Heating · City of
+    Naperville), so the rest are labelled by bucket and want confirming. ③ **The one vendor with a real name is Groot, Inc.
+    ($13,200/yr at Pershing)** — and *"Inc."* is exactly the signal it is probably exempt, which is why the sheet asks rather
+    than deciding. ④ **Pershing's $127,000 of property taxes is one flat figure**, so it is reported as unattributable; it is a
+    county payment either way, but itemizing it makes that explicit. ⑤ **Round 7's flag is now the expensive one:** Liana
+    ($20,000) and Yazin ($10,000) at 401 S Main appear here as vendor candidates. **If they are contractors they need 1099s by
+    January 31; if they are owner draws they need nothing** and belong under Owner & entity money. That is the third round these
+    two lines have surfaced, and the first with a per-form penalty attached. ⑥ **The threshold** is shown as $2,000 for 2026 —
+    confirm it against the year you file; every vendor is listed either way.
+
 - **2026-07-31** — **Accounting round 12 (Slice 7a): the package you hand your accountant — and the sheet that says what it deliberately
   LEFT OFF** (George: *"continue"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by
   phase). Deployed: frontend Cloudflare version **`09a47df9`**, demo worker `2a41a222`. **$0 — no AI call anywhere; NO migration, NO

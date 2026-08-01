@@ -10,6 +10,7 @@ import { CardGridSkeleton } from '../components/Skeleton';
 import CorporationProfileModal from '../components/CorporationProfileModal';
 import AnnualReportModal from '../components/AnnualReportModal';
 import ExportCpaModal from '../components/ExportCpaModal';
+import Export1099Modal from '../components/Export1099Modal';
 import { BuildingIcon, DocIcon } from '../components/icons';
 
 const TITLES = { leases: 'Portfolio', financials: 'Financials', history: 'History' };
@@ -30,6 +31,7 @@ export default function CorporationsPage({ mode }) {
   const [editCorp, setEditCorp] = useState(null);
   const [arCorp, setArCorp] = useState(null);
   const [cpaCorp, setCpaCorp] = useState(null);
+  const [necCorp, setNecCorp] = useState(null);
 
   const { data: corps = [], isPending } = useQuery({ queryKey: ['corporations'], queryFn: listCorporations });
   // Batched in one request (replaces the per-card N+1) so every card's counts /
@@ -101,7 +103,7 @@ export default function CorporationsPage({ mode }) {
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} onCpa={setCpaCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
+            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} onCpa={setCpaCorp} on1099={setNecCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
           ))}
         </div>
       )}
@@ -109,11 +111,12 @@ export default function CorporationsPage({ mode }) {
       {editCorp && <CorporationProfileModal corp={editCorp} onClose={() => setEditCorp(null)} />}
       {arCorp && <AnnualReportModal corp={arCorp} onClose={() => setArCorp(null)} />}
       {cpaCorp && <ExportCpaModal corporationId={cpaCorp.id} corporationName={cpaCorp.name} year={year} onClose={() => setCpaCorp(null)} />}
+      {necCorp && <Export1099Modal corporationId={necCorp.id} corporationName={necCorp.name} year={year} onClose={() => setNecCorp(null)} />}
     </div>
   );
 }
 
-function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, counts, rollup, entity, properties = [], pf, year }) {
+function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, on1099, counts, rollup, entity, properties = [], pf, year }) {
   const navigate = useNavigate();
   const fin = mode !== 'leases';
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
@@ -167,6 +170,18 @@ function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, counts, rollup, entity,
           onClick={(e) => { e.stopPropagation(); onCpa(corp); }}
         >
           <DocIcon /> Tax package
+        </button>
+      )}
+      {/* Its own control rather than a sheet inside the tax package, because the deadline
+          is different: 1099s are due January 31 and the return is not. Finding out in
+          March that you needed a W-9 is finding out late by construction. */}
+      {fin && (
+        <button
+          className="corp-edit"
+          title="Vendors who may need a 1099-NEC for the selected year — due January 31, with what is deliberately left off and why"
+          onClick={(e) => { e.stopPropagation(); on1099(corp); }}
+        >
+          <DocIcon /> 1099s
         </button>
       )}
     </span>
