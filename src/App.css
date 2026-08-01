@@ -503,6 +503,42 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
   .recov-row > div:first-child{grid-column:1/-1}
   .recov-row .num{text-align:left}
 }
+/* Slice 5a — "What you own". Five columns rather than the recoverability table's four,
+   because an asset carries a stock figure (what it is worth on the books) alongside the
+   flow figures the rest of this page deals in. Same type treatment throughout, so the
+   whole Financials page still reads as one document. */
+.asset-table{display:flex;flex-direction:column}
+.asset-row{display:grid;grid-template-columns:1fr 130px 120px 130px 130px 34px;gap:14px;align-items:center;padding:9px 0;border-bottom:1px solid var(--hair)}
+.asset-row .num{text-align:right;font-variant-numeric:tabular-nums}
+.asset-row > div{min-width:0}
+.asset-row.asset-th{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;padding-bottom:10px;border-bottom:1px solid var(--line)}
+/* Book value is the answer this table exists to give, so it carries the weight — the
+   same treatment the per-tenant breakdown gives its closing Difference figure and the
+   recoverability table gives its net. What has been taken so far stays quiet. */
+.asset-row .asset-book{font-weight:600;color:var(--ink)}
+.asset-row .asset-back{color:var(--muted)}
+/* An asset that cannot depreciate yet: gold, the app's "look here", matching the chip
+   that unblocks it. It reports "—" rather than $0, because a fully-depreciated asset
+   legitimately reads $0 and the two must not look alike. The gold marks the DERIVED
+   figures only — the cost is a fact the landlord typed and is not in question. */
+.asset-row.asset-blocked .asset-year,
+.asset-row.asset-blocked .asset-back,
+.asset-row.asset-blocked .asset-book{color:var(--gold)}
+.asset-row.asset-total{border-bottom:none;border-top:1px solid var(--line);padding-top:12px;margin-top:2px}
+.asset-row.asset-total b{font-family:var(--display);font-size:17px;font-weight:600}
+/* The accountant cross-check is prose, not a figure, so it wraps where .cell-sub won't. */
+.asset-note{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.35;white-space:normal;max-width:52ch}
+.asset-note.warn-sub{color:var(--gold);font-weight:600}
+@media (max-width:880px){
+  /* Four money columns don't survive a phone. The recoverability table's reflow, one
+     column wider: the header band hides, the asset takes a full-width line, and the
+     figures wrap 2-across self-labelled by the shared .stat-label. */
+  .asset-row{grid-template-columns:repeat(2,1fr);gap:10px 14px}
+  .asset-row.asset-th{display:none}
+  .asset-row > div:first-child{grid-column:1/-1}
+  .asset-row .num{text-align:left}
+  .asset-row .icon-btn{justify-self:start}
+}
 .cam-row.cat-none .num{color:var(--gold);font-weight:600}
 .cam-input{font-family:inherit;font-size:14px;padding:9px 11px;border:1px solid transparent;border-radius:var(--radius);background:var(--panel-2);color:var(--ink);width:100%;outline:none}
 .cam-input:hover{border-color:var(--border);background:#fff}

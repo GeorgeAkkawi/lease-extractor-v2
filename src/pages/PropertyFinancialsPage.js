@@ -19,6 +19,7 @@ import RecoverabilityTable from '../components/RecoverabilityTable';
 import EntityLedgerSection from '../components/EntityLedgerSection';
 import OtherIncomeSection from '../components/OtherIncomeSection';
 import WhatStayedStrip from '../components/WhatStayedStrip';
+import AssetRegisterSection from '../components/AssetRegisterSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
@@ -212,6 +213,11 @@ export default function PropertyFinancialsPage() {
       {/* Below the expense sections, because it is deliberately NOT one of them:
           nothing here is an expense of this building. */}
       <EntityLedgerSection propId={propId} corporationId={prop?.corporation_id || corpId} year={year} />
+
+      {/* Last, because it is the only panel on this page that is not about money that
+          moved this year. Everything above answers "what crossed the account"; this one
+          answers "what do I own, and what did it lose". */}
+      <AssetRegisterSection propId={propId} year={year} />
 
       <div className="page-head" style={{ marginTop: 8 }}>
         <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>

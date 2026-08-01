@@ -41,6 +41,13 @@ export default defineConfig({
     // "Test timed out" INSTEAD of the assertion that was actually failing — so a real
     // regression arrived with its cause hidden. The gap is what lets waitFor give up
     // first and report what it was waiting for.
-    testTimeout: 15000,
+    // Round 9 raised it 15s → 30s, and the reason is worth recording so nobody trims
+    // it back. Most render tests here await a real WRITE CHAIN through the demo mock,
+    // not a repaint, so their budget is a STARVATION allowance rather than a work
+    // allowance: at 139 test files vitest runs 139 jsdom environments across the pool,
+    // and on a machine under load the whole suite ran 5× slower (environment 361s vs
+    // 41s) — enough for a test doing 108ms of work to blow a 15s ceiling. Raising it
+    // costs nothing on a green run and stops the next round chasing a phantom.
+    testTimeout: 30000,
   },
 });

@@ -4143,6 +4143,53 @@ export const setLeaseSecurityDeposit = (leaseId, amount) =>
       .eq('id', leaseId).select().single()
   );
 
+// ---- Fixed assets (Slice 5a) -------------------------------------------------
+// Depreciable things standing at a property. See src/lib/depreciation.js for why the
+// arithmetic lives there and nothing is stored.
+//
+// ⚠ NOTE THE ABSENCE OF A YEAR FILTER, and it is not an oversight. Every other list in
+// this file is scoped to a fiscal year because every other figure belongs to one. An
+// asset belongs to ALL of them: it has a date it entered service and a life spanning
+// decades, and the year's figure is derived from the schedule. Filtering by year here
+// would hide the building from every year but the one it was bought in.
+export const listFixedAssets = (propertyId) =>
+  rows(supabase.from('fixed_assets').select('*').eq('property_id', propertyId));
+
+export async function addFixedAsset(asset) {
+  const numOrNull = (v) => (v === '' || v == null || !isFinite(Number(v)) ? null : Number(v));
+  return one(
+    supabase.from('fixed_assets')
+      .insert({
+        property_id: asset.property_id,
+        kind: asset.kind || null,
+        description: asset.description || null,
+        placed_in_service: asset.placed_in_service || null,
+        cost: Math.abs(Number(asset.cost) || 0),
+        // Preserved as null when unanswered — the whole land refusal turns on it, so
+        // it must never be coerced to 0 on the way in.
+        land_cost: asset.land_cost === '' || asset.land_cost == null ? null : Math.abs(Number(asset.land_cost) || 0),
+        useful_life_years: numOrNull(asset.useful_life_years),
+        prior_accumulated: numOrNull(asset.prior_accumulated),
+        prior_accumulated_year: numOrNull(asset.prior_accumulated_year),
+        note: asset.note || null,
+        owner_id: await ownerId(),
+      })
+      .select().single()
+  );
+}
+
+export const deleteFixedAsset = (id) =>
+  rows(supabase.from('fixed_assets').delete().eq('id', id));
+
+// The one edit worth a dedicated call: the land allocation is what unblocks a building's
+// schedule, so it is set from a chip on the row rather than by re-entering the asset.
+export const setFixedAssetLand = (id, landCost) =>
+  one(
+    supabase.from('fixed_assets')
+      .update({ land_cost: landCost === '' || landCost == null ? null : Math.abs(Number(landCost) || 0) })
+      .eq('id', id).select().single()
+  );
+
 // Answer the "money not yet placed" nag by giving the line a real home, without
 // re-importing the statement it came from. Writes the ledger row FIRST, then stamps
 // the line — so an interruption leaves a recorded draw with a still-nagging line

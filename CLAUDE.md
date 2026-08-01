@@ -181,6 +181,108 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 9 (Slice 5a): a thing bought once and used for thirty-nine years stops being one catastrophic
+  year — the asset register, straight-line depreciation, and a refusal to guess the land** (George: *"continue"*, working the
+  accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0079`**
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`095eb1f8`**, demo worker `a0f8148d`. **$0 — no AI call
+  anywhere; NO edge function, NO view, NO RPC; 0079 adds ONE table and alters NOTHING, so NOT ONE STORED TOTAL MOVED** (read back
+  live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26). Tests **1293/1293 across 139
+  files** (was 1263/137 — +30, two new suites).
+  - **The gap, stated precisely.** Amlak has never held the idea that a thing can be **bought once and used for years**. An
+    $18,000 roof is an $18,000 expense in the year it was paid, so that year reads as a disaster and every other year reads
+    better than it was. And the largest asset a landlord owns cannot be described at all — verified live again this round:
+    **`properties` has exactly EIGHT columns, one added since 0001** (`building_sf`, 0005). No acquisition date, no purchase
+    price, nothing.
+  - **⚠ NOTHING THIS ROUND WRITES CAN MOVE A BILL, AND THAT IS STRUCTURAL RATHER THAN CAREFUL.** Depreciation is a **non-cash**
+    figure: no money leaves the bank, no expense total changes, no tenant is billed. Every number is DERIVED from a
+    `fixed_assets` row, and that table is read by no view, no invoice and no share calculation — the same safety `entity_ledger`
+    (0077) and `other_income` (0078) have. Test-pinned by re-reading `cam_total`, `roof_total`, `taxes_total`, every
+    `v_tenant_shares` row and City Dental's invoice around booking a $46,800 HVAC asset.
+  - **⚠ AND IT IS DELIBERATELY ABSENT FROM "WHAT ACTUALLY STAYED."** That strip answers what is in the **account**; depreciation
+    never crossed the account. Subtracting it there would be the tidiest possible lie — a cash figure with a non-cash number
+    taken out of it. Pinned as its own test: the strip renders no Depreciation row and still reads **$80,740.00**.
+  - **⚠ THE REFUSAL THE ROUND TURNS ON — the land.** The land/building split is the most consequential number in depreciation
+    and Amlak **cannot know it**: it is an allocation *decision*, not a fact printed on the settlement statement. An 80/20
+    default is one line of code and silently wrong on most properties. So a building whose land has never been valued
+    **does not depreciate at all** — it shows a gold **"Set the land value"** chip and reports **"—", never $0**, because a
+    fully-depreciated asset legitimately reads $0 and the two must not look alike. **`null` is not zero:** a ground lease or a
+    condo unit legitimately answers 0 and depreciates the whole cost; a building nobody has split has null and blocks. Pinned in
+    both directions, and the gold marks only the **derived** columns — the cost is a fact the landlord typed and is not in
+    question.
+  - **The invariant that makes a 39-row schedule trustworthy.** Σ of every year's expense equals the depreciable basis **to the
+    cent**, on six different assets including ones that divide into nothing. Achieved the way `componentizeSchedule` does it:
+    each year is the difference between two **rounded cumulative** totals and the final year is the exact remainder — never
+    `round2(basis / life)` repeated, which over 27.5 years ends a third of a dollar short. **A test caught me asserting the naive
+    model** (34,036.36 vs the correct 34,036.37) and was rewritten to pin the real property, with the arithmetic spelled out so
+    nobody "corrects" it back.
+  - **Whole-month proration, and it says so.** A building placed in service in April takes 9 months in its first year. That is
+    **not** the mid-month convention — which is MACRS, deliberately not computed. Book value is **cost** less accumulated, not
+    basis less it, so a fully-depreciated building is worth its land forever; the arithmetic does the teaching.
+  - **⚠ AND IT DOES NOT REMOVE ANYTHING FROM YOUR EXPENSES — named on the panel rather than left to be discovered.** Recording a
+    roof here while the same roof sits in this year's roof total counts it twice. Taking it OUT and amortizing it back into CAM
+    is a **real billing change** that must run the full `resyncPropertyBilling` → `settleBillingChange` carry-through, which is
+    Slice 5b. An unnamed double-count is exactly the kind of quiet wrongness this arc keeps refusing.
+  - **The register is a JS registry with default lives** (`ASSET_KINDS` — the FEATURES / NOTIFY_TYPES / EXPENSE_CATEGORIES /
+    ENTITY_KINDS idiom, no CHECK): Building 39 · Building improvement 39 · Land improvement 15 · Equipment 7 · Appliances 5 ·
+    Acquisition costs 39 · **Loan costs with NO default**, on purpose — points amortize over the term of a loan Amlak does not
+    know until Slice 6, and a confident schedule off a number nobody chose is worse than asking. Defaults assume
+    **nonresidential** property (which is what Amlak is for) and are stated as such; a residential landlord types 27.5 and the
+    schedule follows. An **unknown kind** carries no life and blocks rather than borrowing another kind's — the same refusal
+    `dispositionInfo` and `entityKindInfo` make.
+  - **⚠ THE ONE TABLE IN THIS APP WITH NO `year` COLUMN, and that is the feature.** Every other money row belongs to a fiscal
+    year because every other figure does. An asset belongs to **all of them** — it has a date it entered service and a life
+    spanning decades, and the year's figure is derived. So `listFixedAssets` is deliberately **not** year-scoped; filtering it
+    would make the building vanish from every year but the one it was bought in. Pinned.
+  - **The accountant cross-check, and why disagreement reads as a fact.** A landlord who has owned a building for ten years
+    already has this figure on the CPA's last Form 4562. The schedule here is computed **independently** from cost, life and
+    in-service date, so the two are two SOURCES for one number — the deposit cross-check of round 8, one slice on. **They will
+    almost never match exactly:** a CPA applies the mid-month convention and this file prorates by whole months. So a gap smaller
+    than one year's depreciation is reported **with an explanation and no warning tone**; only a larger gap flags, because that
+    means a different cost or a different life. Three states pinned.
+  - **⚠ AND IT DELIBERATELY DID NOT ADD `properties.purchase_price`.** The building is an **asset like the roof is** — one cost,
+    one in-service date, one land allocation — so it belongs in the register rather than special-cased into two columns with
+    their own rules. That keeps **one depreciation rule for everything** and leaves the closing-statement extractor (Slice 5c) a
+    row to fill rather than a second schema to reconcile against this one.
+  - **Also refused in the schema itself:** no MACRS/bonus/§179 columns (elections are the accountant's; being subtly wrong is
+    worse than being absent), no disposal columns (gain/loss and recapture are a decision, not arithmetic — built when built,
+    not stubbed), and **no `import_id`** — nothing imports an asset yet, and a column with no writer is the write-only-data
+    antipattern this codebase keeps finding. Slice 5b adds it beside the code that writes it.
+  - **Where it shows.** A **"What you own"** panel, last on every property's Financials page — deliberately last, because every
+    panel above it answers *what crossed the account* and this one answers *what do I own and what did it lose*. Five columns
+    (Cost · FY {year} · Taken to date · Book value) on its own grid, with the recoverability table's ≤880px reflow so four money
+    columns survive a phone.
+  - **Files.** New: `supabase/migrations/0079_fixed_assets.sql` · `src/lib/depreciation.js` ·
+    `src/components/AssetRegisterSection.js` · `src/lib/__tests__/depreciation.test.js` (22) ·
+    `src/components/__tests__/assetRegisterUi.test.js` (8). Edited: `src/lib/{api,demo/store}.js` ·
+    `src/pages/PropertyFinancialsPage.js` · `src/App.css` · `vite.config.js`. **No** view, RPC, edge function or mock change —
+    `fixed_assets` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation (re-verified, not inherited),
+    and no `_shared` module was touched so §5 fans out to nothing. **No existing assertion changed** — this round adds a concept
+    rather than moving one, which is what "alters nothing" buys.
+  - **⚠ A suite-wide flake recurred and the ceiling was raised, not the test.** `camBreakdownV2` timed out at 15s on one full
+    run and passed in **108ms** in isolation; the failing run was **5× slower across the board** (environment 361s vs 41s, wall
+    99s vs 19s) — machine contention, not logic. Most render tests here await a real **write chain** through the demo mock, so
+    their budget is a **starvation** allowance rather than a work allowance, and at 139 files vitest runs 139 jsdom environments
+    across the pool. `testTimeout` 15s → **30s**, keeping the 6× gap over `asyncUtilTimeout` that round 4 established so a
+    genuine `waitFor` failure still reports the real assertion. Re-run green. Rounds 3 and 4 each hit this; the comment now says
+    what it is so the next round doesn't chase it.
+  - **Verified:** unit **1293/1293** (`vitest run`); `npm run build` compiles; migration applied clean and read back (13 columns
+    · `land_cost` **nullable** · `property_id` **NOT NULL** · **no `year` column** · both `owner_all` and `require_aal2` policies
+    · 4 indexes · **0 pre-existing rows**); **every stored expense total identical before and after**; live 200s on all four
+    URLs; live bundle carries the backend ref, demo bundle greps **free** of it. Browser drive-through skipped per George's
+    standing preference — the eight render tests mount the **real** panel and the **real** strip and drive the actual flow,
+    including answering the land question and watching the schedule unblock.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now ends with **"What you own"**. Record the
+    building first — its cost, the date you bought it, and **how much of that was the land** — then the roof, the parking lot,
+    the HVAC. Each one shows what it costs you in book value this year instead of wrecking a single year's figures.
+  - **Flags:** ① **Nothing is recorded yet** — 0 assets live. The building is the place to start, and it needs the land split
+    before it will depreciate at all; your closing statement or the county assessor's ratio is where that number comes from.
+    ② **Recording an asset does not remove it from your expenses** — until Slice 5b, a roof entered in both places is counted
+    twice. ③ **Straight-line and book only.** Your accountant applies the conventions and elections Amlak deliberately doesn't
+    compute, so their figure and this one will differ slightly in an asset's first year — the panel says so where it happens
+    rather than flagging it. ④ **Selling an asset isn't handled yet** — gain, loss and recapture are decisions, not arithmetic.
+    ⑤ Round 7's flag still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401 S Main are still recorded as not-billed
+    **expenses**.
+
 - **2026-07-31** — **Accounting round 8 (Slice 4c): a deposit that isn't rent can no longer be booked as rent — other income
   gets a home, and the security deposit becomes a lease term that the bank line is checked AGAINST** (George: *"continue"*,
   working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB

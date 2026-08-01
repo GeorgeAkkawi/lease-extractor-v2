@@ -201,6 +201,24 @@ export function seed() {
       { id: 'inc-2', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: null, year: Y, category: 'parking', label: 'Lot 2 monthly permits', amount: 1800, txn_date: iso(Y, 4, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 4, 1) },
       { id: 'inc-3', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: null, year: Y, category: 'utility', label: 'Water reimbursement', amount: 640, txn_date: iso(Y, 5, 9), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 9) },
     ],
+    // Slice 5a — things bought once and used for years. Every figure here divides
+    // evenly on purpose, so the demo's yearly depreciation is a clean number a reader
+    // can check by hand: the building's $936,000 basis over 39 years is exactly
+    // $24,000/yr ($2,000/mo), the roof's $19,500 over 39 is $500, the parking lot's
+    // $42,000 over 15 is $2,800. Dates are Y-relative so those figures stay stable as
+    // the calendar moves.
+    //
+    // Three cases at once: a building placed in APRIL (so its first year is prorated to
+    // 9 months and the whole-month convention is visible), a roof placed on January 1
+    // (no proration), and — on prop-2 — a building with NO land allocation, which is
+    // the gold "Set the land value" refusal. asset-1 also carries the accountant's own
+    // accumulated figure through Y-3, which the schedule agrees with to the dollar.
+    fixed_assets: [
+      { id: 'asset-1', owner_id: DEMO_USER.id, property_id: 'prop-1', kind: 'building', description: 'Maple Plaza — structure', placed_in_service: iso(Y - 7, 4, 1), cost: 1190000, land_cost: 254000, useful_life_years: null, prior_accumulated: 114000, prior_accumulated_year: Y - 3, note: null, created_at: iso(Y - 7, 4, 1) },
+      { id: 'asset-2', owner_id: DEMO_USER.id, property_id: 'prop-1', kind: 'improvement', description: 'Roof replacement', placed_in_service: iso(Y - 2, 1, 1), cost: 19500, land_cost: null, useful_life_years: null, prior_accumulated: null, prior_accumulated_year: null, note: null, created_at: iso(Y - 2, 1, 1) },
+      { id: 'asset-3', owner_id: DEMO_USER.id, property_id: 'prop-1', kind: 'land_improvement', description: 'Parking lot resurfacing', placed_in_service: iso(Y - 4, 7, 1), cost: 42000, land_cost: null, useful_life_years: null, prior_accumulated: null, prior_accumulated_year: null, note: null, created_at: iso(Y - 4, 7, 1) },
+      { id: 'asset-4', owner_id: DEMO_USER.id, property_id: 'prop-2', kind: 'building', description: 'Oak Center — structure', placed_in_service: iso(Y - 5, 1, 1), cost: 800000, land_cost: null, useful_life_years: null, prior_accumulated: null, prior_accumulated_year: null, note: null, created_at: iso(Y - 5, 1, 1) },
+    ],
     financial_snapshots: [
       // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"
       // for it; snap-1/snap-2 carry the frozen collection picture so the demo shows
