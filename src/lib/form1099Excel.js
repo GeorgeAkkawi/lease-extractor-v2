@@ -13,7 +13,7 @@
 import { xlsxSheet, xlsxPen, XLSX_PALETTE } from './cpaExcel';
 import {
   build1099Worksheet, FILING_DEADLINE, EFILE_AT, PENALTY_NOTE, THRESHOLD_NOTE,
-  PAYEE_SOURCES, treatmentInfo,
+  PAYEE_SOURCES, treatmentInfo, vendorPhrase,
 } from './form1099';
 
 const { GOLD_BG, GOLD_INK, INK, MUTED, SUMMARY_BG } = XLSX_PALETTE;
@@ -87,7 +87,7 @@ function addWorksheet(wb, pkg, now) {
     p.section('What to check before you rely on this');
     if (pkg.counts.imprecise) {
       p.note(
-        `• ${pkg.counts.imprecise} of the candidates are named after an EXPENSE BUCKET rather ` +
+        `• ${vendorPhrase(pkg.counts.imprecise, 'is', 'are')} named after an EXPENSE BUCKET rather ` +
         'than a payee. A bucket can cover more than one vendor, so confirm who each one ' +
         'actually went to — importing a bank statement teaches Amlak the payee.',
         { italic: false, ink: GOLD_INK, bg: GOLD_BG, height: 30 }
@@ -95,15 +95,17 @@ function addWorksheet(wb, pkg, now) {
     }
     if (pkg.counts.needsCategory) {
       p.note(
-        `• ${pkg.counts.needsCategory} carry no tax category, so Amlak could not rule them ` +
-        'out and listed them. Setting the category on the Expense entry removes the ones ' +
-        'that are utilities, materials or taxes.',
+        `• ${vendorPhrase(pkg.counts.needsCategory, 'carries', 'carry')} no tax category, so Amlak ` +
+        `could not rule ${pkg.counts.needsCategory === 1 ? 'it' : 'them'} out and listed ` +
+        `${pkg.counts.needsCategory === 1 ? 'it' : 'them'}. Setting the category on the Expense ` +
+        'entry removes the ones that are utilities, materials or taxes.',
         { italic: false, ink: GOLD_INK, bg: GOLD_BG, height: 30 }
       );
     }
     if (pkg.counts.noMethod) {
       p.note(
-        `• ${pkg.counts.noMethod} have no record of HOW they were paid. A card or PayPal ` +
+        `• ${vendorPhrase(pkg.counts.noMethod, 'has', 'have')} no record of HOW ` +
+        `${pkg.counts.noMethod === 1 ? 'it was' : 'they were'} paid. A card or PayPal ` +
         'payment is reported by the processor on a 1099-K and must not go on your 1099-NEC ' +
         'as well — check any of these that were paid by card.',
         { italic: false, ink: GOLD_INK, bg: GOLD_BG, height: 30 }

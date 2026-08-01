@@ -97,15 +97,27 @@ describe('the list, and the question it asks', () => {
   // question, so the vendor is listed rather than ruled out.
   it('lists what it could not rule out, and says why', async () => {
     const dlg = await openModal();
-    expect(flagText(dlg)).toMatch(/carry no tax category/);
+    expect(flagText(dlg)).toMatch(/no tax category/);
     expect(flagText(dlg)).toMatch(/rather than risk dropping one/);
+  });
+
+  // Seen on a real portfolio: with exactly ONE uncategorised bucket the flag read
+  // "1 carry no tax category". The demo seed carries that single bucket (Security), so
+  // this case is the singular one — the plural wording is pinned in the unit suite.
+  it('counts vendors in the singular when there is only one', async () => {
+    const dlg = await openModal();
+    const t = flagText(dlg);
+    expect(t).toMatch(/1 vendor carries no tax category/);
+    expect(t).not.toMatch(/\b1 carry\b/);
+    expect(t).not.toMatch(/\b1 have\b/);
+    expect(t).not.toMatch(/\b1 of these are\b/);
   });
 
   // ⚠ Round 6's audit rows are forward-only, so "no method on record" must read as
   // UNKNOWN — never assumed to be a cheque, or a card payment lands on both forms.
   it('warns that a card payment is already on the processor’s 1099-K', async () => {
     const dlg = await openModal();
-    expect(flagText(dlg)).toMatch(/no record of how they were paid/);
+    expect(flagText(dlg)).toMatch(/no record of how (it was|they were) paid/);
     expect(flagText(dlg)).toMatch(/1099-K/);
   });
 

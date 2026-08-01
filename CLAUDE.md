@@ -181,6 +181,63 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-08-01** — **Two wording defects found by DRIVING the deployed demo, not by reading the code: a lender-facing dollar
+  figure printed as a bare number, and three 1099 flags that read "1 carry" when a portfolio has exactly one of something**
+  (George: *"can you show me what everything looks like populated in the demo"* — the walkthrough itself was the bug
+  report). Deployed: frontend Cloudflare version **`753c9018`**, demo worker `c9bd3e0c`. **$0 — no AI call, NO migration,
+  NO edge function, NO view, NO RPC, NO table, and nothing is stored. Three display strings and their tests; no code path
+  that touches a figure was altered, so the before/after expense read-back was skipped as vacuous and is noted as such
+  rather than performed and reported.** Tests **1466/1466 across 150 files** (was 1463/150 — +3, no new suite).
+  - **⚠ NEITHER WAS REACHABLE FROM A TEST THAT EXISTED, AND THAT IS THE POINT OF THE ROUND.** Round 14 shipped with 37
+    new assertions and 1463 green; round 13 with 32. Both defects sat in strings those suites asserted with **substring**
+    matchers — `toMatch(/carry no tax category/)` passes whether the sentence reads *"4 vendors carry"* or *"1 carry"*, and
+    nothing asserted the uncategorised figure's SHAPE at all. A matcher loose enough to survive a refactor is loose enough
+    to survive a defect; the fix in both cases is an assertion on the FORM of the output, not merely its presence.
+  - **⚠ AND BOTH ARE SINGULAR-CASE DEFECTS, which is why a fixture never caught them.** The unit fixtures carry three and
+    four vendors, so every flag read plurally and correctly. The live demo carries **exactly one** uncategorised bucket
+    (Security) — the state round 4 seeded *on purpose* to demo the gold "Set a tax category" chip — so the very seed built
+    to show the refusal working is the one that exposed the sentence describing it as broken. A test now pins the singular
+    explicitly, with a comment saying it was seen on a real portfolio.
+  - **The lender fix:** `lenderFlags` built its uncategorised warning with `round2()`, so a lender-facing pre-flight read
+    **"6000 of expenses carry no category"** — which on a page whose every other figure is currency reads as a COUNT, not
+    a dollar amount. Now `money()`. `lenderPackage.js` gains one import (`./format`, itself dependency-free, so no cycle).
+    Pinned by asserting the text **starts** `/^\$[\d,]+\.\d{2} of expenses/` rather than merely containing the number.
+  - **The 1099 fix, and it is shared rather than written twice.** Three flags read *"1 carry no tax category"*, *"1 have
+    no record of how they were paid"*, *"1 of these are named after an expense bucket"*. New exported
+    **`vendorPhrase(n, singularVerb, pluralVerb)`** in `form1099.js` → *"1 vendor carries"* / *"4 vendors carry"*, with
+    inline it/them and it-was/they-were agreement beside it. **Exported rather than duplicated because the identical three
+    sentences exist in the modal AND in the workbook** — §3's rule read forward: the sheet on screen and the sheet in the
+    download must not word one fact two ways, and fixing only the one I could see would have left the Excel copy wrong
+    with nothing comparing them. `form1099Excel.js` gains it in the same commit.
+  - **Three existing assertions loosened, deliberately, and one added that is stricter than all of them.** The two
+    substring matchers that let this through became number-agnostic (`/no tax category/`,
+    `/no record of how (it was|they were) paid/`) so they no longer pin a specific count — and a NEW case asserts the
+    singular form directly *and* that `/\b1 carry\b/`, `/\b1 have\b/` and `/\b1 of these are\b/` are **absent**. Pinning
+    the absence is what makes it a regression rather than a spot fix.
+  - **A test fixture that lied, caught while writing the test.** My first lender assertion built its uncategorised case by
+    passing `buckets: []` — which flags nothing, because round 5's category resolution falls back to the LABEL REGISTRY
+    and then to what the SECTION means before it gives up. "Landscaping" resolves with no bucket record at all. The
+    fixture now adds a genuinely unknown CAM label ("Concierge desk"), the only section that is actually ambiguous.
+  - **Files.** Edited: `src/lib/lenderPackage.js` (one import, one string) · `src/lib/form1099.js` (`vendorPhrase`) ·
+    `src/lib/form1099Excel.js` (one import, three strings) · `src/components/Export1099Modal.js` (one import, three
+    strings) · `src/lib/__tests__/{lenderPackage,form1099}.test.js` · `src/components/__tests__/form1099Ui.test.js`.
+    **No** new file, migration, edge function, view, RPC, mock or demo-seed change. **§5 fans out to nothing.**
+  - **Verified:** unit **1466/1466** — and re-run **three consecutive times**, because the first full run failed ONE
+    assertion in `form1099Ui` that then refused to reproduce in five subsequent runs, in the suite or in isolation. That
+    is the documented starvation flake (rounds 3/4/9: 150 jsdom environments, render tests awaiting a real write chain,
+    `testTimeout` 30s as a contention allowance rather than a work allowance) — recorded here rather than chased, per
+    round 9's note. `npm run build` compiles; live 200s on all four URLs; live bundle carries the backend ref, demo bundle
+    greps **free** of it. **Both fixes then confirmed on the DEPLOYED demo in a real browser** — the same way they were
+    found: the lender pre-flight now reads **"$6,000.00 of expenses"**, and the 1099 flags read *"4 vendors are named…"*,
+    *"**1 vendor carries** no tax category, so Amlak couldn't rule **it** out and listed **it**…"*, *"4 vendors have no
+    record of how they were paid…"*.
+  - **George: hard-refresh (Cmd+Shift+R).** Nothing moved and nothing new appeared — three sentences read correctly now.
+    A **17-screenshot walkthrough of the whole accounting arc** is in `~/Desktop/amlak-demo-tour/`.
+  - **Worth keeping for the next round:** the demo seed is now populated for **every** round 3–14 surface, so driving it
+    is a cheap end-to-end read on the arc — and it is the only check that exercises the singular, the empty and the
+    blocked states together. Round 14's own note said the render tests "cover most of what a click-through would prove."
+    They didn't. Both defects were in the half they can't reach: how a sentence READS.
+
 - **2026-07-31** — **Accounting round 14 (Slice 7c): the package you hand a LENDER — and the coverage ratio if the tenants
   reaching the end of their term walk** (George: *"go"*, closing the accounting direction doc
   `~/.claude/plans/no-need-to-come-magical-fairy.md`). Deployed: frontend Cloudflare version **`2faf85f8`**, demo worker

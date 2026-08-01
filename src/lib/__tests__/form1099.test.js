@@ -16,7 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   thresholdFor, THRESHOLDS, treatmentFor, VENDOR_TREATMENTS, paidByCard, vendorKey,
-  vendorRowsFor, worksheet, EFILE_AT,
+  vendorRowsFor, worksheet, EFILE_AT, vendorPhrase,
 } from '../form1099';
 import { EXPENSE_CATEGORIES } from '../expenseCategories';
 
@@ -327,6 +327,17 @@ describe('the filing facts it reports', () => {
       ],
     });
     expect(w.candidates.map((v) => v.name)).toEqual(['Large', 'Middle', 'Small']);
+  });
+});
+
+// The flags are sentences, so the count has to agree with its verb. Shared by the modal
+// and the workbook so one fact can't be worded two ways.
+describe('how it counts vendors in a sentence', () => {
+  it('agrees in the singular and the plural', () => {
+    expect(vendorPhrase(1, 'carries', 'carry')).toBe('1 vendor carries');
+    expect(vendorPhrase(4, 'carries', 'carry')).toBe('4 vendors carry');
+    expect(vendorPhrase(1, 'is', 'are')).toBe('1 vendor is');
+    expect(vendorPhrase(0, 'has', 'have')).toBe('0 vendors have');
   });
 });
 

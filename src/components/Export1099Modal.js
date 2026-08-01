@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { build1099Worksheet, FILING_DEADLINE, EFILE_AT, PAYEE_SOURCES } from '../lib/form1099';
+import { build1099Worksheet, FILING_DEADLINE, EFILE_AT, PAYEE_SOURCES, vendorPhrase } from '../lib/form1099';
 import { download1099WorksheetXlsx } from '../lib/form1099Excel';
 import { money } from '../lib/format';
 import { useModalA11y } from './modalA11y';
@@ -48,21 +48,21 @@ export default function Export1099Modal({ corporationId, corporationName, year, 
   if (c?.imprecise) {
     flags.push({
       key: 'imprecise',
-      text: `${c.imprecise} of these are named after an expense bucket, not a payee — one bucket can cover more than one vendor.`,
+      text: `${vendorPhrase(c.imprecise, 'is', 'are')} named after an expense bucket, not a payee — one bucket can cover more than one vendor.`,
       fix: 'Confirm who each actually went to. Importing a bank statement teaches Amlak the payee.',
     });
   }
   if (c?.needsCategory) {
     flags.push({
       key: 'category',
-      text: `${c.needsCategory} carry no tax category, so Amlak couldn’t rule them out and listed them rather than risk dropping one.`,
+      text: `${vendorPhrase(c.needsCategory, 'carries', 'carry')} no tax category, so Amlak couldn’t rule ${c.needsCategory === 1 ? 'it' : 'them'} out and listed ${c.needsCategory === 1 ? 'it' : 'them'} rather than risk dropping one.`,
       fix: 'Set the category on the Expense entry to clear the ones that are utilities, materials or taxes.',
     });
   }
   if (c?.noMethod) {
     flags.push({
       key: 'method',
-      text: `${c.noMethod} have no record of how they were paid — a card or payment-app charge is reported by the processor on a 1099-K and must not go on your 1099-NEC as well.`,
+      text: `${vendorPhrase(c.noMethod, 'has', 'have')} no record of how ${c.noMethod === 1 ? 'it was' : 'they were'} paid — a card or payment-app charge is reported by the processor on a 1099-K and must not go on your 1099-NEC as well.`,
       fix: 'Check any of these you paid by card.',
     });
   }

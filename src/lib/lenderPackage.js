@@ -35,6 +35,7 @@ import {
   getTenantShares, listOtherIncome, listInvoicesForProperty, listPayments,
   listLeases, listRenewalsByLeases, listUnplacedLines, localDateIso,
 } from './api';
+import { money } from './format';
 import { recoverabilityRows } from './recoverability';
 import { summarizeOtherIncome } from './otherIncome';
 import { optionLapseReason } from './renewals';
@@ -410,7 +411,9 @@ export function lenderFlags(pkg, cov) {
   if (uncategorized > 0.005) {
     flags.push({
       key: 'uncategorized',
-      text: `${round2(uncategorized)} of expenses carry no category, so the operating statement shows them on their own line rather than filed as “Other”.`,
+      // money(), not round2() — every other figure in this flag list is currency, and a
+      // bare "6000" on a lender-facing screen reads as a count rather than a dollar figure.
+      text: `${money(uncategorized)} of expenses carry no category, so the operating statement shows them on their own line rather than filed as “Other”.`,
       fix: 'Set the category once per bucket on the Expense entry.',
     });
   }

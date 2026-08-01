@@ -184,6 +184,13 @@ export function paidByCard(description) {
 export const vendorKey = (name) =>
   String(name || '').toUpperCase().replace(/[^A-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 
+// "1 vendor carries" / "4 vendors carry" — a count of one must not read "1 carry no tax
+// category", which is what the worksheet said until it was seen on a real portfolio with
+// exactly one uncategorised bucket. Exported rather than written twice so the flags on
+// screen and the same flags in the workbook can't word one fact two ways (§3).
+export const vendorPhrase = (n, singularVerb, pluralVerb) =>
+  `${n} vendor${n === 1 ? '' : 's'} ${n === 1 ? singularVerb : pluralVerb}`;
+
 // ⚠ AMLAK DOES NOT RELIABLY KNOW THE PAYEE, AND THE WORKSHEET SAYS SO PER ROW.
 // `cam_line_items` has a bucket LABEL, not a payee — "Repairs" can cover three
 // contractors, and a bucket named "Comcast" happens to be a payee only by luck. So each

@@ -295,6 +295,18 @@ describe('the pre-flight', () => {
     const f = lenderFlags(pkg(), coverage({})).find((x) => x.key === 'holdover');
     expect(f.text).toMatch(/Old Diner is holding over/);
   });
+
+  // Seen on screen: the uncategorised figure printed as a bare "6000", which on a
+  // lender-facing page reads as a count rather than money. Every dollar in these flags
+  // is currency-formatted.
+  it('states the uncategorised figure as money, not a bare number', () => {
+    // A CAM label the registry has no default for — the one genuinely ambiguous section,
+    // and the state the demo's "Security" bucket is in.
+    const un = shape({ items: [...ITEMS, { kind: 'cam', label: 'Concierge desk', amount: 6000, paid_date: null, billable: true }] });
+    const f = lenderFlags(pkg({ properties: [un] }), coverage({})).find((x) => x.key === 'uncategorized');
+    expect(f).toBeTruthy();
+    expect(f.text).toMatch(/^\$[\d,]+\.\d{2} of expenses/);
+  });
 });
 
 describe('month arithmetic', () => {
