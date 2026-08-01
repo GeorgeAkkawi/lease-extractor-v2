@@ -1039,6 +1039,16 @@ tbody tr:last-child td{border-bottom:none}
 .corp-edit svg{width:13px;height:13px;flex-shrink:0}
 .corp-actions{flex-shrink:0;align-self:center;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 
+/* The tax package's pre-flight: the four figures it will carry, then anything that
+   wants an answer before it leaves. Gold is this app's "look here", never a fault. */
+.cpa-pre{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:10px 12px;background:var(--panel-2);border:1px solid var(--hair);border-radius:var(--radius)}
+.cpa-pre>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cpa-pre .muted{font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+.cpa-pre b{font-size:15px;white-space:nowrap}
+.cpa-flags{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.cpa-flag{font-size:12px;line-height:1.45;color:var(--gold);background:var(--gold-soft,#FBF3DF);border-left:3px solid var(--gold);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
+@media (max-width:560px){.cpa-pre{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
 /* secondary line of small stats under a metric card (e.g. roof billed/absorbed):
    one tidy line, the two figures pushed to opposite ends */
 .stat-note{display:flex;justify-content:space-between;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);white-space:nowrap}

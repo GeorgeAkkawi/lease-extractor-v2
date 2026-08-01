@@ -9,6 +9,7 @@ import { money } from '../lib/format';
 import { CardGridSkeleton } from '../components/Skeleton';
 import CorporationProfileModal from '../components/CorporationProfileModal';
 import AnnualReportModal from '../components/AnnualReportModal';
+import ExportCpaModal from '../components/ExportCpaModal';
 import { BuildingIcon, DocIcon } from '../components/icons';
 
 const TITLES = { leases: 'Portfolio', financials: 'Financials', history: 'History' };
@@ -28,6 +29,7 @@ export default function CorporationsPage({ mode }) {
   const [name, setName] = useState('');
   const [editCorp, setEditCorp] = useState(null);
   const [arCorp, setArCorp] = useState(null);
+  const [cpaCorp, setCpaCorp] = useState(null);
 
   const { data: corps = [], isPending } = useQuery({ queryKey: ['corporations'], queryFn: listCorporations });
   // Batched in one request (replaces the per-card N+1) so every card's counts /
@@ -99,18 +101,19 @@ export default function CorporationsPage({ mode }) {
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
+            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} onCpa={setCpaCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
           ))}
         </div>
       )}
 
       {editCorp && <CorporationProfileModal corp={editCorp} onClose={() => setEditCorp(null)} />}
       {arCorp && <AnnualReportModal corp={arCorp} onClose={() => setArCorp(null)} />}
+      {cpaCorp && <ExportCpaModal corporationId={cpaCorp.id} corporationName={cpaCorp.name} year={year} onClose={() => setCpaCorp(null)} />}
     </div>
   );
 }
 
-function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, entity, properties = [], pf, year }) {
+function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, counts, rollup, entity, properties = [], pf, year }) {
   const navigate = useNavigate();
   const fin = mode !== 'leases';
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
@@ -157,6 +160,15 @@ function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, entity, proper
       >
         <DocIcon /> Annual report
       </button>
+      {fin && (
+        <button
+          className="corp-edit"
+          title="Download this entity's tax package for the selected year — income and expenses by tax category, the depreciation schedule, and what is deliberately left off"
+          onClick={(e) => { e.stopPropagation(); onCpa(corp); }}
+        >
+          <DocIcon /> Tax package
+        </button>
+      )}
     </span>
   );
 

@@ -181,6 +181,91 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 12 (Slice 7a): the package you hand your accountant — and the sheet that says what it deliberately
+  LEFT OFF** (George: *"continue"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by
+  phase). Deployed: frontend Cloudflare version **`09a47df9`**, demo worker `2a41a222`. **$0 — no AI call anywhere; NO migration, NO
+  edge function, NO view, NO RPC, NO new table. Nothing in this round writes, so NOT ONE STORED TOTAL MOVED** (read back live after:
+  Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596; 401 S Main CAM 1,846.26 — byte-identical). Tests
+  **1394/1394 across 146 files** (was 1353/144 — +41, two new suites).
+  - **An ENTITY files a return, not a building** — so this is scoped to a corporation, and that is also the shape of the form itself:
+    Form 8825 puts one column per property on a single sheet with a total column, and Schedule E does the same. The summary is
+    literally that layout — categories down, properties across. It lives on the corporation card in Financials beside Business
+    profile and Annual report, and deliberately **not** on the Portfolio tab, which lists tenants and has no business carrying it.
+  - **⚠ THE ARITHMETIC RULE THE WHOLE ROUND TURNS ON, and it REVERSES Slice 3 on purpose. THE RETURN IS GROSS ON BOTH SIDES.** A
+    tenant's CAM and tax reimbursement is rental INCOME, and the expense it reimburses is deducted in FULL. Round 5's recoverability
+    table nets — spent less recovered — because *"what did this cost me"* is the question a landlord asks. A return must not: netting
+    understates income and expenses by the same figure and is not permitted on either form. On the pinned fixture tenants reimburse
+    **$13,600 of $21,200 spent**; the deductible figure is $21,200, and the headline test asserts it is **not** $7,600. The recovered
+    column still rides along — on the tie-out sheet, as CONTEXT beside the deductible figure, never subtracted from it.
+  - **⚠ AND A COST YOU DELIBERATELY DIDN'T BILL IS STILL DEDUCTIBLE — which is what finally closes round 5's finding.**
+    `syncCamTotal` sums only `billable !== false`, so an absorbed cost never reaches `cam_total`, therefore never `total_expenses`,
+    therefore **never NOI**. It is an ordinary expense of the property all the same, so it **is** on the return. That makes this
+    package's expense total legitimately **HIGHER than the app's**, which is why the tie-out reconciles the two line by line rather
+    than hoping nobody notices: *expenses as NOI counts them · + costs you absorbed · + depreciation · = expenses on this return.*
+    On George's live 401 S Main that difference is **$40,843** — the Liana / Yazin / IL DPT REV / Other lines, which have been
+    visible on the page and absent from every derived figure since 2026-07-21, and now land somewhere.
+  - **⚠ THE SHEET THAT MAKES THE OTHER FOUR TRUSTWORTHY — "Not on this return."** Round 6's rule (a dollar is either recorded
+    somewhere or explicitly excluded **with a reason**) and round 11's refused-charges list, applied to a tax package: owner draws ·
+    contributions · security deposits held · bank lines not yet placed, each with its figure and why it is not on either form. A CPA
+    cannot otherwise tell a careful export from one that quietly dropped every distribution. **A draw filed as an expense understates
+    income by exactly the amount the accountant taxes** — so it is named, not merely omitted. An **entity cost** sits in its own
+    section on that sheet rather than in the left-off total, because it genuinely IS deductible; Amlak simply will not guess an
+    allocation across properties, so it is stated for the accountant to place.
+  - **The form mapping is the deliverable, not decoration.** `EXPENSE_CATEGORIES` is the UNION of the two forms (round 4), so three
+    categories exist on one and not the other — and naming which "Other" they roll into is the useful half: **Management fees** and
+    **Supplies** have a Schedule E line and no 8825 line; **Wages** is the reverse. `formLine()` reports that as `viaOther` rather
+    than silently vanishing or silently claiming a line. An unknown key returns **null** — the same refusal `treatmentInfo`,
+    `assetKindInfo`, `entityKindInfo` and `dispositionInfo` make. Line NUMBERS move between revisions, so the sheet leads with the
+    LABEL and states the revision beside the number.
+  - **The cash/accrual switch lives here and only here — which is what Slice 1's dates were built for.** Accrual: rent billed for the
+    year, every expense line of the year. Cash: rent **received** during the year whatever invoice it settles, and only expenses
+    carrying a payment date. **⚠ An undated line is never given an invented date and never silently dropped** — it is excluded from
+    the totals, counted, and listed in full on the Detail sheet, because `paid_date` is nullable and deliberately un-backfilled
+    (stamping Dec 31 on a hand-typed figure is a lie that looks like a real date forever). An **un-itemized** kind — a flat total
+    nobody split — has no day at all, so it is undated by definition, and the kind totals handed to `recoverabilityRows` are summed
+    from the KEPT lines specifically so it cannot sneak back as that function's synthetic row.
+  - **⚠ A bug this design had to avoid, and the one change it needed to a shipped module.** Cash filtering hands
+    `recoverabilityRows` a smaller `expense` than the year really had, so deriving the recovery rate from it would report tenants
+    reimbursing **several times** what was spent (taxes: 118,853 ÷ a filtered 30,000 = 3.96×). The recovery rate is a property-level
+    truth about the WHOLE year, so `recoverabilityRows` gained an optional **`fractions`** override — additive, omit it and nothing
+    changes, and it is what stops this round duplicating the grouping rule §3 says always drifts. Pinned in both directions.
+  - **The CAM straddle is reported, never picked.** A 2025 true-up billed then and collected now is this year's cash income and last
+    year's accrual expense; there is no correct silent answer, so the tie-out states *"…of which $X settled a prior year's invoice."*
+  - **A pre-flight before anything downloads, and that is the point.** A tax package that quietly files uncategorized money as
+    "Other", or quietly drops what a cash basis cannot date, is worse than no package: **it looks finished.** So the modal states the
+    four figures it will carry and then every figure that wants an answer — with the fix — while it can still be fixed. Nothing is
+    blocked; an honest package with a gap named beats a tidy one that hides it.
+  - **Uncategorized is its own row, below the categories, and NEVER folded into the "Other" category** — round 4's refusal carried
+    onto the form, where it matters most. Pinned as a unit test and in the DOM.
+  - **One `api.js` change:** `security_deposit` joins `LEASE_LIST_COLS`. It is a scalar the package needs per lease and
+    `v_tenant_shares` deliberately does not carry it (rule #7, verified in round 8). `ai_review` stays out for the opposite reason —
+    it is a blob, and every tenant list would download every one. **Caught before shipping:** without it the deposits-held figure
+    would have read **$0 forever**.
+  - **Files.** New: `src/lib/cpaPackage.js` · `src/lib/cpaExcel.js` · `src/components/ExportCpaModal.js` ·
+    `src/lib/__tests__/cpaPackage.test.js` (32) · `src/components/__tests__/cpaExportUi.test.js` (9). Edited: `src/lib/api.js` (one
+    column) · `src/lib/recoverability.js` (the optional override) · `src/pages/CorporationsPage.js` · `src/App.css`. **No** migration,
+    edge function, view, RPC, mock or demo-seed change — the package only reads, and the demo seed already carried every case it
+    needed. **§5 fans out to nothing** (no `_shared` module touched). **No existing assertion changed.**
+  - **Verified:** unit **1394/1394** (`vitest run`); `npm run build` compiles; **every stored expense total identical before and
+    after**; live 200s on all four URLs; live bundle carries the backend ref **and** the new export, demo bundle greps **free** of
+    it. Browser drive-through skipped per George's standing preference — the nine render tests mount the **real** corporation grid
+    and the **real** modal, and one of them drives the actual Download button through ExcelJS to a real workbook buffer, which is the
+    only thing that proves all five sheets build.
+  - **George: hard-refresh (Cmd+Shift+R).** Every corporation card on **Financials** now carries **Tax package**. It reads your
+    income and expenses by tax category with one column per property, every line behind them, the depreciation schedule, what is
+    deliberately left off, and a tie-out against what the app shows on screen.
+  - **Flags:** ① **Expect a lot of "Not categorized" on your first export**, and that is the forcing function working — live, **0 of
+    your expense buckets have a category set**. Pershing's **Garbage ($13,200 in FY2026, $13,596 in FY2027)** has no default because
+    the registry knows "Waste removal" and "Trash removal" but not "Garbage"; 401 S Main shows **$40,935.19** uncategorized, almost
+    all of it the Liana / Yazin / IL DPT REV lines. Set the category once per bucket on the Expense entry and it applies everywhere.
+    ② **A cash basis will place almost nothing today** — **0 of your 12 expense lines carry a payment date**, so cash reports them as
+    undated rather than inventing dates. Accrual is the default and is the right basis for your figures as they stand; dates arrive
+    automatically on every statement you import from here. ③ **Depreciation is $0** until you record the building under "What you
+    own". ④ **Interest and mortgage costs are blank** — Amlak does not track debt yet, and the tie-out says so rather than implying
+    you paid none. ⑤ Round 7's flag still stands, and this round is what makes it expensive: your Liana ($20,000) and Yazin
+    ($10,000) lines are on this return as **deductible expenses**. If they are owner draws they belong under **Owner & entity
+    money**, where the package would correctly leave them off.
+
 - **2026-07-31** — **Accounting round 11 (Slice 5c): the one document that says what a building cost — read once, ever, and it
   shows what it REFUSED to capitalize** (George: *"continue"*, working the accounting direction doc
   `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0081`** (Supabase

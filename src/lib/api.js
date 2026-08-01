@@ -246,7 +246,10 @@ export const updateProperty = (id, patch) =>
 // text, so property/tenant lists and the Overview prefetch stay light. getLease
 // (below) keeps select('*') for the detail page.
 const LEASE_LIST_COLS =
-  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,premises_address,est_cam_annual,est_tax_annual,est_roof_annual,lease_type';
+  // security_deposit (0078) rides along because it is a scalar the CPA package needs per
+  // lease and v_tenant_shares deliberately does not carry it. `ai_review` stays OUT for
+  // the opposite reason — it is a blob, and every tenant list would download every one.
+  'id,owner_id,property_id,tenant_name,square_footage,base_rent,lease_start,lease_termination_date,lease_terms,share_override_pct,source,extraction_status,lease_file_id,created_at,updated_at,roof_responsible,ai_confidence,tenant_email,tenant_contact_name,no_renewal_option,is_active,premises_address,est_cam_annual,est_tax_annual,est_roof_annual,lease_type,security_deposit';
 
 export const listLeases = async (propertyId) => {
   const all = await rows(supabase.from('leases').select(LEASE_LIST_COLS).eq('property_id', propertyId).order('tenant_name'));

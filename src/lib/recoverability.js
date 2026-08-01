@@ -104,8 +104,14 @@ function expenseLines(items, expense) {
  *
  * Pure: takes rows, reads no clock and no network.
  */
-export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [] } = {}) {
-  const fractions = recoveryFractions({ shares, expense });
+// `fractions` is an optional override, and it exists for exactly one caller: the CPA
+// package on a CASH basis, which filters `items` down to the lines carrying a payment
+// date and therefore hands in a smaller `expense` than the year really had. Deriving the
+// fractions from that shrunken figure would read as tenants reimbursing several times
+// what was spent. The recovery rate is a property-level truth about the WHOLE year, so
+// the caller passes the year's real one. Omit it and nothing changes.
+export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [], fractions: override = null } = {}) {
+  const fractions = override || recoveryFractions({ shares, expense });
   const byCat = new Map();
   let uncategorized = null;
 
