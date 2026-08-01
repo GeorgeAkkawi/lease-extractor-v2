@@ -50,30 +50,41 @@ export const ASSET_KINDS = [
     key: 'improvement',
     label: 'Building improvement',
     life: 39,
+    // Slice 5b: a capital improvement is the classic thing a CAM clause lets a landlord
+    // amortize back to tenants. `amortizable` says only that the OPTION is offered — it
+    // is never switched on by itself (see AMORTIZE_KINDS).
+    amortizable: true,
     hint: 'Roof, HVAC, plumbing, electrical, windows — part of the structure, so it takes the structure’s life.',
   },
   {
     key: 'land_improvement',
     label: 'Land improvement',
     life: 15,
+    amortizable: true,
     hint: 'Parking lot, fencing, exterior lighting, landscaping — outside the building, and a shorter life.',
   },
   {
     key: 'equipment',
     label: 'Equipment and fixtures',
     life: 7,
+    amortizable: true,
     hint: 'Signage, security systems, machinery — anything that is not part of the structure.',
   },
   {
     key: 'appliances',
     label: 'Appliances and floor coverings',
     life: 5,
+    amortizable: true,
     hint: 'Appliances, carpet and removable fittings.',
   },
   {
     key: 'acquisition_costs',
     label: 'Acquisition costs',
     life: 39,
+    // NOT amortizable, and neither is the building above it. A CAM clause lets a landlord
+    // recover the cost of an IMPROVEMENT to the property; it does not let them bill
+    // tenants for the depreciation of the building itself or for what it cost to buy it.
+    // Offering the option here would invite a charge no lease supports.
     hint: 'Title, legal and survey fees capitalized into the purchase rather than expensed.',
   },
   {
@@ -225,6 +236,75 @@ export function summarizeAssets(assets = [], year) {
     bookValue: round2(cost - accumulated),
     blocked,
   };
+}
+
+// ---- Slice 5b: billing a capitalized cost back ------------------------------
+//
+// ⚠ THE CORRECTION THIS ROUND EXISTS TO MAKE. The direction doc said a capitalized cost
+// comes back as "a CAM amortization line." It is wrong, and Pershing proves it: a roof is
+// billed ONLY to leases carrying roof_responsible — 1 of its 9 — while CAM is billed
+// pro-rata to all of them. Pushing an amortized roof into CAM would move roughly $17,000
+// of an $18,000 roof onto eight tenants whose leases do not make them responsible for it.
+//
+// So an asset amortizes back into THE KIND OF EXPENSE IT CAME FROM. A roof returns to
+// roof, a parking lot to CAM. The same tenants pay — spread over the life instead of
+// landed in one year, which is what a well-drafted CAM clause actually says.
+export const AMORTIZE_KINDS = [
+  { key: 'cam', label: 'CAM', hint: 'Billed pro-rata by square footage to every tenant.' },
+  { key: 'roof', label: 'Roof', hint: 'Billed only to leases whose terms make them responsible for the roof.' },
+];
+
+const AMORTIZE_BY_KEY = new Map(AMORTIZE_KINDS.map((k) => [k.key, k]));
+export const amortizeKindLabel = (key) => (AMORTIZE_BY_KEY.get(key) || { label: 'Not billed back' }).label;
+
+// Whether the OPTION to bill this asset back may be offered at all. Two refusals, both
+// about what a lease can support rather than what the arithmetic can do:
+//   • the building itself and its acquisition costs are never a CAM item — a tenant pays
+//     for improvements to the property, not for the landlord owning it;
+//   • loan costs are a cost of the DEBT, and debt service is not an operating expense
+//     (the same line Slice 6 draws around NOI).
+// An unknown kind is refused for the reason assetKindInfo refuses one: it carries no
+// defaults, so it must not inherit another kind's.
+export const canAmortize = (asset) => !!assetKindInfo(asset?.kind).amortizable;
+
+// What one asset bills back in one fiscal year, or null when it doesn't.
+//
+// ⚠ AND IT IS OPT-IN — `amortize_into` is null until the landlord sets it, so this
+// returns null by default and no tenant's bill moves because an asset was recorded.
+// Whether a particular lease permits a capital cost to be amortized into CAM is a LEASE
+// question Amlak cannot answer from the schema, and auto-billing tenants for something
+// their lease may not allow is the cam_capped problem with the sign flipped.
+//
+// The figure IS the year's depreciation — same pure function, one source of truth — so
+// the first (prorated) year bills the months the asset was actually in service, and a
+// fully-depreciated asset bills nothing rather than billing forever.
+export function amortizationFor(asset, year) {
+  const into = asset?.amortize_into || null;
+  if (!into || !canAmortize(asset)) return null;
+  const calc = depreciationForYear(asset, year);
+  if (calc.blocked) return null;
+  const amount = round2(calc.thisYear || 0);
+  if (!(amount > 0)) return null;
+
+  const s = depreciationSchedule(asset);
+  const idx = s.rows.findIndex((r) => r.year === Number(year));
+  return {
+    kind: into,
+    amount,
+    label: amortizationLabel(asset, year),
+    yearOf: idx >= 0 ? idx + 1 : null,
+    ofYears: s.rows.length,
+  };
+}
+
+// The label the derived expense row wears, written so the line explains itself in the
+// expense list without anyone having to open the asset register.
+export function amortizationLabel(asset, year) {
+  const name = asset?.description || assetKindLabel(asset?.kind);
+  const s = depreciationSchedule(asset);
+  const idx = s.blocked ? -1 : s.rows.findIndex((r) => r.year === Number(year));
+  const of = idx >= 0 ? ` (yr ${idx + 1} of ${s.rows.length})` : '';
+  return `${name} — amortized${of}`;
 }
 
 // The cross-check, and the reason it reads as a fact rather than an alarm.

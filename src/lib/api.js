@@ -20,6 +20,7 @@ import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQ
 import { advanceDueDate } from './annualReports';
 import { isValidCategory, bucketKey, defaultCategoryFor, isCapitalProne } from './expenseCategories';
 import { lineCompleteness } from './dispositions';
+import { amortizationFor, canAmortize, assetKindInfo } from './depreciation';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -1890,9 +1891,12 @@ const syncTotalFor = (propertyId, year, kind) =>
 // The carried line is a normal row: rename it, split it, or delete it once the real
 // instalments are in.
 //
-// The roof carries the IDENTICAL hazard and a sharper consequence: roof costs bill back
-// at 100% to roof-responsible tenants rather than pro-rata, so re-summing a $18,000
-// roof down to a $500 repair would under-bill those tenants by the whole difference.
+// The roof carries the IDENTICAL hazard. (An earlier version of this comment said roof
+// costs "bill back at 100% rather than pro-rata" — the SQL says otherwise and has since
+// 0005: roof_amt is roof_total × (tenant SF ÷ building SF), the same pro-rata formula CAM
+// uses, gated on each lease's roof_responsible flag. The hazard is real either way —
+// re-summing an $18,000 roof down to a $500 repair under-bills every responsible tenant —
+// but the figure is their pro-rata share of the difference, not the whole of it.)
 // Same guard, same shape, one function.
 async function carryFlatIntoItems(property_id, year, kind) {
   const existing = await listExpenseLineItems(property_id, year, kind);
@@ -1909,7 +1913,7 @@ async function carryFlatIntoItems(property_id, year, kind) {
   );
 }
 
-async function addExpenseLineItem({ property_id, year, label, amount, import_id = null, billable = true, kind = 'cam', rent_pct = null, paid_date = null }) {
+async function addExpenseLineItem({ property_id, year, label, amount, import_id = null, billable = true, kind = 'cam', rent_pct = null, paid_date = null, asset_id = null }) {
   if (kind !== 'cam') await carryFlatIntoItems(property_id, year, kind);
   const item = await one(
     supabase
@@ -1920,6 +1924,7 @@ async function addExpenseLineItem({ property_id, year, label, amount, import_id 
         ...(rent_pct != null ? { rent_pct } : {}),
         ...(paid_date ? { paid_date } : {}),
         ...(import_id ? { import_id } : {}),
+        ...(asset_id ? { asset_id } : {}),
         owner_id: await ownerId(),
       })
       .select()
@@ -4172,6 +4177,11 @@ export async function addFixedAsset(asset) {
         prior_accumulated: numOrNull(asset.prior_accumulated),
         prior_accumulated_year: numOrNull(asset.prior_accumulated_year),
         note: asset.note || null,
+        // Slice 5b. Both nullable and both default to nothing: an asset bills nothing
+        // back until amortize_into is set, and import_id is present only when the asset
+        // was capitalized straight off a bank line.
+        amortize_into: asset.amortize_into || null,
+        import_id: asset.import_id || null,
         owner_id: await ownerId(),
       })
       .select().single()
@@ -4189,6 +4199,172 @@ export const setFixedAssetLand = (id, landCost) =>
       .update({ land_cost: landCost === '' || landCost == null ? null : Math.abs(Number(landCost) || 0) })
       .eq('id', id).select().single()
   );
+
+// ---- Slice 5b: capitalize, and bill it back ---------------------------------
+
+// Switch an asset's amortization on or off. This is the ONE write in this file that can
+// change a tenant's bill without a figure being typed, so it is deliberately its own
+// call rather than a field on a form: the UI names the consequence before it fires, and
+// the caller carries it through.
+export async function setAssetAmortization(assetId, into, propertyId, year) {
+  const asset = await one(
+    supabase.from('fixed_assets')
+      .update({ amortize_into: into || null })
+      .eq('id', assetId).select().single()
+  );
+  const sync = await syncAmortizationItems(propertyId, year);
+  if (sync.changed) await resyncPropertyBilling(propertyId, Number(year));
+  return { asset, ...sync };
+}
+
+// One derived expense row per amortizing asset, self-healing on year-open exactly as
+// service contracts and rent-percentage fees already are (syncContractCamItems is the
+// shape this is cloned from, down to the `changed` signal).
+//
+// ⚠ THE ROW GOES INTO THE ASSET'S OWN KIND, never into CAM by default. A roof amortizes
+// back into roof_total, so only roof_responsible leases pay it; a parking lot amortizes
+// into CAM, so everyone does. Getting that backwards would bill eight Pershing tenants
+// for a roof their leases exclude.
+//
+// ⚠ AND IT REFUSES A CLOSED YEAR. resyncPropertyBilling already skips one — a bill that
+// has been sent must not move because a screen was opened — so writing the line anyway
+// would leave the expense total and the frozen snapshot disagreeing with nothing able to
+// reconcile them.
+//
+// Written through addExpenseLineItem rather than a raw insert, which is load-bearing: a
+// roof amortization row can be the FIRST roof line a property has, and carryFlatIntoItems
+// is what stops that re-summing a hand-typed roof total down to the amortized figure.
+export async function syncAmortizationItems(propertyId, year) {
+  const y = Number(year);
+  if (await isYearClosed(propertyId, y)) return { changed: false, skipped: 'closed' };
+
+  const [assets, derived] = await Promise.all([
+    listFixedAssets(propertyId),
+    rows(
+      supabase.from('cam_line_items').select('*')
+        .eq('property_id', propertyId).eq('year', y).not('asset_id', 'is', null)
+    ),
+  ]);
+
+  const byAsset = new Map(derived.map((it) => [it.asset_id, it]));
+  const kindsTouched = new Set();
+  let changed = false;
+
+  for (const a of assets) {
+    const am = amortizationFor(a, y);
+    const existing = byAsset.get(a.id);
+    if (!am) continue;
+    if (!existing) {
+      await addExpenseLineItem({
+        property_id: propertyId, year: y, kind: am.kind,
+        label: am.label, amount: am.amount, asset_id: a.id,
+      });
+      kindsTouched.add(am.kind);
+      changed = true;
+    } else if (
+      Number(existing.amount) !== am.amount
+      || existing.label !== am.label
+      || existing.kind !== am.kind
+    ) {
+      // A kind change means the row has to move buckets, not just re-price — otherwise
+      // the old kind keeps a stale total. Delete and re-add so both kinds re-sum.
+      if (existing.kind !== am.kind) {
+        await rows(supabase.from('cam_line_items').delete().eq('id', existing.id));
+        kindsTouched.add(existing.kind);
+        await addExpenseLineItem({
+          property_id: propertyId, year: y, kind: am.kind,
+          label: am.label, amount: am.amount, asset_id: a.id,
+        });
+      } else {
+        await one(
+          supabase.from('cam_line_items')
+            .update({ amount: am.amount, label: am.label })
+            .eq('id', existing.id).select().single()
+        );
+      }
+      kindsTouched.add(am.kind);
+      changed = true;
+    }
+  }
+
+  // Remove rows whose asset stopped amortizing, was fully depreciated, or is no longer
+  // in service this year — the same cleanup a contract row gets when its term moves.
+  const stillAmortizing = new Set(
+    assets.filter((a) => amortizationFor(a, y)).map((a) => a.id)
+  );
+  for (const [assetId, it] of byAsset) {
+    if (stillAmortizing.has(assetId)) continue;
+    await rows(supabase.from('cam_line_items').delete().eq('id', it.id));
+    kindsTouched.add(it.kind);
+    changed = true;
+  }
+
+  for (const k of kindsTouched) await syncTotalFor(propertyId, y, k);
+  return { changed, skipped: null };
+}
+
+// ⚠ THE ROUND'S HEADLINE, and the one write in this whole accounting arc that
+// deliberately MOVES A TENANT'S BILL.
+//
+// Round 9 could record an $18,000 roof as an asset but could not take it out of the
+// year's roof_total, so a landlord who did both told the app about it twice — named on
+// that panel rather than left to be discovered. This is the other half: the expense line
+// becomes an asset and stops being an expense.
+//
+// That is a real billing change. roof_total feeds v_property_totals, which feeds every
+// roof-responsible lease's roof_amt, which feeds their invoice — so it runs the full §1
+// carry-through and the caller settles the query cache after it.
+//
+// TWO REFUSALS, both about not moving a figure under a bill that has already gone out:
+//   • a CLOSED year is refused outright. Record the asset by hand and leave the expense
+//     where it is — the tenants were billed that roof, and that is the history.
+//   • an asset needs a date it entered service, and an expense line's paid_date is
+//     nullable (0074 deliberately backfilled none). Rather than invent one, the caller
+//     supplies it; the UI defaults to the line's own paid_date when it has one.
+export async function capitalizeExpenseLine(itemId, fields = {}) {
+  const item = await one(supabase.from('cam_line_items').select('*').eq('id', itemId).single());
+  if (!item) throw new Error('That expense line no longer exists.');
+
+  const propertyId = item.property_id;
+  const year = Number(item.year);
+  if (await isYearClosed(propertyId, year)) {
+    return { skipped: 'closed', asset: null };
+  }
+
+  const placed = fields.placed_in_service || item.paid_date || null;
+  if (!placed) return { skipped: 'no_date', asset: null };
+
+  const kind = fields.kind || 'improvement';
+  // The asset amortizes back into the kind of expense it came from — the same tenants,
+  // spread over the life. Offered only where a lease could support it, and only when the
+  // caller asked: `amortize` unset means the cost simply leaves the year's expenses.
+  const into = fields.amortize && canAmortize({ kind })
+    ? (item.kind === 'roof' ? 'roof' : 'cam')
+    : null;
+
+  const asset = await addFixedAsset({
+    property_id: propertyId,
+    kind,
+    description: fields.description || item.label,
+    placed_in_service: placed,
+    cost: Number(item.amount) || 0,
+    land_cost: assetKindInfo(kind).landSplit ? (fields.land_cost ?? null) : null,
+    useful_life_years: fields.useful_life_years ?? null,
+    amortize_into: into,
+    // Provenance rides along: an asset capitalized off a bank line stays clickable back
+    // to the stored statement PDF, exactly as the expense line it replaces was.
+    import_id: item.import_id || null,
+  });
+
+  // Asset FIRST, then remove the expense. An interruption between the two leaves the
+  // asset recorded and the expense still standing — visible and fixable — rather than a
+  // deleted cost with nothing to show for it.
+  await deleteExpenseLineItem(item.id, propertyId, year, item.kind);
+  const sync = await syncAmortizationItems(propertyId, year);
+  const billing = await resyncPropertyBilling(propertyId, year);
+
+  return { asset, skipped: null, amortized: sync.changed, billing, fromKind: item.kind };
+}
 
 // Answer the "money not yet placed" nag by giving the line a real home, without
 // re-importing the statement it came from. Writes the ledger row FIRST, then stamps
@@ -4424,6 +4600,10 @@ export async function applyStatementImport({ propertyId, year, fileName, account
   // fee into paymentsTotal would report rent collection that never happened, which is
   // the exact misstatement this slice exists to prevent — one screen earlier.
   let incomeCount = 0, incomeTotal = 0, depositCount = 0, depositTotal = 0;
+  // Slice 5b — money out that bought something lasting, counted apart from expenses for
+  // the same reason: it is not a cost of this year, and folding it into expensesTotal
+  // would report a year of spending that the arithmetic deliberately spreads over decades.
+  let capitalCount = 0, capitalTotal = 0;
   const crossProperty = {};
   // Auto-learn payee rules ride the import too (a checked tenant deposit is remembered
   // automatically; an expense only when "Always" is ticked). Loaded once, lazily, so an
@@ -4474,6 +4654,25 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       const item = await addRoofLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Roof', amount: Number(e.amount), import_id: imp.id, paid_date: e.date || null });
       applied.push({ kind: 'roof_item', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: item.label, hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
+    } else if (e.type === 'capital') {
+      // Slice 5b — bought once, used for years.
+      //
+      // ⚠ Deliberately NOT counted in expensesCount/expensesTotal, and deliberately NOT
+      // an expense line. The whole point is that this cost does not belong to one year:
+      // it lands in fixed_assets, which no view, no invoice and no share calculation
+      // reads, so capitalizing at import can move no tenant's bill. Billing it back over
+      // its life is a separate opt-in decision (setAssetAmortization), made where the
+      // consequence can be stated.
+      const asset = await addFixedAsset({
+        property_id: e.property_id,
+        kind: e.asset_kind || 'improvement',
+        description: e.label || 'Capital improvement',
+        placed_in_service: e.date || null,
+        cost: Number(e.amount),
+        import_id: imp.id,
+      });
+      applied.push({ kind: 'capital', asset_id: asset.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: asset.description, hash: e.hash });
+      capitalCount++; capitalTotal += Number(e.amount);
     } else if (e.type === 'entity') {
       // Slice 4b — a draw, a contribution, or a cost of the LLC itself.
       //
@@ -4642,6 +4841,7 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       paymentsCount, paymentsTotal, expensesCount, expensesTotal, crossProperty,
       entityOutCount, entityOutTotal, entityInCount, entityInTotal,
       incomeCount, incomeTotal, depositCount, depositTotal,
+      capitalCount, capitalTotal,
       // The proof-of-completeness, returned so the results strip can state it at the
       // one moment it reassures: right after saving. Derived from the same array that
       // was just written, so it cannot claim more than the audit table holds.
@@ -4701,6 +4901,20 @@ export async function undoStatementImport(imp) {
       // suite while orphaning rows live. (A deposit records no row at all — its
       // evidence is the statement line, which undo deletes wholesale.)
       await deleteOtherIncomeEntry(a.entry_id);
+    } else if (a.kind === 'capital') {
+      // Same explicit delete as the entity and income rows, for the same reason (0080
+      // cascades on import_id; the demo mock has no FKs). Deleting the asset cascades
+      // away any amortization line derived from it — but the kind it was billing into
+      // has to be re-summed afterwards, or that total keeps the removed row's figure.
+      const derived = await rows(
+        supabase.from('cam_line_items').select('id,kind,year').eq('asset_id', a.asset_id)
+      );
+      // Deleted EXPLICITLY rather than left to the cascade — the demo mock has no
+      // foreign keys, so a cascade-only design would pass the whole suite and orphan
+      // amortization rows live, which is precisely the not() incident.
+      for (const d of derived) await rows(supabase.from('cam_line_items').delete().eq('id', d.id));
+      await deleteFixedAsset(a.asset_id);
+      for (const d of derived) await syncTotalFor(a.property_id, d.year, d.kind);
     } else if (a.kind === 'deposit') {
       // Nothing to reverse: a deposit wrote no row, only the audit line's pointer at
       // its lease — and undo deletes every one of this import's lines wholesale. The

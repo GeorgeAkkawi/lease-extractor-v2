@@ -5,6 +5,7 @@ import { settleBillingChange } from '../lib/invalidate';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
+import CapitalizeLineButton, { CAPITALIZE_FLOOR } from './CapitalizeLineButton';
 
 // Roof costs, itemized the way property taxes are (0074). A roof is replaced once and
 // repaired several times, and one accumulating figure hid which payment was which — the
@@ -117,10 +118,24 @@ export default function RoofSection({ propId, year, expense }) {
             <div>
               {it.label}
               {it.import_id && <span className="badge info" style={{ marginLeft: 8 }} title="Recorded by a bank-statement import — ✕ removes just this line; ↩ Undo on the import reverses the whole statement">imported</span>}
+              {it.asset_id && (
+                <span className="badge info" style={{ marginLeft: 8 }} title="Derived from an asset in “What you own” — this year's share of a cost spread over its life. Switch it off there, not here.">amortized</span>
+              )}
+              {/* Slice 5b — a roof REPLACEMENT is the textbook capital cost, and this is
+                  where a landlord is standing when they realize it. Capitalizing lowers
+                  roof_total, which lowers what roof-responsible tenants are billed; the
+                  confirm names that before anything moves. */}
+              {!it.asset_id && Math.abs(Number(it.amount) || 0) >= CAPITALIZE_FLOOR && (
+                <div style={{ marginTop: 4 }}>
+                  <CapitalizeLineButton item={it} propId={propId} year={year} />
+                </div>
+              )}
             </div>
             <div className="num">{money(it.amount)}</div>
             <div className="num muted" style={{ fontSize: 12 }} title={it.paid_date ? undefined : 'No date on file — entered by hand rather than read from a statement'}>{fmtShortDate(it.paid_date)}</div>
-            <button className="icon-btn danger-btn" onClick={() => remove.mutate(it)}>✕</button>
+            {it.asset_id
+              ? <span className="muted" title="Derived from an asset — managed in “What you own”" style={{ fontSize: 11 }}>auto</span>
+              : <button className="icon-btn danger-btn" onClick={() => remove.mutate(it)}>✕</button>}
           </div>
         ))
       )}

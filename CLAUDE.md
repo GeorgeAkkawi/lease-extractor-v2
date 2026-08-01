@@ -181,6 +181,103 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 10 (Slice 5b): an expense can become an asset — and the cost comes back through the SAME
+  charge it left, so a roof still reaches only the tenants whose leases cover it** (George: *"can we merge roof as part of CAM
+  since we can bill it separatly will that help? if not just continue"* — answered no, with the evidence, and his question
+  produced the round's central correction; see below). Deployed: DB migration **`0080`** (Supabase `awgrjmbcghdjgnqeiqkt`),
+  frontend Cloudflare version **`6772233c`**, demo worker `8ddc148e`. **$0 — no AI call anywhere; NO edge function, NO view, NO
+  RPC; 0080 adds THREE NULLABLE COLUMNS and alters nothing, so NOT ONE STORED TOTAL MOVED** (read back live before and after:
+  Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596; 401 S Main CAM 1,846.26 — byte-identical). Tests
+  **1328/1328 across 142 files** (was 1293/139 — +35, three new suites).
+  - **⚠ THIS IS THE ONE ROUND IN THE ACCOUNTING ARC THAT DELIBERATELY MOVES A TENANT'S BILL.** Rounds 6–9 were safe by
+    construction — every table they wrote is read by no view, no invoice and no share calculation. This one removes a cost from
+    `roof_total` / `cam_total`, which feeds `v_property_totals`, which feeds every lease's `roof_amt` / `cam_amount`, which feeds
+    their invoice. So it runs the full §1 carry-through (`resyncPropertyBilling` → `settleBillingChange`) and every entry point
+    names the consequence in the direction it actually cuts before anything happens.
+  - **What round 9 left unfinished, and this closes.** Round 9 could record an $18,000 roof in the asset register but could not
+    take it out of the year's roof total, so a landlord who did both told the app about the same roof twice — flagged on that
+    panel rather than left to be discovered. **⤴ Capitalize** on the expense line itself is the other half: the cost leaves the
+    year and becomes an asset with a life, in one confirmed action.
+  - **⚠ GEORGE'S QUESTION PRODUCED THE ROUND'S CENTRAL CORRECTION, and the plan was wrong.** The direction doc said a capitalized
+    cost comes back as *"a CAM amortization line."* Checking his merge-roof-into-CAM question against the SQL showed why that
+    would be a real misbilling: **`roof_amt` is `roof_total × (tenant SF ÷ building SF)` gated on each lease's
+    `roof_responsible` flag, while `cam_amount` is the same formula with no gate** — and **Pershing has 9 leases of which
+    exactly 1 is roof-responsible**. Amortizing a roof into CAM would move roughly **$17,000 of an $18,000 roof onto eight
+    tenants whose leases exclude it**. So an asset now remembers **which kind of expense it came from** and amortizes back into
+    that same kind: a roof returns to roof, a parking lot to CAM. Same tenants, spread over the life instead of landed in one
+    year. Pinned as the headline test — capitalizing drops the roof-responsible tenant's `roof_amt` 5,000 → 2,000 while the
+    other tenant's stays exactly 0.
+  - **The answer to the merge question itself, for the record: no.** Roof already bills exactly like CAM; the ONLY difference is
+    the per-lease flag, and CAM has no equivalent (`billable` is per-LINE and property-wide — "don't bill anyone for this", not
+    "don't bill THIS tenant"). Merging would start billing the roof to the other eight Pershing tenants immediately. And the
+    simplification he was reaching for **already shipped in round 3**: the roof became `kind='roof'` on `cam_line_items`, so
+    `addExpenseLineItem` / `syncKindTotal` / `carryFlatIntoItems` are already kind-agnostic and this round's core move — remove
+    the line, re-sum its kind — is one code path either way.
+  - **⚠ AND IT IS OPT-IN, WHICH IS THE SECOND REFUSAL.** `amortize_into` is **null by default**, so capitalizing alone moves the
+    cost OUT and brings nothing back. Whether a particular lease permits recovering a capital cost is a LEASE question Amlak
+    cannot answer from the schema — auto-billing for something the lease may not allow is the `cam_capped` problem with the sign
+    flipped — so the charge is switched on deliberately, and the confirm says outright *"Amlak can't tell whether your leases
+    permit recovering capital costs — check the clause before switching this on."* Pinned.
+  - **⚠ WHICH CHARGE IT RETURNS THROUGH IS PICKED, NEVER INFERRED.** My first draft guessed from the asset kind — and
+    "Building improvement" covers a roof AND a lobby renovation, which belong to different charges and different tenants.
+    Caught before it shipped; the asset panel offers **Bill through CAM** and **…or roof** as two explicit choices, each
+    naming who pays. An asset capitalized off an expense line needs no question — it inherits the kind of the line it came from.
+  - **Three refusals in the write path, each about not moving a figure under a bill already sent.** ① A **closed year is
+    refused outright** — record the asset by hand and leave the expense as history; ② an asset needs a date it entered service
+    and `paid_date` is nullable (0074 backfilled none), so an undated line is refused rather than given an invented date;
+    ③ `syncAmortizationItems` **writes no charge into a closed year** — the asset still amortizes, the charge simply starts from
+    the next open year, and the panel says so instead of showing "billed back · $0.00 this year". All three pinned.
+  - **The self-heal, cloned from `syncContractCamItems` down to the `changed` signal.** One derived `cam_line_items` row per
+    amortizing asset, refreshed when the figure drifts, removed when the asset stops amortizing or is fully depreciated, and
+    re-derived on year-open — so a second year bills the full figure where the first was prorated to the months in service,
+    with nothing re-entered. Written through `addExpenseLineItem` rather than a raw insert, which is **load-bearing**: an
+    amortization row can be the FIRST roof line a property has, and `carryFlatIntoItems` is what stops that re-summing a
+    hand-typed roof total down to the amortized figure.
+  - **At import**, a money-out line at or above the **$2,500 de-minimis floor** gains a *"Bought once, used for years"* group.
+    The entry type is **`capital`, not `cam`** — it lands in `fixed_assets` and reaches no expense total, so capitalizing at
+    import moves no bill. Never pre-selected: whether a payment REPLACED something or merely fixed it is a judgement only the
+    landlord can make from the invoice. `import_id` rides onto the asset, so provenance back to the stored statement PDF
+    survives — the column round 9 deliberately refused ("a column with no writer is the write-only-data antipattern") now has
+    its writer. Undo deletes the derived lines **explicitly** before the asset and re-sums the affected kinds — the mock has no
+    FKs, so a cascade-only design would pass the suite and orphan rows live (the `not()` incident).
+  - **⚠ NEITHER new destination learns a payee rule**, on purpose and for a new reason: a vendor who replaces a roof one year
+    repairs one the next, and the difference is the **amount**, not the payee — learning "ABC Roofing → capitalize" would
+    capitalize every future $400 repair from them.
+  - **Two existing assertions changed, both deliberately, both stricter.** ① `dispositionForRow`'s unknown-disposition guard has
+    now been overtaken **twice** — `owner` until round 7 made it real, `capital` until this round did — which is the guard
+    working; only `debt` remains genuinely unbuilt, so the case gained a literal never-shippable key no future round can claim.
+    ② A new sibling case pins that `capital` is **placed** and deliberately **not** `expense`.
+  - **A test-isolation lesson worth keeping.** Scratch fiscal years do NOT isolate assets — an asset is deliberately not
+    year-scoped (round 9's whole point), so one left behind goes on amortizing into every later case's year. That is the
+    feature behaving correctly; the suite now clears amortizing assets between cases and hands out scratch years two at a time,
+    since the self-heal case legitimately works in `y` and `y + 1`.
+  - **Files.** New: `supabase/migrations/0080_capitalize_and_amortize.sql` · `src/components/CapitalizeLineButton.js` ·
+    `src/lib/__tests__/amortization.test.js` (16) · `src/lib/__tests__/capitalizeLine.test.js` (12) ·
+    `src/components/__tests__/capitalizeUi.test.js` (6). Edited: `src/lib/{depreciation,api,dispositions}.js` ·
+    `src/components/{AssetRegisterSection,CamSection,RoofSection,StatementReview}.js` · `src/App.css` ·
+    `src/lib/__tests__/statementLines.test.js`. **No** view, RPC, edge function, mock or demo-seed change — `fixed_assets` and
+    `cam_line_items` are plain tables the demo mock auto-creates, and **no view reads either** (verified live, not inherited:
+    all three views return false for both), so §3 and rule #7 carry no obligation and §5 fans out to nothing.
+  - **Also fixed in passing: a wrong claim in the code and in this log.** Both said roof costs "bill back at 100% to
+    roof-responsible tenants rather than pro-rata." The SQL has said otherwise since 0005 — it is the same pro-rata formula CAM
+    uses, gated on the flag. The hazard the comment describes is real either way, but the figure is each tenant's pro-rata share
+    of the difference, not the whole of it. Round 10 is precisely the round that would have acted on the wrong version.
+  - **Verified:** unit **1328/1328** (`vitest run`); `npm run build` compiles; migration applied clean and read back (all three
+    columns present and **nullable**, 0 assets · 0 amortizing · 0 derived lines); **every stored expense total identical before
+    and after**; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it. Browser
+    drive-through skipped per George's standing preference — the six render tests mount the **real** RoofSection and the
+    **real** asset panel and drive the actual confirm-then-commit flow, including the closed-year refusal.
+  - **George: hard-refresh (Cmd+Shift+R).** Any CAM or roof line of $2,500 or more now carries **⤴ Capitalize**. Use it on a
+    roof replacement and the cost stops wrecking that year — and if your leases let you recover it, tick the box and it comes
+    back at cost ÷ life through the same charge, so the same tenants pay.
+  - **Flags:** ① **Capitalizing lowers what tenants are billed for that year, on purpose** — the confirm names the figure before
+    it moves, and your invoices for the year are re-issued. ② **Billing it back is off unless you tick it**, because Amlak
+    can't read whether your leases permit recovering capital costs — check the clause. ③ **A closed year refuses** both the
+    capitalize and the charge; record the asset by hand and leave the expense as history. ④ **Pershing has 1 roof-responsible
+    lease of 9**, so a roof you capitalize and re-bill there reaches one tenant — worth confirming that flag is right on the
+    other eight before you rely on it. ⑤ Round 7's flag still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401 S
+    Main are still recorded as not-billed **expenses**.
+
 - **2026-07-31** — **Accounting round 9 (Slice 5a): a thing bought once and used for thirty-nine years stops being one catastrophic
   year — the asset register, straight-line depreciation, and a refusal to guess the land** (George: *"continue"*, working the
   accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0079`**

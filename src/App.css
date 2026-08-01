@@ -528,6 +528,10 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .asset-row.asset-total b{font-family:var(--display);font-size:17px;font-weight:600}
 /* The accountant cross-check is prose, not a figure, so it wraps where .cell-sub won't. */
 .asset-note{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.35;white-space:normal;max-width:52ch}
+/* Slice 5b. The amortization control sits on the row rather than behind a toggle,
+   because it is the only thing on this panel that reaches a tenant's bill. */
+.asset-amort{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:5px;font-size:11px}
+.capitalize-form{margin-top:6px;padding:10px 12px;background:var(--panel-2);border-left:2px solid var(--gold);border-radius:3px}
 .asset-note.warn-sub{color:var(--gold);font-weight:600}
 @media (max-width:880px){
   /* Four money columns don't survive a phone. The recoverability table's reflow, one

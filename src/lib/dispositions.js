@@ -81,6 +81,18 @@ export const DISPOSITIONS = [
     placed: true,
     hint: 'The tenant’s money, held. A liability — never income, and never credited against their rent.',
   },
+  // Slice 5b — money out that buys something lasting. PLACED, and deliberately NOT
+  // 'expense': the whole point is that a thing bought once and used for years is not a
+  // cost of this year. It reaches no expense total and moves no tenant's bill on the way
+  // in; only switching its amortization on does that, later and on purpose.
+  {
+    key: 'capital',
+    label: 'Capitalized as an asset',
+    short: 'Asset',
+    dir: 'out',
+    placed: true,
+    hint: 'Bought once and used for years — recorded in the asset register and depreciated, not expensed in one year.',
+  },
   {
     key: 'ignored',
     label: 'Deliberately left out',
@@ -200,6 +212,8 @@ export function dispositionForRow({ checked, kind, picked, duplicate }) {
   // deposit is it" is the entire question.
   if (checked && kind === 'other_income') return 'other_income';
   if (checked && kind === 'deposit_held') return 'deposit_held';
+  // Slice 5b. Writes a fixed_assets row, so it needs the tick like every other write.
+  if (checked && kind === 'capital') return 'capital';
   // A transfer is the exception, and for the same reason an ignore is: it writes
   // nothing, so the PICK is the entire decision and there is no tick to wait for.
   if (picked && kind === 'transfer') return 'transfer';

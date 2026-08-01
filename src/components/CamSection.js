@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals, resyncPropertyBilling, listExpenseBuckets, saveExpenseBucket } from '../lib/api';
+import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, syncAmortizationItems, getPropertyTotals, resyncPropertyBilling, listExpenseBuckets, saveExpenseBucket } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
+import CapitalizeLineButton, { CAPITALIZE_FLOOR } from './CapitalizeLineButton';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
 import { EXPENSE_CATEGORIES, categoryFor, categoryLabel, bucketKey } from '../lib/expenseCategories';
 import { money, fmtShortDate } from '../lib/format';
@@ -30,11 +31,15 @@ export default function CamSection({ propId, year, expense }) {
     queryFn: async () => {
       const contracts = await syncContractCamItems(propId, year);
       const rentPct = await syncRentPctCamItems(propId, year);
+      // Slice 5b — and true up any capital cost being amortized back, the same way. An
+      // asset in its second year bills a different figure than in its first (the first
+      // is prorated to the months it was in service), so opening a year re-derives it.
+      const amort = await syncAmortizationItems(propId, year);
       // Only when a sync actually WROTE (a contract's escalated cost moved, the rent
       // basis changed) does the CAM total differ — carry that through to the year's
       // invoices. Both syncs are idempotent, so a plain revisit reports no change and
       // this never fires; opening a page must not rewrite bills for nothing.
-      if (contracts?.changed || rentPct) await resyncPropertyBilling(propId, year);
+      if (contracts?.changed || rentPct || amort?.changed) await resyncPropertyBilling(propId, year);
       return listCamLineItems(propId, year);
     },
   });
@@ -219,12 +224,23 @@ export default function CamSection({ propId, year, expense }) {
             {Number(it.rent_pct)}% of {money(rentBasis)} base rent
           </div>
         )}
+        {it.asset_id && (
+          <span className="badge info" style={{ marginLeft: 8 }} title="Derived from an asset in “What you own” — this year's share of a cost spread over its life. Switch it off there, not here.">amortized</span>
+        )}
         {showCat && <div>{catChip(String(it.label || '').trim())}</div>}
+        {/* Slice 5b — offered only above the de-minimis floor, and never on a row this
+            list doesn't own: a contract row is managed in Contracts, and an amortized
+            row IS an asset already. */}
+        {!it.contract_id && !it.asset_id && Math.abs(Number(it.amount) || 0) >= CAPITALIZE_FLOOR && (
+          <div style={{ marginTop: 4 }}>
+            <CapitalizeLineButton item={it} propId={propId} year={year} />
+          </div>
+        )}
       </div>
       <div className="num">{money(it.amount)}</div>
       <div className="num muted" style={{ fontSize: 12 }} title={it.paid_date ? undefined : 'No date on file — entered by hand, or carried from a service contract, rather than read from a statement'}>{fmtShortDate(it.paid_date)}</div>
-      {it.contract_id
-        ? <span className="muted" title="Managed by the service contract — edit it in Contracts" style={{ fontSize: 11 }}>auto</span>
+      {it.contract_id || it.asset_id
+        ? <span className="muted" title={it.asset_id ? 'Derived from an asset — managed in “What you own”' : 'Managed by the service contract — edit it in Contracts'} style={{ fontSize: 11 }}>auto</span>
         : <button className="icon-btn danger-btn" onClick={() => remove.mutate(it)}>✕</button>}
     </div>
   );

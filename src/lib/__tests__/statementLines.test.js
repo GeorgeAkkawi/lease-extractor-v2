@@ -33,13 +33,25 @@ describe('the disposition vocabulary', () => {
 
   // A row written by a later round read by an older bundle must never read as placed:
   // guessing "placed" hides money, and this whole slice exists because hidden money is
-  // the failure mode. 'debt' and 'capital' are Slice 5/6 and genuinely do not exist
-  // yet — 'owner' was the example here until round 7 made it real, which is exactly
-  // the scenario this guard is for.
+  // the failure mode.
+  //
+  // ⚠ THIS TEST HAS NOW BEEN OVERTAKEN TWICE, WHICH IS THE GUARD WORKING. 'owner' was
+  // the example until round 7 made it real; 'capital' was the example until round 10
+  // made it real. Only 'debt' is left — Slice 6, genuinely not built — so the case is
+  // pinned against a literal unknown too, which no future round can quietly claim.
   it('treats an unknown disposition as unplaced, never as placed', () => {
     expect(isPlaced('debt')).toBe(false);
     expect(isPlaced(undefined)).toBe(false);
-    expect(dispositionInfo('capital').short).toBe('Unplaced');
+    expect(isPlaced('a-kind-no-round-will-ever-ship')).toBe(false);
+    expect(dispositionInfo('debt').short).toBe('Unplaced');
+  });
+
+  // Slice 5b — capitalizing is PLACED, and deliberately not 'expense'. A thing bought
+  // once and used for years is accounted for without being a cost of this year.
+  it('counts a capitalized line as placed, and apart from expenses', () => {
+    expect(isPlaced('capital')).toBe(true);
+    expect(dispositionInfo('capital').key).not.toBe('expense');
+    expect(dispositionInfo('capital').dir).toBe('out');
   });
 
   // Slice 4b — the three homes round 7 added. All PLACED: a draw recorded is

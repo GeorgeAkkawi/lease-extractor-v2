@@ -11,6 +11,7 @@ import {
 } from '../lib/api';
 import { EXPENSE_CATEGORIES, defaultCategoryFor } from '../lib/expenseCategories';
 import { INCOME_CATEGORIES, incomeCategoryLabel } from '../lib/otherIncome';
+import { ASSET_KINDS } from '../lib/depreciation';
 import {
   matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
   corroborateAmount, monthOfDate, deriveEstimateFromDeposit, CAM_KEYWORD_LABELS,
@@ -31,7 +32,14 @@ import MutationError from './MutationError';
 // top (deposits self-route to their tenant's own property regardless), with a
 // switch banner when the deposits vote for a different property.
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —', owner_draw: 'Owner draw', owner_contribution: 'Owner contribution', entity_cost: 'Entity cost', transfer: 'Transfer', other_income: 'Other income', deposit_held: 'Security deposit' };
+const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —', owner_draw: 'Owner draw', owner_contribution: 'Owner contribution', entity_cost: 'Entity cost', transfer: 'Transfer', other_income: 'Other income', deposit_held: 'Security deposit', capital: 'Capital asset' };
+
+// Slice 5b — the de-minimis safe harbor. Below it, a repair is a repair: the IRS lets a
+// landlord expense an item under $2,500 rather than capitalize it, and offering the
+// choice on a $180 filter change would be noise on every statement. Above it the option
+// appears; it is never pre-selected, because whether a payment REPLACED something or
+// merely fixed it is a judgement only the landlord can make from the invoice.
+const CAPITALIZE_FLOOR = 2500;
 const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info', ai: 'info' };
 const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
@@ -134,6 +142,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const tenant = leaseId ? ctx.tenants.find((t) => t.lease_id === leaseId) : null;
       // Slice 4c — the income category, carried through from the pick.
       const category = pick ? pick.category || null : null;
+      // Slice 5b — which kind of asset a capitalized line becomes. The useful life
+      // follows from it, so a roof and a parking lot are not interchangeable.
+      const assetKind = pick ? pick.assetKind || null : null;
       // Recompute recon routing when the user re-picked the tenant by hand. Only ever
       // for RENT: a deposit or a late fee names a tenant without paying an invoice, so
       // routing one to an open reconciliation would settle a bill it never paid.
@@ -165,6 +176,10 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         ? !!(leaseId && tenant)
         : kind === 'other_income' ? true
         : kind === 'deposit_held' ? !!(leaseId && tenant)
+        // Slice 5b: capitalizing writes a fixed_assets row, and it needs a DATE to date
+        // the schedule from. The line's own date is that date; a line the extractor
+        // couldn't date can't become an asset here (the asset register takes it by hand).
+        : kind === 'capital' ? !!row.txn.date
         : kind.startsWith('expense_') || (!!ENTITY_KIND_FOR[kind] && !!ctx.corporationId);
       // Does the deposit match what the ledger projects for the month it's applied to?
       // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
@@ -179,7 +194,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         && Number((tenant.coverage || [])[finalMonth - 1]) >= Number(tenant.owed[finalMonth - 1]) - 0.05);
       const isChecked = writable && checked && !(alreadyPaid && ov.checked === undefined);
       return {
-        row, i, kind, label, category, leaseId, tenant, toRecon, month: finalMonth,
+        row, i, kind, label, category, assetKind, leaseId, tenant, toRecon, month: finalMonth,
         checked: isChecked,
         ai: !!ov.ai, picked: ov.pick != null,
         monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
@@ -429,6 +444,18 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             category: r.category || 'other',
             label: payeeLabel(payeeOf(r.row.txn.description), incomeCategoryLabel(r.category)),
             description: r.row.txn.description, hash: r.row.hash,
+          });
+        // Slice 5b — bought once, used for years. Note the entry type is 'capital', NOT
+        // 'cam': it lands in fixed_assets and reaches no expense total, so capitalizing
+        // at import moves no tenant's bill. Only switching the asset's amortization on
+        // does that, later, on the Financials panel, with the consequence named.
+        } else if (r.kind === 'capital') {
+          entries.push({
+            type: 'capital', property_id: expenseProp, year: r.row.year,
+            amount: r.row.txn.amount, date: r.row.txn.date,
+            asset_kind: r.assetKind || 'improvement',
+            label: payeeLabel(payeeOf(r.row.txn.description), 'Capital improvement'),
+            hash: r.row.hash,
           });
         } else if (r.kind === 'deposit_held') {
           // Records that the deposit ARRIVED. Writes no row and never touches
@@ -768,6 +795,10 @@ function targetKeyOf(r) {
   // income line AND a rent line is correctly seen as boilerplate rather than a payee.
   if (r.kind === 'other_income') return `income:${r.category || 'other'}`;
   if (r.kind === 'deposit_held') return `deposit:${r.leaseId || ''}`;
+  // Slice 5b — also deliberately not learned. A vendor who replaces a roof one year
+  // repairs one the next, and the difference is the AMOUNT, not the payee: learning
+  // "ABC Roofing → capitalize" would capitalize every future $400 repair from them.
+  if (r.kind === 'capital') return `capital:${r.assetKind || 'improvement'}`;
   // A draw, a transfer or an entity cost is as much a "payee" as a vendor is — and
   // learning it is the whole point, since the same distribution line recurs monthly.
   // These keys are also what OWN_NAME_TARGETS (statementMatch.js) checks against, so
@@ -784,6 +815,9 @@ export function resolvePick(pick) {
   if (pick.startsWith('lease:')) return { kind: 'tenant', lease_id: pick.slice(6) };
   if (pick.startsWith('cam:')) return { kind: 'expense_cam', label: pick.slice(4) };
   if (pick.startsWith('other:')) return { kind: 'expense_other', label: pick.slice(6) };
+  // Slice 5b. The pick carries which KIND of asset, because the useful life follows from
+  // it and a roof (39 yr) and a parking lot (15 yr) are not interchangeable.
+  if (pick.startsWith('capital:')) return { kind: 'capital', assetKind: pick.slice(8) };
   if (pick === 'expense_tax' || pick === 'expense_cam' || pick === 'expense_roof' || pick === 'ignore') return { kind: pick };
   // Slice 4b — money that crossed the bank but is not this building's income or
   // expense. These write to entity_ledger, never to expense_records.
@@ -1014,6 +1048,19 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                 {!otherBuckets.some((b) => b.label.toLowerCase() === 'other') && <option value="other:Other">Other — not billed</option>}
               </optgroup>
               <option value="__new">＋ New bucket…</option>
+              {/* Slice 5b — bought once, used for years. Offered only above the
+                  de-minimis floor, because below it a repair is a repair and the choice
+                  would be noise on every statement. Capitalizing here writes an asset
+                  and NO expense line, so it moves no tenant's bill: billing the cost
+                  back over its life is a separate, opt-in decision on the Financials
+                  panel, where the consequence can be named. */}
+              {Math.abs(Number(r.row.txn.amount) || 0) >= CAPITALIZE_FLOOR && (
+                <optgroup label="Bought once, used for years">
+                  {ASSET_KINDS.filter((k) => k.amortizable).map((k) => (
+                    <option key={k.key} value={`capital:${k.key}`}>Capitalize — {k.label}</option>
+                  ))}
+                </optgroup>
+              )}
               {/* Slice 4b — real money out that is not this building's expense. A draw
                   filed as an expense understates income by exactly the amount the CPA
                   taxes, so it gets its own destination rather than the nearest bucket. */}

@@ -1,32 +1,38 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listFixedAssets, addFixedAsset, deleteFixedAsset, setFixedAssetLand } from '../lib/api';
+import { listFixedAssets, addFixedAsset, deleteFixedAsset, setFixedAssetLand, setAssetAmortization } from '../lib/api';
 import {
   ASSET_KINDS, assetKindInfo, assetKindLabel, summarizeAssets, priorCheck, DEFAULT_LIFE_NOTE,
+  amortizationFor, canAmortize,
 } from '../lib/depreciation';
+import { settleBillingChange } from '../lib/invalidate';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
 
 // Slice 5a — the things this property owns, and what they lose in value each year.
 //
-// ⚠ NOTHING ON THIS PANEL MOVES A DOLLAR. Depreciation never crossed the bank: no
-// expense total changes, no tenant is billed, and it appears in no cash figure —
-// including, deliberately, "What actually stayed" above, which answers what is in the
-// account. Every row lives in `fixed_assets`, which no view, no invoice and no share
-// calculation reads.
+// ⚠ THE DEPRECIATION ITSELF MOVES NO DOLLAR. It never crossed the bank: no expense total
+// changes, no tenant is billed, and it appears in no cash figure — including, deliberately,
+// "What actually stayed" above, which answers what is in the account. Every row lives in
+// `fixed_assets`, which no view, no invoice and no share calculation reads.
 //
-// ⚠ AND IT DOES NOT REMOVE ANYTHING FROM YOUR EXPENSES. Recording a roof here while the
-// same roof sits in this year's roof total counts it twice. Taking it OUT of the
-// expense — and amortizing it back into CAM — is a real billing change that has to run
-// the full carry-through, which is Slice 5b. So the panel says so on its face rather
-// than letting the double-count go unnamed.
+// ⚠ EXACTLY ONE CONTROL HERE IS DIFFERENT, and Slice 5b added it: billing a capitalized
+// cost back to tenants over its life writes a REAL expense line. That is opt-in, confirmed
+// with the consequence named, and carries the full §1 chain. Everything else on this panel
+// is still inert.
+//
+// ⚠ AND RECORDING AN ASSET STILL DOES NOT REMOVE IT FROM YOUR EXPENSES. A roof entered
+// here while the same roof sits in this year's roof total is counted twice — the fix is
+// the ⤴ Capitalize control on the expense line itself, which moves the cost rather than
+// copying it. The footer says so rather than letting the double-count go unnamed.
 export default function AssetRegisterSection({ propId, year }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const [adding, setAdding] = useState(false);
   const [editLand, setEditLand] = useState(null);
   const [landDraft, setLandDraft] = useState('');
+  const [amortNote, setAmortNote] = useState(null);
   const blank = {
     kind: 'improvement', description: '', placed_in_service: '', cost: '',
     land_cost: '', useful_life_years: '', prior_accumulated: '', prior_accumulated_year: '',
@@ -49,6 +55,68 @@ export default function AssetRegisterSection({ propId, year }) {
     mutationFn: ({ id, land_cost }) => setFixedAssetLand(id, land_cost),
     onSuccess: () => { setEditLand(null); setLandDraft(''); invalidate(); },
   });
+
+  // ⚠ Slice 5b — THE ONE MUTATION ON THIS PANEL THAT MOVES A TENANT'S BILL. Everything
+  // else here is non-cash and reaches no total; switching amortization on writes a real
+  // expense line that tenants are charged pro-rata. So it carries the full billing
+  // settle, and the confirm below names the consequence before it fires.
+  const setAmort = useMutation({
+    mutationFn: ({ id, into }) => setAssetAmortization(id, into, propId, year),
+    onSuccess: (res) => {
+      // ⚠ A closed year's bills are frozen, so no charge is written into it. The asset
+      // still amortizes — the charge simply starts from the next open year — and saying
+      // that is better than a chip that reads "billed back · $0.00 this year".
+      setAmortNote(res?.skipped === 'closed'
+        ? `FY ${year} is closed, so nothing was billed into it. The charge starts from the next open year.`
+        : null);
+      invalidate();
+      qc.invalidateQueries({ queryKey: ['camLineItems', propId, year] });
+      qc.invalidateQueries({ queryKey: ['expenseRecord', propId, year] });
+      settleBillingChange(qc, { propertyId: propId, year });
+    },
+  });
+
+  // ⚠ WHICH CHARGE IT GOES BACK THROUGH IS PICKED, NEVER INFERRED — and that is the
+  // whole correction this round makes. "Building improvement" covers a roof AND a lobby
+  // renovation; a roof must bill through the roof charge so only roof-responsible leases
+  // pay it, while a lobby belongs in CAM where everyone does. Guessing from the kind
+  // would put roughly $17,000 of an $18,000 roof onto eight Pershing tenants whose
+  // leases exclude it. (An asset capitalized off an expense line already knows, because
+  // it inherits the kind of the line it came from.)
+  async function chooseAmortize(row, calc, into) {
+    if (!into) {
+      const ok = await askConfirm({
+        title: 'Stop billing this back?',
+        message: `${row.description || assetKindLabel(row.kind)} — currently ${money(calc.thisYear || 0)} a year.`,
+        implications: [
+          'The amortized line comes off this year’s expenses, so tenants are billed less.',
+          'The asset and its depreciation schedule are unchanged — only the charge to tenants stops.',
+          'Your invoices for this year are re-issued at the new figures.',
+        ],
+        confirmLabel: 'Stop billing it back',
+        tone: 'warn',
+      });
+      if (ok) setAmort.mutate({ id: row.id, into: null });
+      return;
+    }
+    const perYear = calc.annual || calc.thisYear || 0;
+    const ok = await askConfirm({
+      title: 'Bill this back to tenants?',
+      message: `${row.description || assetKindLabel(row.kind)} — ${money(row.cost)} over ${calc.life} years.`,
+      implications: [
+        `${money(perYear)} a year is added to your ${into === 'roof' ? 'roof' : 'CAM'} expenses and billed to tenants.`,
+        into === 'roof'
+          ? 'It goes through the roof charge, so only leases whose terms make them responsible for the roof pay it.'
+          : 'It goes through CAM, so every tenant pays a pro-rata share by square footage.',
+        'This year’s figure is prorated to the months it was actually in service.',
+        // The honest limit, stated where the decision is made.
+        'Amlak can’t tell whether your leases permit recovering capital costs — check the clause before switching this on.',
+      ],
+      confirmLabel: 'Bill it back',
+      tone: 'warn',
+    });
+    if (ok) setAmort.mutate({ id: row.id, into });
+  }
 
   const sum = summarizeAssets(assets, year);
   const formKind = assetKindInfo(form.kind);
@@ -197,6 +265,29 @@ export default function AssetRegisterSection({ propId, year }) {
                   {calc.blocked && !needsLand && (
                     <div className="asset-note">Not depreciating — {calc.reason}.</div>
                   )}
+                  {/* Slice 5b — the only thing on this panel that reaches a tenant's
+                      bill, so it states what it is doing on the row rather than hiding
+                      behind a toggle. Offered only where a lease could support it: the
+                      building itself and its acquisition costs are never a CAM item. */}
+                  {!calc.blocked && canAmortize(a) && (
+                    <div className="asset-amort">
+                      {a.amortize_into ? (
+                        <>
+                          <span className="badge info" title="Billed back to tenants through this charge, spread over the asset's life.">
+                            billed back · {a.amortize_into === 'roof' ? 'roof' : 'CAM'}
+                          </span>
+                          <span className="muted"> {money(amortizationFor(a, year)?.amount || 0)} this year</span>
+                          <button type="button" className="ghost btn-sm" onClick={() => chooseAmortize(a, calc, null)}>Stop</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="muted">Not billed back.</span>
+                          <button type="button" className="ghost btn-sm" onClick={() => chooseAmortize(a, calc, 'cam')} title="Adds this year's share to CAM — every tenant pays a pro-rata share by square footage.">Bill through CAM</button>
+                          <button type="button" className="ghost btn-sm" onClick={() => chooseAmortize(a, calc, 'roof')} title="Adds this year's share to the roof charge — only leases whose terms make them responsible for the roof pay it.">…or roof</button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="num"><span className="stat-label">Cost</span>{money(a.cost)}</div>
                 <div className="num asset-year">
@@ -238,12 +329,13 @@ export default function AssetRegisterSection({ propId, year }) {
           figure — nothing left your account, so it is deliberately absent from “What actually
           stayed” above, which counts only money that moved. Straight-line and book only: your
           accountant applies the conventions and elections Amlak does not compute.
-          {' '}Recording an asset here does <strong>not</strong> remove it from your expenses — taking
-          a roof out of the roof total and amortizing it back into CAM changes what tenants are
-          billed, so it stays a separate, deliberate step.
+          {' '}Recording an asset here does <strong>not</strong> remove it from your expenses — if the
+          same cost is still sitting in this year’s CAM or roof total, it is counted twice. Use
+          <strong> ⤴ Capitalize</strong> on the expense line itself to move it instead of copying it.
         </div>
       )}
-      <MutationError of={[add, remove, setLand]} />
+      {amortNote && <div className="note-msg warn" style={{ marginTop: 10 }}>{amortNote}</div>}
+      <MutationError of={[add, remove, setLand, setAmort]} />
     </div>
   );
 }
