@@ -11,6 +11,7 @@ import CorporationProfileModal from '../components/CorporationProfileModal';
 import AnnualReportModal from '../components/AnnualReportModal';
 import ExportCpaModal from '../components/ExportCpaModal';
 import Export1099Modal from '../components/Export1099Modal';
+import ExportLenderModal from '../components/ExportLenderModal';
 import { BuildingIcon, DocIcon } from '../components/icons';
 
 const TITLES = { leases: 'Portfolio', financials: 'Financials', history: 'History' };
@@ -32,6 +33,7 @@ export default function CorporationsPage({ mode }) {
   const [arCorp, setArCorp] = useState(null);
   const [cpaCorp, setCpaCorp] = useState(null);
   const [necCorp, setNecCorp] = useState(null);
+  const [lenderCorp, setLenderCorp] = useState(null);
 
   const { data: corps = [], isPending } = useQuery({ queryKey: ['corporations'], queryFn: listCorporations });
   // Batched in one request (replaces the per-card N+1) so every card's counts /
@@ -103,7 +105,7 @@ export default function CorporationsPage({ mode }) {
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} onCpa={setCpaCorp} on1099={setNecCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
+            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} onCpa={setCpaCorp} on1099={setNecCorp} onLender={setLenderCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
           ))}
         </div>
       )}
@@ -112,11 +114,12 @@ export default function CorporationsPage({ mode }) {
       {arCorp && <AnnualReportModal corp={arCorp} onClose={() => setArCorp(null)} />}
       {cpaCorp && <ExportCpaModal corporationId={cpaCorp.id} corporationName={cpaCorp.name} year={year} onClose={() => setCpaCorp(null)} />}
       {necCorp && <Export1099Modal corporationId={necCorp.id} corporationName={necCorp.name} year={year} onClose={() => setNecCorp(null)} />}
+      {lenderCorp && <ExportLenderModal corporationId={lenderCorp.id} corporationName={lenderCorp.name} year={year} onClose={() => setLenderCorp(null)} />}
     </div>
   );
 }
 
-function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, on1099, counts, rollup, entity, properties = [], pf, year }) {
+function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, on1099, onLender, counts, rollup, entity, properties = [], pf, year }) {
   const navigate = useNavigate();
   const fin = mode !== 'leases';
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
@@ -182,6 +185,18 @@ function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, on1099, counts, rollup,
           onClick={(e) => { e.stopPropagation(); on1099(corp); }}
         >
           <DocIcon /> 1099s
+        </button>
+      )}
+      {/* Its own control for the same reason the 1099 worksheet is: a lender asks on
+          their timetable, not the return's, and the forward coverage read is worth
+          having before you call the bank rather than after. */}
+      {fin && (
+        <button
+          className="corp-edit"
+          title="Download the operating summary, rent roll and rollover schedule a lender asks for — with the coverage ratio if that rollover doesn’t renew"
+          onClick={(e) => { e.stopPropagation(); onLender(corp); }}
+        >
+          <DocIcon /> Lender package
         </button>
       )}
     </span>

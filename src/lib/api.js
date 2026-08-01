@@ -1404,6 +1404,13 @@ export const listScheduledEscalationsForProperty = async (propertyId) => {
 export const listRenewals = (leaseId) =>
   rows(supabase.from('renewal_options').select('*').eq('lease_id', leaseId).order('notice_by_date'));
 
+// Batched for a whole property (the lender package's rollover schedule), mirroring
+// listAbatementsForLeases / listEscalationsByLeases — one query instead of one per lease.
+export async function listRenewalsByLeases(leaseIds) {
+  if (!leaseIds || !leaseIds.length) return [];
+  return rows(supabase.from('renewal_options').select('*').in('lease_id', leaseIds).order('notice_by_date'));
+}
+
 export const createRenewal = async (r) =>
   one(supabase.from('renewal_options').insert({ ...r, owner_id: await ownerId(), status: r.status || 'pending' }).select().single());
 

@@ -181,6 +181,108 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 14 (Slice 7c): the package you hand a LENDER — and the coverage ratio if the tenants
+  reaching the end of their term walk** (George: *"go"*, closing the accounting direction doc
+  `~/.claude/plans/no-need-to-come-magical-fairy.md`). Deployed: frontend Cloudflare version **`2faf85f8`**, demo worker
+  `26d04b80`. **$0 — no AI call anywhere; NO migration, NO edge function, NO view, NO RPC, NO new table, and NOTHING IS
+  STORED. Nothing in this round writes, so NOT ONE STORED TOTAL MOVED** (read back live after: 401 S Main FY2026 CAM
+  1,846.26; Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596 — byte-identical). Tests **1463/1463
+  across 150 files** (was 1426/148 — +37, two new suites).
+  - **⚠ THE ARITHMETIC CORRECTION THIS ROUND TURNS ON, AND IT IS A REAL DEFECT IN A FIGURE GEORGE READS EVERY DAY.**
+    `v_property_totals.noi` is `Σ effective_rent − (taxes + CAM + roof)` — **base rent alone on the income side, the WHOLE
+    expense on the other.** So an expense the tenants reimbursed is subtracted as though the landlord ate it, and the
+    reimbursement is counted nowhere. It is neither the gross view (rent + reimbursements − full expense) nor the net view
+    (rent − unrecovered expense) — **and those two are the SAME number, which is what proves the third one wrong.** On live
+    Pershing FY2026 the omission is **$141,531.57**: the Financials page reads **$161,334.92** where a lender underwrites
+    **$302,866.49**, so the figure on screen is a little over half of it. **This round does NOT redefine the view** — round
+    7 refused that (it would silently re-value every chart point, every closed-year snapshot and every Ask Amlak fact) and
+    round 12 refused it again — so the package computes the underwritable NOI itself and the tie-out sheet reconciles it to
+    the app's own, line by line, exactly as round 12's tie-out reconciles the return's expenses. **Flagged for George as a
+    separate decision, not acted on** (see below).
+  - **⚠ AND THE DENOMINATOR IS NOT AMLAK'S TO KNOW.** DSCR is NOI ÷ debt service and **Slice 6 (debt) is deferred until a
+    client actually has a mortgage.** Three wrong answers were available: **drop DSCR** (it is the number a lender opens
+    with, and the forward version is the whole reason this package beats a spreadsheet); **derive** debt service from
+    something (there is nothing to derive it from); or **store** a figure and let Amlak pose as knowing the loan (a second
+    source of truth for a loan Slice 6 will model properly, and the two would drift the first time either was edited). So
+    debt service is **typed at export and NOT stored** — one number off a mortgage statement — and with none entered the
+    ratio reads **"—", never 0.00× and never ∞**. A ratio with an unknown denominator is not a small ratio; it is not a
+    ratio. Same refusal round 9 makes for a building whose land has never been valued, and pinned in both directions.
+  - **⚠ THE ARITHMETIC ONLY AMLAK CAN DO, and it is why this is worth building at all.** Every accounting package computes
+    DSCR **backwards**: last year's NOI over last year's debt service. Amlak holds every lease's expiry, every unexercised
+    option and every notice deadline, so it computes it **forward** — *"1.58× today; **0.92×** if the two leases reaching
+    term end within twelve months don't renew."* And the exposure is **rent PLUS the tenant's reimbursement**, never rent
+    alone: a departing tenant takes both, and **the expense stays** — their share becomes vacancy the owner carries. Rent
+    alone understates it by the whole recovered amount, which on a net-lease building is a third of it. Pinned as the
+    headline test, and the downside column is arithmetically honest in all four directions: income falls, **opex does not**,
+    the management fee follows the income it is charged on, and the reserve does not move because the building does not
+    shrink.
+  - **⚠ THE GROSS-LEASE TRAP, AND IT IS LIVE.** `v_tenant_shares` computes a pro-rata CAM/tax share for **every** lease
+    including a gross one (0073 deliberately left those columns alone) — but a gross tenant's reimbursement is carved **out
+    of** their flat rent rather than billed on top. Adding it would count the same dollars twice. So a gross row contributes
+    **$0** of reimbursement, its share is reported separately as *"already inside the rent"*, and the rent roll says so on
+    the row. Card Pop (Joliet) is the live case; its share is $0 today only because Joliet has no expenses entered, which is
+    luck rather than correctness. Pinned in both directions.
+  - **⚠ IT UNDERWRITES CONTRACT RENT, NOT INVOICED RENT — a deliberate divergence from round 12.** A return reports what
+    was **billed**; a lender underwrites what the **leases oblige**. The distinction is not academic: Busey Bank's 2026
+    invoice bills **$491,829.12** against base rent of $364,629.12 and an actual CAM share of $1,846.26 — $125,353.74 of
+    unreconciled ESTIMATE. Underwriting the billed figure would report an NOI built on an estimate nobody has trued up, and
+    a property with no invoice raised would silently read **$0** of income. Contract rent also can't be inflated or zeroed
+    by invoicing hygiene, and — the decisive reason — **it is what makes the rent roll and the operating statement tie**:
+    the rent roll sums to the income line exactly (pinned). Billed rides along on the tie-out sheet as a cross-check with
+    the reason stated.
+  - **Never spread across twelve months.** The plan called for a T-12, and Slice 1's dates are on file for **0 of 12** live
+    expense lines — so an evenly-spread month column would be Slice 1's refusal repeated one column over. An undated line
+    goes in an **Undated** column and is counted; an un-itemized flat kind (Pershing's $127,000) is undated by definition;
+    and the sheet states outright that a lender may want a trailing twelve months ending last month while this is the
+    **fiscal year by month**, because that is what every figure in Amlak is keyed to. Honest and cheap beats a half-T-12.
+  - **The fifth sheet matters more here than anywhere in this arc.** Round 6's rule — a dollar is either recorded somewhere
+    or explicitly excluded **with a reason** — applied for the fourth time, now to an underwriting package: the loans, the
+    capital expenditure (correctly outside NOI, on the asset register), **every property with no expenses entered**, and the
+    unplaced bank lines. **A lender who cannot tell a careful export from one that quietly omitted the debt has to assume
+    the worst**, so the absence of the loans is stated on its own sheet rather than left to be noticed. `debt` and `capex`
+    are `always: true` — they appear even on a perfect portfolio.
+  - **A bug caught by my own test, and it was in the accumulator.** The vendor-style treatment merge seeded `report` as
+    `'no'` in round 13; here the equivalent trap was subtler — nothing seeded, so the first excluded line was fine. What the
+    tests did catch was that **a lease with no term end must be counted, not bucketed**: bucketing it by `String(end)`
+    would have put every undated lease in the "beyond" bucket and reported a rollover that may not exist. It is now listed
+    by name with the reason, and the buckets still sum to the rent roll (pinned).
+  - **Where it shows.** A fifth **Lender package** pill on every corporation card on Financials, beside Tax package and
+    1099s — **its own control for the same reason the 1099 worksheet is**: a lender asks on their timetable, and the forward
+    coverage read is worth having *before* you call the bank. The modal takes the three lender assumptions, resolves the
+    ratio live on screen, names the tenants rolling off, and states the NOI gap against the app's own figure. Five sheets:
+    **Summary · Operating statement · Rent roll · Rollover · Not in this package.**
+  - **One additive change to a shipped module:** `api.js` gains `listRenewalsByLeases(leaseIds)` — one batched query
+    mirroring `listAbatementsForLeases` / `listEscalationsByLeases`, so the rollover schedule reads every lease's options in
+    one round-trip instead of one per lease. Nothing else in `api.js` moved.
+  - **Files.** New: `src/lib/lenderPackage.js` · `src/lib/lenderExcel.js` · `src/components/ExportLenderModal.js` ·
+    `src/lib/__tests__/lenderPackage.test.js` (27) · `src/components/__tests__/lenderUi.test.js` (10). Edited:
+    `src/lib/api.js` (one batched helper) · `src/pages/CorporationsPage.js` · `src/App.css`. **No** migration, edge
+    function, view, RPC, mock or demo-seed change — the seed already carried every case it needed (City Dental's term ended
+    2026-05-31, so it is a live holdover). **§5 fans out to nothing** (no `_shared` module touched). **No existing assertion
+    changed** — this round adds a concept rather than moving one. Reuses `recoverabilityRows` for the expense side and
+    `optionLapseReason` for the renewal read, so the package cannot disagree with the Financials page or the lease page.
+  - **Verified:** unit **1463/1463** (`vitest run`); `npm run build` compiles with ExcelJS still lazily chunked; **every
+    stored expense total identical before and after**; live 200s on all four URLs; live bundle carries the backend ref
+    **and** the new package, demo bundle greps **free** of it. Browser drive-through skipped per George's standing
+    preference — the ten render tests mount the **real** corporation grid and the **real** modal, drive the debt-service
+    input through to a resolved ratio, assert the downside is lower than today's, and push the actual Download button
+    through ExcelJS to a real five-sheet workbook buffer.
+  - **George: hard-refresh (Cmd+Shift+R).** Every corporation card on **Financials** now carries **Lender package**. Type
+    your annual debt service and it tells you your coverage today — and what it becomes if the tenants whose leases are
+    ending walk.
+  - **Flags:** ① **⚠ THE NOI ON YOUR FINANCIALS PAGE IS UNDERSTATED BY WHATEVER YOUR TENANTS REIMBURSE — $141,531.57 at
+    Pershing.** I did **not** change it: fixing the view re-values every historical chart point and every Ask Amlak fact,
+    and rounds 7 and 12 both refused that on purpose. **It is your call** — say the word and I'll do it as its own round
+    with the carry-through traced. Meanwhile the lender package reports the correct figure and reconciles the two. ②
+    **Joliet has no expenses entered for 2026 at all**, so its NOI reads as income with nothing taken out — the pre-flight
+    says so, and a lender will check that first. 401 S Main carries **$1,846.26** for a 9,176 SF building, which is
+    similarly not a real operating expense load. ③ **The month columns will be empty** — 0 of your 12 expense lines carry a
+    payment date, and nothing is spread evenly to fill them; dates arrive on every statement you import from here. ④
+    **D & D Dental's term ends 2026-09-30** — the one lease inside twelve months, $47,436 of rent plus $23,708 of
+    reimbursement, and its renewal option carries **no notice date**, so nothing can warn you when the deadline passes. ⑤
+    **No year has ever been closed** (`financial_snapshots` is empty), so there is no frozen collection history — the
+    monthly columns read live payments instead. ⑥ Round 7's Liana / Yazin flag still stands.
+
 - **2026-07-31** — **Accounting round 13 (Slice 7b): the vendors who may need a 1099 — the list and the question, never the
   filing** (George: *"continue"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by
   phase). Deployed: frontend Cloudflare version **`ca62cc8c`**, demo worker `2c5fdf0b`. **$0 — no AI call anywhere; NO migration,

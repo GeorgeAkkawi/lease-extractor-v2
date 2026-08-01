@@ -1059,6 +1059,19 @@ tbody tr:last-child td{border-bottom:none}
 .w9-amt b{font-size:14px}
 .w9-amt .muted{font-size:10px}
 
+/* The lender's own assumptions — debt service, management fee, replacement reserve.
+   Typed on the way out and never stored, because Amlak doesn't hold the loan yet. */
+.lender-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.lender-inputs label{display:flex;flex-direction:column;gap:4px;min-width:0}
+.lender-inputs label>span{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.lender-inputs .text-input{width:100%}
+/* The forward read: what the coverage becomes if the near-term rollover walks. The one
+   thing no accounting package can say, so it gets the accent rather than a muted note. */
+.lender-forward{margin-top:12px;padding:10px 12px;background:var(--panel-2);border-left:3px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0}
+.lender-forward strong{display:block;font-size:13px;line-height:1.4}
+.lender-forward .muted{font-size:11.5px;line-height:1.45;margin-top:3px}
+@media (max-width:640px){.lender-inputs{grid-template-columns:1fr}}
+
 .cpa-flags{margin-top:12px;display:flex;flex-direction:column;gap:8px}
 .cpa-flag{font-size:12px;line-height:1.45;color:var(--gold);background:var(--gold-soft,#FBF3DF);border-left:3px solid var(--gold);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
 @media (max-width:560px){.cpa-pre{grid-template-columns:repeat(2,minmax(0,1fr))}}
