@@ -298,6 +298,9 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .corp-fin{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 8px}
 .corp-card.fin .corp-fin{border-top:1px solid var(--border);padding-top:14px;width:100%}
 .corp-row.fin .corp-fin{margin-left:auto}
+/* Slice 4b — owner/entity money under the fixed three-column trio, never inside it.
+   The trio's grid was pinned deliberately (2026-07-21) so every card formats alike. */
+.corp-card.fin .corp-entity{width:100%;font-size:11px;margin-top:8px}
 .corp-head{display:flex;align-items:center;gap:16px;width:100%;flex-wrap:wrap}
 .corp-head .corp-info{flex:1;min-width:150px}
 /* On fin/history cards the name gets its own line rather than truncating — the
@@ -467,6 +470,18 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
    here mean something different (category | spent | recovered | net) and the expense
    entry's 34px action slot has no counterpart. Same type treatment throughout so the
    two read as one page. */
+/* Slice 4b — "What actually stayed". Reads as a subtraction down the page: one row
+   per movement NOI doesn't know about, a rule under the figure it starts from, and
+   the answer on its own line. Two columns only, so it survives a phone with no
+   breakpoint of its own. */
+.stayed-strip{display:flex;flex-direction:column}
+.stayed-row{display:grid;grid-template-columns:1fr 170px;gap:14px;align-items:baseline;padding:8px 0}
+.stayed-row .num{text-align:right;font-variant-numeric:tabular-nums}
+.stayed-row.stayed-start{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:4px}
+.stayed-op{display:inline-block;width:14px;color:var(--muted);font-weight:700}
+.stayed-row.stayed-total{border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
+.stayed-row.stayed-total b{font-family:var(--display);font-size:20px;font-weight:600}
+
 .recov-table{display:flex;flex-direction:column}
 .recov-row{display:grid;grid-template-columns:1fr 130px 170px 150px;gap:14px;align-items:center;padding:9px 0;border-bottom:1px solid var(--hair)}
 .recov-row .num{text-align:right;font-variant-numeric:tabular-nums}

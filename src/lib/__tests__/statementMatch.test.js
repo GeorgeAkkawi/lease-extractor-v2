@@ -287,10 +287,29 @@ describe('withdrawal keyword table', () => {
     expect(classifyWithdrawal('ABC ROOFING CO ROOF REPAIR')).toMatchObject({ kind: 'expense_roof' });
     expect(classifyWithdrawal('GREENLEAF LANDSCAPING INV 88')).toMatchObject({ kind: 'expense_cam', label: 'Landscaping' });
     expect(classifyWithdrawal('SNOW PLOW SERVICES')).toMatchObject({ kind: 'expense_cam', label: 'Snow removal' });
+    // Debt has no home in Amlak until Slice 6, so a mortgage still suggests ignore —
+    // and the reason now SAYS that rather than implying the line doesn't matter.
     const mort = classifyWithdrawal('CHASE MORTGAGE PMT');
     expect(mort.kind).toBe('ignore');
     expect(mort.reason).toContain('mortgage');
-    expect(classifyWithdrawal('TRANSFER TO SAVINGS').kind).toBe('ignore');
+    // Slice 4b: a transfer and a draw stop being binned and get real destinations.
+    expect(classifyWithdrawal('TRANSFER TO SAVINGS').kind).toBe('transfer');
+    expect(classifyWithdrawal('OWNER DRAW 04').kind).toBe('owner_draw');
+    expect(classifyWithdrawal('MONTHLY DISTRIBUTION').kind).toBe('owner_draw');
+  });
+
+  // The regression that made Slice 4b dangerous before it was fixed. This table used
+  // to match substrings, so "WITHDRAWAL" contained "DRAW" and EVERY U.S. Bank
+  // withdrawal — which is how 401 S Main's statements are written — classified as an
+  // owner draw with HIGH confidence. While the answer was merely `ignore` that was an
+  // unhelpful suggestion; once a draw writes a real equity row, the same false
+  // positive files a Comcast bill as a distribution.
+  it('does not read "withdrawal" as a draw, or a surname as a loan', () => {
+    expect(classifyWithdrawal('Electronic Withdrawal To WASTE MANAGEMENT'))
+      .toMatchObject({ kind: 'expense_cam', label: 'Waste removal' });
+    expect(classifyWithdrawal('ELECTRONIC WITHDRAWAL COMCAST XFINITY').kind).toBe('ignore');
+    expect(classifyWithdrawal('CHECK 2210 SLOANE PROPERTIES').kind).not.toBe('ignore_loan');
+    expect(classifyWithdrawal('PAYMENT TO SLOAN PLUMBING')).toMatchObject({ kind: 'expense_cam', label: 'Plumbing' });
   });
   it('unknown money-out is NEVER auto-booked', () => {
     const c = classifyWithdrawal('MISC PURCHASE 8812');

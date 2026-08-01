@@ -181,6 +181,119 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 7 (Slice 4b): a draw, an entity cost and a transfer finally have somewhere to go — and
+  the app can say what actually STAYED in the account, not just what NOI says** (George: *"continue"*, working the accounting
+  direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0077`** (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`5be8f7ac`**, demo worker `2f4bd71c`. **$0 — no AI call anywhere; NO
+  edge function, NO view, NO RPC; 0077 adds ONE new owner-scoped table and widens ONE CHECK, so NOT ONE STORED TOTAL MOVED**
+  (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26). Tests
+  **1231/1231 across 135 files** (was 1210/133 — +21, two new suites).
+  - **The gap, stated precisely.** Amlak has exactly FOUR homes for a dollar — tenant rent, property taxes, CAM, roof — plus
+    Ignore. `IGNORE_KEYWORDS` binned `MORTGAGE` / `LOAN` / `TRANSFER` / `DRAW` correctly (they are not recoverable CAM) and
+    then recorded them **nowhere**, so **every distribution George has ever taken was invisible to the app**. Round 6 made
+    those lines visible as `unclassified`; this round gives them somewhere to go. **Round 6's judgement paid off exactly as
+    designed: round 7 did not have to go hunting — its work-list was literally `listUnplacedLines`.**
+  - **⚠ THE ACCOUNTING FACT THE WHOLE ROUND TURNS ON.** A distribution is **not an expense** — it reduces EQUITY. It must
+    never reach `expense_records`, never touch `cam_total`, never enter `v_tenant_shares`, never appear in NOI. Filing one as
+    an expense understates income by exactly the amount the CPA taxes. **That is not hypothetical:** 401 S Main is carrying
+    "Liana $20,000" and "Yazin $10,000" as not-billed EXPENSE lines right now, and both read like owner draws — the finding
+    Round 5 surfaced. The safety is structural, not careful: everything this round writes lands in `entity_ledger`, which no
+    view, no invoice and no share calculation reads. Test-pinned by re-reading `cam_total`, every `v_tenant_shares` row and
+    `noi` before and after booking a $24,000 draw.
+  - **⚠ AND IT EXPOSED A LIVE BUG THAT THIS ROUND WOULD HAVE MADE DANGEROUS.** The keyword table matched **substrings**, so
+    `Electronic Withdrawal To WASTE MANAGEMENT` — how U.S. Bank writes EVERY withdrawal, and 401 S Main's statements are U.S.
+    Bank — classified as **"owner draw", confidence HIGH**, because "WITH**DRAW**AL" contains "DRAW". `LOAN` had the same shape
+    (it matches the surname "Sloan"). While the answer was merely `ignore` that was an unhelpful suggestion; the moment a draw
+    became a real destination writing a real equity row, the identical false positive would file a Comcast bill as a
+    distribution. Fixed with **word-boundary** matching (`/(^| )DRAWS?( |$)/`) — the CAM keywords stay substrings on purpose,
+    they are stems (LANDSCAP → LANDSCAPING), but a whole word must be matched as a whole word. Live proof: that line now reads
+    **`expense_cam` / Waste removal**. Pinned as a named regression.
+  - **One table, not three, and no CHECK on `kind`.** A draw, a contribution and an entity cost have one shape and differ only
+    in meaning, so the meaning lives in `kind` plus a JS registry (`src/lib/entityLedger.js`) — the FEATURES / NOTIFY_TYPES /
+    EXPENSE_CATEGORIES / 0076-dispositions idiom. A CHECK would mean a migration every time the list grows (debt, capital) and
+    would reject a row the app considers valid. The one constraint enforced is the one that matters: **`corporation_id` is NOT
+    NULL**, because this is entity-level money by definition.
+  - **`property_id` is nullable and that is not laziness.** An entity cost (registered agent, franchise tax) genuinely belongs
+    to no single building — but an imported line always knows which account it left, and recording that is free information. It
+    is what lets the per-property strip show what actually left that account with **no allocation guess**. `on delete set null`:
+    deleting a property must not erase a draw that really happened. Test-pinned that a property-less row still rolls up to its
+    corporation.
+  - **A transfer writes NOTHING, and that is the design.** Between the owner's own accounts it is neither income nor expense —
+    the disposition IS the record, exactly as an ignore's reason is. So it needs no tick. George's real February line, the
+    **$20,154.11 "Mobile Banking Transfer From Account …8966"**, is the case the plan names: it matched no tenant, sat unticked,
+    and vanished. It is now a recorded transfer.
+  - **A hole in my own design, caught in test — the second round running.** The matcher SUGGESTS transfer, so the dropdown
+    already reads "Transfer" while the line is still unplaced; re-picking the same value changes nothing, leaving **no way to
+    say yes**. Precisely the hole round 6 found on a matcher-ignored row, and the same answer: a **"Confirm transfer"** button
+    that IS the decision, one click. (A draw or entity cost needs no such thing — it writes a row, so its unticked checkbox is
+    already the visible confirmation.)
+  - **Round 6's all-clear was unreachable, and now says so.** `completenessSentence` has always had an "N of N lines placed ✓"
+    branch, but the footer only rendered the block when something was UNPLACED — so the promise that nothing went missing was
+    only ever stated when it was false. It now renders always: *"3 of 3 lines placed ✓ — Every line this statement showed is on
+    record."*
+  - **The ownNames guard is SCOPED, not dropped.** `screenRulePatterns` refuses to learn a pattern naming the landlord's own
+    corporation — that is the live `NASA PROPERTY LLC TRN → always match Ricki's-Lyons` rule that prompted it. But the reason a
+    bank prints the account holder's name is that the line IS a transfer or a draw, so pointing it at one of those is the
+    **correct** answer; refusing would mean re-picking the same distribution by hand every month forever. Now rejected as a
+    tenant or a vendor, allowed as an entity destination.
+  - **`import_rules.target_kind` IS extended (four new values) — the extension 0075 deliberately refused.** `target_kind`
+    answers *"which of Amlak's destinations does this dollar hit"*, and a distribution is a genuinely new destination. A tax
+    category was a different axis entirely, which is why that one was refused and this one isn't.
+  - **"What actually stayed" — the strip, and the two wrong ways to build it, both refused.** Folding the not-billed costs into
+    `cam_total` would **bill tenants for expenses the landlord deliberately absorbed** (the exact thing `billable=false` exists
+    to prevent); redefining `v_property_totals.noi` would silently re-value every historical chart point, every
+    `financial_snapshots` row already written and every Ask Amlak fact. So NOI is quoted **unchanged** and everything it doesn't
+    know about is carried **beside** it, derived client-side: *NOI · + other income · + contributions · − costs you absorbed ·
+    − entity costs · − draws = what actually stayed.* **This is the round that finally counts the not-billed group** — visible
+    on the Expense entry since round 4 and reaching no total, because 2026-07-21 deliberately deferred it ("folding them into
+    NOI = v2"). A zero line is omitted (a strip full of "$0.00 distributions" is noise), the total is summed **from the rows
+    shown** so it can never disagree with its own arithmetic, and the whole strip **hides itself** when there is nothing to
+    reconcile rather than reading "NOI $X = what stayed $X". All pinned.
+  - **Where it shows.** The strip sits directly under NOI on every property's Financials page — it is the sentence NOI leaves
+    unfinished. An **"Owner & entity money"** panel below the expense sections lists each kind with its own subtotal and a
+    ✕ per row (the confirm names all three consequences, including that no bill and no expense total changes). The **corporation
+    cards** carry a quiet *"$24,000 drawn · $5,000 contributed · $1,750 entity costs"* line **under** the fixed three-column
+    Rev/Exp/NOI grid, never inside it — that grid was pinned deliberately on 2026-07-21 so every card formats alike. And the
+    Ledger's **"Money not yet placed"** panel gains a **"Record as…"** control, so answering the nag no longer means
+    re-importing the statement.
+  - **Only an entity COST gets a tax category, and it arrives with none.** A draw files on no line of any return, so offering it
+    a category would invite a wrong answer — pinned in the DOM (exactly one chip renders, on the cost row). The category is
+    nullable for 0075's reason: a defaulted "Other" hides the decision that wants surfacing, so it shows gold as *"Set a tax
+    category"*. It reuses `EXPENSE_CATEGORIES` rather than declaring a second list — §3, applied before the drift.
+  - **Files.** New: `supabase/migrations/0077_entity_ledger.sql` · `src/lib/entityLedger.js` ·
+    `src/components/{EntityLedgerSection,WhatStayedStrip}.js` · `src/lib/__tests__/entityLedger.test.js` (13) ·
+    `src/components/__tests__/whatStayedUi.test.js` (5). Edited: `src/lib/{api,dispositions,statementMatch,demo/store}.js` ·
+    `src/components/{StatementReview,ImportStatementButton}.js` · `src/pages/{PropertyFinancialsPage,LedgerPage,
+    CorporationsPage}.js` · `src/App.css` · four existing suites (see below). **No** edge function, view, RPC or mock change —
+    `entity_ledger` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation here (re-verified, not
+    inherited). Rule #7 re-checked: no view selects `import_rules.*`.
+  - **Four existing assertions were reversed, every one deliberately, and each got STRICTER.** ① `isPlaced('owner')` used
+    `owner` as its example of an unknown disposition — round 6's own comment predicted rounds 7/8 would make it real, which is
+    exactly the scenario that guard is for; it now uses `debt`/`capital` (genuinely Slice 5/6) **and** gained a case pinning
+    that the three new dispositions are placed while `unclassified` remains the only unplaced state. ② `TRANSFER TO SAVINGS`
+    now suggests `transfer`, not `ignore`. ③ The tenant-dropdown test asserted "Other properties is the LAST optgroup", which
+    broke the moment a group was added beneath it — rewritten as the ORDERING rule it was always trying to express, plus a new
+    assertion that the non-rent group sits below both. ④ Round 6's "a deliberate exclusion says why" used the transfer line,
+    which is no longer homeless — it now proves the better outcome (the confirm places it, and it is **not** counted as "left
+    out"), and round 6's original guarantee is preserved in a new sibling test using a genuinely unrecognized line.
+  - **Verified:** unit **1231/1231** (`vitest run`); `npm run build` compiles; migration applied clean and read back (14 columns
+    · `property_id` **nullable** · both `owner_all` and `require_aal2` policies · 4 indexes · **0 pre-existing rows** · the
+    widened CHECK carrying all 10 target kinds); **every stored expense total identical before and after**; live 200s on all
+    four URLs; live bundle carries the backend ref, demo bundle greps **free** of it. Browser drive-through skipped per George's
+    standing preference — the five render tests mount the **real** strip, the **real** panel and the **real** StatementReview
+    and drive the actual flow, including recording a draw by hand and re-reading every tenant's share afterwards.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now carries **"What actually stayed"** under NOI,
+    and an **"Owner & entity money"** panel below the expenses. Import a statement and a draw, a transfer or an LLC cost has a
+    real destination instead of being binned. Anything already sitting under **Money not yet placed** on the Ledger can be
+    recorded from there with one click.
+  - **Flags:** ① **Your Liana ($20,000) and Yazin ($10,000) lines at 401 S Main are still recorded as not-billed EXPENSES** —
+    I did not touch them, because whether they are draws is your call, not mine. If they are, delete them from the Expense entry
+    and record them under **Owner & entity money**; the recoverability table will stop counting $30,000 of distributions as a
+    cost. ② **Mortgages and loans still have no home** and stay unplaced by design — that is Slice 6, and the reason on the row
+    now says so instead of implying the line doesn't matter. ③ A **transfer** records the decision and nothing else, so it
+    appears in no total anywhere — which is correct: it never left your hands. ④ The corporation card's draw line counts every
+    property under that corporation; the per-property strip counts only what left that property's account.
+
 - **2026-07-31** — **Accounting round 6 (Slice 4a): a bank line can no longer disappear — every line a statement showed is
   now a record carrying a decision, and "nothing went missing" became a number you can read** (George: *"continue"*, working
   the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase; the rule is his, from the

@@ -143,6 +143,10 @@ export function suggestRulePattern(description, siblings = []) {
 // A candidate whose pattern also appears on a line resolving to a DIFFERENT target
 // is boilerplate: learning it would point all of those lines at whichever saved
 // last. Reject it (and say so), keep the rest.
+// The destinations for which naming the owner's own corporation is CORRECT rather
+// than a mis-learned payee — see the guard inside screenRulePatterns.
+const OWN_NAME_TARGETS = new Set(['transfer', 'owner_draw', 'owner_contribution', 'entity_cost']);
+
 export function screenRulePatterns(candidates = [], lines = [], ownNames = []) {
   const norm = (lines || []).map((l) => ({ desc: normalizeDesc(l?.description), targetKey: l?.targetKey || null }));
   const own = (ownNames || []).map((n) => normalizeDesc(n)).filter((n) => n.length >= 3);
@@ -153,7 +157,14 @@ export function screenRulePatterns(candidates = [], lines = [], ownNames = []) {
     if (pat.length < 3) continue;
     const hits = norm.filter((l) => l.desc.includes(pat));
     const conflicts = hits.filter((l) => l.targetKey && l.targetKey !== c.targetKey);
-    const isOwn = own.some((n) => pat.includes(n) || n.includes(pat));
+    // Slice 4b scopes this guard rather than dropping it. A pattern naming the
+    // landlord's own corporation is still nonsense as a TENANT or a VENDOR — that is
+    // the "NASA PROPERTY LLC TRN → always match Ricki's-Lyons" rule that prompted it.
+    // But the reason the bank prints the account holder's name is that the line IS a
+    // transfer or a draw, so pointing it at one of those is not a mistake, it is the
+    // correct answer — and refusing to learn it would mean re-picking the same
+    // distribution by hand every month forever.
+    const isOwn = own.some((n) => pat.includes(n) || n.includes(pat)) && !OWN_NAME_TARGETS.has(c.targetKey);
     if (conflicts.length || isOwn) {
       if (!rejected.has(pat)) rejected.set(pat, { pattern: c.pattern, count: hits.length, own: isOwn });
     } else {
@@ -184,11 +195,26 @@ const CAM_KEYWORDS = [
   ['PAVING', 'Paving'],
   ['PARKING', 'Parking lot'],
 ];
-const IGNORE_KEYWORDS = [
-  ['MORTGAGE', 'a mortgage payment is not a recoverable CAM expense'],
-  ['LOAN', 'loan payments are not operating expenses'],
-  ['TRANSFER', 'internal transfer'],
-  ['DRAW', 'owner draw'],
+// Money OUT that is real but is not this building's operating expense.
+//
+// ⚠ THESE MATCH ON WORD BOUNDARIES, NOT SUBSTRINGS, AND THAT IS A CORRECTNESS FIX.
+// This table used to read `desc.includes('DRAW')`, so "Electronic Withdrawal To WASTE
+// MANAGEMENT" — how U.S. Bank writes EVERY withdrawal, and 401 S Main's statements
+// are U.S. Bank — classified as an owner draw with HIGH confidence. While the answer
+// was merely `ignore` that was an unhelpful suggestion; now that a draw is a real
+// destination that writes a real row, the same false positive would file a Comcast
+// bill as a distribution. `LOAN` had the same shape (it matches the surname "Sloan").
+// The CAM keywords below stay substrings on purpose — they are stems (LANDSCAP →
+// LANDSCAPING) — but a whole word must be matched as a whole word.
+//
+// MORTGAGE and LOAN stay `ignore`: debt is Slice 6 and Amlak genuinely has nowhere to
+// put them yet. Saying so in the reason is more honest than inventing a home.
+const OUT_KEYWORDS = [
+  [/(^| )DRAWS?( |$)/, { kind: 'owner_draw', reason: 'looks like money you took out — recorded as equity, never as an expense' }],
+  [/(^| )DISTRIBUTIONS?( |$)/, { kind: 'owner_draw', reason: 'looks like an owner distribution — recorded as equity, never as an expense' }],
+  [/TRANSFER/, { kind: 'transfer', reason: 'looks like a transfer between your own accounts — neither income nor expense' }],
+  [/(^| )MORTGAGE/, { kind: 'ignore', reason: 'a mortgage payment is not a recoverable CAM expense — Amlak has no home for debt yet' }],
+  [/(^| )LOANS?( |$)/, { kind: 'ignore', reason: 'loan payments are not operating expenses — Amlak has no home for debt yet' }],
 ];
 
 // The built-in bucket names the review dropdown offers alongside the owner's own
@@ -199,8 +225,11 @@ export const CAM_KEYWORD_LABELS = CAM_KEYWORDS.map(([, label]) => label);
 // Unknown money-out → suggest ignore (never auto-booked).
 export function classifyWithdrawal(description, tenants = []) {
   const desc = normalizeDesc(description);
-  for (const [kw, reason] of IGNORE_KEYWORDS) {
-    if (desc.includes(kw)) return { kind: 'ignore', reason, confidence: 'high' };
+  for (const [re, out] of OUT_KEYWORDS) {
+    // Suggested, never auto-ticked: money out is not booked without the landlord's
+    // say-so, and an untouched suggestion stays UNPLACED and keeps nagging rather
+    // than posing as a decision they made (the round-6 judgement, carried forward).
+    if (re.test(desc)) return { ...out, confidence: 'high' };
   }
   if (/(^| )(TAX|TAXES|COUNTY|TREASURER|ASSESSOR)( |$)/.test(desc)) {
     return { kind: 'expense_tax', confidence: 'high' };

@@ -181,6 +181,17 @@ export function seed() {
     expense_buckets: [
       { id: 'bkt-1', owner_id: DEMO_USER.id, label: 'Owner legal fees', category: 'legal', billable: false, capital_prone: false, created_at: iso(Y, 1, 5) },
     ],
+    // Slice 4b — money that crossed prop-1's account and is NOT the building's income
+    // or expense. Seeded because the new panels would otherwise render permanently
+    // empty in demo and read as a bug. One of each kind, so "What actually stayed"
+    // shows a real subtraction: NOI, less the $1,200 of not-billed legal fees already
+    // seeded above, less these. The entity cost carries NO category on purpose — that
+    // is the gold "Set a tax category" state, the same refusal 0075 makes.
+    entity_ledger: [
+      { id: 'ent-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'draw', category: null, label: 'Owner distribution', amount: 24000, txn_date: iso(Y, 3, 15), note: null, import_id: null, line_hash: null, created_at: iso(Y, 3, 15) },
+      { id: 'ent-2', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'cost', category: null, label: 'Illinois franchise tax', amount: 1750, txn_date: iso(Y, 2, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 2, 1) },
+      { id: 'ent-3', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'contribution', category: null, label: 'Capital call — roof work', amount: 5000, txn_date: iso(Y, 5, 20), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 20) },
+    ],
     financial_snapshots: [
       // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"
       // for it; snap-1/snap-2 carry the frozen collection picture so the demo shows

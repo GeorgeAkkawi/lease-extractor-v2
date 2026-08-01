@@ -31,6 +31,34 @@ export const DISPOSITIONS = [
     placed: true,
     hint: 'Recorded as a CAM, tax or roof line on this property.',
   },
+  // Slice 4b — the three homes that did not exist before round 7. All PLACED: a draw
+  // recorded is accounted for even though it appears in no expense total, and a
+  // transfer between the owner's own accounts is real money movement that is neither
+  // income nor expense. "Accounted for" means somebody decided, not "counted as a cost".
+  {
+    key: 'owner',
+    label: 'Owner draw or contribution',
+    short: 'Owner',
+    dir: 'both',
+    placed: true,
+    hint: 'Equity — money you took out or put in. Never income, never an expense.',
+  },
+  {
+    key: 'entity',
+    label: 'Entity cost',
+    short: 'Entity',
+    dir: 'out',
+    placed: true,
+    hint: 'A cost of the LLC itself rather than of this building.',
+  },
+  {
+    key: 'transfer',
+    label: 'Transfer between your accounts',
+    short: 'Transfer',
+    dir: 'both',
+    placed: true,
+    hint: 'Real money movement, but neither income nor expense — it never left your hands.',
+  },
   {
     key: 'ignored',
     label: 'Deliberately left out',
@@ -138,6 +166,15 @@ export function completenessSentence(c) {
 export function dispositionForRow({ checked, kind, picked, duplicate }) {
   if (checked && kind === 'tenant') return 'rent';
   if (checked && String(kind || '').startsWith('expense_')) return 'expense';
+  // Slice 4b. A draw, a contribution and an entity cost each WRITE a row, so they
+  // need the tick exactly as an expense does — money out is never booked without the
+  // landlord's say-so, and a matcher suggestion left untouched stays unplaced and
+  // keeps nagging (the same judgement round 6 made about keyword ignores).
+  if (checked && (kind === 'owner_draw' || kind === 'owner_contribution')) return 'owner';
+  if (checked && kind === 'entity_cost') return 'entity';
+  // A transfer is the exception, and for the same reason an ignore is: it writes
+  // nothing, so the PICK is the entire decision and there is no tick to wait for.
+  if (picked && kind === 'transfer') return 'transfer';
   if (picked && kind === 'ignore') return 'ignored';
   // A duplicate is the one exclusion nobody has to decide: the guard has already
   // matched this line to money recorded from an earlier import, so it IS accounted

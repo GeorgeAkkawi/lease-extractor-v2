@@ -13,6 +13,7 @@ import {
   listStatementImports,
   listUnplacedLines,
   setLineDisposition,
+  placeUnplacedLine,
   undoStatementImport,
   listSnapshots,
   signDocUrl,
@@ -33,6 +34,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 import LeaseTypeChip from '../components/LeaseTypeChip';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness } from '../lib/dispositions';
+import { entityKindsFor } from '../lib/entityLedger';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -109,6 +111,17 @@ export default function LedgerPage() {
   const leaveOut = useMutation({
     mutationFn: ({ id, reason }) => setLineDisposition(id, 'ignored', reason || null),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] }),
+  });
+  // Slice 4b — give the line a real home from here, without re-importing the
+  // statement it came from. Writes to entity_ledger only, so answering the nag can
+  // never move a tenant's bill or this property's expenses.
+  const place = useMutation({
+    mutationFn: ({ line, kind }) => placeUnplacedLine(line, { kind, corporationId: prop?.corporation_id || corpId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] });
+      qc.invalidateQueries({ queryKey: ['entityLedger'] });
+      qc.invalidateQueries({ queryKey: ['entityLedgerByCorps'] });
+    },
   });
 
   // Scoped invalidation after a write settles — this property's roll + the lease-page
@@ -563,8 +576,24 @@ export default function LedgerPage() {
                     <td style={{ fontSize: 12 }}>{l.description || '—'}</td>
                     <td className="num">{l.direction === 'in' ? '+' : '−'}{money(Math.abs(Number(l.amount) || 0))}</td>
                     <td className="num">
+                      {/* Slice 4b — the nag is now answerable, not just silenceable.
+                          Round 6 could only offer "leave it out"; these are the homes
+                          that make the panel a work-list rather than a complaint. */}
                       <select
-                        className="text-input" style={{ maxWidth: 190, fontSize: 11 }}
+                        className="text-input" style={{ maxWidth: 210, fontSize: 11, marginBottom: 4 }}
+                        value=""
+                        disabled={place.isPending || !corpId}
+                        onChange={(e) => { if (e.target.value) place.mutate({ line: l, kind: e.target.value }); }}
+                        title="Record this line where it belongs. None of these touch a tenant's bill or this property's expenses."
+                      >
+                        <option value="">Record as…</option>
+                        {entityKindsFor(l.direction === 'in' ? 'in' : 'out').map((k) => (
+                          <option key={k.key} value={k.key}>{k.label}</option>
+                        ))}
+                        <option value="transfer">Transfer between my own accounts</option>
+                      </select>
+                      <select
+                        className="text-input" style={{ maxWidth: 210, fontSize: 11 }}
                         value=""
                         disabled={leaveOut.isPending}
                         onChange={(e) => { if (e.target.value) leaveOut.mutate({ id: l.id, reason: e.target.value }); }}
@@ -578,7 +607,7 @@ export default function LedgerPage() {
                 ))}
               </tbody>
             </table>
-            <MutationError of={[leaveOut]} />
+            <MutationError of={[leaveOut, place]} />
           </div>
         )}
 

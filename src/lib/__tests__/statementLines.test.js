@@ -31,13 +31,27 @@ describe('the disposition vocabulary', () => {
     expect(isPlaced('expense')).toBe(true);
   });
 
-  // A row written by a later round (owner / transfer / debt …) read by an older
-  // bundle must never read as placed: guessing "placed" hides money, and this whole
-  // slice exists because hidden money is the failure mode.
+  // A row written by a later round read by an older bundle must never read as placed:
+  // guessing "placed" hides money, and this whole slice exists because hidden money is
+  // the failure mode. 'debt' and 'capital' are Slice 5/6 and genuinely do not exist
+  // yet — 'owner' was the example here until round 7 made it real, which is exactly
+  // the scenario this guard is for.
   it('treats an unknown disposition as unplaced, never as placed', () => {
-    expect(isPlaced('owner')).toBe(false);
+    expect(isPlaced('debt')).toBe(false);
     expect(isPlaced(undefined)).toBe(false);
-    expect(dispositionInfo('owner').short).toBe('Unplaced');
+    expect(dispositionInfo('capital').short).toBe('Unplaced');
+  });
+
+  // Slice 4b — the three homes round 7 added. All PLACED: a draw recorded is
+  // accounted for even though it appears in no expense total, and a transfer is real
+  // money movement that is neither income nor expense. "Accounted for" means somebody
+  // decided, NOT "counted as a cost".
+  it('counts an owner draw, an entity cost and a transfer as accounted for', () => {
+    expect(isPlaced('owner')).toBe(true);
+    expect(isPlaced('entity')).toBe(true);
+    expect(isPlaced('transfer')).toBe(true);
+    // Still exactly one unplaced state, however many homes exist.
+    expect(DISPOSITIONS.filter((d) => !d.placed).map((d) => d.key)).toEqual(['unclassified']);
   });
 
   it('names every ignore reason it offers', () => {

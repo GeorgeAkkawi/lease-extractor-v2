@@ -4003,12 +4003,107 @@ export async function listUnplacedLines(propertyId, year = null) {
 // "yes, leave this one out" — with an optional reason. Rounds 7 and 8 point it at
 // their new destinations. Deliberately does NOT write money: placing a line as an
 // expense or a payment has to go through the import path that also books the row.
-export const setLineDisposition = (id, disposition, ignoreReason = null) =>
+export const setLineDisposition = (id, disposition, ignoreReason = null, ref = null) =>
   one(
     supabase.from('statement_lines')
-      .update({ disposition, ignore_reason: disposition === 'ignored' ? ignoreReason : null })
+      .update({
+        disposition,
+        ignore_reason: disposition === 'ignored' ? ignoreReason : null,
+        // Slice 4b: a line placed AFTER the import still names what it produced, so
+        // the audit row stays as traceable as one placed during it.
+        ...(ref ? { ref_kind: ref.kind || null, ref_id: ref.id || null } : {}),
+      })
       .eq('id', id).select().single()
   );
+
+// ---- Entity ledger (Slice 4b) -----------------------------------------------
+// Owner draws, owner contributions, and costs of the LLC itself. See
+// src/lib/entityLedger.js for what each means and why a draw is never an expense.
+//
+// ⚠ Nothing here touches expense_records, cam_line_items, v_tenant_shares or
+// v_property_totals. That is the entire safety property: a distribution recorded
+// through this path cannot move a tenant's bill or the property's NOI, by
+// construction rather than by care.
+
+// Scoped either way: by property (what left this building's account) or by
+// corporation (everything the entity did, including rows with no property).
+export async function listEntityLedger({ propertyId = null, corporationId = null, year = null } = {}) {
+  let q = supabase.from('entity_ledger').select('*');
+  if (propertyId) q = q.eq('property_id', propertyId);
+  else if (corporationId) q = q.eq('corporation_id', corporationId);
+  const list = await rows(q);
+  const y = Number(year);
+  const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
+  return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
+}
+
+// Every corporation's entity ledger for a year, in ONE query — for the corporation
+// cards, which already read a batched roll-up rather than one query per corp.
+export async function listEntityLedgerByCorps(year) {
+  const list = await rows(supabase.from('entity_ledger').select('corporation_id,kind,amount,year'));
+  const y = Number(year);
+  const out = {};
+  for (const r of list || []) {
+    if (y && r.year != null && Number(r.year) !== y) continue;
+    (out[r.corporation_id] ||= []).push(r);
+  }
+  return out;
+}
+
+export async function addEntityLedgerEntry(entry) {
+  return one(
+    supabase.from('entity_ledger')
+      .insert({
+        corporation_id: entry.corporation_id,
+        property_id: entry.property_id || null,
+        year: Number(entry.year) || null,
+        kind: entry.kind,
+        category: entry.category || null,
+        label: entry.label || null,
+        amount: Math.abs(Number(entry.amount) || 0),
+        txn_date: entry.txn_date || null,
+        note: entry.note || null,
+        import_id: entry.import_id || null,
+        line_hash: entry.line_hash || null,
+        owner_id: await ownerId(),
+      })
+      .select().single()
+  );
+}
+
+export const deleteEntityLedgerEntry = (id) =>
+  rows(supabase.from('entity_ledger').delete().eq('id', id));
+
+// Only an entity COST files on a line of the return, so only a cost has a category.
+export const setEntityLedgerCategory = (id, category) =>
+  one(supabase.from('entity_ledger').update({ category: category || null }).eq('id', id).select().single());
+
+// Answer the "money not yet placed" nag by giving the line a real home, without
+// re-importing the statement it came from. Writes the ledger row FIRST, then stamps
+// the line — so an interruption leaves a recorded draw with a still-nagging line
+// (visible, fixable) rather than a placed line with no money behind it (invisible).
+export async function placeUnplacedLine(line, { kind, corporationId, category = null }) {
+  if (kind === 'transfer') {
+    // A transfer writes nothing — the disposition IS the record, exactly as an
+    // ignore's is. There is no row to create and none to reverse.
+    return { line: await setLineDisposition(line.id, 'transfer'), entry: null };
+  }
+  const entry = await addEntityLedgerEntry({
+    corporation_id: corporationId,
+    property_id: line.property_id || null,
+    year: line.year || null,
+    kind,
+    category,
+    label: line.description ? String(line.description).slice(0, 200) : null,
+    amount: line.amount,
+    txn_date: line.txn_date || null,
+    import_id: line.import_id || null,
+    line_hash: line.line_hash || null,
+  });
+  const disposition = kind === 'cost' ? 'entity' : 'owner';
+  const updated = await setLineDisposition(line.id, disposition, null, { kind: 'entity', id: entry.id });
+  return { line: updated, entry };
+}
 
 // Everything the matcher needs, assembled once per import: every property's
 // tenants with their year schedule + coverage (so deposits cross-match the WHOLE
@@ -4154,7 +4249,11 @@ export async function getStatementMatchContext(propertyId, year) {
   // the rule screen is told these names and refuses to learn one as a payee.
   const ownNames = [...new Set((corporations || []).map((c) => String(c.name || '').trim()).filter(Boolean))];
 
-  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory, buckets, businessByProperty, ownNames };
+  // Slice 4b: entity-level money belongs to a corporation, and the review screen is
+  // standing on a property — so the corporation is derived here rather than fetched
+  // again. Already in hand: `properties` selects corporation_id.
+  const corporationId = (properties || []).find((p) => p.id === propertyId)?.corporation_id || null;
+  return { properties: properties || [], tenants, rules: rules || [], existingHashes, accountMemory, buckets, businessByProperty, ownNames, corporationId };
 }
 
 // Write everything the user confirmed on the review screen — exactly once, and
@@ -4177,6 +4276,8 @@ export async function applyStatementImport({ propertyId, year, fileName, account
   await attachDocument(storagePath, { entityType: 'statement_import', entityId: imp.id });
   const applied = [];
   let paymentsCount = 0, paymentsTotal = 0, expensesCount = 0, expensesTotal = 0;
+  // Entity-level money is counted apart from expenses, because it IS apart from them.
+  let entityOutCount = 0, entityOutTotal = 0, entityInCount = 0, entityInTotal = 0;
   const crossProperty = {};
   // Auto-learn payee rules ride the import too (a checked tenant deposit is remembered
   // automatically; an expense only when "Always" is ticked). Loaded once, lazily, so an
@@ -4227,6 +4328,28 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       const item = await addRoofLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Roof', amount: Number(e.amount), import_id: imp.id, paid_date: e.date || null });
       applied.push({ kind: 'roof_item', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: item.label, hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
+    } else if (e.type === 'entity') {
+      // Slice 4b — a draw, a contribution, or a cost of the LLC itself.
+      //
+      // ⚠ Deliberately NOT counted in expensesCount/expensesTotal. A draw is not an
+      // expense (it reduces equity), and an entity cost is not THIS building's
+      // expense — folding either into the import's expense summary would be the same
+      // misstatement one screen earlier. They get their own counters.
+      const row = await addEntityLedgerEntry({
+        corporation_id: e.corporation_id,
+        property_id: e.property_id || propertyId,
+        year: e.year,
+        kind: e.kind,
+        category: e.category || null,
+        label: e.label || (e.description ? String(e.description).slice(0, 200) : null),
+        amount: Number(e.amount),
+        txn_date: e.date || null,
+        import_id: imp.id,
+        line_hash: e.hash || null,
+      });
+      applied.push({ kind: 'entity', entry_id: row.id, entity_kind: e.kind, corporation_id: e.corporation_id, property_id: e.property_id || propertyId, year: e.year, amount: Number(e.amount), hash: e.hash });
+      if (e.kind === 'contribution') { entityInCount++; entityInTotal += Number(e.amount); }
+      else { entityOutCount++; entityOutTotal += Number(e.amount); }
     } else if (e.type === 'estimate') {
       // A CAM & tax estimate read from a deposit (Feature: deriveEstimateFromDeposit).
       // Processed FIRST (the review puts estimate entries ahead of payments in the
@@ -4337,6 +4460,7 @@ export async function applyStatementImport({ propertyId, year, fileName, account
     import: updated,
     summary: {
       paymentsCount, paymentsTotal, expensesCount, expensesTotal, crossProperty,
+      entityOutCount, entityOutTotal, entityInCount, entityInTotal,
       // The proof-of-completeness, returned so the results strip can state it at the
       // one moment it reassures: right after saving. Derived from the same array that
       // was just written, so it cannot claim more than the audit table holds.
@@ -4384,6 +4508,12 @@ export async function undoStatementImport(imp) {
         cam_total: Number(cur?.cam_total) || 0,
         roof_total: a.kind === 'roof' ? next : (Number(cur?.roof_total) || 0),
       });
+    } else if (a.kind === 'entity') {
+      // Delete-if-exists, like a payment: a row George deleted by hand afterwards
+      // must not break the rest of the undo. 0077 cascades on import_id as a
+      // backstop, but this is explicit for the same reason statement_lines' delete
+      // is — the demo mock has no foreign keys (mockClient.js:155).
+      await deleteEntityLedgerEntry(a.entry_id);
     } else if (a.kind === 'rule') {
       // Reverse the learning: a rule that overwrote a prior target restores it; a
       // brand-new rule is deleted. Best-effort — never blocks the rest of the undo.

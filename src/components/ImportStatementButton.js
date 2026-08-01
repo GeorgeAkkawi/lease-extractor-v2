@@ -225,6 +225,11 @@ export function settleStatementImport(qc) {
   // An import records every line it read, and an undo takes them away with it (0076
   // cascades) — so the "money not yet placed" panel moves in both directions.
   qc.invalidateQueries({ queryKey: ['unplacedLines'] });
+  // Slice 4b — an import can now book a draw, a contribution or an entity cost, and
+  // undo takes them away again. Neither moves a billed figure, which is exactly why
+  // they ride this set rather than settleBillingChange's.
+  qc.invalidateQueries({ queryKey: ['entityLedger'] });
+  qc.invalidateQueries({ queryKey: ['entityLedgerByCorps'] });
   qc.invalidateQueries({ queryKey: ['reconciliations'] });
   // An import auto-learns payee rules (and undo un-learns them) — refresh the manager.
   qc.invalidateQueries({ queryKey: ['importRules'] });

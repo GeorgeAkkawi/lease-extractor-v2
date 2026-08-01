@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { listCorporations, createCorporation, listCorpCounts, listCorpRollups, listPropertiesByCorps } from '../lib/api';
+import { listCorporations, createCorporation, listCorpCounts, listCorpRollups, listPropertiesByCorps, listEntityLedgerByCorps } from '../lib/api';
+import { summarizeEntityLedger } from '../lib/entityLedger';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { usePrefetchers } from '../lib/prefetch';
 import { money } from '../lib/format';
@@ -37,6 +38,15 @@ export default function CorporationsPage({ mode }) {
     queryFn: () => listCorpRollups(year),
     enabled: fin,
     placeholderData: keepPreviousData, // keep last year's numbers visible while a new year loads
+  });
+  // Slice 4b — what the OWNER took out and what the LLC itself cost, per corporation.
+  // Kept apart from the roll-up above rather than folded into "Expenses": a draw is
+  // not an expense, and an entity cost is not any building's.
+  const { data: entityByCorp = {} } = useQuery({
+    queryKey: ['entityLedgerByCorps', year],
+    queryFn: () => listEntityLedgerByCorps(year),
+    enabled: fin,
+    placeholderData: keepPreviousData,
   });
   // Properties per corporation, for the hover fly-out that jumps straight to one. One
   // batched query for the whole grid; keyed on the corp id set so it refetches on add/remove.
@@ -89,7 +99,7 @@ export default function CorporationsPage({ mode }) {
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} counts={counts[c.id]} rollup={rollups[c.id]} properties={corpProps[c.id] || []} pf={pf} year={year} />
+            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
           ))}
         </div>
       )}
@@ -100,7 +110,7 @@ export default function CorporationsPage({ mode }) {
   );
 }
 
-function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, properties = [], pf, year }) {
+function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, entity, properties = [], pf, year }) {
   const navigate = useNavigate();
   const fin = mode !== 'leases';
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
@@ -163,6 +173,16 @@ function CorpCard({ corp, mode, onEdit, onAnnual, counts, rollup, properties = [
           <div><span className="muted">Expenses</span><b className="neg">{money(rollup?.expenses ?? 0)}</b></div>
           <div><span className="muted">NOI</span><b>{money(rollup?.noi ?? 0)}</b></div>
         </span>
+        {/* Shown only when there is any — an always-present "$0 drawn" is noise, and
+            the three-column grid above is deliberately fixed, so this sits under it
+            rather than becoming a fourth column. */}
+        {(entity?.draws > 0 || entity?.costs > 0 || entity?.contributions > 0) && (
+          <span className="corp-entity muted" title="Owner draws and contributions move your equity; entity costs belong to the LLC rather than to a building. None of it is in the figures above.">
+            {entity.draws > 0 && <>{money(entity.draws)} drawn</>}
+            {entity.contributions > 0 && <>{entity.draws > 0 ? ' · ' : ''}{money(entity.contributions)} contributed</>}
+            {entity.costs > 0 && <>{(entity.draws > 0 || entity.contributions > 0) ? ' · ' : ''}{money(entity.costs)} entity costs</>}
+          </span>
+        )}
         {flyout}
       </div>
     );

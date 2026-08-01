@@ -30,7 +30,7 @@ import MutationError from './MutationError';
 // top (deposits self-route to their tenant's own property regardless), with a
 // switch banner when the deposits vote for a different property.
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —' };
+const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —', owner_draw: 'Owner draw', owner_contribution: 'Owner contribution', entity_cost: 'Entity cost', transfer: 'Transfer' };
 const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info', ai: 'info' };
 const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
@@ -145,7 +145,13 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const defaultChecked = row.checked && !row.txn.needsReview;
       const checked = ov.checked !== undefined ? ov.checked : defaultChecked;
       // An ignored/unresolved line writes nothing, whatever the checkbox says.
-      const writable = kind === 'tenant' ? !!(leaseId && tenant) : kind.startsWith('expense_');
+      // A row is writable when ticking it would actually record something. A draw,
+      // contribution or entity cost writes an entity_ledger row and needs a
+      // corporation to belong to; a transfer writes nothing at all (its disposition
+      // IS the record), so it is deliberately not writable and needs no tick.
+      const writable = kind === 'tenant'
+        ? !!(leaseId && tenant)
+        : kind.startsWith('expense_') || (!!ENTITY_KIND_FOR[kind] && !!ctx.corporationId);
       // Does the deposit match what the ledger projects for the month it's applied to?
       // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
       // by construction. Tolerance is amountMatches, so a "confident" row never flags.
@@ -390,6 +396,18 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: payeeLabel(payeeOf(r.row.txn.description), 'Property tax'), hash: r.row.hash });
         } else if (r.kind === 'expense_roof') {
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: payeeLabel(payeeOf(r.row.txn.description), 'Roof'), hash: r.row.hash });
+        // Slice 4b — a draw, a contribution or an entity cost. Note the entry type is
+        // 'entity', NOT 'cam': it lands in entity_ledger and can never reach
+        // cam_total, so no tenant's bill can move because of it. An entity cost
+        // arrives with no category on purpose (0075's rule — a defaulted 'Other'
+        // would hide exactly what wants surfacing); it is set on the Financials panel.
+        } else if (ENTITY_KIND_FOR[r.kind]) {
+          entries.push({
+            type: 'entity', kind: ENTITY_KIND_FOR[r.kind], corporation_id: ctx.corporationId,
+            property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date,
+            label: payeeLabel(payeeOf(r.row.txn.description), r.kind === 'entity_cost' ? 'Entity cost' : 'Owner draw'),
+            description: r.row.txn.description, hash: r.row.hash,
+          });
         }
       }
       // Every transcribed line rides along with its disposition — including the ones
@@ -645,12 +663,18 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             went missing rather than a summary of what got ticked. Money IN nags
             harder: an unplaced deposit may be rent that should have settled a month,
             which makes a tenant read short on the Ledger. */}
-        {completeness.unplaced > 0 && (
+        {completeness.total > 0 && (
           <div className={`note-msg ${completeness.unplacedIn > 0 ? 'warn' : ''}`}>
             <strong>{completenessSentence(completeness)}.</strong>{' '}
-            {completeness.unplacedIn > 0
-              ? <>Some of the money you haven’t placed came <strong>in</strong> — if any of it is rent, tick it now, or it will read as a month the tenant never paid.</>
-              : <>Unplaced lines are still recorded and will show under <strong>Money not yet placed</strong> on the Ledger, so nothing is lost — place them whenever you like.</>}
+            {/* The all-clear says so out loud. Round 6 rendered this block only when
+                something was unplaced, which made completenessSentence's "N of N ✓"
+                branch unreachable — and the promise that nothing went missing is
+                worth most at the moment it is actually true. */}
+            {!completeness.unplaced
+              ? <>Every line this statement showed is on record.</>
+              : completeness.unplacedIn > 0
+                ? <>Some of the money you haven’t placed came <strong>in</strong> — if any of it is rent, tick it now, or it will read as a month the tenant never paid.</>
+                : <>Unplaced lines are still recorded and will show under <strong>Money not yet placed</strong> on the Ledger, so nothing is lost — place them whenever you like.</>}
           </div>
         )}
         <MutationError of={[save]} />
@@ -701,6 +725,12 @@ function targetKeyOf(r) {
   if (r.kind === 'tenant' && r.tenant) return `lease:${r.tenant.lease_id}`;
   if (r.kind === 'expense_cam' || r.kind === 'expense_other') return `${r.kind}:${(r.label || '').toLowerCase()}`;
   if (r.kind === 'expense_tax' || r.kind === 'expense_roof') return r.kind;
+  // A draw, a transfer or an entity cost is as much a "payee" as a vendor is — and
+  // learning it is the whole point, since the same distribution line recurs monthly.
+  // These keys are also what OWN_NAME_TARGETS (statementMatch.js) checks against, so
+  // a pattern naming the landlord's own corporation is allowed to learn HERE while
+  // still being refused as a tenant.
+  if (ENTITY_PICKS.has(r.kind)) return r.kind;
   return null;
 }
 
@@ -712,8 +742,17 @@ export function resolvePick(pick) {
   if (pick.startsWith('cam:')) return { kind: 'expense_cam', label: pick.slice(4) };
   if (pick.startsWith('other:')) return { kind: 'expense_other', label: pick.slice(6) };
   if (pick === 'expense_tax' || pick === 'expense_cam' || pick === 'expense_roof' || pick === 'ignore') return { kind: pick };
+  // Slice 4b — money that crossed the bank but is not this building's income or
+  // expense. These write to entity_ledger, never to expense_records.
+  if (ENTITY_PICKS.has(pick)) return { kind: pick };
   return null;
 }
+
+// The three destinations round 7 adds, plus the one that records itself.
+const ENTITY_PICKS = new Set(['owner_draw', 'owner_contribution', 'entity_cost', 'transfer']);
+// pick → the entity_ledger `kind` it writes. 'transfer' writes nothing, so it is
+// absent on purpose.
+const ENTITY_KIND_FOR = { owner_draw: 'draw', owner_contribution: 'contribution', entity_cost: 'cost' };
 
 // One statement month, collapsible. The header carries live counts — total lines, money
 // in / out, and matched vs need-review — so a scan tells you which months want a look.
@@ -872,6 +911,14 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                   ))}
                 </optgroup>
               )}
+              {/* Slice 4b — the deposits that are NOT rent. Booking one of these
+                  against a lease would credit that tenant's invoice and make the
+                  Ledger read the month over-paid, which is why they need their own
+                  home rather than the nearest lease. */}
+              <optgroup label="Not tenant rent">
+                {ctx.corporationId && <option value="owner_contribution">Owner contribution — money you put in</option>}
+                <option value="transfer">Transfer between my own accounts</option>
+              </optgroup>
               <option value="ignore">Ignore</option>
             </>
           ) : (
@@ -887,6 +934,14 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                 {!otherBuckets.some((b) => b.label.toLowerCase() === 'other') && <option value="other:Other">Other — not billed</option>}
               </optgroup>
               <option value="__new">＋ New bucket…</option>
+              {/* Slice 4b — real money out that is not this building's expense. A draw
+                  filed as an expense understates income by exactly the amount the CPA
+                  taxes, so it gets its own destination rather than the nearest bucket. */}
+              <optgroup label="Not the building’s money">
+                {ctx.corporationId && <option value="owner_draw">Owner draw — money you took out</option>}
+                {ctx.corporationId && <option value="entity_cost">Entity cost — the LLC’s, not this building’s</option>}
+                <option value="transfer">Transfer between my own accounts</option>
+              </optgroup>
               <option value="ignore">Ignore</option>
             </>
           )}
@@ -963,6 +1018,34 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
         {row.reason && <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{row.reason}</div>}
         {r.kind === 'expense_other' && (
           <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>tracked for your records — not billed to tenants</div>
+        )}
+        {/* Slice 4b. A transfer has no tick because it records nothing but itself —
+            without this line an unticked row reads as "about to be dropped", which is
+            the exact anxiety round 6 exists to remove. */}
+        {/* A transfer has no tick — it records nothing but itself, so the PICK is the
+            whole decision. Which leaves a hole when the MATCHER suggested it: the
+            dropdown already reads "Transfer", so re-choosing it changes nothing and
+            there is no way to say yes. Exactly the hole round 6 found on a
+            matcher-ignored row, and the same answer — one click that IS the decision. */}
+        {r.kind === 'transfer' && (
+          r.picked ? (
+            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>recorded as a transfer — neither income nor expense</div>
+          ) : (
+            <button
+              type="button" className="ghost btn-sm" style={{ marginTop: 4 }}
+              onClick={() => setOv(r.i, { pick: 'transfer', checked: false })}
+              title="Record this line as a transfer between your own accounts. It writes no income and no expense — the record is that you decided."
+            >
+              Confirm transfer
+            </button>
+          )
+        )}
+        {ENTITY_KIND_FOR[r.kind] && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+            {r.kind === 'entity_cost'
+              ? 'the LLC’s cost, not this building’s — never billed to a tenant'
+              : 'equity, not income or expense — it will not appear in NOI or on any tenant’s bill'}
+          </div>
         )}
         {r.alreadyPaid && !dupe && (
           <div className="note-msg warn" style={{ marginTop: 4 }}>

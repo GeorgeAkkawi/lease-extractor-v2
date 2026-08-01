@@ -80,7 +80,14 @@ describe('StatementReview — reading the lines', () => {
     const groups = Array.from(sel.querySelectorAll('optgroup')).map((g) => g.label);
 
     expect(groups).toContain('Maple Plaza tenants');
-    expect(groups[groups.length - 1]).toBe('Other properties');
+    // The RULE is the ordering — the property you're standing in leads, the rest of
+    // the portfolio drops below it. Asserted as an ordering rather than "last group",
+    // which broke the moment Slice 4b added the non-rent destinations beneath both.
+    expect(groups.indexOf('Other properties')).toBeGreaterThan(groups.indexOf('Maple Plaza tenants'));
+    // Slice 4b — a deposit that isn't rent has somewhere to go that isn't a lease.
+    // Booking one against the nearest tenant credits their invoice and makes the
+    // Ledger read that month over-paid, which is why it needs its own home.
+    expect(groups.indexOf('Not tenant rent')).toBeGreaterThan(groups.indexOf('Other properties'));
     // The home group names tenants plainly — no property suffix, nothing from Oak Center.
     const home = optionsOf(sel, 'Maple Plaza tenants');
     expect(home).toContain('Bright Coffee Co.');

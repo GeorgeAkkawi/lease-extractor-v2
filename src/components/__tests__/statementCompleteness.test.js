@@ -28,16 +28,24 @@ const parsed = () => ({
   warnings: [],
 });
 
-const renderReview = (onSaved = () => {}) => {
+const renderReview = (onSaved = () => {}, p = parsed()) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <StatementReview propertyId="prop-1" year={Y} fileName="mar.csv" parsed={parsed()} onCancel={() => {}} onSaved={onSaved} />
+        <StatementReview propertyId="prop-1" year={Y} fileName="mar.csv" parsed={p} onCancel={() => {}} onSaved={onSaved} />
       </QueryClientProvider>
     </MemoryRouter>
   );
 };
+
+// A line no keyword and no tenant recognizes — genuinely homeless, which is what the
+// transfer line above stopped being once Slice 4b gave it a destination.
+const oneUnknown = () => ({
+  transactions: [{ date: `${Y}-03-14`, description: 'MISC PURCHASE 8812', amount: 320.5, direction: 'out', balance: null, line: 1 }],
+  skippedLines: [],
+  warnings: [],
+});
 
 const renderLedger = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -86,25 +94,41 @@ describe('StatementReview — the completeness statement', () => {
     expect(screen.getByText(/\$9,150\.00 in/)).toBeTruthy();
   });
 
-  it('lets a deliberate exclusion say why, and counts it as accounted for', async () => {
+  // Slice 4b — this line USED to be homeless, and this test used to prove the only
+  // thing round 6 could offer it: an exclusion with a reason. It now has a real
+  // destination, so the same row proves the better outcome. A transfer needs no tick
+  // (it writes nothing but itself) — the PICK is the whole decision, exactly as an
+  // ignore reason is.
+  it('places a transfer on the pick alone, with no tick and no exclusion', async () => {
     renderReview();
     await waitFor(() => expect(screen.getByText(/of 3 lines placed/)).toBeTruthy());
 
     const transferRow = rowFor('ONLINE TRANSFER TO CHECKING 8966');
-    // The matcher binned this by keyword, which is a guess — so it reads as an OFFER
-    // to leave it out, not as a decision already taken on the landlord's behalf.
-    expect(within(transferRow).getByText('Leave it out…')).toBeTruthy();
-    expect(within(transferRow).queryByText('Why leave it out? (optional)')).toBeNull();
+    // The matcher already SUGGESTS transfer, so the dropdown reads "Transfer" while
+    // the line is still unplaced — re-picking the same value changes nothing. The
+    // confirm button is the only thing that can turn a guess into a decision.
+    fireEvent.click(within(transferRow).getByText('Confirm transfer'));
 
-    // Picking the reason IS the decision — one click turns the guess into a record.
-    fireEvent.change(within(transferRow).getByTitle(/Why this line is being left out/), { target: { value: 'transfer' } });
-    await waitFor(() => expect(within(transferRow).getByText('Why leave it out? (optional)')).toBeTruthy());
-
-    // Now every line is accounted for and the unplaced nag is gone. (The footer wraps
-    // its counts in <strong>, so this reads the assembled text rather than one node.)
-    await waitFor(() => expect(document.body.textContent).toContain('1 left out on purpose'));
+    await waitFor(() => expect(document.body.textContent).toContain('3 of 3 lines placed'));
+    // Recorded, NOT excluded — a transfer is real money movement that happens to be
+    // neither income nor expense, and calling it "left out" would be a lie.
+    expect(document.body.textContent).not.toContain('left out on purpose');
     expect(document.body.textContent).not.toContain('not placed');
     expect(document.body.textContent).not.toContain('Money not yet placed');
+  });
+
+  // Round 6's guarantee, kept: a line with no home at all can still be answered.
+  it('still lets a genuinely unrecognized line be left out, with a reason', async () => {
+    renderReview(() => {}, oneUnknown());
+    await waitFor(() => expect(screen.getByText(/of 1 line placed/)).toBeTruthy());
+
+    const row = rowFor('MISC PURCHASE 8812');
+    expect(within(row).getByText('Leave it out…')).toBeTruthy();
+    fireEvent.change(within(row).getByTitle(/Why this line is being left out/), { target: { value: 'personal' } });
+
+    await waitFor(() => expect(within(row).getByText('Why leave it out? (optional)')).toBeTruthy());
+    expect(document.body.textContent).toContain('1 left out on purpose');
+    expect(document.body.textContent).not.toContain('not placed');
   });
 
   it('records every line on save, whatever was decided about each', async () => {

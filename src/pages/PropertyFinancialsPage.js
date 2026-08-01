@@ -16,6 +16,8 @@ import CamSection from '../components/CamSection';
 import TaxSection from '../components/TaxSection';
 import RoofSection from '../components/RoofSection';
 import RecoverabilityTable from '../components/RecoverabilityTable';
+import EntityLedgerSection from '../components/EntityLedgerSection';
+import WhatStayedStrip from '../components/WhatStayedStrip';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
@@ -120,6 +122,9 @@ export default function PropertyFinancialsPage() {
         </div>
       </div>
 
+      {/* Sits directly under NOI, because it is the sentence NOI leaves unfinished. */}
+      <WhatStayedStrip propId={propId} year={year} noi={noi} />
+
       <div className="metric-group">
         <div className="fin-subhead">Recoverable expenses · billed back to tenants</div>
         <div className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 12 }}>
@@ -197,6 +202,10 @@ export default function PropertyFinancialsPage() {
       </StatementDropZone>
 
       <RecoverabilityTable propId={propId} corpId={corpId} year={year} />
+
+      {/* Below the expense sections, because it is deliberately NOT one of them:
+          nothing here is an expense of this building. */}
+      <EntityLedgerSection propId={propId} corporationId={prop?.corporation_id || corpId} year={year} />
 
       <div className="page-head" style={{ marginTop: 8 }}>
         <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>
