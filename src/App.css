@@ -531,6 +531,10 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 /* Slice 5b. The amortization control sits on the row rather than behind a toggle,
    because it is the only thing on this panel that reaches a tenant's bill. */
 .asset-amort{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:5px;font-size:11px}
+/* Slice 5c — one proposed asset on the closing-statement review. */
+.cs-asset{padding:8px 0;border-bottom:1px solid var(--hair)}
+.cs-asset:last-of-type{border-bottom:0}
+.cs-warn{color:var(--gold)}
 .capitalize-form{margin-top:6px;padding:10px 12px;background:var(--panel-2);border-left:2px solid var(--gold);border-radius:3px}
 .asset-note.warn-sub{color:var(--gold);font-weight:600}
 @media (max-width:880px){

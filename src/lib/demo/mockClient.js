@@ -414,6 +414,9 @@ const functions = {
     if (name === 'extract-contract') {
       return ok(demoExtractContract(body));
     }
+    if (name === 'extract-closing-statement') {
+      return ok(demoExtractClosingStatement());
+    }
     if (name === 'extract-addendum') {
       return ok(demoExtractAddendum());
     }
@@ -726,6 +729,36 @@ function demoExtractAnnualReport() {
   const dt = new Date();
   dt.setDate(dt.getDate() + 60);
   return { fields: { due_date: dt.toISOString().slice(0, 10) } };
+}
+
+// Demo stand-in for extract-closing-statement: a realistic ALTA settlement statement
+// with the shape that matters — a purchase price, a handful of capitalizable charges,
+// loan points that are NOT part of the building, and several lines that are neither.
+// Land is deliberately absent, which is the honest common case: a settlement statement
+// almost never states the split, so the building arrives blocked and asks for it.
+function demoExtractClosingStatement() {
+  return {
+    fields: {
+      purchase_price: 1450000,
+      closing_date: '2019-06-14',
+      land_value: null,
+      land_value_quote: null,
+      costs: [
+        { label: "Owner's title insurance premium", amount: 4350, treatment: 'acquisition' },
+        { label: 'Settlement / closing fee', amount: 1200, treatment: 'acquisition' },
+        { label: 'Recording fees — deed', amount: 186, treatment: 'acquisition' },
+        { label: 'State transfer tax', amount: 2175, treatment: 'acquisition' },
+        { label: 'ALTA survey', amount: 2800, treatment: 'acquisition' },
+        { label: 'Loan origination fee (1.0%)', amount: 10150, treatment: 'loan' },
+        { label: "Lender's title policy", amount: 1425, treatment: 'loan' },
+        { label: 'County property taxes 01/01–06/14 (seller credit)', amount: 8940, treatment: 'expense' },
+        { label: 'Prepaid hazard insurance — 12 months', amount: 6300, treatment: 'expense' },
+        { label: 'Tenant security deposits transferred', amount: 21500, treatment: 'not_basis' },
+        { label: 'Prorated June rent credited by seller', amount: 9416.67, treatment: 'not_basis' },
+        { label: 'Lender tax & insurance escrow — initial funding', amount: 4550, treatment: 'not_basis' },
+      ],
+    },
+  };
 }
 
 // Demo stand-in for the ask-lease Edge Function: keyword-routes the question to a

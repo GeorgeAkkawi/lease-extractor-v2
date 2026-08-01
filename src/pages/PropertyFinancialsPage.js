@@ -217,7 +217,7 @@ export default function PropertyFinancialsPage() {
       {/* Last, because it is the only panel on this page that is not about money that
           moved this year. Everything above answers "what crossed the account"; this one
           answers "what do I own, and what did it lose". */}
-      <AssetRegisterSection propId={propId} year={year} />
+      <AssetRegisterSection propId={propId} year={year} propertyName={prop?.name} />
 
       <div className="page-head" style={{ marginTop: 8 }}>
         <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>

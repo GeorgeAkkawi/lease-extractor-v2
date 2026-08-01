@@ -181,6 +181,98 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-07-31** — **Accounting round 11 (Slice 5c): the one document that says what a building cost — read once, ever, and it
+  shows what it REFUSED to capitalize** (George: *"continue"*, working the accounting direction doc
+  `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0081`** (Supabase
+  `awgrjmbcghdjgnqeiqkt`), NEW edge fn **`extract-closing-statement`**, frontend Cloudflare version **`d5a87224`**, demo worker
+  `1464383c`. **Costs the standard paid read — ONE Haiku call, ~5–15¢, ONCE PER PROPERTY FOREVER; no recurring cost, and manual
+  entry stays $0.** NO view, NO RPC; 0081 widens ONE CHECK by a single member and **adds no column to any table**, so **NOT ONE
+  STORED TOTAL MOVED** (read back live before and after: Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM
+  13,596; 401 S Main CAM 1,846.26 — byte-identical). Tests **1353/1353 across 144 files** (was 1328/142 — +25, two new suites).
+  - **The gap, stated precisely.** Amlak captures **FLOW** well — what crossed the bank — because the importer is standing at
+    the account. It captures almost no **STOCK**: what you own, what it cost, when you bought it. And no amount of
+    statement-reading produces it — **a bank statement cannot tell you what you paid for a building in 2014.** Round 9 built the
+    asset register and round 10 gave it a writer at the expense line; both leave the building itself undescribed. The ALTA
+    Settlement Statement (formerly HUD-1) is the one piece of paper that carries the answer.
+  - **⚠ THE REFUSAL THE ROUND TURNS ON, and it is NOT the land this time.** A settlement statement is ~40 charge lines and only
+    three or four are basis. The rest are prorated property taxes, prepaid insurance, transferred tenant deposits, lender escrow
+    funding and rent prorations. **Summing "total settlement charges" into basis is the obvious implementation and it is wrong in
+    the expensive direction**: it capitalizes an operating expense over 39 years, so the purchase year reads better than it was
+    AND the basis stays overstated for as long as the building is owned. On the canned statement that error is **$50,706.67** —
+    pinned as the headline test, which asserts the basis is $1,472,286 and explicitly **not** $1,522,992.67.
+  - **So every line is classified, and the ones that are NOT basis are listed on screen with where they actually belong** —
+    round 6's rule (a dollar is either recorded somewhere or explicitly excluded **with a reason**) applied to a document instead
+    of a bank statement. Four destinations in a JS registry, no CHECK: **acquisition** (title, settlement fee, recording,
+    transfer tax, survey → the building's cost) · **loan** (points, origination, lender's policy → buys the LOAN, not the
+    building) · **expense** (prorated taxes, prepaid insurance → an operating cost of the year) · **not_basis** (deposits
+    transferred, escrow funding, rent proration → moves money without buying anything). **The second list is what makes the
+    first trustworthy** — without it a landlord cannot tell a careful read from one that quietly dropped thirty lines.
+  - **⚠ AND NONE OF THE EXCLUDED MONEY IS WRITTEN ANYWHERE, which is the deliberate part.** The prorated property tax on a
+    closing statement is a real expense of the year you bought — but writing it into that year's `taxes_total` would re-sum the
+    kind, re-split every tenant's share and **move bills on a historical year that is very likely CLOSED**. *Reading a document
+    is not a reason to move somebody's rent.* It is reported precisely, with the figure and the destination, and the landlord
+    types it in if they want it. The screen says so outright rather than leaving the silence to be interpreted.
+  - **⚠ THIS ROUND REVERSES THE PLAN'S OWN ROUND-11 ROW, and round 9 already settled why.** The plan says Slice 5c brings "the
+    first real `properties` columns." It adds **none** — verified live after the migration, `properties` still has exactly
+    **8 columns**, `building_sf` (0005) still the only one ever added. Round 9's reasoning holds: the building is an asset
+    exactly as the roof is — one cost, one in-service date, one land allocation — so it belongs in `fixed_assets` with
+    everything else. **That keeps ONE depreciation rule for everything.** A `properties.purchase_price` would be a SECOND source
+    for a figure the building asset already carries, and the two would drift the first time either was edited; an `acquired_on`
+    is the building's `placed_in_service` under another name. So the schema's whole contribution is somewhere to keep the
+    **document** — and a closing statement belongs to the property, not to any one of the three assets a single reading creates.
+  - **The model reads and classifies; CODE does every sum.** The prompt says outright: *never add anything up, and do not return
+    totals, subtotals, "total settlement charges" or "cash to close"* — those are sums of other lines and would double-count.
+    Pinned by a test asserting each group's total independently.
+  - **Only the BUYER's column counts**, which a two-column settlement statement makes easy to get wrong: a seller-side charge or
+    a seller credit is `not_basis` by name in the prompt.
+  - **Three things it refuses to invent, each pinned in both directions.** ① **The land split** — an allocation DECISION, not a
+    fact on the page, and a settlement statement almost never states it; it comes back **null**, the building arrives blocked,
+    and round 9's gold "Set the land value" chip does its job. Deriving it from an assessor ratio would be exactly the silently-
+    wrong number that refusal exists to prevent. A **stated** value is used, and a stated **zero** stays zero (a ground lease
+    legitimately answers 0 — null is not zero). ② **The closing date** — with none on the document there is nothing to place the
+    building in service, and an invented one is confidently wrong for thirty-nine years; it blocks and asks, and a non-ISO
+    string ("June 2019") is rejected rather than passed through. ③ **A life for the loan costs** — points amortize over the term
+    of a loan Amlak does not know until Slice 6, so the asset arrives with **no life** and says why instead of borrowing the
+    building's 39 years. Round 9 gave `loan_costs` no default for exactly this moment.
+  - **An unclassifiable charge is never basis.** Same refusal `assetKindInfo`, `dispositionInfo` and `entityKindInfo` make: a
+    treatment written by a later round and read by an older cached bundle reports itself as unknown rather than inheriting
+    another's destination — and guessing *toward* basis would overstate what you own.
+  - **Nothing is silently dropped.** A line with no readable amount is **counted and reported**, never treated as zero — the
+    screen reads *"12 charges read · 12 placed"*, and a twelfth line with a null amount reads *"1 had no readable amount"*
+    while the acquisition total stays exactly what it was.
+  - **Structurally safe, like rounds 7–9 and unlike round 10.** Everything this writes lands in `fixed_assets`, which no view,
+    no invoice and no share calculation reads. **Reading a closing statement cannot move a tenant's bill** — by construction
+    rather than by care.
+  - **Where it shows.** A quiet **⬆ Read a closing statement** beside ＋ Record one on "What you own". Upload or paste → the
+    review names each proposed asset with an editable cost (and the land box on the building) → **Record 3 assets**. Cancel
+    after a read throws the upload away, file AND registry row — an explicit cancel is the only thing that deletes it.
+  - **Files.** New: `supabase/migrations/0081_property_documents.sql` · `supabase/functions/extract-closing-statement/index.ts` ·
+    `src/lib/closingStatement.js` · `src/components/ClosingStatementModal.js` · `src/lib/__tests__/closingStatement.test.js` (17)
+    · `src/components/__tests__/closingStatementUi.test.js` (8). Edited: `src/lib/{api,demo/mockClient}.js` ·
+    `src/components/AssetRegisterSection.js` · `src/pages/PropertyFinancialsPage.js` · `src/App.css`. **No** view, RPC or mock
+    view change. **§5 fans out to nothing** — the new function imports `cors.ts`/`anthropic.ts`/`ratelimit.ts` but **modifies
+    none of them** (`git status supabase/functions/_shared/` returned 0 files), so no other importer went stale. **Rule #7
+    re-verified live, not inherited:** no view reads `documents`, so widening its CHECK rebuilds nothing. **No existing
+    assertion changed** — this round adds a concept rather than moving one.
+  - **Verified:** unit **1353/1353** (`vitest run`); `npm run build` compiles; migration applied clean and read back (the CHECK
+    now carries `'property'`, all **20** existing document rows still valid, **0** property docs, **0** assets, `properties`
+    still **8 columns**); **every stored expense total identical before and after**; edge fn deployed clean with unauth POST →
+    **401** (RLS-gated, *not* a schema 500 — proof the new schema was accepted); live 200s on all four URLs; live bundle carries
+    the backend ref **and** the new extractor, demo bundle greps **free** of it. Browser drive-through skipped per George's
+    standing preference — the eight render tests mount the **real** asset panel and drive the actual paste → review → save flow
+    against the demo mock, including the cancel-writes-nothing path.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's **"What you own"** panel now carries **⬆ Read a closing
+    statement**. Upload the settlement statement from when you bought the building and it proposes the building, its
+    capitalizable closing costs and the loan costs as three assets — and shows you every charge it deliberately left out.
+  - **Flags:** ① **It will not know your land value** — a settlement statement almost never states it, so the building arrives
+    with the gold "Set the land value" chip and depreciates nothing until you answer. Your closing statement's own allocation or
+    the county assessor's ratio is where that number comes from. ② **The prorated taxes and prepaid insurance are shown but not
+    recorded**, on purpose — writing them would move bills on a year you have probably closed; type them into the expense
+    sections yourself if you want them. ③ **Loan points get no life** until Slice 6 knows your loan term — set the years by
+    hand, or leave them blocked. ④ **A building you already owned for years also needs the depreciation already taken** —
+    that figure comes off your CPA's last Form 4562 and goes in the "Already depreciated" box on the row. ⑤ Round 7's flag
+    still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401 S Main are still recorded as not-billed **expenses**.
+
 - **2026-07-31** — **Accounting round 10 (Slice 5b): an expense can become an asset — and the cost comes back through the SAME
   charge it left, so a roof still reaches only the tenants whose leases cover it** (George: *"can we merge roof as part of CAM
   since we can bill it separatly will that help? if not just continue"* — answered no, with the evidence, and his question

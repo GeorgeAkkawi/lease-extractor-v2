@@ -4200,6 +4200,38 @@ export const setFixedAssetLand = (id, landCost) =>
       .eq('id', id).select().single()
   );
 
+// ---- Slice 5c: the closing statement ----------------------------------------
+
+export async function extractClosingStatement({ text, storagePath }) {
+  const { fields } = await invokeFunction('extract-closing-statement', { text, storage_path: storagePath });
+  return { fields: fields || {} };
+}
+
+// Write the assets a confirmed closing-statement read proposes, and keep the document.
+//
+// ⚠ IT WRITES ASSETS AND NOTHING ELSE, which is what makes it safe. `fixed_assets` is
+// read by no view, no invoice and no share calculation — the same structural safety
+// rounds 7-9 have — so reading a closing statement CANNOT move a tenant's bill. The
+// prorated property tax the document also carries is deliberately NOT written into that
+// year's `taxes_total`: that would re-sum the kind, re-split every tenant's share and
+// move bills on a historical year that is very likely closed. Reading a document is not
+// a reason to move somebody's rent. The review screen reports the figure instead.
+export async function saveClosingStatement(propertyId, assets = [], opts = {}) {
+  const created = [];
+  for (const a of assets) {
+    if (!(Number(a?.cost) > 0)) continue;
+    created.push(await addFixedAsset({ ...a, property_id: propertyId }));
+  }
+  // The paper the figures came from stays reachable from the property that owns them.
+  // Best-effort: the assets are the point, and a storage hiccup must not lose them.
+  if (opts.storagePath) {
+    try {
+      await attachDocument(opts.storagePath, { entityType: 'property', entityId: propertyId });
+    } catch (_e) { /* the assets are written; the file is simply unlisted */ }
+  }
+  return created;
+}
+
 // ---- Slice 5b: capitalize, and bill it back ---------------------------------
 
 // Switch an asset's amortization on or off. This is the ONE write in this file that can

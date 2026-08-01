@@ -9,6 +9,7 @@ import { settleBillingChange } from '../lib/invalidate';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import ClosingStatementModal from './ClosingStatementModal';
 
 // Slice 5a — the things this property owns, and what they lose in value each year.
 //
@@ -26,10 +27,11 @@ import { useConfirm } from './ConfirmDialog';
 // here while the same roof sits in this year's roof total is counted twice — the fix is
 // the ⤴ Capitalize control on the expense line itself, which moves the cost rather than
 // copying it. The footer says so rather than letting the double-count go unnamed.
-export default function AssetRegisterSection({ propId, year }) {
+export default function AssetRegisterSection({ propId, year, propertyName }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const [adding, setAdding] = useState(false);
+  const [reading, setReading] = useState(false);
   const [editLand, setEditLand] = useState(null);
   const [landDraft, setLandDraft] = useState('');
   const [amortNote, setAmortNote] = useState(null);
@@ -172,10 +174,26 @@ export default function AssetRegisterSection({ propId, year }) {
     <div className="panel">
       <div className="panel-head">
         <strong>What you own · FY {year}</strong>
-        <button type="button" className="secondary btn-sm" onClick={() => setAdding((v) => !v)}>
-          {adding ? 'Cancel' : '＋ Record one'}
-        </button>
+        <div className="row" style={{ gap: 6 }}>
+          {/* Slice 5c. The building is the one asset nobody can type from memory — its
+              cost, its closing date and what part of it was land all live on one piece
+              of paper. Read once, ever. */}
+          <button type="button" className="ghost btn-sm" onClick={() => setReading(true)}>
+            ⬆ Read a closing statement
+          </button>
+          <button type="button" className="secondary btn-sm" onClick={() => setAdding((v) => !v)}>
+            {adding ? 'Cancel' : '＋ Record one'}
+          </button>
+        </div>
       </div>
+
+      {reading && (
+        <ClosingStatementModal
+          propId={propId}
+          propertyName={propertyName || 'This property'}
+          onClose={() => setReading(false)}
+        />
+      )}
       <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
         The building and everything bought once and used for years — a roof, a parking lot, an HVAC
         unit. Each loses value over its life on a straight line, so a single big year stops reading
