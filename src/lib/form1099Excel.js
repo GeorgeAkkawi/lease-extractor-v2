@@ -10,6 +10,7 @@
 // Pure formatting over form1099.js — no AI, no network of its own, no writes. ExcelJS is
 // imported lazily so it stays out of the initial page load. The writer and palette come
 // from cpaExcel.js so both workbooks lay out identically.
+import { saveWorkbook, fileSlug } from './download';
 import { xlsxSheet, xlsxPen, XLSX_PALETTE } from './cpaExcel';
 import {
   build1099Worksheet, FILING_DEADLINE, EFILE_AT, PENALTY_NOTE, THRESHOLD_NOTE,
@@ -228,13 +229,6 @@ export async function download1099WorksheetXlsx({ corporationId, year, prebuilt 
   addLeftOff(wb, pkg);
 
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const slug = String(pkg.corporation?.name || 'entity').trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${slug || 'entity'}-1099-Worksheet-${year}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  saveWorkbook(buf, `${fileSlug(pkg.corporation?.name, 'entity')}-1099-Worksheet-${year}.xlsx`);
   return pkg;
 }

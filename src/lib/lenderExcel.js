@@ -14,6 +14,7 @@
 // Pure formatting over lenderPackage.js — no AI, no network of its own, no writes.
 // ExcelJS is imported lazily so it stays out of the initial page load. The writer and
 // palette come from cpaExcel.js so all three workbooks lay out identically.
+import { saveWorkbook, fileSlug } from './download';
 import { xlsxSheet, xlsxPen, XLSX_PALETTE } from './cpaExcel';
 import {
   buildLenderPackage, coverage, notInPackage, MONTH_ABBR, ADJUSTMENT_NOTE, PERIOD_NOTE,
@@ -300,13 +301,6 @@ export async function downloadLenderPackageXlsx({ corporationId, year, assumptio
   addNotIncluded(wb, pkg);
 
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const slug = String(pkg.corporation?.name || 'entity').trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${slug || 'entity'}-Lender-Package-${year}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  saveWorkbook(buf, `${fileSlug(pkg.corporation?.name, 'entity')}-Lender-Package-${year}.xlsx`);
   return pkg;
 }

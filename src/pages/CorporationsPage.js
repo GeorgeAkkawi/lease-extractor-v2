@@ -7,12 +7,13 @@ import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { usePrefetchers } from '../lib/prefetch';
 import { money } from '../lib/format';
 import { CardGridSkeleton } from '../components/Skeleton';
+import DocumentsFilingsModal from '../components/DocumentsFilingsModal';
 import CorporationProfileModal from '../components/CorporationProfileModal';
 import AnnualReportModal from '../components/AnnualReportModal';
 import ExportCpaModal from '../components/ExportCpaModal';
 import Export1099Modal from '../components/Export1099Modal';
 import ExportLenderModal from '../components/ExportLenderModal';
-import { BuildingIcon, DocIcon } from '../components/icons';
+import { DocIcon } from '../components/icons';
 
 const TITLES = { leases: 'Portfolio', financials: 'Financials', history: 'History' };
 const SUBS = {
@@ -29,6 +30,10 @@ export default function CorporationsPage({ mode }) {
   const pf = usePrefetchers();
   const fin = mode !== 'leases';
   const [name, setName] = useState('');
+  // One state per modal, as before — the new Documents & filings panel adds a sixth and
+  // changes none of the others. It doesn't own them; it just calls the setter that does,
+  // so exactly one dialog is ever open and every existing modal is untouched.
+  const [docsCorp, setDocsCorp] = useState(null);
   const [editCorp, setEditCorp] = useState(null);
   const [arCorp, setArCorp] = useState(null);
   const [cpaCorp, setCpaCorp] = useState(null);
@@ -105,11 +110,23 @@ export default function CorporationsPage({ mode }) {
       ) : (
         <div className="corp-grid">
           {corps.map((c) => (
-            <CorpCard key={c.id} corp={c} mode={mode} onEdit={setEditCorp} onAnnual={setArCorp} onCpa={setCpaCorp} on1099={setNecCorp} onLender={setLenderCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
+            <CorpCard key={c.id} corp={c} mode={mode} onDocs={setDocsCorp} counts={counts[c.id]} rollup={rollups[c.id]} entity={summarizeEntityLedger(entityByCorp[c.id] || [])} properties={corpProps[c.id] || []} pf={pf} year={year} />
           ))}
         </div>
       )}
 
+      {docsCorp && (
+        <DocumentsFilingsModal
+          corp={docsCorp}
+          fin={fin}
+          onEdit={setEditCorp}
+          onAnnual={setArCorp}
+          onCpa={setCpaCorp}
+          on1099={setNecCorp}
+          onLender={setLenderCorp}
+          onClose={() => setDocsCorp(null)}
+        />
+      )}
       {editCorp && <CorporationProfileModal corp={editCorp} onClose={() => setEditCorp(null)} />}
       {arCorp && <AnnualReportModal corp={arCorp} onClose={() => setArCorp(null)} />}
       {cpaCorp && <ExportCpaModal corporationId={cpaCorp.id} corporationName={cpaCorp.name} year={year} onClose={() => setCpaCorp(null)} />}
@@ -119,7 +136,7 @@ export default function CorporationsPage({ mode }) {
   );
 }
 
-function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, on1099, onLender, counts, rollup, entity, properties = [], pf, year }) {
+function CorpCard({ corp, mode, onDocs, counts, rollup, entity, properties = [], pf, year }) {
   const navigate = useNavigate();
   const fin = mode !== 'leases';
   const initials = corp.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
@@ -150,55 +167,24 @@ function CorpCard({ corp, mode, onEdit, onAnnual, onCpa, on1099, onLender, count
       ))}
     </div>
   );
+  // ⚠ ONE control, and that is a bug fix, not a tidy-up. Rounds 12–14 each added a pill
+  // here until there were five; `.corp-actions` is a flex item that claims its full
+  // max-content width, so on a 320px card the row measured 617px and the last three
+  // buttons were PAINTED OUTSIDE the card, over its neighbour — `elementFromPoint` at
+  // their centre returned the next card, so clicking "Tax package" on any card that
+  // wasn't last in its row did nothing at all. It read as a broken download.
+  //
+  // Everything the five did now lives one click deeper, in a panel that also says in
+  // plain words what each one is for. If a sixth ever arrives, it goes in the panel.
   const editBtn = (
     <span className="corp-actions">
       <button
         className="corp-edit"
-        title="Edit this corporation's email identity (name, address, sending email)"
-        onClick={(e) => { e.stopPropagation(); onEdit(corp); }}
+        title="This corporation's business profile, its annual-report deadline, and the packages you hand your accountant, the IRS or a lender"
+        onClick={(e) => { e.stopPropagation(); onDocs(corp); }}
       >
-        <BuildingIcon /> Business profile
+        <DocIcon /> Documents &amp; filings
       </button>
-      <button
-        className="corp-edit"
-        title="This corporation's yearly state annual-report filing deadline + reminders"
-        onClick={(e) => { e.stopPropagation(); onAnnual(corp); }}
-      >
-        <DocIcon /> Annual report
-      </button>
-      {fin && (
-        <button
-          className="corp-edit"
-          title="Download this entity's tax package for the selected year — income and expenses by tax category, the depreciation schedule, and what is deliberately left off"
-          onClick={(e) => { e.stopPropagation(); onCpa(corp); }}
-        >
-          <DocIcon /> Tax package
-        </button>
-      )}
-      {/* Its own control rather than a sheet inside the tax package, because the deadline
-          is different: 1099s are due January 31 and the return is not. Finding out in
-          March that you needed a W-9 is finding out late by construction. */}
-      {fin && (
-        <button
-          className="corp-edit"
-          title="Vendors who may need a 1099-NEC for the selected year — due January 31, with what is deliberately left off and why"
-          onClick={(e) => { e.stopPropagation(); on1099(corp); }}
-        >
-          <DocIcon /> 1099s
-        </button>
-      )}
-      {/* Its own control for the same reason the 1099 worksheet is: a lender asks on
-          their timetable, not the return's, and the forward coverage read is worth
-          having before you call the bank rather than after. */}
-      {fin && (
-        <button
-          className="corp-edit"
-          title="Download the operating summary, rent roll and rollover schedule a lender asks for — with the coverage ratio if that rollover doesn’t renew"
-          onClick={(e) => { e.stopPropagation(); onLender(corp); }}
-        >
-          <DocIcon /> Lender package
-        </button>
-      )}
     </span>
   );
 

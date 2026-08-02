@@ -14,6 +14,7 @@
 // the rule (a dollar is recorded somewhere or explicitly excluded WITH A REASON) and round
 // 11 applied it to a document; this applies it to a tax package. A CPA cannot otherwise
 // tell a careful export from one that quietly dropped every distribution.
+import { saveWorkbook, fileSlug } from './download';
 import { buildCpaPackage, FORM_REVISION_NOTE } from './cpaPackage';
 import { assetKindLabel } from './depreciation';
 
@@ -432,13 +433,6 @@ export async function downloadCpaPackageXlsx({ corporationId, year, basis = 'acc
   }
 
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const slug = String(pkg.corporation?.name || 'entity').trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${slug || 'entity'}-Tax-Package-${year}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  saveWorkbook(buf, `${fileSlug(pkg.corporation?.name, 'entity')}-Tax-Package-${year}.xlsx`);
   return pkg;
 }

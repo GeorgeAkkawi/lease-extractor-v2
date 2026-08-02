@@ -235,14 +235,18 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
    never crosses a dead zone. The old design left a 16px gap bridged by a ::before pad,
    but `overflow-y:auto` forces overflow-x to auto too, which clipped that bridge — so the
    panel vanished the instant you reached for it (George). No gap ⇒ no bridge needed. */
+/* Same containment as .corp-flyout, defensively: a hidden-but-laid-out absolute panel
+   still extends a scroll ancestor's overflow, and this one opens RIGHTWARD. */
 .side-flyout{position:absolute;top:-6px;left:calc(100% - 2px);z-index:60;
-  min-width:214px;max-width:264px;max-height:72vh;overflow-y:auto;
-  background:var(--panel);border:1px solid var(--accent);border-radius:var(--radius);
-  box-shadow:var(--shadow);padding:8px;
+  min-width:214px;max-width:264px;max-height:72vh;
+  height:0;padding:0;border:0 solid var(--accent);overflow:hidden;
+  background:var(--panel);border-radius:var(--radius);
+  box-shadow:var(--shadow);
   opacity:0;visibility:hidden;pointer-events:none;transform:translateY(-3px);
   transition:opacity .12s ease,transform .12s ease}
 .side-item-wrap:hover .side-flyout,
-.side-item-wrap:focus-within .side-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none}
+.side-item-wrap:focus-within .side-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none;
+  height:auto;padding:8px;border-width:1px;overflow-y:auto}
 .side-flyout-corp+.side-flyout-corp{border-top:1px solid var(--hair);margin-top:5px;padding-top:6px}
 .side-flyout-head{display:block;padding:6px 10px;border-radius:6px;color:var(--ink);text-decoration:none;
   font-size:13px;font-weight:700;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -317,16 +321,27 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 
 /* ---- corporation hover fly-out (jump straight to a property) ---- */
 .corp-card.has-flyout,.prop-card.has-flyout{position:relative}
+/* ⚠ COLLAPSED TO NOTHING while closed, and that is load-bearing rather than tidy.
+   `visibility:hidden` HIDES an element but still LAYS IT OUT, and an absolutely-positioned
+   descendant still extends the scrollable overflow of an overflow:auto ancestor — .content
+   is overflow:auto. So the panel hanging below the BOTTOM ROW of cards added its full
+   height to the page's scroll extent permanently, with nobody hovering anything: scroll to
+   the bottom and you land in blank canvas (George).
+   Padding and border go too, not just height — under border-box a box cannot shrink below
+   its own padding + border, so `height:0` alone still measured 18px. The whole closed box
+   is zero, and the open rule puts the chrome back. The opacity/transform fade is unaffected. */
 .corp-flyout{position:absolute;top:calc(100% - 4px);left:0;right:0;z-index:30;
-  display:flex;flex-direction:column;gap:2px;max-height:60vh;overflow-y:auto;
-  background:var(--panel);border:1px solid var(--accent);border-radius:var(--radius);
-  box-shadow:var(--shadow);padding:8px;margin-top:4px;
+  display:flex;flex-direction:column;gap:2px;max-height:60vh;
+  height:0;padding:0;border:0 solid var(--accent);overflow:hidden;
+  background:var(--panel);border-radius:var(--radius);
+  box-shadow:var(--shadow);margin-top:4px;
   opacity:0;visibility:hidden;pointer-events:none;transform:translateY(-4px);
   transition:opacity .12s ease,transform .12s ease}
 .corp-card.has-flyout:hover .corp-flyout,
 .corp-card.has-flyout:focus-within .corp-flyout,
 .prop-card.has-flyout:hover .corp-flyout,
-.prop-card.has-flyout:focus-within .corp-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none}
+.prop-card.has-flyout:focus-within .corp-flyout{opacity:1;visibility:visible;pointer-events:auto;transform:none;
+  height:auto;padding:8px;border-width:1px;overflow-y:auto}
 .corp-flyout-head{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);padding:2px 8px 4px}
 .corp-flyout-item{display:block;padding:8px 10px;border-radius:6px;color:var(--ink);text-decoration:none;
   font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
@@ -960,6 +975,32 @@ tbody tr:last-child td{border-bottom:none}
 .modal-foot{padding:15px 22px;border-top:1px solid var(--border);background:var(--panel-2)}
 .modal-actions{display:flex;justify-content:space-between;align-items:center;gap:14px}
 .modal-actions .muted{font-size:12.5px}
+
+/* ---- Documents & filings panel (one door to a corporation's paperwork) ---- */
+.docfile-body{padding:14px 14px 18px}
+.docfile-group+.docfile-group{margin-top:18px}
+.docfile-group-head{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);
+  padding:0 8px 7px}
+/* A row is a button, so the global uppercase/letter-spacing button treatment has to be
+   undone — these are sentences, not pills. */
+.docfile-row{display:flex;align-items:flex-start;gap:12px;width:100%;text-align:left;
+  padding:11px 10px;border:1px solid transparent;border-radius:var(--radius);
+  background:transparent;color:var(--ink);cursor:pointer;
+  font-size:14px;font-weight:500;text-transform:none;letter-spacing:0;line-height:1.35}
+.docfile-row:hover,.docfile-row:focus-visible{background:var(--panel-2);border-color:var(--border);filter:none}
+.docfile-ico{flex:none;display:inline-flex;padding-top:1px;color:var(--muted)}
+.docfile-ico svg{width:15px;height:15px}
+.docfile-row:hover .docfile-ico,.docfile-row:focus-visible .docfile-ico{color:var(--accent)}
+.docfile-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.docfile-name{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:600}
+.docfile-what{font-size:12.5px;font-weight:400;color:var(--muted);white-space:normal}
+.docfile-chip{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--muted);background:var(--panel-2);border:1px solid var(--border);
+  border-radius:999px;padding:3px 8px;line-height:1;white-space:nowrap}
+/* Gold means nobody has decided yet — the same signal the expense chips use. */
+.docfile-chip.warn{color:var(--gold);border-color:var(--gold);background:transparent}
+.docfile-caret{flex:none;color:var(--faint);font-size:17px;line-height:1.2}
+.docfile-row:hover .docfile-caret,.docfile-row:focus-visible .docfile-caret{color:var(--accent)}
 /* ---- confirm dialog: the message + a highlighted box of what the action does ---- */
 .confirm-msg{font-size:14px;line-height:1.55;margin:0 0 14px;color:var(--ink)}
 .confirm-imp{border:1px solid var(--border);border-left:3px solid var(--danger);background:#F7EBE7;border-radius:var(--radius);padding:12px 14px}
@@ -1037,7 +1078,12 @@ tbody tr:last-child td{border-bottom:none}
 .corp-edit{flex-shrink:0;align-self:center;display:inline-flex;align-items:center;gap:6px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:6px 12px;cursor:pointer;line-height:1;white-space:nowrap}
 .corp-edit:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft);filter:none}
 .corp-edit svg{width:13px;height:13px;flex-shrink:0}
-.corp-actions{flex-shrink:0;align-self:center;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* ⚠ min-width:0 and NOT flex-shrink:0. With `flex-shrink:0` this claimed its full
+   max-content width as a flex item, so its own `flex-wrap` could never fire and its
+   contents were painted outside the 320px card — over the NEXT card, which then ate
+   the clicks. One control now lives here, and these two properties are what stop a
+   future second one re-creating that. Do not restore flex-shrink:0. */
+.corp-actions{min-width:0;align-self:center;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 
 /* The tax package's pre-flight: the four figures it will carry, then anything that
    wants an answer before it leaves. Gold is this app's "look here", never a fault. */

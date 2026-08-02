@@ -181,6 +181,84 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-08-02** — **The tax package and the lender package weren't "failing to download" — they were UNCLICKABLE. Five pills
+  outgrew the corporation card and the last three were painted over the NEXT card, which ate their clicks** (George: *"all
+  those buttons are running off … I tried downloading the tax package and the lender package and they're not downloading …
+  I can scroll all the way down and it scrolls to just blank canvas"* — three reports, and the first two are one bug).
+  Deployed: frontend Cloudflare version **`e12f858b`**, demo worker `7651b75a`. **$0 — no AI call, NO migration, NO edge
+  function, NO view, NO RPC, NO table, and nothing is stored. No figure moves.** Tests **1474/1474 across 151 files** (was
+  1466/150 — +8, one new suite).
+  - **⚠ THE BUG IS A LAYOUT BUG THAT PRESENTED AS A BROKEN FEATURE, AND THAT IS THE WHOLE LESSON.** Measured on the
+    deployed demo at 1317px before touching anything: `.corp-card.fin` is **320px** wide and the five pills (Business
+    profile · Annual report · Tax package · 1099s · Lender package) measured **617px on one row**. `.corp-actions` carried
+    **`flex-shrink:0`**, so as a flex item it claimed its full max-content width and **its own `flex-wrap` could never
+    fire** — it overflowed the card by ~300px, and those buttons landed *underneath the neighbouring card*.
+    `document.elementFromPoint` at the centre of Acme's *Tax package*, *1099s* and *Lender package* returned
+    **`SPAN.corp-head` belonging to Northwind Group** — `hitIsThisButton: false`. So clicking any of them on a card that
+    was **not last in its row** hit the wrong card and nothing opened. George has three corporations, so **two of three
+    were dead**, which is exactly why it read as intermittent.
+  - **The download code was never the problem, and that was proven before changing it:** driving the real button on the
+    deployed demo produced a real **15,429-byte** `.xlsx` with zero errors. Also ruled out by measurement rather than
+    assumption — the lazy `exceljs` chunk serves 200 on both origins, all three modals render `isError`/`isLoading`, and
+    the `disabled={… || !pkg.properties.length}` guard cannot bite (all three live corporations have exactly one property).
+  - **The fix is ONE control, and one control cannot overflow.** The five pills become a single **Documents & filings**
+    pill opening a panel that lists all five — which is simultaneously the layout fix and the answer to a second thing
+    George couldn't tell from the card: five bare nouns say nothing about who they are for. Every row now states it in one
+    plain sentence, grouped as **THE COMPANY** (Business profile · Annual report, with its deadline as a live chip read
+    from the same `['annualReport', corp.id]` key the modal uses, so opening it next is a cache hit) and **THINGS YOU HAND
+    SOMEONE** (Tax package *"For your accountant"* · 1099s *"Due January 31"* · Lender package *"when you apply for a loan
+    or refinance"*). The three exports appear only on Financials/History — the Portfolio tab has no fiscal year in scope.
+  - **No new state machine.** `CorporationsPage` already held one setter per modal; the panel owns none of them, it calls
+    the one a row belongs to and closes itself — so exactly one dialog is ever open and **every existing modal is
+    byte-identical**. `.corp-actions` also loses `flex-shrink:0` and gains `min-width:0` defensively, with a comment saying
+    not to restore it, so a future sixth control can't re-create the overflow.
+  - **⚠ AND THE REASON NO TEST CAUGHT THIS IS WORTH MORE THAN THE FIX.** Five suites asserted these controls — and every
+    one asserted that the label **EXISTED** (`findAllByText('1099s')).toHaveLength(2)`). A label can exist, render, pass
+    an accessibility query and be **physically unreachable**; existence is not reachability. All five now **drive** the
+    control instead of counting it, and the new suite pins the structural property directly: **exactly one `.corp-edit`
+    per card**, the five names are **absent from the card itself**, and the panel is opened from the **FIRST** card — the
+    one whose spill used to be covered. A test that opens the last card would have gone green throughout the outage.
+  - **One subtlety the new tests had to handle, caught by a failing run:** `.corp-card` is itself `role="button"`, so its
+    accessible name is the whole card's text and a loose `/Documents & filings/` pattern matches the CARD too — the click
+    would navigate instead of opening the panel. Every query uses the exact name, with a comment saying why.
+  - **The download tail is fixed anyway — belt and braces, not the cause.** All five exports shared one pattern with two
+    documented hazards: a **detached** anchor (Chrome honours it, Safari and Firefox are documented to drop it) and
+    `revokeObjectURL` called **synchronously** on the next line, which can cancel a download that has not yet taken the
+    blob. Both survive on a fast machine and fail silently on a slow one. New shared `src/lib/download.js`
+    (`saveBlob`/`saveWorkbook`/`fileSlug`) appends the anchor, clicks, removes it, and revokes on a later tick — **one
+    implementation per §3**, since five copies of a rule always drift. Verified by instrumenting the real click:
+    **`inDom: true`** (was false) and **no synchronous revoke**, with no stray anchor left behind.
+  - **⚠ THE THIRD REPORT IS THE HONEST ONE: I FIXED A REAL DEFECT AND STILL COULD NOT REPRODUCE GEORGE'S BLANK CANVAS.**
+    The mechanism I found is real and is **not** the sidebar (that is a flex *sibling* of `.content` and cannot extend it):
+    `.corp-flyout` is an absolutely-positioned **descendant**, and `visibility:hidden` **hides an element but still lays it
+    out**, so the closed panel hanging below the bottom row of cards contributed its full height to `.content`'s scroll
+    extent **permanently, with nobody hovering anything**. Fixed by collapsing the closed state to a true zero — and
+    `height:0` alone was **not enough**, because under `border-box` a box cannot shrink below its own padding + border, so
+    it still measured **18px**; padding and border go too and the open rule puts them back (measured: **closed 0px, open
+    73/109/238px** with links clickable on the corp card, the property card and the sidebar). **But on the demo that
+    removes 0 measurable pixels of scroll** — `.content`'s own 72px bottom gutter absorbs it, and I could not reproduce
+    the symptom at 1317×703, 1317×420 or 1317×800 on `/financials`, `/leases`, a property list or a property page. So this
+    ships as a correctness fix with its effect stated honestly rather than claimed. **George: tell me your window size and
+    which page, or send a screenshot, and I'll find the real one** rather than guess a third time.
+  - **Files.** New: `src/components/DocumentsFilingsModal.js` · `src/lib/download.js` ·
+    `src/components/__tests__/corpCardActions.test.js` (8). Edited: `src/pages/CorporationsPage.js` (five buttons → one) ·
+    `src/App.css` (`.corp-actions`, `.corp-flyout`, `.side-flyout`, new `.docfile-*`) · the five `*Excel.js` download
+    tails · four existing suites retargeted from counting to driving. **No** migration, edge function, view, RPC, mock or
+    demo-seed change. **§5 fans out to nothing.**
+  - **Verified:** unit **1474/1474**; `npm run build` compiles with ExcelJS still lazily chunked; live bundle carries the
+    backend ref, demo bundle greps **free** of it; live 200s on all four URLs. **Then driven in a real browser against the
+    DEPLOYED demo, which is how the last two rounds' defects were found:** the actions row measures **173px** (was 617),
+    `insideCard: true` and `hitIsThisButton: true` on **both** cards, the panel opens **from the first card** with all five
+    rows and the *"due Aug 23"* chip, and clicking Download fired a real download event for
+    **`Acme-Holdings-Tax-Package-2026.xlsx`, 15,428 bytes**. Every control verified inside its card and clickable at
+    **1440 / 1280 / 900 / 420** with zero page overflow. **Zero console errors.**
+  - **George: hard-refresh (Cmd+Shift+R).** Each corporation card now carries one **Documents & filings** button. Open it
+    and everything is there — with a line under each saying what it is. **The Tax package and Lender package will download
+    now; they were never broken, you just couldn't hit the button.**
+  - **Flags:** ① **The blank-canvas scroll is NOT confirmed fixed** — see above; I need your window size or a screenshot.
+    ② Nothing moved and nothing new appeared; the five tools are unchanged, one click deeper. ③ The Annual report row shows
+    its deadline on the panel, so you can see it without opening anything.
+
 - **2026-08-01** — **Two wording defects found by DRIVING the deployed demo, not by reading the code: a lender-facing dollar
   figure printed as a bare number, and three 1099 flags that read "1 carry" when a portfolio has exactly one of something**
   (George: *"can you show me what everything looks like populated in the demo"* — the walkthrough itself was the bug

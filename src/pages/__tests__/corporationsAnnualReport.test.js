@@ -4,7 +4,7 @@
 // reading the seeded record (Acme Holdings, ar-1) — the deadline line + Mark-filed
 // action. Standing in for the live-browser click-through when the shared browser is held.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
@@ -29,14 +29,23 @@ function withProviders(ui, initial = '/leases') {
 
 beforeEach(() => cleanup());
 
-describe('CorporationsPage — Annual report button', () => {
-  it('shows an "Annual report" action alongside "Business profile" on every card', async () => {
+describe('CorporationsPage — Annual report action', () => {
+  // ⚠ Round 15 moved this behind the card's one "Documents & filings" control, because
+  // five pills overflowed a 320px card and painted their neighbours' clicks. This test
+  // used to COUNT the label, which stayed green while three of them were unreachable —
+  // so it now opens the panel and looks for the real button.
+  it('reaches "Annual report" and "Business profile" from every card', async () => {
     withProviders(<CorporationsPage mode="leases" />);
     await waitFor(() => expect(screen.getByText('Acme Holdings')).toBeTruthy());
     expect(screen.getByText('Northwind Group')).toBeTruthy();
-    // One per corporation card (2 seeded corps).
-    expect(screen.getAllByText('Annual report').length).toBe(2);
-    expect(screen.getAllByText('Business profile').length).toBe(2);
+    // One control per corporation card (2 seeded corps). Exact name — the card is
+    // itself role="button", so a loose pattern would match it too.
+    const open = screen.getAllByRole('button', { name: 'Documents & filings' });
+    expect(open).toHaveLength(2);
+    fireEvent.click(open[0]);
+    const panel = await screen.findByRole('dialog');
+    expect(within(panel).getByRole('button', { name: /Annual report/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /Business profile/ })).toBeTruthy();
   });
 });
 

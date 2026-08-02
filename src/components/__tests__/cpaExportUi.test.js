@@ -44,18 +44,30 @@ const openModal = async () => {
 
 beforeEach(() => cleanup());
 
+// ⚠ Round 15 moved every export one click deeper, behind the card's single
+// "Documents & filings" control — because five pills overflowed a 320px card and the
+// last three were painted over the NEXT card, which ate their clicks. These tests used
+// to count the label and stayed green throughout. So they now DRIVE the control: exact
+// name (the card is itself role="button"), click, then look inside the panel.
+const openDocs = async (mode) => {
+  grid(mode);
+  const btns = await screen.findAllByRole('button', { name: 'Documents & filings' });
+  fireEvent.click(btns[0]);
+  return await screen.findByRole('dialog');
+};
+
 describe('where the package is offered', () => {
-  it('sits with the entity’s other paperwork on the Financials card', async () => {
-    grid('financials');
-    expect(await screen.findAllByText('Tax package')).toHaveLength(2); // one per corporation
+  it('sits with the entity’s other paperwork, behind the card’s one control', async () => {
+    const panel = await openDocs('financials');
+    expect(within(panel).getByRole('button', { name: /Tax package/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /Business profile/ })).toBeTruthy();
   });
 
   // A tax package is a financials act. The Portfolio tab lists tenants and has no
   // business carrying it.
   it('is absent from the Portfolio tab', async () => {
-    grid('leases');
-    await screen.findByText('Acme Holdings');
-    expect(screen.queryByText('Tax package')).toBeNull();
+    const panel = await openDocs('leases');
+    expect(within(panel).queryByRole('button', { name: /Tax package/ })).toBeNull();
   });
 });
 

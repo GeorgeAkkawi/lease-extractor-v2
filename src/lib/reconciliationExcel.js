@@ -2,6 +2,7 @@
 // estimated CAM & tax, a summary, auto-insights, and a lease-terms reference. Pure
 // formatting over the live figures from reconciliationData.js (no AI, no network of
 // its own). ExcelJS is imported lazily so it stays out of the initial page load.
+import { saveWorkbook, fileSlug } from './download';
 import { buildReconciliationReport } from './reconciliationData';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -293,12 +294,5 @@ export async function downloadReconciliationXlsx({ propertyId, year, leaseIds = 
   }
 
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const slug = String(report.property?.name || 'property').trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${slug || 'property'}-Reconciliation-${year}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  saveWorkbook(buf, `${fileSlug(report.property?.name, 'property')}-Reconciliation-${year}.xlsx`);
 }

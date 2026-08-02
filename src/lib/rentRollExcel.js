@@ -3,6 +3,7 @@
 // lender/accountant-ready Excel file — one worksheet per property, each with a
 // summary block + a commercial rent-roll table. No AI, no network: pure
 // formatting that runs in the browser. ExcelJS is loaded lazily by the caller.
+import { saveWorkbook, fileSlug } from './download';
 
 // ---- column geometry (A..N) -------------------------------------------------
 // Suite | Tenant | Size(SF,%NRSF) | Annual Rent(Annual,PSF,%Total) |
@@ -299,14 +300,6 @@ export async function downloadRentRollXlsx({ leases = [], properties = [], fileL
   if (!wb.worksheets.length) addPropertySheet(wb, usedNames, { name: 'Rent Roll', building_sf: null }, [], now);
 
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const slugged = fileLabel
-    ? String(fileLabel).trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '')
-    : '';
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `rent-roll${slugged ? `-${slugged}` : ''}-${now.toISOString().slice(0, 10)}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
+  const slugged = fileLabel ? fileSlug(fileLabel, '') : '';
+  saveWorkbook(buf, `rent-roll${slugged ? `-${slugged}` : ''}-${now.toISOString().slice(0, 10)}.xlsx`);
 }

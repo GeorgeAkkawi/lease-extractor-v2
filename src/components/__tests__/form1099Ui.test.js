@@ -51,16 +51,29 @@ beforeEach(() => cleanup());
 describe('where the worksheet is offered', () => {
   // Its own control rather than a sheet inside the tax package: 1099s are due January 31
   // and the return is not, so burying it there makes it late by construction.
-  it('sits beside the tax package on the Financials card', async () => {
+  //
+  // ⚠ Round 15 moved it one click deeper. It used to be a fifth pill ON the card, and
+  // this test asserted only that the text EXISTED — which stayed green the whole time the
+  // button was being painted outside its card and was physically unclickable. So it now
+  // DRIVES the control instead of counting it. Reachability, not existence.
+  it('sits beside the tax package, behind the card’s one control', async () => {
     grid('financials');
-    expect(await screen.findAllByText('1099s')).toHaveLength(2); // one per corporation
-    expect(screen.getAllByText('Tax package')).toHaveLength(2);
+    // Exact name — the card is itself role="button" and a loose pattern matches it too.
+    const open = await screen.findAllByRole('button', { name: 'Documents & filings' });
+    expect(open).toHaveLength(2); // one per corporation
+    fireEvent.click(open[0]);
+    const panel = await screen.findByRole('dialog');
+    expect(within(panel).getByRole('button', { name: /1099s/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /Tax package/ })).toBeTruthy();
   });
 
   it('is absent from the Portfolio tab', async () => {
     grid('leases');
-    await screen.findByText('Acme Holdings');
-    expect(screen.queryByText('1099s')).toBeNull();
+    // Exact name — the card is itself role="button" and a loose pattern matches it too.
+    const open = await screen.findAllByRole('button', { name: 'Documents & filings' });
+    fireEvent.click(open[0]);
+    const panel = await screen.findByRole('dialog');
+    expect(within(panel).queryByRole('button', { name: /1099s/ })).toBeNull();
   });
 });
 

@@ -48,18 +48,27 @@ const stat = (dlg, label) => within(dlg).getByText(label).parentElement.querySel
 
 beforeEach(() => cleanup());
 
+// ⚠ Round 15 — see cpaExportUi for the full note. Five pills overflowed the card and
+// the last three (this one included) were unclickable; counting the label stayed green
+// the whole time. Drive the control instead. Exact name: the card is role="button" too.
+const openDocs = async (mode) => {
+  grid(mode);
+  const btns = await screen.findAllByRole('button', { name: 'Documents & filings' });
+  fireEvent.click(btns[0]);
+  return await screen.findByRole('dialog');
+};
+
 describe('where the package is offered', () => {
-  it('sits beside the tax package and the 1099 worksheet on the Financials card', async () => {
-    grid('financials');
-    expect(await screen.findAllByText('Lender package')).toHaveLength(2); // one per corporation
-    expect(screen.getAllByText('Tax package')).toHaveLength(2);
-    expect(screen.getAllByText('1099s')).toHaveLength(2);
+  it('sits beside the tax package and the 1099 worksheet, behind the card’s one control', async () => {
+    const panel = await openDocs('financials');
+    expect(within(panel).getByRole('button', { name: /Lender package/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /Tax package/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /1099s/ })).toBeTruthy();
   });
 
   it('is absent from the Portfolio tab', async () => {
-    grid('leases');
-    await screen.findByText('Acme Holdings');
-    expect(screen.queryByText('Lender package')).toBeNull();
+    const panel = await openDocs('leases');
+    expect(within(panel).queryByRole('button', { name: /Lender package/ })).toBeNull();
   });
 });
 
