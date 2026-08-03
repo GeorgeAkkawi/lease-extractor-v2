@@ -181,6 +181,68 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-08-03** — **Scaled back to ONE extra bar: "What each property keeps" now carries the rent COLLECTED so far beside each
+  property's Revenue, and nothing else** (George, reviewing the round below: *"lets retry - all we need i think is just the year to
+  date collected revenue"*). Deployed: frontend Cloudflare version **`30f8e3d6`**, demo worker `ebed3cea`. **$0 — no AI call, NO
+  migration, NO edge function, NO view, NO RPC, NOTHING IS STORED. This round only READS.** Tests **1531/1531 across 155 files**
+  (was 1535/155 — **−4, deliberately**: the assertions that went are the ones guarding behaviour that no longer exists).
+  - **What this replaces.** The round below shipped SIX bars — three measures on two bases (Revenue↔Collected, Expenses↔Paid,
+    NOI↔Kept). George read it and cut it to the one figure he actually wanted. **Four bars now: Revenue · Collected so far ·
+    Expenses · NOI**, with Collected the same olive as Revenue, one tint lighter, standing immediately beside it.
+  - **⚠ THE SIMPLIFICATION DELETES A WHOLE CLASS OF PROBLEM, which is the argument for it.** `Paid` and `Kept` were the half that
+    could quietly lie: an expense line with no `paid_date` is in neither, so the panel had to carry a ⚠ paragraph naming the
+    undated total (**$153,546** on George's live data) or "Kept" would have read as profit on a year whose bills simply aren't
+    dated. With no Paid bar there is nothing to be wrong about — **the warning, the second query, the two-row basis legend and the
+    per-property undated arithmetic all came out**, not because they were wrong but because nothing needs them now. The refusals
+    they encoded are still recorded in the round below and still hold the day an expense-side bar is ever built.
+  - **One query, not two.** `listLedgerYtdByProperty` → **`listCollectedByProperty`**: `v_invoice_balances` alone, returning
+    `{collected, billed}`. The `cam_line_items` read, the `paid_date` split and the billable filter are gone with the bar they fed.
+    Query key `['portfolioYtd']` → `['portfolioCollected']`, moved in `settleBillingChange` and `settleStatementImport` together,
+    so recording a payment or importing a statement still moves the bar.
+  - **⚠ THE ONE THING THAT STILL HAS TO BE SAID, and it survives the cut.** `collected` is **all-in** — it carries the CAM & tax the
+    tenants reimburse — while `Revenue` is `total_revenue` = Σ `effective_rent`, **contract base rent only**. So Collected is **not
+    a share of the Revenue bar and can read above it**, and a reader who assumes otherwise computes a collection rate that is
+    simply wrong. The foot says so in the same breath as it says where the figure comes from, the hover carries *"of $X billed"*
+    and *"incl. reimbursed CAM & tax"*, and a test pins that the shaper never clamps it (round 14's NOI understatement is the same
+    asymmetry one column over — clamping would make the chart lie to protect a figure that is itself incomplete).
+  - **`collected` IS the Ledger tab's Collected column, by construction** — same filter as `getYearInvoice` (non-void, `kind`
+    'annual', a missing kind reading annual), so the Overview and the Ledger can never name two figures for the same property on
+    the same day. **A reconciliation true-up is therefore excluded**, deliberately and test-pinned: real money, but not on that
+    column. **Proved the test can fail** — dropping the `isAnnualInvoice` filter fails exactly that case and nothing else.
+  - **⚠ TWO LAYOUT DEFECTS, BOTH FOUND IN A REAL BROWSER AND NEITHER VISIBLE TO ANY TEST** — recharts measures its parent and every
+    element is 0×0 in jsdom, so **no chart in this app is ever drawn in a test**. ① **The legend overran its panel by 41px at
+    420px**: `.chart-legend` was `flex-wrap:nowrap`, which three short words survived and a fourth entry ("Collected so far") did
+    not. Fixed on the **base class** rather than by adding the `.wrap` modifier — a legend that overruns its panel is always a bug,
+    and `.wrap`'s real payload is the donut legend's spacing, not its wrapping. ② **The bar figures can still collide**, which is
+    the defect the round below hit at George's 3-property width. Measured on the deployed demo: a **283px per-property slot clears
+    its labels by 9px**, and three properties at 1440 get **~339px** — so 1440 is safe, but a narrowed window is not, and a
+    viewport-only media query is the wrong instrument because what matters is the plot width **divided by the number of
+    properties**. A `dense` class (four bars **and** 3+ properties) drops the figures below 1200px and nowhere else; the two-bar
+    demo and the three-bar layout are untouched.
+  - **A property with nothing collected leaves its slot empty**, and that is left as-is: recharts draws no rect for a zero, the
+    slot sits in the same labelled position on every property, and the hover reads *"Collected so far $0.00 · nothing billed yet
+    this year"*. On George's live data all three properties have collections, so no gap appears.
+  - **Files.** Edited: `src/lib/{api,portfolioCharts,invalidate}.js` · `src/components/{PortfolioCharts,ImportStatementButton}.js` ·
+    `src/pages/DashboardPage.js` · `src/App.css` · tests (`portfolioYtd` → **`portfolioCollected`** (7→6), `portfolioCharts` (−1),
+    `chartTooltips` (=), `dashboardOverview` (3→2)). **No** migration, edge function, view, RPC, mock or demo-seed change.
+    **§5 fans out to nothing.**
+  - **Verified:** unit **1531/1531** (`vitest run`; one run hit the documented starvation flake and was clean on re-run, twice);
+    `npm run build` compiles; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it.
+    **Then driven in a real browser against the DEPLOYED demo at 1440 / 980 / 760 / 420px** — that is how both defects above were
+    found. After the fixes: bars **50px with uniform 17px gaps**, **zero label collisions at every width**, **zero page or panel
+    overflow at every width**, the hover reading *Revenue $144,000 · Collected so far $100,300 · of $187,800.00 billed · incl.
+    reimbursed CAM & tax · Expenses $47,000 (taxes/CAM/roof broken out) · NOI $97,000* with nothing truncated, and the
+    no-collections property explaining its empty slot. **Zero console errors or warnings.**
+  - **George: hard-refresh (Cmd+Shift+R).** Each property now has a lighter bar beside its Revenue — the rent actually collected
+    this year, straight off the Ledger. Live today: **Pershing $233,222** collected · **Joliet $147,524** · **401 S Main $40,986**.
+  - **Flags:** ① **Collected is not a percentage of the Revenue bar** — it includes the CAM & tax your tenants reimburse, which
+    Revenue doesn't count, so it can sit higher. The panel says so. ② **401 S Main has billed $491,829 against $364,629 of contract
+    rent** — that gap is the ~$125k of unreconciled CAM & tax estimate round 14 flagged; the collected bar is a share of what was
+    billed, not of the rent. ③ The **Paid** and **Kept** bars are gone, and with them the ⚠ note about your $153,546 of undated
+    expenses. Those expenses are still undated and still absent from every cash figure in the app — the CPA package's cash basis
+    will say so when you run it. ④ The bars follow the **fiscal-year selector**, like everything else on the page.
+
+
 - **2026-08-03** — **"What each property keeps" now draws TWO bases side by side: what the year comes to on paper, and what has
   actually moved so far** (George: *"add year to date revenue, expenses and NOI as a bar on the what each property keeps graph in
   the overview, taken from the ledger. make sure to make the distinction between them clear and easy to understand"*). Deployed:

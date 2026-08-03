@@ -40,7 +40,7 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
     ['corpRollups'],
     // The Overview's "so far this year" bars — collected + expenses paid to date, per
     // property. It reads the same invoices/payments this just moved.
-    ['portfolioYtd'],
+    ['portfolioCollected'],
     ['alerts'],
   ];
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });

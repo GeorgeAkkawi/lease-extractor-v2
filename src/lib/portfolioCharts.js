@@ -21,15 +21,11 @@ export const CHART_SERIES = {
   vacant: '#D8D2C3',    // warm paper-grey — reads as "nothing here", never as a figure
 };
 
-// The "so far this year" trio, drawn beside its full-year twin. SAME HUE, lighter tint —
-// deliberately not a fourth/fifth/sixth colour: the pairing is the whole point, and two
-// unrelated colours would read as six separate measures rather than three on two bases.
-// Every tint is already in DONUT_PALETTE, so nothing new enters the app's palette.
-export const CHART_SERIES_YTD = {
-  collected: '#9AA77E',  // olive, lightened
-  paid: '#C09A55',       // gold, lightened
-  kept: '#6F8874',       // forest, lightened
-};
+// Rent collected so far, drawn beside the Revenue bar it belongs to. THE SAME OLIVE, one
+// tint lighter — deliberately not a fourth colour: the pairing IS the point, and an
+// unrelated hue would read as a fourth unrelated measure rather than the same one, so far.
+// Already in DONUT_PALETTE, so nothing new enters the app's palette.
+export const CHART_COLLECTED = '#9AA77E';
 
 // Ramp for the revenue donut: olive → forest → gold → their soft tints. Ordered so the
 // biggest earner takes the deepest ink and the tail fades, which is how a reader's eye
@@ -52,7 +48,6 @@ export const ROLLOVER_RAMP = ['#94661B', '#B08A46', '#9A9152', '#7C8B5A', '#5C6B
 export const kfmt = (v) => (v == null || isNaN(v) ? '' : Math.abs(v) >= 1000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v)}`);
 
 const num = (n) => Number(n) || 0;
-const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 // Property name lookup that survives a property the totals map doesn't cover.
 const nameFor = (p) => p?.name || 'Untitled property';
@@ -206,25 +201,21 @@ export function tenantMix(property, leases) {
 // different quantity entirely (they're usually higher; the gap IS the year-end true-up).
 // They're carried onto each row so the tooltip can show its working, because a bar
 // labelled only "Expenses" can't tell the landlord which of the two it is.
-// ⚠ THE SECOND BASIS, and the whole reason the panel needs explaining. `ledgerByProp`
-// (listLedgerYtdByProperty) adds a "so far this year" twin to each of the three:
+// ⚠ THE FOURTH BAR, and the one thing about it that must be said out loud. `collectedByProp`
+// (listCollectedByProperty) adds `Collected` — the rent actually received against this
+// year's invoices — beside the Revenue bar it belongs to.
 //
-//   Revenue  (on paper, whole year)  ↔  Collected  (money in, so far)
-//   Expenses (entered, whole year)   ↔  Paid       (expense lines dated on/before today)
-//   NOI      (revenue − expenses)    ↔  Kept       (collected − paid)
-//
-// The two are NOT the same measure at two points in time, and pretending otherwise is the
-// trap here:
+// It is NOT a fraction of Revenue, and treating it as one is the trap:
 //   • Collected is ALL-IN — it carries the CAM & tax the tenants reimburse — while
-//     Revenue is `total_revenue` = Σ effective_rent, contract BASE RENT only. So Kept can
-//     legitimately read ABOVE NOI (round 14's flag: v_property_totals.noi subtracts the
-//     whole expense and counts none of the reimbursement). The panel says so.
-//   • Paid counts only DATED expense lines. Whatever the year's stored totals hold beyond
-//     the dated ones is returned as `expensesUndated` so the caller can state it rather
-//     than let Kept quietly read as profit. Nothing is spread evenly across the months.
-// `hasYtd` is per-property (did anything actually move?) so the caller can hide the trio
-// portfolio-wide when it would draw three empty bars.
-export function revenueExpensesNoi(properties, totalsByProp, ledgerByProp = null) {
+//     Revenue is `total_revenue` = Σ effective_rent, contract BASE RENT only. So a
+//     property collecting well can legitimately read ABOVE its Revenue bar (the same
+//     asymmetry as round 14's NOI flag: v_property_totals counts none of the
+//     reimbursement). The panel states the reason rather than clamping the figure.
+//   • `billedYtd` rides along so the tooltip can say what it is a share OF — the invoices
+//     actually issued — which is the honest denominator.
+// `hasCollected` is per-property so the caller can hide the bar portfolio-wide rather than
+// draw an empty one against every property.
+export function revenueExpensesNoi(properties, totalsByProp, collectedByProp = null) {
   return (properties || [])
     .map((p) => {
       const t = totalsByProp?.[p.id];
@@ -236,20 +227,11 @@ export function revenueExpensesNoi(properties, totalsByProp, ledgerByProp = null
       const expenses = taxes + cam + roof;
       if (revenue === 0 && expenses === 0) return null;
       const row = { id: p.id, name: nameFor(p), Revenue: revenue, Expenses: expenses, NOI: num(t.noi), taxes, cam, roof };
-      if (ledgerByProp) {
-        const y = ledgerByProp[p.id] || {};
-        const collected = num(y.collected);
-        const paid = num(y.paidToDate);
-        const later = num(y.datedLater);
-        row.Collected = collected;
-        row.Paid = paid;
-        row.Kept = round2(collected - paid);
+      if (collectedByProp) {
+        const y = collectedByProp[p.id] || {};
+        row.Collected = num(y.collected);
         row.billedYtd = num(y.billed);
-        row.expensesLater = later;
-        // Everything the stored total holds that carries no usable date yet — undated
-        // lines AND an un-itemized flat kind, which has no line to date at all.
-        row.expensesUndated = Math.max(0, round2(expenses - paid - later));
-        row.hasYtd = collected > 0 || paid > 0;
+        row.hasCollected = row.Collected > 0;
       }
       return row;
     })
@@ -257,10 +239,9 @@ export function revenueExpensesNoi(properties, totalsByProp, ledgerByProp = null
     .sort((a, b) => b.Revenue - a.Revenue);
 }
 
-// Is there a "so far" story to tell at all? False when nothing has been collected and no
-// expense carries a payment date — three flat zero bars per property would say nothing
-// and make the three that matter harder to read.
-export const hasYtdBars = (rows) => (rows || []).some((r) => r.hasYtd);
+// Is there anything collected to draw at all? False when not a dollar has come in — a flat
+// zero bar against every property would say nothing and cost the other three their width.
+export const hasCollectedBars = (rows) => (rows || []).some((r) => r.hasCollected);
 
 // A long property name in a legend or axis tick pushes the chart out of shape; the
 // tooltip still carries the full name.

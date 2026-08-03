@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import {
   revenueByProperty, occupancyByProperty, portfolioOccupancy, revenueExpensesNoi, rentRollover,
-  hasYtdBars, CHART_SERIES, CHART_SERIES_YTD, DONUT_PALETTE, ROLLOVER_RAMP, kfmt, shortName,
+  hasCollectedBars, CHART_SERIES, CHART_COLLECTED, DONUT_PALETTE, ROLLOVER_RAMP, kfmt, shortName,
 } from '../lib/portfolioCharts';
 import { money, money0, sf } from '../lib/format';
 import { localDateIso } from '../lib/api';
@@ -19,10 +19,10 @@ import { localDateIso } from '../lib/api';
 // comes from (concentration by tenant), HOW MUCH space sits empty, WHEN the rent comes up
 // for renewal (concentration in time), and WHICH property actually keeps what it earns.
 // A panel with nothing to say hides itself rather than drawing an empty frame.
-export default function PortfolioCharts({ properties = [], totalsByProp = {}, ytdByProp = null, leases = [], year }) {
+export default function PortfolioCharts({ properties = [], totalsByProp = {}, collectedByProp = null, leases = [], year }) {
   const revenue = revenueByProperty(properties, totalsByProp);
   const space = occupancyByProperty(properties, totalsByProp);
-  const performance = revenueExpensesNoi(properties, totalsByProp, ytdByProp);
+  const performance = revenueExpensesNoi(properties, totalsByProp, collectedByProp);
   const rollover = rentRollover(leases, localDateIso());
 
   if (!revenue.length && !space.length && !performance.length && !rollover.length) return null;
@@ -55,22 +55,10 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, yt
     'At today’s rent, not a forecast.',
   ].filter(Boolean).join(' ');
 
-  // "So far this year" — the cash twin of the three bars. Hidden entirely when nothing
-  // has moved: three flat zeros per property would say nothing and cost the other three
-  // half their width.
-  const showYtd = hasYtdBars(performance);
-  const undatedTotal = showYtd
-    ? performance.reduce((s, d) => s + (Number(d.expensesUndated) || 0), 0)
-    : 0;
-  const anyCollected = showYtd && performance.some((d) => (Number(d.Collected) || 0) > 0);
-  // ⚠ Only the WHOLE-YEAR trio is labelled, never all six. Measured in the browser at the
-  // width three properties actually get: six labels over six ~37px bars run together
-  // ("$97k$87k"), and overlapping digits are worse than none. Labelling every other bar
-  // leaves each figure a clear neighbour at any width this panel is ever given, and keeps
-  // the three that have carried their figure since 2026-07-29 carrying it. The "so far"
-  // three are named in the legend, spelled out in the foot, and exact on hover.
-  const showBarLabels = performance.length <= 6;
-  const fullYearLabel = (key) => (showBarLabels
+  // The collected bar hides itself entirely when nothing has come in: a flat zero against
+  // every property would say nothing and cost the other three bars their width.
+  const showCollected = hasCollectedBars(performance);
+  const barLabel = (key) => (performance.length <= 6
     ? <LabelList dataKey={key} position="top" formatter={kfmt} className="bar-label" />
     : null);
 
@@ -179,48 +167,46 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, yt
       {performance.length > 0 && (
         <ChartPanel
           title="What each property keeps"
-          caption={showYtd ? `FY ${year} · on paper vs. what has actually moved` : `Revenue · expenses · NOI · FY ${year}`}
+          caption={showCollected
+            ? `FY ${year} · with the rent collected so far`
+            : `Revenue · expenses · NOI · FY ${year}`}
           wide
-          /* Six bars fit a laptop and not a phone: at 420px they land ~20px wide and their
-             figures overlap. The class lets one media query drop the labels for THIS
-             layout only — the three-bar version keeps carrying its figures at every width,
-             and the tooltip carries all six regardless. */
-          className={showYtd ? 'has-ytd' : ''}
+          /* ⚠ Whether the bar figures fit depends on the room ONE property gets, which is
+             the plot width divided by the number of properties — so a viewport-only media
+             query is the wrong instrument, and labelling every bar collided at exactly
+             this panel's 3-property width last round. Measured on the deployed demo: a
+             283px per-property slot still clears its labels by 9px, and three properties
+             at 1440 get ~339px. `dense` marks the case that can fall under that — three or
+             more properties in a narrowed window — so the media query below drops the
+             figures there and nowhere else. The hover panel carries all four regardless. */
+          className={[
+            showCollected ? 'has-collected' : '',
+            showCollected && performance.length >= 3 ? 'dense' : '',
+          ].filter(Boolean).join(' ')}
         >
-          {/* Two labelled rows, not six loose swatches. The bars pair off — each "so far"
-              bar is the same hue as the full-year one it sits beside — so the legend has
-              to name the two BASES before it names the six series, or a reader has no way
-              to tell six measures from three measured twice. */}
-          <div className={`chart-legend${showYtd ? ' chart-legend-basis' : ''}`}>
-            <span className="leg-basis">
-              {showYtd && <b className="leg-tag">Whole year</b>}
-              <span><span className="sw" style={{ background: CHART_SERIES.revenue }} /> Revenue</span>
-              <span><span className="sw" style={{ background: CHART_SERIES.expenses }} /> Expenses</span>
-              <span><span className="sw" style={{ background: CHART_SERIES.noi }} /> NOI</span>
-            </span>
-            {showYtd && (
-              <span className="leg-basis">
-                <b className="leg-tag">So far</b>
-                <span><span className="sw" style={{ background: CHART_SERIES_YTD.collected }} /> Collected</span>
-                <span><span className="sw" style={{ background: CHART_SERIES_YTD.paid }} /> Paid</span>
-                <span><span className="sw" style={{ background: CHART_SERIES_YTD.kept }} /> Kept</span>
-              </span>
+          {/* Named in BAR order, so the reader can map each swatch to the column under it. */}
+          <div className="chart-legend">
+            <span><span className="sw" style={{ background: CHART_SERIES.revenue }} /> Revenue</span>
+            {showCollected && (
+              <span><span className="sw" style={{ background: CHART_COLLECTED }} /> Collected so far</span>
             )}
+            <span><span className="sw" style={{ background: CHART_SERIES.expenses }} /> Expenses</span>
+            <span><span className="sw" style={{ background: CHART_SERIES.noi }} /> NOI</span>
           </div>
           <ResponsiveContainer width="100%" height={220}>
-            {/* ⚠ THE PAIRING ONLY READS IF THE BARS TOUCH, and recharts will not do that on
+            {/* ⚠ THE PAIR ONLY READS IF THE TWO BARS TOUCH, and recharts will not do that on
                 its own: it divides the property's band by the number of series and then
-                CENTRES each bar in its slot, so a maxBarSize small enough to fit six
-                scatters them across the band with a hole wherever a figure is $0 — six
-                loose columns instead of three pairs, which is the one thing this panel
-                must not look like. Narrowing the band (barCategoryGap) and closing the gap
-                between bars is what pulls each pair together; the size cap is then only a
-                ceiling for a portfolio with one or two properties. */}
+                CENTRES each bar in its slot, so a maxBarSize small enough to fit four
+                scatters them across the band with a hole wherever a figure is $0 — four
+                loose columns instead of a pair and two singles, which is the one thing this
+                panel must not look like. Narrowing the band (barCategoryGap) and closing
+                the gap between bars is what pulls Revenue and Collected together; the size
+                cap is then only a ceiling for a portfolio with one or two properties. */}
             <BarChart
               data={performance}
               margin={{ top: 16, right: 4, left: -8, bottom: 0 }}
-              barCategoryGap={showYtd ? '34%' : '10%'}
-              barGap={showYtd ? 2 : 4}
+              barCategoryGap={showCollected ? '24%' : '10%'}
+              barGap={showCollected ? 2 : 4}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(27,24,19,.1)" vertical={false} />
               <XAxis dataKey="name" tickFormatter={(v) => shortName(v, 16)} tick={{ fontSize: 10 }} interval={0} />
@@ -230,51 +216,38 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, yt
                   Expenses · NOI · Revenue — reading as though NOI came out of expenses;
                   and the Expenses row has to show the actual taxes/CAM/roof it's made of. */}
               <Tooltip content={<PerformanceTip year={year} />} cursor={{ fill: 'rgba(27,24,19,.05)' }} />
-              {/* Declared in PAIRS — Revenue then Collected, Expenses then Paid, NOI then
-                  Kept — so each measure's two bases stand next to each other. Split into
-                  two groups of three and the eye has to travel the whole property to
-                  compare the one thing the panel is about. */}
-              <Bar dataKey="Revenue" fill={CHART_SERIES.revenue} isAnimationActive={false} maxBarSize={showYtd ? 46 : 54}>
-                {fullYearLabel('Revenue')}
+              {/* Collected is declared immediately after Revenue, never at the end: it is
+                  the same measure with money actually in hand, and the two only read as one
+                  thing twice if they stand next to each other. */}
+              <Bar dataKey="Revenue" fill={CHART_SERIES.revenue} isAnimationActive={false} maxBarSize={showCollected ? 50 : 54}>
+                {barLabel('Revenue')}
               </Bar>
-              {showYtd && <Bar dataKey="Collected" fill={CHART_SERIES_YTD.collected} isAnimationActive={false} maxBarSize={46} />}
-              <Bar dataKey="Expenses" fill={CHART_SERIES.expenses} isAnimationActive={false} maxBarSize={showYtd ? 46 : 54}>
-                {fullYearLabel('Expenses')}
+              {showCollected && (
+                <Bar dataKey="Collected" fill={CHART_COLLECTED} isAnimationActive={false} maxBarSize={50}>
+                  {barLabel('Collected')}
+                </Bar>
+              )}
+              <Bar dataKey="Expenses" fill={CHART_SERIES.expenses} isAnimationActive={false} maxBarSize={showCollected ? 50 : 54}>
+                {barLabel('Expenses')}
               </Bar>
-              {showYtd && <Bar dataKey="Paid" fill={CHART_SERIES_YTD.paid} isAnimationActive={false} maxBarSize={46} />}
-              <Bar dataKey="NOI" fill={CHART_SERIES.noi} isAnimationActive={false} maxBarSize={showYtd ? 46 : 54}>
-                {fullYearLabel('NOI')}
+              <Bar dataKey="NOI" fill={CHART_SERIES.noi} isAnimationActive={false} maxBarSize={showCollected ? 50 : 54}>
+                {barLabel('NOI')}
               </Bar>
-              {showYtd && <Bar dataKey="Kept" fill={CHART_SERIES_YTD.kept} isAnimationActive={false} maxBarSize={46} />}
             </BarChart>
           </ResponsiveContainer>
-          {showYtd ? (
+          {showCollected ? (
             <div className="chart-foot">
               <p className="chart-foot-line">
-                <b>Whole year</b> is what FY {year} comes to on paper — the rent the leases
-                oblige, and the actual property taxes, CAM and roof entered on each property’s
-                Expense entry — not the CAM &amp; tax estimates billed to tenants.
+                Revenue, Expenses and NOI are what FY {year} comes to <b>on paper</b> — the rent
+                the leases oblige, and the actual property taxes, CAM and roof entered on each
+                property’s Expense entry, not the CAM &amp; tax estimates billed to tenants.
               </p>
               <p className="chart-foot-line">
-                <b>So far</b> is money that has actually moved: rent <b>collected</b> on the
-                Ledger, and expenses <b>paid</b> — the expense lines carrying a payment date on
-                or before today. <b>Kept</b> is what’s left of the two.
+                <b>Collected so far</b> is money that has actually arrived: payments recorded
+                against this year’s invoices, straight off the Ledger. It is <b>all-in</b> — it
+                includes the CAM &amp; tax your tenants reimburse, which Revenue doesn’t count —
+                so it is not a share of the Revenue bar and can read above it.
               </p>
-              {undatedTotal > 0 && (
-                <p className="chart-foot-line warn">
-                  ⚠ {money0(undatedTotal)} of this year’s expenses carry no payment date, so they
-                  are <em>not</em> in “Paid” or “Kept” — nothing is spread evenly across the
-                  months to fill the gap. Add the date on each property’s Expense entry and both
-                  bars fill in.
-                </p>
-              )}
-              {anyCollected && (
-                <p className="chart-foot-line">
-                  <b>Kept can read above NOI</b>, and that isn’t an error: “Collected” is all-in
-                  — it includes the CAM &amp; tax your tenants reimburse — while “Revenue” and
-                  NOI count contract rent only.
-                </p>
-              )}
             </div>
           ) : (
             <p className="chart-foot">
@@ -320,10 +293,9 @@ export function RolloverTip({ active, payload }) {
   );
 }
 
-// Revenue · Expenses · NOI, in that order, with the expenses broken into the actual
-// figures they were summed from — and, when there is one, the "so far this year" trio in
-// its own block below a rule, each row naming what it actually counts. Exported for the
-// same reason as RolloverTip.
+// Revenue · Collected · Expenses · NOI, in bar order, with the expenses broken into the
+// actual figures they were summed from and the collected figure carrying what it is a
+// share OF. Exported for the same reason as RolloverTip.
 export function PerformanceTip({ active, payload, label, year }) {
   const d = active && payload?.length ? payload[0].payload : null;
   if (!d) return null;
@@ -332,13 +304,34 @@ export function PerformanceTip({ active, payload, label, year }) {
     ['CAM / maintenance', d.cam],
     ['Roof', d.roof],
   ].filter(([, v]) => v > 0);
-  const ytd = d.Collected != null;
+  const collected = d.Collected != null;
   return (
     <div className="chart-tip">
-      <div className="chart-tip-head">{label}</div>
-      {ytd && <div className="chart-tip-basis">On paper · FY {year}</div>}
+      <div className="chart-tip-head">{label}{year ? <span className="muted"> · FY {year}</span> : null}</div>
       <ul className="chart-tip-list">
         <li><span className="sw" style={{ background: CHART_SERIES.revenue }} /><span className="chart-tip-name">Revenue</span><span className="chart-tip-val">{money(d.Revenue)}</span></li>
+        {collected && (
+          <>
+            <li>
+              <span className="sw" style={{ background: CHART_COLLECTED }} />
+              <span className="chart-tip-name">Collected so far</span>
+              <span className="chart-tip-val">{money(d.Collected)}</span>
+            </li>
+            {/* What the figure is a share OF, then the reason it isn't a share of Revenue.
+                Two rows rather than one: .chart-tip-name truncates, and either half is
+                worth more than half a sentence with an ellipsis on the end. */}
+            <li className="chart-tip-part">
+              <span className="chart-tip-name">
+                {d.billedYtd > 0 ? `of ${money(d.billedYtd)} billed` : 'nothing billed yet this year'}
+              </span>
+            </li>
+            {d.Collected > 0 && (
+              <li className="chart-tip-part">
+                <span className="chart-tip-name">incl. reimbursed CAM &amp; tax</span>
+              </li>
+            )}
+          </>
+        )}
         <li><span className="sw" style={{ background: CHART_SERIES.expenses }} /><span className="chart-tip-name">Expenses</span><span className="chart-tip-val">{money(d.Expenses)}</span></li>
         {parts.map(([name, v]) => (
           <li key={name} className="chart-tip-part">
@@ -348,43 +341,6 @@ export function PerformanceTip({ active, payload, label, year }) {
         {parts.length === 0 && <li className="chart-tip-part muted">No expenses entered for this year</li>}
         <li><span className="sw" style={{ background: CHART_SERIES.noi }} /><span className="chart-tip-name">NOI</span><span className="chart-tip-val">{money(d.NOI)}</span></li>
       </ul>
-      {ytd && (
-        <>
-          <div className="chart-tip-basis rule">So far · money that has moved</div>
-          <ul className="chart-tip-list">
-            <li>
-              <span className="sw" style={{ background: CHART_SERIES_YTD.collected }} />
-              <span className="chart-tip-name">Collected</span>
-              <span className="chart-tip-val">{money(d.Collected)}</span>
-            </li>
-            {d.billedYtd > 0 && (
-              <li className="chart-tip-part">
-                <span className="chart-tip-name">of {money(d.billedYtd)} billed</span>
-              </li>
-            )}
-            <li>
-              <span className="sw" style={{ background: CHART_SERIES_YTD.paid }} />
-              <span className="chart-tip-name">Paid</span>
-              <span className="chart-tip-val">{money(d.Paid)}</span>
-            </li>
-            {d.expensesUndated > 0 && (
-              <li className="chart-tip-part">
-                <span className="chart-tip-name">{money(d.expensesUndated)} has no payment date</span>
-              </li>
-            )}
-            {d.expensesLater > 0 && (
-              <li className="chart-tip-part">
-                <span className="chart-tip-name">{money(d.expensesLater)} dated later this year</span>
-              </li>
-            )}
-            <li>
-              <span className="sw" style={{ background: CHART_SERIES_YTD.kept }} />
-              <span className="chart-tip-name">Kept</span>
-              <span className="chart-tip-val">{money(d.Kept)}</span>
-            </li>
-          </ul>
-        </>
-      )}
     </div>
   );
 }

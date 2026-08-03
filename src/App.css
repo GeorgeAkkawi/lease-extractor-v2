@@ -780,7 +780,10 @@ tbody tr:last-child td{border-bottom:none}
 .sec-title{font-family:var(--display);font-size:24px;font-weight:600;margin-bottom:16px}
 
 /* ---- chart ---- */
-.chart-legend{display:flex;gap:20px;margin-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+/* Wraps by construction: a legend that overruns its panel is always a bug, and a fourth
+   entry ("Collected so far") pushed NOI 41px past the panel edge at 420px before this.
+   The .wrap modifier below is about the donut legend's spacing, not its wrapping. */
+.chart-legend{display:flex;flex-wrap:wrap;gap:6px 20px;margin-bottom:10px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
 .chart-legend span{display:flex;align-items:center;gap:8px}
 .chart-legend .ln{width:16px;height:3px;border-radius:2px}
 .chart-legend .sw{width:12px;height:12px;border-radius:2px}
@@ -833,26 +836,24 @@ tbody tr:last-child td{border-bottom:none}
    figure, so it takes the whole row rather than a third of it. */
 .chart-panel.wide{grid-column:1/-1}
 .chart-foot{font-size:11px;color:var(--muted);margin:9px 0 2px;line-height:1.45}
-/* The performance panel's foot becomes several sentences once it has two bases to
-   explain — one per idea, so the reader can stop after the one they needed. */
+/* The performance panel's foot becomes two sentences once a second basis is on the chart
+   — one per idea, so the reader can stop after the one they needed. */
 .chart-foot-line{margin:0 0 5px}
 .chart-foot-line:last-child{margin-bottom:0}
 .chart-foot-line b{color:var(--ink);font-weight:600}
-.chart-foot-line.warn{color:var(--gold)}
-.chart-foot-line.warn b{color:var(--gold)}
-/* Six bars are three measures on two bases, not six measures. The legend has to say that
-   before it names anything, so each basis gets its own labelled row. */
-.chart-legend-basis{flex-direction:column;gap:6px;align-items:flex-start}
-.chart-legend-basis .leg-basis{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-.chart-legend-basis .leg-tag{color:var(--faint);font-weight:700;min-width:84px;letter-spacing:.1em}
-/* On a phone the six-bar layout gives each bar ~20px, so its figures overlap — measured
+/* On a phone the four-bar layout gives each bar ~20px, so its figures overlap — measured
    at 420px. Drop them for THAT layout only (the three-bar one still fits) and let the
-   hover panel carry every figure. The reserved tag column goes too, or the legend wraps
-   one word to a line. */
+   hover panel carry every figure. */
 @media (max-width:720px){
-  .chart-panel.wide.has-ytd .bar-label{display:none}
-  .chart-legend-basis .leg-tag{min-width:0}
-  .chart-legend-basis .leg-basis{gap:10px}
+  .chart-panel.wide.has-collected .bar-label{display:none}
+}
+/* Four bars × three or more properties is the combination that runs out of room first:
+   what matters is the width ONE property gets, not the viewport, so this breakpoint is
+   higher than the one above rather than a duplicate of it. Measured on the deployed demo —
+   a 283px per-property slot clears its labels by 9px, and three properties clear that at
+   1440 but not in a narrowed window. */
+@media (max-width:1200px){
+  .chart-panel.wide.has-collected.dense .bar-label{display:none}
 }
 /* Hover panels, replacing recharts' default box on both bar charts. The default sorted
    its rows ALPHABETICALLY (itemSorter:'name'), which read as Expenses · NOI · Revenue —
@@ -870,10 +871,6 @@ tbody tr:last-child td{border-bottom:none}
 .chart-tip-part{padding-left:16px;color:var(--muted);font-size:11px}
 .chart-tip-part .chart-tip-val{font-weight:500}
 .chart-tip-note{margin:6px 0 0;color:var(--muted);font-size:11px;line-height:1.35}
-/* Names which BASIS the rows beneath it are on — the tooltip carries both, and without
-   the label the six figures read as one list with two of everything. */
-.chart-tip-basis{font-size:9px;text-transform:uppercase;letter-spacing:.11em;color:var(--faint);font-weight:700;margin-bottom:4px}
-.chart-tip-basis.rule{margin-top:8px;padding-top:7px;border-top:1px solid var(--hair)}
 /* Space leased — a headline share over one filled track per property. The same hairline
    progress language the Ledger's Collected column and the alert urgency bar speak, so it
    reads as part of the app rather than a chart bolted on. */

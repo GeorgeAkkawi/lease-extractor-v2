@@ -64,58 +64,43 @@ describe('Overview — portfolio charts', () => {
     expect(screen.getByText(/not the CAM & tax estimates billed to tenants/i)).toBeTruthy();
   });
 
-  // George, 2026-08-03: "add year to date revenue, expenses and NOI as a bar on the what
-  // each property keeps graph … taken from the ledger. make sure to make the distinction
-  // between them clear and easy to understand."
-  it('draws the "so far this year" trio beside the full-year one, and names both bases', async () => {
+  // George, 2026-08-03: "all we need i think is just the year to date collected revenue"
+  // — one extra bar on "What each property keeps", taken from the Ledger.
+  it('draws the collected bar beside Revenue and names it in the legend', async () => {
     const { container } = renderDash();
     await waitFor(() => expect(screen.getByText('What each property keeps')).toBeTruthy());
-    // Six series, but the legend names the two BASES first — without those two tags the
-    // reader has no way to tell six measures from three measured twice, which is exactly
-    // the distinction George asked to be made clear. Asserted on the LEGEND specifically:
-    // the same two words appear in the foot that explains them, and a loose query would
-    // pass on the prose alone while the legend sat unlabelled.
+    // The legend has to read in BAR order, or a reader cannot map a swatch to the column
+    // under it — and "Collected so far" has to sit SECOND, next to the Revenue it belongs
+    // to, not tacked on the end where it reads as a fourth unrelated measure.
     const legend = await waitFor(() => {
-      const el = container.querySelector('.chart-legend-basis');
+      const el = container.querySelector('.chart-panel.wide .chart-legend');
       expect(el).toBeTruthy();
       return el;
     });
-    expect([...legend.querySelectorAll('.leg-tag')].map((n) => n.textContent))
-      .toEqual(['Whole year', 'So far']);
-    // Each basis names its own three, in pairing order — Revenue↔Collected, and so on.
-    expect([...legend.querySelectorAll('.leg-basis')].map((g) => [...g.querySelectorAll('.sw')].map((s) => s.parentElement.textContent.trim())))
-      .toEqual([['Revenue', 'Expenses', 'NOI'], ['Collected', 'Paid', 'Kept']]);
-    // The cash trio is spelled out in words too, because a lighter bar is not self-explanatory.
-    expect(screen.getByText(/money that has actually moved/i)).toBeTruthy();
+    expect([...legend.querySelectorAll('.sw')].map((s) => s.parentElement.textContent.trim()))
+      .toEqual(['Revenue', 'Collected so far', 'Expenses', 'NOI']);
+    // The four-bar layout carries the class one media query needs to drop its figures on a
+    // phone; without it the three-bar layout would lose its labels too.
+    expect(container.querySelector('.chart-panel.wide.has-collected')).toBeTruthy();
   });
 
-  // ⚠ THE ONE THAT MATTERS, and the reason "Paid" isn't just a smaller Expenses bar.
-  // The demo seeds $47,000 of expenses on Maple Plaza against $16,000 of DATED lines
-  // ($8k + $4k CAM, $1.5k + $2.5k roof; the "Owner legal fees" line is billable:false and
-  // is excluded from cam_total, so it is excluded here too) — plus Oak Center's $82,000
-  // entered as flat figures with no lines at all. $31,000 + $82,000 = $113,000 that cannot
-  // be dated. Date-independent on purpose: which side of TODAY each dated line falls on
-  // moves Paid, but never the undated total.
-  it('states the expenses it could not date rather than letting "Kept" read as profit', async () => {
-    renderDash();
+  // ⚠ THE ONE THAT MATTERS. On the demo seed Maple Plaza reads Revenue $144,000 against
+  // $100,300 collected, which invites exactly the wrong reading — "70% collected" — when the
+  // two count different money. The foot has to make both halves of the correction explicit:
+  // where the figure comes from, and why it can read above the bar beside it.
+  it('says the collected figure is all-in, so it is not a share of Revenue', async () => {
+    const { container } = renderDash();
     await waitFor(() => expect(screen.getByText('What each property keeps')).toBeTruthy());
-    const warn = await waitFor(() => {
-      const el = document.querySelector('.chart-foot-line.warn');
-      expect(el).toBeTruthy();
-      return el;
+    const foot = await waitFor(() => {
+      const lines = [...container.querySelectorAll('.chart-panel.wide .chart-foot-line')];
+      expect(lines.length).toBe(2);
+      return lines.map((n) => n.textContent).join(' ');
     });
-    expect(warn.textContent).toMatch(/\$113,000 of this year’s expenses carry no payment date/);
-    expect(warn.textContent).toMatch(/not.*in “Paid” or “Kept”/);
-    // …and that nothing is invented to fill the hole.
-    expect(warn.textContent).toMatch(/nothing is spread evenly across the months/i);
-  });
-
-  // Collected is all-in (it carries the reimbursed CAM & tax) while Revenue is contract
-  // rent only, so Kept can sit ABOVE NOI. Unexplained that reads as a bug in the chart.
-  it('warns that Kept can read above NOI, because the two count different money', async () => {
-    renderDash();
-    await waitFor(() => expect(screen.getByText('What each property keeps')).toBeTruthy());
-    expect(screen.getByText(/Kept can read above/i)).toBeTruthy();
+    expect(foot).toMatch(/payments recorded against this year’s invoices/i);
+    expect(foot).toMatch(/straight off the Ledger/i);
+    expect(foot).toMatch(/all-in/i);
+    expect(foot).toMatch(/includes the CAM & tax your tenants reimburse/i);
+    expect(foot).toMatch(/not a share of the Revenue bar and can read above it/i);
   });
 
   it('no longer draws the three metric cards — the charts say all three better', async () => {

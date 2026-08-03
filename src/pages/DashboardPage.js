@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, listLedgerYtdByProperty, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
+import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, listCollectedByProperty, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
 import { buildAlerts, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER, isLongPast, notificationKey, notificationSnoozed } from '../lib/alerts';
 import { groupFeed, rowSubject } from '../lib/notifyTypes';
 import { resolveLeadDays } from '../lib/notifyPrefs';
@@ -53,9 +53,9 @@ export default function DashboardPage() {
   // payment date on or before today, per property, in one round-trip. Feeds the second
   // trio of bars on "What each property keeps"; invalidated by settleBillingChange
   // alongside the ledger keys, so recording a payment moves the chart.
-  const { data: ytdByProp } = useQuery({
-    queryKey: ['portfolioYtd', year, propIds.length],
-    queryFn: () => listLedgerYtdByProperty(propIds, year),
+  const { data: collectedByProp } = useQuery({
+    queryKey: ['portfolioCollected', year, propIds.length],
+    queryFn: () => listCollectedByProperty(propIds, year),
     enabled: !!index,
   });
   // The landlord's per-type notification lead times ("notify me N ahead"). Folded into
@@ -234,7 +234,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} ytdByProp={ytdByProp} leases={leases} year={year} />}
+      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} collectedByProp={collectedByProp} leases={leases} year={year} />}
 
       {nothingShown && (
         <div className="panel">

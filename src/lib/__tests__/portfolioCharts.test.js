@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   revenueByProperty, occupancyByProperty, portfolioOccupancy, revenueExpensesNoi, rentRollover,
-  tenantMix, hasYtdBars, kfmt, shortName, DONUT_PALETTE,
+  tenantMix, hasCollectedBars, kfmt, shortName, DONUT_PALETTE,
 } from '../portfolioCharts';
 
 const PROPS = [
@@ -161,75 +161,54 @@ describe('revenueExpensesNoi', () => {
     expect(maple.taxes + maple.cam + maple.roof).toBe(maple.Expenses);
   });
 
-  it('adds NO year-to-date fields when there is no ledger data to add — byte-identical', () => {
+  it('adds NO collected field when there is nothing to add — byte-identical', () => {
     // The third argument is optional and must stay so: every existing caller (and the
     // panel's own three-bar mode) reads exactly the shape it always did.
     const before = revenueExpensesNoi(PROPS, TOTALS);
     expect(before[0].Collected).toBeUndefined();
-    expect(before[0].hasYtd).toBeUndefined();
-    expect(hasYtdBars(before)).toBe(false);
+    expect(before[0].hasCollected).toBeUndefined();
+    expect(hasCollectedBars(before)).toBe(false);
   });
 });
 
-// The second basis: what has actually MOVED, beside what the year comes to on paper.
-describe('revenueExpensesNoi — "so far this year"', () => {
-  // Maple: $60k collected of $120k billed; $12k of expenses dated on/before today, $3k
-  // dated later in the year, so $30k of the $45k stored total carries no date at all.
-  const YTD = {
-    p1: { collected: 60000, billed: 120000, paidToDate: 12000, datedLater: 3000 },
-    p2: { collected: 0, billed: 0, paidToDate: 0, datedLater: 0 },
+// The fourth bar: the rent that has actually arrived, beside the Revenue it belongs to.
+describe('revenueExpensesNoi — rent collected so far', () => {
+  const COLLECTED = {
+    p1: { collected: 60000, billed: 120000 },
+    p2: { collected: 0, billed: 0 },
   };
 
-  it('pairs each figure with its cash twin and keeps the three on-paper ones untouched', () => {
-    const maple = revenueExpensesNoi(PROPS, TOTALS, YTD).find((d) => d.name === 'Maple Plaza');
+  it('adds the collected figure and leaves the three on-paper ones untouched', () => {
+    const maple = revenueExpensesNoi(PROPS, TOTALS, COLLECTED).find((d) => d.name === 'Maple Plaza');
     expect(maple).toMatchObject({ Revenue: 120000, Expenses: 45000, NOI: 75000 });
-    expect(maple).toMatchObject({ Collected: 60000, Paid: 12000, Kept: 48000 });
-    expect(maple.Kept).toBe(maple.Collected - maple.Paid);
+    expect(maple).toMatchObject({ Collected: 60000, billedYtd: 120000, hasCollected: true });
   });
 
-  // ⚠ THE ONE THAT MATTERS. "Paid" counts only DATED lines, so whatever the stored total
-  // holds beyond them has to be reported — otherwise "Kept" quietly reads as profit on a
-  // portfolio whose expenses simply haven't been dated. Nothing is spread across months
-  // to fill the gap (round 14's refusal), so the gap must be stated instead.
-  it('reports the expenses it could NOT date rather than letting Kept overstate', () => {
-    const maple = revenueExpensesNoi(PROPS, TOTALS, YTD).find((d) => d.name === 'Maple Plaza');
-    expect(maple.expensesUndated).toBe(30000);            // 45,000 − 12,000 paid − 3,000 later
-    expect(maple.expensesLater).toBe(3000);
-    expect(maple.Paid + maple.expensesLater + maple.expensesUndated).toBe(maple.Expenses);
+  it('draws the bar only when something has actually come in', () => {
+    expect(hasCollectedBars(revenueExpensesNoi(PROPS, TOTALS, COLLECTED))).toBe(true);
+    const nothing = { p1: { collected: 0, billed: 0 } };
+    expect(hasCollectedBars(revenueExpensesNoi(PROPS, TOTALS, nothing))).toBe(false);
+    // Billed but not paid is still nothing collected — an invoice raised is not money in.
+    const billedOnly = { p1: { collected: 0, billed: 90000 } };
+    expect(hasCollectedBars(revenueExpensesNoi(PROPS, TOTALS, billedOnly))).toBe(false);
   });
 
-  it('an un-itemized property reads its WHOLE expense total as undated, not as paid', () => {
-    // Oak Center has expenses entered as flat figures with no lines to date at all.
-    const oak = revenueExpensesNoi(PROPS, TOTALS, YTD).find((d) => d.name === 'Oak Center');
-    expect(oak.Paid).toBe(0);
-    expect(oak.expensesUndated).toBe(70000);
-    expect(oak.hasYtd).toBe(false);   // nothing has moved here
-  });
-
-  it('shows the trio only when something has actually moved', () => {
-    expect(hasYtdBars(revenueExpensesNoi(PROPS, TOTALS, YTD))).toBe(true);
-    const nothing = { p1: { collected: 0, billed: 0, paidToDate: 0, datedLater: 0 } };
-    expect(hasYtdBars(revenueExpensesNoi(PROPS, TOTALS, nothing))).toBe(false);
-    // A single dated expense line is enough on its own — money out is money that moved.
-    const paidOnly = { p1: { collected: 0, billed: 0, paidToDate: 500, datedLater: 0 } };
-    expect(hasYtdBars(revenueExpensesNoi(PROPS, TOTALS, paidOnly))).toBe(true);
-  });
-
-  it('lets Kept exceed NOI without clamping — the two are on different bases', () => {
-    // Collected is ALL-IN (it carries the CAM & tax tenants reimburse) while Revenue is
-    // contract base rent only, so this ordering is correct arithmetic, not a bug to hide.
-    // v_property_totals.noi is the known understatement (round 14); silently capping Kept
-    // at NOI would make the chart lie to protect a figure that is itself incomplete.
-    const rich = { p1: { collected: 140000, billed: 140000, paidToDate: 1000, datedLater: 0 } };
+  // ⚠ THE ONE THAT MATTERS. Collected is ALL-IN — it carries the CAM & tax the tenants
+  // reimburse — while Revenue is contract base rent only. So a well-collected property
+  // legitimately reads ABOVE its Revenue bar. Silently capping it would make the chart lie
+  // to protect a figure (v_property_totals, round 14) that is itself incomplete.
+  it('lets Collected exceed Revenue without clamping — the two count different money', () => {
+    const rich = { p1: { collected: 145000, billed: 145000 } };
     const maple = revenueExpensesNoi(PROPS, TOTALS, rich).find((d) => d.name === 'Maple Plaza');
-    expect(maple.Kept).toBe(139000);
-    expect(maple.Kept).toBeGreaterThan(maple.NOI);
+    expect(maple.Collected).toBe(145000);
+    expect(maple.Collected).toBeGreaterThan(maple.Revenue);
   });
 
-  it('a property the ledger read knows nothing about still renders, with zeros', () => {
+  it('a property the read knows nothing about still renders, with zeros', () => {
     const maple = revenueExpensesNoi(PROPS, TOTALS, {}).find((d) => d.name === 'Maple Plaza');
-    expect(maple).toMatchObject({ Collected: 0, Paid: 0, Kept: 0, hasYtd: false });
-    expect(maple.expensesUndated).toBe(45000);
+    expect(maple).toMatchObject({ Collected: 0, billedYtd: 0, hasCollected: false });
+    // …and its on-paper figures are untouched by the empty read.
+    expect(maple).toMatchObject({ Revenue: 120000, Expenses: 45000, NOI: 75000 });
   });
 });
 
