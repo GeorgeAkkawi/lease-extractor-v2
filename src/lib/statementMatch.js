@@ -399,6 +399,11 @@ export function deriveEstimateFromDeposit(amount, tenant, month) {
   // to bill on top. Refused outright rather than left to the <$1 heuristic below,
   // which only holds while the property has no expenses entered.
   if (tenant.gross) return null;
+  // ⚠ A month carrying a one-off CHARGE or CREDIT (0082) is not evidence of a yearly
+  // rate. "deposit − base − roof" on a month with a $250 late fee inside it would derive
+  // a PERMANENT +$3,000/yr CAM & tax estimate off a single event. Same refusal shape as
+  // the gross branch: better no estimate than a confidently wrong one.
+  if (Math.abs(Number((tenant.adjByMonth || [])[m - 1]) || 0) > DUST) return null;
   const base = round2(Number((tenant.baseByMonth || [])[m - 1]) || 0);
   if (base <= DUST) return null; // the month bills no base rent — nothing to derive from
   const roof = round2(Number((tenant.roofByMonth || [])[m - 1]) || 0);

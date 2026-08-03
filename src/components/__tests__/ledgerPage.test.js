@@ -9,6 +9,7 @@ import { render, screen, waitFor, within, cleanup, fireEvent } from '@testing-li
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
+import { ConfirmProvider } from '../ConfirmDialog';
 import LedgerPage from '../../pages/LedgerPage';
 import { updateLease, markMonthPaid, unmarkMonthPaid } from '../../lib/api';
 import { currentYear } from '../../lib/format';
@@ -19,10 +20,12 @@ function renderLedger(propId = 'prop-1') {
     <MemoryRouter initialEntries={[`/financials/corp-1/${propId}/ledger`]}>
       <QueryClientProvider client={qc}>
         <ChromeProvider>
-          <Routes>
-            <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
-            <Route path="/financials/:corpId/:propId" element={<div>financials-page</div>} />
-          </Routes>
+          <ConfirmProvider>
+            <Routes>
+              <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
+              <Route path="/financials/:corpId/:propId" element={<div>financials-page</div>} />
+            </Routes>
+          </ConfirmProvider>
         </ChromeProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -143,7 +146,7 @@ describe('LedgerPage — the rent ledger grid', () => {
     await updateLease('lease-4', { square_footage: 1000 });
   });
 
-  it('a settled-SHORT month reads ✓ paid (paid = paid) — no "short" badge, click undoes it', async () => {
+  it('a settled-SHORT month reads ✓ paid (paid = paid) — no "short" badge; clicking opens the month panel, where undo lives', async () => {
     const Y = currentYear();
     // Tag City Dental's April at only $5,000 of the $9,150 owed → settled short.
     await markMonthPaid('lease-2', 'prop-1', Y, 4, { amount: 5000 });
@@ -165,8 +168,18 @@ describe('LedgerPage — the rent ledger grid', () => {
       .find((c) => (c.getAttribute('title') || '').includes('received $5,000'));
     expect(aprCell).toBeTruthy();
     expect(within(aprCell).getByText('$5,000')).toBeTruthy();
-    // Clicking undoes it — April re-opens (nothing is topped up).
+    // Clicking a settled month now OPENS it (George, 2026-08-03: "make the ledger
+    // clickable per month to go in and edit to show the differences"). The panel states
+    // what was billed vs what came in, and carries the undo the cell used to.
     fireEvent.click(aprCell);
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /April/ })).toBeTruthy());
+    const panel = screen.getByRole('dialog', { name: /April/ });
+    expect(within(panel).getByText('Still owed')).toBeTruthy();
+    expect(within(panel).getByText('$4,150.00')).toBeTruthy();
+    // Undo through the panel → its confirm → April re-opens (nothing is topped up).
+    fireEvent.click(within(panel).getByText('Undo this month'));
+    await waitFor(() => expect(screen.getByRole('alertdialog')).toBeTruthy());
+    fireEvent.click(screen.getByText('Undo the month'));
     await waitFor(() => expect(
       Array.from(document.querySelectorAll('button.rr-cell.paid'))
         .find((c) => (c.getAttribute('title') || '').includes('received $5,000'))

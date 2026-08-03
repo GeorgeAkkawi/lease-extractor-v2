@@ -62,8 +62,19 @@ export function owedArray(owedByMonth) {
 // States: null (owed ≤ 0, nothing received) · 'unbilled' (owed ≤ 0 but money was
 // tagged here) · 'covered' (settled, or pool ≥ owed − dust) · 'partial' (pool > 0) ·
 // 'open' (0); the caller renders "—"/"Free" for a null month.
-export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {}) {
+//
+// ⚠ 0082 — `adjustments` (a length-12 signed array of per-month charges/credits) changes
+// ONE line: a settled month's coverage caps at the SCHEDULED owed rather than the
+// adjusted owed. Without it `settled ⇒ coverage = owed` means a charge posted on a month
+// that was already paid produces gap 0 and NEVER appears in owesToDate — and correcting
+// a month you already collected is the commonest reason to post one. With the cap, a
+// +$400 charge produces $400 of real arrears while a plain payment difference still does
+// not (the "paid = paid" rule holds, because a payment difference doesn't move
+// `scheduled`). With no adjustments scheduled === owed, so this is byte-identical.
+export function allocatePayments({ owedByMonth, payments = [], adjustments = null, dust = 0.05 } = {}) {
   const owed = owedArray(owedByMonth);
+  const adj = Array.isArray(adjustments) ? adjustments : null;
+  const scheduledOwed = owed.map((o, i) => round2(o - (Number(adj?.[i]) || 0)));
   const tagged = Array(12).fill(0);
   let pool = 0;
   const sorted = [...(payments || [])].sort((a, b) => String(a?.paid_date || '').localeCompare(String(b?.paid_date || '')));
@@ -93,8 +104,15 @@ export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {
   const states = [];
   for (let i = 0; i < 12; i++) {
     received.push(round2(tagged[i] + poolDraw[i]));
-    // Coverage is bill-satisfaction: a tag on an unbilled month settles nothing.
-    const c = settled[i] && owed[i] > 0 ? owed[i] : round2(Math.min(owed[i], poolDraw[i]));
+    // Coverage is bill-satisfaction: a tag on an unbilled month settles nothing. A
+    // settled month satisfies the SCHEDULED bill whatever the amount ("paid = paid"),
+    // but never an adjustment posted on top of it — that is new money that has not
+    // arrived, so it stays owed until it is recorded or written off.
+    // (Real dollars from an untagged lump still pay an adjustment down — hence + poolDraw,
+    // which is also what makes "record the remaining difference" settle the month.)
+    const c = settled[i] && owed[i] > 0
+      ? round2(Math.min(owed[i], round2(scheduledOwed[i] + poolDraw[i])))
+      : round2(Math.min(owed[i], poolDraw[i]));
     coverage.push(c);
     if (!(owed[i] > 0)) states.push(tagged[i] > 0 ? 'unbilled' : null);
     else if (settled[i] || c >= owed[i] - dust) states.push('covered');
@@ -118,24 +136,36 @@ export function allocatePayments({ owedByMonth, payments = [], dust = 0.05 } = {
 // without this rule the fold-cents would print as "base $0.03" on a free month.
 // Partially-abated months (percent/amount) keep base-as-remainder: the reduction
 // comes out of base, CAM&tax/roof stay whole.
-export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, roofAnnual = 0 } = {}) {
+//
+// ⚠ 0082 — `adjustments` (a length-12 signed array) adds a FOURTH component and extends
+// the invariant to **base + camTax + roof + adj === owed**. Every one of the three
+// derived components is computed off the SCHEDULED owed (owed − adj), never the adjusted
+// owed — otherwise a +$400 correction would print as $400 of extra BASE RENT (base is a
+// remainder, ledger.js's oldest trap), and a −$150 credit would silently shrink the
+// printed CAM & tax via the `min` below rather than showing as its own line. The
+// `kind === 'free'` branch reads scheduled too, or a charge on a free month would print
+// as an invented CAM & tax expense.
+export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, roofAnnual = 0, adjustments = null } = {}) {
   const f = Number(factor) > 0 ? Number(factor) : 1;
   const camTaxMonthly = round2(((Number(camTaxAnnual) || 0) / 12) * f);
   const roofMonthly = round2(((Number(roofAnnual) || 0) / 12) * f);
+  const adj = Array.isArray(adjustments) ? adjustments : null;
   const out = {};
   for (let m = 1; m <= 12; m++) {
     const c = schedule?.[m] || {};
     const owedM = round2(Number(c.owed) || 0);
-    if (c.outsideTerm || owedM <= 0) { out[m] = { base: 0, camTax: 0, roof: 0 }; continue; }
-    let roof = Math.min(roofMonthly, owedM);
+    const adjM = round2(Number(adj?.[m - 1]) || 0);
+    const sOwed = round2(owedM - adjM); // what the SCHEDULE alone says for this month
+    if (c.outsideTerm || sOwed <= 0) { out[m] = { base: 0, camTax: 0, roof: 0, adj: round2(owedM) }; continue; }
+    let roof = Math.min(roofMonthly, sOwed);
     let camTax;
     if (c.abated && c.kind === 'free') {
-      camTax = round2(owedM - roof); // base is $0 by construction; CAM&tax absorbs fold-cents
+      camTax = round2(sOwed - roof); // base is $0 by construction; CAM&tax absorbs fold-cents
     } else {
-      camTax = Math.min(camTaxMonthly, round2(owedM - roof));
+      camTax = Math.min(camTaxMonthly, round2(sOwed - roof));
     }
-    const base = round2(owedM - camTax - roof);
-    out[m] = { base, camTax: round2(camTax), roof: round2(roof) };
+    const base = round2(sOwed - camTax - roof);
+    out[m] = { base, camTax: round2(camTax), roof: round2(roof), adj: adjM };
   }
   return out;
 }

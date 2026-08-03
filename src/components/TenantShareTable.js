@@ -16,6 +16,7 @@ import {
   getLeaseStatedEstimate,
   getLeaseSort,
   isAnnualInvoice,
+  listAdjustments,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
 import { sortTenantRows } from '../lib/leaseSort';
@@ -112,6 +113,13 @@ export default function TenantShareTable({ propertyId, year }) {
     queryFn: () => listInvoicesForProperty(propertyId),
   });
   const { data: leaseSort = {} } = useQuery({ queryKey: ['leaseSort'], queryFn: getLeaseSort });
+  // Per-month charges/credits (0082). A CAM & tax correction is part of what the tenant
+  // was billed this year, so it belongs on the estimate side of the live Difference —
+  // and ⚖ Reconcile must settle against the same figure or it charges it twice.
+  const { data: adjustments = [] } = useQuery({
+    queryKey: ['adjustments', propertyId, year],
+    queryFn: () => listAdjustments({ propertyId, year }),
+  });
 
   const [editingId, setEditingId] = useState(null); // lease being estimate-edited
   const [emailDraft, setEmailDraft] = useState(null); // reconciliation statement
@@ -231,10 +239,13 @@ export default function TenantShareTable({ propertyId, year }) {
   // so Estimated − Actual on screen always equals the Difference. `anyEstimate` gates
   // the whole estimated/difference/reconcile view: with no estimate typed it stays
   // dormant (the tenant simply bills its actual share, exactly as before).
+  const adjByLease = {};
+  for (const a of adjustments || []) (adjByLease[a.lease_id] ||= []).push(a);
   const rowsData = shares.map((s) => {
-    const fig = reconcileFigures({ share: s });
+    const adj = adjByLease[s.lease_id] || [];
+    const fig = reconcileFigures({ share: s, adjustments: adj });
     const billed = billedComponents(s);
-    return { share: s, fig, billed, recon: reconByLease[s.lease_id] || null };
+    return { share: s, fig, billed, adj, recon: reconByLease[s.lease_id] || null };
   });
   // Order the tenant entries by the shared sort preference (name / size / rent /
   // suite). The vacant + totals bands render after the map, so they stay pinned last.
@@ -380,6 +391,7 @@ export default function TenantShareTable({ propertyId, year }) {
               editing={editingId === s.lease_id}
               carried={carried}
               priorBilled={priorBilledByLease[s.lease_id]}
+              camTaxAdjust={row.fig.camTaxAdjust}
               onToggle={() => setEditingId(editingId === s.lease_id ? null : s.lease_id)}
             />
             <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? <SfRate annual={camTaxActual} area={s.square_footage} /> : ''} />
@@ -535,9 +547,13 @@ function DiffStat({ fig, show }) {
 // back to) with its $/SF sub-line, as a click target that opens/closes the editor.
 // When the estimate is carried over from a prior year (est_confirmed_year is stale) a
 // quiet hint shows what was billed last year and invites a re-save to confirm it.
-function EstimateStat({ share, billed, editing, carried, priorBilled, onToggle }) {
+function EstimateStat({ share, billed, editing, carried, priorBilled, camTaxAdjust = 0, onToggle }) {
   const sfNum = Number(share.square_footage) || 0;
-  const estCamTax = billed.camTax;
+  // What was actually BILLED for CAM & tax this year = the typed yearly estimate PLUS any
+  // per-month CAM & tax corrections posted on the Ledger (0082). Showing the estimate
+  // alone here would break the guarantee this column and the Difference column rest on:
+  // Estimated − Actual === Difference.
+  const estCamTax = Math.round((billed.camTax + (Number(camTaxAdjust) || 0)) * 100) / 100;
   const psfSub = sfNum > 0 ? <SfRate annual={estCamTax} area={sfNum} /> : '';
   const roofSub = share.roof_responsible && billed.roof > 0 ? `+ roof ${money(billed.roof)}` : '';
   const lastYear = priorBilled != null && priorBilled > 0 ? priorBilled : estCamTax;
@@ -575,6 +591,13 @@ function EstimateStat({ share, billed, editing, carried, priorBilled, onToggle }
             the neighboring column. */}
         <div className="cell-sub">{billed.anyEstimate ? (psfSub || NBSP) : 'billing actuals'}</div>
         {billed.anyEstimate && roofSub && <div className="cell-sub">{roofSub}</div>}
+        {/* Only when an estimate is actually typed — with none, this column reads
+            "billing actuals" and there is no estimate figure for a correction to be
+            "included in". The correction still shows on the Ledger box and the tenant
+            statement, which is where it belongs. */}
+        {billed.anyEstimate && Math.abs(Number(camTaxAdjust) || 0) > 0.005 && (
+          <div className="cell-sub">incl. {camTaxAdjust < 0 ? '−' : '+'}{money(Math.abs(camTaxAdjust))} corrected</div>
+        )}
         {carried && <div className="cell-sub carried-hint">carried over — last year {money0(lastYear)}</div>}
       </button>
     </div>

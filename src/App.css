@@ -120,6 +120,12 @@ button.rr-cell.abated{cursor:pointer}
    deposits, or an abated month. It settles no charge, so it can't be a ✓; it says so
    instead of quietly drifting onto the next month the lease does bill. */
 .rr-cell.recv{background:var(--gold-soft);border-color:var(--gold);color:var(--gold);border-style:dashed;min-width:46px}
+/* A per-month charge or credit posted on this box (0082). It rides UNDER the figure so
+   the cell still reads as its own state — the adjustment is why the box is off, not a
+   state of its own. Gold = a charge the tenant owes on top; forest = a credit. */
+.rr-adj{display:block;font-size:9px;font-weight:700;line-height:1;margin-top:1px;color:var(--gold);white-space:nowrap;font-variant-numeric:tabular-nums}
+.rr-adj.credit{color:var(--forest)}
+button.rr-cell.outside{cursor:pointer}
 /* The key: real .rr-cell swatches wearing the live classes, so it can't drift from
    the grid it explains. */
 .rr-key{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin:6px 0 14px;font-size:11.5px;color:var(--faint)}
@@ -1011,6 +1017,52 @@ tbody tr:last-child td{border-bottom:none}
 .confirm-imp.info .confirm-imp-title{color:var(--accent)}
 .confirm-imp ul{margin:0;padding-left:17px}
 .confirm-imp li{font-size:12.5px;line-height:1.5;color:var(--ink);margin:3px 0}
+
+/* ---- Month detail panel (0082) — one month of one tenant, opened from a Ledger box.
+   Two columns that read left to right the way the question is asked: what you billed,
+   then what came in — with the "the bill itself was different" form underneath. */
+.month-panel{width:640px;max-width:calc(100vw - 32px)}
+.mp-nav{display:flex;align-items:center;gap:2px}
+.mp-nav-label{font-family:var(--ui);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);min-width:30px;text-align:center}
+.mp-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.mp-cap{font-family:var(--ui);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+.mp-line{display:flex;align-items:baseline;gap:8px;font-size:13px;padding:3px 0;border-bottom:1px solid var(--hair)}
+.mp-line>span{flex:1;min-width:0;color:var(--muted)}
+.mp-line>b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.mp-line em{font-style:normal}
+.mp-line.mp-sub{border-bottom-style:dashed;color:var(--faint)}
+.mp-line.mp-total{border-bottom:0;border-top:1px solid var(--border);margin-top:4px;padding-top:6px;font-weight:700}
+.mp-line.mp-total>span{color:var(--ink)}
+.mp-line.mp-short>b{color:var(--gold)}
+.mp-charge{color:var(--gold)}
+.mp-credit{color:var(--forest)}
+.mp-line.mp-adj .icon-btn{padding:0 4px;line-height:1}
+.mp-post{margin-top:20px;border-top:1px solid var(--border);padding-top:14px}
+.mp-note{font-size:12px;line-height:1.55;margin:0 0 10px}
+.mp-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mp-form label{display:flex;flex-direction:column;gap:4px;min-width:0}
+.mp-form label>span{font-family:var(--ui);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+.mp-form .mp-memo{grid-column:1 / -1}
+.mp-hint{font-size:11.5px;line-height:1.5;margin:8px 0 0}
+.mp-preview{font-size:12.5px;margin-right:auto}
+@media (max-width:640px){
+  .mp-grid,.mp-form{grid-template-columns:1fr}
+}
+
+/* ---- Tenant statement — the running account on the lease page. */
+.stmt-table{width:100%;border-collapse:collapse;font-size:13px}
+.stmt-table th{font-family:var(--ui);font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);font-weight:600}
+.stmt-table td{padding:6px 10px;border-bottom:1px solid var(--hair);vertical-align:top}
+.stmt-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stmt-date{color:var(--faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+.stmt-memo{font-size:11.5px;margin-top:1px}
+.stmt-bal{font-weight:700}
+.stmt-table tr.stmt-payment td{color:var(--forest)}
+.stmt-table tr.stmt-credit td{color:var(--forest)}
+.stmt-table tr.stmt-adjustment td{color:var(--gold)}
+.stmt-table tr.stmt-total td{border-bottom:0;border-top:1px solid var(--border);font-weight:700;color:var(--ink)}
+.stmt-owed{color:var(--gold);font-weight:700}
+.stmt-credit{color:var(--forest);font-weight:700}
 .invoice-text{width:100%;min-height:300px;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:13px;line-height:1.6;border:1px solid var(--border);border-radius:var(--radius);padding:16px;resize:vertical;color:var(--ink);background:var(--panel-2);outline:none}
 .invoice-text:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .ai-loading{display:flex;align-items:center;gap:12px;padding:44px;justify-content:center;color:var(--muted);font-size:15px;font-style:italic;font-family:var(--display)}

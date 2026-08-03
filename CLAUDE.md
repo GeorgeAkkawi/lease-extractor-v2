@@ -181,6 +181,136 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-08-03** — **A Ledger month is now a place you can go INTO: open any month with money on it, see what was billed vs
+  what came in, and post a charge or a credit that carries all the way through** (George: *"be able to go into months that
+  are under or overpaid and edit, maybe the cam or base is different so make the ledger clickable per month to go in and
+  edit to show the differences (this goes into accounting because it should apply debits and credits per tenant — figure
+  out the logic for this as well like a way we can integrate into the system)"*, plus his four scoping picks: **settled
+  months open / open months still mark** · a line that **moves the balance** *"and there needs to be a way to settle it
+  that can move through the software where those numbers are affected"* · a **tenant statement on the lease page** · **all
+  four kinds**). Deployed: DB migration **`0082`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  **`58a23f02`**, demo worker `6ad06df0`. **$0 — no AI call anywhere; NO edge function, NO view, NO RPC; 0082 adds ONE plain
+  table and alters nothing, so NOT ONE STORED EXPENSE TOTAL MOVED** (read back live before and after: 401 S Main FY2026 CAM
+  1,846.26; Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596 — byte-identical). Tests
+  **1514/1514 across 154 files** (was 1479/152 — +35, two new suites).
+  - **The gap, stated precisely.** A month's `owed` is **derived, never stored** — `annualBase ÷ 12 + otherAnnual ÷ 12`
+    (`leaseSchedule.js`) — and its base/CAM&tax/roof split is two ANNUAL figures divided by twelve (`ledger.js`). **The only
+    per-month money column in the entire schema is `payments.period_month`** (0037). So the Ledger could SHOW a month came
+    in off (forest ✓, gold figure, a `short $649.44` chip) and offer **nowhere to say why and nothing to do about it** —
+    the only write verbs on the whole grid were *insert one payment* and *delete that month's payments*.
+  - **⚠ THE ONE RULE THE WHOLE FEATURE RESTS ON, and it is not a slogan — two silent-corruption paths were traced before a
+    line was written:** *An adjustment changes what is **OWED**. It never changes what was **RECEIVED**, and it never counts
+    itself as **covered**.*
+    - **① It would have manufactured a payment.** `resyncYearBillingToEstimate` re-records any month whose payments are all
+      system marks when the recorded total differs from `owed`. A +$400 charge would have **deleted the $5,000 payment and
+      written $5,400** — asserting money that never arrived and pushing **Collected UP by the charge**. Worse, the obvious
+      test would have *endorsed* it: `estimateResync.test.js` asserts exactly that re-stamp, because for an ESTIMATE it is
+      correct (an estimate re-prices money the tenant was always going to pay; a charge is new money that hasn't come).
+      **Fix: that function deliberately builds its schedule WITHOUT adjustments** — Σadj reaches the invoice TOTAL and
+      nowhere else. A comment at the call site says so, because a later round would "helpfully" thread it through.
+    - **② The charge would have been invisible.** `allocatePayments` sets `settled ⇒ coverage = owed`, so `gap = 0` and
+      `owesToDate` never moves — on **George's commonest case**, correcting a month already collected. **Fix: a settled
+      month's coverage caps at the SCHEDULED owed** (`min(owed, scheduled + poolDraw)`), so a +$400 charge produces $400 of
+      real arrears while a plain payment difference still does not — **"paid = paid" is preserved**, because a payment
+      difference doesn't move `scheduled`. A real lump still pays a charge down and settles the month.
+    - **Both are byte-identical with no adjustments** (`scheduled === owed`), which is why the other 1,479 tests stayed green.
+  - **⚠ THE TWO TESTS THAT MATTER, and why the obvious one is worthless.** *"The invoice total moved by $400"* passes whether
+    or not the feature manufactures a payment or hides the charge — the same shape as yesterday's
+    `expect(blob.size).toBeGreaterThan(4000)` "verifying" a corrupt workbook. So the suite posts a +$400 charge on an
+    **already system-marked** month and asserts **(a) not one payment row's amount changed** and **(b) `owesToDate` reports
+    $400**. Alongside: `base + camTax + roof + adj === owed` across the free-month, mid-year-start and out-of-term fixtures;
+    Σ owed still settles the invoice **to the cent** after both penny-folds; and the render tests **drive the real cell**
+    rather than asserting the panel's markup exists.
+  - **⚠ WHAT THIS IS NOT — and the direction doc's refusal is upheld.** `no-need-to-come-magical-fairy.md:571` refuses a
+    **general ledger**: *"a second source of truth for dollars that already have one."* This is not that. No chart of
+    accounts, no journal entries, no double entry, no second place NOI can be computed. It is a **one-sided tenant
+    sub-ledger** whose every dollar resolves into the ONE per-month `owed` the app already derives — a term added to an
+    existing equation rather than a parallel system. **`SIGNED amount`, deliberately**: `entity_ledger` (0077) stores a
+    magnitude and takes its sign from the kind because a draw is always out; here the sign is genuinely per-row (a CAM
+    correction goes either way), so it lives on the row and `kind` is only the category. **That IS debits and credits.**
+  - **The fourth component, and the trap it avoids.** `componentizeSchedule` computes `base = owed − camTax − roof` — base
+    is a **remainder**, this file's oldest trap. Let the adjusted owed reach it and a +$400 correction prints as **$400 of
+    extra BASE RENT**; a −$150 credit silently shrinks the printed CAM & tax via its `min`. So all three derived components
+    are computed off the **scheduled** owed and a fourth is returned: **`base + camTax + roof + adj === owed`**, every
+    month. The `kind === 'free'` branch reads scheduled too, or a charge on a free month would print as an invented CAM &
+    tax expense (pinned).
+  - **⚠ AND THE PENNY-FOLD IS RESTRICTED TO SCHEDULED MONTHS.** In reconcile-to-a-bill mode the scheduled part scales to
+    `invoiceTotal − Σadj` and the fold lands only on a month the schedule owes — otherwise the year's rounding cents could
+    land on a month that owes **solely** because of a charge, breaking the invariant by those cents. Pinned with a mid-year
+    lease whose February owes exactly its $250 fee and not a cent more.
+  - **⚠ FOUR REFUSALS, each about not letting a correction become a lie.** ① A **GROSS lease** is refused the CAM & tax
+    correction — the flat rent already CONTAINS taxes & CAM and the share is carved OUT of it (0073), so a correction there
+    re-adds on top of a rent that already includes it, the exact hole 0073 exists to close (matches `reconcileCamTax`'s
+    throw). Base, fee and credit stay available. ② A **closed year** refuses outright, like every §1 carry-through since
+    round 10. ③ A **credit larger than the month's bill** refuses, because a negative owed reads as "unbilled" everywhere
+    downstream and would drop the excess out of the year total. ④ An **unknown kind** (written by a later round, read by an
+    older bundle) still counts its AMOUNT — a signed dollar on a month is kind-independent, and dropping it would break the
+    invariant between two bundles — but never offsets the year-end true-up.
+  - **⚠ THE YEAR-END DOUBLE-CHARGE, closed.** `reconcileFigures` compares the annual estimate to the actual share. A +$400
+    CAM correction means the tenant **has already been billed** $400 more CAM — leave it out and ⚖ Reconcile trues up as
+    though they hadn't, **charging the same dollars twice**. So the estimate side reads `est.camTax + Σ(camtax-kind
+    adjustments)`; only that kind counts (a late fee is not CAM). The Financials **Estimated** column shows the same figure
+    with an *"incl. +$400.00 corrected"* line, so the on-screen guarantee **Estimated − Actual === Difference** still holds,
+    and `reconciliationData.js` moved with it so the Excel sheet can't disagree with the screen.
+  - **⚠ A CHARGED FEE AND OTHER INCOME ARE NOT THE SAME EVENT, and the guard is structural.** Round 8 built `other_income`
+    with a nullable `lease_id` precisely so a late fee could NAME a tenant without crediting their invoice. The distinction:
+    `other_income` records a fee that **arrived**; an adjustment records one that is **owed**. The panel says so in
+    plain words — and two guards make it more than advice: `getStatementMatchContext` carries adjustments (or a $5,250
+    deposit against a $5,000 month + $250 fee reads as "over" and can trip the already-recorded collision guard), and
+    **`deriveEstimateFromDeposit` now REFUSES a month carrying an adjustment** — without it a one-off $250 fee inside a
+    deposit would derive a **permanent +$3,000/yr CAM & tax estimate**. Pinned that City Dental's seeded $250 late fee
+    still moves no Ledger month.
+  - **Where it shows.** Every month box **with money on it** opens a **month panel**: scheduled base · CAM & tax · roof,
+    every correction on the month with a ✕, the resulting **Owed**, each payment received, and the difference — with the two
+    ways to close it side by side (**Record $X received** = money arrived; **post a charge/credit** = the bill was
+    different) and a ◀ ▶ switcher. An **open** month still marks paid in one click (George's call). A `+$400` / `−$150`
+    chip renders under any cell carrying one. The lease page gains a foldable **Tenant statement** — every charge, credit
+    and payment in date order with a running balance, listing only charges that have **come due** (rent is charged on the
+    1st, so December's rent isn't a March balance).
+  - **This also revives two dead cells:** a month recorded across several payments and a lump-covered month were inert
+    `<span>`s ("manage it on the lease's Invoices & payments"). Both open the panel now, which lists every payment on them.
+  - **Files.** New: `supabase/migrations/0082_lease_adjustments.sql` · `src/lib/adjustments.js` ·
+    `src/components/MonthDetailPanel.js` · `src/components/TenantStatement.js` ·
+    `src/lib/__tests__/adjustments.test.js` (29) · `src/components/__tests__/monthPanelUi.test.js` (6). Edited:
+    `src/lib/{leaseSchedule,ledger,reconciliation,reconciliationData,statementMatch,invalidate,api}.js` ·
+    `src/components/TenantShareTable.js` · `src/pages/{LedgerPage,LeaseDetailPage}.js` · `src/App.css` · two existing
+    suites (`ledger` — the two componentize assertions now pin the 4th component; `ledgerPage` — the settled-cell click
+    asserts the panel + its undo instead of the old inline undo). **No** view, RPC, edge function, mock or demo-seed
+    change — `lease_adjustments` is a plain table the demo mock auto-creates (`mockClient.js:240`, re-verified not
+    inherited), so **§3 carries no mirror obligation** and **§5 fans out to nothing**.
+  - **No demo-seed row, deliberately.** Four suites pin prop-2's figures and `ledgerPage`/`camReconciliation` pin prop-1's
+    ($22,300 / $109,800 / $78,000) — a seeded adjustment would re-price them, the same reason 2026-07-27 refused a seeded
+    short month. prop-2 is the **open-year** property (prop-1 carries a `financial_snapshots` row for the current year, so
+    an adjustment there refuses), so the whole flow is driveable in the demo in three clicks — which is exactly what the
+    verification below did.
+  - **Verified:** unit **1514/1514** (`vitest run`); `npm run build` compiles (857 modules); migration applied clean and
+    read back (**10 columns · `lease_id` NOT NULL · both `owner_all` and `require_aal2` policies · 3 indexes · 0
+    pre-existing rows**); **every stored expense total identical before and after**; live 200s on all four URLs; live
+    bundle carries the backend ref **and** the new table, demo bundle greps **free** of it. **Then driven in a real browser
+    against the DEPLOYED demo, which is how the last three rounds' defects were found:** an open January marks paid in one
+    click **with no dialog**; clicking it again opens *"January 2026 — Northwind Books"* reading **Base rent $10,416.67 ·
+    CAM & tax $2,333.33 · Scheduled $12,750.00 · Owed $12,750.00 · Received $12,750.00 · Settled**; posting a **+$400 CAM &
+    tax correction** through the real form turns it into **Owed $13,150.00 · Received $12,750.00 · Still owed $400.00**,
+    the box reads **✓ $12,750 +$400** with its figure gold, the row reads **short $400.00** — and **Collected stays exactly
+    $12,750.00** (rule ① proved live, not just in a test). Panel fits **420px** (388px wide, single column) with **zero**
+    page overflow at either width. **Zero console errors.**
+  - **George: hard-refresh (Cmd+Shift+R).** On a property's **Ledger**, click any month that has money on it. You'll see
+    what was billed, what came in, and the difference — and you can either record the rest as received or say the bill
+    itself was different (the CAM really was higher, a late fee, a concession you agreed). Whatever you post moves that
+    year's invoice, Outstanding, and the year-end reconcile with it, and shows up on the tenant's statement at the bottom
+    of their lease page.
+  - **Flags:** ① **The printed invoice DOCUMENT is the one link I have not finished, and §1 says to name it.**
+    `invoiceTemplate.js:73` sums the items it builds from the invoice's four component columns and never reads
+    `total_amount`, so a printed invoice would understate by exactly the adjustment. **It is dormant** — `InvoiceButton.js`
+    has been imported by nothing since 2026-07-13, so no user can reach it — which is why this is deferred rather than
+    rushed (closing it means a `draft-invoice` edge change, one of §3's four copies of the estimate math). **It must be
+    closed before that button is ever re-wired.** ② **Posting an adjustment re-issues that year's invoice**, a visible move
+    in Outstanding — the same behaviour every CAM/estimate edit has had since 2026-07-27. ③ **A closed year refuses** —
+    reopen it, or record the correction in the open year. ④ **A charge and Other income are two ways to record the same
+    money** — pick one; the panel says which is which. ⑤ **Adjustments deliberately never reach `total_revenue`**
+    (`0049:55` = `sum(effective_rent)`), matching `other_income`'s refusal — stated so nobody "fixes" it later and silently
+    re-values every chart point and closed-year snapshot.
+
 - **2026-08-03** — **The workbooks downloaded fine and opened DAMAGED: every sheet in three exports declared a frozen pane
   that splits nothing** (George: *"im getting issues when i try to open the excel sheets its saying it couldnt recover
   everything. also does it cost anything for the software to run those functions?"*). Deployed: frontend Cloudflare version

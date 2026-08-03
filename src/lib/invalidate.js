@@ -29,6 +29,13 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
     // The lease row (base rent can move with an escalation) and the lists that show it.
     leaseId ? ['lease', leaseId] : ['lease'],
     propertyId ? ['leases', propertyId] : ['leases'],
+    // Per-month charges and credits (0082) — the Ledger cells, the month panel and the
+    // lease's tenant statement all read them.
+    ['adjustments'],
+    // The statement importer's match context carries each tenant's per-month owed, so a
+    // charge must reach it or a deposit covering it reads as "over" (and can trip the
+    // already-recorded collision guard).
+    ['statementContext'],
     // Roll-ups and anything that reads an invoice balance.
     ['corpRollups'],
     ['alerts'],

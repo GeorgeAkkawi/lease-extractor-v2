@@ -11,6 +11,7 @@
 //                                both use, so they can never disagree.
 //
 // Pure code, no I/O — unit-tested in __tests__/reconciliation.test.js.
+import { camTaxAdjustmentTotal } from './adjustments';
 
 // Balances within ±5¢ are rounding dust, not money owed (same convention as the
 // 0055 v_invoice_balances clamp).
@@ -90,17 +91,23 @@ export function actualComponents(share) {
 // settlement matches what the landlord sees. Reconciliation is only meaningful once
 // an estimate is typed; with none, est == actual (its plain actual share) → nothing
 // owed, and the UI keeps the whole estimated/difference view dormant.
-// Returns { est, actual, estTotal, actualTotal, diff, direction, lines } where
-// diff = actual − estimate (> 0 ⇒ the tenant owes the shortfall; < 0 ⇒ the
+// ⚠ `adjustments` — the year's lease_adjustments rows (0082). A CAM & tax CORRECTION
+// means the tenant has ALREADY been billed that much more (or less) CAM this year, so it
+// belongs on the estimate side. Leave it out and ⚖ Reconcile trues up as though they
+// hadn't been — charging the same dollars twice. Only camtax-kind rows count (a late fee
+// or a base correction is not CAM), and an unrecognized kind deliberately doesn't offset.
+// Returns { est, actual, estTotal, actualTotal, diff, direction, lines, camTaxAdjust }
+// where diff = actual − estimate (> 0 ⇒ the tenant owes the shortfall; < 0 ⇒ the
 // landlord owes the tenant a refund; within ±5¢ ⇒ even).
-export function reconcileFigures({ share }) {
+export function reconcileFigures({ share, adjustments = null }) {
   const { cam, tax, roof } = billedComponents(share);
   const est = { cam, tax, roof };
   const actual = actualComponents(share);
+  const camTaxAdjust = camTaxAdjustmentTotal(adjustments);
 
   // CAM and property tax reconcile together as ONE combined "CAM & tax" line — the
   // landlord bills a single combined estimate, so they true up as a single figure.
-  const estCamTax = round2(est.cam + est.tax);
+  const estCamTax = round2(round2(est.cam + est.tax) + camTaxAdjust);
   const actualCamTax = round2(actual.cam + actual.tax);
   const lines = [
     { key: 'camtax', label: 'CAM & tax', est: estCamTax, actual: actualCamTax, diff: round2(actualCamTax - estCamTax) },
@@ -116,5 +123,5 @@ export function reconcileFigures({ share }) {
   const diff = round2(actualTotal - estTotal);
   const direction = Math.abs(diff) <= RECON_DUST ? 'even' : diff > 0 ? 'tenant_owes' : 'landlord_owes';
 
-  return { est, actual, estTotal, actualTotal, diff, direction, lines };
+  return { est, actual, estTotal, actualTotal, diff, direction, lines, camTaxAdjust };
 }

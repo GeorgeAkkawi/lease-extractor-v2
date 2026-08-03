@@ -15,6 +15,7 @@ import RenewalOptionsEditor from '../components/RenewalOptionsEditor';
 import AbatementEditor from '../components/AbatementEditor';
 import AddendumEditor from '../components/AddendumEditor';
 import InvoicesPanel from '../components/InvoicesPanel';
+import TenantStatement from '../components/TenantStatement';
 import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
 import DocumentsList from '../components/DocumentsList';
@@ -684,6 +685,10 @@ export default function LeaseDetailPage() {
           </div>
           <InvoicesPanel leaseId={leaseId} />
         </div>
+      )}
+
+      {showPanel('lease_receivables') && (
+        <TenantStatement leaseId={leaseId} year={Number(new Date().getFullYear())} tenantName={lease.tenant_name} />
       )}
 
       <div className="panel">

@@ -39,10 +39,10 @@ function termMonths(start, end) {
 //   roll        — this lease's getPropertyMonthlyRoll row (for the monthly base) or null
 //   renewals    — the lease's renewal_options rows
 //   property    — { name, address }
-export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTotal = 0, buildingSf = 0, roll = null, renewals = [], property = {}, year }) {
+export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTotal = 0, buildingSf = 0, roll = null, renewals = [], adjustments = [], property = {}, year }) {
   const sqft = Number(share.square_footage) || 0;
   const sharePct = Number(share.share_pct) || (buildingSf > 0 ? sqft / buildingSf : 0);
-  const fig = reconcileFigures({ share });
+  const fig = reconcileFigures({ share, adjustments });
   const est = billedComponents(share);
   const actual = actualComponents(share);
   // The rent as BILLED: the lease's base for a net tenant; on a gross lease the flat
@@ -53,7 +53,7 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
   // Monthly base — escalation-aware from the ledger's own schedule when we have it.
   let monthlyBase = Array(12).fill(round2(baseAnnual / 12));
   if (roll?.schedule) {
-    const comp = componentizeSchedule({ schedule: roll.schedule, factor: roll.factor, camTaxAnnual: roll.camTaxAnnual, roofAnnual: roll.roofAnnual });
+    const comp = componentizeSchedule({ schedule: roll.schedule, factor: roll.factor, camTaxAnnual: roll.camTaxAnnual, roofAnnual: roll.roofAnnual, adjustments: roll.adjustments });
     monthlyBase = Array.from({ length: 12 }, (_, i) => round2(Number(comp[i + 1]?.base) || 0));
   }
 
@@ -77,7 +77,9 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
     itemsActual.push({ label: 'Roof', kind: 'roof', annual: round2(actual.roof), psf: sqft > 0 ? actual.roof / sqft : null });
   }
 
-  const estCamTax = est.camTax;
+  // The estimate side carries the year's CAM & tax CORRECTIONS (0082) — the same figure
+  // reconcileFigures uses, so this sheet can never disagree with the on-screen Difference.
+  const estCamTax = round2(est.camTax + (Number(fig.camTaxAdjust) || 0));
   const actualCamTax = round2(actual.cam + actual.tax);
   const estRoof = est.roof;
   const actualRoof = round2(actual.roof);
@@ -182,6 +184,8 @@ export async function buildReconciliationReport({ propertyId, year }) {
       share, camItems, taxItems, roofTotal, buildingSf,
       roll: rollByLease[share.lease_id] || null,
       renewals: renewalsByLease[share.lease_id] || [],
+      // The roll already carries this year's rows — no extra query.
+      adjustments: rollByLease[share.lease_id]?.adjustmentRows || [],
       property: property || {}, year,
     })
   );

@@ -32,6 +32,7 @@ import LearnedPayeesPanel from '../components/LearnedPayeesPanel';
 import MutationError from '../components/MutationError';
 import { useConfirm } from '../components/ConfirmDialog';
 import LeaseTypeChip from '../components/LeaseTypeChip';
+import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness } from '../lib/dispositions';
 import { entityKindsFor } from '../lib/entityLedger';
@@ -160,6 +161,8 @@ export default function LedgerPage() {
   // Per-cell pending set (`${leaseId}:${m}`) so ONE click disables only its own box —
   // the whole grid stays clickable (parallel marks work), which is the speed fix.
   const [pendingCells, setPendingCells] = useState(() => new Set());
+  // Which month box is open in the detail panel: { leaseId, month } or null.
+  const [editing, setEditing] = useState(null);
   const cellKey = (leaseId, m) => `${leaseId}:${m}`;
 
   // Optimistic paint: adjust the row's raw payments (what the allocation derives from)
@@ -235,14 +238,19 @@ export default function LedgerPage() {
   const tenantSort = leaseSort.tenants || {};
   const derived = sortTenantRows(
     rows.map((r) => {
-      const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments });
-      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual });
+      const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments, adjustments: r.adjustments });
+      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual, adjustments: r.adjustments });
       const summary = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc, today });
       const steps = escalationStepMonths({ schedule: r.schedule, comp });
       return { r, alloc, comp, summary, steps };
     }),
     { mode: tenantSort.mode, dir: tenantSort.dir, pick: (d) => d.r }
   );
+
+  // The row the month panel is open on — resolved from the SAME derived array the grid
+  // paints from, so the panel and the box it was opened from can never disagree (and it
+  // repaints automatically after a post).
+  const editingRow = editing ? derived.find(({ r }) => r.lease_id === editing.leaseId) : null;
 
   const markAll = (m) => {
     const unpaid = derived.filter(({ alloc }) => round2(alloc.owed[m - 1] - alloc.coverage[m - 1]) > 0.05).length;
@@ -401,6 +409,12 @@ export default function LedgerPage() {
                       const m = i + 1;
                       const s = r.schedule?.[m];
                       const c = comp[m];
+                      const adjM = round2(Number(c?.adj) || 0);
+                      // Any cell carrying a charge or a credit says so under its figure.
+                      const adjChip = Math.abs(adjM) > 0.005
+                        ? <span className={`rr-adj${adjM < 0 ? ' credit' : ''}`}>{adjM < 0 ? '−' : '+'}{money0(Math.abs(adjM))}</span>
+                        : null;
+                      const open = () => setEditing({ leaseId: r.lease_id, month: m });
                       const owedM = alloc.owed[i];
                       const state = alloc.states[i];
                       const covered = alloc.coverage[i];
@@ -421,21 +435,20 @@ export default function LedgerPage() {
                       if (state === 'unbilled') {
                         return (
                           <td key={m}>
-                            <button type="button" className="rr-cell recv" disabled={pending}
-                              onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
-                              title={`${ml}: ${money(receivedM)} received — this lease bills nothing for ${ml}, so it settles no charge and isn't counted as collected rent. Click to undo.`}>
-                              ↓<span className="rr-amt">{money0(receivedM)}</span>
+                            <button type="button" className="rr-cell recv" disabled={pending} onClick={open}
+                              title={`${ml}: ${money(receivedM)} received — this lease bills nothing for ${ml}, so it settles no charge and isn't counted as collected rent. Click to open the month.`}>
+                              ↓<span className="rr-amt">{money0(receivedM)}</span>{adjChip}
                             </button>
                           </td>
                         );
                       }
-                      if (s?.outsideTerm) {
-                        return <td key={m}><span className="rr-cell outside" title={`${ml}: before this lease began`}>—</span></td>;
+                      if (s?.outsideTerm && !(owedM > 0)) {
+                        return <td key={m}><button type="button" className="rr-cell outside" onClick={open} title={`${ml}: before this lease began — click to open the month`}>—</button></td>;
                       }
                       if (owedM <= 0) {
-                        return <td key={m}><span className="rr-cell abated" title={`${ml}: base rent abated — nothing due`}>F</span></td>;
+                        return <td key={m}><button type="button" className="rr-cell abated" onClick={open} title={`${ml}: base rent abated — nothing due · click to open the month`}>F</button></td>;
                       }
-                      const parts = c ? `${money(c.base)} base · ${money(c.camTax)} CAM&tax${c.roof > 0 ? ` · ${money(c.roof)} roof` : ''}` : '';
+                      const parts = c ? `${money(c.base)} base · ${money(c.camTax)} CAM&tax${c.roof > 0 ? ` · ${money(c.roof)} roof` : ''}${Math.abs(adjM) > 0.005 ? ` · ${adjM < 0 ? '−' : '+'}${money(Math.abs(adjM))} adjustment` : ''}` : '';
                       const monthLine = `${ml}: ${money(owedM)} owed (${parts})${s?.abated ? ' — base rent abated' : ''}`;
                       const started = year < curY || (isCurrentFy && m <= curM);
                       if (state === 'covered') {
@@ -456,55 +469,54 @@ export default function LedgerPage() {
                             : '';
                           // Recorded across MORE than one same-month payment: undoing would delete
                           // them all, so it's inert here and managed on the lease's Invoices & payments.
-                          if (tagCount > 1) {
-                            return (
-                              <td key={m}>
-                                <span className={`rr-cell paid${s?.abated ? ' abated' : ''}${stepCls}`}
-                                  title={`${stepTip}${ml}: received ${money(receivedM)}${diffTip} — recorded across ${tagCount} payments · manage on the lease's Invoices & payments`}>
-                                  ✓<span className={amtCls}>{amtText}</span>
-                                </span>
-                              </td>
-                            );
-                          }
-                          // One tagged payment — paid = paid, click to undo whatever the amount.
+                          // A settled month opens the month panel — where the base/CAM&tax
+                          // split, every payment on it, and the two ways to close a
+                          // difference (record the money, or say the bill itself was
+                          // different) all live. George, 2026-08-03: "make the ledger
+                          // clickable per month to go in and edit to show the differences."
+                          // Undo moved inside the panel; several same-month payments are
+                          // no longer inert (the panel lists them all).
                           return (
                             <td key={m}>
                               <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
-                                onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' })}
-                                title={`${stepTip}${ml} paid — received ${money(receivedM)}${diffTip} · click to undo`}>
-                                ✓<span className={amtCls}>{amtText}</span>
+                                onClick={open}
+                                title={`${stepTip}${ml} paid — received ${money(receivedM)}${diffTip}${tagCount > 1 ? ` across ${tagCount} payments` : ''} · click to open the month`}>
+                                ✓<span className={amtCls}>{amtText}</span>{adjChip}
                               </button>
                             </td>
                           );
                         }
-                        // Covered by an untagged lump. Show the amount it drew and say a lump paid
-                        // it — a faded, figureless, unclickable ✓ reads as a button that didn't press.
+                        // Covered by an untagged lump. Show the amount it drew and say a lump paid it.
                         return (
                           <td key={m}>
-                            <span className={`rr-cell paid pool${stepCls}`} title={`${stepTip}${monthLine} — ${money(receivedM)} drawn from a lump payment · manage it on the lease's Invoices & payments`}>
-                              ✓<span className="rr-amt">{money0(receivedM)}</span>
-                            </span>
+                            <button type="button" className={`rr-cell paid pool${stepCls}`} disabled={pending} onClick={open}
+                              title={`${stepTip}${monthLine} — ${money(receivedM)} drawn from a lump payment · click to open the month`}>
+                              ✓<span className="rr-amt">{money0(receivedM)}</span>{adjChip}
+                            </button>
                           </td>
                         );
                       }
                       if (state === 'partial') {
-                        // Only a pooled lump produces a partial now (a tag always settles). One glyph,
-                        // one action: click records the gap so the month reads paid.
+                        // Part-covered by a lump. Opens the month, where "Record $X received"
+                        // closes the gap in one click and an adjustment says the bill was different.
                         const gap = round2(owedM - covered);
                         return (
                           <td key={m}>
-                            <button type="button" className={`rr-cell partial${stepCls}`} disabled={pending}
-                              onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'gap', amount: gap })}
-                              title={`${stepTip}${monthLine} — ${money(covered)} covered by a lump payment · click to record the remaining ${money(gap)}`}>◐</button>
+                            <button type="button" className={`rr-cell partial${stepCls}`} disabled={pending} onClick={open}
+                              title={`${stepTip}${monthLine} — ${money(covered)} covered by a lump payment · click to open the month and record the remaining ${money(gap)}`}>◐{adjChip}</button>
                           </td>
                         );
                       }
+                      // An OPEN month keeps its one-click mark-paid — George's call: only a
+                      // month with money on it opens the panel. (Shift/right-click isn't a
+                      // discoverable affordance, so the panel is reached from any settled
+                      // month and its ◀ ▶ switcher walks to this one.)
                       const late = started;
                       return (
                         <td key={m}>
                           <button type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
                             onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'mark', amount: round2(owedM) })}
-                            title={`${stepTip}${late ? 'Overdue — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—</button>
+                            title={`${stepTip}${late ? 'Overdue — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—{adjChip}</button>
                         </td>
                       );
                     })}
@@ -702,6 +714,19 @@ export default function LedgerPage() {
 
         <LearnedPayeesPanel propId={propId} year={year} />
       </StatementDropZone>
+
+      {editingRow && (
+        <MonthDetailPanel
+          propertyId={propId}
+          year={year}
+          month={editing.month}
+          row={editingRow.r}
+          comp={editingRow.comp}
+          alloc={editingRow.alloc}
+          onMonth={(m) => setEditing((e) => ({ ...e, month: m }))}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }

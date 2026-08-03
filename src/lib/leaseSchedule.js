@@ -19,8 +19,19 @@
 // months and mis-charges a mid-year start.
 import { occupancyStart, monthlyBases } from './escalations';
 import { monthlyScheduleForYear } from './abatement';
+import { monthlyAdjustments } from './adjustments';
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+// Accept either a length-12 signed array or the raw lease_adjustments rows.
+function adjArray(adjustments) {
+  if (!adjustments) return null;
+  if (Array.isArray(adjustments) && adjustments.length === 12 && adjustments.every((v) => typeof v === 'number')) {
+    return adjustments.map((v) => round2(v));
+  }
+  const a = monthlyAdjustments(adjustments);
+  return a.some((v) => v !== 0) ? a : null;
+}
 
 // Build the term-aware monthly schedule for one lease-year. The SHAPE — which months are
 // owed vs "—" (before occupancy start), which are "Free" (abated), and a mid-year rate
@@ -33,31 +44,53 @@ const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 // occupancyStartIso, factor } — factor is the invoice-scaling ratio applied to the owed
 // months (1 when no scaling ran), so the ledger's component split can scale CAM&tax the
 // same way the whole month was scaled.
-export function buildLeaseSchedule({ year, grossBase, otherAnnual, abatements, escalations, leaseStart, invoiceTotal }) {
+export function buildLeaseSchedule({ year, grossBase, otherAnnual, abatements, escalations, leaseStart, invoiceTotal, adjustments }) {
   const occ = occupancyStart({ lease_start: leaseStart }, escalations);
   const bases = monthlyBases(escalations, grossBase, year);
   const schedule = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual, abatements, occupancyStartIso: occ, monthlyBases: bases });
   const shareAnnual = round2(Object.values(schedule).reduce((s, c) => s + c.owed, 0));
+  // ⚠ Per-month charges and credits (0082). They are added LAST, after any scaling and
+  // after both penny-folds, so an adjustment is the exact dollar figure the landlord
+  // typed — never smeared across twelve months by the invoice `factor`, and never inside
+  // abatement.js's own fold (which is gated at ≤12¢ and would be wrong by Σadj).
+  const adj = adjArray(adjustments);
+  const adjTotal = adj ? round2(adj.reduce((s, v) => s + v, 0)) : 0;
+  // An invoice's total already CONTAINS Σadj (resyncYearBillingToEstimate writes it that
+  // way), so the scheduled part must scale to the total LESS the adjustments — otherwise
+  // the charge would be counted twice and every month re-priced by it.
+  const scaleTarget = invoiceTotal != null ? round2(Number(invoiceTotal) - adjTotal) : null;
   let factor = 1;
-  if (invoiceTotal != null && shareAnnual > 0 && Math.abs(round2(invoiceTotal) - shareAnnual) > 0.05) {
-    factor = Number(invoiceTotal) / shareAnnual;
+  if (scaleTarget != null && shareAnnual > 0 && Math.abs(scaleTarget - shareAnnual) > 0.05) {
+    factor = scaleTarget / shareAnnual;
     for (let m = 1; m <= 12; m++) {
       const c = schedule[m];
       if (c.outsideTerm) continue;
       c.owed = round2(c.owed * factor);
       if (!c.abated) c.full = c.owed;
     }
-    // Penny-fold so the scaled months sum EXACTLY to the invoice total.
-    const diff = round2(Number(invoiceTotal) - round2(Object.values(schedule).reduce((s, c) => s + c.owed, 0)));
+    // Penny-fold so the scaled months sum EXACTLY to the scheduled target. It lands only
+    // on a SCHEDULED month (adjustments haven't been applied yet), so a month that owes
+    // solely because of a charge can never absorb the year's rounding cents — which would
+    // break `base + camTax + roof + adj === owed` by those cents.
+    const diff = round2(scaleTarget - round2(Object.values(schedule).reduce((s, c) => s + c.owed, 0)));
     if (diff !== 0) {
       for (let m = 12; m >= 1; m--) {
         if (!schedule[m].outsideTerm && schedule[m].owed > 0) { schedule[m].owed = round2(schedule[m].owed + diff); if (!schedule[m].abated) schedule[m].full = schedule[m].owed; break; }
       }
     }
   }
+  if (adj) {
+    for (let m = 1; m <= 12; m++) {
+      const a = adj[m - 1];
+      if (!a) continue;
+      const c = schedule[m];
+      c.owed = round2(c.owed + a);
+      c.adjustment = a;
+    }
+  }
   const annual = Object.values(schedule).reduce((s, c) => s + c.owed, 0);
   const owedMonths = Object.values(schedule).filter((c) => !c.outsideTerm && c.owed > 0).length;
-  return { schedule, annual, owedMonths, occupancyStartIso: occ, factor };
+  return { schedule, annual, owedMonths, occupancyStartIso: occ, factor, adjustments: adj };
 }
 
 // The per-month rent OWED for an invoice's own year, as a length-12 array [Jan..Dec],
@@ -69,7 +102,7 @@ export function buildLeaseSchedule({ year, grossBase, otherAnnual, abatements, e
 // input arStatus.monthsBehindForInvoice / summarizeAR / the bell alerts use to decide how
 // many DUE months are actually unpaid (vs a flat total/12 that mis-reads free + mid-year
 // leases).
-export function owedByMonthForInvoice(invoice, { leaseStart = null, escalations = [], abatements = [] } = {}) {
+export function owedByMonthForInvoice(invoice, { leaseStart = null, escalations = [], abatements = [], adjustments = null } = {}) {
   if (!invoice) return null;
   const grossBase = Number(invoice.base_rent_annual || 0);
   const otherAnnual =
@@ -87,6 +120,9 @@ export function owedByMonthForInvoice(invoice, { leaseStart = null, escalations 
     escalations,
     leaseStart,
     invoiceTotal,
+    // ⚠ Without this the alert path scales the SCHEDULED months to a total that already
+    // contains Σadj, smearing a one-month charge across the whole year.
+    adjustments,
   });
   const arr = [];
   for (let m = 1; m <= 12; m++) arr.push(Number(schedule[m]?.owed) || 0);

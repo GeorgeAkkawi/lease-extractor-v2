@@ -209,7 +209,7 @@ describe('componentizeSchedule', () => {
     const sched = { 1: { owed: 0, outsideTerm: true }, 2: { owed: 1000, outsideTerm: false } };
     for (let m = 3; m <= 12; m++) sched[m] = { owed: 1000, outsideTerm: false };
     const comp = componentizeSchedule({ schedule: sched, factor: 1, camTaxAnnual: 1200 });
-    expect(comp[1]).toEqual({ base: 0, camTax: 0, roof: 0 });
+    expect(comp[1]).toEqual({ base: 0, camTax: 0, roof: 0, adj: 0 });
   });
 });
 
@@ -245,7 +245,7 @@ describe('base builds UP from the lease, never backwards from a stale invoice (G
     expect(comp[12].base).toBeLessThanOrEqual(2395.45);
     for (let m = 7; m <= 12; m++) expect(comp[m].base).not.toBe(2211.65); // the old scaled-residual bug
     // A pre-tenancy month owes nothing.
-    expect(comp[1]).toEqual({ base: 0, camTax: 0, roof: 0 });
+    expect(comp[1]).toEqual({ base: 0, camTax: 0, roof: 0, adj: 0 });
   });
 });
 
