@@ -181,6 +181,55 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-08-03** — **The workbooks downloaded fine and opened DAMAGED: every sheet in three exports declared a frozen pane
+  that splits nothing** (George: *"im getting issues when i try to open the excel sheets its saying it couldnt recover
+  everything. also does it cost anything for the software to run those functions?"*). Deployed: frontend Cloudflare version
+  **`4a3332e6`**, demo worker `e3afa763`. **$0 — and that is also the answer to his second question: no exporter makes a
+  network call of any kind. ExcelJS is lazily imported and runs in the browser over figures already on screen. No AI, no edge
+  function, NO migration, nothing stored, no figure moves.** Tests **1479/1479 across 152 files** (was 1474/151 — +5, one new
+  suite).
+  - **One bug, one function.** `sheet()` in `cpaExcel.js` — the writer **shared by three workbooks** — always emitted
+    `views: [{ state: 'frozen', ySplit: opts.freeze ?? 1 }]`, so every sheet passing `{ freeze: 0 }` declared a **frozen pane
+    with no split row**. Excel rejects that pane, calls the package damaged, and "repairs" it by discarding the view — which
+    is exactly the *"couldn't recover everything"* dialog. **George's figures were never at risk**: Excel drops the view, not
+    the cells.
+  - **⚠ THE CODEBASE ALREADY KNEW THIS, IN A COMMENT, AND THE SHARED WRITER DID THE OPPOSITE.** `rentRollExcel.js:120`:
+    *"A real split is required — a frozen pane with no split row makes Excel flag the file as corrupt ('recover content')."*
+    That writer freezes rows 1–9 with an explicit `topLeftCell` and is fine. A controlled comparison ruled out everything
+    else: `reconciliationExcel.js` uses a **byte-identical `pageSetup`** with a real split and is also fine, so the page
+    setup is innocent and the view was the only variable.
+  - **Blast radius, and it maps exactly onto what he tried:** tax package **1 of 5** sheets (Summary), lender package **5 of
+    5**, 1099 worksheet **2 of 2** — 8 sheets, and **one bad sheet condemns the whole workbook**. The reconciliation and rent
+    roll exports use their own writers and were never affected.
+  - **The fix emits NO view when there is no split**, and carries the matching `topLeftCell` when there is. Dropping the
+    freeze is correct rather than merely fastest: these sheets stack a title band, notes and several `head()` bands per
+    property, so there is no single header row to pin — the rent roll can freeze precisely because it has exactly one.
+  - **⚠ AND THE REASON NO TEST CAUGHT IT IS WORTH MORE THAN THE FIX.** All five workbook tests assert the same thing —
+    `expect(blob.size).toBeGreaterThan(4000)`. **A corrupt .xlsx is still a well-formed zip of exactly the right size**;
+    Excel only rejects it when it validates the package on open. So every export was "verified" by a check that could not
+    fail for the defect it had. **Size is not validity** — the same shape as yesterday's lesson that *existence is not
+    reachability*, one layer down. New `workbookValidity.test.js` unzips the **real buffer** with `jszip` (already present
+    via exceljs), parses each `xl/worksheets/*.xml`, and asserts the rule **structurally** — no `state="frozen"` pane whose
+    split is zero or absent, so it holds however the view is written. **Proved by reintroducing the bug: exactly the three
+    broken workbooks fail and the two healthy writers pass.** All five are covered, which also pins the two correct writers
+    against a later refactor onto the shared one.
+  - **Round 15 did not cause this** — it has been there since rounds 12–14. Round 15 only made the buttons clickable, so
+    yesterday was the first time anyone opened a file. My round-15 verification proved a 15,428-byte download and stopped
+    there, which is precisely the mistake above.
+  - **Files.** Edited: `src/lib/cpaExcel.js` (one function). New: `src/lib/__tests__/workbookValidity.test.js` (5). **No**
+    migration, edge function, view, RPC, component, mock or demo-seed change. **§5 fans out to nothing.**
+  - **Verified:** unit **1479/1479**, incl. the new suite failing before the fix and passing after; `npm run build` compiles
+    with ExcelJS still in its own lazy 937 kB chunk; the **deployed bundle** greps positive for `ySplit:r,topLeftCell` and
+    **zero** occurrences of the old zero-split form; live 200s on all four URLs; demo bundle greps **free** of the backend ref.
+  - **George: hard-refresh (Cmd+Shift+R), then download the tax package and the lender package again — they should open with
+    no repair dialog.** That last step is yours; I can't run Excel from here.
+  - **Flags:** ① **Found while diagnosing and deliberately NOT bundled in** (his call): `cpaExcel.js` destructures its
+    currency option as `{ money: moneyFrom = 1 }` while all 30+ call sites pass `{ moneyFrom: N }` — so it has **never once
+    been read** and always falls back to 1. Cosmetic but visible in a lender-facing document: **Sq ft prints as `$2,000.00`**
+    and asset life as **`$39.00`**. One-word fix, say the word. ② **The "Documents & filings" button you said you can't see
+    is still unresolved** — separate from this, and I need to know which tab you're on (it's on **Financials**, not
+    Portfolio) or a screenshot. ③ Yesterday's blank-canvas scroll is still unconfirmed.
+
 - **2026-08-02** — **The tax package and the lender package weren't "failing to download" — they were UNCLICKABLE. Five pills
   outgrew the corporation card and the last three were painted over the NEXT card, which ate their clicks** (George: *"all
   those buttons are running off … I tried downloading the tax package and the lender package and they're not downloading …

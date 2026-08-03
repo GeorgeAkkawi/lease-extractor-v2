@@ -46,10 +46,20 @@ const colLetter = (n) => {
 export const XLSX_PALETTE = { OLIVE, CREAM, INK, MUTED, GOLD_BG, GOLD_INK, NEUTRAL_BG, SUMMARY_BG, CUR };
 export { sheet as xlsxSheet, pen as xlsxPen };
 
+// ⚠ A frozen pane MUST have a real split row. `{ state: 'frozen', ySplit: 0 }` declares a
+// pane that splits nothing — Excel rejects it, calls the whole package damaged, and
+// "repairs" it by discarding the view ("we found a problem… couldn't recover everything").
+// The figures survive; the dialog does not inspire confidence. rentRollExcel.js:120 has
+// carried this warning since the last time someone hit it. So: no split → NO view at all,
+// and a real split carries the matching topLeftCell.
+//
+// Most sheets here pass { freeze: 0 } on purpose — they stack a title band, notes and
+// several head() bands per property, so there is no single header row worth pinning.
 function sheet(wb, name, widths, opts = {}) {
+  const freeze = Number(opts.freeze ?? 1) || 0;
   const ws = wb.addWorksheet(name, {
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } },
-    views: [{ state: 'frozen', ySplit: opts.freeze ?? 1 }],
+    ...(freeze > 0 ? { views: [{ state: 'frozen', ySplit: freeze, topLeftCell: `A${freeze + 1}` }] } : {}),
   });
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   return ws;
