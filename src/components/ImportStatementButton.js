@@ -219,6 +219,9 @@ export function settleStatementImport(qc) {
   qc.invalidateQueries({ queryKey: ['camLineItems'] });
   qc.invalidateQueries({ queryKey: ['taxLineItems'] });
   qc.invalidateQueries({ queryKey: ['corpRollups'] });
+  // The Overview's "so far this year" bars — an import books both halves of them at
+  // once: tenant deposits (collected) and dated expense lines (paid).
+  qc.invalidateQueries({ queryKey: ['portfolioYtd'] });
   qc.invalidateQueries({ queryKey: ['historyEvents'] });
   qc.invalidateQueries({ queryKey: ['statementImports'] });
   qc.invalidateQueries({ queryKey: ['statementContext'] });

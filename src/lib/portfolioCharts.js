@@ -21,6 +21,16 @@ export const CHART_SERIES = {
   vacant: '#D8D2C3',    // warm paper-grey — reads as "nothing here", never as a figure
 };
 
+// The "so far this year" trio, drawn beside its full-year twin. SAME HUE, lighter tint —
+// deliberately not a fourth/fifth/sixth colour: the pairing is the whole point, and two
+// unrelated colours would read as six separate measures rather than three on two bases.
+// Every tint is already in DONUT_PALETTE, so nothing new enters the app's palette.
+export const CHART_SERIES_YTD = {
+  collected: '#9AA77E',  // olive, lightened
+  paid: '#C09A55',       // gold, lightened
+  kept: '#6F8874',       // forest, lightened
+};
+
 // Ramp for the revenue donut: olive → forest → gold → their soft tints. Ordered so the
 // biggest earner takes the deepest ink and the tail fades, which is how a reader's eye
 // ranks slices without reading a single label.
@@ -42,6 +52,7 @@ export const ROLLOVER_RAMP = ['#94661B', '#B08A46', '#9A9152', '#7C8B5A', '#5C6B
 export const kfmt = (v) => (v == null || isNaN(v) ? '' : Math.abs(v) >= 1000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v)}`);
 
 const num = (n) => Number(n) || 0;
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 // Property name lookup that survives a property the totals map doesn't cover.
 const nameFor = (p) => p?.name || 'Untitled property';
@@ -195,7 +206,25 @@ export function tenantMix(property, leases) {
 // different quantity entirely (they're usually higher; the gap IS the year-end true-up).
 // They're carried onto each row so the tooltip can show its working, because a bar
 // labelled only "Expenses" can't tell the landlord which of the two it is.
-export function revenueExpensesNoi(properties, totalsByProp) {
+// ⚠ THE SECOND BASIS, and the whole reason the panel needs explaining. `ledgerByProp`
+// (listLedgerYtdByProperty) adds a "so far this year" twin to each of the three:
+//
+//   Revenue  (on paper, whole year)  ↔  Collected  (money in, so far)
+//   Expenses (entered, whole year)   ↔  Paid       (expense lines dated on/before today)
+//   NOI      (revenue − expenses)    ↔  Kept       (collected − paid)
+//
+// The two are NOT the same measure at two points in time, and pretending otherwise is the
+// trap here:
+//   • Collected is ALL-IN — it carries the CAM & tax the tenants reimburse — while
+//     Revenue is `total_revenue` = Σ effective_rent, contract BASE RENT only. So Kept can
+//     legitimately read ABOVE NOI (round 14's flag: v_property_totals.noi subtracts the
+//     whole expense and counts none of the reimbursement). The panel says so.
+//   • Paid counts only DATED expense lines. Whatever the year's stored totals hold beyond
+//     the dated ones is returned as `expensesUndated` so the caller can state it rather
+//     than let Kept quietly read as profit. Nothing is spread evenly across the months.
+// `hasYtd` is per-property (did anything actually move?) so the caller can hide the trio
+// portfolio-wide when it would draw three empty bars.
+export function revenueExpensesNoi(properties, totalsByProp, ledgerByProp = null) {
   return (properties || [])
     .map((p) => {
       const t = totalsByProp?.[p.id];
@@ -206,11 +235,32 @@ export function revenueExpensesNoi(properties, totalsByProp) {
       const revenue = num(t.total_revenue);
       const expenses = taxes + cam + roof;
       if (revenue === 0 && expenses === 0) return null;
-      return { id: p.id, name: nameFor(p), Revenue: revenue, Expenses: expenses, NOI: num(t.noi), taxes, cam, roof };
+      const row = { id: p.id, name: nameFor(p), Revenue: revenue, Expenses: expenses, NOI: num(t.noi), taxes, cam, roof };
+      if (ledgerByProp) {
+        const y = ledgerByProp[p.id] || {};
+        const collected = num(y.collected);
+        const paid = num(y.paidToDate);
+        const later = num(y.datedLater);
+        row.Collected = collected;
+        row.Paid = paid;
+        row.Kept = round2(collected - paid);
+        row.billedYtd = num(y.billed);
+        row.expensesLater = later;
+        // Everything the stored total holds that carries no usable date yet — undated
+        // lines AND an un-itemized flat kind, which has no line to date at all.
+        row.expensesUndated = Math.max(0, round2(expenses - paid - later));
+        row.hasYtd = collected > 0 || paid > 0;
+      }
+      return row;
     })
     .filter(Boolean)
     .sort((a, b) => b.Revenue - a.Revenue);
 }
+
+// Is there a "so far" story to tell at all? False when nothing has been collected and no
+// expense carries a payment date — three flat zero bars per property would say nothing
+// and make the three that matter harder to read.
+export const hasYtdBars = (rows) => (rows || []).some((r) => r.hasYtd);
 
 // A long property name in a legend or axis tick pushes the chart out of shape; the
 // tooltip still carries the full name.

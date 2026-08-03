@@ -2051,6 +2051,68 @@ export async function listPropertyTotalsByYear(propertyIds, year) {
   return byProp;
 }
 
+// ---- "So far this year" — the CASH side of each property, in ONE round-trip -------
+// The Overview's performance panel draws two bases side by side. The full-year trio is
+// what the year comes to ON PAPER (contract rent from the leases + the totals entered on
+// each Expense entry). This is the other one: money that has ACTUALLY MOVED by today.
+//
+//   collected   — every dollar recorded against the year's ANNUAL invoices. Deliberately
+//                 the same filter getYearInvoice uses (non-void, kind 'annual', a missing
+//                 kind reading annual), so this figure IS the Ledger tab's Collected
+//                 column summed across the property's tenants and the two can't diverge.
+//                 A reconciliation true-up is excluded for exactly that reason.
+//   billed      — those invoices' totals, so a caller can say "of $X billed".
+//   paidToDate  — expense lines carrying a payment date ON OR BEFORE today (0074).
+//   datedLater  — dated, but the date hasn't arrived; kept apart so the caller can derive
+//                 what is genuinely UNDATED (stored total − paidToDate − datedLater),
+//                 which also absorbs an un-itemized flat kind (it has no line, so no day).
+//
+// ⚠ An UNDATED line is never given an invented date and never silently counted — the same
+// refusal the CPA package's cash basis makes (round 12). Stamping "probably paid by now"
+// on a hand-typed figure is a lie that looks like a real date forever, and spreading the
+// year's expenses evenly across elapsed months is the same lie one column over (round 14).
+// It is excluded, and the caller states the amount out loud.
+//
+// The billable filter mirrors the sync functions EXACTLY (syncCamTotal drops
+// billable === false, syncKindTotal does not) so "paid so far" can never exceed the
+// full-year Expenses bar it sits beside — they count the same universe of lines.
+export async function listLedgerYtdByProperty(propertyIds, year, todayIso = localDateIso()) {
+  const ids = [...new Set((propertyIds || []).filter(Boolean))];
+  if (ids.length === 0) return {};
+  const today = String(todayIso || '').slice(0, 10);
+  const [invAll, lineAll] = await Promise.all([
+    rows(
+      supabase.from('v_invoice_balances')
+        .select('property_id,kind,status,total_amount,amount_paid')
+        .in('property_id', ids).eq('year', year)
+    ),
+    rows(
+      supabase.from('cam_line_items')
+        .select('property_id,kind,amount,paid_date,billable')
+        .in('property_id', ids).eq('year', year)
+    ),
+  ]);
+  const out = {};
+  const at = (pid) => (out[pid] ||= { collected: 0, billed: 0, paidToDate: 0, datedLater: 0 });
+  for (const i of invAll || []) {
+    if (!i?.property_id || i.status === 'void' || !isAnnualInvoice(i)) continue;
+    const r = at(i.property_id);
+    r.collected = round2(r.collected + (Number(i.amount_paid) || 0));
+    r.billed = round2(r.billed + (Number(i.total_amount) || 0));
+  }
+  for (const it of lineAll || []) {
+    if (!it?.property_id) continue;
+    if ((it.kind || 'cam') === 'cam' && it.billable === false) continue;
+    const amt = Number(it.amount) || 0;
+    const d = it.paid_date ? String(it.paid_date).slice(0, 10) : null;
+    if (!d) continue;                                  // undated — derived by the caller
+    const r = at(it.property_id);
+    if (d <= today) r.paidToDate = round2(r.paidToDate + amt);
+    else r.datedLater = round2(r.datedLater + amt);
+  }
+  return out;
+}
+
 export const getTenantShares = (propertyId, year) =>
   rows(
     supabase.from('v_tenant_shares').select('*').eq('property_id', propertyId).eq('year', year)

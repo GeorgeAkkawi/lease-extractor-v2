@@ -181,6 +181,83 @@ omission, which is how the invoice drift above survived unnoticed.
 > needs to be deployed live, append a dated entry below recording what went out
 > (what changed, the files, and the Cloudflare version id). Keep newest at the top.
 
+- **2026-08-03** — **"What each property keeps" now draws TWO bases side by side: what the year comes to on paper, and what has
+  actually moved so far** (George: *"add year to date revenue, expenses and NOI as a bar on the what each property keeps graph in
+  the overview, taken from the ledger. make sure to make the distinction between them clear and easy to understand"*). Deployed:
+  frontend Cloudflare version **`db24a9e6`**, demo worker `76da635d`. **$0 — no AI call, NO migration, NO edge function, NO view,
+  NO RPC, NOTHING IS STORED. This round only READS, so not one figure can move** (live totals re-read after: Pershing FY2026
+  taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26 — byte-identical). Tests **1535/1535 across 155 files**
+  (was 1514/154 — +21, one new suite).
+  - **Six bars per property, in three PAIRS:** Revenue ↔ **Collected** · Expenses ↔ **Paid** · NOI ↔ **Kept**. Each cash bar is
+    the same hue as its on-paper twin, one tint lighter — deliberately not three new colours, because the pairing IS the point and
+    six unrelated colours would read as six measures rather than three measured twice. Every tint was already in `DONUT_PALETTE`.
+  - **⚠ THE TWO ARE NOT THE SAME MEASURE AT TWO POINTS IN TIME, and pretending otherwise is the whole trap.** `Collected` is
+    **all-in** — it carries the CAM & tax the tenants reimburse — while `Revenue` is `total_revenue` = Σ `effective_rent`,
+    **contract base rent only**. So **Kept legitimately reads ABOVE NOI** (round 14's flag: `v_property_totals.noi` subtracts the
+    whole expense and counts none of the reimbursement — $141,531.57 at Pershing). Silently clamping Kept to NOI would make the
+    chart lie to protect a figure that is itself incomplete, so the panel states the reason instead, and a test pins that the
+    ordering is allowed to invert.
+  - **⚠ AND THE EXPENSE SIDE IS WHERE A "PROFIT SO FAR" BAR GOES QUIETLY WRONG.** `Paid` counts only expense lines carrying a
+    `paid_date` on or before today (0074). Two wrong answers were available and both were refused: stamping "probably paid by now"
+    on an undated hand-typed figure (a lie that looks like a real date forever), and **prorating the year's expenses by elapsed
+    months** — which is round 14's refused T-12 spread, one column over. So an undated line is excluded, and the amount is stated
+    **out loud** rather than left to make Kept look like profit: the panel's foot reads *"⚠ $X of this year's expenses carry no
+    payment date, so they are not in Paid or Kept — nothing is spread evenly across the months to fill the gap."* Same rule as the
+    CPA package's cash basis (round 12), so the two can't disagree.
+  - **⚠ ON GEORGE'S LIVE DATA THAT FIGURE IS $153,546, AND IT IS THE POINT.** **0 of his expense lines carry a payment date** (3 at
+    Pershing, 8 at 401 S Main, none dated), so `Paid` reads **$0 on all three properties** and the ⚠ line is the loudest thing on
+    the panel. That is the forcing function `paid_date` was built for. Live read-back: Pershing rev $313,035 / exp $151,700 / NOI
+    $161,335 vs **collected $233,222**; Joliet $354,900 / $0 / $354,900 vs **$147,524**; 401 S Main $364,629 / $1,846 / $362,783 vs
+    **$40,986**.
+  - **`collected` IS the Ledger tab's Collected column, by construction.** `listLedgerYtdByProperty` filters exactly as
+    `getYearInvoice` does — non-void, `kind` 'annual' (a missing kind reading annual) — so the Overview and the Ledger can never
+    name two figures for the same property on the same day. **A reconciliation true-up is therefore excluded**, deliberately and
+    test-pinned: it is real money, but it is not on that column. The `billable` filter likewise mirrors the sync functions exactly
+    (`syncCamTotal` drops `billable === false`, `syncKindTotal` doesn't), so **Paid can never climb above the Expenses bar beside
+    it** — the demo seeds a dated $1,200 non-billable line precisely so a naive sum would read $17,200 and fail.
+  - **One extra round-trip for the whole Overview, no schema.** `v_invoice_balances` + `cam_line_items` filtered by the properties
+    and the year, in one `Promise.all` — no per-property waterfall, no new table, no view change. `['portfolioYtd']` joins
+    **`settleBillingChange`** and `settleStatementImport`, so recording a payment, posting an adjustment or importing a statement
+    moves the bars.
+  - **⚠ TWO DEFECTS THE TEST SUITE CANNOT SEE, BOTH FOUND IN A REAL BROWSER — and that gap is the lesson.** recharts'
+    `ResponsiveContainer` measures its parent and every element is **0×0 in jsdom**, so **no chart in this app has ever been
+    DRAWN in a test**. ① recharts divides a property's band by the series count and then **centres** each bar in its slot, so a
+    `maxBarSize` small enough to fit six scattered them across the band with a hole wherever a figure was $0 — six loose columns
+    instead of three pairs, i.e. the one thing this panel must not look like. Fixed with `barCategoryGap` 34% + `barGap` 2 + a
+    higher cap. ② At the width **three** properties actually get, six labels over ~37px bars ran together (`$97k$87k`). Only the
+    **whole-year trio** is labelled now — every other bar, so each figure always has a clear neighbour — which also keeps the three
+    that have carried their figure since 2026-07-29 carrying it; the cash three are named in the legend, spelled out in the foot and
+    exact on hover. Neither was visible from any assertion that could have been written.
+  - **Where it shows.** The legend is **two labelled rows** (`Whole year` / `So far`), because six swatches can't say which of them
+    are the same thing twice. The hover panel splits into **On paper · FY 2026** and **So far · money that has moved**, with the
+    cash block accounting for every expense dollar not in Paid (*"$31,000.00 has no payment date"*, *"$2,500.00 dated later this
+    year"*) and naming what Collected is a share of (*"of $187,800.00 billed"*). The trio **hides itself entirely** when nothing has
+    moved — three flat zeros per property would say nothing and cost the other three half their width.
+  - **Files.** New: `src/lib/__tests__/portfolioYtd.test.js` (7). Edited: `src/lib/{api,portfolioCharts,invalidate}.js` ·
+    `src/components/{PortfolioCharts,ImportStatementButton}.js` · `src/pages/DashboardPage.js` · `src/App.css` · two existing suites
+    (`portfolioCharts` +6, `chartTooltips` +4, `dashboardOverview` +3). **No** migration, edge function, view, RPC, mock or
+    demo-seed change — the demo seed already carried every case it needed (a dated line, a **future**-dated line, an undated line, a
+    non-billable line, an un-itemized flat kind, and a property with no ledger activity at all). **§5 fans out to nothing.**
+  - **Verified:** unit **1535/1535** (`vitest run`) — **and the new assertions proved able to fail**: reintroducing the billable
+    filter bug fails 3 cases including the render-level one, which is what separates them from `expect(size).toBeGreaterThan(4000)`.
+    Every figure is date-independent (`todayIso` is passed explicitly) so the suite doesn't change answer in January.
+    `npm run build` compiles; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it.
+    **Then driven in a real browser against the DEPLOYED demo at 1440px, 980px and 420px** — the tooltip reads Revenue $144,000 ·
+    Expenses $47,000 (taxes/CAM/roof broken out) · NOI $97,000 · Collected $100,300 of $187,800 billed · Paid $13,500 · $31,000
+    undated · $2,500 dated later · Kept $86,800, and **13,500 + 31,000 + 2,500 = 47,000 = Expenses to the cent**. Zero page or panel
+    overflow at every width, **zero console errors or warnings**.
+  - **George: hard-refresh (Cmd+Shift+R).** The Overview's bottom panel now shows each property twice over: the darker bars are what
+    FY 2026 comes to on paper, the lighter ones beside them are what has actually moved. **Your "Paid" bars will read $0** — none of
+    your expense lines has a payment date yet. Type the date on each one (Financials → Expense entry → Date paid) and both the Paid
+    and Kept bars fill in; until then the panel says so rather than quietly counting the money as kept.
+  - **Flags:** ① **$153,546 of your expenses can't be dated**, so Kept currently overstates what you've really kept by that much
+    once those bills are paid — named on the panel, not buried. ② **Kept sits above NOI on Pershing** ($233k vs $161k) and that is
+    correct arithmetic, not a bug: Collected includes the CAM & tax your tenants reimburse and NOI counts none of it. Round 14's
+    offer stands — say the word and I'll fix the NOI view as its own round with the carry-through traced. ③ **Joliet has no expenses
+    entered at all**, so its Expenses, NOI and Paid bars are honest but empty. ④ A **reconciliation** payment isn't in Collected, on
+    purpose — it isn't on the Ledger's Collected column either, and the two must agree. ⑤ The bars follow the **fiscal-year
+    selector**, like everything else on the page.
+
 - **2026-08-03** — **A Ledger month is now a place you can go INTO: open any month with money on it, see what was billed vs
   what came in, and post a charge or a credit that carries all the way through** (George: *"be able to go into months that
   are under or overpaid and edit, maybe the cam or base is different so make the ledger clickable per month to go in and

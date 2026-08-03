@@ -84,6 +84,50 @@ describe('PerformanceTip — Revenue · Expenses · NOI, in that order', () => {
     const { container } = render(<PerformanceTip active={false} payload={[{ payload: row }]} label="Maple Plaza" />);
     expect(container.firstChild).toBeNull();
   });
+
+  // Six figures in one panel is six ways to misread it unless each says which BASIS it is
+  // on. The tooltip is where the reader lands to resolve the two lighter bars, so it has
+  // to label the blocks and account for every dollar the "Paid" figure left out.
+  describe('with a "so far this year" block', () => {
+    const ytd = {
+      ...row,
+      Collected: 60000, Paid: 12000, Kept: 48000,
+      billedYtd: 120000, expensesLater: 3000, expensesUndated: 30000,
+    };
+
+    it('labels both blocks and keeps the on-paper trio first', () => {
+      const { container } = render(<PerformanceTip active payload={[{ payload: ytd }]} label="Maple Plaza" year={2026} />);
+      expect(screen.getByText('On paper · FY 2026')).toBeTruthy();
+      expect(screen.getByText('So far · money that has moved')).toBeTruthy();
+      const names = [...container.querySelectorAll('.chart-tip-name')].map((n) => n.textContent);
+      expect(names.indexOf('Revenue')).toBeLessThan(names.indexOf('Collected'));
+      expect(names.indexOf('NOI')).toBeLessThan(names.indexOf('Collected'));
+      expect(names).toContain('Paid');
+      expect(names).toContain('Kept');
+    });
+
+    // ⚠ The assertion this block exists for. "Paid $12,000" against $45,000 of entered
+    // expenses is only honest if the panel says where the other $33,000 went — otherwise
+    // "Kept $48,000" reads as profit on a year whose expenses simply aren't dated yet.
+    it('accounts for every expense dollar that is NOT in "Paid"', () => {
+      render(<PerformanceTip active payload={[{ payload: ytd }]} label="Maple Plaza" year={2026} />);
+      expect(screen.getByText('$30,000.00 has no payment date')).toBeTruthy();
+      expect(screen.getByText('$3,000.00 dated later this year')).toBeTruthy();
+      expect(screen.getByText('of $120,000.00 billed')).toBeTruthy();
+    });
+
+    it('says nothing about undated expenses when every line is dated', () => {
+      render(<PerformanceTip active payload={[{ payload: { ...ytd, expensesUndated: 0, expensesLater: 0 } }]} label="Maple Plaza" year={2026} />);
+      expect(screen.queryByText(/has no payment date/)).toBeNull();
+      expect(screen.queryByText(/dated later this year/)).toBeNull();
+    });
+
+    it('draws only the on-paper block when the row carries no ledger read', () => {
+      render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" year={2026} />);
+      expect(screen.queryByText('So far · money that has moved')).toBeNull();
+      expect(screen.queryByText('On paper · FY 2026')).toBeNull();
+    });
+  });
 });
 
 // The property card's tenant-mix donut. Same jsdom caveat as the two above, and the same
