@@ -26,6 +26,7 @@ export const FEATURES = [
   { key: 'contracts', label: 'Service contracts',  hint: 'Landscaping, snow removal, security and other standing service agreements. Turning this off also silences its dashboard reminders and emails.' },
   { key: 'ledger',    label: 'Rent ledger',        hint: 'Per-tenant monthly collections: projected vs actually collected, month by month, with bank-statement import. Turning this off hides the Ledger tab and the collected/owes column on Financials.' },
   { key: 'announcements', label: 'Tenant announcements', hint: 'Write one notice — resurfacing, holiday hours, a new manager — and email it to every tenant of a property at once. Turning this off hides the Announcements button on the property cards.' },
+  { key: 'esign', label: 'E-signature', hint: 'Send a lease, extension or amendment to a tenant to sign electronically, then countersign it yourself — Amlak builds the signed PDF with a certificate of completion. Turning this off hides the signature controls in Addendums & riders; documents already signed stay on file.' },
 ];
 
 export const FEATURE_KEYS = FEATURES.map((f) => f.key);

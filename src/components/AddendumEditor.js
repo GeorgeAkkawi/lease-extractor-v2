@@ -4,7 +4,10 @@ import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAd
 import { fmtDate, money } from '../lib/format';
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { coversLabel } from '../lib/riders';
+import { useFeatures } from '../lib/features';
 import { useConfirm } from './ConfirmDialog';
+import AddendumEnvelopeRows from './AddendumEnvelopeRows';
+import SendForSignatureModal from './SendForSignatureModal';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
 // into the lease via applyAddendum. The AI reads the document and LEADS: it pre-fills
@@ -75,12 +78,17 @@ function primaryKind(f) {
   return 'other';
 }
 
-export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, currentTermEnd }) {
+export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, currentTermEnd, lease, property, corp }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
+  const { isOn } = useFeatures();
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
 
   const [adding, setAdding] = useState(false);
+  // E-signature lives in this card too (George, 2026-08-04). An amendment arrives one of two
+  // ways — already signed on paper and uploaded, or sent out from here to be signed — and
+  // both belong to the same card because both end up as the same thing.
+  const [sending, setSending] = useState(false);
   const [mode, setMode] = useState('upload'); // 'upload' | 'manual'
   const [form, setForm] = useState(blankForm());
   const [busy, setBusy] = useState(false);
@@ -346,6 +354,12 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
         </p>
       )}
 
+      {/* Anything currently out for signature, above the settled amendments. A row leaves
+          this strip and joins the table below only when it is actually applied. */}
+      {isOn('esign') && lease && (
+        <AddendumEnvelopeRows leaseId={leaseId} lease={lease} property={property} corp={corp} />
+      )}
+
       {addendums.length > 0 && (
         <div className="table-wrap" style={{ marginBottom: 16 }}>
           <table style={{ minWidth: 0 }}>
@@ -384,9 +398,19 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
       )}
 
       {!adding ? (
-        <button type="button" className="secondary" onClick={() => { setForm(blankForm()); setAdding(true); }}>
-          + Add addendum / rider
-        </button>
+        <div className="row">
+          <button type="button" className="secondary" onClick={() => { setForm(blankForm()); setAdding(true); }}>
+            + Add addendum / rider
+          </button>
+          {/* The second way an amendment gets here: not signed yet. Same card, because it
+              becomes the same thing. */}
+          {isOn('esign') && lease && property && (
+            <button type="button" className="secondary" onClick={() => setSending(true)}
+              title="Send a document to this tenant to sign electronically">
+              ✎ Send one for signature
+            </button>
+          )}
+        </div>
       ) : (
         <div className="callout" style={{ marginTop: 4 }}>
           <div className="between" style={{ marginBottom: 10 }}>
@@ -665,6 +689,17 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
           )}
           {err && <p className="note-msg danger" style={{ marginTop: 10 }}>{err}</p>}
         </div>
+      )}
+
+      {sending && (
+        <SendForSignatureModal
+          lease={lease}
+          property={property}
+          corp={corp}
+          defaultPurpose="extension"
+          onClose={() => setSending(false)}
+          onSent={() => { /* the strip repaints off the invalidated ['envelopes'] key */ }}
+        />
       )}
     </div>
   );

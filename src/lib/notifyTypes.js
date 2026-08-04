@@ -37,6 +37,16 @@ export const NOTIFY_COLUMNS = [
     kinds: [],
   },
   {
+    key: 'signature',
+    // Both halves of a document that is waiting on the LANDLORD: the tenant has signed and
+    // it needs his countersignature, or it is signed by both and was never applied. An
+    // envelope still out with the tenant raises nothing — he can't act on it — so this
+    // column only ever holds work he can finish.
+    label: 'Signatures',
+    focuses: ['signature_countersign', 'signature_apply'],
+    kinds: [],
+  },
+  {
     key: 'insurance',
     // One heading for the whole life of a certificate: none on file → requested →
     // chased → on file and expiring. Same tenant, same conversation.

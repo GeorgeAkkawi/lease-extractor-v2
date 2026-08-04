@@ -1440,6 +1440,59 @@ textarea.text-input{resize:vertical;min-height:90px}
 /* (a rider row's controls use the shared .doc-actions / .doc-act2 pair above, so
    "Open rider" lines up with "Open lease" and the saved copies' "Open") */
 
+/* ── E-signature ───────────────────────────────────────────────────────────────────
+   Documents out for signature, shown INSIDE the Addendums & riders card above the
+   settled-amendments table. Borrows the riders' vocabulary on purpose — this strip and
+   that table are two states of the same thing — but keeps its own class names so a
+   change to one can't silently reshape the other. */
+.env-strip{border-left:2px solid var(--gold);background:var(--panel-2);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px}
+.env-head{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700;margin-bottom:8px}
+.env-rows{display:flex;flex-direction:column;gap:10px}
+.env-row{display:flex;align-items:flex-start;gap:10px;font-size:13px;flex-wrap:wrap}
+.env-row-main{flex:1;min-width:220px;display:flex;flex-direction:column;gap:2px}
+.env-row-name{font-weight:600}
+.env-row-sub{color:var(--muted);font-size:11.5px}
+/* The line that stops a signed document from reading as a filed one. */
+.env-row-note{color:var(--gold);font-size:11.5px;font-weight:600}
+.env-badge{align-self:flex-start;white-space:nowrap}
+.env-row-acts{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+/* Two fields that belong together (who signs / their email). Collapses to one column
+   on a narrow screen rather than squeezing both. */
+.env-2col{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.env-2col .form-field{max-width:none}
+@media (max-width:640px){.env-2col{grid-template-columns:1fr}}
+
+/* Signature capture — shared by the tenant's page and the landlord's countersign dialog,
+   so a signature looks identical wherever it was made. */
+.sigpad{margin-bottom:14px}
+.sigpad-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap}
+.sigpad-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700}
+.sigpad-canvas{border:1.5px dashed var(--line);border-radius:var(--radius);background:var(--panel);touch-action:none;cursor:crosshair;display:block}
+.sigpad-canvas.typed{cursor:default}
+.sigpad-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;font-size:12px;flex-wrap:wrap}
+
+/* The public signing page. Deliberately not app chrome — see src/pages/SignPage.js. */
+body.sign-body{background:var(--paper)}
+.sign-page{min-height:100vh;display:flex;justify-content:center;padding:32px 16px 64px}
+.sign-card{width:100%;max-width:760px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:28px 30px 34px}
+.sign-brand{font-family:var(--display);font-size:20px;font-weight:700;color:var(--ink)}
+.sign-rule{border:0;border-top:1px solid var(--hair);margin:14px 0 20px}
+.sign-title{font-family:var(--display);font-size:26px;margin:0 0 6px;line-height:1.25}
+.sign-sub{margin:0 0 12px;font-size:13px}
+.sign-note{background:var(--accent-soft);border-radius:var(--radius);padding:10px 12px;font-size:13px;line-height:1.55;margin:0 0 12px;white-space:pre-wrap}
+.sign-doc{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:var(--panel-2);margin:16px 0 6px}
+.sign-frame{width:100%;height:min(70vh,620px);border:0;display:block}
+.sign-dl{margin:0 0 20px;font-size:12.5px}
+.sign-block{border-top:1px solid var(--hair);padding-top:18px;margin-top:6px}
+.sign-consent{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.55;margin-bottom:16px;cursor:pointer}
+.sign-consent input{margin-top:3px;flex:0 0 auto}
+.sign-done{font-size:40px;color:var(--forest);line-height:1}
+.sign-legal{display:block;border-top:1px solid var(--hair);margin-top:24px;padding-top:14px;font-size:11.5px;line-height:1.6}
+
+/* Completes the note-msg tone set (warn / danger / info already exist) — a send that
+   actually worked had no voice of its own until now. */
+.note-msg.good{background:var(--forest-soft);color:var(--forest)}
+
 /* per-tenant lease document + AI assistant */
 .lease-doc{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:340px;overflow:auto;color:var(--ink);margin-bottom:16px}
 .qa-log{display:flex;flex-direction:column;gap:14px;margin-bottom:16px}

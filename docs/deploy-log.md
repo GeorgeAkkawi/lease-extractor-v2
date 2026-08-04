@@ -14,6 +14,126 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **E-signature, Phase 1: send a document from Amlak, the tenant signs it on a public page,
+  you countersign, and Amlak builds the executed PDF with a certificate of completion** (George: *"looking to
+  create a docusign type feature to amlak"* → then, after I answered the legality/security questions, three
+  scoping decisions in his own words: *"theres no need for the software to create a doc - just make there a
+  place for the user to drop it in so they can send from amlak"* · *"i want this to be a part of the add
+  addendums and riders card on each lease page"* · *"build it in - make sure there are no holes in the link
+  where people can access the users account"*). Deployed: DB migrations **`0085` + `0086`** (Supabase
+  `awgrjmbcghdjgnqeiqkt`), edge fns **`send-for-signature`, `sign-envelope`, `countersign-envelope` (all
+  new)**, frontend Cloudflare version **`9abd90ab`**, demo worker **`c89bc5b6`**. **$0 — no AI call anywhere
+  in this feature**, no tenant emails sent by me, nothing destructive (`0085` is three `create table if not
+  exists` + one widened CHECK; `0086` is one additive `update`). Tests **1620/1620** (was 1568 — +52 across
+  4 new suites).
+  - **This closes the deferral of 2026-07-29** (*"announcements + e-signature deferred, they need more
+    depth"*). Announcements shipped earlier today; this is the other half.
+  - **⚠ THIS IS THE FIRST UNAUTHENTICATED PAGE IN THE APP.** Every route until now sat behind login + 2FA and
+    every edge function called `auth.getUser()`. A tenant signing a lease has no account and never will. That
+    is the whole risk of the feature and it is why George asked about holes; the answers are below and in the
+    header comments of `sign-envelope/index.ts` and `SignPage.js`. **Read those before touching either file.**
+  - **George's legal question, answered:** ESIGN (federal) + UETA (49 states; NY uses ESRA) make an electronic
+    signature enforceable **without any vendor** — there is no approved-vendor list and DocuSign holds no legal
+    privilege. What the law requires is intent, consent, attribution (UETA §9: *"may be proved in any manner,
+    including a showing of the efficacy of any security procedure"*) and retention. DocuSign's real advantage
+    is that its certificate is cheap to prove in a dispute, which is a **litigation-cost** difference, not a
+    validity one — so the certificate below is the whole point of the feature, not decoration. Flagged to him:
+    not legal advice, and county **recording** offices often refuse e-signed documents without notarization
+    (affects recording a long-term lease, not enforceability between the parties).
+  - **How the one public endpoint is gated.** `sign-envelope` (`verify_jwt = false`, the only user-facing
+    function in the project with that setting) reads with the **service role**, so:
+    - **The token is the gate and the ONLY selector.** 32 bytes of `crypto.getRandomValues`, base64url; the DB
+      stores **only `sha256(token)`** in `envelope_signers.token_hash` (UNIQUE → one exact index hit). There is
+      no `token` column to steal, and the function accepts **no envelope id, lease id or signer id** — nothing
+      enumerable — so nothing can be walked.
+    - **`enforceRateLimit` CANNOT be used here** — it returns 401 when there is no Authorization header, which
+      is every request this function will ever see. Caught while writing it. Replaced with a per-isolate IP
+      throttle that is explicitly labelled noise control; 2^256 is what makes guessing infeasible.
+    - **Explicit column lists everywhere, never `select('*')`**, and `signature_envelopes` deliberately holds
+      **no financial column at all** — there is nothing in the row to leak by accident.
+    - **Expiry is enforced in the function, not by a sweep.** A lapsed envelope still reads `status = 'sent'`
+      in the database; `liveState()` is what refuses it, and `envelopeStatus()` (`src/lib/envelopes.js`) is its
+      client twin. **These two are a JS↔TS mirror pair — change them in the same commit** (CLAUDE.md §3).
+  - **What the tenant sees, and nothing else.** `amlakre.com/sign/<token>`: business name, document title,
+    their own name, the document in a frame, a consent checkbox, a name field, a signature pad (✎ draw or
+    ⌨ type), Sign / Decline. **No sidebar, no nav, no route back into the app**, and `SignPage.js` calls
+    `supabase.from(...)` **zero times** — its only outside contact is a bare `fetch` in `src/lib/signPublic.js`
+    with no Authorization header. Rendered in `App.js` **above every gate**, including above the `loading`
+    spinner, so a slow session lookup can't strand a tenant on a page that needs no session.
+  - **Where it lives.** Inside the existing **Addendums & riders** card, per George — a separate strip directly
+    ABOVE the addendum table, not rows inside it. That table's columns are *Covers* and *What it changed*; an
+    unsigned document has neither, and forcing it in would fill those cells with dashes and imply the lease had
+    been amended. A row leaves the strip and joins the table only when it is actually applied.
+  - **⚠ AN EXECUTED ENVELOPE APPLIES NOTHING, AND SAYS SO.** It does not touch the term, rent, square footage
+    or estimates, and it does **not** create a `lease_addendums` row — a row in that table means *"an amendment
+    that HAS been applied"* and filing an unapplied one would make the table lie. The strip prints *"Signed,
+    but nothing on this lease has changed yet"*, and a `signature_apply` alert keeps saying so. **Phase 1
+    therefore touches nothing on the money spine** — no `resyncLeaseBilling`, no `settleBillingChange`, no view,
+    no invoice. That is deliberate: George can watch a real signature land before any code goes near a figure.
+  - **The certificate of completion** (`countersign-envelope`, `npm:pdf-lib` — npm-in-Deno already established
+    by `_shared/pdf.ts`'s `npm:unpdf`): a signature page with both signatures, then the audit trail — every
+    `envelope_events` row with timestamp, IP and user agent — plus the **SHA-256 of the exact bytes**, hashed
+    at send **from storage, not from the client** (a client-supplied hash is a seal chosen by the sealer).
+    A PDF source gets all of it merged into one file; a **`.docx` cannot be stamped** (no page geometry without
+    a Word renderer), so the certificate ships as its companion and the send modal says so rather than implying
+    a stamp that isn't there.
+  - **Registry work (CLAUDE.md §4), including two things the suite caught:**
+    - **`notifyTypes.test.js` failed on the new alert focuses** — exactly the guard it exists for. Added a
+      **Signatures** column to `NOTIFY_COLUMNS`. Without it both alerts would have landed in the catch-all.
+    - **`alertKey`'s anchor chain needed `envelope_id`, placed FIRST.** A signature alert also carries a
+      `lease_id`, so without it two envelopes on the same lease collapse to one key and dismissing one
+      dismisses the other. There is now a test that asserts exactly that.
+    - `esign` added to `FEATURES` **with its backfill `0086`** — the `announcements` lesson from this morning
+      applied without needing to relearn it. Verified live: George's array now reads
+      `["insurance","contracts","ledger","announcements","esign"]`.
+    - Two alerts, both **standing** (no `horizonDays`): `signature_countersign` (waiting on him) and
+      `signature_apply` (signed, never applied). An envelope merely waiting on the *tenant* raises **nothing** —
+      he can't act on it, and the expiry shows on the row instead.
+  - **One UI change the tests forced, and it was right:** the `sent` badge originally read *"Out for
+    signature"* — the same words as the strip's own heading. Now **"Awaiting tenant"**, which is the useful
+    half and reads as the counterpart to *"Signed — countersign"*.
+  - **Demo parity (§3):** `mockClient.js` walks an envelope through its **real** states (send → sign →
+    countersign) rather than stubbing `ok()`, because the states are the feature; the sandbox never emails
+    anyone and never mints a real token (its "token" is the envelope id — **live stores only sha256 of 32
+    CSPRNG bytes**, noted in both files so nobody reads the mock as a template). A drift the suite caught: an
+    unknown token was a 404 live but had no distinct signal in the mock, so the demo showed a generic error
+    where production shows *"This link isn't valid"* — fixed with a `not_found` flag mirroring `closed`.
+  - **Verified live, driving the real endpoints.** Unauth POST → **401** on both `send-for-signature` and
+    `countersign-envelope`. `sign-envelope` reachable with **no Authorization header at all** (proving
+    `verify_jwt = false` took): garbage token → **404**, unknown action → **400**, sign without consent →
+    **400**, sign with a non-PNG signature → **400**, expired link → **410** *and no document*. Then the check
+    that matters: **a real probe envelope inserted against a live lease, read through the public endpoint as a
+    tenant, and the response grepped** — it returned exactly `state · title · filename · message ·
+    business_name · property_name · signer_name · expires_at · document_url · already_signed` and **none** of
+    `47436` (the lease's base rent), the tenant name, the lease id, the property id, the owner id, or the
+    storage path. Probe rows deleted afterwards (`signature_envelopes` back to 0 rows). Also: three RLS'd
+    tables with **2 policies each**, live `index.html` confirmed serving the new bundle hash
+    (`assets/index-CSXKXNFz.js`), `/sign/<token>` returns **200** (SPA fallback), and the demo bundle grepped
+    **free** of the live project ref while the live bundle carries it.
+  - **Test note:** `premisesResizeReview.test.js` failed once under full-suite load and passed on every
+    subsequent run, in isolation and in the full suite. A timing flake, not a regression — recorded here rather
+    than quietly ignored.
+  - **George: hard-refresh (Cmd+Shift+R), then drive one envelope end to end.** Open a lease → **Addendums &
+    riders** → **✎ Send one for signature** → drop a PDF in → put **your own address** as the signer → send.
+    Open the link **on your phone** (a device with no Amlak session — that is the real test of what a tenant
+    sees), sign it, then come back and **✎ Countersign**. Open the signed copy and read the certificate page.
+  - **Flags (no action needed):** ① **Phase 2 is not built** — applying a signed document to the lease (the
+    extension path, and the new-lease path with your *"keep the old lease but replace the terms"* choice) is
+    the next round, and it is the part that touches billing, which is why it is separate. Until then an
+    executed document is a signed record that files itself and changes nothing. ② **A signing link is a bearer
+    token** — anyone it is forwarded to can sign. Closed with expiry, single-use completion and Void; an
+    optional access code was offered and not chosen, and is a small addition whenever you want it. ③ **One
+    tenant signer per envelope** in the UI; the schema already allows more. ④ A **PDF** gives you one combined
+    signed file — a Word doc gives you the original plus a separate certificate.
+  - **Files.** New: `supabase/migrations/0085_signature_envelopes.sql`, `0086_backfill_esign_feature.sql`;
+    `supabase/functions/{send-for-signature,sign-envelope,countersign-envelope}/index.ts`;
+    `src/lib/envelopes.js`, `src/lib/signPublic.js`; `src/pages/SignPage.js`;
+    `src/components/{SignaturePad,SendForSignatureModal,AddendumEnvelopeRows}.js`; four test suites
+    (`envelopes`, `signatureAlerts`, `signPage`, `esignCard`). Modified: `src/App.js` (the public route),
+    `supabase/config.toml` (`verify_jwt = false`), `src/lib/api.js`, `features.js`, `alerts.js`,
+    `notifyTypes.js`, `src/components/AddendumEditor.js`, `src/pages/{LeaseDetailPage,DashboardPage,HistoryPage}.js`,
+    `src/App.css`, `src/lib/demo/{mockClient,store}.js`.
+
 - **2026-08-04** — **Fix: one landlord, two businesses, one inbox — the recipient count now reads in TENANTS
   and the shared address explains itself** (George: *"it says 3/4 recipients but all 4 are selected… oh i see
   its because mario is the same email for 2 tenants - so we should only send one email if the same tenant owns

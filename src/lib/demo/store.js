@@ -379,5 +379,65 @@ export function seed() {
         updated_at: iso(Y - 1, 11, 3),
       },
     ],
+
+    // Two envelopes on Bright Coffee, chosen so the sandbox shows the two states that
+    // actually need a landlord: one waiting on HIM (signed, needs countersigning) and one
+    // signed by both and never applied. The third state — still out with the tenant —
+    // deliberately raises no alert, so seeding it would demonstrate nothing.
+    //
+    // ⚠ token_hash HOLDS THE ENVELOPE ID HERE. The demo has no crypto and no security
+    // boundary; live stores ONLY sha256 of a 32-byte CSPRNG token (0085). Anyone reading
+    // this as a template for the real thing has it exactly backwards.
+    signature_envelopes: [
+      {
+        id: 'env-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1',
+        renewal_option_id: null, purpose: 'extension', title: 'Second Amendment to Lease',
+        storage_path: 'demo/second-amendment.pdf', filename: 'Second Amendment to Lease.pdf',
+        doc_sha256: 'a3f1c0de5b7290114e6d8c2f9a4b1d3e7c05f8a2b6d4e9c1370f5a8b2c4d6e80',
+        message: 'Here is the extension we discussed — let me know if anything looks off.',
+        status: 'signed', expires_at: iso(Y, 12, 31),
+        sent_at: iso(Y, 6, 2), signed_at: iso(Y, 6, 4),
+        countersigned_at: null, executed_at: null, applied_at: null,
+        executed_path: null, certificate_path: null,
+        created_at: iso(Y, 6, 2), updated_at: iso(Y, 6, 4),
+      },
+      {
+        id: 'env-2', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1',
+        renewal_option_id: null, purpose: 'other', title: 'Estoppel Certificate',
+        storage_path: 'demo/estoppel.pdf', filename: 'Estoppel Certificate.pdf',
+        doc_sha256: 'b7c2e91d40a83f5628d1097cba4e6f38025d7a9c1e4b8036f2a5c7d9e1b30462',
+        message: null, status: 'executed', expires_at: iso(Y, 5, 30),
+        sent_at: iso(Y, 4, 12), signed_at: iso(Y, 4, 14),
+        countersigned_at: iso(Y, 4, 15), executed_at: iso(Y, 4, 15), applied_at: null,
+        executed_path: 'demo/estoppel-signed.pdf', certificate_path: 'demo/estoppel-signed.pdf',
+        created_at: iso(Y, 4, 12), updated_at: iso(Y, 4, 15),
+      },
+    ],
+    envelope_signers: [
+      { id: 'sgn-1t', owner_id: DEMO_USER.id, envelope_id: 'env-1', role: 'tenant',
+        name: 'Sam Rivera', email: 'sam@brightcoffee.example', token_hash: 'env-1',
+        consent_at: iso(Y, 6, 4), signed_at: iso(Y, 6, 4), typed_name: 'Sam Rivera',
+        signature_path: 'signatures/env-1/tenant-demo.png', ip: '203.0.113.10',
+        user_agent: 'Mozilla/5.0 (iPhone)', created_at: iso(Y, 6, 2) },
+      { id: 'sgn-1l', owner_id: DEMO_USER.id, envelope_id: 'env-1', role: 'landlord',
+        name: 'Acme Holdings', email: 'leasing@acmeholdings.example', token_hash: null,
+        created_at: iso(Y, 6, 2) },
+      { id: 'sgn-2t', owner_id: DEMO_USER.id, envelope_id: 'env-2', role: 'tenant',
+        name: 'Sam Rivera', email: 'sam@brightcoffee.example', token_hash: 'env-2',
+        consent_at: iso(Y, 4, 14), signed_at: iso(Y, 4, 14), typed_name: 'Sam Rivera',
+        signature_path: 'signatures/env-2/tenant-demo.png', ip: '203.0.113.10',
+        user_agent: 'Mozilla/5.0 (Macintosh)', created_at: iso(Y, 4, 12) },
+      { id: 'sgn-2l', owner_id: DEMO_USER.id, envelope_id: 'env-2', role: 'landlord',
+        name: 'Acme Holdings', email: 'leasing@acmeholdings.example', token_hash: null,
+        typed_name: 'Acme Holdings', signed_at: iso(Y, 4, 15), consent_at: iso(Y, 4, 15),
+        created_at: iso(Y, 4, 12) },
+    ],
+    envelope_events: [
+      { id: 'evt-1a', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'created', actor: 'landlord', at: iso(Y, 6, 2) },
+      { id: 'evt-1b', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'sent', actor: 'landlord', at: iso(Y, 6, 2) },
+      { id: 'evt-1c', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'viewed', actor: 'tenant', at: iso(Y, 6, 3), ip: '203.0.113.10' },
+      { id: 'evt-1d', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'consented', actor: 'tenant', at: iso(Y, 6, 4), ip: '203.0.113.10' },
+      { id: 'evt-1e', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'signed', actor: 'tenant', at: iso(Y, 6, 4), ip: '203.0.113.10' },
+    ],
   };
 }

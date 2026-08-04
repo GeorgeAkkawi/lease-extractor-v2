@@ -68,7 +68,8 @@ export default function DashboardPage() {
     queryFn: async () => {
       const leadDays = resolveLeadDays(leadPrefs);
       const ledgerOn = isFeatureOn(enabledFeatures, 'ledger');
-      const [data, states] = await Promise.all([fetchAlertData({ leadDays, ledgerOn }), listAlertStates()]);
+      const esignOn = isFeatureOn(enabledFeatures, 'esign');
+      const [data, states] = await Promise.all([fetchAlertData({ leadDays, ledgerOn, esignOn }), listAlertStates()]);
       return buildAlerts(data, toAlertStates(states), new Date(), { features: enabledFeatures, hiddenWidgets: hidden, leadDays });
     },
     refetchInterval: 60_000,

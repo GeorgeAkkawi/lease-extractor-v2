@@ -1,7 +1,8 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useMatch } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 import Login from './pages/Login';
+import SignPage from './pages/SignPage';
 import TwoFactorChallenge from './pages/TwoFactorChallenge';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import SecuritySettings from './pages/SecuritySettings';
@@ -25,6 +26,18 @@ import './App.css';
 
 export default function App() {
   const { session, loading, securityLoading, needsTwoFactor, passwordRecovery } = useAuth();
+  const signing = useMatch('/sign/:token');
+
+  // ⚠ THE ONE PUBLIC ROUTE, AND IT MUST STAY ABOVE EVERY GATE BELOW.
+  // A tenant signing a lease has no account, so this page cannot wait on `loading`, cannot
+  // be redirected to <Login />, and must never render inside <Layout> (which would give a
+  // stranger the sidebar and every nav target in the app). It is returned before any of
+  // that is consulted — including before the loading spinner, so a slow session lookup
+  // can't leave a tenant staring at "Loading…" for a page that needs no session at all.
+  // See the header of src/pages/SignPage.js.
+  // The token is handed over explicitly: this renders OUTSIDE any <Route>, so useParams()
+  // has nothing to read from.
+  if (signing) return <SignPage token={signing.params.token} />;
 
   if (loading) return <div className="centered">Loading…</div>;
   if (!session) return <Login />;

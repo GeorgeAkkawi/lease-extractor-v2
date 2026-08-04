@@ -29,7 +29,12 @@ function joinMonths(names, cap = 3) {
 // back to lease_id for every other alert type, keeping existing saved keys stable).
 // property_id is the last resort — only the statement reminder reaches it, so adding it
 // can't disturb any key already saved.
-export const alertKey = (a) => `${a.focus}:${a.contract_id || a.report_id || a.lease_id || a.property_id}:${a.date}`;
+// ⚠ A NEW ALERT TYPE WITH ITS OWN ENTITY MUST BE ADDED TO THIS CHAIN. The anchor falls
+// through to lease_id / property_id, so an alert keyed on something else collapses to
+// `focus:undefined:date` — and every such alert then shares ONE dismissal. envelope_id sits
+// FIRST because a signature alert also carries a lease_id (it is about a lease), which would
+// otherwise make two envelopes on the same lease dismiss each other.
+export const alertKey = (a) => `${a.focus}:${a.envelope_id || a.contract_id || a.report_id || a.lease_id || a.property_id}:${a.date}`;
 
 // A STORED notification (the bell's "Is X renewing?", "rent applied ✓") lives in its own
 // table and is dismissed by deleting the row — so it never needed a key. Snoozing does:
@@ -172,7 +177,7 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 //   • hiddenWidgets — the hidden_widgets array (reserved; no widget currently gates an alert).
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unloggedMonths, missingPayments },
+  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unloggedMonths, missingPayments, envelopes },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
   { features = null, hiddenWidgets = [], leadDays = null } = {}, // eslint-disable-line no-unused-vars
@@ -180,6 +185,7 @@ export function buildAlerts(
   const insuranceOn = featureOn(features, 'insurance');
   const contractsOn = featureOn(features, 'contracts');
   const ledgerOn = featureOn(features, 'ledger');
+  const esignOn = featureOn(features, 'esign');
   // How far ahead each type notifies — the owner's saved lead, else the default. A null
   // map (never configured) uses the defaults, which equal the prior hard-coded horizons,
   // so an untouched account produces byte-identical alerts.
@@ -360,6 +366,7 @@ export function buildAlerts(
       });
     });
 
+    // ── (insurance continues below) ──────────────────────────────────────────────────
     // ── Nothing on file at all ───────────────────────────────────────────────────────
     // No date to count down to, so no horizonDays and no countdown chip — `days` here is
     // a sort weight, ranking the three states against each other inside the standing tier
@@ -403,6 +410,46 @@ export function buildAlerts(
           ? 'Asked recently — this becomes a follow-up if nothing arrives.'
           : 'Send the request — the ✉ writes the letter to the tenant.',
       });
+    });
+  }
+
+  // ── Documents out for signature ─────────────────────────────────────────────────────
+  // Two states worth raising, and deliberately not a third:
+  //   • SIGNED — the tenant has done their part and the document is stuck on the landlord.
+  //     This is the only one he can clear in a single click, so it is the one that leads.
+  //   • EXECUTED but not applied — signed by both and still not pushed into the lease. A
+  //     signed extension nobody applied is exactly how a term end goes quietly stale.
+  // Deliberately NOT raised: an envelope merely waiting on the tenant. That is normal for
+  // days at a time, and an alert the landlord can do nothing about is noise. The expiry
+  // shows on the row in the lease card instead.
+  //
+  // Both are standing alerts (no horizonDays) — there is no deadline to count toward, only
+  // work sitting undone, which is exactly what tier 1 is for.
+  if (esignOn) {
+    (envelopes || []).forEach((env) => {
+      const lease = leaseById[env.lease_id];
+      const corpId = propMap[env.property_id]?.corporation_id;
+      const who = env.signer_typed_name || env.signer_name || 'The tenant';
+      const tenant = lease?.tenant_name || 'tenant';
+      if (env.status === 'signed') {
+        out.push({
+          envelope_id: env.id, lease_id: env.lease_id, property_id: env.property_id, corporation_id: corpId,
+          focus: 'signature_countersign', tone: 'warn', bucketLabel: 'Waiting on you',
+          date: env.signed_at ? String(env.signed_at).slice(0, 10) : null, days: -6,
+          title: `Signed — countersign “${env.title}”`,
+          detail: `${who} signed ${env.signed_at ? fmtDate(String(env.signed_at).slice(0, 10)) : ''} · ${tenant}`,
+          action: 'Open the lease and countersign it — that builds the signed copy and emails you both.',
+        });
+      } else if (env.status === 'executed' && !env.applied_at) {
+        out.push({
+          envelope_id: env.id, lease_id: env.lease_id, property_id: env.property_id, corporation_id: corpId,
+          focus: 'signature_apply', tone: 'info', bucketLabel: 'Signed, not applied',
+          date: env.executed_at ? String(env.executed_at).slice(0, 10) : null, days: -4,
+          title: `Signed but not applied — “${env.title}”`,
+          detail: `Signed by both parties · nothing on ${tenant}’s lease has changed yet`,
+          action: 'Open the lease to file it against the term, or leave it as a signed record.',
+        });
+      }
     });
   }
 

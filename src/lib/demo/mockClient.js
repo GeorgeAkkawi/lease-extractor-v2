@@ -440,6 +440,70 @@ const functions = {
       const to = (body?.recipients || []).map((r) => (typeof r === 'string' ? r : r?.to)).filter(Boolean);
       return ok({ sent: to.map((addr) => ({ to: addr, id: 'demo-email' })), failed: [] });
     }
+    // ---- E-signature ------------------------------------------------------
+    // The sandbox never emails anyone and never mints a real token. It DOES walk the
+    // envelope through its real states, because the states are the feature: sending
+    // creates a 'sent' row, the signing page moves it to 'signed', and countersigning
+    // moves it to 'executed'. A stub that only returned ok() would leave the strip in the
+    // Addendums card, the countersign dialog and the alert completely unexercised.
+    if (name === 'send-for-signature') {
+      const nowIso = new Date().toISOString();
+      if (body?.resend_envelope_id) {
+        const env = (db.signature_envelopes || []).find((e) => e.id === body.resend_envelope_id);
+        if (env) { env.status = 'sent'; env.expires_at = body.expires_at; env.sent_at = nowIso; }
+        return ok({ envelope_id: body.resend_envelope_id, sign_url: demoSignUrl(body.resend_envelope_id), emailed: true });
+      }
+      const id = `env-${Math.random().toString(36).slice(2, 10)}`;
+      (db.signature_envelopes ||= []).push({
+        id, owner_id: DEMO_USER.id, lease_id: body?.lease_id, property_id: body?.property_id,
+        renewal_option_id: body?.renewal_option_id ?? null, purpose: body?.purpose || 'other',
+        title: body?.title || 'Document', storage_path: body?.storage_path || 'demo/doc.pdf',
+        filename: body?.filename ?? null, doc_sha256: 'demo0000000000000000000000000000000000000000000000000000000000',
+        message: body?.message ?? null, status: 'sent', expires_at: body?.expires_at,
+        sent_at: nowIso, signed_at: null, countersigned_at: null, executed_at: null,
+        applied_at: null, executed_path: null, certificate_path: null,
+        created_at: nowIso, updated_at: nowIso,
+      });
+      (db.envelope_signers ||= []).push(
+        { id: `sgn-${id}-t`, owner_id: DEMO_USER.id, envelope_id: id, role: 'tenant',
+          name: body?.signer_name || 'Tenant', email: body?.signer_email || null,
+          // The demo stores the "token" in the clear because there is no security boundary
+          // to protect in an in-memory sandbox. LIVE STORES ONLY sha256(token) — see 0085.
+          token_hash: id, signed_at: null, typed_name: null, signature_path: null,
+          consent_at: null, ip: null, user_agent: null, created_at: nowIso },
+        { id: `sgn-${id}-l`, owner_id: DEMO_USER.id, envelope_id: id, role: 'landlord',
+          name: body?.landlord_name || 'Landlord', email: body?.reply_to || null,
+          token_hash: null, created_at: nowIso },
+      );
+      (db.envelope_events ||= []).push(
+        { id: `evt-${id}-1`, owner_id: DEMO_USER.id, envelope_id: id, kind: 'created', actor: 'landlord', at: nowIso },
+        { id: `evt-${id}-2`, owner_id: DEMO_USER.id, envelope_id: id, kind: 'sent', actor: 'landlord', at: nowIso },
+      );
+      return ok({ envelope_id: id, sign_url: demoSignUrl(id), emailed: true });
+    }
+    if (name === 'sign-envelope') {
+      return demoSignEnvelope(body);
+    }
+    if (name === 'countersign-envelope') {
+      const env = (db.signature_envelopes || []).find((e) => e.id === body?.envelope_id);
+      if (!env) return { data: null, error: { message: 'That document no longer exists.' } };
+      if (env.status !== 'signed') return { data: null, error: { message: 'The tenant hasn’t signed this yet.' } };
+      const nowIso = new Date().toISOString();
+      const path = `executed/${env.id}/demo-signed.pdf`;
+      Object.assign(env, {
+        status: 'executed', countersigned_at: nowIso, executed_at: nowIso,
+        executed_path: path, certificate_path: path, updated_at: nowIso,
+      });
+      const landlord = (db.envelope_signers || []).find((s) => s.envelope_id === env.id && s.role === 'landlord');
+      if (landlord) Object.assign(landlord, { typed_name: body?.typed_name || null, signed_at: nowIso, consent_at: nowIso });
+      (db.envelope_events ||= []).push(
+        { id: `evt-${env.id}-cs`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'countersigned', actor: 'landlord', at: nowIso },
+        { id: `evt-${env.id}-ex`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'executed', actor: 'system', at: nowIso },
+      );
+      // No PDF is built in the sandbox — pdf-lib is a Deno-side dependency of the edge
+      // function and never ships in the browser bundle.
+      return ok({ ok: true, executed_path: path, stamped: true });
+    }
     if (name === 'review-lease') {
       return ok(demoReviewLease(body));
     }
@@ -902,6 +966,91 @@ function demoAskPortfolio(body) {
     answer: `That's not something the records summary tracks directly. You can have me read the full lease documents to answer it.`,
     needs_docs: true,
   };
+}
+
+// ---- E-signature ----------------------------------------------------------
+// The demo's "token" is just the envelope id — there is no security boundary to protect in
+// an in-memory sandbox, and pretending otherwise would only obscure what the LIVE function
+// does. Live: 32 CSPRNG bytes, stored solely as sha256(token). See 0085 and the header of
+// supabase/functions/sign-envelope/index.ts.
+const demoSignUrl = (id) => `${globalThis.location?.origin || 'https://amlakre.com'}/sign/${id}`;
+
+// Demo stand-in for the ONE public edge function. Mirrors the real state machine — including
+// the two refusals that matter — so the tenant-facing page can be driven end to end in the
+// sandbox without a Supabase project.
+function demoSignEnvelope(body) {
+  const fail = (message, extra = {}) => ({ data: { error: message, ...extra }, error: { message } });
+  const env = (db.signature_envelopes || []).find((e) => e.id === body?.token);
+  // `not_found` mirrors the live function's 404 (as `closed` mirrors its 410) — supabase's
+  // invoke() has no status to carry, so the shape has to say it. Without this the page fell
+  // through to its generic "something went wrong" instead of the calm "this link isn't
+  // valid", and the demo would have looked right while diverging from production.
+  // The MESSAGE is identical either way — a bad token learns nothing from the difference.
+  if (!env) return fail('This signing link isn’t valid.', { not_found: true });
+
+  const expired = env.expires_at && new Date(env.expires_at).getTime() <= Date.now();
+  const state = env.status !== 'sent' ? env.status : (expired ? 'expired' : 'sent');
+  if (state !== 'sent') {
+    const CLOSED = {
+      signed: 'You’ve already signed this document. You’ll receive the completed copy by email once it’s countersigned.',
+      executed: 'This document has already been completed and signed by both parties.',
+      declined: 'This document was declined and can no longer be signed.',
+      voided: 'This request was cancelled by the sender. Please contact them if you were expecting to sign something.',
+      expired: 'This signing link has expired. Please contact the sender for a new one.',
+    };
+    return fail(CLOSED[state] || 'This document is no longer available to sign.', { closed: true, state });
+  }
+
+  const signer = (db.envelope_signers || []).find((s) => s.envelope_id === env.id && s.role === 'tenant');
+  const prop = (db.properties || []).find((p) => p.id === env.property_id);
+  const corp = (db.corporations || []).find((c) => c.id === prop?.corporation_id);
+  const nowIso = new Date().toISOString();
+
+  if (body?.action === 'view') {
+    return ok({
+      state: 'sent',
+      title: env.title,
+      filename: env.filename,
+      message: env.message,
+      business_name: corp?.name || 'Your landlord',
+      property_name: prop?.name || null,
+      signer_name: signer?.name || null,
+      expires_at: env.expires_at,
+      // No storage in the sandbox, so there is no document to frame. The page copes (it
+      // says so rather than showing an empty box) and everything below the frame — consent,
+      // name, signature pad, Sign — is fully exercised.
+      document_url: null,
+      already_signed: !!signer?.signed_at,
+    });
+  }
+
+  if (body?.action === 'decline') {
+    Object.assign(env, { status: 'declined', declined_reason: body?.reason || null, updated_at: nowIso });
+    (db.envelope_events ||= []).push({ id: `evt-${env.id}-dec`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'declined', actor: 'tenant', at: nowIso });
+    return ok({ ok: true, state: 'declined' });
+  }
+
+  // sign — the same two refusals the live function makes before writing anything.
+  if (body?.consent !== true) return fail('Please agree to sign electronically before signing.');
+  const typed = String(body?.typed_name || '').trim();
+  if (!typed) return fail('Please type your name.');
+  if (!String(body?.signature_png || '').startsWith('data:image/png;base64,')) {
+    return fail('Please draw or type your signature.');
+  }
+
+  if (signer) {
+    Object.assign(signer, {
+      consent_at: nowIso, signed_at: nowIso, typed_name: typed,
+      signature_path: `signatures/${env.id}/tenant-demo.png`, ip: '203.0.113.10',
+      user_agent: 'Demo browser',
+    });
+  }
+  Object.assign(env, { status: 'signed', signed_at: nowIso, updated_at: nowIso });
+  (db.envelope_events ||= []).push(
+    { id: `evt-${env.id}-con`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'consented', actor: 'tenant', at: nowIso },
+    { id: `evt-${env.id}-sig`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'signed', actor: 'tenant', at: nowIso },
+  );
+  return ok({ ok: true, state: 'signed', signer_name: typed });
 }
 
 // Demo stand-in for the draft-tenant-email Edge Function. Returns PROSE ONLY — the

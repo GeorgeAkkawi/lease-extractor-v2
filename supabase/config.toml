@@ -413,6 +413,19 @@ verify_jwt = false
 [functions.health-check]
 verify_jwt = false
 
+# ⚠ sign-envelope is the ONLY function here reached by a member of the PUBLIC, and the only
+# unauthenticated *user* endpoint in the project. A tenant signing a lease has no account and
+# never will, so no JWT can be required — the gate is instead a 256-bit random token stored
+# only as a SHA-256 digest (envelope_signers.token_hash, 0085), which is also the single
+# selector the function accepts. Unlike the two cron jobs above there is no shared secret,
+# because the token IS the secret and it is per-document. Read the header comment in
+# supabase/functions/sign-envelope/index.ts before touching anything in that file.
+#
+# The other two e-signature functions — send-for-signature and countersign-envelope — are
+# ordinary landlord endpoints and deliberately keep the default verify_jwt = true.
+[functions.sign-envelope]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327

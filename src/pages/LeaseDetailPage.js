@@ -678,7 +678,10 @@ export default function LeaseDetailPage() {
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           Add each amendment on top of the original lease — the app works out the rent and term you're in <strong>today</strong>.
         </p>
-        <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} squareFootage={lease.square_footage} currentTermEnd={lease.lease_termination_date} />
+        {/* lease/property/corp are passed for the e-signature half of this card: the tenant
+            to send to, the property the envelope belongs to, and the business whose name the
+            email goes out under. Already in scope here — no extra queries. */}
+        <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} squareFootage={lease.square_footage} currentTermEnd={lease.lease_termination_date} lease={lease} property={prop} corp={corp} />
       </div>
 
       {showPanel('lease_receivables') && (

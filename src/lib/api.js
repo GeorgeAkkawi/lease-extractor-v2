@@ -209,6 +209,117 @@ export async function logAnnouncementSent({ propertyId, propertyName, subject, s
   });
 }
 
+// ---------------------------------------------------------------------------
+// E-signature — a document sent out, signed, and countersigned
+// ---------------------------------------------------------------------------
+
+// Every envelope on one lease, newest first, each carrying its tenant signer's name so a
+// row can say "Waiting on City Dental" without a second round trip.
+//
+// TWO QUERIES, NOT A NESTED SELECT, on purpose: postgrest's embedded-resource syntax
+// (`select('*, envelope_signers(...)')`) is not implemented by the demo mock, so a nested
+// select would pass every test and return undefined signers live. Stitching in JS is the
+// same cost and works identically in both. (Same class of trap as the `not()` incident —
+// see the comment at mockClient.js:155.)
+export async function listEnvelopes(leaseId) {
+  const envs = await rows(
+    supabase.from('signature_envelopes').select('*').eq('lease_id', leaseId).order('sent_at', { ascending: false })
+  );
+  if (!envs?.length) return [];
+  const signers = await rows(
+    supabase.from('envelope_signers').select('*').in('envelope_id', envs.map((e) => e.id))
+  );
+  const tenantOf = {};
+  (signers || []).forEach((s) => { if (s.role === 'tenant') tenantOf[s.envelope_id] = s; });
+  return envs.map((e) => ({
+    ...e,
+    signer_name: tenantOf[e.id]?.name || null,
+    signer_email: tenantOf[e.id]?.email || null,
+    signer_typed_name: tenantOf[e.id]?.typed_name || null,
+  }));
+}
+
+// The audit trail for one envelope — the same rows the certificate page is printed from,
+// so the landlord can read them without opening the PDF.
+export const listEnvelopeEvents = (envelopeId) =>
+  rows(supabase.from('envelope_events').select('*').eq('envelope_id', envelopeId).order('at'));
+
+// Send a document out for signature. The document must already be uploaded (uploadDoc) —
+// the edge function downloads those exact bytes and hashes them itself, because a
+// client-supplied hash would be a seal chosen by the sealer.
+//
+// Returns { envelope_id, sign_url, emailed }. `sign_url` carries the raw token and is the
+// ONLY time it is ever visible: nothing stores it, and no endpoint can recover it. Show it
+// as a copyable fallback, never persist it.
+export function sendForSignature({
+  leaseId, propertyId, renewalOptionId, purpose, title, storagePath, filename,
+  message, signerName, signerEmail, expiresAt, replyTo, landlordName,
+}) {
+  return invokeFunction('send-for-signature', {
+    lease_id: leaseId,
+    property_id: propertyId,
+    renewal_option_id: renewalOptionId || null,
+    purpose: purpose || 'other',
+    title,
+    storage_path: storagePath,
+    filename: filename || null,
+    message: message || null,
+    signer_name: signerName || null,
+    signer_email: signerEmail,
+    expires_at: expiresAt,
+    reply_to: replyTo || null,
+    landlord_name: landlordName || null,
+  });
+}
+
+// Send it again — mints a NEW token and retires the old one, so the previous link stops
+// working immediately. Also the fix for an expired link, which is why the button offers it
+// on both 'sent' and 'expired' (see canResend, src/lib/envelopes.js).
+export function resendEnvelope({ envelopeId, expiresAt, replyTo, signerEmail, signerName }) {
+  return invokeFunction('send-for-signature', {
+    resend_envelope_id: envelopeId,
+    expires_at: expiresAt,
+    reply_to: replyTo || null,
+    signer_email: signerEmail,
+    signer_name: signerName || null,
+  });
+}
+
+// The landlord's signature, which executes the document: builds the signed PDF with both
+// signatures and the certificate of completion, files it, and emails a copy to both parties.
+// Applies NOTHING to the lease — see the header of countersign-envelope/index.ts.
+export function countersignEnvelope({ envelopeId, typedName, signaturePng }) {
+  return invokeFunction('countersign-envelope', {
+    envelope_id: envelopeId, typed_name: typedName, signature_png: signaturePng,
+  });
+}
+
+// Pull a document back before anyone has signed it. The link stops working because the
+// function refuses any status other than 'sent' — the token itself is left in place rather
+// than blanked, so the audit trail still shows which link was cancelled.
+export async function voidEnvelope(envelopeId) {
+  await rows(supabase.from('signature_envelopes').update({ status: 'voided' }).eq('id', envelopeId));
+  await rows(supabase.from('envelope_events').insert({
+    owner_id: await ownerId(), envelope_id: envelopeId, kind: 'voided', actor: 'landlord',
+  }));
+}
+
+// Dated trail on the property History. Best-effort (logHistoryEvent swallows errors) — a
+// history row must never be able to undo a signature that actually happened.
+export async function logSignatureEvent({ propertyId, leaseId, tenantName, type, title, signerName }) {
+  return logHistoryEvent({
+    property_id: propertyId,
+    lease_id: leaseId || null,
+    tenant_name: tenantName || null,
+    type,
+    description: type === 'signature_executed'
+      ? `“${title}” signed by both parties${signerName ? ` — ${signerName}` : ''}`
+      : `“${title}” sent to ${signerName || 'the tenant'} for signature`,
+    event_date: paymentIsoToday(),
+    meta: { title: title || null, signer: signerName || null },
+  });
+}
+
 export const createCorporation = async (name) =>
   one(supabase.from('corporations').insert({ name, owner_id: await ownerId() }).select().single());
 
@@ -3081,7 +3192,7 @@ export async function draftCamReconciliationEmail(recon) {
 }
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
-export async function fetchAlertData({ leadDays = null, ledgerOn = true } = {}) {
+export async function fetchAlertData({ leadDays = null, ledgerOn = true, esignOn = true } = {}) {
   const [leasesR, escR, renR, propR, insR, conR, abaR, insReqR, corpR, arR] = await Promise.all([
     supabase.from('leases').select('id,tenant_name,property_id,lease_start,lease_termination_date,no_renewal_option,is_active,base_rent,notify_lease_end_days'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status,new_base_rent'),
@@ -3113,6 +3224,12 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true } = {}) 
     insuranceRequests: insReqR.data || [],
     corporations: corpR.data || [],
     annualReports: arR.data || [],
+    // Documents awaiting the LANDLORD — signed and needing his countersignature, or executed
+    // and never applied. Only the two open states are fetched: an envelope still out with
+    // the tenant raises nothing (he can't act on it), and the three settled states are
+    // history. Fetched only when the module is on, and the signer's name is stitched in so
+    // the alert can say who signed. Skipped entirely on error → no alert rather than a wrong one.
+    ...(esignOn ? { envelopes: await fetchOpenEnvelopes() } : { envelopes: [] }),
     // Precomputed inputs for the two Rent Ledger reminders — built from the SAME math the
     // Ledger grid paints, honoring the configurable grace after month end. Only fetched
     // when the Rent Ledger module is on (else both alerts are hidden anyway). Skipped on
@@ -3121,6 +3238,34 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true } = {}) 
       ? await computeLedgerAlerts(leases, escalations, abatements, leadDays)
       : { unloggedMonths: [], missingPayments: [] }),
   };
+}
+
+// Envelopes the LANDLORD still owes something on, portfolio-wide, with the tenant signer's
+// name stitched in. Two queries rather than a nested select for the same reason listEnvelopes
+// uses two — postgrest's embedded-resource syntax is not implemented by the demo mock, so a
+// nested select would pass every test and return undefined live.
+async function fetchOpenEnvelopes() {
+  try {
+    const envs = await rows(
+      supabase.from('signature_envelopes')
+        .select('id,lease_id,property_id,title,status,signed_at,executed_at,applied_at,purpose')
+        .in('status', ['signed', 'executed'])
+    );
+    if (!envs?.length) return [];
+    const signers = await rows(
+      supabase.from('envelope_signers').select('envelope_id,role,name,typed_name')
+        .in('envelope_id', envs.map((e) => e.id))
+    );
+    const tenantOf = {};
+    (signers || []).forEach((s) => { if (s.role === 'tenant') tenantOf[s.envelope_id] = s; });
+    return envs.map((e) => ({
+      ...e,
+      signer_name: tenantOf[e.id]?.name || null,
+      signer_typed_name: tenantOf[e.id]?.typed_name || null,
+    }));
+  } catch {
+    return []; // an alert we can't compute is better absent than wrong
+  }
 }
 
 // One pass over the year's annual invoices producing BOTH ledger reminders:

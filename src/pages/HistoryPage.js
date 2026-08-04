@@ -30,6 +30,8 @@ const EVENT_LABEL = {
   // Building-wide, so it carries a property_id and no lease_id — deliberately absent from
   // the tenantStory.js allowlist so it doesn't repeat on every tenant's story.
   announcement_sent: 'Announcement sent',
+  signature_sent: 'Sent for signature',
+  signature_executed: 'Signed by both parties',
   cam_reconciled: 'CAM & tax reconciled',
   cam_refunded: 'CAM & tax refund paid',
   cam_reconcile_undone: 'CAM & tax reconcile undone',
@@ -53,6 +55,10 @@ const EVENT_BADGE = {
   estimate_set: 'info',
   insurance_requested: 'info',
   announcement_sent: 'info',
+  signature_sent: 'info',
+  // Good, not info: both parties signing is a completed thing, the same way a confirmed
+  // renewal is. It does NOT mean the lease changed — that is a separate, later click.
+  signature_executed: 'good',
   cam_reconciled: 'info',
   cam_refunded: 'good',
   cam_reconcile_undone: 'warn',
