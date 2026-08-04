@@ -703,30 +703,28 @@ export default function LeaseDetailPage() {
               actually drawn from. */}
           <span className="muted">Reads the lease, every rider, and where the term stands today</span>
         </div>
+        {/* Three blocks in the order George asked for, 2026-08-04: "the saved copy of
+            the lease, then open lease, then open riders". The copies go ABOVE the
+            assistant's own row (savedCopies) and the riders BELOW it (documents), so
+            "Open lease" lands directly on top of "Open rider" — the adjacency of his
+            original ask (2026-07-30: "we have an open lease and right under make an
+            open rider button"), which the copies list had grown in between. The lease
+            still leads the riders, and the ask box still comes last. */}
         <LeaseAssistant
           leaseId={lease.id}
           leaseText={lease.lease_text}
           askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations, abatements })}
           canSave
-          documents={
-            <>
-              {/* The lease and its own copies first, then the riders — George,
-                  2026-07-30: "leases should be listed first on lease document and
-                  assistant then riders". It reads as the document, then its versions,
-                  then what amended it; and it puts the copies' Open buttons directly
-                  under "Open lease", which is the column they line up with.
-                  Both lists are passed in as the assistant's documents slot so
-                  everything openable sits together and the ask box stays last. */}
-              <DocumentsList
-                entityType="lease"
-                entityId={lease.id}
-                title="Saved copies of the lease"
-                addLabel="Add a copy"
-                emptyText="No file on file — this lease was entered by hand or pasted in. Add a copy to keep the original alongside it."
-              />
-              <RiderDocs riders={addendums} />
-            </>
+          savedCopies={
+            <DocumentsList
+              entityType="lease"
+              entityId={lease.id}
+              title="Saved copies of the lease"
+              addLabel="Add a copy"
+              emptyText="No file on file — this lease was entered by hand or pasted in. Add a copy to keep the original alongside it."
+            />
           }
+          documents={<RiderDocs riders={addendums} />}
         />
       </div>
 

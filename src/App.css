@@ -1364,6 +1364,14 @@ textarea.text-input{resize:vertical;min-height:90px}
 .doc-act2{display:inline-flex;justify-content:flex-end;align-items:center;width:var(--doc-act);flex:0 0 auto}
 
 .doc-list{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
+/* The panel now stacks: saved copies → the lease's own "Open lease" row → riders
+   (George, 2026-08-04). So the copies list leads the panel and must NOT draw a rule of
+   its own — .panel-head already ends in one, and two hairlines 18px apart read as a
+   mistake. The lease's row takes the rule instead, which is what separates it from the
+   copies above it. Both are positional, so the policy / contract / archived-lease
+   assistants (no copies list) are untouched: their row is :first-child, no rule. */
+.doc-panel > .doc-list:first-child{border-top:0;margin-top:0;padding-top:0}
+.doc-panel > .doc-open-row:not(:first-child){border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 .doc-list-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
 /* (typography shared with .rider-head, below — declared once so they can't drift) */
 .doc-list-empty{font-size:12.5px;margin:0}
@@ -1381,9 +1389,10 @@ textarea.text-input{resize:vertical;min-height:90px}
   .doc-act2:empty{display:none}
 }
 
-/* Riders listed under "Open lease" — each opens its own cached text in the same box.
-   Labelled and ruled off like the saved-copies list beneath it, so the two read as one
-   filing drawer rather than as loose buttons under the assistant. */
+/* Riders listed directly under "Open lease" — each opens its own cached text in the
+   same box. Labelled and ruled off like the saved-copies list two blocks above, so the
+   whole panel reads as one filing drawer rather than as loose buttons under the
+   assistant. */
 .rider-group{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 .doc-list-head strong,.rider-head{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700}
 .rider-head{margin-bottom:2px}

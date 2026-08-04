@@ -7,12 +7,17 @@ import AnswerText from './AnswerText';
 //   ask(question) -> Promise<answer>     (required; wires the backend)
 //   onSave(text)  -> Promise              (optional; only when canSave)
 //   docText, suggested[], canSave, label ("lease" | "policy" | "contract" | …)
-//   documents     -> optional nodes rendered with the other document controls,
-//                    between the opened copy and the ask box (the lease page puts its
-//                    riders and saved copies here, so everything you can OPEN sits
-//                    together under "Open lease" and the ask box stays the last thing
-//                    on the panel — it was previously stranded above a file list).
-export default function DocAssistant({ docText, suggested = [], canSave = false, onSave, ask, label = 'document', documents = null }) {
+//   savedCopies   -> optional nodes rendered ABOVE this document's own "Open …" row
+//                    (the lease page puts its saved-copies list here)
+//   documents     -> optional nodes rendered BELOW it, before the ask box (the lease
+//                    page puts its riders here)
+//
+// The two slots are what put the panel in the order George asked for, 2026-08-04: "the
+// order should go the saved copy of the lease, then open lease, then open riders" — so
+// "Open lease" sits directly above "Open rider" again, which was his original placement
+// (2026-07-30) before the copies list was added between them. The ask box stays the last
+// thing on the panel either way; it was once stranded above a file list.
+export default function DocAssistant({ docText, suggested = [], canSave = false, onSave, ask, label = 'document', documents = null, savedCopies = null }) {
   const [openDoc, setOpenDoc] = useState(false);
   const [q, setQ] = useState('');
   // Only the CURRENT question is shown — asking a new one replaces the previous Q&A
@@ -51,7 +56,13 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
     // action at the same x (George, 2026-07-30: "the open lease button should be in line
     // with the lease open button"). See .doc-actions in App.css.
     <div className="doc-panel">
-      <div className="between" style={{ marginBottom: 12 }}>
+      {savedCopies}
+
+      {/* This document's own row: what's on file, and the button that opens it. It sits
+          BETWEEN the saved copies above and the riders below, and is ruled off like both
+          of them — .doc-open-row in App.css, which skips the rule when nothing precedes
+          it (the policy, contract and archived-lease assistants pass no savedCopies). */}
+      <div className="between doc-open-row" style={{ marginBottom: 12 }}>
         {/* State only. "Ask anything about it below" used to live here too, repeating
             what the panel heading and its intro paragraph already said — three
             sentences for one idea. The ask box says what it is; this says what's on
@@ -78,8 +89,9 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
 
       {hasDoc && openDoc && <div className="lease-doc">{docText}</div>}
 
-      {documents}
-
+      {/* The paste box belongs to the row above it — that status line is its cue ("No
+          lease saved yet. Paste it once…"), so it stays with it rather than being pushed
+          below the riders now that the row has moved down. */}
       {!hasDoc && canSave && (
         <div style={{ marginBottom: 16 }}>
           <textarea
@@ -97,6 +109,8 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
           </div>
         </div>
       )}
+
+      {documents}
 
       {/* Ruled off from the documents above it, so the panel reads as two things —
           what you can open, then what you can ask — instead of one undifferentiated

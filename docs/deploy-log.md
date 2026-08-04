@@ -14,6 +14,53 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **"Open lease" sits directly above "Open rider" again — the saved-copies list moved above it instead of
+  between them** (George: *"On the lease document and assistant tab in the tenant's profile, I want the open lease button to
+  be above the rider's button. So the order should go the saved copy of the lease, then open lease, then open riders just for
+  consistency and format."*). Deployed: frontend Cloudflare version **`1b870e66`**, demo worker `f3a363e9`. **$0 — layout
+  only: no AI call, NO migration, NO edge function, NO view, NO RPC, nothing stored, no figure moves, no query touched.**
+  Tests **1533/1533 across 155 files** (was 1532/155 — +1).
+  - **What it actually was.** George's original placement (2026-07-30) was *"we have an open lease and right under make an
+    open rider button"* — the two Opens adjacent. The **saved-copies list, added the same day**, landed between them: the
+    panel read *Open lease → SAVED COPIES → RIDERS*, so the button he'd asked to put above the riders had a whole file list
+    in the way. This restores the adjacency without losing the copies list, by moving the copies **above** the lease's own
+    row rather than moving the row down past them.
+  - **The mechanism is two slots, not a reshuffle.** `DocAssistant` (the one component behind the lease, insurance-policy and
+    service-contract assistants) already took a `documents` slot rendered below its Open row; it now also takes
+    **`savedCopies`**, rendered above it. `LeaseDetailPage` passes `DocumentsList` to the new slot and `RiderDocs` to the old
+    one — which is what produces the order. Everything else about the panel is unchanged, and **the ask box is still last**
+    (it was once stranded above a file list; that stays fixed).
+  - **The paste box moved with its own cue line.** When a lease has no saved text the Open row instead reads *"No lease saved
+    yet. Paste it once…"* — with the row moved down, leaving the textarea where it was would have put the riders between the
+    sentence and the box it describes. It now sits directly under the row it belongs to.
+  - **The hairlines are positional so the other two assistants are untouched.** The copies list leads the panel now, so
+    `.doc-panel > .doc-list:first-child` drops its own top rule (`.panel-head` already ends in one — two hairlines 18px apart
+    read as a mistake), and `.doc-panel > .doc-open-row:not(:first-child)` gives the lease's row the rule instead. The
+    insurance-policy and service-contract assistants — and the **archived-lease** one on the History page — pass no
+    `savedCopies`, so their Open row is `:first-child` and stays flush. **Verified in the live browser:** the policy panel's
+    first child computes `border-top: 0px`.
+  - **Alignment from 2026-07-30 survives, measured not assumed.** Every primary Open on the panel still ends at the same x —
+    `⬆ Add a copy`, both copies' `Open`, `Open lease` and both `Open rider` all measured **right = 1287px**, with `Open file`
+    in the reserved trailing slot at 1375.
+  - **Verified on the deployed demo, both shapes.** City Dental (2 riders, 2 copies): blocks stack **SAVED COPIES (border 0)
+    → OPEN LEASE ROW (1px) → RIDERS (1px) → ASK BOX**, with `Open lease` at y=3602 directly above `Open rider` at y=3684.
+    Bright Coffee (no riders, no copies on file): **SAVED COPIES → OPEN LEASE ROW → ASK BOX**, clean. **Zero console errors
+    or warnings.** All four URLs 200; live bundle carries the backend ref, demo bundle greps free of it.
+  - **Both order tests were proved to fail against the old layout** before being trusted — the page-level one
+    (`riderOpen.test.js`, renamed to *"stacks the saved copies, then Open lease, then the riders"*, scoped to the lease's own
+    `.doc-panel` because the page mounts one per policy and contract too) and a new component-level one
+    (`assistantAnswerRender.test.js`) pinning `copies → open → doc → documents → ask`, plus a guard that an assistant with no
+    `savedCopies` stays flush at the top. Reverting the slot order failed exactly those two and nothing else.
+  - **Gotcha worth recording (my error, caught before it shipped):** running `npx vite build --config vite.demo.config.js`
+    **without `--outDir build-demo`** writes the credential-free demo bundle into **`build/`** — the live worker's directory.
+    The main deploy had already happened, so nothing wrong went live, but the demo deploy then shipped a stale `build-demo`
+    and reported *"No updated asset files to upload"*, which is the tell. The command in `vite.demo.config.js:14` includes
+    the flag; use it. Rebuilt both, re-verified the live bundle still greps `awgrjmbcghdjgnqeiqkt` (1) and the demo does not (0).
+  - **Files:** `src/components/DocAssistant.js` (new `savedCopies` slot, `.doc-open-row` class, paste box moved),
+    `src/components/LeaseAssistant.js` (passes it through), `src/pages/LeaseDetailPage.js` (splits the two lists into the two
+    slots), `src/App.css` (the two positional rules), `src/pages/__tests__/riderOpen.test.js`,
+    `src/components/__tests__/assistantAnswerRender.test.js`.
+
 - **2026-08-04** — **A removed tenant kept haunting the sidebar hover — two cache keys nobody was invalidating · and CLAUDE.md
   split so a session no longer opens by spending ~212,000 tokens** (George: *"I removed a tenant (dennys) but it didnt remove
   that name from the profile hover (small bug fix)"*, plus two questions — the renewal Notice-by wiring, and whether the whole

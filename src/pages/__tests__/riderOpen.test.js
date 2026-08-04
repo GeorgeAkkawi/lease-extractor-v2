@@ -117,18 +117,29 @@ describe('Lease page — Open rider', () => {
     expect(within(list).getAllByRole('button', { name: 'Open' })).toHaveLength(2);
   });
 
-  it('lists the lease and its copies BEFORE the riders', async () => {
-    // George, 2026-07-30: "leases should be listed first on lease document and assistant
-    // then riders." Reads as the document, then its versions, then what amended it — and
-    // it puts the copies' Open buttons directly under "Open lease".
+  it('stacks the saved copies, then "Open lease", then the riders', async () => {
+    // George, 2026-08-04: "I want the open lease button to be above the rider's button.
+    // So the order should go the saved copy of the lease, then open lease, then open
+    // riders." That puts "Open lease" DIRECTLY on top of "Open rider" — the adjacency of
+    // his original ask (2026-07-30, "we have an open lease and right under make an open
+    // rider button"), which the copies list had grown in between.
+    //
+    // Asserted on the real page rather than on DocAssistant alone, because the order is
+    // produced by WHICH SLOT each list is passed to — a page that passed both to the same
+    // slot would still render, just in the wrong order.
     const { container } = mountLease();
     await waitFor(() => expect(riderRows(container).length).toBe(2));
-    const copies = container.querySelector('.doc-list');
-    const riders = container.querySelector('.rider-group');
-    expect(copies).toBeTruthy();
-    expect(riders).toBeTruthy();
-    // DOCUMENT_POSITION_FOLLOWING (4) — the riders come after the copies.
-    expect(copies.compareDocumentPosition(riders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Scoped to the LEASE's assistant: the page also mounts one per insurance policy and
+    // per service contract, each its own .doc-panel with its own Open row.
+    const panel = container.querySelector('.rider-group').closest('.doc-panel');
+    const marks = [...panel.querySelectorAll(':scope > .doc-list, :scope > .doc-open-row, :scope > .rider-group')]
+      .map((el) => (el.classList.contains('doc-list') ? 'copies' : el.classList.contains('doc-open-row') ? 'open-lease' : 'riders'));
+    expect(marks).toEqual(['copies', 'open-lease', 'riders']);
+
+    // …and it really is the Open lease button in that middle block, not just a div.
+    const openRow = panel.querySelector(':scope > .doc-open-row');
+    expect(within(openRow).getByRole('button', { name: /Open lease/i })).toBeTruthy();
   });
 
   it('gives every "Open …" the same trailing column, so they line up', async () => {

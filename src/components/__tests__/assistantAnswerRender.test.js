@@ -82,14 +82,30 @@ describe('Assistant answers — rendered, not printed', () => {
     expect(container.querySelectorAll('button.qa-chip')).toHaveLength(1);
   });
 
-  it('renders the documents slot between the opened copy and the ask box', async () => {
-    // Everything openable sits together under "Open lease"; the ask box stays last.
-    const { container } = mount({ documents: <div data-testid="docs">rider rows</div> });
+  it('puts savedCopies above the Open row and documents below it, ask box last', async () => {
+    // The two slots are the whole mechanism behind George's order (2026-08-04: "the
+    // saved copy of the lease, then open lease, then open riders"). Pinned here at the
+    // component level so the policy and contract assistants — which share this file and
+    // pass neither slot — can't have it changed out from under them.
+    const { container } = mount({
+      savedCopies: <div data-testid="copies">saved copies</div>,
+      documents: <div data-testid="docs">rider rows</div>,
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Open lease' }));
     await waitFor(() => expect(container.querySelector('.lease-doc')).toBeTruthy());
 
-    const order = [...container.querySelectorAll('.lease-doc, [data-testid="docs"], .qa-form')]
-      .map((el) => (el.classList.contains('lease-doc') ? 'doc' : el.dataset.testid ? 'documents' : 'ask'));
-    expect(order).toEqual(['doc', 'documents', 'ask']);
+    const order = [...container.querySelectorAll('[data-testid="copies"], .doc-open-row, .lease-doc, [data-testid="docs"], .qa-form')]
+      .map((el) => el.dataset.testid || (el.classList.contains('doc-open-row') ? 'open' : el.classList.contains('lease-doc') ? 'doc' : 'ask'));
+    expect(order).toEqual(['copies', 'open', 'doc', 'docs', 'ask']);
+  });
+
+  it('leaves an assistant with no saved-copies list flush at the top', async () => {
+    // The insurance policy and service-contract assistants pass no savedCopies, so their
+    // Open row is the panel's first child. The rule that separates the lease's row from
+    // its copies is positional (:not(:first-child) in App.css) precisely so it doesn't
+    // draw a stray hairline straight under those panels' headings.
+    const { container } = mount();
+    const panel = container.querySelector('.doc-panel');
+    expect(panel.firstElementChild.classList.contains('doc-open-row')).toBe(true);
   });
 });
