@@ -14,7 +14,7 @@ const SUGGESTED = [
 // `askContext` (optional) is the richer text the ASSISTANT reasons over — the original
 // lease + every rider + the current phase. The editable/savable box still binds to
 // `leaseText` (the original), so saving never overwrites lease_text with the blob.
-export default function LeaseAssistant({ leaseId, leaseText, askContext, canSave = false, documents = null, savedCopies = null }) {
+export default function LeaseAssistant({ leaseId, leaseText, askContext, canSave = false, documents = null, savedCopies = null, hideOwnRow = false }) {
   const qc = useQueryClient();
   return (
     <DocAssistant
@@ -24,6 +24,7 @@ export default function LeaseAssistant({ leaseId, leaseText, askContext, canSave
       canSave={canSave}
       documents={documents}
       savedCopies={savedCopies}
+      hideOwnRow={hideOwnRow}
       ask={(question) => askLease(leaseId, question, askContext || leaseText)}
       onSave={async (text) => {
         await updateLease(leaseId, { lease_text: text });

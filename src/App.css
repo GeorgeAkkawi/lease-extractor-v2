@@ -1364,12 +1364,12 @@ textarea.text-input{resize:vertical;min-height:90px}
 .doc-act2{display:inline-flex;justify-content:flex-end;align-items:center;width:var(--doc-act);flex:0 0 auto}
 
 .doc-list{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
-/* The panel now stacks: saved copies → the lease's own "Open lease" row → riders
-   (George, 2026-08-04). So the copies list leads the panel and must NOT draw a rule of
-   its own — .panel-head already ends in one, and two hairlines 18px apart read as a
-   mistake. The lease's row takes the rule instead, which is what separates it from the
-   copies above it. Both are positional, so the policy / contract / archived-lease
-   assistants (no copies list) are untouched: their row is :first-child, no rule. */
+/* The lease panel stacks two blocks of the SAME shape — LEASE then RIDERS (George,
+   2026-08-04). Whichever leads must NOT draw a rule of its own: .panel-head already ends
+   in one, and two hairlines 18px apart read as a mistake. Everything after it keeps its
+   rule, and that is what separates the blocks. Positional, so the policy / contract /
+   archived-lease assistants (which lead with their own row instead) are untouched. */
+.doc-panel > .rider-group:first-child,
 .doc-panel > .doc-list:first-child{border-top:0;margin-top:0;padding-top:0}
 /* The one-line legend above the panel: what "Read text" is and what "Open file" is. Sits
    between the panel heading and the first document block. */

@@ -14,6 +14,55 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **The lease is now a rider-shaped row: `Lease · term` → Read text → Open file / Add a file, and the
+  "Saved copies" list is gone from the panel** (George: *"now follow the same format as the riders. Lease - read text -
+  add/open file whichever is there."*). Deployed: frontend Cloudflare version **`ab095ec3`**, demo worker `36a87d0f`.
+  **$0 — no AI call, NO migration, NO edge function, NO view, NO RPC, no figure moves.** Tests **1537/1537 across 155
+  files** (was 1536/155 — +1).
+  - **What went.** The panel described ONE document in two formats: a titled *"Saved copies of the lease"* list, and — in a
+    different shape, elsewhere in the panel — a status sentence with the button that opened its text. Both are replaced by
+    a single **LEASE** block built from the rider row exactly:
+
+    ```
+    LEASE
+      Lease · June 1, 2025 → May 31, 2026                    [Read text] [Open file]
+    RIDERS
+      First Amendment to Lease · Jul 1, 2024 → Jun 30, 2027  [Read text] [Open file]
+      Signage Rider · From April 1, 2025                     [Read text] [Add a file]
+    ```
+  - **New `LeaseDocs.js`, mirroring `RiderDocs.js`** — same `.rider-group` / `.rider-head` / `.rider-row` structure, same
+    two action columns, and it owns the lease's open/closed state and its `.lease-doc` box. `DocAssistant` gained
+    **`hideOwnRow`**: with the row supplied by the caller it contributes only the paste box and the ask box. The
+    insurance-policy, service-contract and **archived-lease (History page)** assistants pass nothing and keep their own row
+    — verified live that the policy panel still leads with `.doc-open-row`.
+  - **The date label is the RIDERS' formatter, deliberately.** `coversLabel({effective_from: lease_start, effective_to:
+    lease_termination_date})` — one function, so the lease row and the rider rows beneath it can never state a period two
+    ways (the §3 mirror rule, applied before it could become a mirror).
+  - **Older copies stayed reachable.** A lease holds one document by George's rule, but accounts predate it (the demo seed
+    has two). Extra copies render as plain **`Earlier copy · <filename> · <date>`** rows under the lease with their own ✕,
+    rather than as a titled list competing with the lease itself — delete them and the block collapses to one row. ⚠
+    **Flagged:** this is the one thing George didn't ask for; the alternative was silently hiding a file that exists.
+  - **`singleFile` was removed from `DocumentsList` the same day it shipped** — the lease was its only consumer and the
+    lease no longer uses that component at all. `DocumentsList` is now **insurance policies + service contracts only**, with
+    its always-on add intact, and its per-row button still reads `Open file`.
+  - **Verified on the deployed demo, driving the real UI.** City Dental: blocks read **Lease (no top rule, it leads the
+    panel) → Riders (1px rule)**; the primary column is **1164px** and the trailing slot **1252px** on all four rows —
+    lease, earlier copy, and both riders; **Read text** on the lease row opened *"COMMERCIAL LEASE AGREEMENT — Tenant: City
+    Dental"* into the same box a rider opens into, with the button flipping to **Hide text** and no rider box opening
+    alongside. Bright Coffee (no file, no riders): one row, **`Lease · January 1, 2024 → December 31, 2027` [Read text]
+    [Add a file]**, no riders block. Insurance's *"Saved certificates"* still shows **⬆ Add a copy**. **Zero console errors
+    or warnings**, `navigation entries === 1` throughout. All four URLs 200; live bundle carries the backend ref, demo
+    greps free of it.
+  - **Not exercised in the browser:** the *no cached text* path (the row drops "Read text", says **· no text saved yet**,
+    and `DocAssistant` now prints the "Paste it once…" sentence above the textarea, since the status row that used to carry
+    it is gone). No demo lease has empty `lease_text`, so this is code-verified only.
+  - **Test note:** the LEASE block reuses `.rider-group`/`.rider-row` — that is the point — so it also carries
+    **`.lease-group`**, purely to name which block is which for the tests and for anyone reading the DOM. It has no styles.
+  - **Files:** `src/components/LeaseDocs.js` (new), `src/components/DocAssistant.js` (`hideOwnRow` + the paste-box cue),
+    `src/components/LeaseAssistant.js` (passes it through), `src/pages/LeaseDetailPage.js` (LeaseDocs + `coversLabel`,
+    drops `DocumentsList`), `src/components/DocumentsList.js` (`singleFile` removed), `src/App.css` (`:first-child` rule
+    now covers `.rider-group` too), `src/pages/__tests__/riderOpen.test.js`.
+
 - **2026-08-04** — **Four words for two things became two: every document on the lease panel now offers "Read text" and
   "Open file", the add control disappears once a file is on file, and a rider takes one without being opened first**
   (George: *"make the open lease and open rider buttons the same formatting they look different… it's also pretty confusing

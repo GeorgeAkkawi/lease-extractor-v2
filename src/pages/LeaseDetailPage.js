@@ -18,8 +18,9 @@ import InvoicesPanel from '../components/InvoicesPanel';
 import TenantStatement from '../components/TenantStatement';
 import RemoveTenantModal from '../components/RemoveTenantModal';
 import LeaseAssistant from '../components/LeaseAssistant';
-import DocumentsList from '../components/DocumentsList';
+import LeaseDocs from '../components/LeaseDocs';
 import RiderDocs from '../components/RiderDocs';
+import { coversLabel } from '../lib/riders';
 import InsuranceVault from '../components/InsuranceVault';
 import LeaseReviewStrip from '../components/LeaseReviewStrip';
 import EmailComposeModal from '../components/EmailComposeModal';
@@ -712,29 +713,25 @@ export default function LeaseDetailPage() {
           <strong>Read text</strong> opens the plain-text copy the assistant reads.{' '}
           <strong>Open file</strong> opens the signed document itself, in a new tab.
         </p>
-        {/* Three blocks in the order George asked for, 2026-08-04: "the saved copy of
-            the lease, then open lease, then open riders". The copies go ABOVE the
-            assistant's own row (savedCopies) and the riders BELOW it (documents), so the
-            lease's own button lands directly on top of the riders' — the adjacency of his
-            original ask (2026-07-30: "we have an open lease and right under make an
-            open rider button"), which the copies list had grown in between. The lease
-            still leads the riders, and the ask box still comes last. */}
+        {/* Two blocks of the SAME shape — George, 2026-08-04: "now follow the same format
+            as the riders. Lease - read text - add/open file whichever is there." The lease
+            leads (his order from earlier the same day), the riders follow, and the ask box
+            still comes last. hideOwnRow: LeaseDocs carries the lease's row and its text
+            box, so the assistant contributes only the paste box and the ask box here. */}
         <LeaseAssistant
           leaseId={lease.id}
           leaseText={lease.lease_text}
           askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations, abatements })}
           canSave
+          hideOwnRow
           savedCopies={
-            /* singleFile: the ⬆ Add disappears once a file is on file. A lease doesn't get
-               a second version as a "copy" — a change arrives as an ADDENDUM, which gets
-               its own AI read (George's reasoning, 2026-08-04). */
-            <DocumentsList
-              entityType="lease"
-              entityId={lease.id}
-              title="Saved copies of the lease"
-              addLabel="Add a file"
-              singleFile
-              emptyText="No file on file — this lease was entered by hand or pasted in. Add the signed document to keep it alongside the text."
+            <LeaseDocs
+              leaseId={lease.id}
+              leaseText={lease.lease_text}
+              /* Deliberately the RIDERS' own date formatter, not a second copy of it:
+                 the lease row and the rider rows beneath it state a period the same way
+                 or they read as two different kinds of thing again. */
+              termLabel={coversLabel({ effective_from: lease.lease_start, effective_to: lease.lease_termination_date })}
             />
           }
           documents={<RiderDocs riders={addendums} leaseId={leaseId} />}

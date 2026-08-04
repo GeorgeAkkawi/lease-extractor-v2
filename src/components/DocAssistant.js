@@ -7,17 +7,19 @@ import AnswerText from './AnswerText';
 //   ask(question) -> Promise<answer>     (required; wires the backend)
 //   onSave(text)  -> Promise              (optional; only when canSave)
 //   docText, suggested[], canSave, label ("lease" | "policy" | "contract" | …)
-//   savedCopies   -> optional nodes rendered ABOVE this document's own "Open …" row
-//                    (the lease page puts its saved-copies list here)
+//   savedCopies   -> optional nodes rendered ABOVE this document's own row (the lease
+//                    page puts its LEASE block here)
 //   documents     -> optional nodes rendered BELOW it, before the ask box (the lease
-//                    page puts its riders here)
+//                    page puts its RIDERS block here)
+//   hideOwnRow    -> the caller renders the document's row AND its text box itself, so
+//                    this component contributes only the paste box and the ask box.
 //
-// The two slots are what put the panel in the order George asked for, 2026-08-04: "the
-// order should go the saved copy of the lease, then open lease, then open riders" — so
-// "Open lease" sits directly above "Open rider" again, which was his original placement
-// (2026-07-30) before the copies list was added between them. The ask box stays the last
+// The lease page passes hideOwnRow: its document is a LeaseDocs row shaped exactly like a
+// rider's (George, 2026-08-04: "follow the same format as the riders"), which owns its own
+// open/closed state. The insurance-policy and service-contract assistants keep the row
+// below — one document, no riders, nothing to line it up with. The ask box stays the last
 // thing on the panel either way; it was once stranded above a file list.
-export default function DocAssistant({ docText, suggested = [], canSave = false, onSave, ask, label = 'document', documents = null, savedCopies = null }) {
+export default function DocAssistant({ docText, suggested = [], canSave = false, onSave, ask, label = 'document', documents = null, savedCopies = null, hideOwnRow = false }) {
   const [openDoc, setOpenDoc] = useState(false);
   const [q, setQ] = useState('');
   // Only the CURRENT question is shown — asking a new one replaces the previous Q&A
@@ -58,48 +60,57 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
     <div className="doc-panel">
       {savedCopies}
 
-      {/* This document's own row: what's on file, and the button that opens it. It sits
-          BETWEEN the saved copies above and the riders below, and is ruled off like both
-          of them — .doc-open-row in App.css, which skips the rule when nothing precedes
-          it (the policy, contract and archived-lease assistants pass no savedCopies). */}
-      <div className="between doc-open-row" style={{ marginBottom: 12 }}>
-        {/* State only. "Ask anything about it below" used to live here too, repeating
-            what the panel heading and its intro paragraph already said — three
-            sentences for one idea. The ask box says what it is; this says what's on
-            file. */}
-        <span className="muted" style={{ fontSize: 12.5 }}>
-          {hasDoc
-            ? `A copy of this ${label} is saved.`
-            : canSave
-              ? `No ${label} saved yet. Paste it once and the assistant can answer questions about it.`
-              : `No ${label} on file.`}
-        </span>
-        {hasDoc && (
-          <span className="doc-actions">
-            {/* "Read text", not "Open lease" — and btn-sm like every other action on the
-                panel. George, 2026-08-04: the two buttons *"look different"*, and they did:
-                this one was the only full-size ghost, so it rendered UPPERCASE at 11.5px
-                beside sentence-case 11px riders. The label change is the same fix from the
-                other side — "Open lease" and the copies' "Open" read as the same act when
-                one gives you a transcription and the other a PDF. */}
-            <button type="button" className="ghost btn-sm" onClick={() => setOpenDoc((o) => !o)}>
-              {openDoc ? 'Hide text' : 'Read text'}
-            </button>
-            {/* The trailing column every row below reserves for its second control
-                (a copy's ✕, a rider's Open file). Empty here, so this button ends
-                exactly where theirs do. */}
-            <span className="doc-act2" />
+      {/* This document's own row: what's on file, and the button that opens it. Skipped
+          entirely when the caller supplies the row (hideOwnRow) — the lease's lives in
+          LeaseDocs so it can carry the same shape as its riders. .doc-open-row in App.css
+          takes a rule only when something precedes it. */}
+      {!hideOwnRow && (
+        <div className="between doc-open-row" style={{ marginBottom: 12 }}>
+          {/* State only. "Ask anything about it below" used to live here too, repeating
+              what the panel heading and its intro paragraph already said — three
+              sentences for one idea. The ask box says what it is; this says what's on
+              file. */}
+          <span className="muted" style={{ fontSize: 12.5 }}>
+            {hasDoc
+              ? `A copy of this ${label} is saved.`
+              : canSave
+                ? `No ${label} saved yet. Paste it once and the assistant can answer questions about it.`
+                : `No ${label} on file.`}
           </span>
-        )}
-      </div>
+          {hasDoc && (
+            <span className="doc-actions">
+              {/* "Read text", not "Open policy" — and btn-sm like every other action on
+                  the panel. George, 2026-08-04: the buttons *"look different"*, and they
+                  did: this one was the only full-size ghost, so it rendered UPPERCASE at
+                  11.5px beside sentence-case 11px rows. The label change is the same fix
+                  from the other side — "Open …" read as the same act whether it gave you
+                  a transcription or a PDF. */}
+              <button type="button" className="ghost btn-sm" onClick={() => setOpenDoc((o) => !o)}>
+                {openDoc ? 'Hide text' : 'Read text'}
+              </button>
+              {/* The trailing column every row below reserves for its second control
+                  (a copy's ✕, a rider's Open file). Empty here, so this button ends
+                  exactly where theirs do. */}
+              <span className="doc-act2" />
+            </span>
+          )}
+        </div>
+      )}
 
-      {hasDoc && openDoc && <div className="lease-doc">{docText}</div>}
+      {!hideOwnRow && hasDoc && openDoc && <div className="lease-doc">{docText}</div>}
 
-      {/* The paste box belongs to the row above it — that status line is its cue ("No
-          lease saved yet. Paste it once…"), so it stays with it rather than being pushed
-          below the riders now that the row has moved down. */}
+      {/* The paste box belongs with the document's row above it — that status line is its
+          cue ("No lease saved yet. Paste it once…") — so it stays there rather than being
+          pushed below the riders. */}
       {!hasDoc && canSave && (
         <div style={{ marginBottom: 16 }}>
+          {/* When the caller owns the row, the sentence that used to introduce this box
+              went with it — so say it here instead of leaving a bare textarea. */}
+          {hideOwnRow && (
+            <p className="muted" style={{ fontSize: 12.5, margin: '0 0 8px' }}>
+              No {label} text saved yet. Paste it once and the assistant can answer questions about it.
+            </p>
+          )}
           <textarea
             className="text-input"
             rows={5}

@@ -34,7 +34,10 @@ function mountLease(leaseId = 'lease-2') {
   );
 }
 
-const riderRows = (container) => [...container.querySelectorAll('.rider-row')];
+// The LEASE block is the same shape as the riders' (that is the point — George,
+// 2026-08-04), so it uses .rider-group too. .lease-group is what tells them apart.
+const riderRows = (c) => [...c.querySelectorAll('.rider-group:not(.lease-group) .rider-row')];
+const leaseRows = (c) => [...c.querySelectorAll('.lease-group .rider-row')];
 
 beforeEach(() => cleanup());
 
@@ -110,7 +113,7 @@ describe('Lease page — Open rider', () => {
     // button saying "Add a file" until a reload.
     const { container } = mountLease();
     await waitFor(() => expect(riderRows(container).length).toBe(2));
-    const input = container.querySelector('.rider-group input[type="file"]');
+    const input = container.querySelector('.rider-group:not(.lease-group) input[type="file"]');
     expect(input).toBeTruthy();
     const pasted = (await listAddendums('lease-2')).find((a) => !a.storage_path);
     expect(pasted).toBeTruthy();
@@ -133,51 +136,55 @@ describe('Lease page — Open rider', () => {
     await updateAddendum(pasted.id, { storage_path: null });
   });
 
-  it('lists every saved copy of the lease itself, newest first', async () => {
-    // The registry (0070). City Dental is seeded with two copies, because a version
-    // list only reads as history when something actually has two.
+  it('renders the lease as ONE rider-shaped row: name, Read text, the file action', async () => {
+    // George, 2026-08-04: "now follow the same format as the riders. Lease - read text -
+    // add/open file whichever is there." The "Saved copies of the lease" list and the
+    // assistant's separate status row were two blocks describing one document two ways.
     const { container } = mountLease();
-    const list = await waitFor(() => {
-      const el = container.querySelector('.doc-list');
-      expect(el).toBeTruthy();
-      return el;
-    });
-    expect(list.textContent).toContain('Saved copies of the lease');
-    const rows = [...list.querySelectorAll('.doc-row')];
-    expect(rows).toHaveLength(2);
-    expect(rows[0].textContent).toContain('city-dental-lease.pdf');
-    // The older one says so, rather than looking like a duplicate.
-    expect(rows[1].textContent).toContain('earlier copy');
-    expect(rows[0].textContent).not.toContain('earlier copy');
-    // Both are openable, and each can be removed individually.
-    expect(within(list).getAllByRole('button', { name: 'Open file' })).toHaveLength(2);
+    await waitFor(() => expect(leaseRows(container).length).toBeGreaterThan(0));
+    const head = container.querySelector('.lease-group .rider-head');
+    expect(head.textContent).toBe('Lease');
+    // Gone: no titled copies list on this panel at all.
+    expect(container.querySelector('.doc-panel .doc-list')).toBeNull();
+
+    const row = leaseRows(container)[0];
+    // Named and dated exactly like a rider row — same formatter, so they can't drift.
+    expect(row.textContent).toContain('Lease');
+    expect(row.querySelector('.rider-row-dates').textContent).toMatch(/→/);
+    expect(within(row).getByRole('button', { name: 'Read text' })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'Open file' })).toBeTruthy();
+    // …and it opens the lease's own text, into the same box a rider opens into.
+    fireEvent.click(within(row).getByRole('button', { name: 'Read text' }));
+    await waitFor(() => expect(container.querySelector('.lease-group .lease-doc')).toBeTruthy());
+    expect(container.querySelector('.lease-group .lease-doc').textContent).not.toContain('SIGNAGE RIDER');
   });
 
-  it('drops the add control once a file is on file — and offers it when none is', async () => {
-    // George, 2026-08-04: "If there is a hard copy of a lease saved take out the add a copy
-    // button, that should only be there when there's none saved… it says a saved copy of the
-    // lease and then add a copy even though right under there already is a copy."
-    //
-    // It costs no version history, by his own reasoning: a lease's next version arrives as an
-    // ADDENDUM (AI-read on its way in), never as another "copy" of the same document.
-    const { container } = mountLease(); // City Dental — two copies on file
-    // Scoped to the LEASE's list: the insurance panel further down the page mounts one too.
-    const list = await waitFor(() => {
-      const el = container.querySelector('.doc-list');
-      expect(el?.querySelectorAll('.doc-row').length).toBe(2);
-      return el;
-    });
-    expect(within(list).queryByRole('button', { name: /Add a file/i })).toBeNull();
+  it('keeps an older copy reachable, as a plain extra row', async () => {
+    // City Dental is seeded with two files — accounts predate the one-document rule, and a
+    // file that exists must stay openable. It sits UNDER the lease as an extra row with its
+    // own ✕, not as a titled list competing with the lease itself.
+    const { container } = mountLease();
+    await waitFor(() => expect(leaseRows(container).length).toBe(2));
+    const [main, older] = leaseRows(container);
+    expect(main.textContent).not.toContain('Earlier copy');
+    expect(older.textContent).toContain('Earlier copy');
+    expect(older.textContent).toContain('city-dental-lease.pdf');
+    expect(within(older).getByRole('button', { name: 'Open file' })).toBeTruthy();
+    expect(older.querySelector('.icon-btn')).toBeTruthy();
+    // An older copy has no text of its own — there is one cached transcription.
+    expect(within(older).queryByRole('button', { name: 'Read text' })).toBeNull();
+  });
 
-    // Bright Coffee has nothing on file — there the invitation is exactly right.
-    cleanup();
-    const bare = mountLease('lease-1');
-    const emptyList = await waitFor(() => {
-      const el = bare.container.querySelector('.doc-list');
-      expect(el.textContent).toContain('No file on file');
-      return el;
-    });
-    expect(within(emptyList).getByRole('button', { name: /Add a file/i })).toBeTruthy();
+  it('offers "Add a file" on the lease row when nothing is on file', async () => {
+    // George, 2026-08-04: "add/open file whichever is there" — and, earlier the same day,
+    // "if there is a copy, you shouldn't have an add a copy button". One slot, one state.
+    // Bright Coffee has no document; City Dental has one and shows Open file instead
+    // (asserted above).
+    const { container } = mountLease('lease-1');
+    await waitFor(() => expect(leaseRows(container).length).toBe(1));
+    const row = leaseRows(container)[0];
+    await waitFor(() => expect(within(row).queryByRole('button', { name: 'Add a file' })).toBeTruthy());
+    expect(within(row).queryByRole('button', { name: 'Open file' })).toBeNull();
   });
 
   it('every action on the panel is the same kind of button', async () => {
@@ -199,30 +206,25 @@ describe('Lease page — Open rider', () => {
     });
   });
 
-  it('stacks the saved copies, then "Open lease", then the riders', async () => {
-    // George, 2026-08-04: "I want the open lease button to be above the rider's button.
-    // So the order should go the saved copy of the lease, then open lease, then open
-    // riders." That puts "Open lease" DIRECTLY on top of "Open rider" — the adjacency of
-    // his original ask (2026-07-30, "we have an open lease and right under make an open
-    // rider button"), which the copies list had grown in between.
+  it('stacks LEASE then RIDERS, two blocks of the same shape', async () => {
+    // George's order from earlier the same day — the lease leads, the riders follow — now
+    // that both are the same kind of block. The assistant's own status row is gone from
+    // this panel entirely (hideOwnRow): it described the lease a second, different way.
     //
     // Asserted on the real page rather than on DocAssistant alone, because the order is
-    // produced by WHICH SLOT each list is passed to — a page that passed both to the same
+    // produced by WHICH SLOT each block is passed to — a page that passed both to the same
     // slot would still render, just in the wrong order.
     const { container } = mountLease();
     await waitFor(() => expect(riderRows(container).length).toBe(2));
 
     // Scoped to the LEASE's assistant: the page also mounts one per insurance policy and
-    // per service contract, each its own .doc-panel with its own Open row.
-    const panel = container.querySelector('.rider-group').closest('.doc-panel');
-    const marks = [...panel.querySelectorAll(':scope > .doc-list, :scope > .doc-open-row, :scope > .rider-group')]
-      .map((el) => (el.classList.contains('doc-list') ? 'copies' : el.classList.contains('doc-open-row') ? 'open-lease' : 'riders'));
-    expect(marks).toEqual(['copies', 'open-lease', 'riders']);
-
-    // …and it really is the lease's own button in that middle block, not just a div.
-    const openRow = panel.querySelector(':scope > .doc-open-row');
-    expect(within(openRow).getByRole('button', { name: 'Read text' })).toBeTruthy();
-    expect(openRow.textContent).toContain('A copy of this lease is saved.');
+    // per service contract, each its own .doc-panel.
+    const panel = container.querySelector('.lease-group').closest('.doc-panel');
+    const marks = [...panel.querySelectorAll(':scope > .rider-group, :scope > .doc-open-row, :scope > .doc-list')]
+      .map((el) => (el.classList.contains('lease-group') ? 'lease' : el.classList.contains('rider-group') ? 'riders' : 'other'));
+    expect(marks).toEqual(['lease', 'riders']);
+    // Both blocks announce themselves the same way.
+    expect([...panel.querySelectorAll('.rider-head')].map((h) => h.textContent)).toEqual(['Lease', 'Riders']);
   });
 
   it('gives every primary action the same trailing column, so they line up', async () => {
@@ -234,31 +236,29 @@ describe('Lease page — Open rider', () => {
     const { container } = mountLease();
     await waitFor(() => expect(riderRows(container).length).toBe(2));
 
-    const groups = [...container.querySelectorAll('.doc-panel .doc-actions')];
-    // The lease's own Read text, its two copy rows, and the two riders. (No ⬆ Add — this
-    // lease has files on it, so the add control is gone.)
-    expect(groups.length).toBeGreaterThanOrEqual(5);
+    const panel = container.querySelector('.lease-group').closest('.doc-panel');
+    const groups = [...panel.querySelectorAll('.doc-actions')];
+    // The lease row, its one older copy, and the two riders.
+    expect(groups.length).toBe(4);
     groups.forEach((g) => {
       expect(g.lastElementChild?.classList.contains('doc-act2')).toBe(true);
     });
 
-    // …including the lease row's, which reserves an EMPTY one so its button ends where
-    // the rows' buttons do rather than sitting flush against the panel edge.
-    const readLease = within(container.querySelector('.doc-open-row')).getByRole('button', { name: 'Read text' });
-    const headGroup = readLease.closest('.doc-actions');
-    expect(headGroup).toBeTruthy();
-    expect(headGroup.querySelector('.doc-act2').childElementCount).toBe(0);
-
-    // Both riders fill that slot now — one with its file, one with the offer of one.
+    // Every row fills that trailing slot, so the primary column is identical down the
+    // panel: the lease's file, the older copy's ✕, a rider's file, a rider's offer of one.
+    const [leaseMain, leaseOlder] = leaseRows(container);
+    expect(within(leaseMain.querySelector('.doc-act2')).getByRole('button', { name: 'Open file' })).toBeTruthy();
+    expect(leaseOlder.querySelector('.doc-act2 .icon-btn')).toBeTruthy();
     const rows = riderRows(container);
     expect(within(rows[0].querySelector('.doc-act2')).getByRole('button', { name: 'Open file' })).toBeTruthy();
     expect(within(rows[1].querySelector('.doc-act2')).getByRole('button', { name: 'Add a file' })).toBeTruthy();
   });
 
-  it('a lease with no riders shows no rider rows at all', async () => {
-    // Bright Coffee (lease-1) has none — an empty "Open rider" heading would be noise.
+  it('a lease with no riders shows the LEASE block and no riders block', async () => {
+    // Bright Coffee (lease-1) has none — an empty "Riders" heading would be noise. The
+    // lease's own block still stands on its own.
     const { container } = mountLease('lease-1');
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Read text' }).length).toBeGreaterThan(0));
-    expect(container.querySelector('.rider-rows')).toBeNull();
+    await waitFor(() => expect(leaseRows(container).length).toBe(1));
+    expect(container.querySelector('.rider-group:not(.lease-group)')).toBeNull();
   });
 });
