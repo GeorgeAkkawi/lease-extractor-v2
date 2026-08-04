@@ -7,8 +7,9 @@ import { usePrefetchers, leasesByPropertiesQuery } from '../lib/prefetch';
 import { money } from '../lib/format';
 import { useFeatures } from '../lib/features';
 import { CardGridSkeleton } from '../components/Skeleton';
-import { ShieldIcon } from '../components/icons';
+import { MegaphoneIcon, ShieldIcon } from '../components/icons';
 import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
+import PropertyAnnouncementsModal from '../components/PropertyAnnouncementsModal';
 import PropLeaseFlyout from '../components/PropLeaseFlyout';
 import PropertyMixDonut from '../components/PropertyMixDonut';
 
@@ -23,6 +24,7 @@ export default function PropertiesPage() {
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const [insuranceProp, setInsuranceProp] = useState(null);
+  const [announceProp, setAnnounceProp] = useState(null);
   const { data: properties = [], isPending } = useQuery({
     queryKey: ['properties', corpId],
     queryFn: () => listProperties(corpId),
@@ -72,17 +74,18 @@ export default function PropertiesPage() {
       ) : (
         <div className="prop-grid">
           {properties.map((p) => (
-            <PropCard key={p.id} corpId={corpId} property={p} onInsurance={setInsuranceProp} pf={pf} />
+            <PropCard key={p.id} corpId={corpId} property={p} onInsurance={setInsuranceProp} onAnnounce={setAnnounceProp} pf={pf} />
           ))}
         </div>
       )}
 
       {insuranceProp && <PropertyInsuranceModal property={insuranceProp} onClose={() => setInsuranceProp(null)} />}
+      {announceProp && <PropertyAnnouncementsModal property={announceProp} corp={corp} onClose={() => setAnnounceProp(null)} />}
     </div>
   );
 }
 
-function PropCard({ corpId, property, onInsurance, pf }) {
+function PropCard({ corpId, property, onInsurance, onAnnounce, pf }) {
   const navigate = useNavigate();
   const { isOn } = useFeatures();
   // Reads the cache seeded by the page's batched fetch — no own network round-trip.
@@ -107,15 +110,27 @@ function PropCard({ corpId, property, onInsurance, pf }) {
       <div className="prop-card-main">
         <div className="prop-card-head">
           <strong>{property.name}</strong>
-          {isOn('insurance') && (
-            <button
-              className="corp-edit"
-              title="Landlord insurance for this property"
-              onClick={(e) => { e.stopPropagation(); onInsurance(property); }}
-            >
-              <ShieldIcon /> Insurance
-            </button>
-          )}
+          {/* Both pills stop propagation — the card itself is the navigate-to-leases button. */}
+          <div className="prop-card-actions">
+            {isOn('announcements') && (
+              <button
+                className="corp-edit"
+                title="Email an announcement to every tenant of this property"
+                onClick={(e) => { e.stopPropagation(); onAnnounce(property); }}
+              >
+                <MegaphoneIcon /> Announcements
+              </button>
+            )}
+            {isOn('insurance') && (
+              <button
+                className="corp-edit"
+                title="Landlord insurance for this property"
+                onClick={(e) => { e.stopPropagation(); onInsurance(property); }}
+              >
+                <ShieldIcon /> Insurance
+              </button>
+            )}
+          </div>
         </div>
         <div className="prop-addr muted">{property.address || 'No address'}</div>
         <div className="prop-card-stats">

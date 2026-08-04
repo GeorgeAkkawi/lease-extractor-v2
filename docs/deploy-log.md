@@ -14,6 +14,116 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **📣 Announcements: one notice, every tenant of a property, one click** (George: *"id like to
+  have some sort of make an announcement tab located on the page where all the leases are that can go to every
+  tenant with a click of a button, but you should be able to exclude a tenant or select all… use ask amlak ai
+  tech… the emails shouldnt be general so that it can be sent to all tenants with one click it shouldnt mention
+  any specificities regarding the tenants… it should sit on the property card next to the insurance… make sure
+  that if that window accidentally closes theres a way to keep the information there so a person doesnt have to
+  restart every time they close it… keep an option to say 'would you like to save a template of this email for
+  future uses?' and cache that email example in that tab, but if its clicked on again it should update to the
+  current date and information"*). **This is the announcements feature deferred on 2026-07-29** from the PigJet
+  round — *"announcements + e-signature deferred, they need more depth"*. E-signature stays deferred.
+  Deployed: DB migration **`0083`** (Supabase `awgrjmbcghdjgnqeiqkt`), edge fns **`draft-announcement` (new)** and
+  **`send-announcement` (new)**, frontend Cloudflare version **`55402164`**, demo worker **`ba66c4d0`**.
+  Tests **1563/1563** (was 1540 — +23 across 2 new suites). **No destructive data** (0083 is one additive
+  `create table if not exists`); **no money spent** — drafting is ~1–2¢ a click, sending is $0 on the existing
+  Resend free tier. **Nothing auto-sends: a notice goes out solely on a click, behind a confirm.**
+  - **George's four calls, asked before any code was written:** ① reach = **this property's tenants only**
+    (the button lives on the property card) · ② template reuse = **placeholders auto-fill instantly and free,
+    PLUS an optional "↻ Rewrite with AI"** · ③ sending = **individual emails, one confirm** (not BCC, not
+    Gmail-per-tenant) · ④ **an optional module** in the Features switchboard, like Insurance.
+  - **Where it sits.** A `📣 Announcements` `.corp-edit` pill next to `Insurance` in the property-card header
+    (`PropertiesPage.js` — the `/leases/:corpId` grid, **not** `LeasesPage.js`). Both pills now live in a
+    `.prop-card-actions` flex wrapper so two of them wrap under the title instead of squeezing the property name.
+    Opens `PropertyAnnouncementsModal` — a **1000px** two-pane `.announce-panel` (sized by CLASS, following the
+    `.month-panel` precedent, not an inline width; it is now the widest dialog in the app, previous max 660).
+  - **① THE ONE RULE, AND IT IS STRUCTURAL, NOT A PROMPT.** A notice sent to every tenant at once must not carry
+    one tenant's private business to their neighbours. So **`draft-announcement` is never shown a lease row** —
+    its input is the property name, address and a head COUNT, nothing else. The model cannot name a tenant it was
+    never told about. The system prompt then forbids inventing one (no tenant name, suite, SF, rent, CAM figure,
+    balance, lease date; *"write around it"* if the request asks for one). Same `cors` + `enforceRateLimit(10,60)`
+    + `callClaude(haiku-4-5, maxTokens 700, schema)` + injection-guard shape as `draft-tenant-email`, which is the
+    file it was copied from. Prose only — the letterhead/date/To/RE/signature come from the client's `letter()`
+    scaffold via new `buildAnnouncementEmail()`, whose To block is deliberately generic (`All Tenants` /
+    property), so an AI notice is typographically identical to a hand-written one.
+  - **② A CLOSED WINDOW DOESN'T COST THE TYPING.** Everything in the window (instruction, subject, body, **and
+    which tenants are unticked**) autosaves to `localStorage` under `amlak.announcementDraft.<propertyId>`, and
+    reopening shows *"Draft restored from last time · Start over"*. **Exclusions are stored, not selections** — a
+    lease added after the draft was saved defaults to receiving the notice rather than being silently left out.
+    **An empty form REMOVES the key rather than storing a blank draft** (`hasContent`) — the first cut wrote one
+    on open, which made every subsequent open falsely announce "Draft restored" and would have trained him to
+    ignore the banner on the one occasion it mattered. Caught by the "Start over" test, fixed before deploy.
+  - **⚠ Named trade-off George should know:** the in-progress draft is **per-browser**. `0028` moved alert
+    dismissals the OTHER way (off localStorage, into a table) because per-browser state doesn't follow the
+    landlord across devices. A half-typed notice is genuinely session-local so this is the right call — but a
+    draft started on the laptop will not appear on the desktop. Say the word and it becomes a debounced row in
+    `announcement_templates`' table instead.
+  - **③ TEMPLATES REFRESH THEMSELVES.** Migration `0083` adds `announcement_templates` (owner-scoped, `owner_all`
+    + restrictive `require_aal2`, `set_updated_at` trigger, `(owner_id, last_used_at desc)` index). It stores the
+    letter **tokenized** — `{date}` / `{property}` / `{business}` / `{business_address}` / `{business_contact}` —
+    never a rendered letter, so one template serves every property and every year. New pure module
+    `src/lib/announcementTokens.js`: `tokenize()` on save, `fill()` on load, deterministic, free, no round trip.
+    `letterDate` is now **exported from `emailTemplates.js` and imported by the tokenizer** on purpose — two
+    spellings of "today" would silently stop matching and a reused notice would go out dated last year. Longest
+    value is substituted first so a business called *"Maple Plaza Holdings LLC"* tokenizes whole before the
+    property *"Maple Plaza"* can match inside it; a value under 3 chars is skipped so a business initialled "AC"
+    can't tokenize the "AC" in "HVAC". `↻ Rewrite with AI` replays the saved `ai_request` for fresh wording.
+  - **Sending — why a NEW function and not a loop over `send-tenant-email`.** That one is capped at **10 sends
+    per minute per user**, so a building with eleven tenants would deliver to some and not others — the worst
+    possible outcome for a notice. `send-announcement` takes the whole list in one call: same auth model (explicit
+    `auth.getUser()` **in addition to** the limiter, because `enforceRateLimit` fails OPEN), `enforceRateLimit
+    (req, 3, 60)`, **max 60 recipients**, case-insensitive dedupe (two leases sharing a contact address must not
+    mean two copies in one inbox), and the identical DMARC sender identity — `From: "{Business name}"
+    <letters@amlakre.com>`, `Reply-To:` the corporation's business email, business NAME looked up under the
+    caller's own JWT so a landlord can only borrow one of HIS names. Sends **individually** (concurrency 2, 550ms
+    pacing) rather than BCC, and returns `{ sent: [{to,id}], failed: [{to,error}] }` so a **partial** delivery is
+    reported honestly (`✓ Sent to 11 tenants` + `1 didn't go through: …`) instead of a bare error. 502 only when
+    every single send failed. No new secrets — `RESEND_API_KEY` / `TENANT_FROM_EMAIL` were already set.
+  - **Confirm + paper trail.** `useConfirm()` names **every recipient** before anything goes out (*"…will be
+    emailed to 2 tenants at Maple Plaza. Each one receives their own copy from Acme Holdings, with replies going
+    to leasing@…"*). After a send, one `history_events` row (`announcement_sent`) per announcement — **not per
+    recipient** — with label + tone added to `HistoryPage.js`. Deliberately **absent from the `tenantStory.js`
+    allowlist**: it's a building-level event with no `lease_id`, so it must not repeat on every tenant's story.
+  - **Downstream (CLAUDE.md "following a change through"):** traced both ways and it touches **nothing on the
+    money spine** — reads no billed figure, writes none, so no `resyncLeaseBilling`, no `settleBillingChange`, no
+    view, no invoice implication. Invalidation is a plain `['announcementTemplates']` prefix. **§3:**
+    `announcement_templates` is a plain table the mock auto-vivifies (`mockClient.js:240`) so it carries no mirror
+    obligation; the two new functions ARE mirrored (`draft-announcement` → a canned generic notice that itself
+    names no tenant, `send-announcement` → `{sent, failed}` — the sandbox never emails anyone). **§4:** the
+    `announcements` FEATURES entry needs only the card-button gate — no alert type, no `NOTIFY_TYPES` lead, no
+    `*_notice_bucket`, no `send-reminders` sweep, no Ask facts; Settings + onboarding render off the array.
+    **§5 fans out to nothing** — no shared edge module was modified, only two new importers added.
+  - **Files.** New: `supabase/migrations/0083_announcement_templates.sql` · `supabase/functions/draft-announcement/
+    index.ts` · `supabase/functions/send-announcement/index.ts` · `src/components/PropertyAnnouncementsModal.js` ·
+    `src/lib/announcementTokens.js` · `src/lib/__tests__/announcementTokens.test.js` ·
+    `src/components/__tests__/announcements.test.js`. Modified: `PropertiesPage.js` · `icons.js` (`MegaphoneIcon`) ·
+    `features.js` · `api.js` (`draftAnnouncement`, `sendAnnouncement`, 4 template calls, `logAnnouncementSent`,
+    `businessFromCorp` now exported) · `emailTemplates.js` (`buildAnnouncementEmail`, `letterDate`) ·
+    `HistoryPage.js` · `Sidebar.js` (demo reset now sweeps the `amlak.announcementDraft.` prefix) ·
+    `demo/mockClient.js` · `demo/store.js` (one seeded template, stored tokenized) · `App.css`.
+  - **Verified:** unit **1563/1563** (`vitest run`); `vite build` compiles (860 modules); **migration applied
+    clean and read back** (9 columns · RLS on · **both** `owner_all` (permissive) and `require_aal2` (restrictive)
+    · `trg_announcement_templates_updated` present · 2 indexes · 0 pre-existing rows); both new functions live and
+    **gated** (unauthenticated POST → **401**, CORS preflight → **200**); all three live URLs 200; the live bundle
+    greps positive for `send-announcement` / `draft-announcement` / `amlak.announcementDraft`. **Then driven in a
+    real browser against the DEPLOYED demo:** both pills sit clean in the card header with a ~95px gap before the
+    title; Announcements opens the modal **without navigating**; `2 of 2` recipients; unticking City Dental →
+    `1 of 2` and `📨 Send to 1 tenant`; the AI draft returned *"Parking Lot Work — Maple Plaza"* whose body
+    contains **no tenant name, no tenant email and no dollar figure**; ✕ then reopen → *"Draft restored"* with the
+    text byte-identical; the seeded *"Winter weather procedures"* template loaded dated **August 4, 2026** naming
+    Maple Plaza and Acme Holdings with **no `{token}` visible anywhere**; the confirm named both recipients; the
+    footer read **`✓ Sent to 2 tenants`**. **Zero console errors, no horizontal overflow.**
+  - **⚠ One check NOT completed, stated plainly:** the verifier's browser session had no resize tool, so the modal
+    was **not** physically rendered at 1280×800 / 1000×800. The CSS is `width:1000px; max-width:calc(100vw - 32px)`
+    with a `270px / 1fr` grid, which clamps rather than overflows — but that is read off the stylesheet, not seen.
+  - **George: click 📣 Announcements on any property card, untick everyone except your OWN address, and send one
+    to yourself to watch it land** — an authenticated send needs your logged-in session, so the first real
+    tenant-facing send is deliberately your click, not mine. Make sure each corporation's Business profile has its
+    business email filled in — that's the reply-to and what names the sender.
+
+---
+
 - **2026-08-04** — **The ✕ now appears on a row holding only TEXT, not just one holding a file** (George: *"add it to the
   riders as well"*). Deployed: frontend Cloudflare version **`3715a5db`**, demo worker `fdcbaa8e`. **$0 — no AI call, NO
   migration, NO edge function, NO view, NO RPC, no figure moves.** Tests **1540/1540 across 155 files** (was 1539/155 — +1).

@@ -339,5 +339,45 @@ export function seed() {
     history_events: [
       { id: 'hist-1', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: 'lease-1', type: 'insurance_requested', description: 'Insurance certificate requested from Bright Coffee Co. → sam@brightcoffee.example', tenant_name: 'Bright Coffee Co.', event_date: iso(Y, 7, 15), meta: { to: 'sam@brightcoffee.example', subject: 'Certificate of insurance — Maple Plaza' }, created_at: iso(Y, 7, 15) },
     ],
+    // One saved announcement, so the Announcements window opens with its template list
+    // populated. Stored TOKENIZED — {date}/{property}/{business} — exactly as the live
+    // table does, which is what lets the demo show a year-old notice reopening dated
+    // today. See src/lib/announcementTokens.js.
+    announcement_templates: [
+      {
+        id: 'anntpl-1',
+        owner_id: DEMO_USER.id,
+        name: 'Winter weather procedures',
+        subject: 'Winter Weather Procedures — {property}',
+        body: [
+          '{business}',
+          '{business_address}',
+          '{business_contact}',
+          '',
+          '{date}',
+          '',
+          'All Tenants',
+          '{property}',
+          '',
+          'RE: Winter Weather Procedures — {property}',
+          '',
+          'Dear Tenants,',
+          '',
+          'As the winter season approaches, we are writing to remind all tenants of the snow and ice procedures at {property}.',
+          '',
+          'Common areas and the parking lot will be cleared by our contractor. Please keep your own entrance clear and report any hazardous conditions to the office promptly.',
+          '',
+          'Please contact our office with any questions.',
+          '',
+          'Sincerely,',
+          '{business}',
+          '{business_contact}',
+        ].join('\n'),
+        ai_request: 'remind everyone about the snow and ice procedures for the winter',
+        last_used_at: iso(Y - 1, 11, 3),
+        created_at: iso(Y - 1, 11, 3),
+        updated_at: iso(Y - 1, 11, 3),
+      },
+    ],
   };
 }

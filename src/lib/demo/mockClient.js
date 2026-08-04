@@ -431,6 +431,15 @@ const functions = {
     if (name === 'draft-tenant-email') {
       return ok(demoDraftTenantEmail(body));
     }
+    if (name === 'draft-announcement') {
+      return ok(demoDraftAnnouncement(body));
+    }
+    if (name === 'send-announcement') {
+      // The demo sandbox never emails anyone — pretend every copy went out. Mirrors the
+      // live shape ({ sent, failed }) so the modal's per-recipient result line is exercised.
+      const to = (body?.recipients || []).map((r) => (typeof r === 'string' ? r : r?.to)).filter(Boolean);
+      return ok({ sent: to.map((addr) => ({ to: addr, id: 'demo-email' })), failed: [] });
+    }
     if (name === 'review-lease') {
       return ok(demoReviewLease(body));
     }
@@ -898,6 +907,47 @@ function demoAskPortfolio(body) {
 // Demo stand-in for the draft-tenant-email Edge Function. Returns PROSE ONLY — the
 // salutation and paragraphs, no letterhead and no sign-off — exactly like the live
 // function, so the client's letter() wrap is exercised for real in the demo.
+// The demo's stand-in for the draft-announcement edge function. Mirrors the one rule that
+// function exists to enforce: the prose it returns names no tenant, no suite and no
+// figure, because a building-wide notice goes to everyone at once. Same {subject, body}
+// shape, body = prose only (the client's letter() scaffold adds the letterhead).
+function demoDraftAnnouncement(body) {
+  const req = String(body?.request || '').toLowerCase();
+  const where = body?.property?.name || 'the property';
+
+  let subject = `Notice to Tenants — ${where}`;
+  let paras;
+  if (/park|lot|resurfac|pav|driveway/.test(req)) {
+    subject = `Parking Lot Work — ${where}`;
+    paras = [
+      `We are writing to let all tenants know about upcoming work to the parking area at ${where}.`,
+      `Access will be restricted while the work is carried out. Please use the alternate entrance during that period and let your staff and visitors know in advance.`,
+      `We will keep disruption to a minimum and appreciate your patience. Please contact our office with any questions.`,
+    ];
+  } else if (/snow|ice|winter|storm/.test(req)) {
+    subject = `Winter Weather Procedures — ${where}`;
+    paras = [
+      `As the winter season approaches, we are writing to remind all tenants of the snow and ice procedures at ${where}.`,
+      `Common areas and the parking lot will be cleared by our contractor. Please keep your own entrance clear and report any hazardous conditions to the office promptly.`,
+      `Please contact our office with any questions.`,
+    ];
+  } else if (/holiday|hours|close|closure/.test(req)) {
+    subject = `Holiday Hours — ${where}`;
+    paras = [
+      `We are writing to inform all tenants of the upcoming holiday schedule at ${where}.`,
+      `The management office will operate on reduced hours during the holiday period. Building access and emergency contacts are unchanged.`,
+      `Please contact our office with any questions.`,
+    ];
+  } else {
+    paras = [
+      `We are writing to all tenants at ${where} regarding an item of building business.`,
+      `${String(body?.request || 'Further details will follow.').trim()}`,
+      `Please contact our office with any questions.`,
+    ];
+  }
+  return { subject, body: [`Dear Tenants,`, ...paras].join('\n\n') };
+}
+
 function demoDraftTenantEmail(body) {
   const t = body?.tenant || {};
   const req = String(body?.request || '').toLowerCase();

@@ -125,6 +125,86 @@ export function sendTenantEmail({ to, subject, body, replyTo }) {
   return invokeFunction('send-tenant-email', { to, subject, body, reply_to: replyTo || null });
 }
 
+// ---------------------------------------------------------------------------
+// Announcements — one notice to every tenant of a property
+// ---------------------------------------------------------------------------
+
+// Draft a building-wide notice from a plain-English request. NOTE what is NOT sent:
+// no lease rows, no tenant names, no figures — only the property and a head count. That
+// is the structural guarantee behind "an announcement mentions no individual tenant";
+// the model cannot name someone it was never told about. ~1–2¢, click-gated.
+export function draftAnnouncement({ request, property, businessName }) {
+  return invokeFunction('draft-announcement', {
+    request,
+    property: {
+      name: property?.name || '',
+      address: property?.address || '',
+      tenant_count: property?.tenant_count ?? null,
+    },
+    business_name: businessName || '',
+  });
+}
+
+// Send one announcement to many tenants in a single call. Deliberately NOT a client-side
+// loop over sendTenantEmail: that function is capped at 10 sends/minute, so a building
+// with eleven tenants would deliver to some and not others. Returns
+// { sent: [{to,id}], failed: [{to,error}] } so a partial delivery is reported honestly.
+// Landlord-initiated only — never auto-sends.
+export function sendAnnouncement({ recipients, subject, body, replyTo }) {
+  return invokeFunction('send-announcement', {
+    recipients: (recipients || []).map((to) => ({ to })),
+    subject,
+    body,
+    reply_to: replyTo || null,
+  });
+}
+
+// Saved announcement templates, newest-used first (matches the table's index).
+export const listAnnouncementTemplates = () =>
+  rows(supabase.from('announcement_templates').select('*').order('last_used_at', { ascending: false, nullsFirst: false }));
+
+// `body` and `subject` arrive already tokenized by src/lib/announcementTokens.js — the
+// row stores {date}/{property}/{business}, never a rendered letter.
+export async function saveAnnouncementTemplate({ name, subject, body, aiRequest }) {
+  return one(
+    supabase.from('announcement_templates')
+      .insert({
+        name: String(name || '').trim().slice(0, 120) || 'Untitled announcement',
+        subject: subject || '',
+        body: body || '',
+        ai_request: aiRequest || null,
+        owner_id: await ownerId(),
+      })
+      .select().single()
+  );
+}
+
+export const deleteAnnouncementTemplate = (id) =>
+  rows(supabase.from('announcement_templates').delete().eq('id', id));
+
+// Stamped when a template is loaded, so the list stays ordered by what he actually reuses.
+export const touchAnnouncementTemplate = (id) =>
+  rows(supabase.from('announcement_templates').update({ last_used_at: new Date().toISOString() }).eq('id', id));
+
+// Record that a notice went out, so the property History keeps a dated trail. One row per
+// announcement, not per recipient — it is a building-level event with no lease_id, which
+// is also why it is deliberately absent from the tenantStory allowlist (src/lib/tenantStory.js):
+// a building notice shouldn't clutter each individual tenant's story.
+// Best-effort (logHistoryEvent swallows errors): never blocks or undoes a send.
+export async function logAnnouncementSent({ propertyId, propertyName, subject, sentCount, failedCount = 0 }) {
+  return logHistoryEvent({
+    property_id: propertyId,
+    lease_id: null,
+    type: 'announcement_sent',
+    description:
+      `Announcement sent to ${sentCount} tenant${sentCount === 1 ? '' : 's'}` +
+      `${propertyName ? ` at ${propertyName}` : ''}${failedCount ? ` (${failedCount} failed)` : ''}` +
+      `${subject ? ` — ${subject}` : ''}`,
+    event_date: paymentIsoToday(),
+    meta: { subject: subject || null, sent: sentCount, failed: failedCount },
+  });
+}
+
 export const createCorporation = async (name) =>
   one(supabase.from('corporations').insert({ name, owner_id: await ownerId() }).select().single());
 
@@ -134,7 +214,7 @@ export const updateCorporation = (id, patch) =>
 
 // Build the letterhead/signature "business" object an email template expects
 // from a corporation record (the corporation IS the sending entity).
-const businessFromCorp = (corp) =>
+export const businessFromCorp = (corp) =>
   corp ? { company_name: corp.name, address: corp.address, contact_email: corp.contact_email, contact_phone: corp.contact_phone } : null;
 
 // ---- Annual reports (one per corporation: state filing deadline) ------------

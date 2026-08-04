@@ -66,7 +66,15 @@ export default function Sidebar() {
 
   function resetDemo() {
     if (window.confirm('Reset all demo data?')) {
-      try { localStorage.removeItem('amlak.dismissedAlerts'); localStorage.removeItem('amlak.snoozedAlerts'); } catch { /* ignore */ }
+      try {
+        localStorage.removeItem('amlak.dismissedAlerts');
+        localStorage.removeItem('amlak.snoozedAlerts');
+        // Announcement drafts are keyed per property, so sweep the prefix — a reset that
+        // left a half-typed demo notice behind would reappear on the next play-through.
+        Object.keys(localStorage)
+          .filter((k) => k.startsWith('amlak.announcementDraft.'))
+          .forEach((k) => localStorage.removeItem(k));
+      } catch { /* ignore */ }
       window.location.reload();
     }
   }

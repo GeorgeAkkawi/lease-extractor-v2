@@ -11,6 +11,10 @@ const longDate = (iso) => {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 };
 const today = () => new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+// The exact string letter() stamps as the date. Exported so announcementTokens.js can
+// find and re-swap it in a saved template — two spellings of "today" would silently stop
+// matching and a reused notice would go out carrying last year's date.
+export const letterDate = today;
 const monthlyOf = (annual) => (annual ? money(Math.round(Number(annual) / 12)) : null);
 
 // Shared letter scaffold: header → date → To block → RE → body → signature.
@@ -63,6 +67,26 @@ export function buildAiDraftEmail({ business, tenant_name, contact_name, tenant_
     paragraphs: paragraphs.length ? paragraphs : [String(bodyProse || '').trim()],
   });
   return { subject: subj, body, to: tenant_email || '' };
+}
+
+// A building-wide notice: the same letter to every tenant of one property. Same scaffold
+// as every other template, but the To block is deliberately generic — no contact name, no
+// tenant name, no tenant email — because this one letter is addressed to all of them and
+// must not carry any single tenant's details (see supabase/functions/draft-announcement).
+export function buildAnnouncementEmail({ business, propertyName, subject, bodyProse }) {
+  const prose = stripSignOff(bodyProse);
+  const paragraphs = prose
+    .split(/\n{2,}/)
+    .map((p) => p.replace(/\s+$/, '').replace(/\n+/g, ' ').trim())
+    .filter(Boolean);
+  const subj = String(subject || '').trim() || `Notice to tenants — ${propertyName || 'the property'}`;
+  const body = letter({
+    business,
+    toBlock: ['All Tenants', propertyName ? propertyName : null],
+    reLine: `RE: ${subj}`,
+    paragraphs: paragraphs.length ? paragraphs : [String(bodyProse || '').trim()],
+  });
+  return { subject: subj, body };
 }
 
 // Drop a trailing "Sincerely," / "Best regards," and everything after it — the scaffold

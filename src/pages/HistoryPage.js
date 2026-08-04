@@ -27,6 +27,9 @@ const EVENT_LABEL = {
   estimate_set: 'CAM & tax estimate set',
   lease_created: 'Lease created',
   insurance_requested: 'Insurance requested',
+  // Building-wide, so it carries a property_id and no lease_id — deliberately absent from
+  // the tenantStory.js allowlist so it doesn't repeat on every tenant's story.
+  announcement_sent: 'Announcement sent',
   cam_reconciled: 'CAM & tax reconciled',
   cam_refunded: 'CAM & tax refund paid',
   cam_reconcile_undone: 'CAM & tax reconcile undone',
@@ -49,6 +52,7 @@ const EVENT_BADGE = {
   rent_abated: 'warn',
   estimate_set: 'info',
   insurance_requested: 'info',
+  announcement_sent: 'info',
   cam_reconciled: 'info',
   cam_refunded: 'good',
   cam_reconcile_undone: 'warn',

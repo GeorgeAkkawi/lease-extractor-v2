@@ -366,6 +366,9 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .prop-card-main{display:flex;flex-direction:column;gap:9px;min-width:0}
 .prop-card:hover{border-color:var(--accent);filter:none}
 .prop-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+/* Two pills now (Announcements + Insurance) — they wrap under the name on a narrow card
+   rather than squeezing the property title. */
+.prop-card-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}
 .prop-card-head strong{font-family:var(--display);font-size:22px;font-weight:600}
 .prop-addr{font-size:12.5px;letter-spacing:.01em}
 .prop-card-stats,.fin-mini{display:flex;gap:20px;margin-top:8px;flex-wrap:wrap;border-top:1px solid var(--hair);padding-top:12px}
@@ -1003,6 +1006,30 @@ tbody tr:last-child td{border-bottom:none}
 .modal-foot{padding:15px 22px;border-top:1px solid var(--border);background:var(--panel-2)}
 .modal-actions{display:flex;justify-content:space-between;align-items:center;gap:14px}
 .modal-actions .muted{font-size:12.5px}
+
+/* ---- Announcements (one notice to every tenant of a property) ---- */
+/* Sized by class rather than an inline width, like .month-panel: this is the widest
+   dialog in the app because it holds a recipient list and a full letter side by side. */
+.announce-panel{width:1000px;max-width:calc(100vw - 32px)}
+.announce-grid{display:grid;grid-template-columns:270px 1fr;gap:24px;align-items:start}
+.announce-side{border-right:1px solid var(--line);padding-right:20px;min-width:0}
+.announce-side-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.announce-label{font-family:var(--ui);font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint)}
+.announce-side-actions{display:flex;gap:2px;margin:2px 0 6px -9px}
+.announce-recipients,.announce-templates{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.announce-recipients{max-height:280px;overflow:auto}
+.announce-recipient label{display:flex;align-items:flex-start;gap:8px;padding:5px 4px;border-radius:6px;cursor:pointer}
+.announce-recipient label:hover{background:var(--panel-2)}
+.announce-recipient span{display:flex;flex-direction:column;min-width:0;font-size:13px;line-height:1.3}
+.announce-recipient small{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.announce-recipient.missing{display:flex;justify-content:space-between;gap:8px;padding:5px 4px;font-size:13px;opacity:.55}
+.announce-templates li{display:flex;justify-content:space-between;align-items:center;gap:4px;font-size:13px}
+.announce-templates li .ghost{text-align:left;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.announce-main{min-width:0}
+.announce-restored{background:var(--accent-soft);border-radius:6px;padding:7px 10px;margin:0 0 12px;font-size:12.5px}
+.announce-draft-row{display:flex;gap:8px;margin:-4px 0 14px}
+.announce-body{min-height:260px}
+.announce-result{margin-bottom:10px}
 
 /* ---- Documents & filings panel (one door to a corporation's paperwork) ---- */
 .docfile-body{padding:14px 14px 18px}
