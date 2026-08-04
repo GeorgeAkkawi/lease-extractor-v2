@@ -306,11 +306,24 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
               {leases.length === 0 && <li className="muted">No tenants on this property yet.</li>}
               {leases.map((l) => {
                 const email = (l.tenant_email || '').trim();
+                // George, 2026-08-04: *"dennys doesnt have an email on file and its hard to
+                // see that on the announcements, make the formatting the same as the other
+                // tenants but just make the box uncheckable until an email is added."*
+                //
+                // It used to render as a bare name + note with NO checkbox, so it was a
+                // different shape from every row around it and the eye slid straight past
+                // it — which is how a tenant silently drops out of an announcement. Now it
+                // is the same row, with the same checkbox, that simply cannot be ticked.
                 if (!email) {
                   return (
                     <li key={l.id} className="announce-recipient missing">
-                      <span>{l.tenant_name || 'Tenant'}</span>
-                      <small className="muted">no email on file</small>
+                      <label title="Add an email address on this tenant’s lease to include them">
+                        <input type="checkbox" checked={false} disabled readOnly />
+                        <span>
+                          {l.tenant_name || 'Tenant'}
+                          <small>no email on file — add one to include them</small>
+                        </span>
+                      </label>
                     </li>
                   );
                 }

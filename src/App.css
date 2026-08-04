@@ -1023,7 +1023,15 @@ tbody tr:last-child td{border-bottom:none}
 .announce-recipient label:hover{background:var(--panel-2)}
 .announce-recipient span{display:flex;flex-direction:column;min-width:0;font-size:13px;line-height:1.3}
 .announce-recipient small{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.announce-recipient.missing{display:flex;justify-content:space-between;gap:8px;padding:5px 4px;font-size:13px;opacity:.55}
+/* A tenant with no address keeps the EXACT shape of every other row — same checkbox, same
+   two lines — and is simply not tickable. It used to drop the checkbox entirely, which made
+   it read as a different kind of thing and easy to miss. The name stays at full strength so
+   you can see WHO is being left out; only the box dims, and the reason is in gold so it
+   reads as something to fix rather than as a quiet aside. */
+.announce-recipient.missing label{cursor:not-allowed}
+.announce-recipient.missing label:hover{background:none}
+.announce-recipient.missing input{opacity:.45}
+.announce-recipient.missing small{color:var(--gold)}
 .announce-templates li{display:flex;justify-content:space-between;align-items:center;gap:4px;font-size:13px}
 .announce-templates li .ghost{text-align:left;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .announce-main{min-width:0}
@@ -1395,6 +1403,14 @@ textarea.text-input{resize:vertical;min-height:90px}
    has one only when it actually holds a file — and without a reserved slot every "Open
    file" above a file-less rider would sit 36px right of the ones below it. */
 .doc-act3{display:inline-flex;justify-content:flex-end;align-items:center;width:var(--doc-act3);flex:0 0 auto}
+/* The keep-or-delete choice in the Replace dialog. Two full-width rows rather than a pair
+   of radios on one line, because "delete the old file" is not a thing to be picked by
+   accident while aiming at the other one. */
+.doc-choice-head{font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:16px 0 6px}
+.doc-choice{display:flex;align-items:flex-start;gap:9px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:6px;cursor:pointer}
+.doc-choice:hover{background:var(--panel-2)}
+.doc-choice span{display:flex;flex-direction:column;font-size:13px;line-height:1.35}
+.doc-choice small{font-size:11.5px;margin-top:2px}
 
 .doc-list{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 /* The lease panel stacks two blocks of the SAME shape — LEASE then RIDERS (George,

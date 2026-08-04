@@ -558,7 +558,10 @@ export const leaseNeedsText = (lease) => (lease?.lease_text || '').trim().length
 // Fill leases.lease_text for a lease whose transcription never landed (the pre-2026-07-21
 // big-scan timeout). Writes only that column, refuses to overwrite a usable transcript,
 // and costs $0 when the file is a digital PDF or .docx — see the edge function's header.
-export const cacheLeaseText = (leaseId) => invokeFunction('cache-lease-text', { lease_id: leaseId });
+// `force` is only ever passed by replaceLeaseFile below — the sweep must keep its refusal
+// to overwrite a transcript that already looks usable.
+export const cacheLeaseText = (leaseId, { force = false } = {}) =>
+  invokeFunction('cache-lease-text', { lease_id: leaseId, force });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1399,6 +1402,81 @@ export async function deleteDocument(id) {
 export async function deleteLeaseFile(docId, leaseId) {
   if (docId) await deleteDocument(docId);
   if (leaseId) await updateLease(leaseId, { lease_text: null });
+}
+
+// Swap the document a lease is built on, and re-read it in the same breath. George,
+// 2026-08-04: *"when a lease is reuploaded … it is recached and lets the user know what
+// will be happening and give them an option to remove the old lease or keep it on file,
+// but you should automatically recache with the new lease and let them know."*
+//
+// Before this there was no way to do it at all: the panel offered "Add a file" ONLY when
+// the lease had none, and a file added that way was invisible to cache-lease-text, which
+// reads leases.lease_file_id → lease_files.storage_path and never looks at the documents
+// registry. So a second upload changed the list and nothing else — the assistant kept
+// answering out of the old document with no sign anything had happened.
+//
+// ⚠ IT DOES NOT RE-EXTRACT THE LEASE'S TERMS, and that is deliberate. Rent, dates, square
+// footage, escalations and renewal options stay exactly as they are. Re-running extraction
+// here would move billed figures off the back of a file drop — no review screen, no
+// confirmation — and the money spine (CLAUDE.md §1) must never move that way. The dialog
+// says so in as many words, and a genuinely new lease is entered as a new lease.
+//
+// ⚠ THE lease_files ROW IS UPDATED IN PLACE rather than replaced, and that is the whole
+// trick. `extraction_raw` on that row still feeds getLeaseStatedEstimate (the CAM / tax
+// estimate pre-fill) and reconcileRenewalOptions. Pointing lease_file_id at a fresh row
+// would blank both of them silently — a figure going quietly stale, which is exactly the
+// failure the standing instruction is about. Only the path and the filename move.
+//
+// Order matters: the new file is stored, wired up and registered BEFORE anything is
+// deleted, so a failure halfway through leaves the landlord with more than he started
+// with rather than less.
+export async function replaceLeaseFile({ leaseId, file, oldDocId = null, keepOld = true }) {
+  if (!leaseId) throw new Error('A lease is required.');
+  validateUploadFile(file);
+  const uid = await ownerId();
+  const safe = file.name.replace(/[^\w.-]+/g, '_');
+  const path = `${uid}/${Date.now()}-${safe}`;
+
+  const up = await supabase.storage.from('lease-documents').upload(path, file, {
+    contentType: file.type || undefined,
+    upsert: false,
+  });
+  if (up.error) throw up.error;
+
+  const lease = await one(
+    supabase.from('leases').select('lease_file_id').eq('id', leaseId).maybeSingle()
+  );
+  let leaseFileId = lease?.lease_file_id || null;
+  if (leaseFileId) {
+    await rows(
+      supabase.from('lease_files')
+        .update({ storage_path: path, original_filename: file.name })
+        .eq('id', leaseFileId)
+    );
+  } else {
+    // A lease that never had a file — a pasted-text import, or one whose row went in an
+    // older cleanup. It gets a row now, which is what makes it cacheable at all.
+    const row = await one(
+      supabase.from('lease_files')
+        .insert({ owner_id: uid, storage_path: path, original_filename: file.name })
+        .select().single()
+    );
+    leaseFileId = row?.id || null;
+    if (leaseFileId) await updateLease(leaseId, { lease_file_id: leaseFileId });
+  }
+
+  await registerDocument({
+    entityType: 'lease', entityId: leaseId, storagePath: path, filename: file.name,
+    bytes: file.size ?? null, mime: file.type || null,
+  });
+
+  // The old copy goes only if he said so, and only once the new one is safely in place.
+  if (!keepOld && oldDocId) await deleteDocument(oldDocId);
+
+  // force, because the lease still holds the PREVIOUS document's transcript and the
+  // "don't overwrite a usable copy" guard would otherwise skip the whole point of this.
+  const result = await cacheLeaseText(leaseId, { force: true });
+  return { storage_path: path, lease_file_id: leaseFileId, ...(result || {}) };
 }
 
 // The same rule one level down: a rider's file and its cached transcription are one

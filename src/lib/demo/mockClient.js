@@ -530,9 +530,25 @@ const functions = {
       // The seeded leases all carry lease_text, so the sweep never actually calls this
       // in demo — it's here so a seed change (or a hand-cleared lease_text) degrades to
       // a sensible answer instead of an unhandled-function error.
+      //
+      // `force` mirrors the live function: it is the re-upload lane (replaceLeaseFile),
+      // where the lease still holds the PREVIOUS document's transcript and the
+      // already-cached guard would otherwise skip the entire point of the action. The
+      // sandbox has no PDF reader, so it writes a stand-in transcript naming the file
+      // that was just uploaded — enough to demonstrate that the text really did change.
       const lease = (db.leases || []).find((l) => l.id === body?.lease_id);
       const text = String(lease?.lease_text || '').trim();
-      if (text.length >= 500) return ok({ skipped: 'already_cached', length: text.length });
+      if (!body?.force && text.length >= 500) return ok({ skipped: 'already_cached', length: text.length });
+      if (body?.force && lease) {
+        const fileRow = (db.lease_files || []).find((f) => f.id === lease.lease_file_id);
+        const fresh = [
+          `COMMERCIAL LEASE AGREEMENT (re-read from ${fileRow?.original_filename || 'the new file'})`,
+          `Tenant: ${lease.tenant_name || 'Tenant'}.`,
+          text || '',
+        ].join('\n').trim();
+        lease.lease_text = fresh;
+        return ok({ length: fresh.length, source: 'text_layer', tenant_name: lease.tenant_name || null });
+      }
       return ok({ length: 0, source: 'transcription', tenant_name: lease?.tenant_name || null });
     }
     if (name === 'extract-bank-statement') {

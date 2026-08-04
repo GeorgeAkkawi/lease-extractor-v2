@@ -14,6 +14,69 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **Replace a lease's document and re-read it in one action, and a tenant with no
+  email finally looks like one on the announcements list** (George: *"double check that when a lease is
+  reuploaded (i dont see the reupload button that we talked about because sometimes new leases are made
+  entirely for the same tenant) it is recached and lets the user know what will be happening and give
+  them an option to remove the old lease or keep it on file, but you should automatically recache with
+  the new lease and let them know. dennys doesnt have an email on file and its hard to see that on the
+  announcements, make the formatting the same as the other tenants but just make the box uncheckable
+  until an email is added."*). Deployed: edge fn **`cache-lease-text`**, frontend Cloudflare
+  **`6ddbcb15`**, demo worker **`4d2fbffb`**. **No migration.** Tests **1674/1674** (was 1662).
+  - **He was right that the button wasn't there — and the reason is worse than a missing button.** The
+    lease row offered **"Add a file" only while the lease had NONE**, so there was no re-upload path at
+    all. Worse, a file added through the generic `uploadDoc` path is **invisible to `cache-lease-text`**,
+    which reads `leases.lease_file_id → lease_files.storage_path` and never looks at the `documents`
+    registry. A second upload changed the document list and *nothing else* — the assistant, the lease
+    search and the AI review all kept answering out of the old document with no sign anything happened.
+  - **New `replaceLeaseFile` (`api.js`)** — store the new file, wire it up, register it, then optionally
+    delete the old one, then force a re-read. In that order deliberately: a failure halfway leaves the
+    landlord with more than he started with, not less.
+    - **⚠ The `lease_files` ROW IS UPDATED IN PLACE, not replaced, and that is the load-bearing part.**
+      `extraction_raw` on that row feeds `getLeaseStatedEstimate` (the CAM / tax estimate pre-fill) and
+      `reconcileRenewalOptions`. Pointing `lease_file_id` at a fresh row would blank both **silently** —
+      a figure going quietly stale, which is the exact failure the standing instruction is about. Only
+      `storage_path` and `original_filename` move. A test asserts City Dental's $12,000 stated estimate
+      survives a replacement.
+    - **⚠ IT DOES NOT RE-EXTRACT THE TERMS.** Rent, dates, square footage, escalations and renewal
+      options are untouched. Re-running extraction off a file drop would move billed figures with no
+      review screen and no confirmation (CLAUDE.md §1). The dialog says so in as many words, and steers
+      the case George named — an entirely new lease for the same tenant — to **add a new lease** so the
+      old term stays in the history. A test compares all five figures before and after.
+  - **`cache-lease-text` gained `force`** (JS↔TS pair: `cacheLeaseText(id, { force })` ↔ the flag in
+    `index.ts`, changed in the same commit). Without it the function's "don't overwrite a usable
+    transcript" guard would skip the entire point of a re-upload, because the lease still holds the
+    PREVIOUS document's text at that moment. The **Review-leases sweep still passes no force**, so its
+    refusal to overwrite is unchanged. Mirrored in `mockClient.js`.
+  - **The dialog** says what will happen *before* the upload, offers **Keep it on record** (pre-selected
+    — the destructive option is never the default) vs **Delete it**, and afterwards reports the outcome
+    in the only terms that mean anything: *"✓ Read 696 characters from city-dental-2027.pdf"* plus
+    whether it cost anything (text layer = free, scan = AI read).
+  - **The failure state is the one that matters** and it is named exactly rather than shown as a generic
+    error: if the file lands but can't be read, the lease points at the NEW document while the saved
+    text is still the OLD one's. The dialog says precisely that, so nobody is left thinking the
+    assistant has been updated when it hasn't.
+  - **Announcements:** a tenant with no address rendered as a bare name with **no checkbox at all**, so
+    it was a different shape from its neighbours and the eye slid past it — which is how a tenant
+    silently drops out of a notice. Now it is the same row, same checkbox, `disabled`, with the reason
+    in gold: *"no email on file — add one to include them"*. It still can't be selected and still
+    doesn't count toward the send.
+  - **Verified on the deployed demo** (City Dental, which is the only seeded lease with both a
+    `lease_files` row and documents): Replace appears beside Open file, the dialog reads correctly with
+    **Keep it on record = true / Delete it = false**, the re-read reported **696 characters**, the old
+    file dropped to "Earlier copy", and the note said the previous file was kept. **Zero console errors.**
+  - **Two gotchas for whoever drives this next.**
+    1. **A stale bundle will lie to you.** The first drive-through showed no Replace button at all; the
+       browser was holding the previous `index-*.js`. Reload with a cache-busting query string before
+       concluding a deploy didn't take.
+    2. **The demo mock hands back the LIVE row object from its store**, so a test that holds
+       `await getLease(id)` and compares it against itself afterwards passes even when every figure has
+       moved — worse than no test. Copy the primitives out first; `leaseReplaceDoc.test.js` does, with
+       the reason written next to it. Same aliasing is why the demo's open text panel appears not to
+       refresh after a replace: React Query's cached object IS the mutated one, so it sees no change.
+       Production returns fresh JSON and updates; the panel is also collapsed on success now so nothing
+       stale is on screen either way.
+
 - **2026-08-04** — **Data repair (no code, no deploy): cached the Joliet "Hair Salon" lease text**
   (George: *"can you look at the hair salon lease on file and cache it for me in text form its not
   cached"*). Lease `abe23ad3-40d7-4fb2-b0b8-007b10817bd4`, file `3968a929-…` (`Victor Rciz.pdf`).

@@ -187,6 +187,50 @@ describe('PropertyAnnouncementsModal — templates', () => {
 
 // George, 2026-08-04: *"its because mario is the same email for 2 tenants — so we should
 // only send one email if the same tenant owns two businesses in the same building but still
+// George, 2026-08-04: *"dennys doesnt have an email on file and its hard to see that on the
+// announcements, make the formatting the same as the other tenants but just make the box
+// uncheckable until an email is added."* The row used to have NO checkbox at all, so it was a
+// different shape from its neighbours and the eye slid past it — which is how a tenant
+// silently drops out of an announcement nobody realises they missed.
+describe('PropertyAnnouncementsModal — a tenant with no email on file', () => {
+  const ORIGINAL = 'billing@citydental.example';
+  beforeEach(async () => {
+    await supabase.from('leases').update({ tenant_email: null }).eq('id', 'lease-2');
+  });
+  afterEach(async () => {
+    await supabase.from('leases').update({ tenant_email: ORIGINAL }).eq('id', 'lease-2');
+  });
+
+  it('is the same row as everyone else, with a checkbox that cannot be ticked', async () => {
+    renderModal();
+    const row = (await screen.findByText('City Dental')).closest('.announce-recipient');
+    const box = row.querySelector('input[type="checkbox"]');
+
+    // The shape is the point: a checkbox exists, it is visibly off, and it is unusable.
+    expect(box).toBeTruthy();
+    expect(box.disabled).toBe(true);
+    expect(box.checked).toBe(false);
+    // …and the reason is on the row, not left to be inferred from a missing address.
+    expect(row.textContent).toContain('no email on file — add one to include them');
+  });
+
+  it('still leaves them out of the send, and out of the count', async () => {
+    renderModal();
+    await screen.findByText('City Dental');
+    // Bright Coffee alone is mailable — the visible row must not become a silent recipient.
+    expect(screen.getByText('1 of 1')).toBeTruthy();
+    expect(screen.getByText(/Send to 1 tenant/)).toBeTruthy();
+  });
+
+  it('becomes a normal, tickable row the moment an address is added', async () => {
+    await supabase.from('leases').update({ tenant_email: ORIGINAL }).eq('id', 'lease-2');
+    renderModal();
+    const row = (await screen.findByText('City Dental')).closest('.announce-recipient');
+    expect(row.querySelector('input[type="checkbox"]').disabled).toBe(false);
+    expect(row.textContent).not.toContain('no email on file');
+  });
+});
+
 // mark 4/4"*. One landlord, two businesses, one inbox: BOTH tenancies count as notified, and
 // he gets ONE copy. The first cut counted unique addresses and read "3 of 4", which looked
 // like two of his selections had been silently dropped.

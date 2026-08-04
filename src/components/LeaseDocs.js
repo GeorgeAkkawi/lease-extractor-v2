@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { listDocuments, deleteDocument, deleteLeaseFile, updateLease, uploadDoc, signDocUrl } from '../lib/api';
+import { listDocuments, deleteDocument, deleteLeaseFile, updateLease, uploadDoc, signDocUrl, replaceLeaseFile } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
 
@@ -33,6 +33,8 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+  const replaceRef = useRef(null);
+  const [pending, setPending] = useState(null); // the file chosen for a replacement
 
   const key = ['documents', 'lease', leaseId];
   const { data: docs = [], isLoading } = useQuery({
@@ -67,6 +69,15 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
       await uploadDoc(file, { entityType: 'lease', entityId: leaseId });
       qc.invalidateQueries({ queryKey: key });
     } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusy(false); }
+  }
+
+  // A replacement is chosen here and committed in the dialog — never straight from the
+  // file picker. Swapping the document the assistant reads is not something that should
+  // happen the instant a file is selected.
+  function onReplacePicked(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) { setErr(''); setPending(file); }
   }
 
   // The lease's CURRENT file. George, 2026-08-04: *"there should be a remove button which
@@ -168,6 +179,15 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
                 {open ? 'Hide text' : 'Read text'}
               </button>
             )}
+            {/* The control George couldn't find, because it did not exist: the row offered
+                "Add a file" only while the lease had NONE. */}
+            {newest && (
+              <button
+                type="button" className="ghost btn-sm" disabled={busy}
+                title="Upload a newer copy of this lease. Amlak re-reads it and replaces the saved text; the lease’s own figures don’t change."
+                onClick={() => replaceRef.current?.click()}
+              >Replace</button>
+            )}
             <span className="doc-act2">
               {newest ? (
                 <button type="button" className="ghost btn-sm" onClick={() => openFile(newest.storage_path)}>Open file</button>
@@ -220,10 +240,176 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
         ref={fileRef} type="file" accept=".pdf,.docx,image/*" style={{ display: 'none' }}
         onChange={onFile} aria-label="Add a document to this lease"
       />
+      <input
+        ref={replaceRef} type="file" accept=".pdf,.docx,image/*" style={{ display: 'none' }}
+        onChange={onReplacePicked} aria-label="Replace this lease's document"
+      />
+      {pending && (
+        <ReplaceLeaseModal
+          leaseId={leaseId}
+          file={pending}
+          current={newest}
+          onClose={() => setPending(null)}
+          onDone={() => {
+            // Collapse the text panel if it happens to be open. The refetch replaces what
+            // it holds, but leaving the PREVIOUS document's text on screen for even a beat
+            // after being told the text was replaced is the exact confusion this feature
+            // exists to remove.
+            setOpen(false);
+            qc.invalidateQueries({ queryKey: key });
+            qc.invalidateQueries({ queryKey: ['lease', leaseId] });
+          }}
+        />
+      )}
       {err && <p className="note-msg danger" style={{ marginTop: -6, marginBottom: 12 }}>{err}</p>}
       {/* The same .lease-doc scroll box a rider opens into — the lease reads like its
           riders because it is the same kind of thing. */}
       {open && hasText && <div className="lease-doc">{leaseText}</div>}
+    </div>
+  );
+}
+
+// Replacing the document a lease is read from, with the two things George asked for around
+// it: it says what is about to happen BEFORE it happens, and it asks what to do with the
+// old file rather than deciding for him.
+//
+// It also reports the outcome in the only terms that mean anything here — how much text
+// came back and whether it cost anything — because "done" alone would not tell him whether
+// the assistant can now answer from the new document.
+//
+// ⚠ THE FAILURE STATE IS THE ONE THAT MATTERS. If the new file lands but can't be read (a
+// photo of a photo, a scan too faint to transcribe), the lease is now pointing at the new
+// document while the SAVED TEXT is still the old one's. That is a genuinely confusing state
+// and the dialog names it exactly rather than showing a generic error.
+function ReplaceLeaseModal({ leaseId, file, current, onClose, onDone }) {
+  const [keepOld, setKeepOld] = useState(true);
+  const [phase, setPhase] = useState('ask'); // ask | working | done | failed
+  const [result, setResult] = useState(null);
+  const [err, setErr] = useState('');
+
+  async function go() {
+    setPhase('working'); setErr('');
+    try {
+      const res = await replaceLeaseFile({
+        leaseId, file, oldDocId: current?.id || null, keepOld,
+      });
+      setResult(res);
+      setPhase('done');
+      onDone?.();
+    } catch (e) {
+      setErr(e?.message || String(e));
+      setPhase('failed');
+      // The file IS swapped by the time a read can fail, so the panel has to refresh even
+      // on this path or it would keep showing the previous document as current.
+      onDone?.();
+    }
+  }
+
+  const done = phase === 'done';
+  const chars = Number(result?.length || 0);
+
+  return (
+    <div className="modal-scrim" onClick={phase === 'working' ? undefined : onClose}>
+      <div className="modal" role="dialog" aria-modal="true" style={{ width: 560 }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <strong>{done ? 'Lease document replaced' : 'Replace the lease document?'}</strong>
+          {phase !== 'working' && <button className="icon-btn" onClick={onClose}>✕</button>}
+        </div>
+        <div className="modal-body">
+          {phase === 'ask' && (
+            <>
+              <p className="note-msg info" style={{ marginTop: 0 }}>
+                <strong>{file.name}</strong> becomes this lease’s document
+                {current?.filename ? <>, in place of <strong>{current.filename}</strong></> : null}.
+              </p>
+              {/* Same block the delete dialogs use, in its informational tone — this is a
+                  change worth explaining, not a destruction worth alarming about. */}
+              <div className="confirm-imp info">
+                <p className="confirm-imp-title">What this does</p>
+                <ul>
+                  <li>
+                    Amlak <strong>re-reads the new document straight away</strong> and replaces the
+                    saved text. The lease assistant, the lease search and the AI review all start
+                    answering from it.
+                  </li>
+                  <li>
+                    <strong>The lease’s own figures do not change.</strong> Rent, dates, square
+                    footage, escalations and renewal options stay exactly as they are — a new
+                    document never moves a billed figure on its own.
+                  </li>
+                  <li>
+                    If this is a genuinely new lease rather than a better copy of this one, add it
+                    as a <strong>new lease</strong> instead, so the old term stays in the history.
+                  </li>
+                </ul>
+              </div>
+
+              <p className="doc-choice-head">The old file</p>
+              <label className="doc-choice">
+                <input type="radio" name="oldfile" checked={keepOld} onChange={() => setKeepOld(true)} />
+                <span>
+                  Keep it on record
+                  <small className="muted">It stays under the lease as an earlier copy and can still be opened.</small>
+                </span>
+              </label>
+              <label className="doc-choice">
+                <input type="radio" name="oldfile" checked={!keepOld} onChange={() => setKeepOld(false)} />
+                <span>
+                  Delete it
+                  <small className="muted">Permanently removed from storage. This can’t be undone.</small>
+                </span>
+              </label>
+
+              <div className="row" style={{ marginTop: 16 }}>
+                <button type="button" onClick={go}>Replace and re-read</button>
+                <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+              </div>
+            </>
+          )}
+
+          {phase === 'working' && (
+            <p className="note-msg info" style={{ marginTop: 0 }}>
+              Uploading <strong>{file.name}</strong> and reading it… A scanned lease can take a
+              minute or two.
+            </p>
+          )}
+
+          {done && (
+            <>
+              <p className="note-msg good" style={{ marginTop: 0 }}>
+                ✓ Read <strong>{chars.toLocaleString()} characters</strong> from {file.name}. The
+                saved text now comes from this document.
+              </p>
+              <p className="muted" style={{ fontSize: 12.5 }}>
+                {result?.source === 'transcription'
+                  ? 'It was a scan, so it was transcribed by AI.'
+                  : 'It carried its own text layer, so it was read for free — no AI call.'}
+                {' '}The lease’s rent, dates, square footage and terms were not touched;
+                {' '}{keepOld ? 'the previous file is still on record below.' : 'the previous file was deleted.'}
+              </p>
+              <div className="row" style={{ marginTop: 14 }}>
+                <button type="button" onClick={onClose}>Done</button>
+              </div>
+            </>
+          )}
+
+          {phase === 'failed' && (
+            <>
+              <p className="note-msg warn" style={{ marginTop: 0 }}>
+                <strong>{file.name}</strong> was saved and is now this lease’s document, but it
+                couldn’t be read. <strong>The saved text is still the previous document’s</strong> —
+                nothing was lost, but the assistant is answering from the older copy until this is
+                fixed.
+              </p>
+              <p className="note-msg danger">{err}</p>
+              <div className="row" style={{ marginTop: 14 }}>
+                <button type="button" className="ghost" onClick={onClose}>Close</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

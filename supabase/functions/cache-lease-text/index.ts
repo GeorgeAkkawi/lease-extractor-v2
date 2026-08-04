@@ -54,7 +54,12 @@ Deno.serve(async (req) => {
     const limited = await enforceRateLimit(req, 30, 60);
     if (limited) return limited;
 
-    const { lease_id } = await req.json();
+    // `force` is the re-upload lane (replaceLeaseFile, api.js). When a landlord swaps the
+    // document a lease is built on, the lease still holds the PREVIOUS document's
+    // transcript — which is precisely what has to be replaced. Without this flag the
+    // "don't overwrite a usable copy" guard below would skip the one thing he just asked
+    // for and the assistant would keep answering out of the document he removed.
+    const { lease_id, force } = await req.json();
     if (!lease_id) return json({ error: 'lease_id required' }, 400);
 
     // The caller's own JWT — so RLS scopes every read and the write to leases the
@@ -72,9 +77,10 @@ Deno.serve(async (req) => {
       .single();
     if (leaseErr || !lease) return json({ error: 'lease not found' }, 404);
 
-    // Already has a usable copy → do nothing, cost nothing, say so.
+    // Already has a usable copy → do nothing, cost nothing, say so. Skipped when the
+    // caller has just replaced the file underneath it (see `force` above).
     const existing = (lease.lease_text || '').trim();
-    if (existing.length >= MIN_USABLE_TEXT) {
+    if (!force && existing.length >= MIN_USABLE_TEXT) {
       return json({ skipped: 'already_cached', length: existing.length });
     }
 
