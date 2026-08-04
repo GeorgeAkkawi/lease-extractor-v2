@@ -188,6 +188,9 @@ describe('Lease page — Open rider', () => {
     const row = leaseRows(container)[0];
     await waitFor(() => expect(within(row).queryByRole('button', { name: 'Add a file' })).toBeTruthy());
     expect(within(row).queryByRole('button', { name: 'Open file' })).toBeNull();
+    // Bright Coffee's text was pasted, not extracted from a file — so the ✕ offers to
+    // delete the TEXT. Without this the whole block had no remove button at all.
+    expect(row.querySelector('.doc-act3 .icon-btn').title).toBe('Delete the saved text');
   });
 
   it('every action on the panel is the same kind of button', async () => {
@@ -257,11 +260,13 @@ describe('Lease page — Open rider', () => {
     expect(within(rows[0].querySelector('.doc-act2')).getByRole('button', { name: 'Open file' })).toBeTruthy();
     expect(within(rows[1].querySelector('.doc-act2')).getByRole('button', { name: 'Add a file' })).toBeTruthy();
 
-    // The DELETE column holds a ✕ on exactly the rows that have a file to delete.
-    expect(leaseMain.querySelector('.doc-act3 .icon-btn')).toBeTruthy();
-    expect(leaseOlder.querySelector('.doc-act3 .icon-btn')).toBeTruthy();
-    expect(rows[0].querySelector('.doc-act3 .icon-btn')).toBeTruthy();
-    expect(rows[1].querySelector('.doc-act3 .icon-btn')).toBeNull(); // nothing on file
+    // The DELETE column holds a ✕ on every row that is holding SOMETHING — including the
+    // pasted Signage Rider, whose only content is text (George, 2026-08-04: "add it to the
+    // riders as well"). The title says which of the two that row would delete.
+    expect(leaseMain.querySelector('.doc-act3 .icon-btn').title).toBe('Delete this file');
+    expect(leaseOlder.querySelector('.doc-act3 .icon-btn').title).toBe('Delete this copy');
+    expect(rows[0].querySelector('.doc-act3 .icon-btn').title).toBe('Delete this file');
+    expect(rows[1].querySelector('.doc-act3 .icon-btn').title).toBe('Delete the saved text');
   });
 
   it('a lease with no riders shows the LEASE block and no riders block', async () => {
@@ -346,5 +351,35 @@ describe('Lease page — Open rider', () => {
     await registerDocument({
       entityType: 'addendum', entityId: riderBefore.id, storagePath: riderBefore.storage_path,
     });
+  });
+
+  it('deletes a PASTED rider’s text, with no file involved', async () => {
+    // George, 2026-08-04: *"add it to the riders as well"* — a rider whose text was pasted
+    // has no file, so the file-flavoured ✕ never appeared and there was no way to remove
+    // anything from that row. The dialog says "text", not "file", because that is what goes.
+    const pasted = (await listAddendums('lease-2')).find((a) => !a.storage_path);
+    expect(pasted.addendum_text).toBeTruthy();
+
+    const { container } = mountLease();
+    await waitFor(() => expect(riderRows(container).length).toBe(2));
+    const row = riderRows(container)[1];
+    expect(within(row).queryByRole('button', { name: 'Open file' })).toBeNull();
+    fireEvent.click(within(row).getByTitle('Delete the saved text'));
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.getAttribute('aria-label')).toBe('Delete the saved text?');
+    expect(dialog.textContent).toMatch(/no file to re-read it from/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete text' }));
+
+    await waitFor(() =>
+      expect(within(riderRows(container)[1]).queryByRole('button', { name: 'Read text' })).toBeNull()
+    );
+    expect((await listAddendums('lease-2')).find((a) => a.id === pasted.id).addendum_text).toBeFalsy();
+    // The rider stays, and with nothing left to hold it stops offering a ✕ at all.
+    expect(riderRows(container)).toHaveLength(2);
+    expect(riderRows(container)[1].textContent).toContain('Signage Rider');
+    expect(riderRows(container)[1].querySelector('.doc-act3 .icon-btn')).toBeNull();
+
+    await updateAddendum(pasted.id, { addendum_text: pasted.addendum_text });
   });
 });

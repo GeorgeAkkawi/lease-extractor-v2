@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { listDocuments, deleteDocument, deleteLeaseFile, uploadDoc, signDocUrl } from '../lib/api';
+import { listDocuments, deleteDocument, deleteLeaseFile, updateLease, uploadDoc, signDocUrl } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
 
@@ -99,6 +99,31 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
     }
   }
 
+  // Text pasted straight in, with no file behind it — the same case as a pasted rider, and
+  // it kept the same block from having any remove button at all. The lease keeps this in
+  // step with RiderDocs deliberately: the two blocks are one shape, and a ✕ that appeared
+  // on one and not the other would be the "two formats for one thing" problem returning.
+  async function removeText() {
+    if (await askConfirm({
+      title: 'Delete the saved text?',
+      message: 'The plain-text copy of this lease will be removed.',
+      implications: [
+        'The assistant will have nothing to read for this lease until text is pasted back in or a file is added.',
+        'This can’t be undone — the text is not kept anywhere else, and there is no file to re-read it from.',
+        'Everything already recorded on the lease stays: the rent, dates, square footage and terms, and every rider.',
+      ],
+      confirmLabel: 'Delete text',
+      tone: 'danger',
+    })) {
+      setErr(''); setBusy(true);
+      try {
+        await updateLease(leaseId, { lease_text: null });
+        setOpen(false);
+        qc.invalidateQueries({ queryKey: ['lease', leaseId] });
+      } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusy(false); }
+    }
+  }
+
   // An EARLIER copy is a different thing and says so: it is not the source of the cached
   // text (the current file above it is), so deleting one takes the file only.
   async function removeCopy(d) {
@@ -152,13 +177,20 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
                 </button>
               ) : null}
             </span>
+            {/* One ✕ for whatever the row is holding: the file (and the text that came out
+                of it), or — with nothing on file — the pasted text on its own. */}
             <span className="doc-act3">
-              {newest && (
+              {newest ? (
                 <button
                   type="button" className="icon-btn danger-btn" title="Delete this file"
                   disabled={busy} onClick={() => removeFile(newest)}
                 >✕</button>
-              )}
+              ) : hasText ? (
+                <button
+                  type="button" className="icon-btn danger-btn" title="Delete the saved text"
+                  disabled={busy} onClick={removeText}
+                >✕</button>
+              ) : null}
             </span>
           </span>
         </div>

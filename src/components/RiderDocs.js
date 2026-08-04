@@ -93,6 +93,32 @@ export default function RiderDocs({ riders = [], leaseId }) {
     }
   }
 
+  // A PASTED rider has text and no file, and until now nothing on the row could remove it
+  // — the ✕ only appeared where there was a file to delete, so a lease whose riders were
+  // all pasted showed no remove button anywhere (George, 2026-08-04: *"add it to the riders
+  // as well"*). Same button, same column; it deletes whatever that row actually holds, and
+  // the dialog names which of the two it is rather than saying "file" about text.
+  async function removeText(r) {
+    if (await askConfirm({
+      title: 'Delete the saved text?',
+      message: `The plain-text copy of “${riderTitle(r)}” will be removed.`,
+      implications: [
+        'The assistant will no longer be able to read this rider when answering about the lease.',
+        'This can’t be undone — the text is not kept anywhere else, and there is no file to re-read it from.',
+        'The rider itself stays: its label, dates and summary are untouched, and so are the lease and its other riders.',
+      ],
+      confirmLabel: 'Delete text',
+      tone: 'danger',
+    })) {
+      setErr(''); setBusyId(r.id);
+      try {
+        await updateAddendum(r.id, { addendum_text: null });
+        setOpenId((id) => (id === r.id ? null : id));
+        qc.invalidateQueries({ queryKey: leaseId ? ['addendums', leaseId] : ['addendums'] });
+      } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusyId(null); }
+    }
+  }
+
   return (
     <div className="rider-group">
       {/* Labelled to match "Saved copies of the lease" above it. Without a heading the
@@ -130,15 +156,22 @@ export default function RiderDocs({ riders = [], leaseId }) {
                     >{busy ? 'Saving…' : 'Add a file'}</button>
                   )}
                 </span>
-                {/* Only a row that HAS a file offers to remove one. Reserved either way,
-                    so the file button doesn't shuffle sideways down the list. */}
+                {/* One ✕ for whatever this row is holding — the file (and the text that
+                    came out of it), or, on a pasted rider, the text on its own. A row
+                    holding neither has nothing to remove and shows none. Reserved either
+                    way, so the file button doesn't shuffle sideways down the list. */}
                 <span className="doc-act3">
-                  {r.storage_path && (
+                  {r.storage_path ? (
                     <button
                       type="button" className="icon-btn danger-btn" title="Delete this file"
                       disabled={busy} onClick={() => removeFile(r)}
                     >✕</button>
-                  )}
+                  ) : hasText ? (
+                    <button
+                      type="button" className="icon-btn danger-btn" title="Delete the saved text"
+                      disabled={busy} onClick={() => removeText(r)}
+                    >✕</button>
+                  ) : null}
                 </span>
               </span>
             </div>

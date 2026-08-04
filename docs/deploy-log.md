@@ -14,6 +14,34 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **The ✕ now appears on a row holding only TEXT, not just one holding a file** (George: *"add it to the
+  riders as well"*). Deployed: frontend Cloudflare version **`3715a5db`**, demo worker `fdcbaa8e`. **$0 — no AI call, NO
+  migration, NO edge function, NO view, NO RPC, no figure moves.** Tests **1540/1540 across 155 files** (was 1539/155 — +1).
+  - **Why George saw no remove button on his riders.** The ✕ shipped an hour earlier was gated on `storage_path` — a
+    file. A **pasted** rider (and a pasted lease) has cached text and no file, so the button never rendered: on an account
+    whose riders were all pasted in rather than uploaded, the RIDERS block had no remove control anywhere. Exactly the gap
+    flagged as "not bundled in" on the previous entry, and the visible symptom of it.
+  - **The rule now: one ✕ per row, for whatever that row is holding.**
+    - a file → *"Delete this file?"* / confirm **Delete file** → file + registry row + the cached text (unchanged);
+    - text only → *"Delete the saved text?"* / confirm **Delete text** → `lease_text` or `addendum_text` alone;
+    - neither → no ✕ at all, because there is nothing to remove.
+    Same column, same icon; the **title attribute and the dialog** are what say which. No new API function needed — the
+    text-only path is a plain `updateLease` / `updateAddendum` null.
+  - **Applied to the LEASE row too, deliberately**, though only the riders were named. The two blocks are one shape by
+    design (08-04, earlier); a ✕ that appeared on riders and not on the lease directly above them would reintroduce the
+    "two formats for one thing" problem this whole panel was rebuilt to remove.
+  - **Files:** `src/components/RiderDocs.js`, `src/components/LeaseDocs.js`, `src/pages/__tests__/riderOpen.test.js`.
+    No CSS — `.doc-act3` was already reserved on every row.
+  - **Verified on the deployed demo, driving it.** Signage Rider (pasted, no file) → ✕ *"Delete the saved text"* @1252px →
+    dialog names the rider and says there is no file to re-read it from → confirm → the row drops to `[Add a file]` alone,
+    keeps its label and dates, and **stops offering a ✕**. Bright Coffee's lease (pasted, no file) → same, and the row
+    becomes `· no text saved yet` with the paste box back. `navEntries: 1`, **zero console errors**. Tests pin the ✕'s
+    title per row: `Delete this file` / `Delete this copy` / `Delete this file` / `Delete the saved text`.
+  - **Gotcha worth recording — the Cloudflare edge flip-flopped.** After the deploy, one demo page load served the NEW
+    bundle and the next served the previous `index.html` from cache, which made the fix look like it hadn't shipped. The
+    tell is `document.querySelector('script[src]')` — check the loaded bundle hash against `build-demo/index.html` before
+    believing a "missing" control on a just-deployed page. A cache-busting query string on the URL cleared it.
+
 - **2026-08-04** — **A ✕ on every row that holds a file — and deleting the file deletes the cached text with it**
   (George: *"there should be a remove button which pops up and says delete file (deleting this file will also cause the
   saved text to delete as well — make sure this is true)"*). Deployed: frontend Cloudflare version **`87268a82`**, demo
