@@ -1018,6 +1018,7 @@ tbody tr:last-child td{border-bottom:none}
 .announce-side-actions{display:flex;gap:2px;margin:2px 0 6px -9px}
 .announce-recipients,.announce-templates{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
 .announce-recipients{max-height:280px;overflow:auto}
+.announce-shared-note{font-size:11.5px;line-height:1.4;margin:0 0 8px;padding:6px 8px;background:var(--panel-2);border-radius:6px}
 .announce-recipient label{display:flex;align-items:flex-start;gap:8px;padding:5px 4px;border-radius:6px;cursor:pointer}
 .announce-recipient label:hover{background:var(--panel-2)}
 .announce-recipient span{display:flex;flex-direction:column;min-width:0;font-size:13px;line-height:1.3}

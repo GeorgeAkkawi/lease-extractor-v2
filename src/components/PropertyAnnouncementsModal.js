@@ -107,11 +107,39 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
     try { localStorage.removeItem(draftKey(property.id)); } catch { /* ignore */ }
   }, [property.id]);
 
-  const recipients = useMemo(
-    () => mailable.filter((l) => !excluded.has(l.id)).map((l) => l.tenant_email.trim()),
-    [mailable, excluded]
-  );
-  const uniqueRecipients = useMemo(() => [...new Set(recipients.map((e) => e.toLowerCase()))], [recipients]);
+  // TENANTS and ADDRESSES are deliberately two different numbers, because one landlord can
+  // run several businesses out of the same building under one contact address (George,
+  // 2026-08-04: "mario is the same email for 2 tenants"). Both his tenancies are notified —
+  // so the count reads 4 of 4 — but he gets ONE email, not two copies of the same notice.
+  const selected = useMemo(() => mailable.filter((l) => !excluded.has(l.id)), [mailable, excluded]);
+
+  // First-seen casing wins; matching is case-insensitive. (The edge function dedupes again
+  // on the same rule — this is the copy that has to agree with what the screen SAYS.)
+  const addresses = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const l of selected) {
+      const addr = l.tenant_email.trim();
+      const key = addr.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(addr);
+    }
+    return out;
+  }, [selected]);
+
+  // Which addresses are shared, so the rows can say so rather than leaving him to compare
+  // two email strings by eye — which is exactly how "3 of 4" read as a bug.
+  const sharedAddresses = useMemo(() => {
+    const counts = new Map();
+    for (const l of mailable) {
+      const key = l.tenant_email.trim().toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return new Set([...counts].filter(([, n]) => n > 1).map(([k]) => k));
+  }, [mailable]);
+
+  const plural = (n) => (n === 1 ? '' : 's');
 
   const toggle = (id) => setExcluded((prev) => {
     const next = new Set(prev);
@@ -181,18 +209,24 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
 
   // --- Send ----------------------------------------------------------------
   const send = useMutation({
-    mutationFn: () => sendAnnouncement({ recipients: uniqueRecipients, subject, body, replyTo: from || null }),
+    mutationFn: () => sendAnnouncement({ recipients: addresses, subject, body, replyTo: from || null }),
     onSuccess: async (res) => {
-      setResult(res);
       setSendError('');
-      const sentCount = res?.sent?.length || 0;
-      if (sentCount) {
+      // Report in TENANTS, since that is what he ticked — a shared address that lands
+      // notifies both tenancies. Count them off the addresses that actually succeeded, so
+      // a partial failure can't overstate the reach.
+      const landed = new Set((res?.sent || []).map((s) => String(s.to || '').toLowerCase()));
+      const tenantsReached = selected.filter((l) => landed.has(l.tenant_email.trim().toLowerCase())).length;
+      const emailsSent = res?.sent?.length || 0;
+      setResult({ tenantsReached, emailsSent, failed: res?.failed || [] });
+      if (emailsSent) {
         clearDraft();
         await logAnnouncementSent({
           propertyId: property.id,
           propertyName: property.name,
           subject,
-          sentCount,
+          sentCount: tenantsReached,
+          emailsSent,
           failedCount: res?.failed?.length || 0,
         });
         qc.invalidateQueries({ queryKey: ['history'] });
@@ -202,14 +236,21 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
   });
 
   async function confirmAndSend() {
-    const names = mailable
-      .filter((l) => !excluded.has(l.id))
-      .map((l) => `${l.tenant_name || 'Tenant'} — ${l.tenant_email}`);
+    const names = selected.map(
+      (l) => `${l.tenant_name || 'Tenant'} — ${l.tenant_email}` +
+        (sharedAddresses.has(l.tenant_email.trim().toLowerCase()) ? ' (shared address)' : '')
+    );
+    const shared = selected.length - addresses.length;
     const ok = await askConfirm({
       title: 'Send this announcement?',
-      message: `“${subject}” will be emailed to ${uniqueRecipients.length} tenant${uniqueRecipients.length === 1 ? '' : 's'} at ${property.name}. Each one receives their own copy from ${corp?.name || 'your business'}, with replies going to ${from || 'your business email'}.`,
+      message:
+        `“${subject}” will be emailed to ${selected.length} tenant${plural(selected.length)} at ${property.name}. ` +
+        (shared
+          ? `That is ${addresses.length} email${plural(addresses.length)} — ${shared} tenanc${shared === 1 ? 'y shares' : 'ies share'} an address with another, and a shared address gets one copy, not two. `
+          : 'Each one receives their own copy ') +
+        `from ${corp?.name || 'your business'}, with replies going to ${from || 'your business email'}.`,
       implications: names,
-      confirmLabel: `Send to ${uniqueRecipients.length} tenant${uniqueRecipients.length === 1 ? '' : 's'}`,
+      confirmLabel: `Send to ${selected.length} tenant${plural(selected.length)}`,
       cancelLabel: 'Not yet',
       tone: 'warn',
     });
@@ -228,7 +269,12 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
     setRestored(false);
   }
 
-  const canSend = Boolean(subject.trim() && body.trim() && uniqueRecipients.length);
+  const canSend = Boolean(subject.trim() && body.trim() && addresses.length);
+  // How many fewer emails than tenants, and how many tenants are actually involved in the
+  // sharing — Mario's two leases on one address are 1 saved email but 2 tenants, and it is
+  // the 2 he needs to see explained.
+  const sharedCount = selected.length - addresses.length;
+  const sharingCount = selected.filter((l) => sharedAddresses.has(l.tenant_email.trim().toLowerCase())).length;
 
   return (
     <div className="modal-scrim" onClick={onClose}>
@@ -243,12 +289,18 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
           <div className="announce-side">
             <div className="announce-side-head">
               <span className="announce-label">Recipients</span>
-              <span className="muted" style={{ fontSize: 12 }}>{uniqueRecipients.length} of {mailable.length}</span>
+              <span className="muted" style={{ fontSize: 12 }}>{selected.length} of {mailable.length}</span>
             </div>
             <div className="announce-side-actions">
               <button className="ghost btn-sm" onClick={selectAll}>Select all</button>
               <button className="ghost btn-sm" onClick={selectNone}>None</button>
             </div>
+            {sharedCount > 0 && (
+              <p className="announce-shared-note muted">
+                {addresses.length} email{plural(addresses.length)} for {selected.length} tenants — {sharingCount} of
+                them share an address and get one copy between them.
+              </p>
+            )}
 
             <ul className="announce-recipients">
               {leases.length === 0 && <li className="muted">No tenants on this property yet.</li>}
@@ -268,7 +320,11 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
                       <input type="checkbox" checked={!excluded.has(l.id)} onChange={() => toggle(l.id)} />
                       <span>
                         {l.tenant_name || 'Tenant'}
-                        <small className="muted">{email}</small>
+                        {/* Say it on the row rather than leaving him to compare two email
+                            strings by eye — that comparison is what made the count look wrong. */}
+                        <small className="muted">
+                          {email}{sharedAddresses.has(email.toLowerCase()) ? ' · shared address' : ''}
+                        </small>
                       </span>
                     </label>
                   </li>
@@ -368,7 +424,12 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
         <div className="modal-foot">
           {result && (
             <div className="announce-result">
-              <span className="badge good">✓ Sent to {result.sent?.length || 0} tenant{(result.sent?.length || 0) === 1 ? '' : 's'}</span>
+              {/* Reported in TENANTS — what he ticked — with the email count alongside only
+                  when the two differ, so a shared address explains itself. */}
+              <span className="badge good">
+                ✓ Sent to {result.tenantsReached} tenant{plural(result.tenantsReached)}
+                {result.emailsSent !== result.tenantsReached ? ` · ${result.emailsSent} email${plural(result.emailsSent)}` : ''}
+              </span>
               {result.failed?.length > 0 && (
                 <span className="note-msg danger" style={{ marginLeft: 8 }}>
                   {result.failed.length} didn’t go through: {result.failed.map((f) => f.to).join(', ')}
@@ -401,8 +462,8 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
               </button>
               <button onClick={confirmAndSend} disabled={!canSend || send.isPending}>
                 {send.isPending
-                  ? `Sending to ${uniqueRecipients.length}…`
-                  : `📨 Send to ${uniqueRecipients.length} tenant${uniqueRecipients.length === 1 ? '' : 's'}`}
+                  ? `Sending to ${selected.length}…`
+                  : `📨 Send to ${selected.length} tenant${plural(selected.length)}`}
               </button>
             </div>
           )}

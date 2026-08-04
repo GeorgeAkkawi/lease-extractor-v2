@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import PropertyAnnouncementsModal from '../PropertyAnnouncementsModal';
 import { ConfirmProvider } from '../ConfirmDialog';
 import { letterDate } from '../../lib/emailTemplates';
+import { supabase } from '../../lib/supabaseClient';
 
 const property = { id: 'prop-1', name: 'Maple Plaza', address: '100 Maple St' };
 const corp = {
@@ -181,6 +182,60 @@ describe('PropertyAnnouncementsModal — templates', () => {
     fireEvent.click(screen.getByText('Save template'));
 
     await waitFor(() => expect(screen.getByText('Lot resurfacing')).toBeTruthy());
+  });
+});
+
+// George, 2026-08-04: *"its because mario is the same email for 2 tenants — so we should
+// only send one email if the same tenant owns two businesses in the same building but still
+// mark 4/4"*. One landlord, two businesses, one inbox: BOTH tenancies count as notified, and
+// he gets ONE copy. The first cut counted unique addresses and read "3 of 4", which looked
+// like two of his selections had been silently dropped.
+describe('PropertyAnnouncementsModal — two tenancies sharing one contact address', () => {
+  const SHARED = 'sam@brightcoffee.example';   // already Bright Coffee's address
+  const ORIGINAL = 'billing@citydental.example';
+
+  // Point City Dental at Bright Coffee's inbox, then put it back — the demo store is
+  // module-level and shared with the suites above/below.
+  beforeEach(async () => {
+    await supabase.from('leases').update({ tenant_email: SHARED }).eq('id', 'lease-2');
+  });
+  afterEach(async () => {
+    await supabase.from('leases').update({ tenant_email: ORIGINAL }).eq('id', 'lease-2');
+  });
+
+  it('counts TENANTS, not addresses — both still read as selected', async () => {
+    renderModal();
+    expect(await screen.findByText('Bright Coffee Co.')).toBeTruthy();
+    // Two tenants, one address: the count must stay 2 of 2, not collapse to 1 of 2.
+    expect(screen.getByText('2 of 2')).toBeTruthy();
+    expect(screen.getByText(/Send to 2 tenants/)).toBeTruthy();
+  });
+
+  it('explains the difference instead of leaving a number that looks wrong', async () => {
+    renderModal();
+    await screen.findByText('Bright Coffee Co.');
+    expect(screen.getByText(/1 email for 2 tenants — 2 of them share an address/)).toBeTruthy();
+    // …and the rows say which ones, so he doesn't have to compare addresses by eye.
+    expect(screen.getAllByText(new RegExp(`${SHARED} · shared address`))).toHaveLength(2);
+  });
+
+  it('sends ONE email but reports both tenants as reached', async () => {
+    renderModal();
+    await draftOne();
+    fireEvent.click(screen.getByText(/Send to 2 tenants/));
+    await screen.findByText('Send this announcement?');
+    fireEvent.click(screen.getByRole('button', { name: 'Send to 2 tenants' }));
+
+    // 2 tenants notified, 1 message actually delivered — both stated, neither implied.
+    await waitFor(() => expect(screen.getByText('✓ Sent to 2 tenants · 1 email')).toBeTruthy());
+  });
+
+  it('drops back to a plain count once the shared address is gone', async () => {
+    await supabase.from('leases').update({ tenant_email: ORIGINAL }).eq('id', 'lease-2');
+    renderModal();
+    await screen.findByText('Bright Coffee Co.');
+    expect(screen.queryByText(/share an address/)).toBe(null);
+    expect(screen.queryByText(/· shared address/)).toBe(null);
   });
 });
 

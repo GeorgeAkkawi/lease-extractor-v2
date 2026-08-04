@@ -14,6 +14,40 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **Fix: one landlord, two businesses, one inbox — the recipient count now reads in TENANTS
+  and the shared address explains itself** (George: *"it says 3/4 recipients but all 4 are selected… oh i see
+  its because mario is the same email for 2 tenants - so we should only send one email if the same tenant owns
+  two businesses in the same building but still mark 4/4"*). Deployed: frontend Cloudflare version
+  **`271d3b2e`**, demo worker **`ff62b579`**. **No migration, no edge-function change, no AI call, no money.**
+  Tests **1568/1568** (was 1564 — +4).
+  - **What was wrong.** The window counted **unique email addresses**, not ticked tenants. Mario's two
+    tenancies share one contact address, so four ticked boxes rendered as *"3 of 4"* and *"Send to 3 tenants"* —
+    which reads as *two of my selections were silently dropped*, the single worst thing a send screen can imply.
+    The **sending was always right** (both the client and `send-announcement` dedupe case-insensitively, so he
+    was only ever going to get one copy); only the arithmetic on screen was answering a different question from
+    the one the checkboxes ask.
+  - **The rule now, stated once and applied everywhere:** **tenants** are what he ticks, **addresses** are what
+    get posted, and they are deliberately two different numbers. `selected` (ticked leases) drives the
+    `4 of 4` count, the `📨 Send to 4 tenants` button and the confirm's title; `addresses` (deduped, first-seen
+    casing preserved) is what goes to the edge function.
+  - **And it now says WHY rather than leaving a number that looks wrong** — the whole reason the old count read
+    as a bug is that the explanation lived nowhere: ① a note under the list — *"3 emails for 4 tenants — 2 of
+    them share an address and get one copy between them"* · ② the affected rows are tagged **`· shared address`**
+    so he doesn't have to compare two email strings by eye · ③ the confirm dialog spells out the split and marks
+    the shared entries in its recipient list · ④ the result badge reports **`✓ Sent to 4 tenants · 3 emails`**,
+    showing the email count only when it differs.
+  - **Partial failures stay honest.** "Tenants reached" is computed from the addresses that actually
+    **succeeded**, not from what was ticked — if the shared address is the one that bounces, both of Mario's
+    tenancies correctly fall out of the count. `logAnnouncementSent` gained `emailsSent` so the History row
+    records both figures (`Announcement sent to 4 tenants (3 emails — shared addresses) at …`).
+  - **Files.** `src/components/PropertyAnnouncementsModal.js` · `src/lib/api.js` (`logAnnouncementSent`) ·
+    `src/App.css` (`.announce-shared-note`) · `src/components/__tests__/announcements.test.js` (+4).
+  - **Verified:** unit **1568/1568**; `vite build` compiles (860 modules). The four new tests drive the real
+    case by pointing City Dental at Bright Coffee's inbox in the demo store (and restoring it after, since the
+    store is module-level): the count holds at **2 of 2** instead of collapsing to 1, the explanatory note and
+    both `· shared address` tags render, a send delivers **one** email and reports **`✓ Sent to 2 tenants ·
+    1 email`**, and the note/tags disappear again once the addresses differ.
+
 - **2026-08-04** — **Fix: the Announcements button was invisible in production — a new FEATURES key ships
   OFF for anyone who has ever used the Settings toggles** (George, minutes after the round below: *"the
   announcements button isnt there"*). Deployed: DB migration **`0084`** (Supabase `awgrjmbcghdjgnqeiqkt`).

@@ -191,17 +191,21 @@ export const touchAnnouncementTemplate = (id) =>
 // is also why it is deliberately absent from the tenantStory allowlist (src/lib/tenantStory.js):
 // a building notice shouldn't clutter each individual tenant's story.
 // Best-effort (logHistoryEvent swallows errors): never blocks or undoes a send.
-export async function logAnnouncementSent({ propertyId, propertyName, subject, sentCount, failedCount = 0 }) {
+// `sentCount` is TENANTS reached, `emailsSent` is messages actually delivered — they differ
+// whenever two tenancies share a contact address (one landlord, two businesses, one inbox).
+// The description leads with tenants because that is what the landlord ticked.
+export async function logAnnouncementSent({ propertyId, propertyName, subject, sentCount, emailsSent = sentCount, failedCount = 0 }) {
   return logHistoryEvent({
     property_id: propertyId,
     lease_id: null,
     type: 'announcement_sent',
     description:
       `Announcement sent to ${sentCount} tenant${sentCount === 1 ? '' : 's'}` +
-      `${propertyName ? ` at ${propertyName}` : ''}${failedCount ? ` (${failedCount} failed)` : ''}` +
+      `${emailsSent !== sentCount ? ` (${emailsSent} email${emailsSent === 1 ? '' : 's'} — shared addresses)` : ''}` +
+      `${propertyName ? ` at ${propertyName}` : ''}${failedCount ? ` · ${failedCount} failed` : ''}` +
       `${subject ? ` — ${subject}` : ''}`,
     event_date: paymentIsoToday(),
-    meta: { subject: subject || null, sent: sentCount, failed: failedCount },
+    meta: { subject: subject || null, sent: sentCount, emails: emailsSent, failed: failedCount },
   });
 }
 
