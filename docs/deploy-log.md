@@ -14,6 +14,56 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **Data repair (no code, no deploy): cached the Joliet "Hair Salon" lease text**
+  (George: *"can you look at the hair salon lease on file and cache it for me in text form its not
+  cached"*). Lease `abe23ad3-40d7-4fb2-b0b8-007b10817bd4`, file `3968a929-…` (`Victor Rciz.pdf`).
+  `leases.lease_text` and `lease_files.extraction_raw->>'full_text'` both now hold **41,416 chars**;
+  before, `lease_text` was **317 chars** of `[Pages 1-10 could not be read for search…]` plus a garbled
+  OCR of the driver's-licence page, and `full_text` was **absent entirely**. **$0 — no AI call**; pages
+  rendered locally with pymupdf and transcribed by hand.
+  - **Textbook case of the failure in [[backfill-lease-text-cache]]:** uploaded 2026-07-10 02:41, before
+    the 2026-07-21 caching fixes. `extraction_raw` has every form-fill field and an `analysis_brief` but
+    **no `full_text`** — the fast pass finished, the transcription pass timed out. `pypdf` confirmed all
+    11 pages carry a **zero-length text layer**, so the free path never had anything to cache.
+  - **Findings recorded in a NOTES block at the end of the cached text**, because they are the kind of
+    thing that reads as a bug later if nobody wrote down that it was already checked:
+    - **¶27 (Additional Rent — taxes, insurance, snow removal, management fees, CAM at $7.00/sq ft) is
+      crossed out by hand and initialed** on the executed 2018 copy. The note explicitly says this does
+      **NOT** mean no CAM is ever charged — the **2022 extension** (already on file as a
+      `lease_addendums` row) sets **$770.00/month estimated CAM & TAX** alongside $2,230.00 base for
+      11-1-2023 → 10-31-2028, and the later document governs. Written that way deliberately: the
+      strike-out alone would mislead anyone reading the document tab.
+    - The lease was signed on **unamended boilerplate from another deal** — page 1 describes a shopping
+      centre at Harlem & Pershing in the Village of Lyons while the property address is 2541 Plainfield
+      Rd, Joliet; the Lessor is *GENA Property, LLC* on page 2 and *NASA Property, LLC* on the signature
+      page; ¶14 cites Lyons ordinances and ¶15 cites Joliet; and the guaranty on page 10 names
+      **Campos Rental Properties of Chico, California** under **California law, Butte County**.
+    - The scan **loses the rest of ¶4 and all of ¶5** — page 2 cuts off mid-sentence and page 3 resumes
+      at ¶6. Marked in place as `[GAP IN THE SCANNED DOCUMENT…]`, deliberately **NOT** in the
+      `[Pages N could not be read]` form that `transcriptGaps` (`leaseRisks.js:157`) matches: that marker
+      means "we failed to transcribe" and makes the review strip suggest a re-upload, which would not
+      help — the content is missing from the file itself.
+    - ¶11 reads **"Two Million ($1,000,000.00) Dollars"** in both limbs; words and figure disagree in
+      the original.
+  - **Downstream, traced both ways:** nothing on the money spine moved — `lease_text` feeds only the
+    document tab, `LeaseReviewStrip`, `tenantStory` and `leaseContext` → `ask-lease`. The only caching
+    on that path is **Anthropic ephemeral prompt caching, keyed on the content itself**, so new text
+    simply makes a new entry; there is no stored-answer table to invalidate and no `snapshotFingerprint`
+    bump needed (that governs Ask *facts*, not lease text). `transcriptGaps` now correctly reports the
+    transcript as complete rather than partial. `est_cam_annual`/`est_tax_annual`/`security_deposit`
+    were **left alone** — see the flags below; changing them is a billing decision, not a caching one.
+  - **Flagged to George, not acted on:** (1) the extension's **$770/month CAM & TAX** is not held on the
+    lease as `est_cam_annual`/`est_tax_annual` (both null) and the split between CAM and tax is his call;
+    (2) `security_deposit` is null but the lease says **$2,500.00**; (3) `lease_start` is 2018-09-26, the
+    *execution* date, where rent commenced **11-1-2018**; (4) the orphaned
+    `2efba6de-…/1783651422141-LEASE_EXTENSION_2022.pdf` in storage (2026-07-10 02:43, ~82 s after this
+    lease) is almost certainly this extension's PDF and **no `documents` row points at it** — the
+    extension's *text* is on file, its *file* is not.
+  - **Gotcha for next time:** `supabase db query … --linked` must run **from the repo root**. A compound
+    `cd scratchpad && … && supabase db query` fails with *"Cannot find project ref"* and the wrapper still
+    prints a benign-looking result, so the write silently does not happen. Verify by re-reading
+    `length(lease_text)`, not by trusting the command's output.
+
 - **2026-08-04** — **E-signature Phase 1.6: the mark follows the finger, and the countersign button says out
   loud that it emails the tenant** (George: *"make sure the user knows that when he saves his signature a copy
   will be sent to the tenant and the drag feature for the sign needs to be more fluid"*). Deployed: frontend
