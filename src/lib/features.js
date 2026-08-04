@@ -8,6 +8,19 @@ import { getEnabledFeatures } from './api';
 // each one appends a single entry to this list and the switchboard picks it up
 // everywhere: the onboarding picker, the Settings "Features" toggles, and the
 // useFeatures() guards on its own UI.
+//
+// ⚠ APPENDING AN ENTRY HERE IS NOT ENOUGH — IT SHIPS OFF FOR EXISTING ACCOUNTS.
+// isFeatureOn (below) reads a stored null as "everything on" but a stored ARRAY as
+// "exactly this set", and every account that has ever touched the Settings toggles has an
+// array. A key appended here is therefore MISSING from that array, which reads as OFF —
+// silently, with no way to discover the module except stumbling on its own toggle. That is
+// exactly what happened to `announcements` on 2026-08-04: shipped, deployed, verified in
+// the demo (which seeds no preferences row, so null ⇒ on) and invisible in production.
+//
+// Absence in the array means EITHER "turned off" OR "didn't exist yet" and the data cannot
+// distinguish them, so this can't be solved once in code. **Every new entry must ship with
+// a backfill migration** — copy `supabase/migrations/0084_backfill_announcements_feature.sql`
+// and change the key. See CLAUDE.md §4.
 export const FEATURES = [
   { key: 'insurance', label: 'Insurance vault',    hint: 'Store landlord and tenant policies, track expiry, and request certificates. Turning this off also silences its dashboard reminders and emails.' },
   { key: 'contracts', label: 'Service contracts',  hint: 'Landscaping, snow removal, security and other standing service agreements. Turning this off also silences its dashboard reminders and emails.' },

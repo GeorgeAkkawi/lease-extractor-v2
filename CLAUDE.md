@@ -145,6 +145,13 @@ Two implementations of one rule always drift unless changed in the same commit.
 - **A new optional module** touches `FEATURES` (`features.js:11`) plus every gate that reads it —
   tabs, route redirects, page sections, `buildAlerts`, `fetchAlertData`, the email sweep, the Ask
   facts, and the demo mock. `grep -rl "isOn('insurance')"` is the fastest way to see the full set.
+  **…and it MUST ship a backfill migration, or it is invisible in production.** `isFeatureOn`
+  reads a stored `null` as "everything on" but a stored **array** as "exactly this set", and every
+  account that has ever touched the Settings toggles holds an array. A key merely appended to
+  `FEATURES` is absent from that array, which reads as OFF. **The demo will not catch this** — it
+  seeds no `user_preferences` row, so it runs the `null` path and shows the module happily while
+  production hides it (that is exactly how `announcements` shipped invisible, 2026-08-04). Copy
+  `0084_backfill_announcements_feature.sql` and change the key.
 - **A new Ask Amlak fact** must bump the `snapshotFingerprint` version prefix (`portfolio.js:61`,
   now `v5`) — otherwise every previously cached answer keeps serving the thinner summary.
 

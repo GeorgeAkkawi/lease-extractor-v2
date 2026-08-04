@@ -48,6 +48,20 @@ describe('feature switchboard helpers', () => {
     expect(next).toEqual(['insurance', 'contracts']);
   });
 
+  // The trap that hid the Announcements button in production on 2026-08-04 while the demo
+  // (which seeds no preferences row, so null ⇒ everything on) showed it happily. Pinned
+  // here so the next person appending to FEATURES meets it in a test rather than in the
+  // app: a key added AFTER an account saved its choice reads as OFF, and only a backfill
+  // migration turns it on. See supabase/migrations/0084_backfill_announcements_feature.sql.
+  test('a module added after an account chose reads as OFF until it is backfilled', () => {
+    const chosenBeforeTheNewestModule = FEATURE_KEYS.slice(0, -1);
+    const newest = FEATURE_KEYS[FEATURE_KEYS.length - 1];
+    expect(chosenBeforeTheNewestModule).not.toContain(newest);
+    expect(isFeatureOn(chosenBeforeTheNewestModule, newest)).toBe(false);
+    // …and the backfill (append the key) is what restores the new-account default.
+    expect(isFeatureOn([...chosenBeforeTheNewestModule, newest], newest)).toBe(true);
+  });
+
   test('registry keys are unique and non-empty', () => {
     expect(FEATURE_KEYS.length).toBe(new Set(FEATURE_KEYS).size);
     for (const f of FEATURES) {

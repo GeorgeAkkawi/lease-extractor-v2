@@ -14,6 +14,44 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **Fix: the Announcements button was invisible in production — a new FEATURES key ships
+  OFF for anyone who has ever used the Settings toggles** (George, minutes after the round below: *"the
+  announcements button isnt there"*). Deployed: DB migration **`0084`** (Supabase `awgrjmbcghdjgnqeiqkt`).
+  **No frontend deploy was needed** — wrangler reported *"No updated asset files to upload"*, because the
+  only source change was comments; the bug was **entirely in data**. Cloudflare version `0419043b` (config
+  re-stamp only). Tests **1564/1564** (+1). Nothing destructive: `0084` only ever APPENDS.
+  - **Root cause, found in the data rather than guessed.** `user_preferences.enabled_features` is `null` for
+    a never-chosen account and an **explicit jsonb array** once the landlord touches the Features
+    switchboard. `isFeatureOn` (`features.js:23`) reads null as *"everything on"* and an array as *"exactly
+    this set"*. George's account held `["insurance","contracts","ledger"]`, saved **2026-07-31** — so
+    `isOn('announcements')` asked `[…].includes('announcements')` → **false**, and the pill never rendered.
+    Nothing was wrong with the button, the bundle, the gate, or the deploy.
+  - **⚠ WHY THE BROWSER VERIFICATION MISSED IT, and this is the lesson worth keeping.** The demo **seeds no
+    `user_preferences` row at all**, so the sandbox runs the `null` path — *everything on*. A brand-new
+    module therefore ALWAYS looks correct in the demo and can still be invisible in production. **Driving
+    the demo can never prove a feature gate.** The check that would have caught it is one query:
+    `select enabled_features from user_preferences`.
+  - **The ambiguity is in the data model and cannot be fixed once in code.** A key absent from the stored
+    array means EITHER "the landlord turned it off" OR "it did not exist when he chose", and the array alone
+    cannot distinguish them. Self-healing on read would silently re-enable a module he deliberately turned
+    off. So it has to be fixed **per module, at the moment the module ships**.
+  - **Fix.** `0084` appends `announcements` to every non-null `enabled_features` missing it —
+    idempotent (`not jsonb_exists(…)`), array-typed guarded, nulls untouched. An account that chose before
+    the module existed never made a decision about it, so it gets the same default a new account gets: **on**.
+    Turning it off afterwards is one click; never discovering it exists is not. Read back: George's row is
+    now `["insurance","contracts","ledger","announcements"]`, the other account still `null`.
+  - **Three guardrails so the next module cannot repeat it**, placed where the mistake actually gets made:
+    ① a loud comment directly above the `FEATURES` array (`features.js`) saying appending an entry is NOT
+    enough and pointing at `0084` as the template · ② a new test in `features.test.js` that pins the trap
+    generically — the newest registry key reads OFF against a set chosen without it, and appending it is
+    what restores the default · ③ **CLAUDE.md §4** now states the backfill requirement and that *the demo
+    will not catch this*.
+  - **Files.** New: `supabase/migrations/0084_backfill_announcements_feature.sql`. Modified: `features.js`
+    (comment only) · `src/lib/__tests__/features.test.js` · `CLAUDE.md` (§4).
+  - **George: hard-refresh the tab** (⌘⇧R). `['enabledFeatures']` is a React Query key with `staleTime` 5min,
+    `gcTime: Infinity` and `refetchOnWindowFocus: false`, so a tab that was already open will keep serving
+    the pre-backfill answer until it reloads.
+
 - **2026-08-04** — **📣 Announcements: one notice, every tenant of a property, one click** (George: *"id like to
   have some sort of make an announcement tab located on the page where all the leases are that can go to every
   tenant with a click of a button, but you should be able to exclude a tenant or select all… use ask amlak ai
