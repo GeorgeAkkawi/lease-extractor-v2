@@ -703,10 +703,19 @@ export default function LeaseDetailPage() {
               actually drawn from. */}
           <span className="muted">Reads the lease, every rider, and where the term stands today</span>
         </div>
+        {/* Said once, at the top, for the whole panel. Every row below offers the same two
+            actions and the names are the only thing telling them apart, so the difference
+            is stated rather than left to be inferred — George, 2026-08-04: "it's pretty
+            confusing what the difference is between opening the cached leases and riders
+            that are saved and then opening the physical copy". */}
+        <p className="muted doc-panel-legend">
+          <strong>Read text</strong> opens the plain-text copy the assistant reads.{' '}
+          <strong>Open file</strong> opens the signed document itself, in a new tab.
+        </p>
         {/* Three blocks in the order George asked for, 2026-08-04: "the saved copy of
             the lease, then open lease, then open riders". The copies go ABOVE the
-            assistant's own row (savedCopies) and the riders BELOW it (documents), so
-            "Open lease" lands directly on top of "Open rider" — the adjacency of his
+            assistant's own row (savedCopies) and the riders BELOW it (documents), so the
+            lease's own button lands directly on top of the riders' — the adjacency of his
             original ask (2026-07-30: "we have an open lease and right under make an
             open rider button"), which the copies list had grown in between. The lease
             still leads the riders, and the ask box still comes last. */}
@@ -716,15 +725,19 @@ export default function LeaseDetailPage() {
           askContext={buildLeaseAskContext({ lease, renewals, addendums, escalations, abatements })}
           canSave
           savedCopies={
+            /* singleFile: the ⬆ Add disappears once a file is on file. A lease doesn't get
+               a second version as a "copy" — a change arrives as an ADDENDUM, which gets
+               its own AI read (George's reasoning, 2026-08-04). */
             <DocumentsList
               entityType="lease"
               entityId={lease.id}
               title="Saved copies of the lease"
-              addLabel="Add a copy"
-              emptyText="No file on file — this lease was entered by hand or pasted in. Add a copy to keep the original alongside it."
+              addLabel="Add a file"
+              singleFile
+              emptyText="No file on file — this lease was entered by hand or pasted in. Add the signed document to keep it alongside the text."
             />
           }
-          documents={<RiderDocs riders={addendums} />}
+          documents={<RiderDocs riders={addendums} leaseId={leaseId} />}
         />
       </div>
 

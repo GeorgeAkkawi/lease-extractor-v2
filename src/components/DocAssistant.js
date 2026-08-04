@@ -76,8 +76,14 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
         </span>
         {hasDoc && (
           <span className="doc-actions">
-            <button type="button" className="ghost" onClick={() => setOpenDoc((o) => !o)}>
-              {openDoc ? `Hide ${label}` : `Open ${label}`}
+            {/* "Read text", not "Open lease" — and btn-sm like every other action on the
+                panel. George, 2026-08-04: the two buttons *"look different"*, and they did:
+                this one was the only full-size ghost, so it rendered UPPERCASE at 11.5px
+                beside sentence-case 11px riders. The label change is the same fix from the
+                other side — "Open lease" and the copies' "Open" read as the same act when
+                one gives you a transcription and the other a PDF. */}
+            <button type="button" className="ghost btn-sm" onClick={() => setOpenDoc((o) => !o)}>
+              {openDoc ? 'Hide text' : 'Read text'}
             </button>
             {/* The trailing column every row below reserves for its second control
                 (a copy's ✕, a rider's Open file). Empty here, so this button ends

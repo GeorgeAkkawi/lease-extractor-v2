@@ -1371,6 +1371,10 @@ textarea.text-input{resize:vertical;min-height:90px}
    copies above it. Both are positional, so the policy / contract / archived-lease
    assistants (no copies list) are untouched: their row is :first-child, no rule. */
 .doc-panel > .doc-list:first-child{border-top:0;margin-top:0;padding-top:0}
+/* The one-line legend above the panel: what "Read text" is and what "Open file" is. Sits
+   between the panel heading and the first document block. */
+.doc-panel-legend{font-size:12px;margin:-8px 0 14px;line-height:1.5}
+.doc-panel-legend strong{color:var(--ink);font-weight:600}
 .doc-panel > .doc-open-row:not(:first-child){border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 .doc-list-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
 /* (typography shared with .rider-head, below — declared once so they can't drift) */

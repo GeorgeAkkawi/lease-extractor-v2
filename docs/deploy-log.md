@@ -14,6 +14,64 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **Four words for two things became two: every document on the lease panel now offers "Read text" and
+  "Open file", the add control disappears once a file is on file, and a rider takes one without being opened first**
+  (George: *"make the open lease and open rider buttons the same formatting they look different… it's also pretty confusing
+  what the difference is between open the cashed leases and riders that are saved and then opening the physical copy… if
+  there is a copy, you shouldn't have a add a copy button… for the riders, the only way to add a copy is to open it first,
+  look at the cashed lease, and then add a copy."* His two picks: **name the action, not the object**, and — on being told
+  the add button was also the version history — ***"no i dont like this because if somebody wants to add a new copy it would
+  go in the addendums and riders which are then re read and re uploaded by AI."***). Deployed: frontend Cloudflare version
+  **`29d82738`**, demo worker `1f26f969`. **$0 — no AI call, NO migration, NO edge function, NO view, NO RPC, no figure
+  moves.** Tests **1536/1536 across 155 files** (was 1533/155 — +3).
+  - **The confusion was real and it was in the labels.** The panel had **four** words for **two** acts: `Open lease` and
+    `Open rider` opened a *cached transcription*; `Open` (on a saved copy) and `Open file` (on a rider) opened the *signed
+    PDF*. Nothing on screen said which was which. Now the verb names the act, identically on every row: **`Read text`** for
+    the transcription the assistant reads, **`Open file`** for the document itself — plus a one-line legend under the panel
+    heading saying so once.
+  - **They looked different because one of them was a different button.** `Open lease` was the only full-size `.ghost` on
+    the panel, and the base `button` rule renders that **UPPERCASE at 11.5px with .08em tracking** — beside sentence-case
+    11px rider buttons. Everything named is now `.ghost.btn-sm`. **Measured live:** all nine actions on City Dental's panel
+    report `font-size: 11px`, `text-transform: none`, primary column right edge **1164px**, trailing slot **1252px**. The
+    `✕` stays an `.icon-btn` on purpose — it is not one of the named actions.
+  - **`singleFile`: the add control goes once something is on file.** George's complaint was precise — *"it says a saved
+    copy of the lease and then add a copy even though right under there already is a copy"*. It costs no version history,
+    by **his** reasoning, which is the part worth keeping: a lease's next version arrives as an **addendum** (AI-read on the
+    way in), never as another "copy" of the same document. **Deliberately opt-in, not global** — insurance policies and
+    service contracts do NOT pass it and keep their always-on add, because an endorsement really is a second file on one
+    record. Verified live: City Dental (2 copies) shows **no** add control; Bright Coffee (none) shows **⬆ Add a file**;
+    the insurance panel's "Saved certificates" still shows **⬆ Add a copy**.
+  - **A rider takes a file from its own row now.** Previously the only path was: open the rider → read its cached text →
+    find a copies list nested underneath → add there. The row shows **`Add a file`** when the rider has no document and
+    **`Open file`** when it does. The upload registers against the rider **and** writes `lease_addendums.storage_path` (new
+    `updateAddendum`) — that column is what the row reads, so without the write the button would sit on "Add a file" until a
+    reload. Reading state off the cached rider row rather than the registry is what keeps a lease with six riders from
+    firing six document queries on load.
+  - **The nested per-rider copies list is gone.** Under the single-file rule a rider holds 0 or 1 document, so a version
+    drawer there only ever re-offered the file the row already has. ⚠ **Flagged:** that removes the per-file `✕` on a
+    rider — deleting the **rider** still takes its file with it (`deleteAddendum` → `deleteDocumentsFor`), and a rider that
+    somehow holds more than one registry row would now surface only the one on `storage_path`.
+  - **Confirmed, no work needed (George asked):** ① **an uploaded lease does land in that tab** — `uploadAndExtract`
+    registers the file the moment it lands (entity_id null), and `createLeaseFromExtraction` calls
+    `attachDocument(path, {lease, leaseId})` when the review is saved; cancelling calls `discardDocument`, which is what
+    stops an abandoned import leaving a stray file. Riders do the same via `createAddendum`. ② **the assistant already
+    reads the riders** — `buildLeaseAskContext` bundles the current phase + original lease + every amendment in date order,
+    and `ask-lease` uses supplied text verbatim (it only falls back to a DB read when none is passed). There is no separate
+    "search" control in the app; the ask box **is** it, and it has covered riders since 2026-07-01.
+  - **Verified on the deployed demo, driving the real UI:** clicked **Add a file** on the pasted Signage Rider, uploaded a
+    PDF through the real file chooser, and the row **flipped to "Open file" with no reload** (`navigation entries === 1`),
+    no error line, **zero console errors or warnings**. All four URLs 200; live bundle carries the backend ref, demo greps
+    free of it.
+  - **Test fallout worth recording:** the upload test mutates the **module-level demo store**, so it restores the rider's
+    `storage_path` afterwards — without that, two later tests in the same file read a rider that had silently gained a file.
+    And a `.doc-row` count had to be scoped to the lease's own list: the insurance panel further down the page mounts a
+    `DocumentsList` too.
+  - **Files:** `src/lib/api.js` (`updateAddendum`), `src/components/RiderDocs.js` (rewritten: row-level file action, no
+    nested list), `src/components/DocumentsList.js` (`singleFile`, `Open` → `Open file`),
+    `src/components/DocAssistant.js` (`Read text`, `.btn-sm`), `src/pages/LeaseDetailPage.js` (legend, `singleFile`,
+    `leaseId` to RiderDocs), `src/App.css` (`.doc-panel-legend`), `src/pages/__tests__/riderOpen.test.js`,
+    `src/components/__tests__/assistantAnswerRender.test.js`.
+
 - **2026-08-04** — **"Open lease" sits directly above "Open rider" again — the saved-copies list moved above it instead of
   between them** (George: *"On the lease document and assistant tab in the tenant's profile, I want the open lease button to
   be above the rider's button. So the order should go the saved copy of the lease, then open lease, then open riders just for

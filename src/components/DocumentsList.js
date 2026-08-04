@@ -23,6 +23,14 @@ const humanBytes = (n) => {
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 };
 
+// `singleFile` — the record holds ONE document, so the add control disappears the moment
+// something is on file. George, 2026-08-04: *"if there is a copy, you shouldn't have an
+// add a copy button"* — an ⬆ Add sitting beside a heading with the file listed directly
+// underneath reads as a prompt to do something already done. His reasoning is why it
+// doesn't cost the version history: a lease never gets a second version as a "copy", it
+// gets an ADDENDUM, which goes through its own AI read. Insurance policies and service
+// contracts don't pass this and keep the always-on add — an endorsement really is another
+// file on the same record.
 export default function DocumentsList({
   entityType,
   entityId,
@@ -30,6 +38,7 @@ export default function DocumentsList({
   addLabel = 'Add',
   emptyText = 'No copies saved yet.',
   accept = '.pdf,.docx,image/*',
+  singleFile = false,
 }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
@@ -80,12 +89,16 @@ export default function DocumentsList({
     <div className="doc-list">
       <div className="doc-list-head">
         <strong>{title}</strong>
-        <span className="doc-actions">
-          <button type="button" className="ghost btn-sm" disabled={busy} onClick={() => fileRef.current?.click()}>
-            {busy ? 'Saving…' : `⬆ ${addLabel}`}
-          </button>
-          <span className="doc-act2" />
-        </span>
+        {/* Held back until the list has loaded: docs is [] on the first render, so an
+            unguarded check would flash the add button on a record that does have a file. */}
+        {(!singleFile || (!isLoading && docs.length === 0)) && (
+          <span className="doc-actions">
+            <button type="button" className="ghost btn-sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+              {busy ? 'Saving…' : `⬆ ${addLabel}`}
+            </button>
+            <span className="doc-act2" />
+          </span>
+        )}
         <input ref={fileRef} type="file" accept={accept} style={{ display: 'none' }} onChange={onFile} aria-label={`Add a document to this ${entityType.replace(/_/g, ' ')}`} />
       </div>
 
@@ -107,7 +120,10 @@ export default function DocumentsList({
             {[humanBytes(d.bytes), fmtDate(d.created_at)].filter(Boolean).join(' · ')}
           </span>
           <span className="doc-actions">
-            <button type="button" className="ghost btn-sm" onClick={() => open(d.storage_path)}>Open</button>
+            {/* "Open file" everywhere a real document opens, never a bare "Open" — the
+                panel also has "Read text", and the whole point of the pair is that you
+                can tell at a glance which one gives you the signed PDF. */}
+            <button type="button" className="ghost btn-sm" onClick={() => open(d.storage_path)}>Open file</button>
             <span className="doc-act2">
           <button
             type="button" className="icon-btn danger-btn" title="Delete this copy"

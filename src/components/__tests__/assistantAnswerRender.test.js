@@ -91,7 +91,7 @@ describe('Assistant answers — rendered, not printed', () => {
       savedCopies: <div data-testid="copies">saved copies</div>,
       documents: <div data-testid="docs">rider rows</div>,
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Open lease' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read text' }));
     await waitFor(() => expect(container.querySelector('.lease-doc')).toBeTruthy());
 
     const order = [...container.querySelectorAll('[data-testid="copies"], .doc-open-row, .lease-doc, [data-testid="docs"], .qa-form')]

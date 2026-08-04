@@ -1530,6 +1530,14 @@ export const createAddendum = async (a) => {
   return row;
 };
 
+// Patch a rider in place. Used by the rider row's "Add a file" (RiderDocs): a rider
+// that was pasted in has cached text but no document, and attaching one has to write
+// storage_path — that column is what the row reads to decide between "Open file" and
+// "Add a file", and reading it off the already-cached rider is what keeps a lease with
+// six riders from firing six document queries on load.
+export const updateAddendum = (id, patch) =>
+  one(supabase.from('lease_addendums').update(patch).eq('id', id).select().single());
+
 export async function deleteAddendum(id) {
   const a = await one(supabase.from('lease_addendums').select('storage_path').eq('id', id).single()).catch(() => null);
   await deleteDocumentsFor('addendum', id, [a?.storage_path]);
