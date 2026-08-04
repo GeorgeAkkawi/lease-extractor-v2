@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { signDocUrl, uploadDoc, updateAddendum } from '../lib/api';
+import { signDocUrl, uploadDoc, updateAddendum, deleteAddendumFile } from '../lib/api';
 import { coversLabel, riderTitle, sortRiders, riderHasText } from '../lib/riders';
+import { useConfirm } from './ConfirmDialog';
 
 // One row per rider, directly under the lease's own row, offering the SAME two actions in
 // the same order as every other document on this panel:
@@ -28,6 +29,7 @@ import { coversLabel, riderTitle, sortRiders, riderHasText } from '../lib/riders
 // Oldest first, so reading down the list walks the lease forward through time.
 export default function RiderDocs({ riders = [], leaseId }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const [openId, setOpenId] = useState(null);
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
@@ -65,6 +67,32 @@ export default function RiderDocs({ riders = [], leaseId }) {
     } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusyId(null); }
   }
 
+  // Same rule as the lease's own file, one level down: the file and the cached text are
+  // one document, so they go together and the dialog says so before anything happens.
+  // The RIDER survives — only its document does not — so the row stays put and turns
+  // back into "Add a file".
+  async function removeFile(r) {
+    if (await askConfirm({
+      title: 'Delete this file?',
+      message: `The saved file for “${riderTitle(r)}” will be removed from storage.`,
+      implications: [
+        'The saved text goes with it — the assistant will no longer be able to read this rider when answering about the lease.',
+        'The file itself is permanently deleted — this can’t be undone.',
+        'The rider itself stays: its label, dates and summary are untouched, and so are the lease and its other riders.',
+      ],
+      confirmLabel: 'Delete file',
+      tone: 'danger',
+    })) {
+      setErr(''); setBusyId(r.id);
+      try {
+        await deleteAddendumFile(r.id, r.storage_path);
+        setOpenId((id) => (id === r.id ? null : id)); // the text it was showing is gone
+        qc.invalidateQueries({ queryKey: leaseId ? ['addendums', leaseId] : ['addendums'] });
+        qc.invalidateQueries({ queryKey: ['documents', 'addendum', r.id] });
+      } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusyId(null); }
+    }
+  }
+
   return (
     <div className="rider-group">
       {/* Labelled to match "Saved copies of the lease" above it. Without a heading the
@@ -100,6 +128,16 @@ export default function RiderDocs({ riders = [], leaseId }) {
                       type="button" className="ghost btn-sm" disabled={busy}
                       onClick={() => { forRider.current = r; fileRef.current?.click(); }}
                     >{busy ? 'Saving…' : 'Add a file'}</button>
+                  )}
+                </span>
+                {/* Only a row that HAS a file offers to remove one. Reserved either way,
+                    so the file button doesn't shuffle sideways down the list. */}
+                <span className="doc-act3">
+                  {r.storage_path && (
+                    <button
+                      type="button" className="icon-btn danger-btn" title="Delete this file"
+                      disabled={busy} onClick={() => removeFile(r)}
+                    >✕</button>
                   )}
                 </span>
               </span>

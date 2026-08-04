@@ -91,8 +91,16 @@ Deno.serve(async (req) => {
       return json({ error: 'No document is on file for this lease. Upload the lease to make it searchable.' }, 404);
     }
 
+    // A ROW pointing at a file that is no longer in the bucket is the same situation as
+    // no row at all, so it gets the same sentence — the landlord's next move is identical
+    // either way. Two ways to arrive here: the 2026-07-30 storage cleanup (~40 leases kept
+    // their lease_files row), and deleting the lease's file from the document panel, which
+    // deliberately leaves lease_file_id alone so the estimate pre-fill keeps working
+    // (deleteLeaseFile, api.js). "could not download file" told the landlord nothing.
     const { data: blob, error: dlErr } = await supabase.storage.from(BUCKET).download(fileRow.storage_path);
-    if (dlErr || !blob) return json({ error: 'could not download file' }, 404);
+    if (dlErr || !blob) {
+      return json({ error: 'No document is on file for this lease. Upload the lease to make it searchable.' }, 404);
+    }
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const filename = fileRow.original_filename || fileRow.storage_path;
     const mediaType = mimeFor(filename);

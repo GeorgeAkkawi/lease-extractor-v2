@@ -1140,6 +1140,46 @@ export async function deleteDocument(id) {
   return doc;
 }
 
+// The lease's CURRENT document is going, and its cached text goes with it — George,
+// 2026-08-04: *"there should be a remove button which pops up and says delete file
+// (deleting this file will also cause the saved text to delete as well)"*.
+//
+// leases.lease_text is a transcription OF that file. Leaving it behind would keep the
+// assistant answering out of a document the landlord has just removed, quoting clauses
+// from something nobody can open — so the two leave together and the dialog can say so
+// truthfully. Re-adding a file (or pasting the text back) is the way back.
+//
+// DELIBERATELY UNTOUCHED — nothing on the money spine moves:
+//   • lease_file_id and the linked lease_files row, because extraction_raw on it still
+//     feeds getLeaseStatedEstimate (the CAM / tax estimate pre-fill) and
+//     reconcileRenewalOptions. Deleting a FILE must not quietly disarm either;
+//   • every figure the AI already wrote INTO the lease — rent, dates, square footage,
+//     terms — which are the lease's own fields now, not the document's;
+//   • the riders, which carry their own text and their own files.
+//
+// One knock-on is real and left alone on purpose: the lease now reads as "needs text" to
+// the Review-leases sweep, whose cache-lease-text call finds a lease_files.storage_path
+// pointing at the object we just removed. That path already answers with a plain
+// "No document is on file for this lease" (it is the same state as the ~40 leases whose
+// files went in the 2026-07-30 storage cleanup) rather than a download error.
+export async function deleteLeaseFile(docId, leaseId) {
+  if (docId) await deleteDocument(docId);
+  if (leaseId) await updateLease(leaseId, { lease_text: null });
+}
+
+// The same rule one level down: a rider's file and its cached transcription are one
+// document, so removing the file removes the text. The RIDER itself stays — its label,
+// dates and summary are the lease's record of the amendment, not the document's, and the
+// row keeps standing there offering "Add a file".
+//
+// Both places a rider's file can be recorded are swept: the documents registry AND the
+// legacy storage_path column on the rider, which is what the row itself reads.
+export async function deleteAddendumFile(addendumId, storagePath = null) {
+  if (!addendumId) return null;
+  await deleteDocumentsFor('addendum', addendumId, [storagePath]);
+  return updateAddendum(addendumId, { storage_path: null, addendum_text: null });
+}
+
 // A record is being deleted: take its files with it. Extra paths (a legacy
 // storage_path column that never made it into the registry) are swept too.
 export async function deleteDocumentsFor(entityType, entityId, extraPaths = []) {

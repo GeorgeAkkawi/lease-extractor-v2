@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { listDocuments, deleteDocument, uploadDoc, signDocUrl } from '../lib/api';
+import { listDocuments, deleteDocument, deleteLeaseFile, uploadDoc, signDocUrl } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
 
@@ -69,6 +69,38 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
     } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusy(false); }
   }
 
+  // The lease's CURRENT file. George, 2026-08-04: *"there should be a remove button which
+  // pops up and says delete file (deleting this file will also cause the saved text to
+  // delete as well — make sure this is true)"*. It IS true: deleteLeaseFile clears
+  // leases.lease_text in the same call, which is why the dialog leads with that line
+  // rather than burying it. The row falls back to "Add a file" and the paste box
+  // reappears, so there is always a way back.
+  async function removeFile(d) {
+    if (await askConfirm({
+      title: 'Delete this file?',
+      message: `“${d.filename || 'This document'}” will be removed from storage.`,
+      implications: [
+        'The saved text goes with it — the assistant will have no copy of this lease to read until a new file is added or the text is pasted back in.',
+        'The file itself is permanently deleted — this can’t be undone.',
+        'Everything already recorded on the lease stays: the rent, dates, square footage and terms, and every rider with its own text and file.',
+      ],
+      confirmLabel: 'Delete file',
+      tone: 'danger',
+    })) {
+      setErr(''); setBusy(true);
+      try {
+        await deleteLeaseFile(d.id, leaseId);
+        setOpen(false); // the text it was showing no longer exists
+        qc.invalidateQueries({ queryKey: key });
+        // lease_text lives on the lease row, not in the document registry — without this
+        // the row would keep offering "Read text" for text that has just been deleted.
+        qc.invalidateQueries({ queryKey: ['lease', leaseId] });
+      } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusy(false); }
+    }
+  }
+
+  // An EARLIER copy is a different thing and says so: it is not the source of the cached
+  // text (the current file above it is), so deleting one takes the file only.
   async function removeCopy(d) {
     if (await askConfirm({
       title: 'Delete this copy?',
@@ -102,8 +134,9 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
             Lease{term ? <span className="rider-row-dates"> · {term}</span> : null}
             {!hasText && <span className="rider-row-dates"> · no text saved yet</span>}
           </span>
-          {/* The same two-slot group every row on this panel uses, so "Read text" ends in
-              one column and the file action in the next — whether or not the row has one. */}
+          {/* The same three-slot group every row on this panel uses, so "Read text" ends in
+              one column, the file action in the next and the ✕ in the last — whether or
+              not the row happens to have all three. */}
           <span className="doc-actions">
             {hasText && (
               <button type="button" className="ghost btn-sm" onClick={() => setOpen((o) => !o)}>
@@ -119,6 +152,14 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
                 </button>
               ) : null}
             </span>
+            <span className="doc-act3">
+              {newest && (
+                <button
+                  type="button" className="icon-btn danger-btn" title="Delete this file"
+                  disabled={busy} onClick={() => removeFile(newest)}
+                >✕</button>
+              )}
+            </span>
           </span>
         </div>
 
@@ -128,9 +169,14 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
               Earlier copy
               <span className="rider-row-dates"> · {d.filename || 'document'} · {fmtDate(d.created_at)}</span>
             </span>
+            {/* Its two controls sit in the SAME two columns as the lease's above — the
+                "Read text" slot is simply empty, because an earlier copy has no cached
+                text of its own. */}
             <span className="doc-actions">
-              <button type="button" className="ghost btn-sm" onClick={() => openFile(d.storage_path)}>Open file</button>
               <span className="doc-act2">
+                <button type="button" className="ghost btn-sm" onClick={() => openFile(d.storage_path)}>Open file</button>
+              </span>
+              <span className="doc-act3">
                 <button type="button" className="icon-btn danger-btn" title="Delete this copy" onClick={() => removeCopy(d)}>✕</button>
               </span>
             </span>

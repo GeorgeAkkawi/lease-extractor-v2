@@ -13,7 +13,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import LeaseDetailPage from '../LeaseDetailPage';
 import { ConfirmProvider } from '../../components/ConfirmDialog';
 import { ChromeProvider } from '../../context/ChromeContext';
-import { listAddendums, updateAddendum, deleteDocumentsFor } from '../../lib/api';
+import {
+  listAddendums, updateAddendum, deleteDocumentsFor,
+  getLease, updateLease, listDocuments, registerDocument,
+} from '../../lib/api';
 
 // The demo seed puts two riders on City Dental (lease-2): an uploaded First Amendment
 // that covers a real period, and a pasted Signage Rider with no file.
@@ -227,12 +230,12 @@ describe('Lease page — Open rider', () => {
     expect([...panel.querySelectorAll('.rider-head')].map((h) => h.textContent)).toEqual(['Lease', 'Riders']);
   });
 
-  it('gives every primary action the same trailing column, so they line up', async () => {
+  it('gives every row the same three action columns, so they line up', async () => {
     // George, 2026-07-30: "the open lease button should be in line with the lease open
-    // button." Alignment itself is CSS (a fixed .doc-act2 column, measured in the
-    // browser); what a render can pin is the structure that produces it — each primary
-    // action sits in a .doc-actions group whose LAST child is that reserved slot, whether
-    // or not the row has a second control to put in it.
+    // button." Alignment itself is CSS (fixed .doc-act2 / .doc-act3 columns, measured in
+    // the browser); what a render can pin is the structure that produces it — every row's
+    // .doc-actions group ends in the same two reserved slots, whether or not that row has
+    // anything to put in them.
     const { container } = mountLease();
     await waitFor(() => expect(riderRows(container).length).toBe(2));
 
@@ -241,17 +244,24 @@ describe('Lease page — Open rider', () => {
     // The lease row, its one older copy, and the two riders.
     expect(groups.length).toBe(4);
     groups.forEach((g) => {
-      expect(g.lastElementChild?.classList.contains('doc-act2')).toBe(true);
+      expect(g.lastElementChild?.classList.contains('doc-act3')).toBe(true);
+      expect(g.lastElementChild.previousElementSibling?.classList.contains('doc-act2')).toBe(true);
     });
 
-    // Every row fills that trailing slot, so the primary column is identical down the
-    // panel: the lease's file, the older copy's ✕, a rider's file, a rider's offer of one.
+    // The FILE column holds a file action on every row — including the older copy, whose
+    // "Read text" slot is simply empty rather than pushing its Open file left.
     const [leaseMain, leaseOlder] = leaseRows(container);
     expect(within(leaseMain.querySelector('.doc-act2')).getByRole('button', { name: 'Open file' })).toBeTruthy();
-    expect(leaseOlder.querySelector('.doc-act2 .icon-btn')).toBeTruthy();
+    expect(within(leaseOlder.querySelector('.doc-act2')).getByRole('button', { name: 'Open file' })).toBeTruthy();
     const rows = riderRows(container);
     expect(within(rows[0].querySelector('.doc-act2')).getByRole('button', { name: 'Open file' })).toBeTruthy();
     expect(within(rows[1].querySelector('.doc-act2')).getByRole('button', { name: 'Add a file' })).toBeTruthy();
+
+    // The DELETE column holds a ✕ on exactly the rows that have a file to delete.
+    expect(leaseMain.querySelector('.doc-act3 .icon-btn')).toBeTruthy();
+    expect(leaseOlder.querySelector('.doc-act3 .icon-btn')).toBeTruthy();
+    expect(rows[0].querySelector('.doc-act3 .icon-btn')).toBeTruthy();
+    expect(rows[1].querySelector('.doc-act3 .icon-btn')).toBeNull(); // nothing on file
   });
 
   it('a lease with no riders shows the LEASE block and no riders block', async () => {
@@ -260,5 +270,81 @@ describe('Lease page — Open rider', () => {
     const { container } = mountLease('lease-1');
     await waitFor(() => expect(leaseRows(container).length).toBe(1));
     expect(container.querySelector('.rider-group:not(.lease-group)')).toBeNull();
+  });
+
+  // ---- Deleting a file (these two MUTATE the shared demo store, so they run last and
+  //      each puts the seed back) -------------------------------------------------------
+  //
+  // George, 2026-08-04: *"there should be a remove button which pops up and says delete
+  // file (deleting this file will also cause the saved text to delete as well — make sure
+  // this is true)"*. The dialog says it; these prove it isn't a bluff.
+
+  it('deletes the lease’s file AND its saved text, exactly as the dialog warns', async () => {
+    const before = await getLease('lease-2');
+    const [newestBefore] = await listDocuments('lease', 'lease-2');
+    expect(before.lease_text).toBeTruthy();
+    expect(newestBefore).toBeTruthy();
+
+    const { container } = mountLease();
+    await waitFor(() => expect(leaseRows(container).length).toBe(2));
+    fireEvent.click(within(leaseRows(container)[0]).getByTitle('Delete this file'));
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.getAttribute('aria-label')).toBe('Delete this file?');
+    expect(dialog.textContent).toMatch(/saved text goes with it/i);
+    // …and it is honest about what does NOT go — the figures the AI already wrote in.
+    expect(dialog.textContent).toMatch(/rent, dates, square footage and terms/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete file' }));
+
+    // The cached transcription is gone from the lease itself, not just from the screen.
+    await waitFor(async () => expect((await getLease('lease-2')).lease_text).toBeFalsy());
+    expect(await listDocuments('lease', 'lease-2')).toHaveLength(1);
+
+    // The row stops offering text to read, and the panel offers the way back: paste it in.
+    await waitFor(() =>
+      expect(within(container.querySelector('.lease-group')).queryByRole('button', { name: 'Read text' })).toBeNull()
+    );
+    expect(container.querySelector('.doc-panel textarea')).toBeTruthy();
+    // The earlier copy is untouched and simply becomes the lease's file.
+    expect(leaseRows(container)).toHaveLength(1);
+
+    await updateLease('lease-2', { lease_text: before.lease_text });
+    await registerDocument({
+      entityType: 'lease', entityId: 'lease-2', storagePath: newestBefore.storage_path,
+      filename: newestBefore.filename, bytes: newestBefore.bytes, mime: newestBefore.mime,
+    });
+  });
+
+  it('deletes a rider’s file and text together, and leaves the rider standing', async () => {
+    const [riderBefore] = await listAddendums('lease-2');
+    expect(riderBefore.storage_path).toBeTruthy();
+    expect(riderBefore.addendum_text).toBeTruthy();
+
+    const { container } = mountLease();
+    await waitFor(() => expect(riderRows(container).length).toBe(2));
+    fireEvent.click(within(riderRows(container)[0]).getByTitle('Delete this file'));
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toMatch(/saved text goes with it/i);
+    expect(dialog.textContent).toMatch(/rider itself stays/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete file' }));
+
+    // Still two riders — only the document left.
+    await waitFor(() =>
+      expect(within(riderRows(container)[0]).queryByRole('button', { name: 'Add a file' })).toBeTruthy()
+    );
+    expect(riderRows(container)).toHaveLength(2);
+    expect(riderRows(container)[0].textContent).toContain('First Amendment to Lease');
+    expect(within(riderRows(container)[0]).queryByRole('button', { name: 'Read text' })).toBeNull();
+    const after = (await listAddendums('lease-2')).find((a) => a.id === riderBefore.id);
+    expect(after.storage_path).toBeFalsy();
+    expect(after.addendum_text).toBeFalsy();
+
+    await updateAddendum(riderBefore.id, {
+      storage_path: riderBefore.storage_path, addendum_text: riderBefore.addendum_text,
+    });
+    await registerDocument({
+      entityType: 'addendum', entityId: riderBefore.id, storagePath: riderBefore.storage_path,
+    });
   });
 });

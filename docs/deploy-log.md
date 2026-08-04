@@ -14,6 +14,57 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **A ✕ on every row that holds a file — and deleting the file deletes the cached text with it**
+  (George: *"there should be a remove button which pops up and says delete file (deleting this file will also cause the
+  saved text to delete as well — make sure this is true)"*). Deployed: frontend Cloudflare version **`87268a82`**, demo
+  worker `c7b8ac79`, **edge function `cache-lease-text` redeployed**. **$0 — no AI call, NO migration, NO view, NO RPC,
+  no figure moves.** Tests **1539/1539 across 155 files** (was 1537/155 — +2).
+  - **"Make sure this is true" is the whole entry.** The dialog's first line is *"The saved text goes with it"*, and two
+    new API functions make that literal rather than a claim:
+    - `deleteLeaseFile(docId, leaseId)` — `deleteDocument` (registry row + storage object) **and**
+      `updateLease(leaseId, { lease_text: null })`.
+    - `deleteAddendumFile(addendumId, storagePath)` — `deleteDocumentsFor('addendum', …)` **and**
+      `updateAddendum(id, { storage_path: null, addendum_text: null })`. Both places a rider's file can be recorded are
+      swept: the registry AND the legacy `storage_path` column the row itself reads.
+  - **Why the text goes.** `lease_text` is a transcription OF that file. Left behind, the assistant keeps answering out
+    of a document the landlord has just removed, quoting clauses from something nobody can open. The way back is the
+    row's own `Add a file`, or the paste box that reappears the moment the text is null.
+  - **What is deliberately NOT deleted — the §1 money spine does not move.** `lease_file_id` and the linked `lease_files`
+    row stay, because `extraction_raw` on it still feeds **`getLeaseStatedEstimate`** (the CAM / tax estimate pre-fill)
+    and **`reconcileRenewalOptions`**. Deleting a *file* must not quietly disarm either. Every figure the AI already
+    wrote INTO the lease — rent, dates, square footage, terms — stays, and the third implication line says so.
+  - **The chain that had to be followed.** Nulling `lease_text` makes the lease read as "needs text" to the
+    Review-leases sweep → `cacheLeaseText` → `cache-lease-text` finds a `lease_files.storage_path` pointing at the object
+    just removed and used to answer **`could not download file`**. That column is `not null` (0001), so it can't be
+    cleared; the fix is in the function: a row pointing at a missing file now gets the SAME sentence as no row at all —
+    *"No document is on file for this lease. Upload the lease to make it searchable."* This also repairs a **pre-existing**
+    case: the ~40 leases whose files went in the 2026-07-30 storage cleanup kept their `lease_files` row and have been
+    hitting that opaque message ever since.
+  - **A third reserved column, `.doc-act3`** (26px), beside the existing `--doc-act` (78px). Measured on the deployed
+    demo: **Read text → 1128px · file action → 1216px · ✕ → 1252px on every row**, including the ones missing a control.
+    The **earlier-copy** row was restructured to match — its `Open file` moved out of the primary slot into `.doc-act2`
+    and its ✕ into `.doc-act3`, so it lines up with the lease above it instead of one column left.
+  - **Two dialogs, deliberately different, each true of its own row.** The lease's / a rider's **current** file →
+    *"Delete this file?"*, confirm **Delete file**, text goes. An **earlier copy** → the existing *"Delete this copy?"*,
+    text explicitly untouched — it is not the source of the cached transcription, the current file is.
+  - **A rider that has no file has no ✕.** Verified: the pasted Signage Rider shows `[Read text] [Add a file]` and an
+    empty third slot.
+  - **Files:** `src/lib/api.js` (+`deleteLeaseFile`, +`deleteAddendumFile`), `src/components/LeaseDocs.js`,
+    `src/components/RiderDocs.js` (now uses `useConfirm`), `src/App.css` (`.doc-act3` + the mobile collapse),
+    `supabase/functions/cache-lease-text/index.ts`, `src/pages/__tests__/riderOpen.test.js`.
+  - **Tests proved, not assumed.** Two new cases drive the real page: click ✕ → assert the dialog's wording → confirm →
+    assert `getLease('lease-2').lease_text` is falsy and the document count dropped, that the row stops offering
+    `Read text`, and that the rider **survives** its file. **Mutation-checked**: with the `lease_text` / `addendum_text`
+    clear removed from the two API functions, both tests fail. They run last and restore the shared demo seed.
+  - **Verified on the deployed demo, driving it.** Lease ✕ → dialog names the file, the text and what stays → confirm →
+    the row becomes `Lease · June 1, 2025 → May 31, 2026 · no text saved yet` with `[Open file]` (the earlier copy
+    promoted) and the paste box back with its own *"Paste it once…"* lead. Rider ✕ → `First Amendment to Lease` keeps its
+    label and dates and drops to `[Add a file]` alone. `navEntries: 1`, **zero console errors or warnings**. This round
+    also exercised in a browser the **empty-`lease_text` path** that the 08-04 row round could only code-verify.
+  - **Flagged to George — not bundled in:** there is still no way to delete *only* the cached text when a lease has text
+    but no file (paste it, change your mind). Nothing asked for it, and the paste box overwrites, so it is a gap rather
+    than a defect.
+
 - **2026-08-04** — **The lease is now a rider-shaped row: `Lease · term` → Read text → Open file / Add a file, and the
   "Saved copies" list is gone from the panel** (George: *"now follow the same format as the riders. Lease - read text -
   add/open file whichever is there."*). Deployed: frontend Cloudflare version **`ab095ec3`**, demo worker `36a87d0f`.

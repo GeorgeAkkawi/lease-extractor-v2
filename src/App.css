@@ -1359,9 +1359,14 @@ textarea.text-input{resize:vertical;min-height:90px}
    row's SECOND control (a copy's ✕, a rider's Open file); the primary "Open …" sits
    immediately before it, so every one of them shares a right edge whether or not that
    row has a second control. Set on .doc-panel (DocAssistant's root) and inherited. */
-.doc-panel{--doc-act:78px}
+.doc-panel{--doc-act:78px;--doc-act3:26px}
 .doc-actions{display:inline-flex;align-items:center;gap:10px;margin-left:auto}
 .doc-act2{display:inline-flex;justify-content:flex-end;align-items:center;width:var(--doc-act);flex:0 0 auto}
+/* A THIRD reserved column, for the ✕ that deletes that row's file (George, 2026-08-04).
+   Same reasoning as the second: the lease has one, its earlier copies have one, a rider
+   has one only when it actually holds a file — and without a reserved slot every "Open
+   file" above a file-less rider would sit 36px right of the ones below it. */
+.doc-act3{display:inline-flex;justify-content:flex-end;align-items:center;width:var(--doc-act3);flex:0 0 auto}
 
 .doc-list{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 /* The lease panel stacks two blocks of the SAME shape — LEASE then RIDERS (George,
@@ -1389,8 +1394,8 @@ textarea.text-input{resize:vertical;min-height:90px}
   .doc-row-name{flex:1 0 100%}
   /* No room to reserve a column on a phone — the rows wrap anyway, so the slot
      collapses to whatever it actually holds and disappears when it holds nothing. */
-  .doc-panel{--doc-act:auto}
-  .doc-act2:empty{display:none}
+  .doc-panel{--doc-act:auto;--doc-act3:auto}
+  .doc-act2:empty,.doc-act3:empty{display:none}
 }
 
 /* Riders listed directly under "Open lease" — each opens its own cached text in the
