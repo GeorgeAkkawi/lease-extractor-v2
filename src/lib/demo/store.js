@@ -17,6 +17,42 @@ const lapsed = (() => {
   return dt.toISOString().slice(0, 10);
 })();
 
+// A real, valid, one-page PDF — 1.7 kB, hand-built, no dependency — so the sandbox has an
+// actual document to render and drag a signature onto. Without it the demo could not show
+// drag-to-sign at all (there is no storage in DEMO mode, so `document_url` was null and the
+// signing page fell straight to its "can't be shown" branch).
+//
+// It is lease-shaped on purpose: it carries a genuine signature block with two `By: ______`
+// lines at PDF points (56, 420) and (320, 420), which is what makes "drop your signature on
+// the signature line" a real thing to do in the demo rather than a click on blank paper.
+export const DEMO_PDF_B64 =
+  'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwg' +
+  'L1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2Ug' +
+  'L1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAg' +
+  'UiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5' +
+  'cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggMTIxMiA+PgpzdHJlYW0K' +
+  'QlQKL0YxIDE1IFRmCjEgMCAwIDEgNTYgNzgwIFRtCihTRUNPTkQgQU1FTkRNRU5UIFRPIExFQVNFKSBUagovRjEgMTAg' +
+  'VGYKMSAwIDAgMSA1NiA3NDUgVG0KKE1hcGxlIFBsYXphIC0gU3VpdGUgMTIwKSBUagovRjEgMTAgVGYKMSAwIDAgMSA1' +
+  'NiA3MTUgVG0KKFRoaXMgU2Vjb25kIEFtZW5kbWVudCB0byBMZWFzZSBpcyBlbnRlcmVkIGludG8gYXMgb2YgSmFudWFy' +
+  'eSAxLCAyMDI2LCkgVGoKL0YxIDEwIFRmCjEgMCAwIDEgNTYgNzAwIFRtCihieSBhbmQgYmV0d2VlbiBBQ01FIEhPTERJ' +
+  'TkdTIFwoIkxhbmRsb3JkIlwpIGFuZCBCUklHSFQgQ09GRkVFIENPLiBcKCJUZW5hbnQiXCkuKSBUagovRjEgMTAgVGYK' +
+  'MSAwIDAgMSA1NiA2NjUgVG0KKDEuIFRFUk0uIFRoZSBUZXJtIGlzIGV4dGVuZGVkIHRocm91Z2ggRGVjZW1iZXIgMzEs' +
+  'IDIwMzEuKSBUagovRjEgMTAgVGYKMSAwIDAgMSA1NiA2NDUgVG0KKDIuIEJBU0UgUkVOVC4gQmFzZSBSZW50IHNoYWxs' +
+  'IGJlICQ2NiwwMDAuMDAgcGVyIGFubnVtLCBwYXlhYmxlIG1vbnRobHkuKSBUagovRjEgMTAgVGYKMSAwIDAgMSA1NiA2' +
+  'MjUgVG0KKDMuIEFsbCBvdGhlciB0ZXJtcyBhbmQgY29uZGl0aW9ucyBvZiB0aGUgTGVhc2UgcmVtYWluIGluIGZ1bGwg' +
+  'Zm9yY2UgYW5kIGVmZmVjdC4pIFRqCi9GMSAxMCBUZgoxIDAgMCAxIDU2IDU2MCBUbQooSU4gV0lUTkVTUyBXSEVSRU9G' +
+  'LCB0aGUgcGFydGllcyBoYXZlIGV4ZWN1dGVkIHRoaXMgQW1lbmRtZW50LikgVGoKL0YxIDEwIFRmCjEgMCAwIDEgNTYg' +
+  'NDkwIFRtCihMQU5ETE9SRDopIFRqCi9GMSAxMCBUZgoxIDAgMCAxIDU2IDQ3MCBUbQooQUNNRSBIT0xESU5HUykgVGoK' +
+  'L0YxIDEwIFRmCjEgMCAwIDEgNTYgNDIwIFRtCihCeTogX19fX19fX19fX19fX19fX19fX19fX19fX19fXykgVGoKL0Yx' +
+  'IDkgVGYKMSAwIDAgMSA1NiA0MDAgVG0KKE5hbWU6KSBUagovRjEgOSBUZgoxIDAgMCAxIDU2IDM4NSBUbQooRGF0ZTop' +
+  'IFRqCi9GMSAxMCBUZgoxIDAgMCAxIDMyMCA0OTAgVG0KKFRFTkFOVDopIFRqCi9GMSAxMCBUZgoxIDAgMCAxIDMyMCA0' +
+  'NzAgVG0KKEJSSUdIVCBDT0ZGRUUgQ08uKSBUagovRjEgMTAgVGYKMSAwIDAgMSAzMjAgNDIwIFRtCihCeTogX19fX19f' +
+  'X19fX19fX19fX19fX19fX19fX19fXykgVGoKL0YxIDkgVGYKMSAwIDAgMSAzMjAgNDAwIFRtCihOYW1lOikgVGoKL0Yx' +
+  'IDkgVGYKMSAwIDAgMSAzMjAgMzg1IFRtCihEYXRlOikgVGoKRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAw' +
+  'MDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAw' +
+  'MDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jv' +
+  'b3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjE1NzQKJSVFT0YK';
+
 export const DEMO_USER = { id: 'demo-user', email: 'demo@local' };
 
 export function seed() {
@@ -380,15 +416,34 @@ export function seed() {
       },
     ],
 
-    // Two envelopes on Bright Coffee, chosen so the sandbox shows the two states that
-    // actually need a landlord: one waiting on HIM (signed, needs countersigning) and one
-    // signed by both and never applied. The third state — still out with the tenant —
-    // deliberately raises no alert, so seeding it would demonstrate nothing.
+    // Three envelopes on Bright Coffee, one per state that shows something:
+    //   env-3  SENT      — still out with the tenant. **This is the one you open at
+    //                      /sign/env-3 to see the tenant's side and drag a signature onto
+    //                      the document.** Without it the sandbox has nothing signable: the
+    //                      other two are already past that point, so every signing link in
+    //                      the demo answered "already handled" and drag-to-sign — the thing
+    //                      George asked to be shown — could not be demonstrated at all.
+    //   env-1  SIGNED    — waiting on the landlord's countersignature.
+    //   env-2  EXECUTED  — signed by both and never applied.
     //
     // ⚠ token_hash HOLDS THE ENVELOPE ID HERE. The demo has no crypto and no security
     // boundary; live stores ONLY sha256 of a 32-byte CSPRNG token (0085). Anyone reading
     // this as a template for the real thing has it exactly backwards.
     signature_envelopes: [
+      {
+        id: 'env-3', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1',
+        renewal_option_id: null, purpose: 'extension', title: 'Third Amendment to Lease',
+        storage_path: 'demo/third-amendment.pdf', filename: 'Third Amendment to Lease.pdf',
+        doc_sha256: 'c4d9e2b70a15368fbe2c04a97d31856ef0b4a2c68d5e9137fa2b06c4d8e15937',
+        message: 'Here’s the extension we discussed — sign at the bottom of page 1 and I’ll countersign.',
+        // A month out, so the row shows a real countdown rather than a bare date.
+        status: 'sent', expires_at: new Date(Date.now() + 26 * 86400000).toISOString(),
+        sent_at: new Date(Date.now() - 2 * 86400000).toISOString(),
+        signed_at: null, countersigned_at: null, executed_at: null, applied_at: null,
+        executed_path: null, certificate_path: null,
+        created_at: new Date(Date.now() - 2 * 86400000).toISOString(),
+        updated_at: new Date(Date.now() - 2 * 86400000).toISOString(),
+      },
       {
         id: 'env-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1',
         renewal_option_id: null, purpose: 'extension', title: 'Second Amendment to Lease',
@@ -414,6 +469,17 @@ export function seed() {
       },
     ],
     envelope_signers: [
+      // env-3's tenant row HOLDS THE LINK — token_hash is the envelope id in the demo only.
+      // Live it is sha256 of 32 CSPRNG bytes (0085); anyone reading this as a template for
+      // the real thing has it exactly backwards.
+      { id: 'sgn-3t', owner_id: DEMO_USER.id, envelope_id: 'env-3', role: 'tenant',
+        name: 'Sam Rivera', email: 'sam@brightcoffee.example', token_hash: 'env-3',
+        consent_at: null, signed_at: null, typed_name: null, signature_path: null,
+        place_page: null, place_x: null, place_y: null, place_w: null,
+        ip: null, user_agent: null, created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
+      { id: 'sgn-3l', owner_id: DEMO_USER.id, envelope_id: 'env-3', role: 'landlord',
+        name: 'Acme Holdings', email: 'leasing@acmeholdings.example', token_hash: null,
+        created_at: new Date(Date.now() - 2 * 86400000).toISOString() },
       { id: 'sgn-1t', owner_id: DEMO_USER.id, envelope_id: 'env-1', role: 'tenant',
         name: 'Sam Rivera', email: 'sam@brightcoffee.example', token_hash: 'env-1',
         consent_at: iso(Y, 6, 4), signed_at: iso(Y, 6, 4), typed_name: 'Sam Rivera',
@@ -433,6 +499,8 @@ export function seed() {
         created_at: iso(Y, 4, 12) },
     ],
     envelope_events: [
+      { id: 'evt-3a', owner_id: DEMO_USER.id, envelope_id: 'env-3', kind: 'created', actor: 'landlord', at: new Date(Date.now() - 2 * 86400000).toISOString() },
+      { id: 'evt-3b', owner_id: DEMO_USER.id, envelope_id: 'env-3', kind: 'sent', actor: 'landlord', at: new Date(Date.now() - 2 * 86400000).toISOString() },
       { id: 'evt-1a', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'created', actor: 'landlord', at: iso(Y, 6, 2) },
       { id: 'evt-1b', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'sent', actor: 'landlord', at: iso(Y, 6, 2) },
       { id: 'evt-1c', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'viewed', actor: 'tenant', at: iso(Y, 6, 3), ip: '203.0.113.10' },

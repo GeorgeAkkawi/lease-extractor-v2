@@ -1,7 +1,7 @@
 // In-memory mock of the subset of the Supabase client our app uses, so the UI is
 // fully clickable in demo mode without any backend. Computes the v_property_totals
 // and v_tenant_shares views the same way the SQL does (math stays in code).
-import { seed, DEMO_USER } from './store';
+import { seed, DEMO_USER, DEMO_PDF_B64 } from './store';
 import { effectiveRent, occupancyStart, monthlyBases } from '../escalations';
 import { monthlyScheduleForYear } from '../abatement';
 import { billedComponents } from '../reconciliation';
@@ -340,7 +340,20 @@ const storage = {
       // hide the very behaviour the list exists to demonstrate).
       async upload(path) { return ok({ path: path || 'demo/upload' }); },
       async download() { return ok(new Blob([])); },
-      async createSignedUrl() { return ok({ signedUrl: '#demo-document' }); },
+      // A signature PNG gets a 1×1 transparent placeholder and everything else gets the
+      // seeded lease PDF as a data: URL — so the countersign screen can actually render the
+      // document and show the tenant's mark on it, which is the whole point of that screen.
+      // '#demo-document' stays the answer for anything opened in a new tab, where the demo
+      // deliberately has no real file to hand over.
+      async createSignedUrl(path) {
+        if (String(path || '').endsWith('.png')) {
+          return ok({ signedUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' });
+        }
+        if (/\.pdf$/i.test(String(path || ''))) {
+          return ok({ signedUrl: `data:application/pdf;base64,${DEMO_PDF_B64}` });
+        }
+        return ok({ signedUrl: '#demo-document' });
+      },
       // Deleting a copy is a real action in the demo — the registry row goes either
       // way, but without this stub the mock would throw where live code succeeds.
       async remove() { return ok([]); },
@@ -476,8 +489,8 @@ const functions = {
           token_hash: null, created_at: nowIso },
       );
       (db.envelope_events ||= []).push(
-        { id: `evt-${id}-1`, owner_id: DEMO_USER.id, envelope_id: id, kind: 'created', actor: 'landlord', at: nowIso },
-        { id: `evt-${id}-2`, owner_id: DEMO_USER.id, envelope_id: id, kind: 'sent', actor: 'landlord', at: nowIso },
+        { id: evtId(), owner_id: DEMO_USER.id, envelope_id: id, kind: 'created', actor: 'landlord', at: nowIso },
+        { id: evtId(), owner_id: DEMO_USER.id, envelope_id: id, kind: 'sent', actor: 'landlord', at: nowIso },
       );
       return ok({ envelope_id: id, sign_url: demoSignUrl(id), emailed: true });
     }
@@ -495,10 +508,16 @@ const functions = {
         executed_path: path, certificate_path: path, updated_at: nowIso,
       });
       const landlord = (db.envelope_signers || []).find((s) => s.envelope_id === env.id && s.role === 'landlord');
-      if (landlord) Object.assign(landlord, { typed_name: body?.typed_name || null, signed_at: nowIso, consent_at: nowIso });
+      if (landlord) {
+        Object.assign(landlord, {
+          typed_name: body?.typed_name || null, signed_at: nowIso, consent_at: nowIso,
+          signature_path: `signatures/${env.id}/landlord-demo.png`,
+          ...demoPlacement(body?.placement),
+        });
+      }
       (db.envelope_events ||= []).push(
-        { id: `evt-${env.id}-cs`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'countersigned', actor: 'landlord', at: nowIso },
-        { id: `evt-${env.id}-ex`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'executed', actor: 'system', at: nowIso },
+        { id: evtId(), owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'countersigned', actor: 'landlord', at: nowIso },
+        { id: evtId(), owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'executed', actor: 'system', at: nowIso },
       );
       // No PDF is built in the sandbox — pdf-lib is a Deno-side dependency of the edge
       // function and never ships in the browser bundle.
@@ -973,7 +992,27 @@ function demoAskPortfolio(body) {
 // an in-memory sandbox, and pretending otherwise would only obscure what the LIVE function
 // does. Live: 32 CSPRNG bytes, stored solely as sha256(token). See 0085 and the header of
 // supabase/functions/sign-envelope/index.ts.
+// Unique per row. The ids used to be derived from the envelope + event kind, which meant
+// signing the same envelope twice in the sandbox produced two events with the SAME id —
+// React dropped one from the record panel and warned about duplicate keys. Live these are
+// gen_random_uuid(); the demo needs the same guarantee, not a readable string.
+let evtSeq = 0;
+const evtId = () => `evt-${(evtSeq += 1)}-${Math.random().toString(36).slice(2, 8)}`;
+
 const demoSignUrl = (id) => `${globalThis.location?.origin || 'https://amlakre.com'}/sign/${id}`;
+
+// ⚠ MIRROR of placementColumns() in supabase/functions/sign-envelope/index.ts and of
+// hasPlacement() in src/lib/signPlacement.js — CLAUDE.md §3. All-or-nothing: an incomplete
+// placement stores four nulls, so the executed PDF falls back to an appended signature page
+// rather than stamping a signature at the bottom-left corner of page 1.
+const NO_PLACE = { place_page: null, place_x: null, place_y: null, place_w: null };
+function demoPlacement(p) {
+  if (!p || typeof p !== 'object') return NO_PLACE;
+  const ok = (v) => typeof v === 'number' && Number.isFinite(v);
+  if (!ok(p.page) || !ok(p.x) || !ok(p.y) || !ok(p.w)) return NO_PLACE;
+  if (p.page < 1 || p.x < 0 || p.y < 0 || p.w <= 0) return NO_PLACE;
+  return { place_page: Math.trunc(p.page), place_x: p.x, place_y: p.y, place_w: p.w };
+}
 
 // Demo stand-in for the ONE public edge function. Mirrors the real state machine — including
 // the two refusals that matter — so the tenant-facing page can be driven end to end in the
@@ -1016,17 +1055,18 @@ function demoSignEnvelope(body) {
       property_name: prop?.name || null,
       signer_name: signer?.name || null,
       expires_at: env.expires_at,
-      // No storage in the sandbox, so there is no document to frame. The page copes (it
-      // says so rather than showing an empty box) and everything below the frame — consent,
-      // name, signature pad, Sign — is fully exercised.
-      document_url: null,
+      // A data: URL of the seeded one-page lease (store.js). There is no storage in DEMO
+      // mode, so a signed-URL path is impossible — but pdf.js opens a data: URL happily,
+      // which is what lets the sandbox demonstrate drag-to-sign on a document with a real
+      // signature block instead of falling through to the "can't be shown" branch.
+      document_url: `data:application/pdf;base64,${DEMO_PDF_B64}`,
       already_signed: !!signer?.signed_at,
     });
   }
 
   if (body?.action === 'decline') {
     Object.assign(env, { status: 'declined', declined_reason: body?.reason || null, updated_at: nowIso });
-    (db.envelope_events ||= []).push({ id: `evt-${env.id}-dec`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'declined', actor: 'tenant', at: nowIso });
+    (db.envelope_events ||= []).push({ id: evtId(), owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'declined', actor: 'tenant', at: nowIso });
     return ok({ ok: true, state: 'declined' });
   }
 
@@ -1043,12 +1083,16 @@ function demoSignEnvelope(body) {
       consent_at: nowIso, signed_at: nowIso, typed_name: typed,
       signature_path: `signatures/${env.id}/tenant-demo.png`, ip: '203.0.113.10',
       user_agent: 'Demo browser',
+      // Where they dropped it, in PDF points. Same all-or-nothing rule as the live function
+      // (placementColumns in sign-envelope/index.ts) — a partial placement stores nulls and
+      // falls back to an appended signature page rather than stamping at the page corner.
+      ...demoPlacement(body?.placement),
     });
   }
   Object.assign(env, { status: 'signed', signed_at: nowIso, updated_at: nowIso });
   (db.envelope_events ||= []).push(
-    { id: `evt-${env.id}-con`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'consented', actor: 'tenant', at: nowIso },
-    { id: `evt-${env.id}-sig`, owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'signed', actor: 'tenant', at: nowIso },
+    { id: evtId(), owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'consented', actor: 'tenant', at: nowIso },
+    { id: evtId(), owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'signed', actor: 'tenant', at: nowIso },
   );
   return ok({ ok: true, state: 'signed', signer_name: typed });
 }

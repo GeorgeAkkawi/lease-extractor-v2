@@ -14,6 +14,102 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **E-signature Phase 1.5: the signature now lands ON the signature line. The signer drags
+  their own mark onto the PDF, the executed copy is stamped for real, the tenant's copy is ATTACHED, and a
+  signed envelope can finally be removed** (George, after a real test run: *"they arent signing the actual
+  document just a box that says that so there needs to be a way to prove they signed it… can the software copy
+  the signature and place it where its supposed to go on the lease?"* → then *"drag and drop signature feature?
+  on the pdf on the tenants side that automatically copies it down and send it back as a real signature on the
+  actual pdf document? same thing for the countersign"* · *"i was just doing a test run on the hair salon one
+  for joliet and i want to remove it"* · *"once its countersigned and implemented does the tenant automatically
+  get sent a signed copy?"*). Deployed: DB migration **`0087`**, edge fns **`sign-envelope`,
+  `countersign-envelope`**, frontend Cloudflare version **`34ec611c`**, demo worker **`f4743e3c`**. **$0 — no
+  AI call**, no tenant emails sent by me, `0087` is four nullable `add column if not exists`. Tests
+  **1652/1652** (was 1620 — +32 across 2 new suites).
+  - **Answering his three questions is what produced the round**, so they are recorded first:
+    - **① "Is it binding if they only tick a box?"** Yes — UETA §2(8) asks only that a signature be *"attached
+      to or logically associated with"* the record, and a certificate page carrying the document's SHA-256 is a
+      textbook logical association (arguably stronger than ink, since the hash proves the bytes never moved).
+      **But enforceable and usable are different things**: a lease whose signature lines are blank *looks*
+      unsigned to a lender, a buyer or a title company. He was right to push. **And his own suggestion is a
+      legal upgrade, not just a visual one** — intent to sign is the FIRST thing ESIGN/UETA ask for, and
+      deliberately placing your own mark on the signature line demonstrates it far better than a checkbox
+      beside an appended page.
+    - **② The Joliet test run** — one envelope (`3f827e69…`, "LEASE EXTENSION 2022", Hair Salon, status
+      *signed*). **Deleted**: 5 events, 2 signers, the envelope, and its 2 storage objects (the uploaded PDF
+      and the tenant's signature PNG). `signature_envelopes` verified back to **0 rows**.
+    - **③ "Does the tenant get a signed copy automatically?"** Yes, on countersign — but checking found it sent
+      a **7-day link and no attachment**, which is thin against ESIGN's retention limb (after a week they'd
+      have nothing). **The executed PDF is now attached**, with the link kept as the fallback above 18 MB.
+  - **⚠ THE GAP THE TEST RUN EXPOSED, and it would have bitten again:** `canVoid` allowed only `sent`, so
+    **once anyone signed, an envelope could not be removed from the lease card at all**. The original reasoning
+    (voiding a signature destroys a record of something real) was right about *delete* and wrong about *void*.
+    Now: **Withdraw** on `sent` **and** `signed` — kills the link, KEEPS the signature and audit trail — and
+    **Delete** on any status, with a dialog graded by what actually dies (`deleteSeverity`): a plain removal, a
+    signature record, or ⚠ a document *signed by both parties*.
+  - **Drag-to-sign — one component, two surfaces.** `PdfSignCanvas` renders the document and takes the drop;
+    the tenant places their own mark on the public page, and the landlord does the same on the countersign
+    screen **with the tenant's signature already drawn where they put it** — which is the entire point of
+    "tenant signs, then you countersign". Tap or drag, because on a phone a tap is what people actually do.
+  - **⚠ THE COORDINATE TRAP, recorded because it looks correct on every test PDF and is wrong on a real
+    scanned lease.** Three spaces are in play and two disagree: the browser (top-left, y down, CSS px), **pdf.js
+    viewport space** (bottom-left, points, `/Rotate` ALREADY applied), and **pdf-lib drawing space**
+    (bottom-left, points, `/Rotate` IGNORED). At 0° they are identical; at `/Rotate 90` — which is exactly what
+    a sideways scan produces — a signature stored from the browser stamps in the wrong corner. `toUnrotated()`
+    is the bridge, and it is a **JS↔TS mirror pair** (`src/lib/signPlacement.js` ↔ `unrotate()` in
+    `countersign-envelope/index.ts`) per CLAUDE.md §3 — **change them in the same commit**. All of it is pure
+    and unit-tested at 0/90/180/270, because pdf.js cannot render in jsdom.
+  - **A real bug the new tests caught immediately:** `hasPlacement` used `Number.isFinite(Number(v))`, and
+    **`Number(null)` is 0, which is finite** — so a NULL coordinate read as a valid zero, i.e. the bottom-left
+    corner of page 1. Every one of those columns is nullable by design, so nulls are the *normal* state here,
+    not an edge case. There is now an explicit null check with the reason written next to it.
+  - **PLACEMENT IS NEVER A GATE.** Unplaced, unrenderable, a `.docx`, an old phone — signing still works and
+    falls back to the appended signature page exactly as before. A tenant who cannot see the document must
+    still be able to sign it. Three tests hold that line. Conversely, when BOTH marks land on the document the
+    now-redundant `SIGNATURES` page is **dropped** — and the **CERTIFICATE page is appended unconditionally**,
+    always, because it is the evidence.
+  - **The signature record** (`Signature record` on any signed row) answers *"i just need to see how its stored
+    after the fact"* **in the app, without opening a PDF**: the document fingerprint with a plain-English note
+    on what it proves, each signer's typed name / email / signed + consented timestamps / IP / device, whether
+    their mark went on the document or on a page at the end, and the full audit trail. This is what
+    `listEnvelopeEvents` was written for in Phase 1 and never used.
+  - **pdf.js is lazy-loaded**, following the `exceljs` precedent exactly. Verified in the build output: **`pdf`
+    434 kB and `pdf.worker` 1.26 MB are their own chunks**, and the main bundle grew only **11 kB** (1,710 →
+    1,721). Nothing PDF-related downloads until someone opens a document to sign.
+  - **Demo parity (§3) — and the sandbox was genuinely broken for this until I drove it.** A real **1.7 kB
+    hand-built one-page PDF** is seeded (`DEMO_PDF_B64`, store.js) with a genuine signature block at PDF
+    (56, 420) and (320, 420), served as a `data:` URL. Then, driving it, I found **every signing link in the
+    demo answered "already handled"** — both seeded envelopes were past the signable point, so drag-to-sign, the
+    exact thing George asked to be shown, could not be demonstrated at all. Added **`env-3`, status `sent`**.
+    Also fixed: demo event ids were derived from envelope+kind, so signing twice produced duplicate React keys.
+  - **Verified by driving the deployed demo, not by assertion.** `/sign/env-3` → pdf.js painted the real
+    document (**41,005 non-blank pixels** on a 694×898 canvas) → ticked consent, typed a signature, **clicked
+    the tenant's `By: ____` line** → the mark landed at **PDF x=319, y=401**, i.e. on the tenant's line at
+    (320, 420) and *not* the landlord's at x=56 → *"✓ Your signature is placed on page 1"* → **Signed**. Then
+    the lease card showed all three envelopes with the right controls per state (Resend/Cancel · Countersign/
+    Withdraw · Open signed copy), the signature record rendered in full, and the countersign canvas painted.
+    **Zero console errors** across the whole run. Plus: `npm test` 1652/1652 and the demo bundle grepped free
+    of the live project ref while the live bundle carries it.
+  - **George: hard-refresh, then try it in the demo first** — <https://amlak-demo.akkawigeo-5.workers.dev/sign/env-3>
+    is a live tenant's-eye view you can sign. Then do the real one: send yourself an envelope, open it **on your
+    phone**, drag your signature onto the line, countersign, and open the signed PDF.
+  - **Flags (no action needed):** ① **Phase 2 is still not built** — applying a signed document to the lease
+    terms (with your *"keep the old lease but replace the terms"* choice) is the next round. ② A **`.docx` still
+    can't be stamped** — no page geometry without a Word renderer — so a Word source gets the appended
+    signature page. **Send PDFs if you want the signature on the line.** ③ **A second, unreferenced
+    `LEASE_EXTENSION_2022.pdf` from 2026-07-10 02:43 UTC is still in storage** — nothing anywhere points at it,
+    so it is invisible in the app, but it is a month older than the Joliet test run and I did not delete data
+    you didn't ask about. Say the word and it goes. ④ No landlord "sign here" markers yet — if a tenant drops
+    their mark somewhere odd you'll see it on the countersign screen before committing yours, and can Withdraw
+    and resend.
+  - **Files.** New: `supabase/migrations/0087_signature_placement.sql`; `src/lib/signPlacement.js` (pure
+    coordinate maths), `src/lib/pdfRender.js` (lazy pdf.js loader), `src/components/PdfSignCanvas.js`; test
+    suites `signPlacement` (20) and `signDragDrop` (11). Modified: `supabase/functions/sign-envelope/index.ts`
+    (accept + validate placement), `countersign-envelope/index.ts` (stamp, drop the redundant page, attach the
+    PDF), `src/pages/SignPage.js`, `src/components/AddendumEnvelopeRows.js` (countersign canvas, signature
+    record, Withdraw + Delete), `src/lib/envelopes.js`, `src/lib/api.js` (`deleteEnvelope`,
+    `listEnvelopeSigners`), `src/App.css`, `src/lib/demo/{mockClient,store}.js`, `package.json` (`pdfjs-dist`).
+
 - **2026-08-04** — **E-signature, Phase 1: send a document from Amlak, the tenant signs it on a public page,
   you countersign, and Amlak builds the executed PDF with a certificate of completion** (George: *"looking to
   create a docusign type feature to amlak"* → then, after I answered the legality/security questions, three

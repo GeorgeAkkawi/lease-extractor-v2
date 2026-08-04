@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import SignaturePad from '../components/SignaturePad';
+import PdfSignCanvas from '../components/PdfSignCanvas';
 import { callSignEndpoint } from '../lib/signPublic';
 import { fmtDate } from '../lib/format';
 
@@ -36,6 +37,12 @@ export default function SignPage({ token }) {
   const [err, setErr] = useState('');
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
+  // Where they dropped their signature on the page: { page, x, y, w } in PDF points, or null.
+  const [placement, setPlacement] = useState(null);
+  // The renderer gave up (a scan pdf.js can't parse, a .docx, an old browser). Signing must
+  // still work — it falls back to the appended signature page, exactly as before this
+  // feature existed. A tenant who can't see the document must still be able to sign it.
+  const [noRender, setNoRender] = useState(false);
 
   // The page has its own <title> and its own background — a tenant landing here should not
   // be able to tell it apart from a purpose-built signing service, because that is what it
@@ -69,6 +76,9 @@ export default function SignPage({ token }) {
       await callSignEndpoint({
         action: 'sign', token, consent: true,
         typed_name: name.trim(), signature_png: signature,
+        // Null when they couldn't or didn't place it — the executed PDF then appends a
+        // signature page instead of stamping. Never a reason to refuse a signature.
+        placement,
       });
       setState((s) => ({ ...s, phase: 'done' }));
     } catch (e) {
@@ -157,17 +167,29 @@ export default function SignPage({ token }) {
         Please review the document below and sign. This link expires {fmtDate(state.expires_at)}.
       </p>
 
+      {/* The document, and the thing they sign ON. Once they've drawn a signature it becomes
+          a mark they place on the page themselves — which is both what George asked for and
+          the better demonstration of intent to sign that ESIGN/UETA ask about. */}
       <div className="sign-doc">
-        {state.document_url ? (
-          <iframe title="Document" src={state.document_url} className="sign-frame" />
+        {state.document_url && !noRender ? (
+          <PdfSignCanvas
+            url={state.document_url}
+            signature={signature}
+            placement={placement}
+            onPlace={setPlacement}
+            disabled={busy}
+            onFail={() => setNoRender(true)}
+          />
         ) : (
-          <p className="muted" style={{ padding: 24 }}>The document couldn’t be loaded. Please contact the sender.</p>
+          <p className="muted" style={{ padding: 24 }}>
+            {state.document_url
+              ? 'This document can’t be shown here — download it below to read it. You can still sign: your signature will be added on a signature page at the end.'
+              : 'The document couldn’t be loaded. Please contact the sender.'}
+          </p>
         )}
       </div>
       {state.document_url && (
         <p className="sign-dl">
-          {/* Word documents and scans don't render in a frame — the download is the way in,
-              and it is offered for every document rather than only when the frame fails. */}
           <a href={state.document_url} target="_blank" rel="noopener noreferrer">⭳ Download a copy</a>
         </p>
       )}
@@ -200,6 +222,18 @@ export default function SignPage({ token }) {
           </label>
 
           <SignaturePad value={signature} onChange={setSignature} typedName={name} disabled={busy} />
+
+          {/* A nudge, never a gate. Placing the mark on the line is the better outcome — it
+              is what makes the signed PDF look signed — but refusing to accept a signature
+              because someone didn't drag it would be a far worse failure than an appended
+              signature page. So this only ever informs. */}
+          {signature && !noRender && state.document_url && (
+            <p className={`note-msg ${placement ? 'good' : 'info'}`}>
+              {placement
+                ? `✓ Your signature is placed on page ${placement.page}. Tap the document again to move it.`
+                : 'Now tap your signature onto the signature line in the document above. If you’d rather not, you can still sign — it will be added on a page at the end.'}
+            </p>
+          )}
 
           {err && <p className="note-msg danger">{err}</p>}
 

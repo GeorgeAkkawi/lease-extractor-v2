@@ -63,6 +63,30 @@ function flooded(ip: string | null, limit = 60, windowMs = 60_000): boolean {
   return recent.length > limit;
 }
 
+// Where the signer dropped their mark, in PDF points (0087). Validated rather than trusted:
+// this arrives from an unauthenticated browser, so a hostile or broken client must not be
+// able to write nonsense into the row that the stamper later reads.
+//
+// ⚠ ALL-OR-NOTHING, AND NULL IS A PERFECTLY GOOD ANSWER. Anything incomplete or out of range
+// stores four nulls, and the executed PDF falls back to an appended signature page. Half a
+// placement would stamp a signature at the corner of page 1 of somebody's lease, which is far
+// worse than not stamping at all. `hasPlacement()` in src/lib/signPlacement.js applies the
+// same rule on the read side — the two are a mirror pair.
+const NONE = { place_page: null, place_x: null, place_y: null, place_w: null };
+function placementColumns(p: unknown): Record<string, number | null> {
+  if (!p || typeof p !== 'object') return NONE;
+  const { page, x, y, w } = p as Record<string, unknown>;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const pg = n(page); const px = n(x); const py = n(y); const pw = n(w);
+  if (pg === null || px === null || py === null || pw === null) return NONE;
+  // A page past the end, a negative point, or a signature wider than any real page is a
+  // broken client, not a placement. 2000pt is comfortably larger than A0.
+  if (pg < 1 || pg > 5000) return NONE;
+  if (px < 0 || py < 0 || px > 20000 || py > 20000) return NONE;
+  if (pw <= 0 || pw > 2000) return NONE;
+  return { place_page: Math.trunc(pg), place_x: px, place_y: py, place_w: pw };
+}
+
 // The one place "is this link still usable" is decided. Mirrored by envelopeStatus() in
 // src/lib/envelopes.js.
 function liveState(env: { status: string; expires_at: string }): string {
@@ -88,7 +112,7 @@ Deno.serve(async (req) => {
     const ip = clientIp(req);
     if (flooded(ip)) return json({ error: 'Too many requests. Please wait a moment.' }, 429);
 
-    const { action, token, consent, typed_name, signature_png, reason } =
+    const { action, token, consent, typed_name, signature_png, reason, placement } =
       await req.json().catch(() => ({}));
 
     if (!token || typeof token !== 'string' || token.length < 20 || token.length > 200) {
@@ -229,6 +253,7 @@ Deno.serve(async (req) => {
     const { error: sgErr } = await admin.from('envelope_signers').update({
       consent_at: now, signed_at: now, typed_name: name,
       signature_path: sigPath, ip, user_agent: userAgent(req),
+      ...placementColumns(placement),
     }).eq('id', signer.id);
     if (sgErr) throw sgErr;
 

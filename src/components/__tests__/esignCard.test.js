@@ -49,6 +49,12 @@ const RESET = async () => {
     expires_at: new Date(Date.now() + 20 * 86400000).toISOString(),
   }).eq('id', 'env-1');
   await supabase.from('signature_envelopes').update({ status: 'executed', applied_at: null }).eq('id', 'env-2');
+  // env-3 is the still-out-with-the-tenant one; a test that expires or deletes it has to
+  // put it back or every later suite sees a different card.
+  await supabase.from('signature_envelopes').update({
+    status: 'sent', signed_at: null,
+    expires_at: new Date(Date.now() + 26 * 86400000).toISOString(),
+  }).eq('id', 'env-3');
 };
 
 beforeEach(async () => { cleanup(); await RESET(); });
@@ -77,30 +83,33 @@ describe('the strip inside Addendums & riders', () => {
   });
 
   it('offers Resend + cancel only while it is still out with the tenant', async () => {
-    // Both seeded envelopes are past that point, so neither should offer them.
+    // Assertions are scoped to a ROW found by its title rather than indexed out of the
+    // card — the seed gained a third envelope and every index-based selector broke.
     mount(AddendumEnvelopeRows);
-    await screen.findByText('Second Amendment to Lease');
-    expect(screen.queryByRole('button', { name: 'Resend' })).toBe(null);
+    await screen.findByText('Third Amendment to Lease');
 
-    // Put one back to 'sent' and the controls appear.
-    await supabase.from('signature_envelopes').update({ status: 'sent', signed_at: null }).eq('id', 'env-1');
-    cleanup();
-    mount(AddendumEnvelopeRows);
-    expect(await screen.findByRole('button', { name: 'Resend' })).toBeTruthy();
-    expect(screen.getByText(/Waiting on Sam Rivera/)).toBeTruthy();
+    // env-3 is the only one still out with the tenant.
+    const outstanding = screen.getByText('Third Amendment to Lease').closest('.env-row');
+    expect(outstanding.textContent).toContain('Waiting on Sam Rivera');
     // The badge names who it waits on rather than echoing the strip's heading.
-    expect(screen.getByText('Awaiting tenant')).toBeTruthy();
+    expect(outstanding.textContent).toContain('Awaiting tenant');
+    expect(outstanding.querySelector('button[title*="Send the link again"]')).toBeTruthy();
+
+    // The signed one has nothing left to chase — it offers Withdraw instead.
+    const signed = screen.getByText('Second Amendment to Lease').closest('.env-row');
+    expect(signed.textContent).not.toContain('Resend');
+    expect(signed.querySelector('button[title*="Withdraw"]')).toBeTruthy();
   });
 
   it('a lapsed link is badged Expired even though the row still says sent', async () => {
     await supabase.from('signature_envelopes').update({
-      status: 'sent', signed_at: null,
       expires_at: new Date(Date.now() - 86400000).toISOString(),
-    }).eq('id', 'env-1');
+    }).eq('id', 'env-3');
     mount(AddendumEnvelopeRows);
     expect(await screen.findByText('Expired')).toBeTruthy();
+    const row = screen.getByText('Third Amendment to Lease').closest('.env-row');
     // …and resend is still offered, because a new link is the fix for a dead one.
-    expect(screen.getByRole('button', { name: 'Resend' })).toBeTruthy();
+    expect(row.querySelector('button[title*="Send the link again"]')).toBeTruthy();
   });
 });
 

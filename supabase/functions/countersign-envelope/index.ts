@@ -54,6 +54,51 @@ const stamp = (iso: string | null | undefined) => {
   return Number.isNaN(d.getTime()) ? '-' : `${d.toISOString().replace('T', ' ').slice(0, 19)} UTC`;
 };
 
+// ⚠ JS ↔ TS MIRROR PAIR — CLAUDE.md §3. The three helpers below are the Deno twins of
+// `hasPlacement` and `toUnrotated` in src/lib/signPlacement.js, and of `placementColumns` in
+// sign-envelope/index.ts. **Change them in the same commit or a signature silently lands in
+// the wrong place**, which is the kind of drift nobody notices until a lease is printed.
+// The JS side carries the full explanation and is unit-tested at four page rotations.
+
+const realNum = (v: unknown) =>
+  v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+
+// Complete placement, or nothing. Half a placement would stamp at the corner of page 1.
+// NOTE `Number(null)` is 0 and finite — the null check is doing real work here.
+const placed = (p: Record<string, unknown> | null | undefined) =>
+  !!p && realNum(p.place_page) && Number(p.place_page) >= 1
+  && realNum(p.place_x) && realNum(p.place_y)
+  && realNum(p.place_w) && Number(p.place_w) > 0;
+
+// The landlord's own placement arrives from the app rather than from a signer row; validated
+// the same way sign-envelope validates the tenant's, so neither client can write nonsense.
+const NO_PLACE = { place_page: null, place_x: null, place_y: null, place_w: null };
+function placementColumns(p: unknown): Record<string, number | null> {
+  if (!p || typeof p !== 'object') return NO_PLACE;
+  const { page, x, y, w } = p as Record<string, unknown>;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const pg = n(page); const px = n(x); const py = n(y); const pw = n(w);
+  if (pg === null || px === null || py === null || pw === null) return NO_PLACE;
+  if (pg < 1 || pg > 5000) return NO_PLACE;
+  if (px < 0 || py < 0 || px > 20000 || py > 20000) return NO_PLACE;
+  if (pw <= 0 || pw > 2000) return NO_PLACE;
+  return { place_page: Math.trunc(pg), place_x: px, place_y: py, place_w: pw };
+}
+
+// Viewport space (pdf.js — /Rotate already applied) → the page's UNROTATED space, which is
+// the only space pdf-lib draws in. Identity at 0°, which is why skipping this looks fine on
+// every test PDF and is wrong on a sideways scan. Mirrors toUnrotated() in signPlacement.js.
+function unrotate(
+  { x, y, w, h }: { x: number; y: number; w: number; h: number },
+  rotation: number, pageW: number, pageH: number,
+) {
+  const r = ((Math.trunc(rotation) % 360) + 360) % 360;
+  if (r === 0) return { x, y, angle: 0 };
+  if (r === 180) return { x: pageW - x - w, y: pageH - y - h, angle: 180 };
+  if (r === 90) return { x: x + h, y, angle: 90 };
+  return { x: pageW - y - h, y: pageH - x - w, angle: 270 };
+}
+
 Deno.serve(async (req) => {
   const { preflight, json, serverError } = cors(req);
   if (req.method === 'OPTIONS') return preflight();
@@ -73,7 +118,7 @@ Deno.serve(async (req) => {
     const limited = await enforceRateLimit(req, 10, 60);
     if (limited) return limited;
 
-    const { envelope_id, typed_name, signature_png } = await req.json().catch(() => ({}));
+    const { envelope_id, typed_name, signature_png, placement } = await req.json().catch(() => ({}));
     if (!envelope_id) return json({ error: 'Which document?' }, 400);
 
     const name = String(typed_name ?? '').trim().slice(0, 200);
@@ -106,7 +151,7 @@ Deno.serve(async (req) => {
 
     const { data: signers } = await supabase
       .from('envelope_signers')
-      .select('id, role, name, email, typed_name, signed_at, signature_path, consent_at, ip, user_agent')
+      .select('id, role, name, email, typed_name, signed_at, signature_path, consent_at, ip, user_agent, place_page, place_x, place_y, place_w')
       .eq('envelope_id', env.id);
     const tenant = (signers ?? []).find((s) => s.role === 'tenant');
     const landlordRow = (signers ?? []).find((s) => s.role === 'landlord');
@@ -120,11 +165,13 @@ Deno.serve(async (req) => {
       .upload(sigPath, landlordSig, { contentType: 'image/png', upsert: false });
     if (upSig.error) throw upSig.error;
 
+    const landlordPlace = placementColumns(placement);
     if (landlordRow) {
       await supabase.from('envelope_signers').update({
         typed_name: name, signed_at: now, consent_at: now, signature_path: sigPath,
         ip: (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || null,
         user_agent: (req.headers.get('user-agent') ?? '').slice(0, 500) || null,
+        ...landlordPlace,
       }).eq('id', landlordRow.id);
     }
     await supabase.from('envelope_events').insert({
@@ -150,10 +197,12 @@ Deno.serve(async (req) => {
     const isPdf = (env.filename ?? '').toLowerCase().endsWith('.pdf')
       || (!!srcBytes && srcBytes.length > 4 && srcBytes[0] === 0x25 && srcBytes[1] === 0x50);
 
-    const built = await buildExecutedPdf({
-      env, tenant, landlordName: name, events: events ?? [],
-      srcBytes: isPdf ? srcBytes : null, tenantSig, landlordSig,
-    });
+    const { bytes: built, tenantStamped: tenantOnDoc, landlordStamped: landlordOnDoc } =
+      await buildExecutedPdf({
+        env, tenant, landlordName: name, events: events ?? [],
+        srcBytes: isPdf ? srcBytes : null, tenantSig, landlordSig,
+        landlordPlace,
+      });
 
     // ---- Store the result ---------------------------------------------------
     const base = `executed/${env.id}`;
@@ -188,9 +237,15 @@ Deno.serve(async (req) => {
     // ---- Send both parties their copy --------------------------------------
     const { data: link } = await supabase.storage
       .from('lease-documents').createSignedUrl(executedPath, 60 * 60 * 24 * 7);
-    await emailCopies(supabase, env, tenant, landlordRow, link?.signedUrl ?? null, isPdf);
+    await emailCopies(supabase, env, tenant, landlordRow, link?.signedUrl ?? null, isPdf, built, execName);
 
-    return json({ ok: true, executed_path: executedPath, stamped: isPdf });
+    return json({
+      ok: true, executed_path: executedPath, stamped: isPdf,
+      // Which signatures landed ON the document rather than on an appended page — the UI
+      // tells the landlord, because "signed" and "signed in the right place" are different
+      // facts and he is the one who will hand this to a lender.
+      on_document: { tenant: tenantOnDoc, landlord: landlordOnDoc },
+    });
   } catch (e) {
     return serverError(e, 'countersign-envelope');
   }
@@ -201,13 +256,14 @@ Deno.serve(async (req) => {
 // scan) yields the signature + certificate as a standalone PDF — see the header.
 // ---------------------------------------------------------------------------
 async function buildExecutedPdf(
-  { env, tenant, landlordName, events, srcBytes, tenantSig, landlordSig }: {
+  { env, tenant, landlordName, events, srcBytes, tenantSig, landlordSig, landlordPlace }: {
     env: Record<string, any>; tenant: Record<string, any>; landlordName: string;
     events: Array<Record<string, any>>; srcBytes: Uint8Array | null;
     tenantSig: Uint8Array | null; landlordSig: Uint8Array;
+    landlordPlace: Record<string, number | null>;
   },
-): Promise<Uint8Array> {
-  const { PDFDocument, StandardFonts, rgb } = await import('npm:pdf-lib');
+): Promise<{ bytes: Uint8Array; tenantStamped: boolean; landlordStamped: boolean }> {
+  const { PDFDocument, StandardFonts, rgb, degrees } = await import('npm:pdf-lib');
 
   let pdf: any;
   if (srcBytes) {
@@ -224,12 +280,17 @@ async function buildExecutedPdf(
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const A4: [number, number] = [595, 842];
   const M = 56;
-  let page = pdf.addPage(A4);
-  let y = A4[1] - M;
+  // ⚠ NO PAGE IS ADDED UP FRONT. When both signatures land on the document itself the
+  // SIGNATURES page is skipped entirely, and an eagerly-created page would leave a blank
+  // sheet in the middle of the landlord's executed lease. `newPage()` is called only where
+  // something is actually about to be written.
+  let page: any = null;
+  let y = 0;
+  const newPage = () => { page = pdf.addPage(A4); y = A4[1] - M; };
 
   const nl = (h: number) => {
     y -= h;
-    if (y < M + 24) { page = pdf.addPage(A4); y = A4[1] - M; }
+    if (y < M + 24) newPage();
   };
   const write = (text: string, { size = 10, f = font, gap = 15, colour = rgb(0.15, 0.15, 0.15) } = {}) => {
     const t = safe(text);
@@ -253,7 +314,59 @@ async function buildExecutedPdf(
     nl(14);
   };
 
+  // ══ STAMP ON THE ACTUAL SIGNATURE LINE ═══════════════════════════════════════════════
+  // George, 2026-08-04: *"they arent signing the actual document just a box that says that…
+  // can the software copy the signature and place it where its supposed to go on the lease?"*
+  // Each signer dropped their own mark on the page (0087); this puts it there for real.
+  //
+  // ⚠ pdf.js AND pdf-lib DISAGREE ABOUT ROTATION. The stored point came through a pdf.js
+  // viewport, which has ALREADY applied the page's /Rotate; pdf-lib draws in the page's
+  // UNROTATED space and ignores /Rotate entirely. `unrotate()` is the bridge. On a page with
+  // no rotation it is the identity — which is why this looks fine on every test PDF and is
+  // wrong on a sideways scan if you skip it.
+  const pages = pdf.getPages();
+  const stampOne = async (place: Record<string, any>, png: Uint8Array | null, caption: string) => {
+    if (!png || !placed(place)) return false;
+    const idx = Math.trunc(Number(place.place_page)) - 1;
+    const target = pages[idx];
+    if (!target) return false; // a page number past the end of THIS document — fall back
+    try {
+      const img = await pdf.embedPng(png);
+      const w = Number(place.place_w);
+      const h = (img.height / img.width) * w;
+      const { width: pw, height: ph } = target.getSize();
+      const angle = target.getRotation().angle || 0;
+      const p = unrotate({ x: Number(place.place_x), y: Number(place.place_y), w, h }, angle, pw, ph);
+      target.drawImage(img, { x: p.x, y: p.y, width: w, height: h, rotate: degrees(p.angle) });
+      // A small caption under the mark, so the page itself says who signed and when rather
+      // than making a reader flip to the certificate to find out.
+      if (p.angle === 0) {
+        target.drawText(safe(caption), {
+          x: p.x, y: Math.max(2, p.y - 8), size: 6, font, color: rgb(0.35, 0.35, 0.35),
+        });
+      }
+      return true;
+    } catch {
+      return false; // an unreadable image must never lose the whole executed document
+    }
+  };
+
+  const tenantStamped = await stampOne(
+    tenant, tenantSig,
+    `Signed by ${tenant.typed_name || tenant.name} - ${stamp(tenant.signed_at)}`,
+  );
+  const landlordStamped = await stampOne(
+    landlordPlace, landlordSig,
+    `Signed by ${landlordName} - ${stamp(new Date().toISOString())}`,
+  );
+
   // ---- Signature page ----
+  // ⚠ ONLY WHEN THE MARKS COULDN'T GO ON THE DOCUMENT ITSELF. When both were stamped in
+  // place this page is pure noise — the signatures are where a reader expects them. When
+  // either was not (a .docx, a scan pdf.js refused, a signer who never dragged anything),
+  // this is the whole reason the signature is associated with the record at all, so it stays.
+  // The CERTIFICATE below is appended unconditionally either way.
+  if (!(tenantStamped && landlordStamped)) {
   write('SIGNATURES', { size: 16, f: bold, gap: 26 });
   write(String(env.title), { size: 11, f: bold, gap: 20 });
   rule();
@@ -265,7 +378,7 @@ async function buildExecutedPdf(
         const img = await pdf.embedPng(png);
         const w = Math.min(200, img.width);
         const h = (img.height / img.width) * w;
-        if (y - h < M + 24) { page = pdf.addPage(A4); y = A4[1] - M; }
+        if (y - h < M + 24) newPage();
         page.drawImage(img, { x: M, y: y - h + 8, width: w, height: h });
         nl(h + 6);
       } catch { /* an unreadable signature image must not lose the whole certificate */ }
@@ -280,8 +393,14 @@ async function buildExecutedPdf(
     write(`Signed ${stamp(at)}${ip ? ` from ${ip}` : ''}`, { size: 9, gap: 22, colour: rgb(0.4, 0.4, 0.4) });
   };
 
-  await drawSigner('TENANT', String(tenant.name), String(tenant.typed_name ?? ''), tenant.signed_at, tenantSig, tenant.ip);
-  await drawSigner('LANDLORD', landlordName, landlordName, new Date().toISOString(), landlordSig);
+  // Only the signer whose mark did NOT land on the document needs a block here.
+  if (!tenantStamped) {
+    await drawSigner('TENANT', String(tenant.name), String(tenant.typed_name ?? ''), tenant.signed_at, tenantSig, tenant.ip);
+  }
+  if (!landlordStamped) {
+    await drawSigner('LANDLORD', landlordName, landlordName, new Date().toISOString(), landlordSig);
+  }
+  }
 
   // ---- Certificate of Completion ----
   page = pdf.addPage(A4); y = A4[1] - M;
@@ -321,15 +440,33 @@ async function buildExecutedPdf(
     { size: 7.5, gap: 11, colour: rgb(0.5, 0.5, 0.5) },
   );
 
-  return await pdf.save();
+  return { bytes: await pdf.save(), tenantStamped, landlordStamped };
 }
 
 // Both parties get the finished copy. The tenant email is the one exception to "Amlak never
 // emails a tenant without a click" — the click was theirs, and a signer is entitled to a copy
 // of what they signed (ESIGN retention).
+// ⚠ THE COPY IS ATTACHED, NOT JUST LINKED. ESIGN's retention limb is about the signer being
+// able to KEEP a copy of what they signed; the 7-day signed URL this used to send alone left
+// a tenant with nothing after a week. The link stays as the fallback for a file too large to
+// attach (Resend caps a message around 40 MB, and a scanned 80-page lease can get there).
+const MAX_ATTACH_BYTES = 18 * 1024 * 1024;
+
+// Base64 in 32 kB slices. `String.fromCharCode(...bytes)` on a multi-megabyte array blows the
+// argument limit and throws — which would have failed only on real leases, never in testing.
+function toBase64(bytes: Uint8Array): string {
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
 async function emailCopies(
   supabase: any, env: Record<string, any>, tenant: Record<string, any>,
   landlord: Record<string, any> | undefined, url: string | null, stamped: boolean,
+  pdfBytes?: Uint8Array, filename?: string,
 ) {
   if (!RESEND_API_KEY || !url) return;
   let businessName = 'Amlak';
@@ -343,24 +480,36 @@ async function emailCopies(
     }
   } catch { /* a display name is not worth failing an executed document over */ }
 
+  const attachable = !!pdfBytes && pdfBytes.byteLength <= MAX_ATTACH_BYTES;
+  const attachments = attachable
+    ? [{ filename: filename || 'signed.pdf', content: toBase64(pdfBytes!) }]
+    : undefined;
+
   const note = stamped
-    ? 'The signed copy, including the certificate of completion, is attached at the link below.'
-    : 'The signature page and certificate of completion are at the link below, alongside your original document.';
-  const text = `"${env.title}" is now signed by both parties.\n\n${note}\n\n${url}\n\n`
-    + `This link is valid for 7 days.\n\n${businessName}`;
+    ? 'The signed copy, with both signatures and the certificate of completion, is attached.'
+    : 'The signature page and certificate of completion are attached, alongside your original document.';
+  const text = `"${env.title}" is now signed by both parties.\n\n`
+    + (attachable
+      ? `${note}\n\nYou can also download it here for the next 7 days:\n${url}\n\n`
+      : `The signed copy is too large to attach. Download it here — the link is valid for 7 days:\n${url}\n\n`)
+    + `Please keep a copy for your records.\n\n${businessName}`;
 
   const to = [tenant?.email, landlord?.email].filter(Boolean) as string[];
   for (const addr of to) {
     try {
-      await fetch('https://api.resend.com/emails', {
+      const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: `${businessName} <${FROM_ADDRESS}>`, to: [addr],
           subject: `Signed: ${env.title}`, text,
+          ...(attachments ? { attachments } : {}),
           ...(landlord?.email ? { reply_to: landlord.email } : {}),
         }),
       });
+      if (!res.ok) {
+        console.error('[countersign-envelope] Resend rejected copy:', res.status, await res.text().catch(() => ''));
+      }
     } catch (e) {
       console.error('[countersign-envelope] copy email failed:', e instanceof Error ? e.message : String(e));
     }

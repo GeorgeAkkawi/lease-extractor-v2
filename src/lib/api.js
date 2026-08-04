@@ -288,10 +288,49 @@ export function resendEnvelope({ envelopeId, expiresAt, replyTo, signerEmail, si
 // The landlord's signature, which executes the document: builds the signed PDF with both
 // signatures and the certificate of completion, files it, and emails a copy to both parties.
 // Applies NOTHING to the lease — see the header of countersign-envelope/index.ts.
-export function countersignEnvelope({ envelopeId, typedName, signaturePng }) {
+export function countersignEnvelope({ envelopeId, typedName, signaturePng, placement }) {
   return invokeFunction('countersign-envelope', {
     envelope_id: envelopeId, typed_name: typedName, signature_png: signaturePng,
+    // { page, x, y, w } in PDF points, or null — null falls back to an appended signature
+    // page rather than refusing to complete the document.
+    placement: placement || null,
   });
+}
+
+// Every signer on one envelope, including where each placed their mark. Read by the
+// countersign screen so the landlord sees the tenant's signature sitting where they actually
+// put it, before he commits his own.
+export const listEnvelopeSigners = (envelopeId) =>
+  rows(supabase.from('envelope_signers').select('*').eq('envelope_id', envelopeId));
+
+// Remove an envelope entirely — the row, its signers, its events and its files.
+//
+// ⚠ THIS IS THE ONE DESTRUCTIVE OPERATION IN THE E-SIGNATURE FEATURE. On an executed
+// envelope it destroys a signed legal document and its audit trail. It exists because a test
+// run has to be removable and a landlord's own records are his to delete; the caller is
+// responsible for a confirm that names exactly what is lost (see deleteSeverity in
+// src/lib/envelopes.js). Signers and events go by ON DELETE CASCADE (0085); the files have to
+// be swept explicitly because storage has no foreign keys.
+export async function deleteEnvelope(envelopeId) {
+  const signers = await listEnvelopeSigners(envelopeId);
+  const env = await one(
+    supabase.from('signature_envelopes').select('storage_path, executed_path, certificate_path')
+      .eq('id', envelopeId).maybeSingle()
+  );
+  const paths = [
+    env?.storage_path, env?.executed_path, env?.certificate_path,
+    ...(signers || []).map((s) => s.signature_path),
+  ].filter(Boolean);
+  // Sweeps the `documents` rows (entity_type 'envelope') AND every path above.
+  await deleteDocumentsFor('envelope', envelopeId, [...new Set(paths)]);
+  // ⚠ THE CHILDREN GO EXPLICITLY, not by relying on ON DELETE CASCADE (0085). The cascade is
+  // real and correct in Postgres — but the demo mock has no foreign keys, so a cascade-only
+  // delete would leave orphaned signers and events in the sandbox while working perfectly
+  // live. That is exactly the class of drift CLAUDE.md §3 is about, and doing it explicitly
+  // costs two statements and makes both behave identically.
+  await rows(supabase.from('envelope_events').delete().eq('envelope_id', envelopeId));
+  await rows(supabase.from('envelope_signers').delete().eq('envelope_id', envelopeId));
+  await rows(supabase.from('signature_envelopes').delete().eq('id', envelopeId));
 }
 
 // Pull a document back before anyone has signed it. The link stops working because the

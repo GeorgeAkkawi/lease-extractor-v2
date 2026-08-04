@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   envelopeStatus, isOpen, needsCountersign, needsApply, statusBadge, daysToExpiry,
-  envelopeLine, sortEnvelopes, canVoid, canResend, expiryFromNow, purposeLabel,
+  envelopeLine, sortEnvelopes, canVoid, canResend, expiryFromNow, purposeLabel, deleteSeverity,
   DEFAULT_EXPIRY_DAYS, EXPIRY_CHOICES, PURPOSE,
 } from '../envelopes';
 
@@ -76,11 +76,33 @@ describe('what needs doing', () => {
 });
 
 describe('what the landlord can still do', () => {
-  it('void is offered only before anyone has signed', () => {
+  // ⚠ THIS RULE CHANGED ON 2026-08-04 AND THE OLD ASSERTION IS WHY. It originally read
+  // "void only before anyone has signed", reasoning that voiding a signed envelope destroys
+  // a record of something real. That left a SIGNED envelope permanently stuck on the lease
+  // card with no way to remove it — which George hit on a test run within an hour of the
+  // feature shipping. Voiding a signed envelope keeps the signature and the whole audit
+  // trail; it withdraws the document and kills the link, nothing more. Destroying the record
+  // is a separate, much sterner action (delete).
+  it('void covers a signed envelope too, not just one still out with the tenant', () => {
     expect(canVoid(env(), NOW)).toBe(true);
-    // Voiding after a signature would destroy the record of something that happened.
-    expect(canVoid(env({ status: 'signed' }), NOW)).toBe(false);
+    expect(canVoid(env({ status: 'signed' }), NOW)).toBe(true);
+    // Settled states have nothing left to withdraw.
+    expect(canVoid(env({ status: 'executed' }), NOW)).toBe(false);
+    expect(canVoid(env({ status: 'declined' }), NOW)).toBe(false);
+    expect(canVoid(env({ status: 'voided' }), NOW)).toBe(false);
+    // A dead link needs a new one, not a withdrawal.
     expect(canVoid(env({ expires_at: day(-1) }), NOW)).toBe(false);
+  });
+
+  it('grades how stern the delete dialog has to be', () => {
+    // Nothing signed yet — a plain removal.
+    expect(deleteSeverity(env(), NOW)).toBe('plain');
+    expect(deleteSeverity(env({ expires_at: day(-1) }), NOW)).toBe('plain');
+    // A signature exists and would be destroyed.
+    expect(deleteSeverity(env({ status: 'signed' }), NOW)).toBe('record');
+    expect(deleteSeverity(env({ status: 'declined' }), NOW)).toBe('record');
+    // A fully signed legal document would be destroyed.
+    expect(deleteSeverity(env({ status: 'executed' }), NOW)).toBe('executed');
   });
 
   it('resend covers BOTH a live link and a lapsed one', () => {

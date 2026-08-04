@@ -136,9 +136,30 @@ export function sortEnvelopes(envs) {
   return [...(envs || [])].sort((a, b) => String(b?.sent_at || '').localeCompare(String(a?.sent_at || '')));
 }
 
-// Can the landlord still pull this back? Only while the tenant hasn't acted — voiding after
-// a signature would destroy a record of something that genuinely happened.
-export const canVoid = (env, now) => envelopeStatus(env, now) === 'sent';
+// Can the landlord still pull this back?
+//
+// Widened on 2026-08-04 to include 'signed'. The original rule allowed only 'sent', reasoning
+// that voiding after a signature destroys a record of something that genuinely happened — but
+// that left a signed envelope PERMANENTLY stuck on the lease card with no way off it, which
+// George hit within an hour of shipping on a test run. Voiding a signed envelope keeps the
+// row and its whole signature record; it only withdraws the document and kills the link. The
+// dialog says which of the two is happening.
+export const canVoid = (env, now) => ['sent', 'signed'].includes(envelopeStatus(env, now));
+
+// Delete is available on ANY status — including executed. It is the landlord's own document
+// and a test run has to be removable, so the answer is not "never", it is "say exactly what
+// is lost first". Deleting an EXECUTED envelope destroys a signed legal document along with
+// its audit trail, so the confirm is graded by status rather than being one generic warning.
+export const canDelete = () => true;
+
+// How stern the delete dialog has to be. 'record' = a signature exists and would be
+// destroyed; 'executed' = a fully signed document would be.
+export function deleteSeverity(env, now) {
+  const s = envelopeStatus(env, now);
+  if (s === 'executed') return 'executed';
+  if (s === 'signed' || s === 'declined') return 'record';
+  return 'plain';
+}
 
 // Re-sending mints a NEW token and retires the old one (see send-for-signature), so it is
 // also the fix for an expired link — which is why 'expired' is offered here and 'sent' is
