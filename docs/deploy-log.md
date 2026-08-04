@@ -1,0 +1,8137 @@
+# Amlak — deployment log
+
+Every round that went live, newest at the top: what changed, the files, the Cloudflare
+version id, what was verified, and the flags raised to George.
+
+**This file is deliberately NOT part of `CLAUDE.md`.** It is ~8,000 lines, and CLAUDE.md is
+injected in full into an assistant's context at the start of every session (and again after
+every `/clear` and `/compact`) — carrying the log there cost ~212,000 tokens before a line of
+code was read. The standing rules stayed in `CLAUDE.md`; the history lives here and is read on
+demand.
+
+**Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
+rather than reading top to bottom. Each entry is self-contained and dated.
+
+---
+
+- **2026-08-04** — **A removed tenant kept haunting the sidebar hover — two cache keys nobody was invalidating · and CLAUDE.md
+  split so a session no longer opens by spending ~212,000 tokens** (George: *"I removed a tenant (dennys) but it didnt remove
+  that name from the profile hover (small bug fix)"*, plus two questions — the renewal Notice-by wiring, and whether the whole
+  of CLAUDE.md is read every session; his two scoping picks: **fix all three lease-list mutations** and **move the log to
+  `docs/`**). Deployed: frontend Cloudflare version **`e8af21f0`**, demo worker `f73e4ae7`. **$0 — no AI call, NO migration, NO
+  edge function, NO view, NO RPC, nothing stored, no figure moves.** Tests **1532/1532 across 155 files** (was 1531/155 — +1,
+  the regression below).
+  - **The bug is a CACHE bug, and the row was never in doubt.** `archiveLease` (`api.js:390-428`) **hard-deletes** the `leases`
+    row — the server truth was right the instant George clicked Remove. What survived was a client-side query that never
+    refetched.
+  - **⚠ THREE keys render a lease list; only ONE was ever invalidated.** `['leases', propId]` (the property lists + the card
+    fly-out) was covered. **`['sidebarLeases', <ids>]`** (`Sidebar.js:34`, the hover fly-out's tenant level) and
+    **`['leasesByProperties', corpId]`** (`prefetch.js:21`) had **zero invalidation call sites anywhere in `src/`** — verified
+    by grep, not assumed.
+  - **⚠ AND IT IS NOT A FIVE-MINUTE STALENESS — IT IS PERMANENT FOR THE SESSION.** `Sidebar` is mounted for the life of the app
+    (`Layout.js:50`) and the client defaults are `staleTime 5min` · `gcTime Infinity` · `refetchOnWindowFocus false`
+    (`index.js:16-18`). A query whose observer never unmounts and has no refetch trigger **never refetches** — so Denny's
+    survived until a hard reload. The comment at `index.js:14-15` states the exact assumption this violated: *"Mutations still
+    call invalidateQueries, so edits refresh immediately."*
+  - **Three mutations shared the one omission**, which is why fixing only the reported one would have brought it straight back:
+    **remove** (`LeaseDetailPage.js:812`) · **rename** (`saveField`, same `invalidate()` helper) · **add**
+    (`LeaseNewPage.js:30`). George chose all three.
+  - **One named set, not a fourth hand-rolled list** — §6's rule read forward. New **`settleLeaseListChange(qc, {propertyId})`**
+    (`src/lib/invalidate.js`) beside `settleBillingChange`, invalidating the two batch keys **by PREFIX** (their full key carries
+    a joined id string the caller doesn't hold). Two call sites cover all three mutations.
+  - **⚠ THE TEST HAD TO BE ABLE TO FAIL, and the obvious one can't.** Asserting *"the helper invalidates three keys"* is
+    tautological — it restates the implementation. So the new case in `sidebarFlyout.test.js` renders the **real** Sidebar
+    **ONCE and never remounts** (a remount refetches and would go green with the bug still in place), drives the **real**
+    `archiveLease`, then asserts City Dental leaves the fly-out while Bright Coffee stays. **Proved it fails**: reverting the
+    helper to the old single-key list fails exactly that case and nothing else.
+  - **THE LOG MOVED, AND THAT IS THE OTHER HALF OF THE ROUND.** `CLAUDE.md` was **8,238 lines / 849,561 chars ≈ 212,000
+    tokens**, and the harness injects it **in full at every session start and again after every `/clear` and `/compact`** —
+    ~98% of it this log. Every session therefore opened by spending ~212k tokens before a line of code was read, which is
+    exactly the *"sessions are taking really long and using up lots of context"* George reported. The rules (§1-§6, the money
+    spine, the deploy steps) stay in **`CLAUDE.md` — now 193 lines, ~3k tokens**; the history lives in
+    **`docs/deploy-log.md`**, which is not auto-loaded and is read on demand by grep. **Nothing is lost** — verified
+    byte-identical against `git show HEAD:CLAUDE.md` lines 184-EOF, and the rules sections 1-179 diff clean. The standing
+    instruction now says to append here, and to grep this file before changing anything with history.
+  - **Files.** New: `docs/deploy-log.md` (8,071 lines). Edited: `src/lib/invalidate.js` (the new set) ·
+    `src/pages/{LeaseDetailPage,LeaseNewPage}.js` (one call each) · `src/components/__tests__/sidebarFlyout.test.js` (+1) ·
+    `CLAUDE.md` (8,238 → 193 lines). **No** migration, edge function, view, RPC, component, CSS, mock or demo-seed change.
+    **§5 fans out to nothing.**
+  - **Verified:** unit **1532/1532** (`vitest run`), incl. the new case **failing before the fix and passing after**;
+    `npm run build` compiles; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it.
+    **Then driven in a real browser against the DEPLOYED demo** — and driven through the app's own router, because a full page
+    load resets the in-memory demo store: the fly-out listed 4 tenants → removing **City Dental** dropped it to 3 **with the
+    other three intact** → creating a tenant put it in the fly-out → renaming it updated the fly-out — all with
+    **`performance.getEntriesByType('navigation').length === 1`**, i.e. **not one page reload in the entire run**, which is the
+    only thing that proves the invalidation rather than a remount. **Zero console errors or warnings.**
+  - **George: hard-refresh (Cmd+Shift+R).** Denny's is gone from the hover. Removing, adding or renaming a tenant now updates
+    the sidebar fly-out immediately, with no reload.
+  - **Answered, no code needed — the renewal "Notice by" date drives BOTH.** On the **Overview** it is the *only* input to the
+    renewal alert (`alerts.js:250` returns early when it's null, so an option with **no notice date raises no renewal alert at
+    all** — only the generic lease-ending one); the Settings *"Upcoming renewal option"* lead only decides how early it shows.
+    On the **email** side, saving it fires the `renewals_reminders` trigger → a `renewal_notice` key date at exactly that date →
+    `reminders` rows at **30 / 14 / 7 days prior on both the email and in-app channels** (`0002_reminders.sql:40-59`, live
+    version `0065:130-133`), which the daily 13:00 UTC `send-reminders` cron mails. Two things do **not** depend on it: the
+    bell's *"Is X renewing?"* prompt (`api.js:3304`) and `apply_due_renewals()` (`0068:85`) both fall back to term end − the
+    Settings lead. **Caveat:** a notice date entered when it is already within 30 days (or past) generates fewer or no email
+    rows — the insert only writes future dates (`0065:140`).
+  - **Flags:** ① **The log is at `docs/deploy-log.md` now** — same git history, same repo, just not loaded into every session.
+    ② `settleBillingChange` was deliberately **not** touched: it already invalidates `['leases', propId]`, which is what the
+    property cards read, so the money path had no live staleness and this was not the round to edit the billing set.
+    ③ The two batch keys still **seed** `['leases', propId]` (`Sidebar.js:37`, `prefetch.js:24`) — not a live bug now that they
+    are invalidated, but a shape where a future caller could overwrite a correctly-refreshed per-property cache.
+
+- **2026-08-03** — **Scaled back to ONE extra bar: "What each property keeps" now carries the rent COLLECTED so far beside each
+  property's Revenue, and nothing else** (George, reviewing the round below: *"lets retry - all we need i think is just the year to
+  date collected revenue"*). Deployed: frontend Cloudflare version **`30f8e3d6`**, demo worker `ebed3cea`. **$0 — no AI call, NO
+  migration, NO edge function, NO view, NO RPC, NOTHING IS STORED. This round only READS.** Tests **1531/1531 across 155 files**
+  (was 1535/155 — **−4, deliberately**: the assertions that went are the ones guarding behaviour that no longer exists).
+  - **What this replaces.** The round below shipped SIX bars — three measures on two bases (Revenue↔Collected, Expenses↔Paid,
+    NOI↔Kept). George read it and cut it to the one figure he actually wanted. **Four bars now: Revenue · Collected so far ·
+    Expenses · NOI**, with Collected the same olive as Revenue, one tint lighter, standing immediately beside it.
+  - **⚠ THE SIMPLIFICATION DELETES A WHOLE CLASS OF PROBLEM, which is the argument for it.** `Paid` and `Kept` were the half that
+    could quietly lie: an expense line with no `paid_date` is in neither, so the panel had to carry a ⚠ paragraph naming the
+    undated total (**$153,546** on George's live data) or "Kept" would have read as profit on a year whose bills simply aren't
+    dated. With no Paid bar there is nothing to be wrong about — **the warning, the second query, the two-row basis legend and the
+    per-property undated arithmetic all came out**, not because they were wrong but because nothing needs them now. The refusals
+    they encoded are still recorded in the round below and still hold the day an expense-side bar is ever built.
+  - **One query, not two.** `listLedgerYtdByProperty` → **`listCollectedByProperty`**: `v_invoice_balances` alone, returning
+    `{collected, billed}`. The `cam_line_items` read, the `paid_date` split and the billable filter are gone with the bar they fed.
+    Query key `['portfolioYtd']` → `['portfolioCollected']`, moved in `settleBillingChange` and `settleStatementImport` together,
+    so recording a payment or importing a statement still moves the bar.
+  - **⚠ THE ONE THING THAT STILL HAS TO BE SAID, and it survives the cut.** `collected` is **all-in** — it carries the CAM & tax the
+    tenants reimburse — while `Revenue` is `total_revenue` = Σ `effective_rent`, **contract base rent only**. So Collected is **not
+    a share of the Revenue bar and can read above it**, and a reader who assumes otherwise computes a collection rate that is
+    simply wrong. The foot says so in the same breath as it says where the figure comes from, the hover carries *"of $X billed"*
+    and *"incl. reimbursed CAM & tax"*, and a test pins that the shaper never clamps it (round 14's NOI understatement is the same
+    asymmetry one column over — clamping would make the chart lie to protect a figure that is itself incomplete).
+  - **`collected` IS the Ledger tab's Collected column, by construction** — same filter as `getYearInvoice` (non-void, `kind`
+    'annual', a missing kind reading annual), so the Overview and the Ledger can never name two figures for the same property on
+    the same day. **A reconciliation true-up is therefore excluded**, deliberately and test-pinned: real money, but not on that
+    column. **Proved the test can fail** — dropping the `isAnnualInvoice` filter fails exactly that case and nothing else.
+  - **⚠ TWO LAYOUT DEFECTS, BOTH FOUND IN A REAL BROWSER AND NEITHER VISIBLE TO ANY TEST** — recharts measures its parent and every
+    element is 0×0 in jsdom, so **no chart in this app is ever drawn in a test**. ① **The legend overran its panel by 41px at
+    420px**: `.chart-legend` was `flex-wrap:nowrap`, which three short words survived and a fourth entry ("Collected so far") did
+    not. Fixed on the **base class** rather than by adding the `.wrap` modifier — a legend that overruns its panel is always a bug,
+    and `.wrap`'s real payload is the donut legend's spacing, not its wrapping. ② **The bar figures can still collide**, which is
+    the defect the round below hit at George's 3-property width. Measured on the deployed demo: a **283px per-property slot clears
+    its labels by 9px**, and three properties at 1440 get **~339px** — so 1440 is safe, but a narrowed window is not, and a
+    viewport-only media query is the wrong instrument because what matters is the plot width **divided by the number of
+    properties**. A `dense` class (four bars **and** 3+ properties) drops the figures below 1200px and nowhere else; the two-bar
+    demo and the three-bar layout are untouched.
+  - **A property with nothing collected leaves its slot empty**, and that is left as-is: recharts draws no rect for a zero, the
+    slot sits in the same labelled position on every property, and the hover reads *"Collected so far $0.00 · nothing billed yet
+    this year"*. On George's live data all three properties have collections, so no gap appears.
+  - **Files.** Edited: `src/lib/{api,portfolioCharts,invalidate}.js` · `src/components/{PortfolioCharts,ImportStatementButton}.js` ·
+    `src/pages/DashboardPage.js` · `src/App.css` · tests (`portfolioYtd` → **`portfolioCollected`** (7→6), `portfolioCharts` (−1),
+    `chartTooltips` (=), `dashboardOverview` (3→2)). **No** migration, edge function, view, RPC, mock or demo-seed change.
+    **§5 fans out to nothing.**
+  - **Verified:** unit **1531/1531** (`vitest run`; one run hit the documented starvation flake and was clean on re-run, twice);
+    `npm run build` compiles; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it.
+    **Then driven in a real browser against the DEPLOYED demo at 1440 / 980 / 760 / 420px** — that is how both defects above were
+    found. After the fixes: bars **50px with uniform 17px gaps**, **zero label collisions at every width**, **zero page or panel
+    overflow at every width**, the hover reading *Revenue $144,000 · Collected so far $100,300 · of $187,800.00 billed · incl.
+    reimbursed CAM & tax · Expenses $47,000 (taxes/CAM/roof broken out) · NOI $97,000* with nothing truncated, and the
+    no-collections property explaining its empty slot. **Zero console errors or warnings.**
+  - **George: hard-refresh (Cmd+Shift+R).** Each property now has a lighter bar beside its Revenue — the rent actually collected
+    this year, straight off the Ledger. Live today: **Pershing $233,222** collected · **Joliet $147,524** · **401 S Main $40,986**.
+  - **Flags:** ① **Collected is not a percentage of the Revenue bar** — it includes the CAM & tax your tenants reimburse, which
+    Revenue doesn't count, so it can sit higher. The panel says so. ② **401 S Main has billed $491,829 against $364,629 of contract
+    rent** — that gap is the ~$125k of unreconciled CAM & tax estimate round 14 flagged; the collected bar is a share of what was
+    billed, not of the rent. ③ The **Paid** and **Kept** bars are gone, and with them the ⚠ note about your $153,546 of undated
+    expenses. Those expenses are still undated and still absent from every cash figure in the app — the CPA package's cash basis
+    will say so when you run it. ④ The bars follow the **fiscal-year selector**, like everything else on the page.
+
+
+- **2026-08-03** — **"What each property keeps" now draws TWO bases side by side: what the year comes to on paper, and what has
+  actually moved so far** (George: *"add year to date revenue, expenses and NOI as a bar on the what each property keeps graph in
+  the overview, taken from the ledger. make sure to make the distinction between them clear and easy to understand"*). Deployed:
+  frontend Cloudflare version **`db24a9e6`**, demo worker `76da635d`. **$0 — no AI call, NO migration, NO edge function, NO view,
+  NO RPC, NOTHING IS STORED. This round only READS, so not one figure can move** (live totals re-read after: Pershing FY2026
+  taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26 — byte-identical). Tests **1535/1535 across 155 files**
+  (was 1514/154 — +21, one new suite).
+  - **Six bars per property, in three PAIRS:** Revenue ↔ **Collected** · Expenses ↔ **Paid** · NOI ↔ **Kept**. Each cash bar is
+    the same hue as its on-paper twin, one tint lighter — deliberately not three new colours, because the pairing IS the point and
+    six unrelated colours would read as six measures rather than three measured twice. Every tint was already in `DONUT_PALETTE`.
+  - **⚠ THE TWO ARE NOT THE SAME MEASURE AT TWO POINTS IN TIME, and pretending otherwise is the whole trap.** `Collected` is
+    **all-in** — it carries the CAM & tax the tenants reimburse — while `Revenue` is `total_revenue` = Σ `effective_rent`,
+    **contract base rent only**. So **Kept legitimately reads ABOVE NOI** (round 14's flag: `v_property_totals.noi` subtracts the
+    whole expense and counts none of the reimbursement — $141,531.57 at Pershing). Silently clamping Kept to NOI would make the
+    chart lie to protect a figure that is itself incomplete, so the panel states the reason instead, and a test pins that the
+    ordering is allowed to invert.
+  - **⚠ AND THE EXPENSE SIDE IS WHERE A "PROFIT SO FAR" BAR GOES QUIETLY WRONG.** `Paid` counts only expense lines carrying a
+    `paid_date` on or before today (0074). Two wrong answers were available and both were refused: stamping "probably paid by now"
+    on an undated hand-typed figure (a lie that looks like a real date forever), and **prorating the year's expenses by elapsed
+    months** — which is round 14's refused T-12 spread, one column over. So an undated line is excluded, and the amount is stated
+    **out loud** rather than left to make Kept look like profit: the panel's foot reads *"⚠ $X of this year's expenses carry no
+    payment date, so they are not in Paid or Kept — nothing is spread evenly across the months to fill the gap."* Same rule as the
+    CPA package's cash basis (round 12), so the two can't disagree.
+  - **⚠ ON GEORGE'S LIVE DATA THAT FIGURE IS $153,546, AND IT IS THE POINT.** **0 of his expense lines carry a payment date** (3 at
+    Pershing, 8 at 401 S Main, none dated), so `Paid` reads **$0 on all three properties** and the ⚠ line is the loudest thing on
+    the panel. That is the forcing function `paid_date` was built for. Live read-back: Pershing rev $313,035 / exp $151,700 / NOI
+    $161,335 vs **collected $233,222**; Joliet $354,900 / $0 / $354,900 vs **$147,524**; 401 S Main $364,629 / $1,846 / $362,783 vs
+    **$40,986**.
+  - **`collected` IS the Ledger tab's Collected column, by construction.** `listLedgerYtdByProperty` filters exactly as
+    `getYearInvoice` does — non-void, `kind` 'annual' (a missing kind reading annual) — so the Overview and the Ledger can never
+    name two figures for the same property on the same day. **A reconciliation true-up is therefore excluded**, deliberately and
+    test-pinned: it is real money, but it is not on that column. The `billable` filter likewise mirrors the sync functions exactly
+    (`syncCamTotal` drops `billable === false`, `syncKindTotal` doesn't), so **Paid can never climb above the Expenses bar beside
+    it** — the demo seeds a dated $1,200 non-billable line precisely so a naive sum would read $17,200 and fail.
+  - **One extra round-trip for the whole Overview, no schema.** `v_invoice_balances` + `cam_line_items` filtered by the properties
+    and the year, in one `Promise.all` — no per-property waterfall, no new table, no view change. `['portfolioYtd']` joins
+    **`settleBillingChange`** and `settleStatementImport`, so recording a payment, posting an adjustment or importing a statement
+    moves the bars.
+  - **⚠ TWO DEFECTS THE TEST SUITE CANNOT SEE, BOTH FOUND IN A REAL BROWSER — and that gap is the lesson.** recharts'
+    `ResponsiveContainer` measures its parent and every element is **0×0 in jsdom**, so **no chart in this app has ever been
+    DRAWN in a test**. ① recharts divides a property's band by the series count and then **centres** each bar in its slot, so a
+    `maxBarSize` small enough to fit six scattered them across the band with a hole wherever a figure was $0 — six loose columns
+    instead of three pairs, i.e. the one thing this panel must not look like. Fixed with `barCategoryGap` 34% + `barGap` 2 + a
+    higher cap. ② At the width **three** properties actually get, six labels over ~37px bars ran together (`$97k$87k`). Only the
+    **whole-year trio** is labelled now — every other bar, so each figure always has a clear neighbour — which also keeps the three
+    that have carried their figure since 2026-07-29 carrying it; the cash three are named in the legend, spelled out in the foot and
+    exact on hover. Neither was visible from any assertion that could have been written.
+  - **Where it shows.** The legend is **two labelled rows** (`Whole year` / `So far`), because six swatches can't say which of them
+    are the same thing twice. The hover panel splits into **On paper · FY 2026** and **So far · money that has moved**, with the
+    cash block accounting for every expense dollar not in Paid (*"$31,000.00 has no payment date"*, *"$2,500.00 dated later this
+    year"*) and naming what Collected is a share of (*"of $187,800.00 billed"*). The trio **hides itself entirely** when nothing has
+    moved — three flat zeros per property would say nothing and cost the other three half their width.
+  - **Files.** New: `src/lib/__tests__/portfolioYtd.test.js` (7). Edited: `src/lib/{api,portfolioCharts,invalidate}.js` ·
+    `src/components/{PortfolioCharts,ImportStatementButton}.js` · `src/pages/DashboardPage.js` · `src/App.css` · two existing suites
+    (`portfolioCharts` +6, `chartTooltips` +4, `dashboardOverview` +3). **No** migration, edge function, view, RPC, mock or
+    demo-seed change — the demo seed already carried every case it needed (a dated line, a **future**-dated line, an undated line, a
+    non-billable line, an un-itemized flat kind, and a property with no ledger activity at all). **§5 fans out to nothing.**
+  - **Verified:** unit **1535/1535** (`vitest run`) — **and the new assertions proved able to fail**: reintroducing the billable
+    filter bug fails 3 cases including the render-level one, which is what separates them from `expect(size).toBeGreaterThan(4000)`.
+    Every figure is date-independent (`todayIso` is passed explicitly) so the suite doesn't change answer in January.
+    `npm run build` compiles; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it.
+    **Then driven in a real browser against the DEPLOYED demo at 1440px, 980px and 420px** — the tooltip reads Revenue $144,000 ·
+    Expenses $47,000 (taxes/CAM/roof broken out) · NOI $97,000 · Collected $100,300 of $187,800 billed · Paid $13,500 · $31,000
+    undated · $2,500 dated later · Kept $86,800, and **13,500 + 31,000 + 2,500 = 47,000 = Expenses to the cent**. Zero page or panel
+    overflow at every width, **zero console errors or warnings**.
+  - **George: hard-refresh (Cmd+Shift+R).** The Overview's bottom panel now shows each property twice over: the darker bars are what
+    FY 2026 comes to on paper, the lighter ones beside them are what has actually moved. **Your "Paid" bars will read $0** — none of
+    your expense lines has a payment date yet. Type the date on each one (Financials → Expense entry → Date paid) and both the Paid
+    and Kept bars fill in; until then the panel says so rather than quietly counting the money as kept.
+  - **Flags:** ① **$153,546 of your expenses can't be dated**, so Kept currently overstates what you've really kept by that much
+    once those bills are paid — named on the panel, not buried. ② **Kept sits above NOI on Pershing** ($233k vs $161k) and that is
+    correct arithmetic, not a bug: Collected includes the CAM & tax your tenants reimburse and NOI counts none of it. Round 14's
+    offer stands — say the word and I'll fix the NOI view as its own round with the carry-through traced. ③ **Joliet has no expenses
+    entered at all**, so its Expenses, NOI and Paid bars are honest but empty. ④ A **reconciliation** payment isn't in Collected, on
+    purpose — it isn't on the Ledger's Collected column either, and the two must agree. ⑤ The bars follow the **fiscal-year
+    selector**, like everything else on the page.
+
+- **2026-08-03** — **A Ledger month is now a place you can go INTO: open any month with money on it, see what was billed vs
+  what came in, and post a charge or a credit that carries all the way through** (George: *"be able to go into months that
+  are under or overpaid and edit, maybe the cam or base is different so make the ledger clickable per month to go in and
+  edit to show the differences (this goes into accounting because it should apply debits and credits per tenant — figure
+  out the logic for this as well like a way we can integrate into the system)"*, plus his four scoping picks: **settled
+  months open / open months still mark** · a line that **moves the balance** *"and there needs to be a way to settle it
+  that can move through the software where those numbers are affected"* · a **tenant statement on the lease page** · **all
+  four kinds**). Deployed: DB migration **`0082`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  **`58a23f02`**, demo worker `6ad06df0`. **$0 — no AI call anywhere; NO edge function, NO view, NO RPC; 0082 adds ONE plain
+  table and alters nothing, so NOT ONE STORED EXPENSE TOTAL MOVED** (read back live before and after: 401 S Main FY2026 CAM
+  1,846.26; Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596 — byte-identical). Tests
+  **1514/1514 across 154 files** (was 1479/152 — +35, two new suites).
+  - **The gap, stated precisely.** A month's `owed` is **derived, never stored** — `annualBase ÷ 12 + otherAnnual ÷ 12`
+    (`leaseSchedule.js`) — and its base/CAM&tax/roof split is two ANNUAL figures divided by twelve (`ledger.js`). **The only
+    per-month money column in the entire schema is `payments.period_month`** (0037). So the Ledger could SHOW a month came
+    in off (forest ✓, gold figure, a `short $649.44` chip) and offer **nowhere to say why and nothing to do about it** —
+    the only write verbs on the whole grid were *insert one payment* and *delete that month's payments*.
+  - **⚠ THE ONE RULE THE WHOLE FEATURE RESTS ON, and it is not a slogan — two silent-corruption paths were traced before a
+    line was written:** *An adjustment changes what is **OWED**. It never changes what was **RECEIVED**, and it never counts
+    itself as **covered**.*
+    - **① It would have manufactured a payment.** `resyncYearBillingToEstimate` re-records any month whose payments are all
+      system marks when the recorded total differs from `owed`. A +$400 charge would have **deleted the $5,000 payment and
+      written $5,400** — asserting money that never arrived and pushing **Collected UP by the charge**. Worse, the obvious
+      test would have *endorsed* it: `estimateResync.test.js` asserts exactly that re-stamp, because for an ESTIMATE it is
+      correct (an estimate re-prices money the tenant was always going to pay; a charge is new money that hasn't come).
+      **Fix: that function deliberately builds its schedule WITHOUT adjustments** — Σadj reaches the invoice TOTAL and
+      nowhere else. A comment at the call site says so, because a later round would "helpfully" thread it through.
+    - **② The charge would have been invisible.** `allocatePayments` sets `settled ⇒ coverage = owed`, so `gap = 0` and
+      `owesToDate` never moves — on **George's commonest case**, correcting a month already collected. **Fix: a settled
+      month's coverage caps at the SCHEDULED owed** (`min(owed, scheduled + poolDraw)`), so a +$400 charge produces $400 of
+      real arrears while a plain payment difference still does not — **"paid = paid" is preserved**, because a payment
+      difference doesn't move `scheduled`. A real lump still pays a charge down and settles the month.
+    - **Both are byte-identical with no adjustments** (`scheduled === owed`), which is why the other 1,479 tests stayed green.
+  - **⚠ THE TWO TESTS THAT MATTER, and why the obvious one is worthless.** *"The invoice total moved by $400"* passes whether
+    or not the feature manufactures a payment or hides the charge — the same shape as yesterday's
+    `expect(blob.size).toBeGreaterThan(4000)` "verifying" a corrupt workbook. So the suite posts a +$400 charge on an
+    **already system-marked** month and asserts **(a) not one payment row's amount changed** and **(b) `owesToDate` reports
+    $400**. Alongside: `base + camTax + roof + adj === owed` across the free-month, mid-year-start and out-of-term fixtures;
+    Σ owed still settles the invoice **to the cent** after both penny-folds; and the render tests **drive the real cell**
+    rather than asserting the panel's markup exists.
+  - **⚠ WHAT THIS IS NOT — and the direction doc's refusal is upheld.** `no-need-to-come-magical-fairy.md:571` refuses a
+    **general ledger**: *"a second source of truth for dollars that already have one."* This is not that. No chart of
+    accounts, no journal entries, no double entry, no second place NOI can be computed. It is a **one-sided tenant
+    sub-ledger** whose every dollar resolves into the ONE per-month `owed` the app already derives — a term added to an
+    existing equation rather than a parallel system. **`SIGNED amount`, deliberately**: `entity_ledger` (0077) stores a
+    magnitude and takes its sign from the kind because a draw is always out; here the sign is genuinely per-row (a CAM
+    correction goes either way), so it lives on the row and `kind` is only the category. **That IS debits and credits.**
+  - **The fourth component, and the trap it avoids.** `componentizeSchedule` computes `base = owed − camTax − roof` — base
+    is a **remainder**, this file's oldest trap. Let the adjusted owed reach it and a +$400 correction prints as **$400 of
+    extra BASE RENT**; a −$150 credit silently shrinks the printed CAM & tax via its `min`. So all three derived components
+    are computed off the **scheduled** owed and a fourth is returned: **`base + camTax + roof + adj === owed`**, every
+    month. The `kind === 'free'` branch reads scheduled too, or a charge on a free month would print as an invented CAM &
+    tax expense (pinned).
+  - **⚠ AND THE PENNY-FOLD IS RESTRICTED TO SCHEDULED MONTHS.** In reconcile-to-a-bill mode the scheduled part scales to
+    `invoiceTotal − Σadj` and the fold lands only on a month the schedule owes — otherwise the year's rounding cents could
+    land on a month that owes **solely** because of a charge, breaking the invariant by those cents. Pinned with a mid-year
+    lease whose February owes exactly its $250 fee and not a cent more.
+  - **⚠ FOUR REFUSALS, each about not letting a correction become a lie.** ① A **GROSS lease** is refused the CAM & tax
+    correction — the flat rent already CONTAINS taxes & CAM and the share is carved OUT of it (0073), so a correction there
+    re-adds on top of a rent that already includes it, the exact hole 0073 exists to close (matches `reconcileCamTax`'s
+    throw). Base, fee and credit stay available. ② A **closed year** refuses outright, like every §1 carry-through since
+    round 10. ③ A **credit larger than the month's bill** refuses, because a negative owed reads as "unbilled" everywhere
+    downstream and would drop the excess out of the year total. ④ An **unknown kind** (written by a later round, read by an
+    older bundle) still counts its AMOUNT — a signed dollar on a month is kind-independent, and dropping it would break the
+    invariant between two bundles — but never offsets the year-end true-up.
+  - **⚠ THE YEAR-END DOUBLE-CHARGE, closed.** `reconcileFigures` compares the annual estimate to the actual share. A +$400
+    CAM correction means the tenant **has already been billed** $400 more CAM — leave it out and ⚖ Reconcile trues up as
+    though they hadn't, **charging the same dollars twice**. So the estimate side reads `est.camTax + Σ(camtax-kind
+    adjustments)`; only that kind counts (a late fee is not CAM). The Financials **Estimated** column shows the same figure
+    with an *"incl. +$400.00 corrected"* line, so the on-screen guarantee **Estimated − Actual === Difference** still holds,
+    and `reconciliationData.js` moved with it so the Excel sheet can't disagree with the screen.
+  - **⚠ A CHARGED FEE AND OTHER INCOME ARE NOT THE SAME EVENT, and the guard is structural.** Round 8 built `other_income`
+    with a nullable `lease_id` precisely so a late fee could NAME a tenant without crediting their invoice. The distinction:
+    `other_income` records a fee that **arrived**; an adjustment records one that is **owed**. The panel says so in
+    plain words — and two guards make it more than advice: `getStatementMatchContext` carries adjustments (or a $5,250
+    deposit against a $5,000 month + $250 fee reads as "over" and can trip the already-recorded collision guard), and
+    **`deriveEstimateFromDeposit` now REFUSES a month carrying an adjustment** — without it a one-off $250 fee inside a
+    deposit would derive a **permanent +$3,000/yr CAM & tax estimate**. Pinned that City Dental's seeded $250 late fee
+    still moves no Ledger month.
+  - **Where it shows.** Every month box **with money on it** opens a **month panel**: scheduled base · CAM & tax · roof,
+    every correction on the month with a ✕, the resulting **Owed**, each payment received, and the difference — with the two
+    ways to close it side by side (**Record $X received** = money arrived; **post a charge/credit** = the bill was
+    different) and a ◀ ▶ switcher. An **open** month still marks paid in one click (George's call). A `+$400` / `−$150`
+    chip renders under any cell carrying one. The lease page gains a foldable **Tenant statement** — every charge, credit
+    and payment in date order with a running balance, listing only charges that have **come due** (rent is charged on the
+    1st, so December's rent isn't a March balance).
+  - **This also revives two dead cells:** a month recorded across several payments and a lump-covered month were inert
+    `<span>`s ("manage it on the lease's Invoices & payments"). Both open the panel now, which lists every payment on them.
+  - **Files.** New: `supabase/migrations/0082_lease_adjustments.sql` · `src/lib/adjustments.js` ·
+    `src/components/MonthDetailPanel.js` · `src/components/TenantStatement.js` ·
+    `src/lib/__tests__/adjustments.test.js` (29) · `src/components/__tests__/monthPanelUi.test.js` (6). Edited:
+    `src/lib/{leaseSchedule,ledger,reconciliation,reconciliationData,statementMatch,invalidate,api}.js` ·
+    `src/components/TenantShareTable.js` · `src/pages/{LedgerPage,LeaseDetailPage}.js` · `src/App.css` · two existing
+    suites (`ledger` — the two componentize assertions now pin the 4th component; `ledgerPage` — the settled-cell click
+    asserts the panel + its undo instead of the old inline undo). **No** view, RPC, edge function, mock or demo-seed
+    change — `lease_adjustments` is a plain table the demo mock auto-creates (`mockClient.js:240`, re-verified not
+    inherited), so **§3 carries no mirror obligation** and **§5 fans out to nothing**.
+  - **No demo-seed row, deliberately.** Four suites pin prop-2's figures and `ledgerPage`/`camReconciliation` pin prop-1's
+    ($22,300 / $109,800 / $78,000) — a seeded adjustment would re-price them, the same reason 2026-07-27 refused a seeded
+    short month. prop-2 is the **open-year** property (prop-1 carries a `financial_snapshots` row for the current year, so
+    an adjustment there refuses), so the whole flow is driveable in the demo in three clicks — which is exactly what the
+    verification below did.
+  - **Verified:** unit **1514/1514** (`vitest run`); `npm run build` compiles (857 modules); migration applied clean and
+    read back (**10 columns · `lease_id` NOT NULL · both `owner_all` and `require_aal2` policies · 3 indexes · 0
+    pre-existing rows**); **every stored expense total identical before and after**; live 200s on all four URLs; live
+    bundle carries the backend ref **and** the new table, demo bundle greps **free** of it. **Then driven in a real browser
+    against the DEPLOYED demo, which is how the last three rounds' defects were found:** an open January marks paid in one
+    click **with no dialog**; clicking it again opens *"January 2026 — Northwind Books"* reading **Base rent $10,416.67 ·
+    CAM & tax $2,333.33 · Scheduled $12,750.00 · Owed $12,750.00 · Received $12,750.00 · Settled**; posting a **+$400 CAM &
+    tax correction** through the real form turns it into **Owed $13,150.00 · Received $12,750.00 · Still owed $400.00**,
+    the box reads **✓ $12,750 +$400** with its figure gold, the row reads **short $400.00** — and **Collected stays exactly
+    $12,750.00** (rule ① proved live, not just in a test). Panel fits **420px** (388px wide, single column) with **zero**
+    page overflow at either width. **Zero console errors.**
+  - **George: hard-refresh (Cmd+Shift+R).** On a property's **Ledger**, click any month that has money on it. You'll see
+    what was billed, what came in, and the difference — and you can either record the rest as received or say the bill
+    itself was different (the CAM really was higher, a late fee, a concession you agreed). Whatever you post moves that
+    year's invoice, Outstanding, and the year-end reconcile with it, and shows up on the tenant's statement at the bottom
+    of their lease page.
+  - **Flags:** ① **The printed invoice DOCUMENT is the one link I have not finished, and §1 says to name it.**
+    `invoiceTemplate.js:73` sums the items it builds from the invoice's four component columns and never reads
+    `total_amount`, so a printed invoice would understate by exactly the adjustment. **It is dormant** — `InvoiceButton.js`
+    has been imported by nothing since 2026-07-13, so no user can reach it — which is why this is deferred rather than
+    rushed (closing it means a `draft-invoice` edge change, one of §3's four copies of the estimate math). **It must be
+    closed before that button is ever re-wired.** ② **Posting an adjustment re-issues that year's invoice**, a visible move
+    in Outstanding — the same behaviour every CAM/estimate edit has had since 2026-07-27. ③ **A closed year refuses** —
+    reopen it, or record the correction in the open year. ④ **A charge and Other income are two ways to record the same
+    money** — pick one; the panel says which is which. ⑤ **Adjustments deliberately never reach `total_revenue`**
+    (`0049:55` = `sum(effective_rent)`), matching `other_income`'s refusal — stated so nobody "fixes" it later and silently
+    re-values every chart point and closed-year snapshot.
+
+- **2026-08-03** — **The workbooks downloaded fine and opened DAMAGED: every sheet in three exports declared a frozen pane
+  that splits nothing** (George: *"im getting issues when i try to open the excel sheets its saying it couldnt recover
+  everything. also does it cost anything for the software to run those functions?"*). Deployed: frontend Cloudflare version
+  **`4a3332e6`**, demo worker `e3afa763`. **$0 — and that is also the answer to his second question: no exporter makes a
+  network call of any kind. ExcelJS is lazily imported and runs in the browser over figures already on screen. No AI, no edge
+  function, NO migration, nothing stored, no figure moves.** Tests **1479/1479 across 152 files** (was 1474/151 — +5, one new
+  suite).
+  - **One bug, one function.** `sheet()` in `cpaExcel.js` — the writer **shared by three workbooks** — always emitted
+    `views: [{ state: 'frozen', ySplit: opts.freeze ?? 1 }]`, so every sheet passing `{ freeze: 0 }` declared a **frozen pane
+    with no split row**. Excel rejects that pane, calls the package damaged, and "repairs" it by discarding the view — which
+    is exactly the *"couldn't recover everything"* dialog. **George's figures were never at risk**: Excel drops the view, not
+    the cells.
+  - **⚠ THE CODEBASE ALREADY KNEW THIS, IN A COMMENT, AND THE SHARED WRITER DID THE OPPOSITE.** `rentRollExcel.js:120`:
+    *"A real split is required — a frozen pane with no split row makes Excel flag the file as corrupt ('recover content')."*
+    That writer freezes rows 1–9 with an explicit `topLeftCell` and is fine. A controlled comparison ruled out everything
+    else: `reconciliationExcel.js` uses a **byte-identical `pageSetup`** with a real split and is also fine, so the page
+    setup is innocent and the view was the only variable.
+  - **Blast radius, and it maps exactly onto what he tried:** tax package **1 of 5** sheets (Summary), lender package **5 of
+    5**, 1099 worksheet **2 of 2** — 8 sheets, and **one bad sheet condemns the whole workbook**. The reconciliation and rent
+    roll exports use their own writers and were never affected.
+  - **The fix emits NO view when there is no split**, and carries the matching `topLeftCell` when there is. Dropping the
+    freeze is correct rather than merely fastest: these sheets stack a title band, notes and several `head()` bands per
+    property, so there is no single header row to pin — the rent roll can freeze precisely because it has exactly one.
+  - **⚠ AND THE REASON NO TEST CAUGHT IT IS WORTH MORE THAN THE FIX.** All five workbook tests assert the same thing —
+    `expect(blob.size).toBeGreaterThan(4000)`. **A corrupt .xlsx is still a well-formed zip of exactly the right size**;
+    Excel only rejects it when it validates the package on open. So every export was "verified" by a check that could not
+    fail for the defect it had. **Size is not validity** — the same shape as yesterday's lesson that *existence is not
+    reachability*, one layer down. New `workbookValidity.test.js` unzips the **real buffer** with `jszip` (already present
+    via exceljs), parses each `xl/worksheets/*.xml`, and asserts the rule **structurally** — no `state="frozen"` pane whose
+    split is zero or absent, so it holds however the view is written. **Proved by reintroducing the bug: exactly the three
+    broken workbooks fail and the two healthy writers pass.** All five are covered, which also pins the two correct writers
+    against a later refactor onto the shared one.
+  - **Round 15 did not cause this** — it has been there since rounds 12–14. Round 15 only made the buttons clickable, so
+    yesterday was the first time anyone opened a file. My round-15 verification proved a 15,428-byte download and stopped
+    there, which is precisely the mistake above.
+  - **Files.** Edited: `src/lib/cpaExcel.js` (one function). New: `src/lib/__tests__/workbookValidity.test.js` (5). **No**
+    migration, edge function, view, RPC, component, mock or demo-seed change. **§5 fans out to nothing.**
+  - **Verified:** unit **1479/1479**, incl. the new suite failing before the fix and passing after; `npm run build` compiles
+    with ExcelJS still in its own lazy 937 kB chunk; the **deployed bundle** greps positive for `ySplit:r,topLeftCell` and
+    **zero** occurrences of the old zero-split form; live 200s on all four URLs; demo bundle greps **free** of the backend ref.
+  - **George: hard-refresh (Cmd+Shift+R), then download the tax package and the lender package again — they should open with
+    no repair dialog.** That last step is yours; I can't run Excel from here.
+  - **Flags:** ① **Found while diagnosing and deliberately NOT bundled in** (his call): `cpaExcel.js` destructures its
+    currency option as `{ money: moneyFrom = 1 }` while all 30+ call sites pass `{ moneyFrom: N }` — so it has **never once
+    been read** and always falls back to 1. Cosmetic but visible in a lender-facing document: **Sq ft prints as `$2,000.00`**
+    and asset life as **`$39.00`**. One-word fix, say the word. ② **The "Documents & filings" button you said you can't see
+    is still unresolved** — separate from this, and I need to know which tab you're on (it's on **Financials**, not
+    Portfolio) or a screenshot. ③ Yesterday's blank-canvas scroll is still unconfirmed.
+
+- **2026-08-02** — **The tax package and the lender package weren't "failing to download" — they were UNCLICKABLE. Five pills
+  outgrew the corporation card and the last three were painted over the NEXT card, which ate their clicks** (George: *"all
+  those buttons are running off … I tried downloading the tax package and the lender package and they're not downloading …
+  I can scroll all the way down and it scrolls to just blank canvas"* — three reports, and the first two are one bug).
+  Deployed: frontend Cloudflare version **`e12f858b`**, demo worker `7651b75a`. **$0 — no AI call, NO migration, NO edge
+  function, NO view, NO RPC, NO table, and nothing is stored. No figure moves.** Tests **1474/1474 across 151 files** (was
+  1466/150 — +8, one new suite).
+  - **⚠ THE BUG IS A LAYOUT BUG THAT PRESENTED AS A BROKEN FEATURE, AND THAT IS THE WHOLE LESSON.** Measured on the
+    deployed demo at 1317px before touching anything: `.corp-card.fin` is **320px** wide and the five pills (Business
+    profile · Annual report · Tax package · 1099s · Lender package) measured **617px on one row**. `.corp-actions` carried
+    **`flex-shrink:0`**, so as a flex item it claimed its full max-content width and **its own `flex-wrap` could never
+    fire** — it overflowed the card by ~300px, and those buttons landed *underneath the neighbouring card*.
+    `document.elementFromPoint` at the centre of Acme's *Tax package*, *1099s* and *Lender package* returned
+    **`SPAN.corp-head` belonging to Northwind Group** — `hitIsThisButton: false`. So clicking any of them on a card that
+    was **not last in its row** hit the wrong card and nothing opened. George has three corporations, so **two of three
+    were dead**, which is exactly why it read as intermittent.
+  - **The download code was never the problem, and that was proven before changing it:** driving the real button on the
+    deployed demo produced a real **15,429-byte** `.xlsx` with zero errors. Also ruled out by measurement rather than
+    assumption — the lazy `exceljs` chunk serves 200 on both origins, all three modals render `isError`/`isLoading`, and
+    the `disabled={… || !pkg.properties.length}` guard cannot bite (all three live corporations have exactly one property).
+  - **The fix is ONE control, and one control cannot overflow.** The five pills become a single **Documents & filings**
+    pill opening a panel that lists all five — which is simultaneously the layout fix and the answer to a second thing
+    George couldn't tell from the card: five bare nouns say nothing about who they are for. Every row now states it in one
+    plain sentence, grouped as **THE COMPANY** (Business profile · Annual report, with its deadline as a live chip read
+    from the same `['annualReport', corp.id]` key the modal uses, so opening it next is a cache hit) and **THINGS YOU HAND
+    SOMEONE** (Tax package *"For your accountant"* · 1099s *"Due January 31"* · Lender package *"when you apply for a loan
+    or refinance"*). The three exports appear only on Financials/History — the Portfolio tab has no fiscal year in scope.
+  - **No new state machine.** `CorporationsPage` already held one setter per modal; the panel owns none of them, it calls
+    the one a row belongs to and closes itself — so exactly one dialog is ever open and **every existing modal is
+    byte-identical**. `.corp-actions` also loses `flex-shrink:0` and gains `min-width:0` defensively, with a comment saying
+    not to restore it, so a future sixth control can't re-create the overflow.
+  - **⚠ AND THE REASON NO TEST CAUGHT THIS IS WORTH MORE THAN THE FIX.** Five suites asserted these controls — and every
+    one asserted that the label **EXISTED** (`findAllByText('1099s')).toHaveLength(2)`). A label can exist, render, pass
+    an accessibility query and be **physically unreachable**; existence is not reachability. All five now **drive** the
+    control instead of counting it, and the new suite pins the structural property directly: **exactly one `.corp-edit`
+    per card**, the five names are **absent from the card itself**, and the panel is opened from the **FIRST** card — the
+    one whose spill used to be covered. A test that opens the last card would have gone green throughout the outage.
+  - **One subtlety the new tests had to handle, caught by a failing run:** `.corp-card` is itself `role="button"`, so its
+    accessible name is the whole card's text and a loose `/Documents & filings/` pattern matches the CARD too — the click
+    would navigate instead of opening the panel. Every query uses the exact name, with a comment saying why.
+  - **The download tail is fixed anyway — belt and braces, not the cause.** All five exports shared one pattern with two
+    documented hazards: a **detached** anchor (Chrome honours it, Safari and Firefox are documented to drop it) and
+    `revokeObjectURL` called **synchronously** on the next line, which can cancel a download that has not yet taken the
+    blob. Both survive on a fast machine and fail silently on a slow one. New shared `src/lib/download.js`
+    (`saveBlob`/`saveWorkbook`/`fileSlug`) appends the anchor, clicks, removes it, and revokes on a later tick — **one
+    implementation per §3**, since five copies of a rule always drift. Verified by instrumenting the real click:
+    **`inDom: true`** (was false) and **no synchronous revoke**, with no stray anchor left behind.
+  - **⚠ THE THIRD REPORT IS THE HONEST ONE: I FIXED A REAL DEFECT AND STILL COULD NOT REPRODUCE GEORGE'S BLANK CANVAS.**
+    The mechanism I found is real and is **not** the sidebar (that is a flex *sibling* of `.content` and cannot extend it):
+    `.corp-flyout` is an absolutely-positioned **descendant**, and `visibility:hidden` **hides an element but still lays it
+    out**, so the closed panel hanging below the bottom row of cards contributed its full height to `.content`'s scroll
+    extent **permanently, with nobody hovering anything**. Fixed by collapsing the closed state to a true zero — and
+    `height:0` alone was **not enough**, because under `border-box` a box cannot shrink below its own padding + border, so
+    it still measured **18px**; padding and border go too and the open rule puts them back (measured: **closed 0px, open
+    73/109/238px** with links clickable on the corp card, the property card and the sidebar). **But on the demo that
+    removes 0 measurable pixels of scroll** — `.content`'s own 72px bottom gutter absorbs it, and I could not reproduce
+    the symptom at 1317×703, 1317×420 or 1317×800 on `/financials`, `/leases`, a property list or a property page. So this
+    ships as a correctness fix with its effect stated honestly rather than claimed. **George: tell me your window size and
+    which page, or send a screenshot, and I'll find the real one** rather than guess a third time.
+  - **Files.** New: `src/components/DocumentsFilingsModal.js` · `src/lib/download.js` ·
+    `src/components/__tests__/corpCardActions.test.js` (8). Edited: `src/pages/CorporationsPage.js` (five buttons → one) ·
+    `src/App.css` (`.corp-actions`, `.corp-flyout`, `.side-flyout`, new `.docfile-*`) · the five `*Excel.js` download
+    tails · four existing suites retargeted from counting to driving. **No** migration, edge function, view, RPC, mock or
+    demo-seed change. **§5 fans out to nothing.**
+  - **Verified:** unit **1474/1474**; `npm run build` compiles with ExcelJS still lazily chunked; live bundle carries the
+    backend ref, demo bundle greps **free** of it; live 200s on all four URLs. **Then driven in a real browser against the
+    DEPLOYED demo, which is how the last two rounds' defects were found:** the actions row measures **173px** (was 617),
+    `insideCard: true` and `hitIsThisButton: true` on **both** cards, the panel opens **from the first card** with all five
+    rows and the *"due Aug 23"* chip, and clicking Download fired a real download event for
+    **`Acme-Holdings-Tax-Package-2026.xlsx`, 15,428 bytes**. Every control verified inside its card and clickable at
+    **1440 / 1280 / 900 / 420** with zero page overflow. **Zero console errors.**
+  - **George: hard-refresh (Cmd+Shift+R).** Each corporation card now carries one **Documents & filings** button. Open it
+    and everything is there — with a line under each saying what it is. **The Tax package and Lender package will download
+    now; they were never broken, you just couldn't hit the button.**
+  - **Flags:** ① **The blank-canvas scroll is NOT confirmed fixed** — see above; I need your window size or a screenshot.
+    ② Nothing moved and nothing new appeared; the five tools are unchanged, one click deeper. ③ The Annual report row shows
+    its deadline on the panel, so you can see it without opening anything.
+
+- **2026-08-01** — **Two wording defects found by DRIVING the deployed demo, not by reading the code: a lender-facing dollar
+  figure printed as a bare number, and three 1099 flags that read "1 carry" when a portfolio has exactly one of something**
+  (George: *"can you show me what everything looks like populated in the demo"* — the walkthrough itself was the bug
+  report). Deployed: frontend Cloudflare version **`753c9018`**, demo worker `c9bd3e0c`. **$0 — no AI call, NO migration,
+  NO edge function, NO view, NO RPC, NO table, and nothing is stored. Three display strings and their tests; no code path
+  that touches a figure was altered, so the before/after expense read-back was skipped as vacuous and is noted as such
+  rather than performed and reported.** Tests **1466/1466 across 150 files** (was 1463/150 — +3, no new suite).
+  - **⚠ NEITHER WAS REACHABLE FROM A TEST THAT EXISTED, AND THAT IS THE POINT OF THE ROUND.** Round 14 shipped with 37
+    new assertions and 1463 green; round 13 with 32. Both defects sat in strings those suites asserted with **substring**
+    matchers — `toMatch(/carry no tax category/)` passes whether the sentence reads *"4 vendors carry"* or *"1 carry"*, and
+    nothing asserted the uncategorised figure's SHAPE at all. A matcher loose enough to survive a refactor is loose enough
+    to survive a defect; the fix in both cases is an assertion on the FORM of the output, not merely its presence.
+  - **⚠ AND BOTH ARE SINGULAR-CASE DEFECTS, which is why a fixture never caught them.** The unit fixtures carry three and
+    four vendors, so every flag read plurally and correctly. The live demo carries **exactly one** uncategorised bucket
+    (Security) — the state round 4 seeded *on purpose* to demo the gold "Set a tax category" chip — so the very seed built
+    to show the refusal working is the one that exposed the sentence describing it as broken. A test now pins the singular
+    explicitly, with a comment saying it was seen on a real portfolio.
+  - **The lender fix:** `lenderFlags` built its uncategorised warning with `round2()`, so a lender-facing pre-flight read
+    **"6000 of expenses carry no category"** — which on a page whose every other figure is currency reads as a COUNT, not
+    a dollar amount. Now `money()`. `lenderPackage.js` gains one import (`./format`, itself dependency-free, so no cycle).
+    Pinned by asserting the text **starts** `/^\$[\d,]+\.\d{2} of expenses/` rather than merely containing the number.
+  - **The 1099 fix, and it is shared rather than written twice.** Three flags read *"1 carry no tax category"*, *"1 have
+    no record of how they were paid"*, *"1 of these are named after an expense bucket"*. New exported
+    **`vendorPhrase(n, singularVerb, pluralVerb)`** in `form1099.js` → *"1 vendor carries"* / *"4 vendors carry"*, with
+    inline it/them and it-was/they-were agreement beside it. **Exported rather than duplicated because the identical three
+    sentences exist in the modal AND in the workbook** — §3's rule read forward: the sheet on screen and the sheet in the
+    download must not word one fact two ways, and fixing only the one I could see would have left the Excel copy wrong
+    with nothing comparing them. `form1099Excel.js` gains it in the same commit.
+  - **Three existing assertions loosened, deliberately, and one added that is stricter than all of them.** The two
+    substring matchers that let this through became number-agnostic (`/no tax category/`,
+    `/no record of how (it was|they were) paid/`) so they no longer pin a specific count — and a NEW case asserts the
+    singular form directly *and* that `/\b1 carry\b/`, `/\b1 have\b/` and `/\b1 of these are\b/` are **absent**. Pinning
+    the absence is what makes it a regression rather than a spot fix.
+  - **A test fixture that lied, caught while writing the test.** My first lender assertion built its uncategorised case by
+    passing `buckets: []` — which flags nothing, because round 5's category resolution falls back to the LABEL REGISTRY
+    and then to what the SECTION means before it gives up. "Landscaping" resolves with no bucket record at all. The
+    fixture now adds a genuinely unknown CAM label ("Concierge desk"), the only section that is actually ambiguous.
+  - **Files.** Edited: `src/lib/lenderPackage.js` (one import, one string) · `src/lib/form1099.js` (`vendorPhrase`) ·
+    `src/lib/form1099Excel.js` (one import, three strings) · `src/components/Export1099Modal.js` (one import, three
+    strings) · `src/lib/__tests__/{lenderPackage,form1099}.test.js` · `src/components/__tests__/form1099Ui.test.js`.
+    **No** new file, migration, edge function, view, RPC, mock or demo-seed change. **§5 fans out to nothing.**
+  - **Verified:** unit **1466/1466** — and re-run **three consecutive times**, because the first full run failed ONE
+    assertion in `form1099Ui` that then refused to reproduce in five subsequent runs, in the suite or in isolation. That
+    is the documented starvation flake (rounds 3/4/9: 150 jsdom environments, render tests awaiting a real write chain,
+    `testTimeout` 30s as a contention allowance rather than a work allowance) — recorded here rather than chased, per
+    round 9's note. `npm run build` compiles; live 200s on all four URLs; live bundle carries the backend ref, demo bundle
+    greps **free** of it. **Both fixes then confirmed on the DEPLOYED demo in a real browser** — the same way they were
+    found: the lender pre-flight now reads **"$6,000.00 of expenses"**, and the 1099 flags read *"4 vendors are named…"*,
+    *"**1 vendor carries** no tax category, so Amlak couldn't rule **it** out and listed **it**…"*, *"4 vendors have no
+    record of how they were paid…"*.
+  - **George: hard-refresh (Cmd+Shift+R).** Nothing moved and nothing new appeared — three sentences read correctly now.
+    A **17-screenshot walkthrough of the whole accounting arc** is in `~/Desktop/amlak-demo-tour/`.
+  - **Worth keeping for the next round:** the demo seed is now populated for **every** round 3–14 surface, so driving it
+    is a cheap end-to-end read on the arc — and it is the only check that exercises the singular, the empty and the
+    blocked states together. Round 14's own note said the render tests "cover most of what a click-through would prove."
+    They didn't. Both defects were in the half they can't reach: how a sentence READS.
+
+- **2026-07-31** — **Accounting round 14 (Slice 7c): the package you hand a LENDER — and the coverage ratio if the tenants
+  reaching the end of their term walk** (George: *"go"*, closing the accounting direction doc
+  `~/.claude/plans/no-need-to-come-magical-fairy.md`). Deployed: frontend Cloudflare version **`2faf85f8`**, demo worker
+  `26d04b80`. **$0 — no AI call anywhere; NO migration, NO edge function, NO view, NO RPC, NO new table, and NOTHING IS
+  STORED. Nothing in this round writes, so NOT ONE STORED TOTAL MOVED** (read back live after: 401 S Main FY2026 CAM
+  1,846.26; Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596 — byte-identical). Tests **1463/1463
+  across 150 files** (was 1426/148 — +37, two new suites).
+  - **⚠ THE ARITHMETIC CORRECTION THIS ROUND TURNS ON, AND IT IS A REAL DEFECT IN A FIGURE GEORGE READS EVERY DAY.**
+    `v_property_totals.noi` is `Σ effective_rent − (taxes + CAM + roof)` — **base rent alone on the income side, the WHOLE
+    expense on the other.** So an expense the tenants reimbursed is subtracted as though the landlord ate it, and the
+    reimbursement is counted nowhere. It is neither the gross view (rent + reimbursements − full expense) nor the net view
+    (rent − unrecovered expense) — **and those two are the SAME number, which is what proves the third one wrong.** On live
+    Pershing FY2026 the omission is **$141,531.57**: the Financials page reads **$161,334.92** where a lender underwrites
+    **$302,866.49**, so the figure on screen is a little over half of it. **This round does NOT redefine the view** — round
+    7 refused that (it would silently re-value every chart point, every closed-year snapshot and every Ask Amlak fact) and
+    round 12 refused it again — so the package computes the underwritable NOI itself and the tie-out sheet reconciles it to
+    the app's own, line by line, exactly as round 12's tie-out reconciles the return's expenses. **Flagged for George as a
+    separate decision, not acted on** (see below).
+  - **⚠ AND THE DENOMINATOR IS NOT AMLAK'S TO KNOW.** DSCR is NOI ÷ debt service and **Slice 6 (debt) is deferred until a
+    client actually has a mortgage.** Three wrong answers were available: **drop DSCR** (it is the number a lender opens
+    with, and the forward version is the whole reason this package beats a spreadsheet); **derive** debt service from
+    something (there is nothing to derive it from); or **store** a figure and let Amlak pose as knowing the loan (a second
+    source of truth for a loan Slice 6 will model properly, and the two would drift the first time either was edited). So
+    debt service is **typed at export and NOT stored** — one number off a mortgage statement — and with none entered the
+    ratio reads **"—", never 0.00× and never ∞**. A ratio with an unknown denominator is not a small ratio; it is not a
+    ratio. Same refusal round 9 makes for a building whose land has never been valued, and pinned in both directions.
+  - **⚠ THE ARITHMETIC ONLY AMLAK CAN DO, and it is why this is worth building at all.** Every accounting package computes
+    DSCR **backwards**: last year's NOI over last year's debt service. Amlak holds every lease's expiry, every unexercised
+    option and every notice deadline, so it computes it **forward** — *"1.58× today; **0.92×** if the two leases reaching
+    term end within twelve months don't renew."* And the exposure is **rent PLUS the tenant's reimbursement**, never rent
+    alone: a departing tenant takes both, and **the expense stays** — their share becomes vacancy the owner carries. Rent
+    alone understates it by the whole recovered amount, which on a net-lease building is a third of it. Pinned as the
+    headline test, and the downside column is arithmetically honest in all four directions: income falls, **opex does not**,
+    the management fee follows the income it is charged on, and the reserve does not move because the building does not
+    shrink.
+  - **⚠ THE GROSS-LEASE TRAP, AND IT IS LIVE.** `v_tenant_shares` computes a pro-rata CAM/tax share for **every** lease
+    including a gross one (0073 deliberately left those columns alone) — but a gross tenant's reimbursement is carved **out
+    of** their flat rent rather than billed on top. Adding it would count the same dollars twice. So a gross row contributes
+    **$0** of reimbursement, its share is reported separately as *"already inside the rent"*, and the rent roll says so on
+    the row. Card Pop (Joliet) is the live case; its share is $0 today only because Joliet has no expenses entered, which is
+    luck rather than correctness. Pinned in both directions.
+  - **⚠ IT UNDERWRITES CONTRACT RENT, NOT INVOICED RENT — a deliberate divergence from round 12.** A return reports what
+    was **billed**; a lender underwrites what the **leases oblige**. The distinction is not academic: Busey Bank's 2026
+    invoice bills **$491,829.12** against base rent of $364,629.12 and an actual CAM share of $1,846.26 — $125,353.74 of
+    unreconciled ESTIMATE. Underwriting the billed figure would report an NOI built on an estimate nobody has trued up, and
+    a property with no invoice raised would silently read **$0** of income. Contract rent also can't be inflated or zeroed
+    by invoicing hygiene, and — the decisive reason — **it is what makes the rent roll and the operating statement tie**:
+    the rent roll sums to the income line exactly (pinned). Billed rides along on the tie-out sheet as a cross-check with
+    the reason stated.
+  - **Never spread across twelve months.** The plan called for a T-12, and Slice 1's dates are on file for **0 of 12** live
+    expense lines — so an evenly-spread month column would be Slice 1's refusal repeated one column over. An undated line
+    goes in an **Undated** column and is counted; an un-itemized flat kind (Pershing's $127,000) is undated by definition;
+    and the sheet states outright that a lender may want a trailing twelve months ending last month while this is the
+    **fiscal year by month**, because that is what every figure in Amlak is keyed to. Honest and cheap beats a half-T-12.
+  - **The fifth sheet matters more here than anywhere in this arc.** Round 6's rule — a dollar is either recorded somewhere
+    or explicitly excluded **with a reason** — applied for the fourth time, now to an underwriting package: the loans, the
+    capital expenditure (correctly outside NOI, on the asset register), **every property with no expenses entered**, and the
+    unplaced bank lines. **A lender who cannot tell a careful export from one that quietly omitted the debt has to assume
+    the worst**, so the absence of the loans is stated on its own sheet rather than left to be noticed. `debt` and `capex`
+    are `always: true` — they appear even on a perfect portfolio.
+  - **A bug caught by my own test, and it was in the accumulator.** The vendor-style treatment merge seeded `report` as
+    `'no'` in round 13; here the equivalent trap was subtler — nothing seeded, so the first excluded line was fine. What the
+    tests did catch was that **a lease with no term end must be counted, not bucketed**: bucketing it by `String(end)`
+    would have put every undated lease in the "beyond" bucket and reported a rollover that may not exist. It is now listed
+    by name with the reason, and the buckets still sum to the rent roll (pinned).
+  - **Where it shows.** A fifth **Lender package** pill on every corporation card on Financials, beside Tax package and
+    1099s — **its own control for the same reason the 1099 worksheet is**: a lender asks on their timetable, and the forward
+    coverage read is worth having *before* you call the bank. The modal takes the three lender assumptions, resolves the
+    ratio live on screen, names the tenants rolling off, and states the NOI gap against the app's own figure. Five sheets:
+    **Summary · Operating statement · Rent roll · Rollover · Not in this package.**
+  - **One additive change to a shipped module:** `api.js` gains `listRenewalsByLeases(leaseIds)` — one batched query
+    mirroring `listAbatementsForLeases` / `listEscalationsByLeases`, so the rollover schedule reads every lease's options in
+    one round-trip instead of one per lease. Nothing else in `api.js` moved.
+  - **Files.** New: `src/lib/lenderPackage.js` · `src/lib/lenderExcel.js` · `src/components/ExportLenderModal.js` ·
+    `src/lib/__tests__/lenderPackage.test.js` (27) · `src/components/__tests__/lenderUi.test.js` (10). Edited:
+    `src/lib/api.js` (one batched helper) · `src/pages/CorporationsPage.js` · `src/App.css`. **No** migration, edge
+    function, view, RPC, mock or demo-seed change — the seed already carried every case it needed (City Dental's term ended
+    2026-05-31, so it is a live holdover). **§5 fans out to nothing** (no `_shared` module touched). **No existing assertion
+    changed** — this round adds a concept rather than moving one. Reuses `recoverabilityRows` for the expense side and
+    `optionLapseReason` for the renewal read, so the package cannot disagree with the Financials page or the lease page.
+  - **Verified:** unit **1463/1463** (`vitest run`); `npm run build` compiles with ExcelJS still lazily chunked; **every
+    stored expense total identical before and after**; live 200s on all four URLs; live bundle carries the backend ref
+    **and** the new package, demo bundle greps **free** of it. Browser drive-through skipped per George's standing
+    preference — the ten render tests mount the **real** corporation grid and the **real** modal, drive the debt-service
+    input through to a resolved ratio, assert the downside is lower than today's, and push the actual Download button
+    through ExcelJS to a real five-sheet workbook buffer.
+  - **George: hard-refresh (Cmd+Shift+R).** Every corporation card on **Financials** now carries **Lender package**. Type
+    your annual debt service and it tells you your coverage today — and what it becomes if the tenants whose leases are
+    ending walk.
+  - **Flags:** ① **⚠ THE NOI ON YOUR FINANCIALS PAGE IS UNDERSTATED BY WHATEVER YOUR TENANTS REIMBURSE — $141,531.57 at
+    Pershing.** I did **not** change it: fixing the view re-values every historical chart point and every Ask Amlak fact,
+    and rounds 7 and 12 both refused that on purpose. **It is your call** — say the word and I'll do it as its own round
+    with the carry-through traced. Meanwhile the lender package reports the correct figure and reconciles the two. ②
+    **Joliet has no expenses entered for 2026 at all**, so its NOI reads as income with nothing taken out — the pre-flight
+    says so, and a lender will check that first. 401 S Main carries **$1,846.26** for a 9,176 SF building, which is
+    similarly not a real operating expense load. ③ **The month columns will be empty** — 0 of your 12 expense lines carry a
+    payment date, and nothing is spread evenly to fill them; dates arrive on every statement you import from here. ④
+    **D & D Dental's term ends 2026-09-30** — the one lease inside twelve months, $47,436 of rent plus $23,708 of
+    reimbursement, and its renewal option carries **no notice date**, so nothing can warn you when the deadline passes. ⑤
+    **No year has ever been closed** (`financial_snapshots` is empty), so there is no frozen collection history — the
+    monthly columns read live payments instead. ⑥ Round 7's Liana / Yazin flag still stands.
+
+- **2026-07-31** — **Accounting round 13 (Slice 7b): the vendors who may need a 1099 — the list and the question, never the
+  filing** (George: *"continue"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by
+  phase). Deployed: frontend Cloudflare version **`ca62cc8c`**, demo worker `2c5fdf0b`. **$0 — no AI call anywhere; NO migration,
+  NO edge function, NO view, NO RPC, NO new table, and NOTHING IS STORED. Nothing in this round writes, so NOT ONE STORED TOTAL
+  MOVED** (read back live after: 401 S Main FY2026 CAM 1,846.26; Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027
+  CAM 13,596 — byte-identical). Tests **1426/1426 across 148 files** (was 1394/146 — +32, two new suites).
+  - **The obligation, stated plainly.** A landlord must issue a **1099-NEC to any unincorporated vendor paid for SERVICES** above
+    the threshold in a calendar year — to the vendor AND the IRS by **January 31**, e-filed once there are **ten or more**
+    returns, with penalties of roughly **$60–$680 per form**. Amlak already knows every vendor payment by payee and by date, so
+    the candidate list costs nothing.
+  - **⚠ THE REFUSALS POINT THE OPPOSITE WAY TO ROUND 11, AND THAT ASYMMETRY IS THE DESIGN.** The closing-statement reader treats
+    an unclassifiable charge as **not basis**, because guessing toward basis overstates what you own for thirty-nine years. Here
+    the expensive direction is reversed: a vendor left OFF is a form never filed and a penalty per form, while a vendor listed in
+    error costs one question. So **anything Amlak cannot rule out stays a CANDIDATE** — an unknown tax category produces a listed
+    vendor marked *"needs a category"*, not an exclusion. The two modules refuse in opposite directions because their costs do,
+    and both are pinned.
+  - **⚠ AND IT NEVER ASSERTS THE ONE FACT THAT DECIDES THE FILING.** A C or S corp is generally exempt, and only a **W-9**
+    answers whether a vendor is one. So the worksheet names candidates and asks; the **W-9 column is deliberately blank**, to be
+    filled in with the accountant. That is also why this round **stores nothing and has no schema** — the answer is not Amlak's
+    to hold, and a remembered guess is worse than a blank box.
+  - **⚠ THE EXCLUSION NOBODY REMEMBERS, AND IT DOUBLE-REPORTS THE VENDOR WHEN MISSED.** A payment by **credit card, debit card or
+    a payment app** is reported by the PROCESSOR on a 1099-K; putting it on your 1099-NEC as well reports the same money twice
+    against that vendor. So only the **non-card portion counts toward the threshold** — pinned as the headline test: $3,000 paid
+    with $1,200 by card is **$1,800 reportable**, which does **not** cross $2,000 even though $3,000 would. Detection is
+    word-boundary matched (round 7's lesson — a substring match reads *CARDINAL Plumbing* as a card), and deliberately does NOT
+    share `statementMatch`'s `BANK_NOISE`: that list answers *"is this token part of a payee name"* and this one answers *"did
+    this ride a card network"* — VISA is in both for opposite reasons, and merging them would tie two unrelated rules together.
+  - **⚠ THE MOST COMMONLY MISSED 1099 THERE IS, and the tax-category registry from round 4 is what catches it.** An **attorney is
+    reported even if the firm IS incorporated** — the exemption every other corporation gets does not apply. A `legal` category
+    therefore resolves to `always` rather than `ask`, renders gold, and states the rule on its own row. Every other category
+    resolves too: utilities and freight are excluded **by regulation whoever the vendor is**, supplies are merchandise, taxes are
+    a government body, interest is Form 1098's job not yours, wages are a W-2, depreciation is not a payment at all. **A vendor
+    paid into two buckets takes the MORE reportable of them** — half a reportable relationship is still reportable.
+  - **⚠ THE THRESHOLD MOVED, AND NOTHING IS HIDDEN BEHIND EITHER FIGURE.** $600 stood for decades; the July 2025 law raised it to
+    **$2,000 for payments made from 2026**, indexed after. Getting it wrong is costly both ways — too high misses a filing, too
+    low buries the real candidates — so the threshold is a **line across the list, never a gate on it**: every vendor is
+    returned, the ones below are still listed and counted, and the sheet says why. Pinned.
+  - **⚠ AMLAK DOES NOT RELIABLY KNOW THE PAYEE, AND EVERY ROW SAYS SO.** `cam_line_items` carries a bucket **label**, not a payee
+    — "Repairs" can cover three contractors, and a bucket named "Comcast" is a payee only by luck. So each row states where its
+    name came from and how far to trust it: **a service contract's vendor** and **a learned payee** (round 7's `import_rules`,
+    joined by `cam_label`) are precise and outrank a **bucket label**, which is marked *"not a payee"* on the row and counted in
+    the flags. A **tenant** rule is never a vendor — it names who paid YOU. Pinned in both directions.
+  - **Three things deliberately left off, each named with its reason** — round 6's rule applied to vendors instead of bank lines.
+    ① An **amortized capital cost** is a book entry: the money left in the year the asset was bought and was reportable *then*,
+    so counting it again every year of its life would invent a payment that never happened. ② A **draw or contribution** is not a
+    payment for services (round 7's distinction, carried onto the form). ③ **An un-itemized yearly figure has no payee attached
+    to any part of it**, so it cannot be tested against the threshold at all — silence would read as *"nothing to report"* when
+    the truth is *"nobody knows"* (round 5's rule, reused; on live data that is Pershing's **$127,000** of taxes).
+  - **A double-count avoided:** `syncContractCamItems` writes a derived line per covering contract, so summing the contract's own
+    annual cost on top would bill the vendor twice. The contract is the **name** source and its line is the **amount** source —
+    with the contract still listed on its own if its year was never opened. Pinned both ways.
+  - **Its own control rather than a sheet inside the tax package**, and the argument is the calendar: 1099s are due **January 31**
+    and the return is not, so finding out in March that you needed a W-9 is finding out late **by construction**. The candidates
+    render **on screen** for the same reason — the action this produces is *"go and collect a W-9"*, and a list you must open a
+    spreadsheet to read is a list you read in March. The download is two sheets: **Worksheet** (with the blank W-9 column) and
+    **Not on this worksheet**.
+  - **One change to a shipped module, additive:** `cpaExcel.js` now exports its writer and palette (`xlsxSheet` / `xlsxPen` /
+    `XLSX_PALETTE`) so both workbooks share ONE layout implementation — §3's rule read forward, since a second copy would drift
+    silently with nothing comparing them.
+  - **Files.** New: `src/lib/form1099.js` · `src/lib/form1099Excel.js` · `src/components/Export1099Modal.js` ·
+    `src/lib/__tests__/form1099.test.js` (22) · `src/components/__tests__/form1099Ui.test.js` (10). Edited:
+    `src/lib/cpaExcel.js` (three exports, no behaviour change) · `src/pages/CorporationsPage.js` · `src/App.css`. **No**
+    migration, edge function, view, RPC, mock or demo-seed change — the seed already carried every case it needed. **§5 fans out
+    to nothing** (no `_shared` module touched). **No existing assertion changed.**
+  - **Verified:** unit **1426/1426** (`vitest run`); `npm run build` compiles with ExcelJS still lazily chunked; **every stored
+    expense total identical before and after**; live 200s on all four URLs; live bundle carries the backend ref **and** the new
+    worksheet, demo bundle greps **free** of it. Browser drive-through skipped per George's standing preference — the ten render
+    tests mount the **real** corporation grid and the **real** modal, and one drives the actual Download button through ExcelJS
+    to a real workbook buffer, which is the only thing that proves both sheets build.
+  - **George: hard-refresh (Cmd+Shift+R).** Every corporation card on **Financials** now carries **1099s** beside Tax package. It
+    lists the vendors that may need a form, what counts toward the threshold, and everything it deliberately left off — then
+    asks the one question it refuses to answer for you.
+  - **Flags:** ① **Every candidate will read "no record of how they were paid"**, because round 6's line records are forward-only
+    and you have **0 of them** so far — so the card check cannot run on anything imported before that round. It starts working
+    from your next import; until then, check by hand whether any of these went on a card. ② **Most names come from an expense
+    bucket, not a payee** — live, only **3 of your 12 learned rules** are vendor rules (Otis Elevator · Belle Heating · City of
+    Naperville), so the rest are labelled by bucket and want confirming. ③ **The one vendor with a real name is Groot, Inc.
+    ($13,200/yr at Pershing)** — and *"Inc."* is exactly the signal it is probably exempt, which is why the sheet asks rather
+    than deciding. ④ **Pershing's $127,000 of property taxes is one flat figure**, so it is reported as unattributable; it is a
+    county payment either way, but itemizing it makes that explicit. ⑤ **Round 7's flag is now the expensive one:** Liana
+    ($20,000) and Yazin ($10,000) at 401 S Main appear here as vendor candidates. **If they are contractors they need 1099s by
+    January 31; if they are owner draws they need nothing** and belong under Owner & entity money. That is the third round these
+    two lines have surfaced, and the first with a per-form penalty attached. ⑥ **The threshold** is shown as $2,000 for 2026 —
+    confirm it against the year you file; every vendor is listed either way.
+
+- **2026-07-31** — **Accounting round 12 (Slice 7a): the package you hand your accountant — and the sheet that says what it deliberately
+  LEFT OFF** (George: *"continue"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by
+  phase). Deployed: frontend Cloudflare version **`09a47df9`**, demo worker `2a41a222`. **$0 — no AI call anywhere; NO migration, NO
+  edge function, NO view, NO RPC, NO new table. Nothing in this round writes, so NOT ONE STORED TOTAL MOVED** (read back live after:
+  Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596; 401 S Main CAM 1,846.26 — byte-identical). Tests
+  **1394/1394 across 146 files** (was 1353/144 — +41, two new suites).
+  - **An ENTITY files a return, not a building** — so this is scoped to a corporation, and that is also the shape of the form itself:
+    Form 8825 puts one column per property on a single sheet with a total column, and Schedule E does the same. The summary is
+    literally that layout — categories down, properties across. It lives on the corporation card in Financials beside Business
+    profile and Annual report, and deliberately **not** on the Portfolio tab, which lists tenants and has no business carrying it.
+  - **⚠ THE ARITHMETIC RULE THE WHOLE ROUND TURNS ON, and it REVERSES Slice 3 on purpose. THE RETURN IS GROSS ON BOTH SIDES.** A
+    tenant's CAM and tax reimbursement is rental INCOME, and the expense it reimburses is deducted in FULL. Round 5's recoverability
+    table nets — spent less recovered — because *"what did this cost me"* is the question a landlord asks. A return must not: netting
+    understates income and expenses by the same figure and is not permitted on either form. On the pinned fixture tenants reimburse
+    **$13,600 of $21,200 spent**; the deductible figure is $21,200, and the headline test asserts it is **not** $7,600. The recovered
+    column still rides along — on the tie-out sheet, as CONTEXT beside the deductible figure, never subtracted from it.
+  - **⚠ AND A COST YOU DELIBERATELY DIDN'T BILL IS STILL DEDUCTIBLE — which is what finally closes round 5's finding.**
+    `syncCamTotal` sums only `billable !== false`, so an absorbed cost never reaches `cam_total`, therefore never `total_expenses`,
+    therefore **never NOI**. It is an ordinary expense of the property all the same, so it **is** on the return. That makes this
+    package's expense total legitimately **HIGHER than the app's**, which is why the tie-out reconciles the two line by line rather
+    than hoping nobody notices: *expenses as NOI counts them · + costs you absorbed · + depreciation · = expenses on this return.*
+    On George's live 401 S Main that difference is **$40,843** — the Liana / Yazin / IL DPT REV / Other lines, which have been
+    visible on the page and absent from every derived figure since 2026-07-21, and now land somewhere.
+  - **⚠ THE SHEET THAT MAKES THE OTHER FOUR TRUSTWORTHY — "Not on this return."** Round 6's rule (a dollar is either recorded
+    somewhere or explicitly excluded **with a reason**) and round 11's refused-charges list, applied to a tax package: owner draws ·
+    contributions · security deposits held · bank lines not yet placed, each with its figure and why it is not on either form. A CPA
+    cannot otherwise tell a careful export from one that quietly dropped every distribution. **A draw filed as an expense understates
+    income by exactly the amount the accountant taxes** — so it is named, not merely omitted. An **entity cost** sits in its own
+    section on that sheet rather than in the left-off total, because it genuinely IS deductible; Amlak simply will not guess an
+    allocation across properties, so it is stated for the accountant to place.
+  - **The form mapping is the deliverable, not decoration.** `EXPENSE_CATEGORIES` is the UNION of the two forms (round 4), so three
+    categories exist on one and not the other — and naming which "Other" they roll into is the useful half: **Management fees** and
+    **Supplies** have a Schedule E line and no 8825 line; **Wages** is the reverse. `formLine()` reports that as `viaOther` rather
+    than silently vanishing or silently claiming a line. An unknown key returns **null** — the same refusal `treatmentInfo`,
+    `assetKindInfo`, `entityKindInfo` and `dispositionInfo` make. Line NUMBERS move between revisions, so the sheet leads with the
+    LABEL and states the revision beside the number.
+  - **The cash/accrual switch lives here and only here — which is what Slice 1's dates were built for.** Accrual: rent billed for the
+    year, every expense line of the year. Cash: rent **received** during the year whatever invoice it settles, and only expenses
+    carrying a payment date. **⚠ An undated line is never given an invented date and never silently dropped** — it is excluded from
+    the totals, counted, and listed in full on the Detail sheet, because `paid_date` is nullable and deliberately un-backfilled
+    (stamping Dec 31 on a hand-typed figure is a lie that looks like a real date forever). An **un-itemized** kind — a flat total
+    nobody split — has no day at all, so it is undated by definition, and the kind totals handed to `recoverabilityRows` are summed
+    from the KEPT lines specifically so it cannot sneak back as that function's synthetic row.
+  - **⚠ A bug this design had to avoid, and the one change it needed to a shipped module.** Cash filtering hands
+    `recoverabilityRows` a smaller `expense` than the year really had, so deriving the recovery rate from it would report tenants
+    reimbursing **several times** what was spent (taxes: 118,853 ÷ a filtered 30,000 = 3.96×). The recovery rate is a property-level
+    truth about the WHOLE year, so `recoverabilityRows` gained an optional **`fractions`** override — additive, omit it and nothing
+    changes, and it is what stops this round duplicating the grouping rule §3 says always drifts. Pinned in both directions.
+  - **The CAM straddle is reported, never picked.** A 2025 true-up billed then and collected now is this year's cash income and last
+    year's accrual expense; there is no correct silent answer, so the tie-out states *"…of which $X settled a prior year's invoice."*
+  - **A pre-flight before anything downloads, and that is the point.** A tax package that quietly files uncategorized money as
+    "Other", or quietly drops what a cash basis cannot date, is worse than no package: **it looks finished.** So the modal states the
+    four figures it will carry and then every figure that wants an answer — with the fix — while it can still be fixed. Nothing is
+    blocked; an honest package with a gap named beats a tidy one that hides it.
+  - **Uncategorized is its own row, below the categories, and NEVER folded into the "Other" category** — round 4's refusal carried
+    onto the form, where it matters most. Pinned as a unit test and in the DOM.
+  - **One `api.js` change:** `security_deposit` joins `LEASE_LIST_COLS`. It is a scalar the package needs per lease and
+    `v_tenant_shares` deliberately does not carry it (rule #7, verified in round 8). `ai_review` stays out for the opposite reason —
+    it is a blob, and every tenant list would download every one. **Caught before shipping:** without it the deposits-held figure
+    would have read **$0 forever**.
+  - **Files.** New: `src/lib/cpaPackage.js` · `src/lib/cpaExcel.js` · `src/components/ExportCpaModal.js` ·
+    `src/lib/__tests__/cpaPackage.test.js` (32) · `src/components/__tests__/cpaExportUi.test.js` (9). Edited: `src/lib/api.js` (one
+    column) · `src/lib/recoverability.js` (the optional override) · `src/pages/CorporationsPage.js` · `src/App.css`. **No** migration,
+    edge function, view, RPC, mock or demo-seed change — the package only reads, and the demo seed already carried every case it
+    needed. **§5 fans out to nothing** (no `_shared` module touched). **No existing assertion changed.**
+  - **Verified:** unit **1394/1394** (`vitest run`); `npm run build` compiles; **every stored expense total identical before and
+    after**; live 200s on all four URLs; live bundle carries the backend ref **and** the new export, demo bundle greps **free** of
+    it. Browser drive-through skipped per George's standing preference — the nine render tests mount the **real** corporation grid
+    and the **real** modal, and one of them drives the actual Download button through ExcelJS to a real workbook buffer, which is the
+    only thing that proves all five sheets build.
+  - **George: hard-refresh (Cmd+Shift+R).** Every corporation card on **Financials** now carries **Tax package**. It reads your
+    income and expenses by tax category with one column per property, every line behind them, the depreciation schedule, what is
+    deliberately left off, and a tie-out against what the app shows on screen.
+  - **Flags:** ① **Expect a lot of "Not categorized" on your first export**, and that is the forcing function working — live, **0 of
+    your expense buckets have a category set**. Pershing's **Garbage ($13,200 in FY2026, $13,596 in FY2027)** has no default because
+    the registry knows "Waste removal" and "Trash removal" but not "Garbage"; 401 S Main shows **$40,935.19** uncategorized, almost
+    all of it the Liana / Yazin / IL DPT REV lines. Set the category once per bucket on the Expense entry and it applies everywhere.
+    ② **A cash basis will place almost nothing today** — **0 of your 12 expense lines carry a payment date**, so cash reports them as
+    undated rather than inventing dates. Accrual is the default and is the right basis for your figures as they stand; dates arrive
+    automatically on every statement you import from here. ③ **Depreciation is $0** until you record the building under "What you
+    own". ④ **Interest and mortgage costs are blank** — Amlak does not track debt yet, and the tie-out says so rather than implying
+    you paid none. ⑤ Round 7's flag still stands, and this round is what makes it expensive: your Liana ($20,000) and Yazin
+    ($10,000) lines are on this return as **deductible expenses**. If they are owner draws they belong under **Owner & entity
+    money**, where the package would correctly leave them off.
+
+- **2026-07-31** — **Accounting round 11 (Slice 5c): the one document that says what a building cost — read once, ever, and it
+  shows what it REFUSED to capitalize** (George: *"continue"*, working the accounting direction doc
+  `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0081`** (Supabase
+  `awgrjmbcghdjgnqeiqkt`), NEW edge fn **`extract-closing-statement`**, frontend Cloudflare version **`d5a87224`**, demo worker
+  `1464383c`. **Costs the standard paid read — ONE Haiku call, ~5–15¢, ONCE PER PROPERTY FOREVER; no recurring cost, and manual
+  entry stays $0.** NO view, NO RPC; 0081 widens ONE CHECK by a single member and **adds no column to any table**, so **NOT ONE
+  STORED TOTAL MOVED** (read back live before and after: Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM
+  13,596; 401 S Main CAM 1,846.26 — byte-identical). Tests **1353/1353 across 144 files** (was 1328/142 — +25, two new suites).
+  - **The gap, stated precisely.** Amlak captures **FLOW** well — what crossed the bank — because the importer is standing at
+    the account. It captures almost no **STOCK**: what you own, what it cost, when you bought it. And no amount of
+    statement-reading produces it — **a bank statement cannot tell you what you paid for a building in 2014.** Round 9 built the
+    asset register and round 10 gave it a writer at the expense line; both leave the building itself undescribed. The ALTA
+    Settlement Statement (formerly HUD-1) is the one piece of paper that carries the answer.
+  - **⚠ THE REFUSAL THE ROUND TURNS ON, and it is NOT the land this time.** A settlement statement is ~40 charge lines and only
+    three or four are basis. The rest are prorated property taxes, prepaid insurance, transferred tenant deposits, lender escrow
+    funding and rent prorations. **Summing "total settlement charges" into basis is the obvious implementation and it is wrong in
+    the expensive direction**: it capitalizes an operating expense over 39 years, so the purchase year reads better than it was
+    AND the basis stays overstated for as long as the building is owned. On the canned statement that error is **$50,706.67** —
+    pinned as the headline test, which asserts the basis is $1,472,286 and explicitly **not** $1,522,992.67.
+  - **So every line is classified, and the ones that are NOT basis are listed on screen with where they actually belong** —
+    round 6's rule (a dollar is either recorded somewhere or explicitly excluded **with a reason**) applied to a document instead
+    of a bank statement. Four destinations in a JS registry, no CHECK: **acquisition** (title, settlement fee, recording,
+    transfer tax, survey → the building's cost) · **loan** (points, origination, lender's policy → buys the LOAN, not the
+    building) · **expense** (prorated taxes, prepaid insurance → an operating cost of the year) · **not_basis** (deposits
+    transferred, escrow funding, rent proration → moves money without buying anything). **The second list is what makes the
+    first trustworthy** — without it a landlord cannot tell a careful read from one that quietly dropped thirty lines.
+  - **⚠ AND NONE OF THE EXCLUDED MONEY IS WRITTEN ANYWHERE, which is the deliberate part.** The prorated property tax on a
+    closing statement is a real expense of the year you bought — but writing it into that year's `taxes_total` would re-sum the
+    kind, re-split every tenant's share and **move bills on a historical year that is very likely CLOSED**. *Reading a document
+    is not a reason to move somebody's rent.* It is reported precisely, with the figure and the destination, and the landlord
+    types it in if they want it. The screen says so outright rather than leaving the silence to be interpreted.
+  - **⚠ THIS ROUND REVERSES THE PLAN'S OWN ROUND-11 ROW, and round 9 already settled why.** The plan says Slice 5c brings "the
+    first real `properties` columns." It adds **none** — verified live after the migration, `properties` still has exactly
+    **8 columns**, `building_sf` (0005) still the only one ever added. Round 9's reasoning holds: the building is an asset
+    exactly as the roof is — one cost, one in-service date, one land allocation — so it belongs in `fixed_assets` with
+    everything else. **That keeps ONE depreciation rule for everything.** A `properties.purchase_price` would be a SECOND source
+    for a figure the building asset already carries, and the two would drift the first time either was edited; an `acquired_on`
+    is the building's `placed_in_service` under another name. So the schema's whole contribution is somewhere to keep the
+    **document** — and a closing statement belongs to the property, not to any one of the three assets a single reading creates.
+  - **The model reads and classifies; CODE does every sum.** The prompt says outright: *never add anything up, and do not return
+    totals, subtotals, "total settlement charges" or "cash to close"* — those are sums of other lines and would double-count.
+    Pinned by a test asserting each group's total independently.
+  - **Only the BUYER's column counts**, which a two-column settlement statement makes easy to get wrong: a seller-side charge or
+    a seller credit is `not_basis` by name in the prompt.
+  - **Three things it refuses to invent, each pinned in both directions.** ① **The land split** — an allocation DECISION, not a
+    fact on the page, and a settlement statement almost never states it; it comes back **null**, the building arrives blocked,
+    and round 9's gold "Set the land value" chip does its job. Deriving it from an assessor ratio would be exactly the silently-
+    wrong number that refusal exists to prevent. A **stated** value is used, and a stated **zero** stays zero (a ground lease
+    legitimately answers 0 — null is not zero). ② **The closing date** — with none on the document there is nothing to place the
+    building in service, and an invented one is confidently wrong for thirty-nine years; it blocks and asks, and a non-ISO
+    string ("June 2019") is rejected rather than passed through. ③ **A life for the loan costs** — points amortize over the term
+    of a loan Amlak does not know until Slice 6, so the asset arrives with **no life** and says why instead of borrowing the
+    building's 39 years. Round 9 gave `loan_costs` no default for exactly this moment.
+  - **An unclassifiable charge is never basis.** Same refusal `assetKindInfo`, `dispositionInfo` and `entityKindInfo` make: a
+    treatment written by a later round and read by an older cached bundle reports itself as unknown rather than inheriting
+    another's destination — and guessing *toward* basis would overstate what you own.
+  - **Nothing is silently dropped.** A line with no readable amount is **counted and reported**, never treated as zero — the
+    screen reads *"12 charges read · 12 placed"*, and a twelfth line with a null amount reads *"1 had no readable amount"*
+    while the acquisition total stays exactly what it was.
+  - **Structurally safe, like rounds 7–9 and unlike round 10.** Everything this writes lands in `fixed_assets`, which no view,
+    no invoice and no share calculation reads. **Reading a closing statement cannot move a tenant's bill** — by construction
+    rather than by care.
+  - **Where it shows.** A quiet **⬆ Read a closing statement** beside ＋ Record one on "What you own". Upload or paste → the
+    review names each proposed asset with an editable cost (and the land box on the building) → **Record 3 assets**. Cancel
+    after a read throws the upload away, file AND registry row — an explicit cancel is the only thing that deletes it.
+  - **Files.** New: `supabase/migrations/0081_property_documents.sql` · `supabase/functions/extract-closing-statement/index.ts` ·
+    `src/lib/closingStatement.js` · `src/components/ClosingStatementModal.js` · `src/lib/__tests__/closingStatement.test.js` (17)
+    · `src/components/__tests__/closingStatementUi.test.js` (8). Edited: `src/lib/{api,demo/mockClient}.js` ·
+    `src/components/AssetRegisterSection.js` · `src/pages/PropertyFinancialsPage.js` · `src/App.css`. **No** view, RPC or mock
+    view change. **§5 fans out to nothing** — the new function imports `cors.ts`/`anthropic.ts`/`ratelimit.ts` but **modifies
+    none of them** (`git status supabase/functions/_shared/` returned 0 files), so no other importer went stale. **Rule #7
+    re-verified live, not inherited:** no view reads `documents`, so widening its CHECK rebuilds nothing. **No existing
+    assertion changed** — this round adds a concept rather than moving one.
+  - **Verified:** unit **1353/1353** (`vitest run`); `npm run build` compiles; migration applied clean and read back (the CHECK
+    now carries `'property'`, all **20** existing document rows still valid, **0** property docs, **0** assets, `properties`
+    still **8 columns**); **every stored expense total identical before and after**; edge fn deployed clean with unauth POST →
+    **401** (RLS-gated, *not* a schema 500 — proof the new schema was accepted); live 200s on all four URLs; live bundle carries
+    the backend ref **and** the new extractor, demo bundle greps **free** of it. Browser drive-through skipped per George's
+    standing preference — the eight render tests mount the **real** asset panel and drive the actual paste → review → save flow
+    against the demo mock, including the cancel-writes-nothing path.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's **"What you own"** panel now carries **⬆ Read a closing
+    statement**. Upload the settlement statement from when you bought the building and it proposes the building, its
+    capitalizable closing costs and the loan costs as three assets — and shows you every charge it deliberately left out.
+  - **Flags:** ① **It will not know your land value** — a settlement statement almost never states it, so the building arrives
+    with the gold "Set the land value" chip and depreciates nothing until you answer. Your closing statement's own allocation or
+    the county assessor's ratio is where that number comes from. ② **The prorated taxes and prepaid insurance are shown but not
+    recorded**, on purpose — writing them would move bills on a year you have probably closed; type them into the expense
+    sections yourself if you want them. ③ **Loan points get no life** until Slice 6 knows your loan term — set the years by
+    hand, or leave them blocked. ④ **A building you already owned for years also needs the depreciation already taken** —
+    that figure comes off your CPA's last Form 4562 and goes in the "Already depreciated" box on the row. ⑤ Round 7's flag
+    still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401 S Main are still recorded as not-billed **expenses**.
+
+- **2026-07-31** — **Accounting round 10 (Slice 5b): an expense can become an asset — and the cost comes back through the SAME
+  charge it left, so a roof still reaches only the tenants whose leases cover it** (George: *"can we merge roof as part of CAM
+  since we can bill it separatly will that help? if not just continue"* — answered no, with the evidence, and his question
+  produced the round's central correction; see below). Deployed: DB migration **`0080`** (Supabase `awgrjmbcghdjgnqeiqkt`),
+  frontend Cloudflare version **`6772233c`**, demo worker `8ddc148e`. **$0 — no AI call anywhere; NO edge function, NO view, NO
+  RPC; 0080 adds THREE NULLABLE COLUMNS and alters nothing, so NOT ONE STORED TOTAL MOVED** (read back live before and after:
+  Pershing FY2026 taxes 127,000 · CAM 24,200 · roof 500; FY2027 CAM 13,596; 401 S Main CAM 1,846.26 — byte-identical). Tests
+  **1328/1328 across 142 files** (was 1293/139 — +35, three new suites).
+  - **⚠ THIS IS THE ONE ROUND IN THE ACCOUNTING ARC THAT DELIBERATELY MOVES A TENANT'S BILL.** Rounds 6–9 were safe by
+    construction — every table they wrote is read by no view, no invoice and no share calculation. This one removes a cost from
+    `roof_total` / `cam_total`, which feeds `v_property_totals`, which feeds every lease's `roof_amt` / `cam_amount`, which feeds
+    their invoice. So it runs the full §1 carry-through (`resyncPropertyBilling` → `settleBillingChange`) and every entry point
+    names the consequence in the direction it actually cuts before anything happens.
+  - **What round 9 left unfinished, and this closes.** Round 9 could record an $18,000 roof in the asset register but could not
+    take it out of the year's roof total, so a landlord who did both told the app about the same roof twice — flagged on that
+    panel rather than left to be discovered. **⤴ Capitalize** on the expense line itself is the other half: the cost leaves the
+    year and becomes an asset with a life, in one confirmed action.
+  - **⚠ GEORGE'S QUESTION PRODUCED THE ROUND'S CENTRAL CORRECTION, and the plan was wrong.** The direction doc said a capitalized
+    cost comes back as *"a CAM amortization line."* Checking his merge-roof-into-CAM question against the SQL showed why that
+    would be a real misbilling: **`roof_amt` is `roof_total × (tenant SF ÷ building SF)` gated on each lease's
+    `roof_responsible` flag, while `cam_amount` is the same formula with no gate** — and **Pershing has 9 leases of which
+    exactly 1 is roof-responsible**. Amortizing a roof into CAM would move roughly **$17,000 of an $18,000 roof onto eight
+    tenants whose leases exclude it**. So an asset now remembers **which kind of expense it came from** and amortizes back into
+    that same kind: a roof returns to roof, a parking lot to CAM. Same tenants, spread over the life instead of landed in one
+    year. Pinned as the headline test — capitalizing drops the roof-responsible tenant's `roof_amt` 5,000 → 2,000 while the
+    other tenant's stays exactly 0.
+  - **The answer to the merge question itself, for the record: no.** Roof already bills exactly like CAM; the ONLY difference is
+    the per-lease flag, and CAM has no equivalent (`billable` is per-LINE and property-wide — "don't bill anyone for this", not
+    "don't bill THIS tenant"). Merging would start billing the roof to the other eight Pershing tenants immediately. And the
+    simplification he was reaching for **already shipped in round 3**: the roof became `kind='roof'` on `cam_line_items`, so
+    `addExpenseLineItem` / `syncKindTotal` / `carryFlatIntoItems` are already kind-agnostic and this round's core move — remove
+    the line, re-sum its kind — is one code path either way.
+  - **⚠ AND IT IS OPT-IN, WHICH IS THE SECOND REFUSAL.** `amortize_into` is **null by default**, so capitalizing alone moves the
+    cost OUT and brings nothing back. Whether a particular lease permits recovering a capital cost is a LEASE question Amlak
+    cannot answer from the schema — auto-billing for something the lease may not allow is the `cam_capped` problem with the sign
+    flipped — so the charge is switched on deliberately, and the confirm says outright *"Amlak can't tell whether your leases
+    permit recovering capital costs — check the clause before switching this on."* Pinned.
+  - **⚠ WHICH CHARGE IT RETURNS THROUGH IS PICKED, NEVER INFERRED.** My first draft guessed from the asset kind — and
+    "Building improvement" covers a roof AND a lobby renovation, which belong to different charges and different tenants.
+    Caught before it shipped; the asset panel offers **Bill through CAM** and **…or roof** as two explicit choices, each
+    naming who pays. An asset capitalized off an expense line needs no question — it inherits the kind of the line it came from.
+  - **Three refusals in the write path, each about not moving a figure under a bill already sent.** ① A **closed year is
+    refused outright** — record the asset by hand and leave the expense as history; ② an asset needs a date it entered service
+    and `paid_date` is nullable (0074 backfilled none), so an undated line is refused rather than given an invented date;
+    ③ `syncAmortizationItems` **writes no charge into a closed year** — the asset still amortizes, the charge simply starts from
+    the next open year, and the panel says so instead of showing "billed back · $0.00 this year". All three pinned.
+  - **The self-heal, cloned from `syncContractCamItems` down to the `changed` signal.** One derived `cam_line_items` row per
+    amortizing asset, refreshed when the figure drifts, removed when the asset stops amortizing or is fully depreciated, and
+    re-derived on year-open — so a second year bills the full figure where the first was prorated to the months in service,
+    with nothing re-entered. Written through `addExpenseLineItem` rather than a raw insert, which is **load-bearing**: an
+    amortization row can be the FIRST roof line a property has, and `carryFlatIntoItems` is what stops that re-summing a
+    hand-typed roof total down to the amortized figure.
+  - **At import**, a money-out line at or above the **$2,500 de-minimis floor** gains a *"Bought once, used for years"* group.
+    The entry type is **`capital`, not `cam`** — it lands in `fixed_assets` and reaches no expense total, so capitalizing at
+    import moves no bill. Never pre-selected: whether a payment REPLACED something or merely fixed it is a judgement only the
+    landlord can make from the invoice. `import_id` rides onto the asset, so provenance back to the stored statement PDF
+    survives — the column round 9 deliberately refused ("a column with no writer is the write-only-data antipattern") now has
+    its writer. Undo deletes the derived lines **explicitly** before the asset and re-sums the affected kinds — the mock has no
+    FKs, so a cascade-only design would pass the suite and orphan rows live (the `not()` incident).
+  - **⚠ NEITHER new destination learns a payee rule**, on purpose and for a new reason: a vendor who replaces a roof one year
+    repairs one the next, and the difference is the **amount**, not the payee — learning "ABC Roofing → capitalize" would
+    capitalize every future $400 repair from them.
+  - **Two existing assertions changed, both deliberately, both stricter.** ① `dispositionForRow`'s unknown-disposition guard has
+    now been overtaken **twice** — `owner` until round 7 made it real, `capital` until this round did — which is the guard
+    working; only `debt` remains genuinely unbuilt, so the case gained a literal never-shippable key no future round can claim.
+    ② A new sibling case pins that `capital` is **placed** and deliberately **not** `expense`.
+  - **A test-isolation lesson worth keeping.** Scratch fiscal years do NOT isolate assets — an asset is deliberately not
+    year-scoped (round 9's whole point), so one left behind goes on amortizing into every later case's year. That is the
+    feature behaving correctly; the suite now clears amortizing assets between cases and hands out scratch years two at a time,
+    since the self-heal case legitimately works in `y` and `y + 1`.
+  - **Files.** New: `supabase/migrations/0080_capitalize_and_amortize.sql` · `src/components/CapitalizeLineButton.js` ·
+    `src/lib/__tests__/amortization.test.js` (16) · `src/lib/__tests__/capitalizeLine.test.js` (12) ·
+    `src/components/__tests__/capitalizeUi.test.js` (6). Edited: `src/lib/{depreciation,api,dispositions}.js` ·
+    `src/components/{AssetRegisterSection,CamSection,RoofSection,StatementReview}.js` · `src/App.css` ·
+    `src/lib/__tests__/statementLines.test.js`. **No** view, RPC, edge function, mock or demo-seed change — `fixed_assets` and
+    `cam_line_items` are plain tables the demo mock auto-creates, and **no view reads either** (verified live, not inherited:
+    all three views return false for both), so §3 and rule #7 carry no obligation and §5 fans out to nothing.
+  - **Also fixed in passing: a wrong claim in the code and in this log.** Both said roof costs "bill back at 100% to
+    roof-responsible tenants rather than pro-rata." The SQL has said otherwise since 0005 — it is the same pro-rata formula CAM
+    uses, gated on the flag. The hazard the comment describes is real either way, but the figure is each tenant's pro-rata share
+    of the difference, not the whole of it. Round 10 is precisely the round that would have acted on the wrong version.
+  - **Verified:** unit **1328/1328** (`vitest run`); `npm run build` compiles; migration applied clean and read back (all three
+    columns present and **nullable**, 0 assets · 0 amortizing · 0 derived lines); **every stored expense total identical before
+    and after**; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it. Browser
+    drive-through skipped per George's standing preference — the six render tests mount the **real** RoofSection and the
+    **real** asset panel and drive the actual confirm-then-commit flow, including the closed-year refusal.
+  - **George: hard-refresh (Cmd+Shift+R).** Any CAM or roof line of $2,500 or more now carries **⤴ Capitalize**. Use it on a
+    roof replacement and the cost stops wrecking that year — and if your leases let you recover it, tick the box and it comes
+    back at cost ÷ life through the same charge, so the same tenants pay.
+  - **Flags:** ① **Capitalizing lowers what tenants are billed for that year, on purpose** — the confirm names the figure before
+    it moves, and your invoices for the year are re-issued. ② **Billing it back is off unless you tick it**, because Amlak
+    can't read whether your leases permit recovering capital costs — check the clause. ③ **A closed year refuses** both the
+    capitalize and the charge; record the asset by hand and leave the expense as history. ④ **Pershing has 1 roof-responsible
+    lease of 9**, so a roof you capitalize and re-bill there reaches one tenant — worth confirming that flag is right on the
+    other eight before you rely on it. ⑤ Round 7's flag still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401 S
+    Main are still recorded as not-billed **expenses**.
+
+- **2026-07-31** — **Accounting round 9 (Slice 5a): a thing bought once and used for thirty-nine years stops being one catastrophic
+  year — the asset register, straight-line depreciation, and a refusal to guess the land** (George: *"continue"*, working the
+  accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0079`**
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`095eb1f8`**, demo worker `a0f8148d`. **$0 — no AI call
+  anywhere; NO edge function, NO view, NO RPC; 0079 adds ONE table and alters NOTHING, so NOT ONE STORED TOTAL MOVED** (read back
+  live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26). Tests **1293/1293 across 139
+  files** (was 1263/137 — +30, two new suites).
+  - **The gap, stated precisely.** Amlak has never held the idea that a thing can be **bought once and used for years**. An
+    $18,000 roof is an $18,000 expense in the year it was paid, so that year reads as a disaster and every other year reads
+    better than it was. And the largest asset a landlord owns cannot be described at all — verified live again this round:
+    **`properties` has exactly EIGHT columns, one added since 0001** (`building_sf`, 0005). No acquisition date, no purchase
+    price, nothing.
+  - **⚠ NOTHING THIS ROUND WRITES CAN MOVE A BILL, AND THAT IS STRUCTURAL RATHER THAN CAREFUL.** Depreciation is a **non-cash**
+    figure: no money leaves the bank, no expense total changes, no tenant is billed. Every number is DERIVED from a
+    `fixed_assets` row, and that table is read by no view, no invoice and no share calculation — the same safety `entity_ledger`
+    (0077) and `other_income` (0078) have. Test-pinned by re-reading `cam_total`, `roof_total`, `taxes_total`, every
+    `v_tenant_shares` row and City Dental's invoice around booking a $46,800 HVAC asset.
+  - **⚠ AND IT IS DELIBERATELY ABSENT FROM "WHAT ACTUALLY STAYED."** That strip answers what is in the **account**; depreciation
+    never crossed the account. Subtracting it there would be the tidiest possible lie — a cash figure with a non-cash number
+    taken out of it. Pinned as its own test: the strip renders no Depreciation row and still reads **$80,740.00**.
+  - **⚠ THE REFUSAL THE ROUND TURNS ON — the land.** The land/building split is the most consequential number in depreciation
+    and Amlak **cannot know it**: it is an allocation *decision*, not a fact printed on the settlement statement. An 80/20
+    default is one line of code and silently wrong on most properties. So a building whose land has never been valued
+    **does not depreciate at all** — it shows a gold **"Set the land value"** chip and reports **"—", never $0**, because a
+    fully-depreciated asset legitimately reads $0 and the two must not look alike. **`null` is not zero:** a ground lease or a
+    condo unit legitimately answers 0 and depreciates the whole cost; a building nobody has split has null and blocks. Pinned in
+    both directions, and the gold marks only the **derived** columns — the cost is a fact the landlord typed and is not in
+    question.
+  - **The invariant that makes a 39-row schedule trustworthy.** Σ of every year's expense equals the depreciable basis **to the
+    cent**, on six different assets including ones that divide into nothing. Achieved the way `componentizeSchedule` does it:
+    each year is the difference between two **rounded cumulative** totals and the final year is the exact remainder — never
+    `round2(basis / life)` repeated, which over 27.5 years ends a third of a dollar short. **A test caught me asserting the naive
+    model** (34,036.36 vs the correct 34,036.37) and was rewritten to pin the real property, with the arithmetic spelled out so
+    nobody "corrects" it back.
+  - **Whole-month proration, and it says so.** A building placed in service in April takes 9 months in its first year. That is
+    **not** the mid-month convention — which is MACRS, deliberately not computed. Book value is **cost** less accumulated, not
+    basis less it, so a fully-depreciated building is worth its land forever; the arithmetic does the teaching.
+  - **⚠ AND IT DOES NOT REMOVE ANYTHING FROM YOUR EXPENSES — named on the panel rather than left to be discovered.** Recording a
+    roof here while the same roof sits in this year's roof total counts it twice. Taking it OUT and amortizing it back into CAM
+    is a **real billing change** that must run the full `resyncPropertyBilling` → `settleBillingChange` carry-through, which is
+    Slice 5b. An unnamed double-count is exactly the kind of quiet wrongness this arc keeps refusing.
+  - **The register is a JS registry with default lives** (`ASSET_KINDS` — the FEATURES / NOTIFY_TYPES / EXPENSE_CATEGORIES /
+    ENTITY_KINDS idiom, no CHECK): Building 39 · Building improvement 39 · Land improvement 15 · Equipment 7 · Appliances 5 ·
+    Acquisition costs 39 · **Loan costs with NO default**, on purpose — points amortize over the term of a loan Amlak does not
+    know until Slice 6, and a confident schedule off a number nobody chose is worse than asking. Defaults assume
+    **nonresidential** property (which is what Amlak is for) and are stated as such; a residential landlord types 27.5 and the
+    schedule follows. An **unknown kind** carries no life and blocks rather than borrowing another kind's — the same refusal
+    `dispositionInfo` and `entityKindInfo` make.
+  - **⚠ THE ONE TABLE IN THIS APP WITH NO `year` COLUMN, and that is the feature.** Every other money row belongs to a fiscal
+    year because every other figure does. An asset belongs to **all of them** — it has a date it entered service and a life
+    spanning decades, and the year's figure is derived. So `listFixedAssets` is deliberately **not** year-scoped; filtering it
+    would make the building vanish from every year but the one it was bought in. Pinned.
+  - **The accountant cross-check, and why disagreement reads as a fact.** A landlord who has owned a building for ten years
+    already has this figure on the CPA's last Form 4562. The schedule here is computed **independently** from cost, life and
+    in-service date, so the two are two SOURCES for one number — the deposit cross-check of round 8, one slice on. **They will
+    almost never match exactly:** a CPA applies the mid-month convention and this file prorates by whole months. So a gap smaller
+    than one year's depreciation is reported **with an explanation and no warning tone**; only a larger gap flags, because that
+    means a different cost or a different life. Three states pinned.
+  - **⚠ AND IT DELIBERATELY DID NOT ADD `properties.purchase_price`.** The building is an **asset like the roof is** — one cost,
+    one in-service date, one land allocation — so it belongs in the register rather than special-cased into two columns with
+    their own rules. That keeps **one depreciation rule for everything** and leaves the closing-statement extractor (Slice 5c) a
+    row to fill rather than a second schema to reconcile against this one.
+  - **Also refused in the schema itself:** no MACRS/bonus/§179 columns (elections are the accountant's; being subtly wrong is
+    worse than being absent), no disposal columns (gain/loss and recapture are a decision, not arithmetic — built when built,
+    not stubbed), and **no `import_id`** — nothing imports an asset yet, and a column with no writer is the write-only-data
+    antipattern this codebase keeps finding. Slice 5b adds it beside the code that writes it.
+  - **Where it shows.** A **"What you own"** panel, last on every property's Financials page — deliberately last, because every
+    panel above it answers *what crossed the account* and this one answers *what do I own and what did it lose*. Five columns
+    (Cost · FY {year} · Taken to date · Book value) on its own grid, with the recoverability table's ≤880px reflow so four money
+    columns survive a phone.
+  - **Files.** New: `supabase/migrations/0079_fixed_assets.sql` · `src/lib/depreciation.js` ·
+    `src/components/AssetRegisterSection.js` · `src/lib/__tests__/depreciation.test.js` (22) ·
+    `src/components/__tests__/assetRegisterUi.test.js` (8). Edited: `src/lib/{api,demo/store}.js` ·
+    `src/pages/PropertyFinancialsPage.js` · `src/App.css` · `vite.config.js`. **No** view, RPC, edge function or mock change —
+    `fixed_assets` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation (re-verified, not inherited),
+    and no `_shared` module was touched so §5 fans out to nothing. **No existing assertion changed** — this round adds a concept
+    rather than moving one, which is what "alters nothing" buys.
+  - **⚠ A suite-wide flake recurred and the ceiling was raised, not the test.** `camBreakdownV2` timed out at 15s on one full
+    run and passed in **108ms** in isolation; the failing run was **5× slower across the board** (environment 361s vs 41s, wall
+    99s vs 19s) — machine contention, not logic. Most render tests here await a real **write chain** through the demo mock, so
+    their budget is a **starvation** allowance rather than a work allowance, and at 139 files vitest runs 139 jsdom environments
+    across the pool. `testTimeout` 15s → **30s**, keeping the 6× gap over `asyncUtilTimeout` that round 4 established so a
+    genuine `waitFor` failure still reports the real assertion. Re-run green. Rounds 3 and 4 each hit this; the comment now says
+    what it is so the next round doesn't chase it.
+  - **Verified:** unit **1293/1293** (`vitest run`); `npm run build` compiles; migration applied clean and read back (13 columns
+    · `land_cost` **nullable** · `property_id` **NOT NULL** · **no `year` column** · both `owner_all` and `require_aal2` policies
+    · 4 indexes · **0 pre-existing rows**); **every stored expense total identical before and after**; live 200s on all four
+    URLs; live bundle carries the backend ref, demo bundle greps **free** of it. Browser drive-through skipped per George's
+    standing preference — the eight render tests mount the **real** panel and the **real** strip and drive the actual flow,
+    including answering the land question and watching the schedule unblock.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now ends with **"What you own"**. Record the
+    building first — its cost, the date you bought it, and **how much of that was the land** — then the roof, the parking lot,
+    the HVAC. Each one shows what it costs you in book value this year instead of wrecking a single year's figures.
+  - **Flags:** ① **Nothing is recorded yet** — 0 assets live. The building is the place to start, and it needs the land split
+    before it will depreciate at all; your closing statement or the county assessor's ratio is where that number comes from.
+    ② **Recording an asset does not remove it from your expenses** — until Slice 5b, a roof entered in both places is counted
+    twice. ③ **Straight-line and book only.** Your accountant applies the conventions and elections Amlak deliberately doesn't
+    compute, so their figure and this one will differ slightly in an asset's first year — the panel says so where it happens
+    rather than flagging it. ④ **Selling an asset isn't handled yet** — gain, loss and recapture are decisions, not arithmetic.
+    ⑤ Round 7's flag still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401 S Main are still recorded as not-billed
+    **expenses**.
+
+- **2026-07-31** — **Accounting round 8 (Slice 4c): a deposit that isn't rent can no longer be booked as rent — other income
+  gets a home, and the security deposit becomes a lease term that the bank line is checked AGAINST** (George: *"continue"*,
+  working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB
+  migration **`0078`** (Supabase `awgrjmbcghdjgnqeiqkt`), edge fns **`extract-lease` + `extract-addendum`** (§5 — both import
+  `_shared/rentSchedule.js`), frontend Cloudflare version **`de0001af`**, demo worker `97f6f911`. **$0 recurring — the deposit
+  read rides the EXISTING supplement call (one extra all-required array = ZERO of the 16-union budget), so no new AI call and
+  no new per-lease cost; NO view, NO RPC; 0078 adds ONE table + ONE nullable lease column + widens ONE CHECK, so NOT ONE STORED
+  TOTAL MOVED** (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26). Tests
+  **1263/1263 across 137 files** (was 1231/135 — +32, two new suites).
+  - **⚠ THE ASYMMETRY THAT MAKES THIS THE MORE DANGEROUS HALF OF SLICE 4, and it is the whole argument for the round.** Round
+    7's gap OMITTED a figure — a distribution went unrecorded. This one **CORRUPTS** one. A deposit on a bank statement had
+    exactly two destinations: a tenant lease, or Ignore. So a $75 late fee, a $5,000 security deposit, a utility reimbursement
+    or an insurance payout had to be booked **against a lease** — which credits it toward that tenant's ANNUAL INVOICE, so
+    `allocatePayments` reads the month over-paid and the Ledger's **Collected column reports rent that never arrived** — or
+    dropped entirely. A landlord can spot a missing number; nobody spots a rent-collection figure that is quietly too high.
+  - **TWO CONCEPTS, TWO SHAPES, AND DELIBERATELY NOT ONE TABLE — the opposite call to round 7's, on purpose.** Round 7 folded
+    three kinds into `entity_ledger` because a draw, a contribution and an entity cost all mean *"not the property's operating
+    result."* Here the two halves fall on **opposite sides of that line**: other income **IS** the property's income (a plus in
+    what actually stayed), while a security deposit is a **LIABILITY** — the tenant's money, held — belonging to no income
+    figure anywhere, ever. One table with a `kind` would put "sum the income" one forgotten filter away from counting held
+    deposits as revenue. Two tables makes that mistake structurally impossible rather than merely avoided — the identical
+    argument round 7 made for keeping draws out of `expense_records`, applied one level down.
+  - **⚠ AND THE DEPOSIT NEEDED NO TABLE AT ALL.** What is HELD is a lease term, so it lives on the lease (`security_deposit`).
+    What ARRIVED is a bank line — and 0076 already records every line with a disposition and a `ref`, so a deposit line
+    pointing at its lease **IS** the corroboration. Creating a third place a deposit figure can live is precisely how two of
+    them start disagreeing. **Neither is derived from the other, and that refusal is the feature:** *the lease says $5,000 is
+    held; the bank shows $5,000 received.* Amlak holds the document AND the money — QuickBooks has the money and not the lease;
+    a lease-abstraction tool has the lease and not the money. Test-pinned that an import **never** writes the bank figure onto
+    `leases.security_deposit`, because collapsing the two sources into one destroys the only check that makes either
+    trustworthy.
+  - **Disagreement is NOT automatically a problem, and reporting it as one would train George to ignore it.** A deposit taken
+    in 2019 has no bank line in Amlak and never will — the overwhelmingly common case — so `stated_only` reads as a plain
+    statement of fact with **tone `null`**, not a warning. The genuinely interesting case is the reverse: **money arrived and
+    the lease records no deposit** (`received_only`, warn) — either the term was never captured, or that money is not a deposit
+    and is now sitting in no income figure at all. Both pinned, in both directions.
+  - **The matcher now recognizes a deposit BEFORE it books as rent.** Two signals: the line says so in words, or it equals what
+    the lease states AND settles no month the tenant owes. **Both halves of the second are required** — a deposit is often set
+    at one month's rent, so an amount that *corroborates* a billed month is rent that merely resembles the deposit.
+    **⚠ AND THE BARE WORD "DEPOSIT" IS NEVER A SIGNAL** — every bank in America prints it on ordinary rent lines ("MOBILE
+    DEPOSIT", "REMOTE DEPOSIT 4471"), so matching it would reclassify a property's entire rent roll. Only the whole PHRASE
+    counts (`SECURITY DEPOSIT` · `DAMAGE DEPOSIT` · `SEC DEP`) — the same word-boundary lesson round 7 learned when
+    "WITH**DRAW**AL" matched "DRAW", applied *before* it could bite this time. Pinned as a named regression.
+  - **Nothing that isn't rent is ever auto-ticked**, even when the line says so in words. The cost of being wrong here is a
+    corrupted Ledger and there is no cheap way back from one, so it is always a suggestion a human confirms.
+  - **⚠ NEITHER NEW DESTINATION LEARNS A PAYEE RULE, and that refusal is load-bearing.** A rule fires on the payee, and a
+    tenant's payee string is **identical** whether they are paying rent, a late fee or a deposit — so learning "PAYEE →
+    security deposit" would reclassify every future rent payment from that tenant as a deposit, silently, in the direction that
+    corrupts. The recurring-payee argument that justifies learning a vendor is at its weakest here: a late fee happens when
+    someone is late, and a deposit happens once per tenancy. (Both still resolve to a `targetKeyOf`, so a pattern hitting an
+    income line AND a rent line is still correctly screened as boilerplate.)
+  - **`lease_id` on `other_income` is the column that makes attribution safe.** A late fee genuinely comes FROM a tenant and
+    recording that is real information — but it must never reach `payments`. So who-paid-it lives in a table **no billing code
+    reads**: the panel shows *"Late fee — March rent · from City Dental"* while City Dental's invoice, payments, monthly
+    schedule and every tenant's share read byte-identical. That is the round's headline test.
+  - **A deposit is read from the lease with ZERO schema cost.** `SUPPLEMENT_SCHEMA` gains `security_deposit` as an
+    all-required array (the `expense_estimates` precedent), so the supplement stays at **15/16** unions and the main SCHEMA —
+    at its 16/16 ceiling — is untouched. Read RAW + basis: *"a deposit equal to two (2) months' Base Rent"* comes back as
+    `2 + months_rent` and the shared pure `depositAmountFrom` multiplies **in code**, against the rent at the **START** of the
+    term (a deposit is fixed at signing and does not climb with the escalations). The prompt refuses first/last month's rent, an
+    application fee, a key deposit and a letter of credit by name, and an unresolvable deposit returns **null rather than a
+    guess** — it is the figure a bank line reconciles against, so a wrong one is worse than none.
+  - **Where it shows.** A new **"Other income"** panel on every property's Financials page, directly above "Owner & entity
+    money" — the two read as a pair: what came in that no invoice knows about, then what went out that no expense total knows
+    about. It is `CamSection` with the sign flipped and the billable axis removed (nobody bills a late fee back), and unlike an
+    expense bucket **every row already carries a category**, so there is no gold "nobody decided" state — the pick is made when
+    the money is placed. The **"What actually stayed"** strip fills the `otherIncome` slot round 7 built and left empty. The
+    lease page gains a **Security deposit** field carrying the cross-check verdict as its hint. The review screen's money-in
+    dropdown gains *"Other income — not rent"* (six categories) and *"Security deposit from…"*, and the Ledger's **"Money not
+    yet placed"** panel offers both.
+  - **A trap caught in test, and it is the one the file already warns about.** The matcher suggests a deposit for the tenant it
+    RECOGNIZED — and that tenant is a *candidate*, so a deposit list built from `pickable` (which filters candidates out) would
+    leave the `<select>` with no option matching its own value and **render blank**. Built from all of the property's tenants
+    instead; pinned.
+  - **Editing a deposit deliberately does NOT run the billing carry-through.** It changes no rent, no share and no invoice, so
+    routing it through `resyncYearBillingToEstimate` / `settleBillingChange` would be a write with no cause — the §1 rule read
+    in the direction that says *don't*.
+  - **Files.** New: `supabase/migrations/0078_other_income_and_deposits.sql` · `src/lib/{otherIncome,deposits}.js` ·
+    `src/components/OtherIncomeSection.js` · `src/lib/__tests__/otherIncome.test.js` (25) ·
+    `src/components/__tests__/otherIncomeUi.test.js` (7). Edited: `src/lib/{api,dispositions,statementMatch,demo/store}.js` ·
+    `src/components/{StatementReview,WhatStayedStrip,ImportStatementButton,LeaseForm}.js` ·
+    `src/pages/{PropertyFinancialsPage,LedgerPage,LeaseDetailPage,LeaseNewPage}.js` ·
+    `supabase/functions/extract-lease/index.ts` · `supabase/functions/_shared/rentSchedule.js`. **No** view, RPC or mock change
+    — `other_income` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation (re-verified, not
+    inherited). **Rule #7 re-checked and it mattered this time:** `v_tenant_shares` selects explicit `l.` columns (ending at
+    `l.lease_type`, 0073) and `v_property_totals` reaches leases only through `effective_rent(l.id, …)` — neither uses `l.*`,
+    so adding a lease column rebuilds no view. `create_lease_tx` needs no change either (`jsonb_populate_record`, 0053).
+  - **One existing assertion updated, and it got stricter.** Round 7's strip test pinned `$78,050`; the seed now carries $2,690
+    of income, so it reads **$80,740** — and the test gained a check that every **sign** is right (the two money-IN lines add,
+    the three money-OUT lines subtract), because a sign flip there would be an arithmetically tidy lie.
+  - **Verified:** unit **1263/1263** (`vitest run`); `npm run build` compiles; migration applied clean and read back (13
+    columns · `property_id` **NOT NULL**, `lease_id` **nullable** · both `owner_all` and `require_aal2` policies · 4 indexes ·
+    **0 pre-existing rows** · `leases.security_deposit` nullable with **0 leases carrying one** · the widened CHECK carrying all
+    12 target kinds); **every stored expense total identical before and after**; both edge fns deployed clean with unauth POST →
+    **401** (RLS-gated, *not* a schema 500 — proof the new schema was accepted); live 200s on all four URLs; live bundle carries
+    the backend ref and `other_income`, demo bundle greps **free** of it. Browser drive-through skipped per George's standing
+    preference — the seven render tests mount the **real** panel, the **real** strip and the **real** StatementReview and drive
+    the actual flow, including re-reading City Dental's invoice and payments around a late fee.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now carries an **"Other income"** panel above
+    "Owner & entity money". On any lease, **Security deposit** sits with the other terms. Import a statement and a deposit that
+    isn't rent — a late fee, parking, a security deposit — finally has somewhere to go instead of having to be filed as rent.
+  - **Flags:** ① **No lease in your portfolio has a security deposit recorded** (verified: 0 of 15) — the field starts empty and
+    fills as you type them in or re-upload a lease, which now reads the clause. ② **Re-uploading a lease is what captures the
+    deposit**; existing leases keep null until then. ③ A deposit **returned or applied at move-out** is deliberately not
+    automated — that is a decision (was it returned, or applied to unpaid rent?), and Amlak should not guess it. ④ **Neither
+    other income nor a deposit is remembered as a payee rule**, on purpose — see above; you pick them each time, which for a
+    late fee is the right cadence anyway. ⑤ Round 7's flag still stands: your Liana ($20,000) and Yazin ($10,000) lines at 401
+    S Main are still recorded as not-billed **expenses**.
+
+- **2026-07-31** — **Accounting round 7 (Slice 4b): a draw, an entity cost and a transfer finally have somewhere to go — and
+  the app can say what actually STAYED in the account, not just what NOI says** (George: *"continue"*, working the accounting
+  direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: DB migration **`0077`** (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`5be8f7ac`**, demo worker `2f4bd71c`. **$0 — no AI call anywhere; NO
+  edge function, NO view, NO RPC; 0077 adds ONE new owner-scoped table and widens ONE CHECK, so NOT ONE STORED TOTAL MOVED**
+  (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500; 401 S Main CAM 1,846.26). Tests
+  **1231/1231 across 135 files** (was 1210/133 — +21, two new suites).
+  - **The gap, stated precisely.** Amlak has exactly FOUR homes for a dollar — tenant rent, property taxes, CAM, roof — plus
+    Ignore. `IGNORE_KEYWORDS` binned `MORTGAGE` / `LOAN` / `TRANSFER` / `DRAW` correctly (they are not recoverable CAM) and
+    then recorded them **nowhere**, so **every distribution George has ever taken was invisible to the app**. Round 6 made
+    those lines visible as `unclassified`; this round gives them somewhere to go. **Round 6's judgement paid off exactly as
+    designed: round 7 did not have to go hunting — its work-list was literally `listUnplacedLines`.**
+  - **⚠ THE ACCOUNTING FACT THE WHOLE ROUND TURNS ON.** A distribution is **not an expense** — it reduces EQUITY. It must
+    never reach `expense_records`, never touch `cam_total`, never enter `v_tenant_shares`, never appear in NOI. Filing one as
+    an expense understates income by exactly the amount the CPA taxes. **That is not hypothetical:** 401 S Main is carrying
+    "Liana $20,000" and "Yazin $10,000" as not-billed EXPENSE lines right now, and both read like owner draws — the finding
+    Round 5 surfaced. The safety is structural, not careful: everything this round writes lands in `entity_ledger`, which no
+    view, no invoice and no share calculation reads. Test-pinned by re-reading `cam_total`, every `v_tenant_shares` row and
+    `noi` before and after booking a $24,000 draw.
+  - **⚠ AND IT EXPOSED A LIVE BUG THAT THIS ROUND WOULD HAVE MADE DANGEROUS.** The keyword table matched **substrings**, so
+    `Electronic Withdrawal To WASTE MANAGEMENT` — how U.S. Bank writes EVERY withdrawal, and 401 S Main's statements are U.S.
+    Bank — classified as **"owner draw", confidence HIGH**, because "WITH**DRAW**AL" contains "DRAW". `LOAN` had the same shape
+    (it matches the surname "Sloan"). While the answer was merely `ignore` that was an unhelpful suggestion; the moment a draw
+    became a real destination writing a real equity row, the identical false positive would file a Comcast bill as a
+    distribution. Fixed with **word-boundary** matching (`/(^| )DRAWS?( |$)/`) — the CAM keywords stay substrings on purpose,
+    they are stems (LANDSCAP → LANDSCAPING), but a whole word must be matched as a whole word. Live proof: that line now reads
+    **`expense_cam` / Waste removal**. Pinned as a named regression.
+  - **One table, not three, and no CHECK on `kind`.** A draw, a contribution and an entity cost have one shape and differ only
+    in meaning, so the meaning lives in `kind` plus a JS registry (`src/lib/entityLedger.js`) — the FEATURES / NOTIFY_TYPES /
+    EXPENSE_CATEGORIES / 0076-dispositions idiom. A CHECK would mean a migration every time the list grows (debt, capital) and
+    would reject a row the app considers valid. The one constraint enforced is the one that matters: **`corporation_id` is NOT
+    NULL**, because this is entity-level money by definition.
+  - **`property_id` is nullable and that is not laziness.** An entity cost (registered agent, franchise tax) genuinely belongs
+    to no single building — but an imported line always knows which account it left, and recording that is free information. It
+    is what lets the per-property strip show what actually left that account with **no allocation guess**. `on delete set null`:
+    deleting a property must not erase a draw that really happened. Test-pinned that a property-less row still rolls up to its
+    corporation.
+  - **A transfer writes NOTHING, and that is the design.** Between the owner's own accounts it is neither income nor expense —
+    the disposition IS the record, exactly as an ignore's reason is. So it needs no tick. George's real February line, the
+    **$20,154.11 "Mobile Banking Transfer From Account …8966"**, is the case the plan names: it matched no tenant, sat unticked,
+    and vanished. It is now a recorded transfer.
+  - **A hole in my own design, caught in test — the second round running.** The matcher SUGGESTS transfer, so the dropdown
+    already reads "Transfer" while the line is still unplaced; re-picking the same value changes nothing, leaving **no way to
+    say yes**. Precisely the hole round 6 found on a matcher-ignored row, and the same answer: a **"Confirm transfer"** button
+    that IS the decision, one click. (A draw or entity cost needs no such thing — it writes a row, so its unticked checkbox is
+    already the visible confirmation.)
+  - **Round 6's all-clear was unreachable, and now says so.** `completenessSentence` has always had an "N of N lines placed ✓"
+    branch, but the footer only rendered the block when something was UNPLACED — so the promise that nothing went missing was
+    only ever stated when it was false. It now renders always: *"3 of 3 lines placed ✓ — Every line this statement showed is on
+    record."*
+  - **The ownNames guard is SCOPED, not dropped.** `screenRulePatterns` refuses to learn a pattern naming the landlord's own
+    corporation — that is the live `NASA PROPERTY LLC TRN → always match Ricki's-Lyons` rule that prompted it. But the reason a
+    bank prints the account holder's name is that the line IS a transfer or a draw, so pointing it at one of those is the
+    **correct** answer; refusing would mean re-picking the same distribution by hand every month forever. Now rejected as a
+    tenant or a vendor, allowed as an entity destination.
+  - **`import_rules.target_kind` IS extended (four new values) — the extension 0075 deliberately refused.** `target_kind`
+    answers *"which of Amlak's destinations does this dollar hit"*, and a distribution is a genuinely new destination. A tax
+    category was a different axis entirely, which is why that one was refused and this one isn't.
+  - **"What actually stayed" — the strip, and the two wrong ways to build it, both refused.** Folding the not-billed costs into
+    `cam_total` would **bill tenants for expenses the landlord deliberately absorbed** (the exact thing `billable=false` exists
+    to prevent); redefining `v_property_totals.noi` would silently re-value every historical chart point, every
+    `financial_snapshots` row already written and every Ask Amlak fact. So NOI is quoted **unchanged** and everything it doesn't
+    know about is carried **beside** it, derived client-side: *NOI · + other income · + contributions · − costs you absorbed ·
+    − entity costs · − draws = what actually stayed.* **This is the round that finally counts the not-billed group** — visible
+    on the Expense entry since round 4 and reaching no total, because 2026-07-21 deliberately deferred it ("folding them into
+    NOI = v2"). A zero line is omitted (a strip full of "$0.00 distributions" is noise), the total is summed **from the rows
+    shown** so it can never disagree with its own arithmetic, and the whole strip **hides itself** when there is nothing to
+    reconcile rather than reading "NOI $X = what stayed $X". All pinned.
+  - **Where it shows.** The strip sits directly under NOI on every property's Financials page — it is the sentence NOI leaves
+    unfinished. An **"Owner & entity money"** panel below the expense sections lists each kind with its own subtotal and a
+    ✕ per row (the confirm names all three consequences, including that no bill and no expense total changes). The **corporation
+    cards** carry a quiet *"$24,000 drawn · $5,000 contributed · $1,750 entity costs"* line **under** the fixed three-column
+    Rev/Exp/NOI grid, never inside it — that grid was pinned deliberately on 2026-07-21 so every card formats alike. And the
+    Ledger's **"Money not yet placed"** panel gains a **"Record as…"** control, so answering the nag no longer means
+    re-importing the statement.
+  - **Only an entity COST gets a tax category, and it arrives with none.** A draw files on no line of any return, so offering it
+    a category would invite a wrong answer — pinned in the DOM (exactly one chip renders, on the cost row). The category is
+    nullable for 0075's reason: a defaulted "Other" hides the decision that wants surfacing, so it shows gold as *"Set a tax
+    category"*. It reuses `EXPENSE_CATEGORIES` rather than declaring a second list — §3, applied before the drift.
+  - **Files.** New: `supabase/migrations/0077_entity_ledger.sql` · `src/lib/entityLedger.js` ·
+    `src/components/{EntityLedgerSection,WhatStayedStrip}.js` · `src/lib/__tests__/entityLedger.test.js` (13) ·
+    `src/components/__tests__/whatStayedUi.test.js` (5). Edited: `src/lib/{api,dispositions,statementMatch,demo/store}.js` ·
+    `src/components/{StatementReview,ImportStatementButton}.js` · `src/pages/{PropertyFinancialsPage,LedgerPage,
+    CorporationsPage}.js` · `src/App.css` · four existing suites (see below). **No** edge function, view, RPC or mock change —
+    `entity_ledger` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation here (re-verified, not
+    inherited). Rule #7 re-checked: no view selects `import_rules.*`.
+  - **Four existing assertions were reversed, every one deliberately, and each got STRICTER.** ① `isPlaced('owner')` used
+    `owner` as its example of an unknown disposition — round 6's own comment predicted rounds 7/8 would make it real, which is
+    exactly the scenario that guard is for; it now uses `debt`/`capital` (genuinely Slice 5/6) **and** gained a case pinning
+    that the three new dispositions are placed while `unclassified` remains the only unplaced state. ② `TRANSFER TO SAVINGS`
+    now suggests `transfer`, not `ignore`. ③ The tenant-dropdown test asserted "Other properties is the LAST optgroup", which
+    broke the moment a group was added beneath it — rewritten as the ORDERING rule it was always trying to express, plus a new
+    assertion that the non-rent group sits below both. ④ Round 6's "a deliberate exclusion says why" used the transfer line,
+    which is no longer homeless — it now proves the better outcome (the confirm places it, and it is **not** counted as "left
+    out"), and round 6's original guarantee is preserved in a new sibling test using a genuinely unrecognized line.
+  - **Verified:** unit **1231/1231** (`vitest run`); `npm run build` compiles; migration applied clean and read back (14 columns
+    · `property_id` **nullable** · both `owner_all` and `require_aal2` policies · 4 indexes · **0 pre-existing rows** · the
+    widened CHECK carrying all 10 target kinds); **every stored expense total identical before and after**; live 200s on all
+    four URLs; live bundle carries the backend ref, demo bundle greps **free** of it. Browser drive-through skipped per George's
+    standing preference — the five render tests mount the **real** strip, the **real** panel and the **real** StatementReview
+    and drive the actual flow, including recording a draw by hand and re-reading every tenant's share afterwards.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now carries **"What actually stayed"** under NOI,
+    and an **"Owner & entity money"** panel below the expenses. Import a statement and a draw, a transfer or an LLC cost has a
+    real destination instead of being binned. Anything already sitting under **Money not yet placed** on the Ledger can be
+    recorded from there with one click.
+  - **Flags:** ① **Your Liana ($20,000) and Yazin ($10,000) lines at 401 S Main are still recorded as not-billed EXPENSES** —
+    I did not touch them, because whether they are draws is your call, not mine. If they are, delete them from the Expense entry
+    and record them under **Owner & entity money**; the recoverability table will stop counting $30,000 of distributions as a
+    cost. ② **Mortgages and loans still have no home** and stay unplaced by design — that is Slice 6, and the reason on the row
+    now says so instead of implying the line doesn't matter. ③ A **transfer** records the decision and nothing else, so it
+    appears in no total anywhere — which is correct: it never left your hands. ④ The corporation card's draw line counts every
+    property under that corporation; the per-property strip counts only what left that property's account.
+
+- **2026-07-31** — **Accounting round 6 (Slice 4a): a bank line can no longer disappear — every line a statement showed is
+  now a record carrying a decision, and "nothing went missing" became a number you can read** (George: *"continue"*, working
+  the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase; the rule is his, from the
+  plan: *"a dollar that crossed the bank is either recorded somewhere or explicitly ignored with a reason. Never dropped."*).
+  Deployed: DB migration **`0076`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`7e7f3e01`**, demo worker
+  `fd28d528`. **$0 — no AI call anywhere; NO edge function, NO view, NO RPC; 0076 is ONE new owner-scoped table that alters
+  nothing, so NOT ONE STORED TOTAL MOVED** (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500).
+  Tests **1210/1210 across 133 files** (was 1186/131 — +24, two new suites).
+  - **What was actually broken, and it was worse than "unrecorded".** A line nothing recognized arrived unticked; saving
+    without touching it produced no write **and no record that the line had ever existed**. `statement_imports.applied`
+    stores every write an import MADE and **nothing about the lines it passed over** — so *"did I ever book that Comcast
+    bill?"* had no answer inside the app. The stored PDF was the only trace, and a PDF is not queryable. The money didn't
+    just go uncounted; it went **untraceable**.
+  - **The fix is a RECORD, not a new destination.** `statement_lines` (0076) holds one row per **transcribed** line — date,
+    description, amount, direction, the `import_hash` that already existed — each carrying a **disposition**. Rounds 7 and 8
+    add the destinations (owner draws, entity costs, transfers, non-rent income, deposits held); this round makes it
+    impossible for a line to vanish while they're being built.
+  - **It does NOT replace `applied`, and the distinction IS the design.** `applied` is the **undo** record — what to reverse,
+    keyed to live rows, replayed backwards. `statement_lines` is the **audit** record — what the statement said and what we
+    decided about it. Which is exactly why **`ref_id` is deliberately NOT a foreign key**: deleting a payment by hand later
+    must not rewrite history to claim the import never booked one.
+  - **⚠ THE JUDGEMENT THIS ROUND TURNS ON — and it's the difference between an honest figure and a flattering one.** The
+    matcher bins `MORTGAGE` / `LOAN` / `TRANSFER` / `DRAW` by keyword and hands the row over as `kind:'ignore'` with nobody
+    having chosen anything. Recording that as `ignored` would **credit the landlord with a decision they never made** — and
+    those are precisely the lines with no home in Amlak *yet*. So a matcher ignore stays **`unclassified` and keeps nagging**
+    until rounds 7–8 give it one. An unplaced figure that quietly absorbed them would be a lie that gets quieter over time.
+    Test-pinned in both directions.
+  - **Three other states, each decided on its own merits.** An ignore the landlord **picked** is `ignored` (their decision).
+    **Unticking is not excluding** — a row can arrive unticked because it needs review, and *"I'll deal with it later"* must
+    not be stored as *"leave it out forever"*, so it stays unplaced. And a **duplicate** is the one exclusion nobody has to
+    make: the guard already matched it to money booked by an earlier import, so it counts as accounted for without asking —
+    nagging about it would train George to ignore the nag.
+  - **A real usability hole found while testing my own design, and fixed.** A matcher-ignored row had **no way to confirm the
+    exclusion** — its only button was *"↩ Undo ignore"*. So the reason picker now shows on **every** ignore row, reading
+    **"Leave it out…"** on the matcher's guess (choosing a reason IS the decision, one click) and *"Why leave it out?
+    (optional)"* once it's theirs. **The reason is never required** — making it mandatory on the way out just teaches people
+    to pick the first option, and an unexplained exclusion is still a decision.
+  - **The tie-out keeps money in and out APART, and that refusal is load-bearing.** A single netted figure would let an
+    unplaced $5,000 deposit and an unplaced $5,000 withdrawal report **"$0 unplaced"** — perfect health on a statement where
+    $10,000 is unaccounted for, i.e. the exact silent loss this slice exists to end. Pinned as its own test, including that
+    the result carries no `unplacedNet` key at all. **Money IN nags harder** on purpose: an unplaced deposit may be rent that
+    should have settled a month, which makes a tenant read short on the Ledger grid.
+  - **Where it shows.** The review footer's old *"N ignored"* — which called every unticked row ignored, conflating a
+    decision with a blind spot — is replaced by **"N left out on purpose · M not placed"** plus a live sentence (*"2 of 3
+    lines placed · 1 not placed ($20,154.11 out)"*). The results strip states it at the moment it reassures, straight after
+    saving. And the Ledger tab grows a **"Money not yet placed"** panel listing each line with a one-click *"Leave it out…"*
+    that records the decision **without re-importing anything**.
+  - **⚠ An unknown disposition reads as UNPLACED, never as placed.** A row written by round 7 and read by an older cached
+    bundle must not be counted as accounted for — guessing "placed" hides money, which is the failure mode. Pinned.
+  - **The mock divergence closed BEFORE it could bite.** 0076 declares `on delete cascade`, but `undoStatementImport` deletes
+    the lines **explicitly** — the demo mock has no foreign keys, so a cascade-only design would have passed the whole suite
+    and left orphans live. That is precisely the `not()` incident (`mockClient.js:155`). The cascade stays as the backstop,
+    and a test pins the explicit delete so nobody "tidies it up".
+  - **The audit table can never cost anyone an import.** The line write is wrapped best-effort and runs AFTER the money
+    writes: an import that has already booked real payments must not be lost because an audit row failed. Test-pinned by
+    breaking the table mid-import — the payment and the expense still land.
+  - **Files.** New: `supabase/migrations/0076_statement_lines.sql` · `src/lib/dispositions.js` ·
+    `src/lib/__tests__/statementLines.test.js` (18) · `src/components/__tests__/statementCompleteness.test.js` (6). Edited:
+    `src/lib/api.js` (`listStatementLines` · `listUnplacedLines` · `setLineDisposition` · the `lines` write + `completeness`
+    on the summary · the explicit undo delete) · `src/components/{StatementReview,ImportStatementButton}.js` ·
+    `src/pages/LedgerPage.js`. **No** edge function, view, RPC, CSS or demo-seed change — `statement_lines` is a plain table
+    the demo mock auto-creates, so §3 carries no mirror obligation here (re-verified, not inherited).
+  - **Verified:** unit **1210/1210** (`vitest run`); `npm run build` compiles; migration applied clean and read back
+    (15 columns · `disposition` **NOT NULL default 'unclassified'** · both `owner_all` and `require_aal2` policies · 3
+    indexes · the import FK reads `confdeltype = 'c'` = cascade · **0 pre-existing rows**); **every stored expense total
+    identical before and after**; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free**
+    of it. Browser drive-through skipped per George's standing preference — the six render tests mount the **real**
+    StatementReview and the **real** LedgerPage against the demo mock and drive the actual flow, including settling a line
+    from the panel.
+  - **Two stale CLAUDE.md facts fixed in passing** (both flagged in the plan): §1's money spine listed a `tax_line_items`
+    table that has never existed (it is `cam_line_items` with `kind='tax'`, since 0067 — now also `'roof'`, since 0074), and
+    §4 said `snapshotFingerprint` was at `v4` when `portfolio.js:61` has read `v5` since 0073. Stale docs, not stale code.
+  - **George: hard-refresh (Cmd+Shift+R).** Import a statement and the footer now tells you **how many of its lines are
+    placed**, not just how many you ticked. Anything left over shows under **Money not yet placed** on that property's
+    Ledger tab — with a one-click way to leave it out for good, and say why.
+  - **Flags:** ① **Statements imported before today have no line records** — the panel only knows what it was told, so it
+    starts empty and fills from your next import. Nothing is lost; re-import a month if you want it audited.
+    ② **Expect the panel to be busy at first, and that is the point** — every mortgage, transfer and draw line the importer
+    has always binned will now sit there unplaced until rounds 7–8 give them real homes. Leaving one out with a reason
+    silences it in the meantime. ③ **The balance tie-out against the bank's own closing figure is deliberately NOT in this
+    round.** The extractor reads `period_start`/`period_end` and a per-line running balance but no summary-block totals, and
+    the last line's balance is **not** universally the closing balance (U.S. Bank prints a per-*day* summary — the 07-31
+    round). Doing it honestly needs two extractor fields and a redeploy; this round ships the **completeness** tie-out, which
+    is the guarantee you actually asked for: every line the statement showed is on record. ④ A follow-on this makes cheap:
+    the duplicate guard currently reads `payments.import_hash` only, so it covers deposits and not expenses —
+    `statement_lines` now holds every line's hash and could cover both.
+
+- **2026-07-31** — **Accounting round 5 (Slice 3): the recoverability table — for the first time the app can say what an
+  expense actually COST you, after tenants pay their share** (George: *"continue"*, working the accounting direction doc
+  `~/.claude/plans/no-need-to-come-magical-fairy.md` phase by phase). Deployed: frontend Cloudflare version **`00bdd480`**,
+  demo worker `e80f1edc`. **$0 — no AI call anywhere; NO migration, NO edge function, NO view, NO new table; not one
+  figure is written and not one tenant's bill can move, because every number is DERIVED.** Tests **1186/1186 across 131
+  files** (was 1165/129 — +21, two new suites).
+  - **The gap this closes, stated precisely.** `v_property_totals` has carried `roof_recovered` / `roof_unrecovered`
+    since migration **0005** — for exactly ONE bucket, because the roof is the one expense with a per-lease
+    responsibility flag. For CAM and taxes it *looks* like recovered equals spent, and it doesn't: vacancy, a share
+    override, and a line marked *not billed to tenants* each break it silently. So the single most important number for
+    a net-lease landlord — what he spent LESS what came back — existed for the roof and nowhere else. **This is the
+    one-off generalized**, and the roof row is now a free cross-check against SQL that predates it by seventy migrations.
+  - **It needed no schema at all, which is the point.** The recovered figure is read out of `v_tenant_shares` (which the
+    per-tenant breakdown on the same page already renders) and the spent figure out of `cam_line_items` (which the three
+    itemized sections above it already render) — **through their own React Query keys**, so it is a cache hit, it
+    repaints on every existing invalidation with no new plumbing, and it **cannot disagree with the page it sits on**.
+  - **Live, on George's real data, the cross-check holds to the cent:** Pershing FY2026 `v_property_totals.roof_recovered`
+    reads **30.36** and this table derives **30.36**. Two independent implementations, one in SQL since 0005 and one in
+    JS today, landing on the same number — pinned by a test that will fail if they ever diverge.
+  - **What Pershing FY2026 now reads:** taxes spent **$127,000** · recovered **$118,853.53** · **net $8,146.47** ·
+    CAM $24,200 / $22,647.68 · roof $500 / $30.36 / **net $469.64** (only Infinite Mobile is roof-responsible).
+    **≈$10,168 carried** — a figure that did not exist in the app this morning.
+  - **⚠ AND IT IMMEDIATELY SURFACED $40,843 THAT HAS NEVER REACHED ANY FIGURE AMLAK COMPUTES.** 401 S Main FY2026 carries
+    **Liana $20,000 · IL DPT REV $10,000 · Yazin $10,000 · Other $843**, all marked not-billed — so `syncCamTotal`
+    (which sums `billable !== false`) never counts them, therefore `total_expenses` doesn't, therefore **NOI doesn't**.
+    That was a deliberate 2026-07-21 decision (*"folding them into NOI = v2"*), and the money has been visible on the
+    page and absent from every figure derived from the page ever since. **This table is the first thing that counts it.**
+    **⚠ And some of it probably isn't an expense at all** — "Liana" and "Yazin" are check payees and read like owner
+    draws, which reduce equity and must never touch a P&L. Slice 4 is what gives a draw a home; until then a not-billed
+    line is counted as an expense because that is what the app was told it is. **Flagged, not papered over.**
+  - **`recovered` is the ACTUAL pro-rata share, not the estimate — and that is the honest choice.** A tenant pays an
+    estimate all year and the difference is settled at reconciliation, so what the landlord is *entitled to collect* for
+    the year is the actual share, whatever the estimate happened to be. It is also why the figure ties to the roof
+    numbers the view has computed for months. **A gross lease still recovers** (0073): its share is carved out of the
+    flat rent rather than billed on top, and `cam_amount`/`tax_amount`/`roof_amt` are deliberately unchanged for it — so
+    **no gross branch was needed anywhere**.
+  - **Two refusals, both load-bearing.** ① **`null`, never 0, for a kind with no spend** — "nothing was spent" and
+    "nothing came back" are different claims, and a 0 would multiply into a recovered column that looks like a finding.
+    ② **An un-itemized kind gets its own row rather than vanishing.** A kind either has lines that sum to its total
+    (`syncKindTotal` re-sums from the rows whenever any exist) or has no lines and one flat figure — so Pershing's
+    **$127,000 of taxes, which nobody has split into instalments, appears as "Property taxes — entered as one figure,
+    not itemized"** instead of being silently absent from a table headed *what it cost you*.
+  - **The section a line was entered in is itself information.** Category resolution is **saved bucket → label registry →
+    what the section means → uncategorized**: a row in the property-taxes list IS a real-estate-tax line and a roof line
+    IS roof work — not a guess, just what the section is for. Only **CAM** is genuinely ambiguous, which is exactly where
+    the gold uncategorized nag belongs. That also meant no chips had to be added to the tax and roof sections this round.
+  - **Every row ties as displayed.** `spent = recovered + net` to the cent (net is derived FROM the rounded pair, never
+    from the raw figures), and the totals line is the **sum of the rows shown**, never a second derivation — a table
+    whose columns don't add up is worse than no table. Both pinned.
+  - **Ranked by NET COST, not by spend** — the roof you absorbed in full outranks a larger tax bill that came back
+    whole, because that is the question. **Uncategorized is pinned last regardless**, so the sort can neither bury the
+    nag nor promote it above real categories (pinned in both directions).
+  - **⚠ THE CAM-CAP CAVEAT — and Slice 3 is what finally answered the question that started this whole plan.** The
+    ten-check review flags `cam_capped`, and grep found the key nowhere in the billing math: Amlak bills uncapped
+    pro-rata regardless, so the recovered column would report money the landlord isn't entitled to collect. Round 4's
+    sweep made this answerable for the first time, and the answer is **exactly one lease — Tobacco, Pershing Plaza.**
+    Making a cap a stored lease term feeding `billedComponents` is a §2 choke-point change and is **deliberately not
+    done here**; the table names the lease, links to it, **and quotes the clause the flag came from**. That quote is the
+    design: **Tobacco's own quote describes an ESTIMATE with a true-up the tenant "unconditionally agrees" to — which is
+    close to the opposite of a cap**, so this one reads as a likely false positive. A caveat you can check beats one you
+    can only believe.
+  - **Slice 2's CAM-only roll-up is DELETED, as Round 4 said it would be.** It covered one of three sections and said so
+    in its own footnote; this covers all three and adds the column worth reading, so keeping both would put two roll-ups
+    on one page disagreeing about scope. `summarizeByCategory` went with it — `recoverabilityRows` is a strict superset,
+    and two implementations of one grouping rule is precisely what §3 says always drifts. **Its invariants moved rather
+    than died**, including THE refusal (uncategorized is never folded into "Other"), now pinned BOTH as a unit test and
+    **in the DOM** against the component that actually ships. Setting a category still happens on the chip in
+    `CamSection` — that is its job and it stays.
+  - **`listLeaseReviews` is deliberately NOT `ai_review` on `LEASE_LIST_COLS`.** That column list feeds every lease list
+    in the app; adding a review blob there would download every review on every tenant list forever. Server-side
+    filtering keeps it to the handful of reviewed rows.
+  - **Files.** New: `src/lib/recoverability.js` · `src/components/RecoverabilityTable.js` ·
+    `src/lib/__tests__/recoverability.test.js` (17) · `src/components/__tests__/recoverabilityUi.test.js` (4). Edited:
+    `src/lib/{api,leaseRisks,expenseCategories}.js` · `src/components/CamSection.js` ·
+    `src/pages/PropertyFinancialsPage.js` · `src/App.css` · tests (`expenseCategories` −5 moved, `bucketUi` retargeted
+    to the chips, `expenseEntryUi` repointed off the removed roll-up). **No** migration, view, RPC, edge function or
+    `mockClient.js` change — nothing new is stored, so §3 carries no mirror obligation here (re-verified, not inherited).
+  - **Verified:** unit **1186/1186** (`vitest run`); `npm run build` compiles; live 200s on all four URLs; live bundle
+    carries the backend ref, demo bundle greps **free** of it; **live read-back confirms the roof cross-check (30.36 =
+    30.36) and that no stored total moved — nothing in this round writes.** **Driven in a real browser against the
+    deployed demo at 1440px and 420px:** the table reads *Repairs $4,000.00 / $1,600.00 / **$2,400.00*** at the top,
+    *Legal and professional $1,200.00 / — / $1,200.00*, *Real estate taxes $25,000.00* flagged un-itemized, *Not
+    categorized $6,000.00* last, and **Total $48,200.00 / $44,600.00 / $3,600.00 — "Tenants cover 92.5% of what you
+    spend"**; at 420px the header band hides and every figure self-labels via the shared `.stat-label`; **zero page
+    overflow at either width, zero console errors**, and the old CAM roll-up confirmed gone.
+  - **George: hard-refresh (Cmd+Shift+R).** Every property's Financials page now carries **"What it cost you"** under the
+    expense entry: what you spent, what your tenants pay back, and what you carry — by the line of your return each
+    bucket rolls up to.
+  - **Flags:** ① **401 S Main will show ~$40,843 of net cost you have never seen in the app** — that is real money you
+    spent, previously counted nowhere. Some of it is probably an owner draw rather than an expense; Slice 4 is what
+    separates those. ② **Tobacco (Pershing) carries a CAM-cap warning** under the table — read the quoted clause; on my
+    reading it doesn't actually cap anything, in which case the figure stands as shown. ③ **Nothing on this page writes.**
+    A wrong category makes a wrong report and can never make a wrong invoice. ④ Pershing's **$127,000 of taxes is one
+    flat figure** — itemize the instalments (Slice 1 gave taxes their own list) and the table gets sharper by payment.
+
+- **2026-07-31** — **Accounting round 4 (Slice 2): an expense bucket becomes a RECORD carrying a tax category · the lease-review
+  sweep finally ran on live data (14 of 15, 31 findings) · and it exposed a real defect — a review built on a half-transcribed
+  scan was reporting confident findings from pages nobody could read** (George: *"im giving you permission to go ahead and change
+  the parameters around the limiter. try again and if you cant change it just leave it and then continue on"*). Deployed: DB
+  migration **`0075`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`533d268b`**, demo worker `59aef771`.
+  **NO edge function, no tenant emails; 0075 is ONE new owner-scoped table and alters nothing, so NOT ONE STORED TOTAL MOVED**
+  (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500). The only spend was the sweep George had already
+  approved — **~$1.35, one time**. Tests **1165/1165 across 129 files** (was 1143/128 — +22, one new suite).
+  - **The limiter: I could change it, and deliberately didn't — the limit was never the blocker.** `ai_rate_check` (0018) opens
+    `if uid is null then return false`, *before* the counter is touched, so a service-role JWT — which carries no `sub`, hence a
+    null `auth.uid()` — is denied whatever number the limit holds. Raising it changes nothing; **weakening that line is the only
+    thing that would have worked, and it is the one line standing between a stray token and the Anthropic key.** So the sweep ran
+    the honest way instead: a real user session minted through the admin API (`generate_link` → `verify`), which gives a genuine
+    `auth.uid()`, lets RLS scope every read and write, and leaves the limiter counting exactly as designed. **RLS proved the
+    session was real rather than borrowed** — `fakkawi3` saw exactly its 14 leases and `khaled.akkawi` exactly its 1; a
+    service-role token would have shown all 15 to both. Both accounts have **0 verified MFA factors**, so 0052's `require_aal2`
+    was dormant and an ordinary session passed. Nothing about the limiter was changed.
+  - **The sweep: `ai_review` 0 → 14 of 15, 31 findings, 2 texts cached.** Every lease that had a readable document is now
+    reviewed. **Vape Store failed honestly** — its transcription came back empty, and `cache-lease-text` reported that rather
+    than writing `''` (the refusal that function was built around, working on real data).
+  - **⚠ AND THE SWEEP IMMEDIATELY EARNED ITS KEEP BY EXPOSING A DEFECT IN ITSELF.** Two of the 14 reviews are built on
+    transcripts far too thin to judge a lease from: **Ricki's cached 5,950 chars and Hair Salon 317**, against 30k–112k for every
+    properly-read lease. Reading them back: Ricki's is **missing pages 1-20 of 36**, and Hair Salon's "lease" transcribed as a
+    **scan of a driver's licence** (`RUIZ SALDIVAR VICTOR`, DOB, class, weight) — yet it returned **five** confident findings.
+    **The reason this class of error is so dangerous here is specific:** the review's most valuable findings are the ones saying a
+    lease is *silent* on something ("no personal guarantee", "no security deposit") — and **an unread page is indistinguishable
+    from silence**. So a partial scan manufactures exactly the findings a landlord would act on.
+  - **The fix is a FACT, not a heuristic — and it needed no re-run.** The transcription pipeline has left visible
+    `[Pages 11-20 could not be read…]` markers since the 2026-07-21 parallel-chunk fix, precisely so a hole is visible rather
+    than silent — **and nothing had ever consulted them.** New pure `transcriptGaps(text)` (`leaseRisks.js`) reads them, and
+    `LeaseReviewStrip` leads with a warning naming the missing pages *above* the findings they undermine. Because it reads the
+    live transcript rather than the saved verdict, it **judges every review already stored** — no re-run, no new column, and it
+    covers leases reviewed before it existed. When almost nothing survives the markers it says so outright ("any finding below is
+    unreliable"). I deliberately **did not invent a "a real lease is ≥N characters" threshold** — that would be a guess; a gap
+    marker is the pipeline's own report of what it failed to read. Also fixed alongside: a lease WITH a document that yielded no
+    text used to read *"There's no lease document on file"*, which is simply untrue and would have George hunting for an upload
+    he already made.
+  - **Slice 2 proper — the bucket becomes a record.** `cam_line_items.label` is free text with no controlled list, built into a
+    Map at runtime from labels already typed. That is genuinely good onboarding — you configure nothing — and it stays as the
+    seed and the fallback. What it cannot do is **hold a decision**. New owner-scoped **`expense_buckets`** (label · category ·
+    billable · capital_prone), unique on `lower(btrim(label))` so one bucket can never hold two categories under two spellings.
+    **Owner-wide, not per-property**, matching the Map it replaces: a bucket named once is offered everywhere, so its category is
+    answered once.
+  - **Two refusals, both load-bearing.** The category does **NOT** go on `cam_line_items` — it is a property of the bucket, and
+    putting it on the line would ask the same question of every landscaping invoice and let two lines in one bucket disagree. And
+    `import_rules.target_kind` is **NOT** extended: it answers *"which of Amlak's money buckets does this dollar hit"* — a
+    billing question with six correct answers driving `resolvePick` — while the tax category is a different axis entirely, where
+    many buckets map to one line. Collapsing them would force a dozen meaningless branches through the import path.
+  - **`category` is NULLABLE, and that is the whole point.** Defaulting to 'Other' would hide exactly what this slice exists to
+    surface — and George's own January import already learned a bucket **literally named "Other"**, which is the failure in
+    miniature. An unanswered bucket shows as its own gold figure with its name attached (*"Not categorized · Security ·
+    $6,000.00"*), never folded into the Other **category** — those are different things: one is a choice to file something as
+    Other, the other is nobody having decided. Test-pinned in both directions.
+  - **Defaults cover what the app proposes; a human-invented label is asked about.** The 18 built-in `CAM_KEYWORDS` plus the two
+    the app generates ship pre-categorized, so a new user gets a usable report before configuring anything. Anything a person
+    named — "Other", "IL DPT REV", "Liana" — has no default. **That asymmetry IS the forcing function.** And a derived answer
+    never poses as a decision: a chip reads solid when chosen, **dashed** when it's Amlak's default, gold when unanswered.
+    **`Security` is deliberately left undefaulted** and pinned as such — a security service lands on Cleaning or Other depending
+    on the CPA, and that judgement must not be made silently.
+  - **The list is the UNION of Form 8825 and Schedule E** (15 entries), because the filing form is unsettled (*"my CPA handles
+    it"*): 8825 carries Wages and no Management fees line, Schedule E is the reverse and adds Supplies. One list serves both. It
+    lives in a **JS registry**, not a CHECK or an enum, matching `FEATURES`/`NOTIFY_TYPES` — a CHECK would mean a migration every
+    time the list is refined, and would reject a row the app considers valid.
+  - **A third bug found and fixed, and it was mine.** Round 3 set `asyncUtilTimeout: 5000` — which **equals** vitest's default
+    `testTimeout`, so a failing `waitFor` consumed the entire test budget and vitest reported *"Test timed out"* instead of the
+    assertion that was actually failing. Every future failure message was degraded. `testTimeout: 15000` restores the gap, and it
+    paid for itself within the same round: the moment it landed, a mystery timeout resolved into the real error in one run.
+  - **Files.** New: `supabase/migrations/0075_expense_bucket_categories.sql` · `src/lib/expenseCategories.js` ·
+    `src/lib/__tests__/expenseCategories.test.js` (21). Edited: `src/lib/{api,leaseRisks,demo/store}.js` ·
+    `src/components/{CamSection,StatementReview,LeaseReviewStrip}.js` · `src/App.css` · `vite.config.js` · tests
+    (`bucketUi` +1 and scoped, `expenseEntryUi` scoped, `expenseBuckets` → `objectContaining`). **No** view, RPC, edge function
+    or `mockClient.js` change — `expense_buckets` is a plain table the demo mock auto-creates, so §3 carries no mirror obligation
+    here (re-verified, not inherited).
+  - **Three test files needed updating, and the change made them stricter, not weaker.** The by-category roll-up legitimately
+    names the same buckets and repeats the same figures, so a bare `getByText('Landscaping')` became ambiguous; the assertions now
+    scope to the itemized rows specifically. Bucket-shape assertions moved to `objectContaining` so a future field can't break
+    them while saying nothing.
+  - **Verified:** unit **1165/1165** (`vitest run`); `npm run build` compiles; migration applied clean and read back
+    (`category` **nullable**, both `owner_all` and `require_aal2` policies present); **every stored expense total identical
+    before and after**; live 200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it.
+    **Driven in a real browser against the deployed demo at 1440px and 420px:** all three chip states render (two dashed
+    defaults, one chosen, one gold *"Set a tax category"*), the roll-up reads *Cleaning and maintenance $12,000.00 · Legal and
+    professional $1,200.00 · **Not categorized $6,000.00 — Security***, and **zero page overflow at either width, zero console
+    errors**. The one 36px row overflow is the **pre-existing** CAM checkbox cell flagged in Round 3 — measured and confirmed
+    unchanged; none of the new rows overflow.
+  - **A claim corrected because the browser made it obvious.** The roll-up was headed *"By tax category"* while covering only the
+    CAM and not-billed lines — silently excluding $127,000 of property taxes. It now reads **"These lines by tax category"** and
+    names what it doesn't cover. The full-property roll-up belongs to Slice 3/7, which read all three sections.
+  - **George: hard-refresh (Cmd+Shift+R).** Every expense bucket now carries a **tax category** — click the small chip under any
+    bucket's name to set it, once, and it applies to that bucket on every property. Underneath the list, a roll-up shows what
+    you spent per line of your return, with anything uncategorized called out rather than buried.
+  - **Flags:** ① **Two lease reviews are unreliable and now say so on screen** — Ricki's (pages 1-20 of 36 never transcribed) and
+    Hair Salon (**the file on record appears to be a driver's licence, not a lease**). Re-upload a clearer scan of each, then
+    re-review. ② **Vape Store still has no readable text** and no review — its scan couldn't be transcribed at all. ③ The
+    remaining **12 reviews are sound** (14 reviewed − the 2 thin ones) — 31 findings across the portfolio. ④ The roll-up covers the CAM and not-billed lines
+    only; taxes and roof file on their own lines and are itemized in their own sections. ⑤ A category changes **reporting only**
+    — it can never change what a tenant is billed, which is why a mis-categorized bucket is a wrong report and never a wrong
+    invoice.
+
+- **2026-07-31** — **Accounting round 3 (Slice 1): every expense line now says the DAY it was paid, and the roof stops being one
+  flat number** (George: *"lets move on"*, working the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md`
+  phase by phase). Deployed: DB migration **`0074`** (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`06417e7b`**,
+  demo worker `b9e7696a`. **$0 — no AI call anywhere in this round; NO edge function; no tenant emails; 0074 is one nullable column
+  + a widened CHECK, and NOT ONE STORED TOTAL MOVED** (read back live: Pershing FY2026 still taxes 127,000 · CAM 24,200 · roof 500).
+  Tests **1143/1143 across 128 files** (was 1130/127 — +13, one new suite).
+  - **Why this is the enabler the whole accounting arc waits on.** `cam_line_items` has carried `year int` and nothing finer since
+    0004 — so an expense had a *year* and no *day*. There was no monthly trend, no seasonality, no answer to "why was March
+    expensive," and no honest cash-basis anything. **The importer has always known each line's real date** — `statementMatch`
+    derives the fiscal year FROM it — and then threw it away. This is the column it was missing. Nothing downstream reads a date
+    yet, deliberately: the point of shipping it first is that a T-12, a monthly chart and a cash/accrual switch all need dates ON
+    FILE before they can exist, and no later cleverness can invent a date nobody recorded.
+  - **`paid_date` is nullable and is NOT backfilled.** An expense typed by hand legitimately has no day, and stamping Dec 31 on it
+    would be a lie that looks like a real date forever. An undated line reads **"—"**, and — the detail that matters — sorts
+    **last**, not first: floating undated rows to the top of a year would read as "paid in January", which is the same invention
+    one step removed. Anything that later reports on dates has to say how many dollars it couldn't date.
+  - **The roof becomes the third itemized list**, in the exact shape 'tax' took in 0067 (`kind` CHECK widened `('cam','tax')` →
+    `+'roof'`). A roof is replaced once and repaired several times; one accumulating figure hid which payment was which — George's
+    own complaint about taxes, one bucket over. Roof rows re-sum into `roof_total` the way tax rows re-sum into `taxes_total`, so
+    the roof PSF, the recovered/absorbed split in `v_property_totals`, roof-responsible tenant shares and invoices all keep working
+    **untouched**. New `RoofSection.js` on the Financials page; the old roof-only `ExpenseForm` is gone, its flat-entry job absorbed
+    as the section's own fallback — exactly what happened to the tax form in 0067.
+  - **⚠ The guard that is not optional, and why the roof's version is sharper than the tax one.** `carryFlatTaxesIntoItems` exists
+    because the first itemized instalment would otherwise re-sum the year DOWN to that instalment. The roof carries the identical
+    hazard **and bills back at 100%** to roof-responsible tenants rather than pro-rata — so a $12,000 roof year re-summed to a
+    $2,000 repair would under-bill those tenants by the whole $10,000, silently, with nothing erroring. It is now one shared
+    `carryFlatIntoItems(property_id, year, kind)` serving both, and the test that proves it is the first one in the new suite.
+  - **A wart retired.** The importer's roof branch used to increment a running total, so **undo reversed a subtraction** — which is
+    where the clamp-at-zero-with-a-note behaviour came from. It now books its own row and undo deletes it, re-summing from the rows
+    that survive. That is a better answer than subtracting from a figure someone has since edited by hand: it can't go negative and
+    can't be thrown off by the edit. `statementImport.test.js`'s clamp assertion was **rewritten rather than deleted** to pin the
+    new behaviour, and the clamp itself lives on for **pre-0074 records** — an old statement's ↩ Undo has to keep working forever,
+    and that path is now pinned in the new suite.
+  - **Three sections, one grid, no layout rebuild.** Column 3 of `.cam-row` has been an empty spacer in every data row since 0064;
+    the date went there. Only change: `110px → 132px`, what a native date input needs for mm/dd/yyyy. **A real bug found in the
+    browser and fixed:** a native date input carries an intrinsic minimum wider than that column once the phone breakpoint narrows
+    it, and pushed the row sideways instead of shrinking — `min-width:0` on it and on the row's cells; re-measured, the roof and tax
+    add-forms now overflow by **zero** at 420px.
+  - **Files.** New: `supabase/migrations/0074_expense_dates_and_roof_items.sql` · `src/components/RoofSection.js` ·
+    `src/lib/__tests__/expenseDatesAndRoof.test.js` (13). Edited: `src/lib/{api,format,demo/store}.js` ·
+    `src/components/{CamSection,TaxSection,StatementReview}.js` · `src/pages/PropertyFinancialsPage.js` · `src/App.css` ·
+    test `statementImport` (the clamp case re-pinned). **No** view, RPC, edge function or `mockClient.js` change — `cam_line_items`
+    is a plain table the demo mock auto-creates, so §3 carries no mirror obligation here (re-verified, not inherited).
+  - **Demo seed:** prop-1's roof is now two dated lines (1,500 + 2,500) summing to **exactly** the seeded 4,000, and most CAM rows
+    carry dates with 'Security' left undated on purpose to demo the honest "—". **Taxes are deliberately left un-itemized** — that
+    is the state the carry-forward guard exists for, and `expenseEntry.test.js` pins it (my first attempt seeded tax rows and broke
+    that regression; the seed lost them rather than the test losing its teeth).
+  - **Verified:** unit **1143/1143** (`vitest run`); `npm run build` compiles; migration applied clean and read back (`paid_date`
+    date/nullable, CHECK now `('cam','tax','roof')`, **12 existing rows correctly left undated**, every stored total unchanged); live
+    200s on all four URLs; live bundle carries the backend ref, demo bundle greps **free** of it. **Driven in a real browser against
+    the deployed demo at 1440px and 420px:** three itemized sections each headed **Date paid**, the roof reading *Apex Roofing — leak
+    repair $1,500.00 May 14* / *section replacement $2,500.00 Aug 27* / **Roof $4,000.00**, the Roof stat card **still $4,000.00 ·
+    $1,600 billed / $2,400 absorbed** (the "no tenant bill moved" proof, live), CAM sorting **Jan 22 → Apr 18 → undated last** (the
+    new order — Snow removal now precedes Landscaping despite being created later), and Oak Center correctly showing the
+    un-itemized flat state at *current: $12,000.00*. **Zero horizontal page overflow at either width; zero console errors.** (One
+    demo-edge propagation race hit and waited out, twice — the documented stale `index.html`.)
+  - **George: hard-refresh (Cmd+Shift+R).** On any property's **Expense entry**, every line now has a **Date paid** column, and the
+    roof has its own itemized list like taxes and CAM. Import a statement and each expense keeps the day the bank printed on it.
+  - **Flags:** ① **Existing expense lines have no date** and will read "—" until you type one or re-import the statement — that's
+    deliberate, not a gap to be filled with a guess. ② **The first roof line you add to a property carries its existing roof total
+    in as an "Entered by hand" line** — rename, split or delete it once the real invoices are in; the year is the sum from then on.
+    ③ **Nothing reads the dates yet.** They exist so the monthly trend, the T-12 and the cash-basis view later in this arc can be
+    built on real data; this round is the foundation, and the visible payoff arrives with them. ④ A pre-existing cosmetic overflow
+    at phone width on the **CAM** add-form's *% of rent* / *not billed* labels (34px cell, ~70px of nowrap text) is unrelated to
+    this round and deliberately left alone — the page itself has zero horizontal overflow. Say the word and I'll tidy it.
+
+- **2026-07-31** — **Accounting rounds 1+2: a lease whose text never cached can be repaired without re-uploading it, and one
+  confirmed click reviews every lease on a property** (George: *"okay lets start implementing the plan phase by phase"*, working
+  the accounting direction doc `~/.claude/plans/no-need-to-come-magical-fairy.md`; rounds 1 and 2 were the two he green-lit
+  earlier with *"add the button but also cache the other 3 leases that arent cached"*). Deployed: NEW `cache-lease-text` edge fn,
+  `extract-lease` + `review-lease` redeployed, frontend Cloudflare version **`5e7b030f`**, demo worker `8a1769ce`.
+  **NO DB migration, no tenant emails, nothing destructive, no live-data change yet** (see the flag). Tests **1130/1130 across
+  127 files** (was 1119/126 — +11, one new suite).
+  - **The state, verified live before writing anything:** `ai_review` is null on **all 15 leases** — the ten-check red-flag
+    surface shipped 2026-07-29 and only fires automatically on *new* imports, so every existing lease predates it. Three have
+    `length(lease_text) = 0`: **Ricki's-Lyons** (Pershing Plaza), **Hair Salon** and **Vape Store** (Joliet). All three have a
+    stored file AND a complete `extraction_raw`, so their *fields* read fine at import and only the transcription came back
+    empty — the pre-2026-07-21 big-scan 546 wall-clock kill (Ricki's is named in the 07-02 log as the 12.9 MB / 36-page scan
+    that hit it). The parallel page-chunking fix landed *after* all three were imported, so re-running transcription now
+    simply succeeds.
+  - **1) `cache-lease-text` — the one missing step, and nothing else.** Re-uploading those leases would work but would also
+    re-run the paid analyst + form reads and re-open the review screen for terms that are already correct. The new function
+    takes a `lease_id`, resolves `leases.lease_file_id → lease_files.storage_path`, downloads under the **caller's own JWT**
+    (never the service role, so RLS scopes every read and the write), and **writes `lease_text` and nothing else** — no terms,
+    no rent, no dates, no `ai_review`. It can never move a billed figure.
+  - **Three refusals make it safe to re-run.** It won't overwrite a transcript that already looks usable (≥ 500 chars), so a
+    second click is a no-op rather than a paid re-read — with the deliberate consequence that a **partial** cache (the
+    pre-07-21 Busey shape, pages 16-36 with 1-15 missing) is left alone, because "don't destroy what's there" beats "might
+    improve it". It refuses cleanly when there's no document on record rather than inventing text. And an empty read is
+    **reported as a failure, never written** — writing `''` would leave the lease looking cached while the assistant still had
+    nothing to answer from, the exact silent-blank the 07-21 gap markers exist to prevent.
+  - **It tries the FREE path first**, exactly as `extract-lease` does: a digital PDF or a Word `.docx` carries its own text
+    layer, read locally with **no model call at all**. Only a real scan pays for transcription. So the quoted cost is a
+    ceiling, not a bill.
+  - **2) The transcription pipeline moved to `_shared/transcribe.ts`** — the 2026-07-21 parallel page-range chunking
+    (`CHUNK_PAGES 10`, `MAX_TRANSCRIBE_CHUNKS 9`, the bounded per-chunk retry, the `[Pages X-Y could not be read]` gap marker)
+    lifted out of `extract-lease` **verbatim** so both functions run one copy. Two copies of that would drift exactly like the
+    four copies of the estimate math did. §5 fan-out honoured: both importers redeployed in the same round, and a comment at
+    the old site says so.
+  - **3) ⚑ Review leases** — on every property's Leases page beside the rent-roll export. Confirm first, with the count and
+    the cost in the standard implications box (*"9 leases will be reviewed · 1 has no searchable text yet and will be read
+    first (free if the file is a digital PDF) · About 61¢ in total, one time · Nothing is written to any lease's terms — this
+    only fills the red-flag panel"*), then a live *"Reviewing 4 of 9…"* and a results line. Reuses `reviewLease` (`api.js`)
+    unchanged. A lease missing its text is **cached first, then reviewed** — order is load-bearing, since reviewing first would
+    report "no text on file" for a lease whose text we were about to fetch.
+  - **⚠ The constraint the plan didn't have, found in the SQL.** The plan flagged `review-lease`'s 10/min limit and said to
+    raise it. Reading `ai_rate_check` (0018) showed the sharper problem: it keys `ai_rate_limit` on **`(user_id, window_start)`
+    with no function name**, so the counter is **shared across every AI function per user** — each function's `limit` argument
+    is checked against one common count. The effective ceiling in a mixed sweep is therefore the **lowest** limit any
+    participating function passes, so raising only `review-lease` would have left `cache-lease-text` at 10 as the binding
+    constraint partway down the list. Both are now **30/min**, matching the Q&A functions.
+  - **A rate limit is retried, not failed.** `invokeFunction` swallowed the HTTP status, so a caller could only string-match
+    the message; it now carries `err.status`. The sweep waits 20s and retries the SAME lease on a 429 (up to 3 times) — a rate
+    limit means "too fast", never "this lease can't be reviewed". Any other error is recorded against that lease and the sweep
+    **carries on**: one unreadable document must never abandon the other fourteen. Sequential on purpose — these are paid reads
+    against a shared counter, so firing 15 in parallel would trip the limit immediately and burn calls on retries.
+  - **Files.** New: `supabase/functions/cache-lease-text/index.ts` · `supabase/functions/_shared/transcribe.ts` ·
+    `src/components/ReviewLeasesButton.js` · `src/lib/__tests__/reviewLeasesSweep.test.js` (11). Edited:
+    `supabase/functions/{extract-lease,review-lease}/index.ts` · `src/lib/{api,supabaseClient,demo/mockClient}.js` ·
+    `src/pages/LeasesPage.js`. **No** migration, view, RPC, CSS or demo-seed change.
+  - **Verified:** unit **1130/1130** (`vitest run`); `npm run build` compiles; all three edge fns deployed clean with unauth
+    POST → **401** on both new/changed ones; live bundle carries the backend ref and the button, demo bundle greps **free** of
+    it; 200s on all four URLs. **Driven in a real browser against the deployed demo:** the button reads *"About 8¢, one time"*,
+    the dialog states all four implications, the sweep runs to *"Reviewed 2 of 2 leases · 10 findings"*, and walking to a lease
+    shows **"Lease review · 5 points to look at"** populated. **Zero console errors.**
+  - **George: hard-refresh (Cmd+Shift+R), then click ⚑ Review leases on each property.** **Pershing Plaza** — 9 leases, 1 needs
+    its document read (Ricki's), ~61¢. **Joliet** — 5 leases, 2 need reading (Hair Salon, Vape Store), ~70¢. **401 S Main** —
+    1 lease, ~4¢. About **$1.35 for the whole portfolio**, one time. That fills the red-flag panel on all 15 and caches the
+    three missing lease texts in the same pass.
+  - **Flags:** ① **I could not run it on your live data from here, by design.** The sweep needs a signed-in user: `ai_rate_check`
+    returns false on a null `auth.uid()`, so a service-role token is correctly refused — which is the limiter working, not a
+    bug. The three clicks above are the live proof, and the read-back is `count(ai_review)` 0 → 15 and
+    `count(*) where length(lease_text) < 500` 3 → 0. ② **Acting on a flag is still out of scope** — in particular a
+    `cam_capped` lease still bills uncapped pro-rata, because a cap becoming a stored lease term feeding `billedComponents` is
+    a §2 choke-point change. Round 5 (the recoverability table) is where that surfaces. ③ A lease with a **partial** transcript
+    is deliberately left alone by the cache step; those carry a visible `[Pages X-Y could not be read]` marker and want a
+    re-upload instead.
+
+- **2026-07-31** — **A payee is learned by its NAME, not by the rail it arrived on — the importer had been remembering
+  "PURCHASE VISA … ON" and "ELECTRONIC WITHDRAWAL"** (George: *"the learned payees system is not working its not
+  assigning what i want it to figure out why"*). Deployed: frontend Cloudflare version **`f1d55ff1`**, demo worker
+  `32a42b7d`, plus a three-row live repair. **$0, NO DB migration, NO edge functions, no AI calls, no tenant emails,
+  nothing deleted** (the repair rewrites three learned patterns in place, guarded on the exact wrong value → a re-run
+  is a no-op). Tests **1119/1119 across 126 files** (was 1115/126 — +4).
+  - **The evidence, from his own import.** His January U.S. Bank statement (DT Naperville → 401 S Main) recorded
+    **nine** named buckets — Elevator service · Other · IL DPT REV · Comcast · Waste removal · HVAC service · Liana ·
+    Yazin, plus a tenant deposit — and the memory kept **three**. Six payees he named by hand were forgotten, and the
+    three that survived were the wrong string: **`PURCHASE VISA CITY OF NAPERVIL ON`**, **`PURCHASE VISA OTIS ELEVATOR
+    ON`**, **`BELLE HEATING AND COOL ON`**. Replayed against his real February and March statements: **zero of the
+    three fire on either month.** So both halves of "not assigning what I want" were real — it learned the wrong
+    things, and then those things never matched.
+  - **Root cause: `suggestRulePattern` keeps the LONGEST run of tokens that are neither digits nor rail wording, and
+    `BANK_NOISE` only knew Chase's vocabulary.** U.S. Bank writes a different rail, and it is *longer than the payee*:
+    `Electronic Withdrawal To WASTE MANAGEMENT …` → **"ELECTRONIC WITHDRAWAL" (21) beats "WASTE MANAGEMENT" (16)**.
+    The same 21 characters won on the Comcast and IL-Dept-of-Revenue lines too, so all three learned the identical
+    string — at which point `screenRulePatterns` did its job and **rejected** it as boilerplate. Correct refusal,
+    but the payee itself was never even a candidate. And where the rail has no break in it at all
+    (`Debit Purchase - VISA CITY OF*NAPERVIL On 012926`) the whole phrase came through as one run, so the pattern
+    carried the card wording — and February pays the *same* vendor by **ACH**, where that substring simply doesn't
+    exist. **This is the second time in eight days the word list has been the bug, one bank apart** (2026-07-23,
+    Chase's `ONLINE ACH DEBIT`), which is what decided the shape of the fix.
+  - **Fix 1 — the list is widened**, with the card / bill-pay / ACH wording this bank prints: `ELECTRONIC ·
+    WITHDRAWAL · PURCHASE · VISA · MASTERCARD · AMEX · POS · ATM · CARD · WIRE · ON · CHECKS · PRESENTED ·
+    CONVENTIONALLY · BUSINESS · BILL · PAY · ESS · PMTID · AUTOPAY · RECURRING · TRN · TRAN`. `ON` earns its place
+    because *"On 021326"* trails every card line; the existing 3-character floor is what stops it ever becoming a
+    pattern in its own right.
+  - **Fix 2 — and the guarantee that does NOT depend on any list**, because there is always a next bank.
+    `suggestRulePattern(description, siblings)` now reads the whole statement: **the rail is what the lines have in
+    common, the payee is what only one line says**, so the run present on the fewest sibling descriptions wins and
+    length is only a tiebreak. This is `screenRulePatterns`' own philosophy moved from *rejection* to *construction* —
+    instead of building a bad pattern and refusing it, build the right one. A 1-arg call is byte-identical to the old
+    longest-run behaviour, so nothing else in the codebase shifted. **Test-pinned on invented wording no stopword list
+    could know** (`ZZQQ TRANSFERRAL NOTICE … PAYEE ACME PLUMBING` → `PAYEE ACME PLUMBING`), and it does real work on
+    live data: February's Busey deposit reads **BUSEY** rather than **NAPERVILLE** *only* because the two City-of-
+    Naperville lines on the same statement carry "NAPERVILLE" inside their reference strings and Busey doesn't.
+  - **Fix 3 — the landlord's own company is not a payee.** `NASA PROPERTY LLC TRN` was live as *"always match →
+    Ricki's-Lyons"*: a bank names the **account holder** on its own transfer lines, which reads exactly like a payee,
+    and one statement can't see the conflict because only one line carried it. `screenRulePatterns` now takes
+    `ownNames` (the owner's corporation names, already fetched by `getStatementMatchContext`) and refuses a pattern
+    that names one — reported with its own wording in the footer, distinct from the bank's-boilerplate refusal.
+  - **One `payeeOf` on the review screen**, bound to that statement's descriptions and threaded to every caller —
+    the draft rules, the learned set, the tax line's label, and the row's own *"remembers X"* hint. So what a row
+    says it will remember is exactly what Save writes; they can no longer name two different things.
+  - **Files.** `src/lib/statementMatch.js` (`BANK_NOISE`, new `payeeRuns`, `suggestRulePattern` siblings,
+    `screenRulePatterns` ownNames) · `src/components/StatementReview.js` (`payeeOf` + threading + footer wording;
+    `taxLabel` now takes the resolved payee) · `src/lib/api.js` (`ownNames` on the match context) ·
+    `src/lib/__tests__/statementMatch.test.js` (+4, incl. his real nine January lines and the Jan→Feb match as named
+    regressions). **No** migration, edge function, view, CSS or demo-seed change.
+  - **Verified:** unit **1119/1119** (`vitest run`); `npm run build` compiles; live bundle carries the backend ref and
+    the demo bundle greps **free** of it; 200s on all four URLs. **Driven against his three real statements end to
+    end:** January now learns **6** payees (was 3) — IL DEPT OF REVEN · OTIS ELEVATOR · COMCAST XFINITY · WASTE
+    MANAGEMENT · CITY OF NAPERVIL · BELLE HEATING AND COOL — and those rules then fire on **4 of 9** February lines
+    and **5 of 8** March lines (**was 0 and 0**). Every remaining line is a genuinely new vendor (LoopNet, Foxvalley
+    Fire, Loss Prevention, Build Tech…), each of which learns itself on its own first import.
+  - **Live repair — three patterns, guarded.** `PURCHASE VISA CITY OF NAPERVIL ON` → **`CITY OF NAPERVIL`** ·
+    `PURCHASE VISA OTIS ELEVATOR ON` → **`OTIS ELEVATOR`** · `BELLE HEATING AND COOL ON` → **`BELLE HEATING AND
+    COOL`**. Targets, buckets and ids untouched, so no import's ↩ Undo is disturbed; read back clean.
+  - **George: hard-refresh (Cmd+Shift+R), then import February.** Otis, City of Naperville and Belle are already
+    recognized. The six payees January forgot — Comcast, Waste Management, IL Dept of Revenue and the rest — get
+    remembered the moment you tick them on this import, and March will sort itself.
+  - **Flags:** ① **One bad rule is still live and I did not delete it** — `NASA PROPERTY LLC TRN → Ricki's-Lyons` on
+    Pershing, your own company learned as a tenant. The new guard stops it happening again but doesn't remove what's
+    there. One click under **Learned payees** on Pershing's Ledger tab, or say the word and I'll drop it. ② **A check
+    line can never be learned.** *"Checks Presented Conventionally 1329"* names a check number, not a payee — that's
+    how Liana and Yazin were forgotten. They'll need picking by hand each time; the row now says nothing rather than
+    guessing. ③ A rule still matches on **any** property (one bank account serves the portfolio) — unchanged, and the
+    panel's footnote says so.
+
+- **2026-07-31** — **A statement that prints "Feb 12" instead of "02/12" now imports — the parser knew Chase's bare
+  `06/01` but had never been taught a month NAME** (George: *"i uploaded the first statement and it worked perfectly
+  but with the feburary statement it failed and couldnt list transactions can you find out why? this is for the BUSEY
+  bank khaled akkawi account"*). Deployed: `extract-bank-statement` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`),
+  frontend Cloudflare version **`4b5dcf06`**. **NO DB migration, no tenant emails, no demo change, nothing
+  destructive — one pure function + a prompt sentence.** Tests **1115/1115 across 126 files** (was 1108/126 — +7).
+  - **The AI never failed. Every read returned 200.** The edge log shows George's three February attempts at
+    **12.5s / 13.0s / 10.6s, all 200** — longer than January's successful 8.8s, which is exactly what transcribing
+    *more* lines looks like (11 vs 9). So the transcription was fine and the loss was downstream, in the client gate.
+  - **Reproduced against the deployed function, both months side by side.** January came back with dates
+    **`01/05` `01/22` `01/30`** — the model had *normalized* them. February came back **`Feb 2` `Feb 17` `Feb 12`** —
+    transcribed **verbatim**, which is precisely what the prompt asks for (*"the posting date EXACTLY as printed"*).
+    `toIsoDate` (`statementParse.js`) accepted `YYYY-MM-DD`, `M/D/YYYY` and a bare `M/D`, and had **no branch for a
+    month name** → all 11 rows returned null → `skippedLines` → **"0 lines parsed · 11 skipped"**, every reason
+    reading `no valid date ("Feb 2")`. Replayed on the real payload before touching anything: **0 parsed / 11 skipped.**
+  - **The same class of bug as the 2026-07-23 Chase round, one format over** — and this time the tell was that the
+    *same bank's* January statement worked. Whether an import succeeded came down to which rendering the model
+    happened to pick that run, so **the fix belongs in the parser, where it's deterministic**, not in the prompt.
+  - **`toIsoDate` now reads the shapes banks actually print:** `Feb 12` · `Feb 12, 2026` · `Feb 12 2026` ·
+    `February 2, 2026` · `Sept 3, 2026` · `Jan. 5, 2026` · `2 Feb 2026` · `12th Feb 2026`. Two guards carry the
+    weight: **`monthFromName` accepts a full name or a 3–4 letter abbreviation and nothing longer**, so a prefix
+    match can't read *"Janitor"* as January (`toIsoDate` is also how the CSV lane tells a date column from a
+    description one); and **the year and its separator are ONE optional unit**, so `Jan 2026` — a month and a year,
+    not a date — can't be read as the 20th with a 2-digit year. Both pinned by tests.
+  - **The load-bearing invariant is preserved:** a bare `Feb 12` with **no** year context still returns null, exactly
+    like a bare `06/01` — that's what stops the CSV lane's column inference reading a stray `1/2` as a date. A
+    year-less month-name date now also gets the honest skip reason, and `dateSkipReason` asks `toIsoDate` rather than
+    re-listing its formats, so the two can't drift as more shapes are accepted.
+  - **Prompt: one sentence, and it says COPY, not convert** — *"A month-NAME date is copied the same way — 'Feb 12'
+    stays 'Feb 12', never rewritten as '02/12'."* Now that the parser handles both renderings this is safe, and it
+    removes the contradiction that had the model flip-flopping between two statements from one bank. The house rule
+    holds: **the model transcribes, code does the date math.**
+  - **Files.** `src/lib/statementParse.js` (`MONTH_NAMES` + `monthFromName`, two `toIsoDate` branches,
+    `dateSkipReason`) · `supabase/functions/extract-bank-statement/index.ts` (the prompt sentence) ·
+    `src/lib/__tests__/statementParse.test.js` (+7, incl. the real 11 February rows as a named regression).
+    **No** migration, view, api, component, CSS or demo-seed change.
+  - **Verified:** unit **1115/1115** (`vitest run`); `npm run build` compiles and the deployed bundle
+    (`assets/index-Cfco5r46.js`) greps positive for the new parser; edge fn deployed clean with unauth POST → **401**;
+    200s on all three URLs. **Driven end to end against the LIVE deployed function on real statements:** February
+    **11 parsed · 0 skipped**, January **9 · 0** (unchanged), and — the generalization check — the untouched **March**
+    statement, which prints `Mar 3` / `Mar 11` and **would have failed identically**, now reads **9 · 0**. Every month
+    ties to the bank's own printed totals **to the penny**: Feb in **$61,139.87** = "Total Other Deposits", Feb out
+    **$81,511.77** = 274.07 card + 11,237.70 other + 70,000.00 checks; Jan in **$40,985.76**, out **$42,689.26**.
+  - **George: hard-refresh (Cmd+Shift+R), then re-import the February statement** — it opens the review screen with
+    all 11 lines. March will import too.
+  - **Flags (no action needed):** ① **U.S. Bank prints a per-DAY balance summary, not a per-line running balance**, so
+    when the read maps a day's ending balance onto each of that day's lines the self-check sees a zero delta and marks
+    them *needs review* (4 lines on January, 2 on March, 0 on February). Cosmetic — the rows still import and the
+    money is right — but say the word and I'll teach the balance check to skip same-day repeats. ② February's first
+    deposit is a **$20,154.11 internal "Mobile Banking Transfer From Account …8966"**, not tenant rent — it won't
+    match a tenant and will sit unticked, which is the correct behaviour; leave it or mark it ignored. ③ Diagnosing
+    this spent **4 transcription reads (~40–60¢)** — two to reproduce Jan vs Feb, two to verify Feb + Mar live.
+
+- **2026-07-31** — **Follow-up: NNN and Gross now wear the SAME chip — the word is the whole difference** (George,
+  reviewing the round below: *"gross is not the same format as NNN on the per tenant break down"*). Deployed: frontend
+  Cloudflare version **`9e517a64`**, demo worker `f6e49dee`. **One component + one CSS rule — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, zero billing-math change.** Tests **1108/1108 across 126 files**
+  (unchanged — two assertions rewritten to pin the new invariant instead of the old variant class).
+  - **He's right, and the reason is the same one that drove the last two rounds.** Two rounds ago I gave Gross a
+    filled accent chip and left NNN as a quiet outline one, reasoning that "the visual weight goes where the money
+    changes." But the two answer the **same question about the same row** — they are one label with two values, not
+    a status flag and a default. Styling them differently made them read as two different *kinds* of thing: an alert
+    on one row, a footnote on the next. That's the identical mistake On/Off made on the control that sets the fact
+    (fixed in the round below), reproduced one surface over.
+  - **One rule, no variant.** `.lease-type-chip.gross` is deleted and `LeaseTypeChip` renders one className for both
+    states; a comment in the CSS says the absence is deliberate, so the variant can't be "restored" as a tidy-up.
+    Browser-measured on both rows: colour, background, border, font-size, weight, letter-spacing, padding, radius and
+    rendered height are **byte-identical** — only the word differs.
+  - **Nothing is lost from the scan.** What actually marks a gross row is the money beside it: the base cell already
+    carries *"flat $60,000.00 − $18,800.00 expenses"*, the Estimated cell reads *included in rent*, and the Reconcile
+    slot states the reason. The chip's job was only ever to name which of the two the row is.
+  - **The invariant is now test-pinned rather than asserted in prose:** both cases assert `className === 'lease-type-chip'`
+    exactly (was `toContain('gross')` / `not.toContain('gross')`), so a future round that re-introduces a weight
+    difference fails the suite instead of shipping.
+  - **Files.** `src/components/LeaseTypeChip.js` · `src/App.css` · test `grossShareTable` (2 assertions).
+    **No** migration, edge function, api, page or demo-seed change — all three tenant lists render the shared
+    component, so the Ledger and the Leases page followed with no edit.
+  - **Verified:** unit **1108/1108** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser against
+    the deployed demo at 1440px and 420px, through the app's OWN router:** the breakdown's Bright Coffee **Gross** and
+    City Dental **NNN** chips return one identical computed-style signature, the Ledger's pair returns the same
+    signature again, and the Totals band stays correctly unlabeled. **Zero horizontal overflow at either width; zero
+    console errors or warnings.** (One deploy-propagation race hit and waited out: the demo edge served a stale
+    `index.html` for ~30s.)
+  - **George: hard-refresh (Cmd+Shift+R).** Both tags now look the same on every tenant list — the only difference is
+    whether it says NNN or Gross.
+
+- **2026-07-31** — **The expense structure is now PICKED (NNN / Gross), not switched on — and the statement importer
+  says out loud why it read no estimate for a gross tenant** (George, reviewing the round below: *"is it connected to
+  bank statement import as well so the import knows which tenants are gross? it shouldnt say gross lease on or off it
+  should just say gross/NNN and select the box"*). Deployed: frontend Cloudflare version **`46079c8a`**, demo worker
+  `603f6f2c`. **Two components + one label — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails,
+  zero billing-math change.** Tests **1108/1108 across 126 files** (was 1104/125 — +4, one new suite).
+  - **The import answer is yes, and it was already load-bearing.** `getStatementMatchContext` puts `gross: !!r.gross`
+    on every tenant (`api.js:3894`, off the gross-aware roll), and `deriveEstimateFromDeposit` opens with
+    `if (tenant.gross) return null` (`statementMatch.js:336`) — **before** its "remainder < $1" heuristic, which only
+    holds while the property has no expenses entered. The matching itself needs no gross branch: a gross tenant's owed
+    IS the flat rent, so its deposit corroborates the month exactly and can never read short.
+  - **What was wrong was the SILENCE.** The estimates section did `if (!derived) continue` — so a gross tenant's
+    deposit produced no row and no reason, which reads as the importer having missed it. Worse, when *every* checked
+    deposit is gross the section didn't render at all: the blank was most confusing exactly where it was most total.
+    Now the section states it by name — *"No estimate is read for Card Pop — that lease is gross, so the deposit is
+    the whole rent with taxes & CAM already inside it. Their share is carved out of that rent on the Financials
+    breakdown instead, never billed on top."* — and stands alone with no table when there's nothing to propose.
+    Names capped at three then "and N more" (the alerts feed's convention), so a fully-gross property can't run the
+    line long. **Refusing and not saying so is the same failure mode as the unlabeled row this round's predecessor
+    fixed** — the absence carries no information.
+  - **The control names the fact instead of switching a feature on.** `Gross lease · On/Off` → **`Expenses · NNN |
+    Gross`**. On/Off made NNN the *unnamed absence of Gross*, which is precisely the ambiguity the row chips were
+    added to kill — reproduced on the control that sets it. Same two words, same order, as the chips and the import
+    review. **The roof toggle beside it deliberately stays On/Off**: you switch a charge on; you don't switch a lease
+    type on. The hint's "Turn on for a flat all-in rent" → "Pick Gross for…".
+  - **The import review's own control moved to the same word:** its segmented pair read **Net** | Gross while every
+    other surface says NNN. One vocabulary across all four places the fact is stated (chip · lease page · import
+    review · analyst read) — the mirror rule applied to wording, not just math.
+  - **Files.** New: `src/pages/__tests__/leaseTypeToggle.test.js` (2). Edited:
+    `src/pages/LeaseDetailPage.js` · `src/components/{LeaseForm,StatementReview}.js` · test `statementEstimate` (+2).
+    **No** migration, edge function, view, api, CSS or demo-seed change.
+  - **Verified:** unit **1108/1108** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser against
+    the deployed demo at 1440px and 420px, through the app's OWN router:** the lease page reads *Expenses · **NNN**
+    [selected] | Gross* with *Charge roof PSF · **On** | Off* untouched beside it; picking Gross moves the selection
+    and swaps the estimate input for *"Included in the rent"*; walking to the Ledger shows **Bright Coffee Co. →
+    Gross** / **City Dental → NNN**; and the sample statement's review renders the standalone gross note naming Bright
+    Coffee. **Zero horizontal overflow at either width; zero console errors or warnings.** (One deploy-propagation
+    race hit and waited out: the demo edge briefly served a stale `index.html`; re-checked and the served hash now
+    matches the built asset.)
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, **Expenses** is now a straight **NNN / Gross** pick. And
+    when you import a statement, a gross tenant no longer just quietly produces nothing — the review says it read no
+    estimate for them, and why.
+  - **Flag (no action needed):** the importer still **learns the payee** from a gross tenant's deposit and books the
+    payment exactly as before — the only thing it refuses is proposing a CAM & tax estimate from it. That's the
+    correct split: the money is real, the derived estimate would be double-billing.
+
+- **2026-07-31** — **Follow-up: every tenant row now STATES its expense structure — NNN or Gross — on the
+  per-tenant breakdown, the Rent Ledger and the Leases list** (George, reviewing the round below: *"did you add
+  the gross lease vs NNN lease toggle that the ai extractor is connected to when it reads the leases? and on the
+  per tenant break down and the ledger it should say whether each tenant is NNN or G"*). Deployed: frontend
+  Cloudflare version **`5d203025`**, demo worker `4ab2f7e8`. **One new component + CSS — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, zero billing-math change.** Tests **1104/1104 across 125 files**
+  (was 1103/125 — +1).
+  - **Half of what he asked for already shipped, half hadn't.** The toggle and its AI wiring were done (analyst
+    VERDICTS `expense_recovery` → `parsed.lease_type` → `initialFromExtraction` → the review form's Net/Gross
+    segmented control → the lease page's Gross lease toggle). What was missing is the part he's pointing at: the
+    breakdown marked **only** gross rows, and the Ledger said nothing at all. Absence-of-label is not a label — a
+    blank row reads as ambiguous between *triple net* and *nobody has recorded which this is*, which is exactly
+    the ambiguity the flag exists to kill. So **both** states are now labeled, on every row.
+  - **One chip, declared once.** New `LeaseTypeChip.js` is the single definition of how the fact is named, imported
+    by all three tenant lists — the mirror rule (§3), applied before the drift rather than after it. Two states,
+    never three: `lease_type` is null on every pre-0073 lease and null reads as NET app-wide, so a null row is
+    labeled **NNN**, not left blank.
+  - **The visual weight goes where the money changes.** Gross is a filled accent chip; NNN is a quiet outline chip,
+    being the default nearly every row is. So a scan down a property finds the exception, and the exception is the
+    row whose base is lower than its lease rent — which is precisely the figure that would otherwise read as a
+    mis-priced net tenant. The old `.gross-chip` (accent text, gross-only) is deleted with the conditional it
+    styled; its trailing *"· gross — expenses included"* wording moves into the tooltip, since the row already
+    says it twice more (the base sub-line's *flat $X − $Y expenses* and the Reconcile slot's note).
+  - **Placement is per-surface, so no row grows.** Breakdown → on the identity meta line after the share
+    percentage. Ledger → inline after the tenant-name link (a badge on its own line would add height to every row
+    of a 12-month grid). Leases page → on the size line, because `.lease-name` is a flex **column** and a bare
+    child would take a whole row. **Leases wasn't in his ask** — added because it's the third tenant list and the
+    same question gets asked standing in front of it; it already differentiated gross implicitly ("incl." /
+    "after expenses") but never named it.
+  - **Files.** New: `src/components/LeaseTypeChip.js`. Edited: `src/components/TenantShareTable.js` ·
+    `src/pages/{LedgerPage,LeasesPage}.js` · `src/App.css` (`.lease-type-chip`; `.gross-chip` removed) · tests
+    `ledgerPage` (+1), `grossShareTable` (the two chip assertions now pin **both** states). **No** migration, edge
+    function, view, api or demo-seed change.
+  - **Verified:** unit **1104/1104** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser
+    against the deployed demo at 1440px and 420px** — and driven through the app's OWN router, since a full page
+    load resets the in-memory mock: all-net seed → both breakdown rows read **NNN** with the Totals band correctly
+    unlabeled; flipping Bright Coffee gross on its lease page then walking to Financials → **Gross** on that row
+    with City Dental still **NNN**; the Ledger shows the same pair, Bright's split reading **$5,000.00/mo =
+    $3,433.34 base · $1,433.33 CAM&tax · $133.33 roof** (the flat rent to the penny) against City Dental's net
+    **$9,150.00/mo = $7,000.00 base · $2,150.00 CAM&tax**; the Leases list reads *2,000 SF · Gross* / *3,000 SF ·
+    NNN*. **Zero horizontal overflow at either width; zero console errors or warnings.**
+  - **George: hard-refresh (Cmd+Shift+R).** Every tenant on the Financials breakdown, the Ledger and the Leases
+    list now carries an **NNN** or **Gross** tag. Card Pop reads Gross; everything else reads NNN until you flip it.
+  - **Flag (no action needed):** the tag reflects the stored flag, so a lease nobody has judged reads **NNN** —
+    that's the app's actual billing behaviour for it, not a claim that the lease was read. Flip any that are
+    wrong with the toggle on the lease page.
+
+- **2026-07-31** — **A lease can now be GROSS: a flat rent that already includes taxes & CAM, with the tenant's
+  share carved OUT of it instead of billed on top** (George: *"There needs to be a gross lease option button in
+  each lease's page in lease terms. The AI extractor should be able to read if a lease is gross or triple net and
+  toggle that but also make it manual. And if a lease is gross … to calculate the actual CAM and tax being paid,
+  it needs to take the difference, which is gonna show what portion of CAM and tax they owe, and then subtract it
+  by the annual base rent … So for CardPop, if the actual was ten thousand … you would subtract ten thousand from
+  the forty two thousand to get thirty two thousand, and then thirty two thousand per year would be the new base
+  rent."*). Deployed: DB migration `0073` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), edge
+  fns **`extract-lease`** + **`draft-invoice`**, frontend Cloudflare version **`ed8fffaf`**, demo worker
+  `060fd091`, plus a one-row live repair. **$0 — the gross/net read rides the EXISTING Sonnet analyst call, so no
+  new AI call and no new per-lease cost; no tenant emails; 0073 is one nullable column + a guarded CHECK + an
+  append-only view recreate.** Tests **1103/1103 across 125 files** (was 1079/123 — +24 across 2 new suites).
+  - **The problem, and why nothing looked broken yet.** Card Pop (Joliet, 1,800 SF) pays a flat **$3,500/mo =
+    $42,000/yr** with no expense-reimbursement clause — a gross lease. Amlak had no concept of one: **every** lease
+    billed base rent PLUS a pro-rata share of taxes/CAM. It was invisible only because **Joliet has no 2026
+    expenses entered** (verified: `exp_2026 = 0` on all five leases). The moment George enters them, Card Pop
+    would have been billed its 12.775% share (~$1,600/mo) **on top of** the flat rent, every $3,500 deposit would
+    have read short forever, and — because the building is 100% let — there'd be no vacancy line to absorb it.
+    The statement importer would then have derived a phantom CAM & tax estimate from the flat deposit and offered
+    to bill *that* too.
+  - **George's model, implemented exactly as dictated.** The tenant's actual pro-rata share is still computed
+    exactly as today — that IS their CAM & tax. The displayed/billed **base = flat rent − that share**; the
+    **total = the flat rent, always**. So as the year's actuals are entered the split shifts but the figure the
+    tenant pays never moves, and the flat deposit keeps settling its month to the penny. The property still
+    *recovers* the gross tenant's share — out of the rent rather than on top of it — which is why the breakdown's
+    vacancy tie-out (`recovered + vacant = entered`) keeps balancing with **no view-math change**.
+  - **The load-bearing invariant: `base_rent` still stores the FLAT figure.** The split is DERIVED everywhere.
+    Writing the carved base back would lose the flat total and re-corrupt on the very next expense edit — the
+    figure would drift a little further from the lease every time George typed a CAM line.
+  - **Data (`0073`).** `leases.lease_type` (`null | 'net' | 'gross'`, **null = net → zero behaviour change for
+    every existing row**) + `v_tenant_shares` recreated appending it as **column 24** (1–23 byte-identical to
+    0065; `security_invoker` re-asserted). **`cam_amount`/`tax_amount`/`roof_amt` are deliberately UNCHANGED** —
+    a gross tenant's share stays pro-rata and **no other tenant re-prices**. `create_lease_tx` needed no change
+    (`jsonb_populate_record`, 0053). **The migration-reviewer caught an off-by-one in my own header comment** —
+    I'd written "column 23", but 0065 already ended at 23, so `lease_type` lands at **24**; fixed before applying
+    so a future reviewer isn't told a taken slot is free.
+  - **ONE branch, then four mirrors moved in the same commit** (rule #3): the canonical gross branch lives in
+    `billedComponents` (`reconciliation.js`), mirrored into `draft-invoice/index.ts`, `resyncYearBillingToEstimate`
+    (`api.js`) and the demo mock. The mock now **imports `billedComponents` directly** (the `leaseFlags`
+    precedent) rather than hand-copying the math — so this round left **three** mirrors where it found four.
+  - **`anyEstimate: false` is the single bit that does the UI work.** A gross lease bills no estimate, so that one
+    flag makes the Difference column dormant, hides ⚖ Reconcile, keeps the Totals est/diff sums clean, suppresses
+    the carried-over banner, and drops the Leases page's " est." tag — **even when stale `est_*` values are still
+    sitting on the row** (they routinely are, on a lease flipped from net). Test-pinned: a $25,000 leftover
+    estimate is ignored while gross, and becomes live again the moment it's switched back — which is exactly why
+    the branch **ignores** it rather than deleting it.
+  - **Where the two figures would have been billed twice, each refused rather than left to luck.** The statement
+    importer's `deriveEstimateFromDeposit` gets an explicit `if (tenant.gross) return null` **first** — its
+    existing "remainder < $1" heuristic only holds while the property has no expenses, so relying on it would have
+    failed on the exact day the feature matters. And `reconcileCamTax` throws outright. **Ask Amlak was actively
+    wrong** and is fixed: it reported a gross tenant's annual bill as rent + share (~$52,000 for a tenant paying
+    $42,000); `snapshotFingerprint` bumped **v4 → v5** so every cached answer built on that arithmetic stops
+    matching.
+  - **The toggle carries through because it has its OWN mutation**, cloned from `setRoof` — `updateLease` →
+    `resyncLeaseBilling` → `settleBillingChange`. `BILLING_FIELDS` alone would NOT have fired it (it only routes
+    `saveField` edits); `'lease_type'` is added there as defense, not as the mechanism.
+  - **Extractor: zero schema cost, zero new calls.** The main SCHEMA is **AT** Anthropic's 16-union ceiling, so a
+    17th union-typed field would 400 every extraction. Net-vs-gross rides the Sonnet analyst's **VERDICTS line**
+    instead (`expense_recovery=<net|gross|unclear>`) — free, and the stronger reader is the better judge of
+    expense-recovery language anyway. `parseAnalystVerdicts` is generic key=value, so **no parser change**. Only a
+    confident verdict is recorded; `unclear`/absent leaves it null → net → today's behaviour, so an uncertain read
+    can never silently change how a lease bills.
+  - **The invoice stores carved but PRINTS one line.** The stored components must stay carved (the ledger reads
+    them back to split each month), but itemizing them on the document would invite a tenant to query charges
+    they were never separately billed — so the bill reads the way their lease does: *"Rent (gross lease — property
+    taxes & CAM included) — $3,500.00/mo · $42,000.00/yr"*, with the est-reconciliation footnote suppressed.
+  - **Files.** New: `supabase/migrations/0073_gross_leases.sql` · tests `grossLease` (9), `grossShareTable` (5).
+    Edited: `src/lib/{reconciliation,api,statementMatch,portfolio,leaseContext,invoiceTemplate,reconciliationData,
+    demo/mockClient}.js` · `src/components/{TenantShareTable,LeaseForm}.js` ·
+    `src/pages/{LeaseDetailPage,LeaseNewPage,LeasesPage}.js` · `src/App.css` ·
+    `supabase/functions/{extract-lease,draft-invoice}/index.ts` · tests `reconciliation` (+6), `portfolio` (+1),
+    `analystVerdicts` (+1), `moneyCollection` (+1), `expenseEstimates` (+1). **No demo-seed change** — every
+    candidate lease feeds pinned figures in other suites (Sunrise 6, Northwind 10, prop-1 ~50), and a new lease
+    would over-let a fully-let seed building; the suites flip a lease inside the test instead and put it back.
+  - **Verified:** unit **1103/1103** (`vitest run`); `npm run build` compiles; migration applied clean and read
+    back (column 24, nullable, CHECK present, `security_invoker=on`, **0 of 15 leases flagged** → nothing moved);
+    both edge fns deployed clean with unauth POST → **401**; live bundle confirmed to **carry** the backend ref
+    and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser against the
+    deployed demo:** flipping Sunrise Yoga to gross turns its breakdown row into **base $24,333.33** with the
+    sub-line *"flat $36,000.00 − $11,666.67 expenses"*, the estimate cell inert at *"included in rent"*, actual
+    **$11,666.67** unchanged, **Total $36,000.00** ("flat rent, all in"), Difference **—**, and *"gross — expenses
+    included in rent"* where ⚖ Reconcile sits; the Ledger owes the flat **$3,000.00/mo = $2,027.78 base ·
+    $972.22 CAM&tax** over 6 in-term months = **$18,000 billed** (the penny invariant holding per month); and
+    **Northwind Books on the same property is byte-identical** ($125,000 base, $153,000 total). **Zero console
+    errors or warnings.** (One deploy-propagation race hit and waited out: the demo edge served a stale
+    `index.html`.) Worth recording for the next session: **the demo mock is in-memory, so a full page navigation
+    resets it to seed** — a cross-page flow has to be driven through the app's own router, not `page.goto`.
+  - **Live repair — one row, guarded, and nothing moved.** Card Pop → `lease_type = 'gross'` (guarded on the
+    property, tenant, $42,000 rent, 1,800 SF and a null flag, so a re-run is a no-op): **UPDATE 1**. Read back:
+    Card Pop reads gross, the other four Joliet leases read null. Because Joliet has no 2026 expenses the carve is
+    $42,000 − $0, so **its existing base-only invoice re-totals unchanged**. The flag is what makes the **next**
+    expense entry carve instead of add.
+  - **George: hard-refresh (Cmd+Shift+R).** Card Pop is already marked gross. Any lease now has a **Gross lease**
+    On/Off toggle under its lease terms — turn it on for a tenant who pays one flat all-in rent, and the
+    Financials breakdown will show their taxes & CAM coming *out* of that rent instead of being added to it.
+  - **Flags (no action needed):** ① **Check Hair Salon and Vape Store.** Their Joliet leases show no expense-
+    sharing clause either (Denny's and Eye 2 Eye clearly do), so they may be gross too — one click each on the new
+    toggle, or re-upload for the AI to judge. ② **If a gross tenant's share ever exceeds the flat rent** the carve
+    caps at $0 base with a warning on the row — the rent is the ceiling and you'd be absorbing the excess.
+    ③ **One chain I deliberately left short, and it's cosmetic:** `owedByMonthForInvoice` (the AR "months behind"
+    path) mixes flat-era escalation figures with the carved current base before scaling to the invoice total —
+    so the **total is exact** but the intra-year *shape* is approximate for a gross lease that has applied
+    historical rent steps. No bill or balance is affected; only which month an arrears is attributed to. Say the
+    word and I'll finish it. ④ Existing net leases are untouched — `null` reads as net, so nothing re-priced.
+
+- **2026-07-30** — **A bank statement can be dragged straight onto the ledger — the whole panel takes the drop,
+  through the same pipeline the button uses** (George: *"make the import statements on the ledger able to
+  recieve a drag and drop."*). Deployed: frontend Cloudflare version **`f8887f62`**, demo worker `a46361f0`.
+  **Frontend + CSS only — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing
+  destructive.** Tests **1079/1079 across 123 files** (was 1071/122 — +8, one new suite).
+  - **One pipeline, two doors.** The reading logic came out of the button into a shared
+    `readStatementFile(file)` (`ImportStatementButton.js`) — CSV parsed in the browser ($0, no AI), PDF through
+    the one transcription read, both landing on the identical `onReady` payload. The button and the drop zone
+    call it, so what you get by dropping is exactly what you get by clicking; there is no second lane to drift.
+    The one asymmetry it had to preserve is the CSV storage-save failure, which must warn without stopping an
+    import — it now rides back as `saveWarning` rather than reaching for the button's own `setErr`.
+  - **The target is the PANEL, not a box.** New `StatementDropZone` takes the host's own `className`, so it IS
+    the `.panel` rather than another div inside it — one element, no reindentation of 300 lines of ledger, and
+    the veil covers exactly the panel it belongs to (browser-measured: veil box == panel box at 1440px and
+    420px). Mounted on the Ledger's grid panel and the Financials **Expense entry** panel — the two places the
+    ⬆ Import statement button already lives. Verified on Financials that the property-summary panel above it is
+    **not** a target: exactly one drop zone per page.
+  - **Nothing is drawn at rest, deliberately.** A permanent dashed box would cost real height on two screens
+    that are already dense, and there is nothing to look at until a file is actually over the page — so the veil
+    exists only while a file is over it or being read (`.stmt-drop-veil`, `inset:-1px` so the dashed edge covers
+    the panel's own border and reads as one shape). Discoverability rides the button's tooltip instead, which
+    now ends *"You can also drag the file straight onto this panel."*
+  - **The counter is the load-bearing detail.** `dragenter`/`dragleave` fire again for every child the cursor
+    crosses, so a boolean flickers off the moment you move over a tenant row — on a panel that is one big table
+    that is every mouse movement. Enters and leaves are counted instead. **Proved in the browser step by step:**
+    over the panel → shown · onto a tenant row → still shown · panel fires its own leave while the row is still
+    under the cursor → **still shown** · off the panel entirely → cleared.
+  - **Three ways a drop can be wrong, each answered rather than swallowed.** A non-file drag (selected text, a
+    link, one of the app's own draggable rows) is ignored outright — the veil never appears. A file that isn't a
+    statement is refused **before the PDF lane can upload it and spend a read**, naming the file: *"Denny's
+    Lease.docx" isn't a bank statement. Export the month as CSV from your bank, or use the PDF statement
+    itself.* And several files at once are refused — *"3 files were dropped — import one statement at a time"* —
+    because quietly reading the first of five would look like all five had been imported.
+  - **The veil says what happens next**, since a drop is otherwise an irreversible-feeling act: *"CSV or PDF —
+    it opens for you to review before anything is recorded."* True by construction — both hosts swap the page
+    for `StatementReview` and nothing writes until Save. While the PDF read is running it becomes *"Reading
+    {filename}…"* rather than sitting on an instruction that has already been followed.
+  - **Files.** New: `src/components/__tests__/statementDrop.test.js` (8). Edited:
+    `src/components/ImportStatementButton.js` (`readStatementFile` + `StatementDropZone`) ·
+    `src/pages/{LedgerPage,PropertyFinancialsPage}.js` (the panel becomes the zone) · `src/App.css`
+    (`.stmt-drop`, `.stmt-drop-veil`, `veilIn`, a reduced-motion opt-out). **No** migration, edge function, view
+    or demo-seed change.
+  - **Verified:** unit **1079/1079** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real
+    browser against the deployed demo:** a real `DataTransfer` carrying a real `File` dropped on the ledger
+    opens *"reviewing march-statement.csv"* with **2 lines parsed · 0 skipped**, the deposit matched to **City
+    Dental (100%)** and tagged **Mar**, the withdrawal classified **Landscaping** — i.e. the dropped file went
+    through the whole matcher, not a shortcut. Both refusals render their message and stay on the ledger; at
+    420px the veil sits inside the viewport with **zero** page overflow. **Zero console errors or warnings.**
+    (jsdom ships no `Blob.text()`, which every browser has had since 2019 — shimmed in the test so it exercises
+    the real CSV lane rather than the environment's gap.)
+  - **George: hard-refresh (Cmd+Shift+R).** On a property's **Ledger** tab — or the **Expense entry** panel on
+    Financials — drag a statement file anywhere onto the panel and let go. It reads it and opens the same review
+    screen the button does. The button hasn't moved.
+  - **Flags (no action needed):** ① Only **CSV and PDF** are accepted; anything else is refused by name rather
+    than uploaded and read. ② **One file at a time** — each statement is reviewed and posted on its own. ③ A
+    dropped **PDF** spends the transcription read (~5–15¢) as soon as it lands, same as the button; a CSV is
+    free. ④ Dropping outside those two panels does whatever your browser normally does with a file.
+
+- **2026-07-30** — **Housekeeping round: a renewal option's notice deadline now opens on the owner's Settings
+  default · the lease and its copies are listed above the riders, with every "Open" in one column · and the
+  over-let case George asked about is answered and pinned** (George: *"by the way for that lets say that there
+  are two leases changing its okay if for the time being the total square footage is over the total for the
+  building because that will be temporary and once the other lease in inputed or removed it will be fixed let me
+  know if that logic is in there. some other housekeeping : leases should be listed first on lease document and
+  assistant then riders and the open lease button should be in line with the lease open button - for the notice
+  by in the renewal options theres a default set by the settings so make sure thats the default set in the notice
+  by which can be changed by clicking in for specific tenants."*). Deployed: frontend Cloudflare version
+  **`4dd32065`**, demo worker `d37f9335`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions,
+  no AI calls, no tenant emails, nothing destructive.** Tests **1071/1071 across 122 files** (was 1057/121 —
+  +14, one new suite).
+  - **1) The over-let question — the answer is yes, and it's now a guarantee rather than my say-so.** Traced every
+    consumer of the leased total: `v_property_totals` computes `vacant_sf = greatest(0, building_sf − total_sf)`
+    (0049) so it **clamps at zero, never negative**; `tenantMix` does the same in JS and simply draws **no vacant
+    slice**; `occupancyByProperty` clamps `leased = min(total_sf, building)` so the Overview's leased-space bar
+    can't overflow its track. **Each tenant's own share is untouched** — `v_tenant_shares` divides that tenant's
+    SF by the building, so nobody is billed the wrong rate while the other lease is outstanding. The one visible
+    artifact is that the shares **add past 100%**, which is the honest arithmetic of the state, and it settles
+    itself the moment the other lease is entered or taken off. New `overLetProperty.test.js` pins all of it,
+    including **both** ways out (the outgoing tenant hands the space back, or the incoming lease is deleted) and
+    a regression guard that the ordinary under-let vacancy still renders.
+  - **What did need changing was the wording.** The per-tenant breakdown's footnote called it *"over-allocated
+    space — yours to reconcile"*, which reads as an accusation about a state George correctly describes as
+    normal and temporary. It now names the cause (*"one tenant expanded before the one giving the space back was
+    updated, or a replacement lease added before the old one was removed"*), says it settles itself, and says the
+    thing that actually matters: **no one is on the wrong rate meanwhile — only the total collected runs ahead of
+    what you spent until it balances.** The under-let branch is unchanged.
+  - **2) The notice deadline opens on the Settings default.** Settings → Notifications carries an *"Upcoming
+    renewal option"* lead (183 days shipped); nothing on a renewal option had ever read it, so four of George's
+    pending options sit with **no deadline at all** and an empty box. New pure `leadAsUnits(days)` (`notifyPrefs.js`)
+    turns a day count into the two units a lease actually states — 183 → **6 months**, 365 → **12 months**, 90 → 3
+    months — using **the same month test `formatLeadDays` uses**, so the Settings row and the Notice-by control
+    can never describe one lead two ways. **180 deliberately stays 180 days**: it isn't six months, and rounding
+    it would move the deadline.
+  - **A pre-fill, never a write — the distinction is load-bearing.** `noticeDraftFrom(ren, defaultDays)` reaches
+    the default **only** when the option carries neither a rule nor a date (a deadline already on the option is a
+    fact and is never overwritten), and it only seeds the editor: nothing is stored until Save. That is the same
+    line `noticeDrift` already draws — a deadline that appeared because a screen rendered is exactly the silent
+    movement this codebase keeps out of its money paths, and the bell, the lapse rule and `apply_due_renewals()`
+    all read the stored `notice_by_date` and nothing else. So the cell on an option with no deadline still reads
+    **＋ set**, with a muted **"default 6 months before"** underneath — the default named as a default, not as a
+    date the reminders know about. Clicking in opens it filled, with the derived date and a line saying where the
+    figure came from and that changing it moves this tenant only.
+  - **The add dialog opens on it too**, so a new option gets a sensible deadline written at creation — that write
+    is explicit and confirmed, which is what makes it legitimate there.
+  - **3) The document panel reads lease → copies → riders, and every "Open" is in one column.** The order swap is
+    George's; the alignment is what it exposed, with "Open lease" now sitting directly above the copies' Open
+    buttons. Three kinds of row had each grown their own action layout, so three Open buttons ended at three x
+    positions. One shared pair — `.doc-actions` + a fixed-width `.doc-act2` trailing slot holding each row's
+    SECOND control (a copy's ✕, a rider's Open file) — puts every primary Open at the same right edge whether or
+    not that row has a second control. `.rider-act` is deleted; its job is now the shared rule. On a phone the
+    reserved column collapses (`--doc-act:auto` + `.doc-act2:empty{display:none}`) since the rows wrap anyway.
+  - **Files.** New: `src/lib/__tests__/overLetProperty.test.js` (4). Edited: `src/lib/{notifyPrefs,renewals}.js` ·
+    `src/components/{NoticeByField,RenewalOptionModal,RenewalOptionsEditor,DocAssistant,DocumentsList,RiderDocs,
+    TenantShareTable}.js` · `src/pages/LeaseDetailPage.js` · `src/App.css` · tests `renewalNoticeLead` (+4),
+    `renewalNoticeEdit` (+3), `renewalOptionModal` (+1), `riderOpen` (+2). **No** migration, edge function, view
+    or demo-seed change.
+  - **Verified:** unit **1071/1071** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser
+    at 1440px and 420px:** all six Open controls in the panel share **exactly one right edge (x=1287)** with the
+    slot 78px wide on every row, the panel reads *Open lease → SAVED COPIES OF THE LEASE → RIDERS*, the add
+    dialog opens pre-filled at **6 months** with the Settings provenance line and resolves live to *"Due November
+    30, 2030 — counted back from May 31, 2031"* as the term is typed, and at 420px the reserved slots collapse to
+    0 with zero page or panel overflow. **Zero console errors or warnings.** (One deploy-propagation race hit and
+    waited out: the demo edge served a stale `index.html`.)
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, **＋ set** on a renewal option now opens on *6 months
+    before* with the date already worked out — change it there for that tenant, or change the default for
+    everything under Settings → Notifications. The lease document panel lists the lease's own copies above the
+    riders, with all the Open buttons in one line.
+  - **Flags (no action needed):** ① Adding an option through the dialog now **writes** a deadline by default
+    (the resolved date from your 6-month lead) — clear it in the dialog if a particular option genuinely has no
+    notice requirement. ② The Settings figure does double duty now: it's both how far ahead you're reminded and
+    the starting point for the deadline itself. Changing it moves the default for options you set **from then
+    on** — nothing already stored re-dates itself. ③ Nothing has been changed about the over-let case beyond the
+    wording; if you'd rather the breakdown showed a banner instead of a footnote line, say the word.
+
+- **2026-07-30** — **A rider that re-sizes the premises is finally read as one: the extractor already knew the
+  square footage and threw it away, so a tenant's CAM and tax share went on billing the old size** (George:
+  *"is there a way for the rider ai extraction to notice when the squarefootage of a property increaes or
+  decreases and apply it to the lease terms?"*; asked how a mid-term change should hit the split he said *"im
+  really not sure here"*, so the call was mine — see the trade-off below). Deployed: `extract-addendum` edge fn
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version **`a4225a52`**, demo worker `fe437e2e`.
+  **$0 — the size rides the EXISTING rent-supplement call, so no new AI call and no new per-rider cost; NO DB
+  migration** (`leases.square_footage` has existed since 0001), no tenant emails, nothing destructive. Tests
+  **1057/1057 across 121 files** (was 1043/119 — +14 across 2 new suites).
+  - **The answer to his question was "it already reads it".** `RENT_SCHEMA` has carried `square_footage` — *"the
+    leased area in square feet exactly as written"* — all along, and `index.ts:533` used it three times (to
+    annualize a $/SF row, a superseded quote, and a stated CAM estimate) and then **never merged it onto
+    `parsed`**. It didn't even leave the edge function. Exactly the shape of the 7/24 CAM-estimate bug: read
+    fine, no field to land in. The **lease import** path writes `square_footage` (`api.js:1455`); only the rider
+    path dropped it.
+  - **Why it isn't a one-line fix, and the detail that decided the design.** `square_footage` is the numerator of
+    the CAM / tax / roof split — `v_tenant_shares` computes
+    `share_pct = square_footage / coalesce(nullif(p.building_sf,0), pt.total_sf)`. So the blast radius turns
+    entirely on whether a building size is entered: **with one** (Pershing 13,750, Joliet 13,000) the denominator
+    is fixed and only that tenant re-splits → `resyncLeaseBilling`; **without one** (401 S Main) the denominator
+    is Σ leased SF, so re-sizing one tenant **re-splits every tenant on the property** → `resyncPropertyBilling`.
+    That is the same distinction the 2026-07-27 carry-through rule already draws, and `square_footage` was
+    already in `BILLING_FIELDS`, so hand-editing it on the lease page has always carried through correctly — the
+    rider path just needed to route through the same call rather than invent a third one. Both branches are
+    test-pinned, including that the OTHER tenant's stored invoice moves in the no-building-size case.
+  - **The trade-off George was unsure about, and the call I made.** `leases.square_footage` is a **single current
+    value with no history** — unlike rent, which has the escalation ledger behind it — so a mid-year expansion
+    re-splits the WHOLE year rather than pro-rating from its date. On his own numbers that is real money: D&D
+    Dental going 2,156 → 3,000 SF at Pershing is $23,708 vs $32,989 of CAM & tax, and a July 1 change makes
+    whole-year ($32,989) and pro-rated ($28,349) differ by ~$4,600. **Chose whole-year**, because ① premises
+    changes overwhelmingly land at a renewal or extension boundary, which is a year edge where both answers are
+    identical, and ② it throws nothing away: the rider's `effective_from` is already stored (added 7/30), so
+    pro-rating later is a pure computation change on data already on file. The alternative costs a migration plus
+    a JS↔SQL twin inside `v_tenant_shares` — and twins are precisely what this codebase drifts on. **The card
+    says so in plain words** rather than leaving it implicit.
+  - **Recital vs operative — the same distinction `superseded` draws for rent.** A rider constantly restates the
+    existing area in a recital (*"the Premises, containing approximately 2,156 square feet, as more fully
+    described in the Lease"*), which changes nothing. So the size CHANGE gets its own field —
+    `new_square_footage` + `square_footage_quote`, both nullable, taking the schema from 8 → **10 of the 16-union
+    ceiling** — and the prompt is explicit that a recital leaves it null, and that a rider stating only the area
+    ADDED must not have a total guessed for it. The review card is then ticked **only when the figure differs
+    from the size on file**; an unchanged figure is filled but left unticked, and `applyAddendum` treats a
+    matching size as a no-op (no write, no history event, no re-split) — test-pinned.
+  - **The $/SF arithmetic got quietly more correct too.** A rider that expands the premises and then prices rent
+    at "$22.00 PSF" means the NEW area, so `resized || recited || leaseSqft` now leads the fallback chain.
+  - **Nothing to repair.** Checked all 7 live riders: not one mentions square footage (`rider_sf` null across the
+    board, and no `sq ft` string in any `addendum_text`). This is forward-looking only.
+  - **Registry entries filled:** a `premises_resized` history event (free-text `type`, so no migration) with the
+    prior and new area in `meta` and dated by the period the rider GOVERNS rather than the day it was signed ·
+    an `EVENT_LABEL` + `EVENT_BADGE` entry (`HistoryPage.js`) · and `STORY_EVENTS` (`tenantStory.js`), because a
+    tenant taking or giving back space belongs in their story, not the bookkeeping log.
+  - **Demo fixture — a deliberate reversal caught in the browser.** The canned rider first EXPANDED to 2,600 SF,
+    which drove the seeded property to *"5,600 SF leased of 5,000 SF building"* with shares summing to 112% —
+    the demo building is fully let, so any expansion over-lets it and reads as a bug. Switched to a **surrender
+    to 1,600 SF**: it fits, it exercises the contraction wording, and it puts the vacant-space row on the
+    breakdown. No seed change (moving `building_sf` would re-price the pinned demo bills).
+  - **Files.** New: tests `premisesResize` (10), `premisesResizeReview` (4). Edited:
+    `supabase/functions/extract-addendum/index.ts` (schema + prompt + merge) · `src/lib/api.js` (`applyAddendum`
+    write + carry-through) · `src/components/AddendumEditor.js` (the effect card, `formToChanges`, `canSave`,
+    intake pre-fill) · `src/pages/HistoryPage.js` · `src/lib/tenantStory.js` · `src/lib/demo/mockClient.js`.
+    **No** migration, view, or shared-edge-module change (so rule #5's fan-out doesn't bite — only
+    `extract-addendum` needed redeploying).
+  - **Verified:** unit **1057/1057** (`vitest run`); `npm run build` compiles; edge fn deployed clean with unauth
+    POST → **401**; live bundle confirmed to **carry** the backend ref and the demo bundle grepped **free** of
+    it; 200s on all four URLs. **Driven in a real browser against the deployed demo:** the card arrives ticked at
+    1,600 with *"Currently 2,000 SF on this lease"*, the rider's own words, and the whole-year note; saving moves
+    the lease to **1,600 SF**; Financials then reads **Bright Coffee 1,600 SF · 32.0%** (was 2,000 · 40.0%) with
+    **City Dental unchanged at 3,000 SF · 60.0%** — the fixed-denominator branch proven live — plus a **Vacant
+    space 400 SF · 8.0%** row and totals of 4,600 of 5,000; and the History timeline shows **PREMISES RE-SIZED —
+    "Premises reduced to 1,600 SF (was 2,000 SF) (First Amendment)"**. **Zero console errors or warnings; zero
+    horizontal overflow.** (Two deploy-propagation races hit and waited out: the demo edge served a stale
+    `index.html`, then a new `index.html` whose JS asset hadn't landed — both cleared on revalidation.)
+  - **George: hard-refresh (Cmd+Shift+R).** Upload a rider that changes how much space a tenant occupies and the
+    review screen now carries a **"Changes the size of the premises"** card, pre-filled with the new area and the
+    clause it came from. Confirming it re-splits that tenant's CAM and tax for the year.
+  - **Flags (no action needed):** ① The re-split covers the **whole year**, not just the months after the rider —
+    stated on the card. Say the word and I'll add pro-rating; the effective date is already stored. ② On a
+    property with **no building size entered** (401 S Main), re-sizing one tenant moves **every** tenant's share,
+    because the denominator is the leased total — entering a building size makes it behave like Pershing.
+    ③ A rider that states only the space **added** ("plus 400 square feet") leaves the field blank rather than
+    guessing a total; type the new total yourself. ④ Existing riders are untouched — re-upload one only if you
+    want its size change picked up.
+
+- **2026-07-30** — **A renewal option's notice deadline is now entered the way the lease writes it — "180 days
+  before" — and the date is worked out for you** (George: *"for the renewal tab make sure i can click into notice
+  by and change the duration to something specific like how many months before"*). Deployed: DB migration `0072`
+  (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), frontend Cloudflare version **`1723a2a8`**,
+  demo worker `1c083c77`, plus a two-row guarded backfill. **$0, NO edge functions, no AI calls, no tenant emails;
+  0072 is two nullable columns + a guarded CHECK.** Tests **1043/1043 across 119 files** (was 1020/117 — +23
+  across 2 new suites).
+  - **A lease never prints a notice DATE.** It prints a duration — *"180 days prior to the expiration of the
+    then-current term"*, *"twelve (12) months prior"* — and the date falls out of when that term ends. The column
+    held only the resolved date, so the app could show **when** notice was due but had no idea what rule produced
+    it: George did the arithmetic by hand, and if the term later moved the stored date quietly stopped meaning what
+    the lease says. Same division of labour as the rent schedule: **the human states the rule, the code does the
+    arithmetic.**
+  - **What it counts back from is the load-bearing detail.** Not today, and not the option's own start — the day
+    the term **this option extends** runs out, i.e. the day before its period opens. For the first pending option
+    that is exactly the lease's committed term end, **which is precisely what `reconcileRenewalOptions` has always
+    counted back from** when it reads a "N days prior" clause out of an import — so the hand-entered and extracted
+    paths now resolve identically. For a *later* option it's the end of the option before it, which is what
+    "expiration of the then-current term" actually means once one has been exercised. All of it derives from the
+    `optionWindows` chain the Covers column already draws, so the deadline and the period can't disagree.
+  - **The circularity, avoided deliberately.** `cmpRenewal` orders options **by notice date**, and `optionWindows`
+    takes that ordered list — so deriving a notice date *from* a window computed *from* the notice dates would
+    close a loop. The add dialog's draft option is therefore explicitly **dateless**: a new option chains onto the
+    end (which is what adding one means), and a dateless draft is exactly what `cmpRenewal` sorts last.
+  - **`notice_by_date` is still the one answer everything reads** — the lapse rule (0068), `apply_due_renewals()`,
+    the `renewals_reminders` trigger (0002), `alerts.js`, `isRenewalDecisionDue`. The lead is stored **alongside**
+    it, never instead of it, so not one downstream consumer changed shape. A deadline typed as a plain date carries
+    **no** lead — nothing would re-date it, and nothing should.
+  - **When the period moves, the row says so — it doesn't silently re-date itself.** Extend the term by an
+    addendum and "6 months before" now means a different day; the cell shows the stored date with a gold
+    *"period moved → November 30, 2028"* beneath it, and one click in / one click Save settles it. **Reported
+    rather than applied on purpose:** re-dating is a write, and a write that happens because a screen rendered is
+    the exact class of silent movement this codebase keeps out of its money paths. Test-pinned in both directions,
+    including that a settled (applied/declined) option never flags — by then the date is a record.
+  - **The dialog reads as a sequence now.** Notice moved out of the three-across field row and **below** the
+    Covers line, because it is measured back from it: what it's called → how long it runs → the years that covers →
+    when the tenant has to decide. One shared `NoticeByField` serves both the dialog and the inline row, so the two
+    can't drift into asking the same question two ways.
+  - **Live backfill — two rows, and nothing moved.** Ricki's and Five Points both carry a "180 days prior" clause;
+    `reconcileRenewalOptions` had computed their dates from it but had nowhere to keep the rule. Guarded on the
+    stored date already equalling **term end − 180 days** *and* the option being the only pending one on its lease
+    (so the anchor is unambiguous), so it could only ever touch rows where the rule and the date already agree:
+    **2 rows updated, both dates byte-identical.** `reconcileRenewalOptions` now stores the lead as well as the
+    date, so future imports arrive self-describing.
+  - **A real CSS bug found in the browser, not the DOM.** `.notice-by-n{width:70px}` lost on specificity to
+    `.notice-by-row .text-input{width:auto}` directly above it, so the count input stretched to 183px and pushed
+    the unit dropdown onto its own line. Qualified and re-measured: **70px + 138px on one line** at both widths.
+  - **Files.** New: `supabase/migrations/0072_renewal_notice_lead.sql` · `src/components/NoticeByField.js` ·
+    tests `renewalNoticeLead` (15), `renewalNoticeEdit` (6). Edited: `src/lib/{renewals,api,demo/store}.js` ·
+    `src/components/{RenewalOptionsEditor,RenewalOptionModal}.js` · that suite's modal test (+2) · `src/App.css`.
+    **No** edge function or view change (migration-reviewer verified — no view selects `renewal_options.*`, and the
+    two PL/pgSQL readers use `select * into` a record, which re-resolves at call time).
+  - **Verified:** unit **1043/1043** (`vitest run`); `npm run build` compiles; migration applied clean and read
+    back (both columns nullable, CHECK present); live bundle confirmed to **carry** the backend ref and the demo
+    bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser at 1440px and 420px:** the
+    cell reads *November 30, 2025 · 6 months before*; clicking it opens on the **rule**, not a bare date, and
+    states *"counted back from May 31, 2026, when the term this option extends runs out"*; switching to
+    **180 days before** recomputes to **December 2, 2025** live and saves both; the dialog derives *Due June 30,
+    2027* while you type the term; at 420px the modal sits 395px inside the viewport with the notice controls still
+    on one line. **Zero console errors or warnings; zero horizontal overflow at either width.**
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, the **Notice by** column is now clickable. Four of your
+    pending options have no deadline at all (Card Pop, D&D Dental, Infinite Mobile, Vape Store) — click **＋ set**,
+    type the number the lease states, pick *months before* or *days before*, and the date is worked out from the
+    end of the term that option extends. Ricki's and Five Points now read *180 days before* under their dates.
+  - **Flags (no action needed):** ① A deadline entered as a **plain date** carries no rule, so nothing will ever
+    re-date it — that's deliberate. ② An option with **no term** can't be dated from a duration (there's no
+    boundary to count back from); the control says so and still takes a plain date. Infinite Mobile's option is the
+    one in this state. ③ The drift note only appears on **pending** options — on a settled one the date is history.
+    ④ AI-imported options only pick up the rule when the clause reads "N days/months prior"; anything phrased
+    differently still stores just a date, editable in two clicks.
+
+- **2026-07-30** — **Adding a renewal option moved into a dialog that can express a rent per YEAR of the option
+  period (remembered hidden, written only when it's exercised) · the decision buttons became one shape on every
+  row · AND the 299 MB of redundant storage copies were deleted** (George: *"go for the storage cleanup - and for
+  the renewal options tab can you take out all the boxes for adding an option and only have them appear when the
+  add option button is clicked. when that button is clicked you can create a popup that has the user answer all
+  those questions and it needs to be a bit more in depth like if the rent goes up yearly or within a certain term
+  amount the user should have to option to update that like 'add rent escalation as part of this option' and that
+  should be hidden but be rememberd so that when the renewal is applied the escalations save. lastly clean up the
+  format of the renewal decision - the renew not renewing email tenant is not symmetrical"*). Deployed: DB
+  migration `0071` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), frontend Cloudflare version
+  **`3c241e39`**, demo worker `74d1c5ee`, plus the one-time bucket cleanup. **$0, NO edge functions, no AI calls,
+  no tenant emails; 0071 is one nullable jsonb column + a guarded CHECK.** Tests **1020/1020 across 117 files**
+  (was 1005/115 — +15 across 2 new suites).
+  - **0) The storage cleanup ran** (approved 2026-07-30, dry run reviewed first as promised). **118 objects /
+    413.4 MB → 41 / 113.7 MB**; 77 redundant identical copies deleted, **zero** referenced paths touched, all **41**
+    distinct content hashes kept including **all 6** New Hong Kong versions. Read back after: 41 objects, 114 MB,
+    41 distinct hashes — free tier now **11%** used. The service-role key was piped straight from
+    `supabase projects api-keys` into the script's environment inside one shell command; it was never printed,
+    written to disk, or committed. **Known, harmless leftover:** ~40 abandoned `lease_files` rows keep dangling
+    `storage_path` values — unreachable from the UI either way, and their `extraction_raw` is untouched.
+  - **1) The add-option strip is gone; there's one button.** Six inputs sat permanently under the table, and two
+    of them (**New rent** and **or +%/yr**) were mutually exclusive with nothing saying so — filling both was
+    silently meaningless. New **`RenewalOptionModal`** asks the rent as **ONE question with four answers** —
+    **Flat · Rises yearly · Year by year · Not stated** — and only the answer you pick asks anything further.
+    Exactly one rent shape is written and the others are explicitly nulled, so an option can no longer carry two
+    contradictory answers (test-pinned both ways).
+  - **2) "Year by year" is the thing the old form could not express** — and it's the commonest thing a lease
+    actually prints. It renders **one row per option year, each labelled with the date it takes effect**
+    (*Year 1 · from June 1, 2031*), derived from the same `optionWindows` chain the table's Covers column uses —
+    so the dialog's dates ARE the dates written. A **"fill the rest from year 1 at N% a year"** control covers
+    George's *"if the rent goes up yearly"* without typing five boxes (browser-checked: 96,000 → 98,880 →
+    101,846 → 104,902 → 108,049 at 3%).
+  - **Hidden, then remembered — the load-bearing pair.** New nullable `renewal_options.rent_schedule` (`0071`),
+    shaped **identically** to what `buildRenewalScheduleSteps` already consumes from the AI read, so the
+    hand-entered and extracted paths speak one vocabulary. Nothing is written to the rent ledger while the option
+    is merely pending; `rollLeaseIntoRenewal` materializes the whole schedule as real dated `rent_escalations`
+    **only when the option is applied**. Test-pinned as a pair: a pending option leaves the escalations and the
+    lease byte-identical, and applying it books one step per priced year.
+  - **Why a column on the option rather than gated steps.** Gated steps past the term end (what the AI import
+    path writes) would have worked, but declining or deleting the option would strand them, and George asked for
+    *hidden*. On the option, the schedule dies with the option — pinned by a test that declines one and asserts
+    zero orphaned steps.
+  - **A seam this exposed, and the deliberate call.** `rollLeaseIntoRenewal` anchors its flat/+%-per-year year-1
+    step on the term end **itself** (2027-12-31), while `optionWindows` / `buildRenewalScheduleSteps` / the rider
+    `coversLabel` all treat the renewal as starting the **day after** (2028-01-01) — the tenant occupies through
+    the end date. The new schedule path uses the day-after convention, which is what lets the dialog's per-year
+    dates be the dates actually written. **The existing flat/% path was left exactly as it is** — moving it would
+    shift `lease_start` and every booked step by a day on every renewal, under live billing, for no ask. Pinned
+    by a test that asserts the flat option still dates year 1 on the term end. Flagged below.
+  - **The ±45-day dedupe does real work here:** in the caught-up branch the year-1 step booked alongside
+    `base_rent` and the schedule's own year-1 row are one day apart, so only one survives; and a lease whose
+    imported schedule already prints the option years (Ricki's) can't end up with two steps a fortnight apart.
+    Test-pinned.
+  - **3) The decision column is one shape on every row.** A `flex-wrap` row gave three buttons of three widths,
+    breaking wherever they happened to fit — different on every row, which is what George saw. Now a fixed
+    **two-column grid**: the two answers side by side, the follow-up (**✉ Email tenant**, or **Already renewed**
+    on a lapsed option) spanning both beneath. There is always exactly one follow-up, so every pending row has
+    the identical shape. **Measured in the browser across both demo rows: `Renew@1050/120` · `Not
+    renewing@1176/120` · `Already renewed@1050/246` — identical to the pixel.** A declined row drops the muted
+    "Not renewing" text that only repeated the Declined badge one cell to its left, so its ↩ Undo aligns under
+    Renew.
+  - **Demo parity.** `ren-1` now carries a year-by-year schedule instead of a `+%/yr` formula — the shape the
+    dialog writes. The figures are the same 5%/yr climb its notes already described, so **no displayed rent and
+    no confirm dialog moved**; only the code path exercised changed.
+  - **Files.** New: `supabase/migrations/0071_renewal_option_schedule.sql` · `src/components/RenewalOptionModal.js`
+    · tests `renewalOptionRentSchedule` (8), `renewalOptionModal` (7). Edited: `src/lib/{renewals,api,demo/store}.js`
+    · `src/components/RenewalOptionsEditor.js` · `src/App.css`. **No** edge function or view change (checked: no
+    view selects `renewal_options.*`, so rule #7 doesn't bite).
+  - **Verified:** unit **1020/1020** (`vitest run`); `npm run build` compiles; migration applied clean and read
+    back (`rent_schedule`, jsonb, nullable); live bundle confirmed to **carry** the backend ref and the demo bundle
+    grepped **free** of it; 200s on all four URLs with the edge serving the new hash (`assets/index-sN8gDVrh.js`).
+    **Driven in a real browser at 1440px and 420px:** the panel renders **zero** input boxes until Add option is
+    clicked; the dialog derives *Covers June 1, 2031 → May 31, 2036 · 5 years* while you type the term, chaining
+    correctly past the existing option; five dated year rows fill forward at 3%; saving produces a second row whose
+    Covers picks up exactly where the first ends; the three field inputs sit on one baseline (all at y=297) and the
+    dialog stacks to one column at 420px inside the viewport. **Zero console errors or warnings; zero horizontal
+    overflow at either width.**
+  - **George: hard-refresh (Cmd+Shift+R).** On any lease, **Renewal options** now shows one **+ Add option**
+    button; clicking it opens a dialog that shows the period the option would cover as you type its term, and lets
+    you write the rent for each year of that option. Those years stay hidden until you mark the option renewed —
+    then they become real rent steps. The Renew / Not renewing / ✉ buttons now line up the same way on every row.
+  - **Flags (no action needed):** ① A **flat** or **+%/yr** option still dates its first step on the term end
+    itself, one day before a year-by-year option's first step — pre-existing, deliberately not moved under a live
+    billing path. Say the word and I'll align them. ② **Term is now required** to add an option — it's what dates
+    the period and sizes the year rows; existing options with no term are untouched and still show their length
+    only. ③ Only the **hand-entered** path stores a schedule on the option; an AI-imported option still writes its
+    year rents as gated steps past the term end, as before. ④ Your storage sits at **114 MB of 1 GB** — the reason
+    to consider Pro is still **backups** (no point-in-time recovery on free tier), not space.
+
+- **2026-07-30** — **Every renewal option now states the period it covers as DATES · and an AI answer is
+  rendered instead of having its markdown printed at you** (George: *"The renewal options need to be dated from
+  when they start to when they end. Can we fix the formatting for the lease document assistant? There's a lot of
+  noise and would be hard to read for somebody who didn't know what it was. Keep the detail. Remove the noise."*).
+  Deployed: frontend Cloudflare version **`50e4028b`**, demo worker `6ec3c670`. **Frontend + `src/lib` only —
+  $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing destructive.** Tests
+  **1005/1005 across 115 files** (was 973/112 — +32 across 3 new suites).
+  - **1) The dates were never stored, and that's the point.** A lease states a **length** — *"sixty (60)
+    months"* — never a date, so `term_months` was all the table could show. The dates come from where the
+    committed term ends, which is precisely the arithmetic `rollLeaseIntoRenewal` already books
+    (`newEnd = addMonths(termEnd, term_months)`). New pure **`optionWindows`** (`renewals.js`) derives them once
+    so the row, the confirm dialog and the AI assistant all quote the same period rather than three components
+    each doing their own date math. A window runs from the **day after** the current term end through that new
+    end (the `buildRenewalScheduleSteps` convention), and the next option picks up from there.
+  - **The applied case runs the other way, and it's the part that would have been wrong.** Confirming an option
+    has ALREADY moved `lease_termination_date`, so the committed end *includes* it — chaining it forward would
+    date a period the tenant has been occupying for years as if it were still ahead. Applied options are walked
+    **backwards** from the committed end instead. Test-pinned on Ricki's live shape (2016 start, three 5-year
+    options, two exercised): Option 1 reads **May 2 2021 → May 1 2026**, Option 2 **May 2 2026 → May 1 2031**,
+    Option 3 (still open) **May 2 2031 → May 1 2036** — no gap and no overlap at either seam.
+  - **Two deliberate silences.** A **declined** option gets no dates at all — nothing will ever cover it, and
+    dating a period that won't happen is worse than saying nothing (it falls back to the bare length). And an
+    option with **no stated length stops its chain**: everything after it is unknowable, so the map returns what
+    it knows and no more rather than inventing a boundary.
+  - **The column is now `Covers`** — the date range as the main line, `60 mo (5 yr)` as the sub — and it lands
+    directly above the **Addendums & riders** table, which has carried a `Covers` column in the identical
+    `Jul 1, 2024 → Jun 30, 2027` arrow form since this morning. An option's period and a rider's period now read
+    as the same kind of fact because they're formatted by the same rule (`windowLabel` ↔ `coversLabel`). The
+    confirm dialog leads with the period too, so what you approve names the years you're agreeing to.
+  - **2) The assistant's "noise" was markdown, printed.** Claude writes `**bold**`, `- ` bullets, `> ` quotes and
+    `## ` headings by default; **nothing in this codebase has ever rendered markdown** (grepped: no `marked`, no
+    `react-markdown`, no renderer of any kind), and both answer boxes were `white-space:pre-wrap` — so every
+    asterisk, hyphen and angle bracket reached the page as literal punctuation. The detail was always there; it
+    was wearing its markup. **Invisible in demo**, which is why it survived: the canned answers are plain prose,
+    so only George's live account ever showed it.
+  - **New pure `answerFormat.js` + shared `AnswerText.js`**, applied to the lease/policy/contract assistant AND
+    Ask Amlak (both surfaces, so the two can't drift into formatting one model's output two ways). Deliberately
+    **not a markdown parser and no new dependency** — it handles the subset the models actually emit and leaves
+    everything else literal, because a half-understood construct rendered wrong is worse than one rendered as
+    text. Everything is built from parsed text nodes: no `dangerouslySetInnerHTML`, so a model echoing a tag out
+    of a lease can't inject it.
+  - **Italics are unsupported on purpose.** A lone `_` or `*` matches `est_cam_annual` and `3 * 4` far more often
+    than it marks emphasis in an answer about a lease, and a wrongly-eaten underscore silently corrupts the
+    figure it was part of. Test-pinned, along with: an unbalanced `**` stays literal rather than swallowing the
+    rest of the answer, `2026. was the year…` is not a numbered list, and a wrapped bullet folds into its own
+    item instead of breaking into a new paragraph.
+  - **3) Three sentences said one thing.** The panel heading, an intro paragraph beneath it, and the assistant's
+    own status line all said "ask questions about the lease". The paragraph is gone, the heading now carries the
+    only fact none of them did — *"Reads the lease, every rider, and where the term stands today"* — and the
+    status line reports state only: *"A copy of this lease is saved."*
+  - **4) The panel now reads as two things.** `DocAssistant` gained an optional **`documents` slot** rendered
+    between the opened copy and the ask box; the lease page passes its riders and saved copies into it. So
+    everything openable sits together under **Open lease** — which is where George asked for "Open rider" in the
+    first place, and where it had NOT been landing: `RiderDocs` and the file list were rendering *after* the
+    whole assistant, so the rider rows sat below the ask box with the suggestion chips wedged between them.
+    Insurance and contracts pass nothing and are untouched.
+  - **Labelled and ruled.** The rider rows get a **RIDERS** heading matching *SAVED COPIES OF THE LEASE* beneath
+    them (shared typography, declared once so they can't drift), and the ask half is ruled off with `.qa-ask` —
+    it previously ran flush into the last file row and read as one more list item. The suggestion chips get a
+    **TRY ASKING** label and a real class instead of an inline `fontSize: 11` on a generic ghost button.
+  - **A ragged edge found in the browser, not in the DOM.** The rider actions ended flush-right, so *Open rider*
+    sat at three different x positions depending on whether that rider had a file. Both action slots are now
+    always laid out, empty when there's nothing in them — measured after: every slot at **1209** and **1297**.
+  - **Demo parity.** `demoAskLease`'s rent answer now replies in **markdown**, as the real model does — otherwise
+    the demo literally could not show the fix, and the next session would "helpfully" plain-text it again.
+  - **Files.** New: `src/lib/answerFormat.js` · `src/components/AnswerText.js` · tests `answerFormat` (15),
+    `optionWindows` (13), `assistantAnswerRender` (4). Edited: `src/lib/{renewals,leaseContext,demo/mockClient}.js` ·
+    `src/components/{RenewalOptionsEditor,DocAssistant,LeaseAssistant,RiderDocs}.js` ·
+    `src/pages/{LeaseDetailPage,AskPage}.js` · `src/App.css`. **No** migration, edge function or demo-seed change.
+  - **Verified:** unit **1005/1005** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; 200s on all four URLs with the edge serving the
+    new hash (`assets/index-B_Y0TTu-.js` — it served a cached `index.html` for one request, which cleared on
+    revalidation). **Driven in a real browser at 1440px and 420px:** the option row reads *June 1, 2026 → May 31,
+    2031* over *60 mo (5 yr)*, directly above the riders table's identically-formatted Covers column; asking the
+    rent question renders **$84,000** bold, three real bullets, and the quoted clause behind an olive rule with
+    **no asterisks, hyphens or angle brackets anywhere**; the rider action slots align to the pixel. **Zero
+    console errors or warnings; zero horizontal overflow at either width.**
+  - **George: hard-refresh (Cmd+Shift+R).** Every renewal option now reads as a date range — on Ricki's you'll
+    see all three periods chained, the two you've exercised dated backwards from today's term end. And every AI
+    answer is formatted: bold figures, real bullets, quoted clauses. Ask Amlak got the same treatment.
+  - **Flags (no action needed):** ① A **declined** option shows only its length — nothing covers it, so there's
+    no period to state. ② An option with no term length on file shows no dates, and stops the chain for any
+    option after it; fill in **Term (mo)** and the whole chain dates itself. ③ Markdown **tables** are the one
+    construct not rendered — if the AI ever answers with one, the pipes will still show as text. Say the word
+    and I'll add it. ④ Previously-cached Ask Amlak answers render through the new formatter too — no cache bump
+    needed, the change is entirely client-side.
+
+- **2026-07-30** — **Every uploaded file is now KEPT, listed and openable on its own record — and a rider opens
+  like the lease does, with the period it governs** (George: *"need to come up with a way to save copies of things
+  that are uploaded like insurance, riders, leases and any file that uploads like the bank statements. also when
+  new riders are uploaded we need to be able to cache those as well like in the lease document and assistant (we
+  have an open lease and right under make an open rider button (input the dates of the rider)) talk to me about
+  the health of my supabase first and the implications of storage. Will i need to upgrade supabase soon?"*; his
+  scoping picks: keep **every version with a delete button** · listed **on each record**, no portfolio-wide page ·
+  rider dates as a **from/to** pair · and, on the old files, *"Clear it out now, but keep both Hong Kongs"*).
+  Deployed: DB migration `0070` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **FIX-FIRST → fixed → applied
+  clean**), `review-lease` edge fn, frontend Cloudflare version **`a716f44c`**, demo worker `c32e27a1`. **$0, no
+  AI calls, no tenant emails; 0070 is additive only** (one new table, three nullable columns, two guarded
+  backfills, a widened MIME allowlist). Tests **973/973 across 112 files** (was 944/109 — +29 across 3 new suites).
+  - **The Supabase health answer, measured before touching anything.** Database **16 MB of 500** (3%). File storage
+    **413 MB of 1 GB — 41%**, across 118 objects. But only **41 distinct files by content hash**: 299 MB is
+    redundant identical copies (Wingstop ×7, Denny's ×3, Gzim ×4), **60 objects / 170 MB are referenced by no
+    database row at all**, and just **18** were reachable from the UI. Cached *text* is negligible — 641 KB for
+    every lease, 144 KB for every rider — so **text is free and files are the entire cost**. **No upgrade needed
+    on these numbers:** after the cleanup he sits at ~114 MB (11%), and at ~3.5 MB a document that is room for
+    roughly **280 documents, about 6× his book**. The real reason to take Pro is **backups** — free tier has no
+    point-in-time recovery and pauses after a week idle, against 41 irreplaceable scanned commercial leases.
+  - **The leaks, each one manufacturing orphans.** Insurance uploaded the certificate and **discarded the path** —
+    all **7** live policies had `storage_path` null, so not one certificate could be opened from the record it
+    belonged to (the column has existed since 0014). Service contracts, the same (column since 0015). **CSV bank
+    statements were never stored at all**: `csv` was in neither the client allowlist nor the bucket's, so
+    `validateUploadFile` threw and `ImportStatementButton`'s `.catch(() => null)` swallowed it — *while a code
+    comment claimed the file was kept*. Abandoned review flows (lease import, statement review, rider) left the
+    file behind forever, which is where 40 of the 55 unreachable lease files came from. And **nothing in the app
+    had ever deleted a file** — audit item **S-2**, open since 2026-07-06. All closed.
+  - **One registry, so a file can't be orphaned by construction.** New owner-scoped **`documents`** table
+    (`entity_type` ∈ lease · addendum · insurance_policy · service_contract · statement_import · annual_report),
+    written by the ONE `uploadDoc` helper. **The storage path is the key throughout** — every caller already holds
+    it, so `attachDocument` / `discardDocument` need no new id plumbing. `entity_id` is deliberately **nullable**:
+    an importer uploads before its record exists, the review screen adopts it on save, and **Cancel discards both
+    the row and the file** — an explicit cancel is now the only thing that deletes an upload. No cron, nothing
+    silent. `lease_files` and `insurance_documents` stay put doing their existing jobs; the migration backfills
+    **15 lease rows + 1 rider row** from data already on file.
+  - **The UI is one shared `DocumentsList`**, mounted on the lease, each open rider, each insurance policy and each
+    service contract: newest first, filename · size · date, **Open** via the existing `signDocUrl`, and a **✕**
+    behind the standard `ConfirmDialog` that says plainly the file goes but the cached text and extracted terms
+    stay. Everything after the first row is labelled **"earlier copy"**, so seven identically-named uploads read as
+    history rather than a mess. **This is also the first time a lease's own PDF is openable at all** —
+    `lease_files.storage_path` has been written since day one and never read back into the UI.
+  - **"Open rider", exactly where he asked for it** — directly under **Open lease**, inside the same panel, one row
+    per rider oldest-first, each naming the period it covers. It opens that rider's text into the **same
+    `.lease-doc` box** the lease uses, and shows **Open file** only when there is a file (a pasted rider has text
+    but no document — inventing the button would promise something that isn't there). **Zero new queries:**
+    `addendums` was already in scope (it feeds `buildLeaseAskContext`) and `listAddendums` already does
+    `select('*')`, so the text and path were already in the client cache. **The assistant needed no change — it has
+    been reading every rider since 2026-07-01.** This just lets a human read them too.
+  - **Rider dates.** `lease_addendums` has carried only `amendment_date` — the day it was **signed** — since 0021.
+    New nullable `effective_from` / `effective_to` are the period it **governs**, and the two are routinely months
+    apart. Backfilled from each rider's own cached extraction: **6 of the 7 live riders filled immediately**; the
+    assignment rider legitimately has neither (it swaps a tenant on a date and governs nothing after). New pure
+    `src/lib/riders.js` (`coversLabel` / `riderTitle` / `sortRiders` / `riderHasText`) keeps the review form, the
+    rider table's new **Covers** column and the lease page's rows describing that period identically.
+  - **The migration-reviewer caught a hard blocker and it was real.** My first backfill guarded the date cast with
+    a `~ '^\d{4}-\d{2}-\d{2}$'` regex plus a round-trip comparison — which is **self-defeating**: evaluating the
+    comparison requires executing the very cast that raises, and Postgres does not promise left-to-right `AND`
+    evaluation anyway. **Verified against live data before applying:** the Denny's rider's `extraction_raw` really
+    does carry `new_termination_date: "2033-04-31"` (the document literally prints "April 31") — so the file would
+    have aborted on every run, forever. Rewritten as a **per-row loop with the cast in its own exception block**:
+    read back after applying, that rider took its `effective_from` (2023-07-01) and left `effective_to` blank
+    instead of taking the whole migration down.
+  - **A latent bug fixed in the same round: your AI lease review had never seen a single rider.**
+    `review-lease/index.ts` selected `title, effective_date` from `lease_addendums` — **neither column exists**
+    (it has `label` + `amendment_date`). PostgREST 400s on an unknown column, and because the read is best-effort
+    that failure was **silent**: every lease review ever run reviewed the original document with **zero**
+    amendments attached. Now reads `label, amendment_date, effective_from, effective_to, addendum_text` and labels
+    each amendment with its period.
+  - **A mock-vs-live divergence found while testing, of exactly the `not()` kind.** The demo mock's `order()`
+    **ignored `{ ascending: false }`** — so every descending list (archived policies, insurance requests, and now a
+    record's saved copies) came back in the OPPOSITE order in demo to live. Fixed to honour the flag, with nulls
+    last in both directions; the full suite stayed green, so nothing had been relying on the wrong behaviour.
+  - **`archiveLease` deliberately does NOT delete the lease file** — it now carries the path onto
+    `expired_leases.storage_path` instead, so a departed tenant's original stays openable. Destroying it would be
+    the one genuinely lossy move available here.
+  - **Files.** New: `supabase/migrations/0070_document_registry.sql` · `src/lib/riders.js` ·
+    `src/components/{DocumentsList,RiderDocs}.js` · tests `documents`, `riderDates`, `riderOpen`. Edited:
+    `src/lib/api.js` (the registry + every delete sweep) · `src/components/{AddendumEditor,InsuranceVault,
+    ServiceContractsSection,ImportStatementButton,AnnualReportModal}.js` ·
+    `src/pages/{LeaseDetailPage,LeaseNewPage,LedgerPage,PropertyFinancialsPage}.js` · `src/App.css` ·
+    `src/lib/demo/{store,mockClient}.js` · `supabase/functions/review-lease/index.ts`.
+  - **Verified:** unit **973/973** (`vitest run`); `npm run build` compiles; migration applied clean and read back
+    (6 of 7 riders dated, 16 documents registered, the bucket's MIME list carrying all three CSV variants); edge fn
+    deployed clean; live bundle confirmed to **carry** the backend ref and the demo bundle grepped **free** of it;
+    200s on all four URLs with the edge serving the new hash (`assets/index-49tmXAij.js`). **Driven in a real
+    browser against the deployed demo:** both rider rows render under Open lease in the right order with their
+    periods (*"· July 1, 2024 → June 30, 2027"* and *"· From April 1, 2025"*), Open rider reveals the right text
+    and **switches** rather than stacking when the other is clicked, Open file appears only on the rider that has
+    one, the pasted rider correctly says *"No file on file for this rider — it was pasted in"*, the lease lists two
+    copies with the second marked **earlier copy**, and the ✕ opens the confirm naming all three consequences.
+    **Zero console errors or warnings; zero horizontal overflow at 1440px.**
+  - **George: hard-refresh (Cmd+Shift+R).** Open any lease → under **Open lease** you'll now see a row per rider
+    with the dates it covers and an **Open rider** button, plus **Saved copies of the lease** with an Open and a ✕
+    per version. Insurance policies and service contracts have the same list.
+  - **⏳ STILL TO DO — the cleanup needs a service-role key from you.** 20 objects / **141 MB belong to two deleted
+    accounts**, and storage RLS scopes deletes to your own uid, so a browser session physically cannot reach them
+    and the CLI has no `storage rm`. Paste your service-role key (Supabase → Settings → API) into the gitignored
+    `.env.secrets.local` as `SUPABASE_SERVICE_ROLE_KEY=…` and say the word — the script is written and will print
+    the full before/after report as a **dry run** first, deleting nothing until you've seen it.
+  - **Flags (no action needed):** ① **I am protecting more than you asked.** The strict "delete anything nothing
+    points at" rule would have destroyed **both** New Hong Kong versions — none of the 8 copies is linked to a live
+    lease. The rule I will run keeps **one copy of every distinct document** instead: 413 MB → ~114 MB rather than
+    → 91 MB, and nothing unique is lost. ② Your 7 insurance certificates still show no file — the fix keeps them
+    from today; the ones already uploaded are unreachable and will be swept. ③ Re-run a lease review on a lease
+    with riders to see the difference now that the review can actually read them. ④ Re-uploading a document adds a
+    version rather than replacing one, by your choice — the list will grow until you delete from it.
+
+- **2026-07-30** — **Two more on the donut: the legend names EVERY tenant (the "+1 more" placeholder is gone) ·
+  and the hover panel no longer flashes out when the cursor crosses the middle of the chart** (George, reviewing
+  the round below: *"the property pie chart says +1 more and vacant - go with the vacant drop the +1. also when i
+  go into the ciricle of the pie chart like where is says 94% it resets the pop up which is kind of an eye sore,
+  the pop up should stay anywhere within the circle."*). Deployed: frontend Cloudflare version **`7c266983`**,
+  demo worker `9bc38d91`. **One component + its CSS — $0, NO DB migration, NO edge functions, no AI calls, no
+  tenant emails, nothing destructive.** Tests **944/944 across 109 files** (was 942 — +2).
+  - **1) The cap is gone, and the card doesn't grow.** `LEGEND_MAX = 8` rolled the ninth tenant into a "+N more"
+    row — and his Pershing Plaza has exactly nine, so the placeholder was hiding a real tenant while sitting in
+    the legend whose entire job is naming them. Measured before removing it: the legend renders **two 160px
+    columns** at 17px a row, inside a `.prop-mix` that is `align-items:center` against a **150px** chart — so ten
+    entries fill five rows (**85px**) and the block is still shorter than the donut beside it. The cap was buying
+    nothing.
+  - **2) The flash was recharts', and the fix is to stop using its tooltip.** `<Tooltip>` clears the moment the
+    cursor leaves a **sector** — and the donut's hole is off every sector, so passing over the centre figure blanked
+    the panel and brought it back. The active slice is now state the component owns: `onMouseEnter` on the `Pie`
+    sets it, and it is cleared only by `onMouseLeave` on the **chart wrapper**, so the hole, the centre figure and
+    the square's corners all keep the panel up. The recharts `<Tooltip>` import is gone entirely.
+  - **`TenantMixTip`'s props are unchanged** (`{active, payload, building}`) — it is now rendered directly rather
+    than by recharts, which left `chartTooltips.test.js` byte-identical and means the panel's own markup is still
+    covered by the one suite that can reach it.
+  - **Positioning survives the phone.** The panel's offset moved from an inline `left` to an inline **`--tip-x`**
+    custom property, so the ≤768px breakpoint can override it — beside the chart there is no room at that width,
+    so it drops **beneath** the donut instead of hanging off the card's right edge. Measured at 420px: inside the
+    card, **zero** page overflow.
+  - **Files:** `src/components/PropertyMixDonut.js` · `src/App.css` (`.prop-mix-tip` + the phone breakpoint;
+    `.prop-mix-swatch.is-more` and the `.prop-mix-more` colour rule deleted with the row they styled) ·
+    `src/pages/__tests__/propertyMixDonut.test.js` (+2). **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **944/944** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; 200s on all four URLs. **Driven in a real browser at
+    1440px and 420px with actual pointer movement** (`page.mouse.move` around the arc, since a bounding-box hover
+    lands in the hole on a donut): on the big arc → *City Dental · 3,000 SF · 60.0% of building*; into the hole →
+    **same panel, still there**; onto the small arc → switches to *Bright Coffee Co.*; off the card → clears. The
+    panel's box and the chart's box do not intersect at either width, the centre still reads **100% leased** while
+    it is open, and the page has zero horizontal overflow. **Zero console errors or warnings.**
+  - **George: hard-refresh (Cmd+Shift+R).** Every tenant is named in the legend now, and the hover panel stays put
+    while you move around inside the donut.
+  - **Flag (no action needed):** a property with a very large number of tenants gets a taller legend rather than a
+    truncated one — at two columns it takes ~17px per pair, so even a twenty-tenant building adds about 85px to the
+    card. Say the word if you'd rather it capped and scrolled at some point.
+
+- **2026-07-30** — **Follow-ups on the same round: every alert row grows a real progress bar · insurance stops
+  being silent about the buildings and tenants with NO certificate at all (and says whether anyone has asked) ·
+  a hover panel replaces the native tooltip · and the property donut is bigger, names every slice, and no longer
+  hides behind its own tooltip** (George, reviewing the round above: *"I still want progress bars for the alerts
+  and notifications. They should be descending from most urgent to least urgent in terms of days. For the alerts
+  notifications, make sure to list every property that doesn't yet have insurance, but there needs to be nuance.
+  So if the insurance was requested, that should be a different type of notification. If the insurance hasn't
+  been requested, that should be known as well … maybe you can fix that by adding a hover feature, so if I hover
+  over one of the insurance notifications, it kind of expands and tells me more in-depth details. Also for the
+  portfolio, I like the chart, but the formatting is bad. If I hover over the chart, I can still see the ninety
+  four percent, and I don't see the chart. Can we make it bigger? And for each section, put the title of the
+  tenant and the percent square footage."*). Deployed: frontend Cloudflare version **`9de96e52`**, demo worker
+  `b7dba170`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no AI calls, no tenant
+  emails, nothing destructive.** Tests **942/942 across 109 files** (was 921/108 — +21, one new suite).
+  - **1) The bar is a bar again.** After the rows were compacted it ran as a 2px fill on a **transparent** track,
+    which reads as a stray rule rather than a measure — nothing to be "part way along". Now a **visible track**
+    (`--hair`) with a 4px coloured fill, still on the row's bottom edge, so the row grew 32px → 34px and no more.
+  - **Every row carries one now, which is what makes the column read as a series.** The old rule rendered a bar
+    only when `urgencyFill` returned a number, so the three weight-based alerts had none — leaving holes in the
+    middle of a column and breaking the descent George asked to see. New pure **`rowFill`** (exported, beside
+    `urgencyFill`) resolves the three cases the feed actually contains: a **dated** alert tracks its date; a
+    **standing** row (no `horizonDays` — a statement never imported, a certificate never sent, a renewal question
+    waiting on an answer) is pinned **full**, because it ranks above everything merely upcoming precisely by being
+    a problem now; and an update that **already happened** reads **empty**. Test-pinned as a series: a column's
+    fills are non-increasing top to bottom, which is George's "descending from most urgent to least urgent" as an
+    assertion rather than a promise. The ordering itself was already right (`buildFeed` → `groupFeed` preserves
+    it) and is now pinned per column too, off the rendered countdown chips.
+  - **2) The insurance gap was real, and it was structural.** Both existing insurance alerts need something to
+    ALREADY be on record — `insurance` needs a policy carrying an expiry date, `insurance_chase` needs a logged
+    request. So a building nobody had ever entered a policy for, or a tenant nobody had ever asked, produced **no
+    alert at all**. The one case a landlord most needs telling about was the one case the bell was silent on.
+  - **New focus `insurance_missing`, in three mutually exclusive states** — the nuance George specified, in
+    escalating order of neglect: a **property with no landlord policy** (*"No building insurance — Joliet"*), a
+    **tenant with no certificate and no request ever sent** (*"No certificate on file — D & D Dental · No
+    certificate on file, and none has been requested yet"*, bucket **Never requested**), and a **tenant asked
+    recently and still waiting** (*"Certificate requested — …"*, tone **info**, bucket **Requested**). Past the
+    21-day lead the existing chase-up takes over and this one steps aside — a `chased` set makes the hand-off
+    explicit, so one tenant is never named twice in the same column.
+  - **Tone stays WARN, never danger, and the wording is why.** The app cannot tell "uninsured" from "not entered
+    yet", so every line says only what it knows — *none on file* — and never claims a lapse. No date exists to
+    count down to, so no `horizonDays`, no countdown chip, and `days` is a sort weight ranking the three states
+    against each other inside the standing tier (never-asked outranks asked-and-waiting: the landlord's own
+    inaction first).
+  - **The registry entries were all filled** (the CLAUDE.md checklist): the `buildAlerts` block · the Insurance
+    feature gate (switching the module off silences all of it, test-pinned) · the `alertKey` anchor chain (a
+    tenant row anchors on `lease_id`, a building row on `property_id` — both already in the chain) · the
+    `notifyTypes` Insurance column, which `notifyTypes.test.js` **would have failed on** had I forgotten ·
+    `alertCanEmail` · and `draftAlertEmail`. **No lead entry** in `notifyPrefs` — it has no date, so there is
+    nothing to notify "ahead" of. **No fetchAlertData change** — properties, leases, policies and requests were
+    all already being fetched; the alert was simply never derived from them.
+  - **The ✉ picks the right letter.** Never asked → the plain **first**-request letter (the renewed-certificate
+    letter would name a policy that doesn't exist); asked and waiting → the second-request letter, dated from the
+    first. A building's own policy has no lease and nobody to write to, so it correctly shows **no ✉** at all.
+  - **3) The hover panel replaces the native tooltip.** A browser `title=` is slow, unstyleable and can't lay out
+    label/value pairs — and once a real panel existed there would have been two tooltips fighting on one row, so
+    the attribute is **gone**. `RowPopover` is anchored `left:0/right:0` **on the row**, so it is exactly the
+    column's width: it reads as the row expanding downward over its neighbours, and can never push the board
+    sideways however narrow the window gets (verified: zero horizontal overflow at 1440px **and** 420px). It
+    carries the full title, the who/where, the detail, a **label/value fact list**, a plain-English **next step**,
+    and the bucket + date. Insurance is where the facts earn their place — *Insurer · Expires · Last requested:
+    **Never*** — because "No certificate on file — City Dental" alone doesn't say whether anyone has asked, which
+    is exactly the distinction George wanted visible.
+  - **A real positioning bug found in the browser:** on the board's bottom row the panel spilled ~52px past the
+    panel container, into a `.content` that is `overflow:auto` — so it could clip or stretch the page's scroll
+    height. The **last row of each column now opens upward** (`.nrow-pop-up`), measured after: every last-row
+    panel flips, and the worst remaining spill across all ten demo rows is **24px**, inside the panel's own
+    padding. The panel stays in the DOM (hidden by CSS, not unmounted) so there's no hover latency, and
+    `aria-hidden` keeps it out of the accessibility tree — everything in it is already reachable via the row's
+    own subject and the page one click away.
+  - **4) The donut: bigger, named, and no longer hiding behind its own tooltip.** 118px → **150px**. Every slice
+    is named in a **permanent legend** — tenant, colour swatch, and its share of the building — which is George's
+    *"for each section, put the title of the tenant and the percent square footage"*. Labels **on** the chart were
+    the obvious reading of that ask and were rejected on the evidence: they collide at nine tenants (Pershing) and
+    the small slices have nowhere to sit, whereas a legend scales and stays readable at rest. The hover keeps the
+    deeper read ($/SF and annual rent) it always had.
+  - **The complaint about the 94% was a real overlap, and the first fix was the wrong one.** I initially hid the
+    centre figure while a slice was hovered — which treated the symptom. Driving it in the browser showed the
+    actual fault: recharts tracks the cursor, and on a 150px chart the panel lands **on top of the very slice
+    being pointed at**. So the tooltip is now **pinned beside the chart** (`position={{x: size + 12, y: 0}}`,
+    `allowEscapeViewBox`), the centre figure stays visible throughout, and the hide-on-hover state came back out.
+    Measured after: the panel's box and the chart's box do not intersect at all, and the centre reads **100%
+    leased** while the panel reads *City Dental · 3,000 SF · 60.0% of building · $84,000.00/yr · $28.00 /SF/yr*.
+    A fixed spot also stops the panel jittering across a small target.
+  - **Layout followed.** The mix block moved from a narrow right-hand column to the **full width of the card**
+    under its own figures, separated by a hairline — which is what gives the donut room and the legend two
+    columns; `.prop-grid` widened 380px → **440px** to match. A second browser fix: at 160px per legend column the
+    percentage sat at the far right of its cell and read as belonging to the **next** entry, so name and share now
+    sit side by side. On a phone the block **stacks** (donut centred, one-column legend) instead of being hidden
+    outright as before — that was right when the donut was 118px and hover-only, but the legend names every slice
+    in text, so the information now survives the width.
+  - **Files.** New: `src/lib/__tests__/insuranceMissing.test.js`. Edited: `src/lib/{alerts,notifyTypes,api}.js` ·
+    `src/pages/DashboardPage.js` (`rowFill`, `RowPopover`, `UrgencyBar`, `alertExtras`) ·
+    `src/components/PropertyMixDonut.js` · `src/App.css` (`.alert-progress`, `.nrow-pop*`, `.prop-mix*`,
+    `.prop-card`, `.prop-grid`, the phone breakpoint) · tests `alertUrgency`, `notifyBoard`, `dashboardOverview`,
+    `propertyMixDonut`. **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **942/942** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; live 200s on all four URLs with the edge confirmed
+    serving the new hash (`assets/index-BpZrJ-A1.js`) — it served a cached `index.html` briefly, which cleared on
+    revalidation. **Driven in a real browser at 1440px and 420px**: the Insurance column went **2 rows → 6** on the
+    demo seed (Oak Center's building, plus Northwind Books and Sunrise Yoga with no certificate), every row shows a
+    4px bar descending 100/100/100/100/89/89 down the column, the whole feed still fits in **332px**, the hover
+    panel reads its facts and next step, the building row correctly shows **no ✉** while the tenant rows do, and
+    the donut renders with its legend and a panel that no longer touches the chart. **Zero console errors at both
+    widths.**
+  - **George: hard-refresh (Cmd+Shift+R).** The Overview's rows each carry a filled bar now, fullest at the top of
+    every column. The Insurance column will list any building or tenant with no certificate on file — and says
+    whether you've asked. Hover any row for the full detail. On Portfolio, the donut is larger, names every tenant
+    with its share, and the hover panel sits beside the chart instead of on top of it.
+  - **Flags (no action needed):** ① The Insurance column will grow on your live data the first time you look —
+    every property with no landlord policy entered, and every tenant with no certificate, now has a row. They are
+    dismissible individually, and each disappears for good once a policy is saved. ② A tenant you asked **more
+    than 21 days** ago shows as the existing "Insurance not received" follow-up, not as "never requested" — same
+    tenant, one row, by design. ③ The tooltip on the donut opens over the legend's first column; the panel names
+    that tenant with more detail than the legend entry it covers. ④ The board still leaves white space under a
+    short column when a tall one sits beside it — inherent to a CSS grid row, cosmetic, and the whole feed is
+    unscrolled regardless. Say the word if you want the columns packed tighter.
+
+- **2026-07-30** — **Three UI changes: every property card grows a tenant-mix donut (% of building + $/SF base
+  rent on hover) · the notification feed becomes a full-width board with one column per type, compact rows, and
+  no Lease expirations table · and "Lease & tenant history" is rebuilt as a story per tenant** (George: *"visuals
+  for the property tab (mainly showing percentage of building and psf base rent when hovering) - fix notifications
+  formatting to soething where i dont have to scroll a lot to see all - redefine lease tenant and history not sure
+  to what but dont like what it does."* Then two rounds of scoping: **pie chart**, and *"i want it on the same page
+  as the property card for example: pershing plaza and Joliet"* · *"compact row and i want you to sort by
+  notification type — create a column for each notification type … make sure for every notification theres one"* +
+  *"i like the option with the show empties - you can remove the lease experiations table because it will be a
+  notification no need to double down"* · *"i like a story per tenant maybe put it under a property to just so we
+  know where we are. but also filter out some of the noise"*). Deployed: frontend Cloudflare version **`afe5815f`**,
+  demo worker `4b3b6b86`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no AI calls, no
+  tenant emails, nothing destructive.** Tests **921/921 across 108 files** (was 866/103 — +55 across 5 new suites).
+  - **1) The donut, and where it went.** George's ask named the "property tab", but **% of building appears nowhere
+    on a tenant row today** — the only one on the whole Leases page is the vacancy line at the bottom. Asked where
+    he wanted it, he chose the page that lists property *cards* (`/leases/:corpId`). `PropCard` already reads the
+    batched `['leases', propId]` cache and holds `building_sf`, so the donut costs **zero extra network calls** and
+    can't disagree with the Tenants / Sq ft / Leased / Revenue figures beside it (test-pinned: the donut's centre
+    percentage must equal the card's own Leased stat — two derivations of one thing).
+  - **The denominator is the load-bearing detail.** New pure `tenantMix` mirrors the SQL rule the bills are split
+    by — `coalesce(nullif(p.building_sf,0), pt.total_sf)` (`v_tenant_shares`, 0065) — so a slice's percentage IS
+    the share that tenant is charged CAM and tax on. With no building size entered it falls back to leased SF and
+    draws **no vacant slice**: nothing is *known* to be empty, and inventing a vacancy would be a lie (the same
+    choice `occupancyByProperty` makes). Counts every lease including `is_active === false` — an outdated tenant
+    still occupies the space. A lease with rent but no SF can't be sized, so it takes no slice and its `psf` is
+    **null rather than Infinity**.
+  - **The hover is the feature**, so it's tested directly: *D & D Dental · 1,077 SF · 7.8% of building · Base rent
+    $31,800.96/yr · ≈ $29.53 /SF/yr*. The `≈` is the existing `format.js` rule (7/24) — $29.53 × 1,077 is three
+    dollars above the figure printed directly above it, so the rate says it's rounded. The vacant slice reads
+    *"882 SF · 6.4% of building — Unleased, nothing to collect"* and has no rent line to invent.
+  - **A real fix found in the browser:** the donut was first built on a `ResponsiveContainer`, which measures its
+    parent — and under the phone breakpoint (where the donut is hidden) that's 0×0, so recharts warned on every
+    render. It's a fixed 118px, so there was nothing to measure: it's now a plain `<PieChart width height>`.
+    Warning gone, **and the chart actually draws in jsdom**, so the render test can assert the real slices
+    (`['City Dental', 'Bright Coffee Co.']`, biggest first) rather than only the wrapper — the one chart in this
+    codebase that isn't limited to tooltip-only coverage.
+  - **2) The board — why the feed was unscrollable, precisely.** `.alert-list` had **no CSS rule at all**, `.panel`
+    has no `max-height`, and `.dash-cols` had no rule either — so the feed was one flat, unbounded list of ~120px
+    rows (title · who/where · detail · urgency bar · bucket + date). A 15-lease book realistically produces 15–40
+    rows = **2,000–5,000px** of panel. Measured after: seven columns of 32px rows put the demo's whole feed in
+    **207px**.
+  - **The registry is the guarantee, not a convention.** New `src/lib/notifyTypes.js` — seven columns, each
+    claiming a set of alert **focuses** and notification **kinds** (Rent escalations · Renewals · Lease endings ·
+    Insurance · Rent & payments · Service contracts · Corporate filings), plus an `other` catch-all that renders
+    **only when non-empty**. `notifyTypes.test.js` **reads the source**: every `focus:` literal in `alerts.js` (10)
+    and every `kind` inserted into `notifications` in `api.js` (4) must map to a real column, so adding an alert
+    type without giving it a home fails the suite instead of vanishing. That is George's *"make sure for every
+    notification theres one"* in mechanical form.
+  - **The compact row, and what compaction must NOT break.** One line: tone dot · subject · countdown chip. The
+    full title, who/where, detail, bucket and date move into the row's `title` — the column heading already says
+    what KIND of thing it is, so *"Rent escalation — Five Points Wings"* becomes just **Five Points Wings**
+    (`rowSubject`: tenant → contract name → text after the LAST em dash → the "Is X renewing?" strip → the title).
+    Three invariants held deliberately: the **urgency bar survives** as a 2px hairline along the row's bottom edge
+    (same `urgencyFill`, zero added height, and the chip tints with it too); the countdown still renders **only**
+    when `horizonDays != null`, so the three weight-based alerts — whose `days` is a sort weight, not a date —
+    still show none; and the ✉ / clock / ✕ fade in on hover **in the same fixed-width slot the chip occupies**
+    (browser-measured: the row stays 253×32 hovered and un-hovered — a board of 20 rows that reflowed under the
+    pointer would be unusable). A row carrying a **question** (the renewal Yes/No prompt) opts out of the
+    hover-reveal entirely and keeps its buttons and rent-entry visible.
+  - **The Lease expirations table is gone**, as he asked. Nothing is lost: the `termination` alert covers the same
+    leases on the same 183-day lead, carries the same "no renewal option" signal, and is clickable to the lease —
+    it now has a column of its own. `expirations` came out of `DASHBOARD_WIDGETS`; a key left in someone's saved
+    `hidden_widgets` is inert (the retired-metric-cards precedent).
+  - **3) The tenant story — and why the old timeline was always empty.** Every `history_events` type is a side
+    effect of some OTHER action (applying a renewal, reconciling CAM, importing a statement). **Nothing writes an
+    event when a lease is created or when a tenant leaves** — the two moments a landlord most expects — so the
+    table under a heading promising tenant history was usually blank, and when it filled it filled with CAM
+    reconciles and statement imports, which carry no `lease_id` and no `tenant_name` and rendered **"—" in the very
+    column the heading pointed at**.
+  - **The fix needs no new writes.** The lease rows already hold the bookends: `lease_start` → **"Moved in"**,
+    `lease_termination_date` → **"Term ends / ended"**, `expired_leases.lease_end` + `status` → **"Left —
+    Renewed / Vacated / Terminated"**. New pure `tenantStory.js` derives them, so **every card is populated on day
+    one — zero DB writes, no migration** — and there's no double-recording risk (a real `tenant_removed` event
+    would duplicate the derivation). Real events attach by `lease_id` for a current tenant and by `tenant_name` for
+    a former one (its lease row is gone — `ON DELETE SET NULL` — but 0040 denormalized the name onto the event).
+  - **Two bugs fixed in passing:** events inside a card sort **oldest → newest by their BUSINESS date**, which
+    fixes the existing mismatch where the list sorted by `created_at` while displaying `event_date` (so beauty and
+    barber's renewal backdated to 2008 sat at the top of the list reading 2008); and `renewal_reopened` — written
+    by `api.js` since 7/02 but missing from the label map — no longer renders as raw snake_case.
+  - **The noise moves rather than disappears.** `STORY_EVENTS` stay in the timeline; `LEDGER_EVENTS`
+    (`estimate_set`, the four `cam_*`, the two `statement_*`) move to a folded **"Bookkeeping log"** that keeps the
+    old When/Tenant/Event/Detail table. An **unknown** type falls to the log rather than vanishing — same principle
+    as the board's `other` column. Cards fold, and collapsed each still states what it holds — *"100 Maple St —
+    Suite 120 · 2,000 SF · $60,000.00/yr · term ends December 31 2027 · 1 recorded change"* — following the
+    `.panel-toggle` rule the Rent escalations panel set. A former tenant's card keeps both things the deleted
+    archive table did: **Open & ask** (`LeaseAssistant`) and the confirm-gated ✕.
+  - **Files.** New: `src/lib/{notifyTypes,tenantStory}.js` · `src/components/PropertyMixDonut.js` · tests
+    `notifyTypes`, `tenantStory`, `notifyBoard`, `tenantStoryPage`, `propertyMixDonut`. Edited:
+    `src/lib/{portfolioCharts,dashboardWidgets}.js` · `src/pages/{DashboardPage,HistoryPage,PropertiesPage}.js` ·
+    `src/App.css` (`.prop-mix*`, `.notif-board`/`.notif-col*`/`.nrow*`, `.story-*`; `.alert-when`/`.alert-where`
+    removed with the rows they styled) · tests `portfolioCharts`, `chartTooltips`, `dashboardOverview`,
+    `notificationRowActions`, `insuranceChaseEmail`. **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **921/921** across four consecutive runs (`vitest run`); `npm run build` compiles; live
+    bundle confirmed to **carry** the backend ref and the demo bundle grepped **free** of it; live 200s on all four
+    URLs, and the edge confirmed serving the new hash (`assets/index-kshAiVOx.js`) — it served a cached
+    `index.html` for the first ~30s after deploy, which cleared on revalidation. **Driven in a real browser at
+    1440px and 420px**: the donut renders with its slices and the hover reads *City Dental · 3,000 SF · 60.0% of
+    building · $84,000.00/yr · $28.00 /SF/yr*; the board shows seven headings with counts, empty ones reading "All
+    clear", the whole feed in 207px, and zero layout shift on hover; History reads *"Who has occupied Maple
+    Plaza"* with City Dental **Holdover**, Bright Coffee **Current** (timeline: Moved in → Insurance requested →
+    Term ends), and two former tenants **Vacated** / **Renewed**. **Zero console errors or warnings on every page.**
+  - **George: hard-refresh (Cmd+Shift+R).** Portfolio → a corporation → each property card carries a donut; hover a
+    slice for the tenant's share of the building and its $/SF. The Overview's alerts now read across seven columns
+    instead of down one long list. History opens on a card per tenant instead of an empty table.
+  - **Flags (no action needed):** ① Dismissing a lease-ending alert now removes it from the Overview entirely — the
+    expirations table used to show it regardless. ② The "Lease expirations table" toggle disappears from Settings →
+    Display with the table (one-way, same as the three retired metric cards). ③ The donut needs each property's
+    **Building size** entered to show vacant space; without it the slices divide by leased SF and the card reads
+    100% leased. ④ The demo's two properties are exactly 100% leased, so the vacant slice only shows on your real
+    Pershing Plaza (882 SF empty). ⑤ On a phone the donut is hidden and the card returns to one column — 118px of
+    chart doesn't survive that width. ⑥ Card folds are per-visit, not remembered; say the word if they should stick.
+
+- **2026-07-29** — **A stored notification is now formatted like every other row in the feed (✉ icon + snooze) ·
+  a lapsed option gains the third answer it always needed — "Already renewed", which records the history and
+  changes nothing · beauty and barber's 2008 renewal is on the record and the bell has stopped asking · and the
+  Rent escalations section folds shut** (George: *"the beauty and barber shop renewal and dnd dental renewal
+  notifications are formatted differently for emails and snooze. make sure its just the email emoticon and add a
+  snooze button for those types. Fix this for me - I want beauty and barber to have the history that they renewed
+  in 2008 but since its so far in the past i want you to stop the notifications but show that it happened - add a
+  collapse button for rent esclations."*). Deployed: frontend Cloudflare version **`58e4afa8`**, demo worker
+  `aae2a199`, plus a three-statement live repair. **Frontend + `src/lib` only — $0, NO DB migration, NO edge
+  functions, no AI calls, no tenant emails; the live writes are one status update, one history row and the
+  deletion of a stale prompt, each guarded so a re-run is a no-op.** Tests **866/866 across 103 files** (was
+  845/99 — +21 across 3 new suites).
+  - **1) The formatting difference was real, and it was two things at once.** A computed **alert** carried a
+    right-hand column — `✉` icon-button · a clock to defer · `✕` — while a stored **notification** (the bell's
+    *"Is X renewing?"* prompt) carried a wordy **"✉ View / send tenant email"** link buried in its body and **no
+    snooze at all**. So two rows asking for the same kind of decision — the renewal prompt sitting beside a
+    renewal-notice alert — read as different kinds of thing. Both row types now render through **one**
+    `rowActions` helper in `DashboardPage.js`, which is what stops them drifting apart again; `.bell-link` is
+    deleted from the CSS with a note saying where it went.
+  - **Snoozing a notification needed somewhere to live, and it reuses what's already there.** A notification is a
+    *row* — dismissing it deletes it — so "remind me next week" had nowhere to go. New `notificationKey(n)` =
+    `notification:{id}` writes to the same server-synced **`alert_states`** table the alerts use (**no migration**),
+    under a namespace that can't collide with an `alertKey` (those read `focus:id:date`). Test-pinned both ways:
+    the row leaves the feed **and the notification is still in the database** — a snooze defers a decision, it
+    doesn't answer it. Safe because `promptDueRenewalDecisions` *updates* an existing prompt rather than
+    recreating it, so the id — and the snooze — hold until the deadline they were deferred from.
+  - **2) "Already renewed" — the answer that was missing.** beauty and barber's option had exactly two buttons and
+    **both were wrong**: *Renew* would have extended the term again and booked the 2008-era **$19,386** against a
+    current **$31,800.96**, and *Not renewing* would simply have been untrue — the tenant did renew. The new
+    third button appears **only on a Lapsed option**, opens an inline row for the date it happened (pre-filled
+    from the option's own notice date), and its whole value is what it does **not** write: new
+    `markRenewalRenewedHistoric` sets the option applied at that date, logs a dated `renewal_confirmed` history
+    event, clears the prompt — and touches **no term, no rent, no escalation**. Test-pinned by re-reading the
+    lease after every call, plus a rent-step count that must not move. The confirm dialog leads with *"The term
+    end and base rent are NOT changed"*, because that is the reason to use it.
+  - **A consumer that would have broken it, caught by tracing forward.** `currentTermLabel` gave an applied
+    renewal option precedence over an extension addendum **unconditionally** — so recording a 2008 renewal would
+    have relabelled a lease whose current term came from a 2020 addendum. It now takes whichever act moved the
+    term **last**, comparing `applied_at` against `amendment_date`, falling back to the old behaviour when either
+    date is missing. Verified against the live rows: this lease's last extension is dated 2020-01-25, so its
+    header still reads *"Extended term — Third Addendum to Lease"* — unchanged by the repair.
+  - **3) The live repair, three guarded statements.** Option `15d516db` → **applied at 2008-09-01** (noon UTC, so
+    the calendar day can't shift west of UTC); a `renewal_confirmed` history event dated 2008-09-01 naming the
+    tenant and saying plainly it was *recorded after the fact*; and the stale `renewal_decision` prompt deleted.
+    **Read back:** base rent still **$31,800.96**, term still **2030-05-31**, **8** rent steps (unchanged), and
+    the only prompt left is **D & D Dental's — which is legitimately due** (term ends 2026-09-30, no notice date,
+    63 days out). That one keeps its Yes/No, and now has a ✉ and a snooze like everything else.
+  - **Why the prompt existed at all, for the record.** `promptDueRenewalDecisions` has cleared a lapsed option's
+    prompt since 0068 (7/28) — but this one was created **2026-07-29 15:24 UTC**, which is no cron time (06:00 ·
+    06:15 · 13:00). It came from a browser running a **cached pre-0068 bundle**. Recording the renewal makes it
+    moot whichever code path runs next.
+  - **4) Rent escalations folds shut.** The panel head is now a disclosure (`.panel-toggle`, `aria-expanded`), and
+    **collapsed it still states what it holds** — *"9 steps · next Jun 1 2027 → $34,000.00"* — because a fold that
+    hides its own summary just makes you open it again. Forced open when an alert deep-links to `?focus=escalation`
+    or the lease review's finding jumps here, so the scroll-and-flash can never land on a closed panel (pinned by a
+    test). The editor's own *"Show all N steps"* collapse inside the table is unchanged.
+  - **Files:** `src/lib/{alerts,api,leaseTerm}.js` · `src/pages/{DashboardPage,LeaseDetailPage}.js` ·
+    `src/components/RenewalOptionsEditor.js` · `src/App.css` (`.panel-toggle`/`.panel-caret`; `.bell-link`
+    removed) · tests: `historicRenewal`, `notificationRowActions`, `renewalHistoric`, `escalationCollapse` (all
+    new). **No** migration, edge function, demo-seed or mock change.
+  - **Verified:** unit **866/866** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry** the
+    backend ref and the demo bundle grepped **free** of it; live 200s on all four URLs; the edge confirmed serving
+    the new hash (`assets/index-MYmF8Hbh.js`) rather than a stale `index.html`. Browser drive-through skipped per
+    George's standing preference — the three new render suites drive the real notification row (including the
+    snooze round-trip against `alert_states`), the real "Already renewed" flow through its confirm dialog, and the
+    real lease page's collapse.
+  - **George: hard-refresh (Cmd+Shift+R).** The beauty-and-barber prompt is gone and its option reads **Applied ·
+    September 1, 2008** with the renewal on the property's History timeline. D&D Dental's prompt still asks — now
+    with a ✉ and a clock beside it like every other row. Any lapsed option elsewhere offers **Already renewed**.
+    And the Rent escalations header is clickable to fold the whole section away.
+  - **Flags (no action needed):** ① Recording a renewal is **one-way from the UI** (deleting the option removes the
+    record) — the dialog says so. ② The 4th Addendum on that lease is dated **2008-01-25** in the app while it
+    extends 2025→2030 — a copy-paste slip in your own paperwork that the extractor read faithfully. Harmless, but
+    it's why the lease's header names the *Third* Addendum; the Dated field is editable if you want it fixed.
+    ③ The collapse is per-visit, not remembered — say the word if it should stick.
+
+- **2026-07-29** — **Five follow-up notes on the new Overview, all acted on: the Expenses bar proves it is the
+  ACTUAL figure · the rollover bars name the leases behind them · the property-performance hover reads
+  Revenue → Expenses → NOI again · a renewal option that lapsed eighteen years ago stops posing as a deadline
+  (plus a labelled Ignore for anything else long past) · and "Insurance not received" finally has a ✉, drafting
+  a proper SECOND-request letter** (George, after the round above went live: *"the bar graph should how actual
+  expenses(CAM+tax) not estimate. rent coming up for renewal should show the leases ending when hovering. the
+  hover for the 'what each property keeps should be Revenue, expenses, NOI in that order. Theres an outdated
+  renewal notice for like 6000 days for beauty and barber shop, if a renewal option has lapsed that far behind
+  there should just be an ignore button for something like that. if insurance is not recieved notification pops
+  up there should be an email prompt requesting the insurance again - this email should mention this is the
+  secont for insurance and that they kindly provide it (make it professional)"*). Deployed: frontend Cloudflare
+  version **`9e15ddda`**, demo worker `eb9f9ab7`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge
+  functions, no AI calls, no tenant emails, nothing destructive.** Tests **845/845 across 99 files** (was 820/95
+  — +25 across 4 new suites).
+  - **1) The Expenses bar was ALREADY the actual — so the fix is to make it prove it, not to change the figure.**
+    Checked against his live rows before touching anything: the bar reads `v_property_totals.taxes_total +
+    cam_total + roof_total`, which is `expense_records` — the landlord's own entered figures. Pershing FY2026 =
+    **127,000 + 24,200 + 500 = 151,700**, and the tenants' CAM & tax **estimates** sum to **161,322.49** — a
+    different number entirely (the ~$9.6k gap IS the year-end true-up). Nothing estimated ever reached the chart.
+    What was missing was any way to tell: a bar labelled only "Expenses" can't say which of the two it is. So
+    `revenueExpensesNoi` now carries the three components it summed, the hover breaks them out
+    (**Property taxes / CAM / roof**, indented under the Expenses row), and a foot line states it plainly —
+    *"the actual property taxes, CAM and roof entered on each property's Expense entry for FY {year} — not the
+    CAM & tax estimates billed to tenants."* **Roof stays in the total** deliberately: NOI subtracts it, so
+    dropping it would break Revenue − Expenses = NOI on the same chart. A component of $0 is omitted; a property
+    with none says *"No expenses entered for this year"* instead of drawing three zeros.
+  - **2) The hover order was a real bug, and the cause is one recharts default.** `Tooltip` ships
+    `itemSorter: 'name'`, so the three series were sorted **alphabetically** — **Expenses · NOI · Revenue** —
+    which reads as though NOI came out of expenses. Both charts now use custom `content`, so rows render in
+    declared order and can carry a breakdown beneath one of them. (Same reason the rollover tooltip is custom:
+    the default box can't list anything.)
+  - **3) The rollover bars name their leases.** `rentRollover` now returns each bucket's leases — name, rent,
+    end date, biggest rent first — and the hover lists up to six with "+N more" beyond, over the bucket total and
+    lease count. **Test-pinned invariant:** the named rents must sum to exactly the bar they sit under, and the
+    list length must equal `count` — otherwise the tooltip would be describing a different figure than the one
+    being hovered. The "Now" bar's header says what it is (*"Already past its end date"*) rather than repeating
+    the bare label.
+  - **4) The 6,540-day renewal notice — a missed consumer, not a new rule.** Confirmed live: beauty and barber
+    shop carries a **pending** option with `notice_by_date` **2008-09-01** against a term end of **2030-05-31**.
+    The 2026-07-28 round built `optionLapseReason` for exactly this and wired it into four places — the option
+    table's badge, `isRenewalDecisionDue`, `promptDueRenewalDecisions` and SQL `apply_due_renewals()` — but
+    **`buildAlerts` was never taught it**, so the bell kept counting down to a deadline that stopped mattering
+    eighteen years ago. It now skips a lapsed option, using the same shared rule (so a lapse judged in the bell
+    can't disagree with the badge on the lease page), with a local `localIso(now)` mirroring `api.js`'s
+    `localDateIso` so the date is the landlord's, not UTC's. **Cuts exactly one way, test-pinned both
+    directions:** a notice missed by two months on a term ending next year is still a live, actionable alert —
+    the ±18-month test is what separates it from one belonging to an earlier term. **Blast radius measured before
+    deploying:** of the eight pending options on live data, exactly **one** matches (beauty and barber shop);
+    Ricki's (notice 6 months before term end) and Five Points (≈6 months) are untouched. Nothing is written —
+    the option stays pending, and closing it is still George's call.
+  - **…plus the Ignore button he asked for, generalized.** New pure `isLongPast(a)` (`LONG_PAST_DAYS = 365`):
+    a **dated** alert more than a year past its date drops the snooze clock (there is nothing to defer to) and
+    its bare ✕ becomes a labelled **Ignore** — same server-side `alert_states` dismissal, but for something years
+    overdue "close" and "never show me this again" are not the same promise. Guarded against the trap that
+    created this bug in the first place: the three weight-based alerts carry a *sort weight* in `days`, not a
+    date, so a `−4000` weight must never read as a decade-old deadline — `isLongPast` requires `horizonDays`,
+    the same field the countdown and the urgency bar test.
+  - **5) "Insurance not received" gets its ✉ and its own letter.** The button was *unreachable*, not missing:
+    `draftAlertEmail` has built an email for `insurance_chase` since 2026-07-09, but `alertCanEmail` never
+    returned true for that focus — the gap flagged in CLAUDE.md on 2026-07-26. Fixed, and pointed at a **new**
+    `buildInsuranceSecondRequestEmail` rather than the first-request letter, which would have read as though
+    we'd forgotten we already asked. It says plainly *"This is our second request."*, dates the first ask from
+    the alert's own request date, names the certificate on file (insurer + expiry) when there is one, and
+    **asks courteously** — the likeliest explanation is an agent's oversight, so the tone stays warm through the
+    ask, offers *"if it has already been sent, please accept our thanks and disregard this note"*, and only
+    states the lease obligation at the end **as a fact**. Deliberately invents **no deadline and no penalty** —
+    nothing in the app knows what this lease actually provides for — and a test pins the absence of
+    *default / breach / terminate / penalty / "within N days"*. Kind stays `insurance_request`, so sending it
+    logs another `insurance_requested` event: "📨 Last requested" moves to today and the chase-up re-arms from
+    there.
+  - **Files:** `src/lib/{portfolioCharts,alerts,api,emailTemplates}.js` ·
+    `src/components/PortfolioCharts.js` · `src/pages/DashboardPage.js` · `src/App.css` (`.chart-tip*`,
+    `.alert-ignore`) · tests: `lapsedRenewalAlert`, `insuranceSecondRequest`, `chartTooltips`,
+    `insuranceChaseEmail` (all new) + `portfolioCharts` / `dashboardOverview` extended. **No** migration, edge
+    function, demo-seed or mock change.
+  - **A testing note worth keeping:** recharts' `ResponsiveContainer` measures its parent, and every element is
+    0×0 in jsdom — so **no chart is ever drawn there and no tooltip ever mounts**. A DashboardPage render test
+    would have gone green with either new tooltip throwing. `RolloverTip` and `PerformanceTip` are therefore
+    exported and rendered directly (`chartTooltips.test.js`), which is the only coverage those components can
+    get short of a browser. The `insuranceChaseEmail` suite likewise drives the **real button** rather than
+    `draftAlertEmail` — a helper test would have passed the whole time the feature was unreachable.
+  - **Verified:** unit **845/845** (`vitest run`); `npm run build` compiles; live bundle confirmed to **carry**
+    the backend ref and the demo bundle grepped **free** of it; live 200s on all four URLs; and the edge
+    confirmed serving the new hash (`assets/index-C2Zg_KGG.js`) rather than a stale `index.html`. Browser
+    drive-through skipped per George's standing preference — the four new suites drive the real alert rule, the
+    real tooltips and the real ✉ path against the demo mock.
+  - **George: hard-refresh (Cmd+Shift+R).** The beauty-and-barber notice is gone from the bell; hover any
+    rollover bar to see which tenants are in it; the property hover reads Revenue → Expenses → NOI with the
+    taxes/CAM/roof breakdown under Expenses; and once a certificate has gone unanswered for 21 days the
+    reminder carries a ✉ that writes the second request for you.
+  - **Flags (no action needed):** ① The beauty-and-barber option is still **pending** on the lease — the bell
+    just stopped nagging. Mark it *Not renewing* on the lease page whenever you want it closed for good.
+    ② The Ignore button only appears on alerts more than a year past their date; with the lapse fix in, you may
+    not have one right now. ③ Your Pershing CAM & tax **estimates** total ~$161.3k against ~$151.7k of actual
+    expenses — about $9.6k over-collected on paper, which is what ⚖ Reconcile settles at year end.
+
+- **2026-07-29** — **Four features in one round: the Overview becomes a chart band (and loses its three metric
+  cards) · notifications sort by real urgency · Ask Amlak drafts a tenant letter · every lease gets an AI
+  red-flag review** (George dropped a PigJet screenshot — *"i dont like the design we need to make it fit the
+  design of my software"* — and scoped it down: red flags = *"a quick check to see whats missing from the leases
+  like important clauses or things that could hurt the landlord"*; email drafts in Ask Amlak only, *"connected to
+  the email service in gmail so the user can send it from there to a specific tenant from a users specific
+  email"*; no new critical-dates panel — *"we can just add that quick timeline to the notifications already
+  present"*; announcements + e-signature deferred, *"they need more depth"*. Then two demo-review rounds on top —
+  see **What his review changed** below). Deployed: DB migration `0069` (Supabase `awgrjmbcghdjgnqeiqkt`), edge
+  fns **`extract-lease`, `review-lease` (new), `ask-portfolio`, `draft-tenant-email` (new)**, frontend Cloudflare
+  version **`75247769`**, demo worker `92c94567`. **NO tenant emails** (a draft opens in the compose modal like
+  every other letter — nothing auto-sends), **nothing destructive** (0069 is one `add column if not exists` on a
+  nullable jsonb). Tests **820/820** (was 717 — +103 across 7 new suites).
+  - **⚠ George asked for demo-first this round** (*"before you implement any design changes this run i want to
+    see them in the demo before we pish them live"*), so the whole round shipped to the sandbox twice and
+    production stayed byte-identical until he said *"okay lets move forward and export all changes to the live
+    build"*. Worth keeping as a pattern for anything this visual.
+  - **Cost:** the lease review is **free at import** (it rides the Sonnet analyst read `extract-lease` already
+    pays for — one extra output line, ~20 tokens); a **↻ Re-review** click on an older lease is a separate Haiku
+    read of the CACHED text, **~2–5¢**; an Ask Amlak email draft is **~1–2¢**. Both new functions are Haiku 4.5,
+    `enforceRateLimit(req, 10, 60)`, click-gated — nothing fires on a page load.
+  - **1) The Overview is now a chart band.** Four panels off the two queries the page ALREADY runs (the search
+    index + `v_property_totals` for the selected FY) — **zero new network calls**, and they can't disagree with
+    the property pages they sum. **Where the rent comes from** (donut by property, rent roll in the centre) ·
+    **Space leased** · **Rent coming up for renewal** · **What each property keeps** (Revenue/Expenses/NOI, full
+    width). All shapers are pure in new `src/lib/portfolioCharts.js`; recharts was already a dependency
+    (HistoryPage's trends chart), and the two now share `CHART_SERIES` so they read as one visual language.
+  - **2) Notifications sort by urgency.** The panel used to render **all stored notifications first, unsorted**,
+    then alerts by a single `a.days - b.days` — and that one numeric sort mixed real days-remaining with three
+    *sort weights that only look like days* (`statement_reminder` = `-months.length`, `missing_payment` =
+    `-10 - months.length`, `insurance_chase` = days *since* the request). So a statement reminder at `-3`
+    outranked a lease that ended five days ago. Now **one merged list, four plain tiers** (`URGENCY_TIER`,
+    `alerts.js:57`): **0 overdue** (a date already passed, longest-overdue first) · **1 standing** (a problem
+    with no date — money not received, a statement not imported, a certificate asked for and never answered, an
+    open *"Is X renewing?"* prompt — ranked danger→warn→info) · **2 upcoming** (soonest first) · **3 fyi**. Tier
+    1 is the honest home for the three weight-based alerts: they *are* overdue in substance but have no deadline
+    to count, so they rank above anything merely upcoming **without rendering a countdown they can't back**
+    (test-pinned: a ledger reminder has no `.alert-days` and no bar, while a dated alert on the same screen has
+    both). `alertUrgency` is exported so the page and the tests use the identical rule; `buildFeed` (exported
+    from `DashboardPage.js`) returns the one ordered array. **Untouched:** `alertKey`, dismiss/snooze,
+    `send-reminders`, every email path.
+  - **3) Ask Amlak drafts a tenant letter.** Ask a question, get an answer, and where the answer names one
+    tenant a **"✉ Draft an email to {tenant}"** button appears → `draft-tenant-email` writes **prose only** (the
+    salutation and the paragraphs between it and the sign-off) and the client's own `letter()` scaffold adds the
+    letterhead, date, To block, RE line and signature — the same scaffold every hand-written Amlak template
+    uses, so an AI draft is typographically indistinguishable from a built-in one and **can't quietly drop the
+    business identity**. Opens in the existing compose modal, so Gmail / 📨 Send now / copy all work unchanged.
+    **Facts are supplied, never computed** — the model gets that one tenant's figures as data, must not invent a
+    number, a date or a legal threat, and is told not to follow instructions appearing inside the tenant record.
+  - **4) Lease review — the red flags.** New `_shared/leaseFlags.js` holds the landlord-side checklist ONCE and
+    both readers import it, so a flag raised at import and a flag raised by the button mean exactly the same
+    thing: **10 checks** — `no_personal_guarantee` · `no_security_deposit` · `tenant_early_termination` ·
+    `no_assignment_consent` · `cam_capped` · `no_late_fee` · `no_holdover_premium` · `no_insurance_requirements`
+    · `below_market_renewal` · `exclusive_use`. The convention is **yes = the concern applies**, and every flag
+    must carry the lease's own words (or say plainly that the lease is silent) — the whole point is *what's
+    missing*, which is exactly what a quote can't prove, so "silent" is a first-class answer rather than a
+    failure. Rendered by `LeaseReviewStrip` on the lease page, hideable via a new `lease_review` Display toggle.
+    `review-lease` reads the **cached** `lease_text` + addendum texts — **never re-parses a PDF, never makes a
+    vision call**; a lease with no cached text says so plainly instead of guessing from the structured fields.
+  - **What his review changed (two rounds on the demo, all six notes acted on):**
+    - **The "~a cent" wording is gone** from the review button and both Ask Amlak buttons. **Flagged, unchanged:**
+      the 🤖 Suggest tenants/buckets tooltips and the ⬆ Import statement title still carry ¢ figures — different
+      pages, and those are tooltips on a click-gated action rather than labels. Say the word and they go too.
+    - **The three metric cards came off** (*"with the implmemntation of the graphs we are not going to need the
+      top 3 cards"*) — and **nothing was lost, which had to be checked before deleting**: the rent roll is the
+      donut's centre figure (same sum, to the dollar), occupancy is both the page-head subtitle and the new
+      panel's headline, and the expiring count is the expirations table itself. The one genuine casualty was the
+      *"add building sizes"* nudge riding on the Occupancy card's foot — carried into the occupancy panel rather
+      than dropped. Their Display toggles went with them; a stale key in someone's saved `hidden_widgets` is
+      inert.
+    - **"Leased vs vacant" was rebuilt with no chart at all** (*"doesnt really make sense and its not intuitive
+      specifically the axis'"* — he was right: stacked bars compare *totals across* properties while the question
+      is a *ratio inside* each one, and the Y axis read `10k` of nothing named). Now **Space leased** — a headline
+      percentage over one filled track per property, the same hairline-progress language the Ledger's Collected
+      column already speaks. Most-vacant first, because the empty space is the point.
+    - **Every Expenses/NOI bar carries its figure** (was Revenue only), and the panel went **full width** — three
+      grouped bars per property need the room, and it's the comparison the other three lead up to. Above ~6
+      properties the labels are dropped and the tooltip carries them; a row of overlapping numbers is worse than
+      none. **The gold was re-cut** (*"a moore fitting shade of gold"*): `#B98B3A` sat at 47% lightness / 53%
+      saturation against olive at 33% and forest at 23% — which is precisely why it read mustard on ivory. New
+      chart gold **`#9C7430`**, same hue family as the `--gold` token, deep enough to sit with the greens. The
+      donut's two gold tints moved with it, and **`HistoryPage.js`'s one hex** moved in the same commit —
+      `portfolioCharts.js` documents the two as one visual language, so leaving History behind would have created
+      the drift the comment denies.
+    - **The new metric he asked for** (*"think of another metric we can visual that might be important for
+      landlords"*) is **rollover exposure** — how much annual rent comes up for renewal each year, the one thing
+      a commercial landlord watches that nothing else on the Overview touched (the other three panels are all
+      about *today*). Natural companion to the donut: concentration by tenant, then concentration **in time**.
+      A leading **"Now"** bucket carries active leases already past term end — rent on holdover is exposed today
+      and nothing else said so.
+    - **Then he said the metric itself wasn't clear** (*"i dont understanf what the new metric does explain it
+      and change the red color to something more fitting"*) — treated as the panel's fault, not the reply's.
+      **The red went**: `#8E2C22` is the `--danger` token, which everywhere else in Amlak signals a *fault*, and
+      a lease reaching its end date is a scheduled fact the landlord already agreed to. The ramp now opens on the
+      app's own **`--gold #94661B`** — gold's documented job here is *"look here"*, which is exactly the weight
+      that bucket wants — and cools through `#B08A46 · #9A9152 · #7C8B5A` into olive and forest. **The copy was
+      rewritten too**: title *"When your rent rolls off"* → **"Rent coming up for renewal"** (industry shorthand
+      out), the caption now answers *what is a bar* rather than carrying a statistic that presumed you knew, and
+      the foot assembles conditionally so each clause is only stated when it's true — the share, then *"Now" is
+      rent already past its end date — a tenant holding over*, then *at today's rent, not a forecast*.
+  - **Honesty guards, deliberate:** rollover uses **`base_rent`** (the rent in effect today, projected forward),
+    **not** the year-aware `effective_rent` the donut and NOI panels read — the two answer different questions,
+    and the caption is what keeps that legitimate. Parked tenants (`is_active === false`) aren't exposure and
+    are excluded; a lease with no term end is counted in the denominator but never drawn as rolling off.
+  - **Files.** New: `src/lib/portfolioCharts.js` · `src/lib/leaseRisks.js` · `src/components/PortfolioCharts.js`
+    · `src/components/LeaseReviewStrip.js` · `supabase/functions/_shared/leaseFlags.js` ·
+    `supabase/functions/{review-lease,draft-tenant-email}/index.ts` ·
+    `supabase/migrations/0069_lease_ai_review.sql` · 7 test suites (`portfolioCharts`, `alertUrgency`,
+    `feedOrder`, `leaseFlags`, `leaseRisks`, `leaseReviewStrip`, `askEmailDraft`, `dashboardOverview`).
+    Edited: `src/lib/{alerts,api,dashboardWidgets,analystBrief,emailTemplates,demo/mockClient}.js` ·
+    `src/pages/{DashboardPage,AskPage,LeaseDetailPage,LeaseNewPage,HistoryPage}.js` · `src/App.css` ·
+    `supabase/functions/{extract-lease,ask-portfolio}/index.ts`. **No demo-seed change** — `store.js`'s
+    `building_sf` is the CAM/tax share denominator since 0042, so moving it would re-price real bills.
+  - **Verified:** unit **820/820** (`vitest run`); `npm run build` compiles; `0069` applied clean and read back
+    (`ai_review`, jsonb, nullable); all four edge fns deployed clean with unauth POST on both new ones → **401**
+    (RLS-gated, *not* a schema 500); demo bundle grepped **free of the live ref** `awgrjmbcghdjgnqeiqkt` and the
+    live bundle confirmed to **carry** it; live 200s on all four URLs, and the edge confirmed serving the new
+    bundle hash (`assets/index-C49r7db3.js`) rather than a stale `index.html`. The deployed demo was driven in a
+    real browser across both review rounds — zero console errors.
+  - **George: hard-refresh (Cmd+Shift+R).** The Overview opens on four charts instead of three cards; the bell
+    reads most-urgent-first; open a lease for its red-flag review (older leases have a **↻ Re-review** button,
+    ~2–5¢); and in Ask Amlak, ask about one tenant and you'll get a **✉ Draft an email** button.
+  - **Flags (no action needed):** ① Deleting the three cards is one-way for their Display toggles — anyone who
+    had hidden one loses the switch, since the block it hid is gone. No data implication. ② The **demo can't
+    show vacancy** — both seeded properties are exactly 100% leased; your Pershing Plaza (882 SF empty) will.
+    ③ A lease imported before today has **no stored review** until you click ↻ Re-review; new imports carry one
+    automatically and free. ④ **Announcements** and **in-app e-signature** are still deferred, as you asked.
+
+- **2026-07-28** — **A stale renewal option can no longer pose as a live decision — and no renewal can
+  quietly book a rent BELOW the one in effect today** (George: *"theres an outdated renewal on the beauty and
+  barber shop, if i click that will it force the renewal on the current lease terms or does the software
+  recognize the past due date and not update"* → after I traced it and named the two bugs, *"yeah do that"*).
+  Deployed: DB migration `0068` (Supabase `awgrjmbcghdjgnqeiqkt`, migration-reviewer **APPROVE**), frontend
+  Cloudflare version `b726e21d`, demo worker `30d59b20`. **$0, NO edge functions, no AI calls, no tenant
+  emails, nothing destructive** (0068 is one `create or replace function`; the only rows it removes are
+  stale `renewal_decision` prompts, which regenerate whenever a decision is genuinely due). Tests
+  **717/717** (was 703 — +14 in a new `renewalLapse` suite).
+  - **The answer to his question was "neither", which is why it needed fixing.** Clicking Renew would NOT
+    have forced the option onto today's terms — `rollLeaseIntoRenewal`'s future branch leaves `lease_start`
+    and `base_rent` alone (the 2026-07-02 fix). But the app also did **not** recognize the past deadline:
+    staleness was judged on the committed **term end** alone. His lease reads `lease_start` 2004-01-01,
+    term end **2030-05-31** (carried there by addendums), base rent **$31,800.96**, with a pending *"First
+    Option to Renew"* — **notice by 2008-09-01**, 60 mo, **$19,386**. Term end in the future → the option
+    read as perfectly normal, so the lease page offered **Renew** and the nightly cron had been raising
+    *"Is beauty and barber shop renewing?"* since 7/24. Confirming would have extended the term to
+    **2035-05-31** and booked a $19,386 step — a **−$12,414.96/yr** decrease — from an option whose notice
+    window expired eighteen years ago. And an applied option has no ↩ Undo.
+  - **Fix 1 — the lapse rule learns about notice windows.** New pure `optionLapseReason(ren, termEnd,
+    todayIso)` in `renewals.js` returns `'term_ended'` (the existing rule) or the new **`'notice_passed'`**:
+    the deadline has passed AND sits more than **18 months** before the committed term end, so it cannot be
+    the notice window for *this* term — real ones are "180 days prior" or "twelve (12) months prior", and 18
+    leaves generous headroom. **The one-month-late option is deliberately safe**: a deadline that just passed
+    on a term ending this year is still a live choice and is test-pinned as such.
+  - **Fix 2 — a decrease is confirmed, never assumed.** The guard sits inside **`confirmRenewal`** rather
+    than on a screen, so every entry point inherits it: when the first-year rent lands below the current
+    rent it returns `{ needsDecreaseOk, currentRent, newRent, effectiveFrom }` and **writes nothing** until
+    the caller re-calls with `acceptDecrease: true`. Genuine decreases happen, so it's a confirmation, not a
+    block. Both callers show the figures first — the lease page in its own dialog, the bell in a matching
+    one.
+  - **The browser prompts on Renew / Not renewing are gone**, replaced by the `ConfirmDialog` the 7/24 round
+    offered to extend here. The Renew dialog states exactly what will happen: the new term end, the rent it
+    books **and when** (it branches on the same `hasBegun` test `rollLeaseIntoRenewal` uses, so it can't
+    promise one thing and write another), why the option looks stale if it does, a loud **"⚠ That is a
+    DECREASE from the current $X"** line, and that an applied option can't be undone. Title and tone flip to
+    danger on a decrease.
+  - **One rule, four consumers, zero duplication.** `optionLapseReason` now drives the option table's badge
+    (with a tooltip saying *which* way it lapsed), `isRenewalDecisionDue`, and `promptDueRenewalDecisions`
+    — which additionally **clears** a stale prompt rather than leaving it. `renewalFirstYearRent` was
+    extracted from `rollLeaseIntoRenewal` and is now shared with the dialogs, so the warning and the write
+    are the same arithmetic. The lease page also grew a distinct banner for the notice-lapsed case, since
+    "this term has ended" would have been simply untrue here.
+  - **The SQL twin moved in the same commit** (`0068`): `apply_due_renewals()` gains the identical rule in
+    its stale-prompt DELETE and its loop, otherwise byte-identical to `0065` — verified by diffing the
+    **deployed** function against the 0065 source first (identical but for Postgres's keyword casing), so
+    this wasn't rebased onto drift.
+  - **The migration-reviewer caught a real mirror gap and it was fixed before deploy:** my JS used
+    `monthsBetween` (whole months, floored) while the SQL uses `notice < term_end - interval '18 months'`,
+    so the two disagreed for about a month around the boundary — the cron could have re-raised a prompt the
+    app had just cleared. `optionLapseReason` now computes the cutoff with `addMonths(end, -18)`, and the
+    parity was **proved against the live database** on seven boundary dates including leap-year and
+    end-of-month clamping (2030-05-31 → 2028-11-30, 2028-02-29 → 2026-08-29 …) — JS and Postgres agree on
+    every one. A test pins the exact day either side of the boundary.
+  - **Blast radius measured on live data before deploying, and it is exactly one row.** A query for every
+    pending option matching the new rule returns **only** the beauty-and-barber option; a query for every
+    pending option that would book a decrease returns **the same single row**. The DELETE predicate was
+    dry-run as a SELECT first: one stale prompt, and the D&D Dental prompt (term ends 2026-09-30, no notice
+    date) correctly survives. Read-back after applying: the stale prompt is gone, `base_rent` still
+    $31,800.96, term still 2030-05-31, the option still `pending` — **closing it is George's call, not the
+    app's**.
+  - **Files:** `supabase/migrations/0068_renewal_notice_lapse.sql` (new), `src/lib/renewals.js`
+    (`STALE_NOTICE_MONTHS`, `optionLapseReason`, `optionLapsed`, `renewalFirstYearRent`), `src/lib/api.js`,
+    `src/components/RenewalOptionsEditor.js`, `src/pages/DashboardPage.js`,
+    `src/lib/__tests__/renewalLapse.test.js` (new), `CLAUDE.md` (the new twin added to the mirrors list).
+    No demo-seed or mock change — the mock never implemented `apply_due_renewals`; the demo runs the JS
+    twin, and its seeded option already demos the `term_ended` case.
+  - **Verified:** unit **717/717** (`vitest run`); `npm run build` compiles; migration applied clean and the
+    function run once by hand (returned 0 new prompts, cleared the stale one); demo bundle grepped **free of
+    the live ref** `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. Browser
+    drive-through skipped per George's standing preference (the new suite drives the real rule and the real
+    `confirmRenewal` guard against the demo mock).
+  - **George:** hard-refresh (Cmd+Shift+R). That option now reads **Lapsed** with a line explaining it
+    belongs to an earlier term, the bell has stopped asking, and if you ever do click Renew on anything
+    you'll see the new term end and the rent it books — with a red warning if it's below what the tenant
+    pays today — before anything is written.
+
+- **2026-07-27** — **A standing rule for downstream effects — and the one live gap it described,
+  closed: the stored invoice can no longer drift from the live figures** (George: *"A lot of times,
+  changing one thing in this software will have a lot of downstream effects on other places… like
+  updating rent updates a lot of other things on the financials page, and vice versa. I wanna make
+  sure that in the MD, there's something that talks about this kind of logic… if you're changing
+  something that has other implications, follow that line of logic and line of reasoning to make sure
+  that nothing breaks long term and that all of those functions are coherent with each other and
+  build off of one another, and nothing is left behind."*; asked how far to take it he chose
+  **rule + auto-resync everywhere**). Deployed: frontend Cloudflare version `8b5688ed`, demo worker
+  `6e505190`. **Frontend + `src/lib` + docs only — $0, NO DB migration, NO edge functions, no AI
+  calls, no tenant emails.** Tests **703/703** (was 696 — +7 in `estimateResync`).
+  - **The gap was real, not hypothetical.** `resyncYearBillingToEstimate` (api.js) is what moves a
+    stored annual invoice back in line with the live lease figures, and it had exactly **four**
+    callers — the two estimate editors, `applyAddendum`, and statement import. So editing a tenant's
+    **square footage**, **share override**, **roof responsibility**, the **building size**, a **CAM or
+    tax total**, a **rent escalation** or an **abatement** re-split `v_tenant_shares` — and the
+    Financials breakdown and the Ledger grid followed, because they build **up** from live data (the
+    2026-07-21 design) — while the **invoice kept its old total**. Everything reading that invoice
+    (`v_invoice_balances.balance`, Outstanding / receivables, the alerts' `owedByMonthForInvoice`
+    path) stayed stale until something unrelated happened to trigger a resync.
+  - **Part 1 — the rule.** New CLAUDE.md section **"Following a change through"**, between *Acting on
+    a confirmed change* and *Deploying to production*: George's instruction in his own words, then
+    *trace it both ways BEFORE the first edit, walk the chain forward AFTER, and name any link you
+    can't finish*. Then the map, written as an "if you changed X, also check Y" checklist so it gets
+    consulted rather than read: ① the money spine as a diagram, with **the asymmetry stated
+    explicitly** — screens rebuild themselves, the invoice is a frozen copy ② the three choke points
+    (`buildLeaseSchedule` and its two modes · `allocatePayments`/`componentizeSchedule` and the
+    base+camTax+roof === owed invariant · `billedComponents`) ③ mirrors that must move together —
+    the JS↔SQL twins, the **four** copies of the estimate math, and the demo mock's five hand-written
+    views, with the `not()` incident named as what happens when only one side moves ④ registries
+    where every entry has to be filled (9 touchpoints for an alert type — including the `alertKey`
+    anchor chain, where a missing entity id collapses the key to `undefined`; the feature registry;
+    the Ask fingerprint bump) ⑤ deploy fan-out (`cors.ts`/`ratelimit.ts` → **17** functions,
+    `anthropic.ts` → 13, `pdf`/`docx` → 3, `rentSchedule`/`analystVerdicts` → 2) ⑥ the two shared
+    invalidation sets. **Every file:line in it was re-verified against the code before writing**, not
+    taken from this log.
+  - **Part 2 — two safety properties make automating it correct.** ① **Real money is never
+    rewritten**: the resync re-stamps only **system** mark-paid months (`import_id == null && note ==
+    null`), so a bank-imported deposit or a manually-noted payment survives and a genuine short/over
+    payment still trues up at ⚖ Reconcile. ② **A closed year is never touched** — a year with a
+    `financial_snapshots` row is skipped. **Deliberate refinement of the plan:** the guard sits on the
+    NEW automatic paths, not inside `resyncYearBillingToEstimate` itself. The distinction is real —
+    on the four explicit paths the landlord typed a billed figure on that year's screen and meant it;
+    here they changed something else entirely, and a bill already sent shouldn't move underneath them.
+    It also means **zero behaviour change and zero regression risk** on the four existing callers
+    (putting it inside would have silently changed them, and would have broken on the demo seed, whose
+    prop-1 closes the current year).
+  - **New in `api.js`:** `isYearClosed(propertyId, year)` · `resyncLeaseBilling(leaseId, propertyId,
+    year)` · **`resyncPropertyBilling(propertyId, year)`**, which fans out over the property's live
+    `kind='annual'` invoices reusing the per-lease resync — so there is still exactly ONE
+    implementation of the math. `syncContractCamItems` now returns `{ total, changed }` (no caller
+    used the old number) so a year-open auto-carry can report whether it actually wrote.
+  - **New `src/lib/invalidate.js`** — `settleBillingChange(qc, { propertyId, leaseId, year })`, the one
+    invalidation set for "a billed figure moved" (10 key families). Each editor still invalidates its
+    own list; the shared part can't drift apart again. Deliberately **not** merged with
+    `settleStatementImport` — that's a wider statement-specific set, and two named sets beat one that
+    fits neither.
+  - **Nine call sites wired** — per-lease: `LeaseDetailPage` `saveField` (gated on a **`BILLING_FIELDS`**
+    set — `base_rent`, `square_footage`, `share_override_pct`, `lease_termination_date` — so a
+    tenant-name edit never rewrites an invoice), `setRoof`, `anchorStart`; `EscalationScheduleEditor`
+    (add + delete, after `backfillLeaseToToday`); `AbatementEditor` (add + delete). Property-wide:
+    `BuildingSizeEditor` (the share denominator — now takes the page's `year`), `CamSection` (add /
+    remove / flat save / **undo**, and on year-open **only when a contract or rent-% sync actually
+    wrote** — a plain page visit must not rewrite bills), `TaxSection`, `PropertyFinancialsPage`
+    `ExpenseForm` (roof). Lease-page edits use the current calendar year (the `saveEstCamTax`
+    precedent); Financials edits use the page's selected FY. **`LeaseForm.js` needed nothing** — it is
+    only the create path, and a new lease has no invoice, so the resync already no-ops.
+  - **Files:** `CLAUDE.md`, `src/lib/api.js`, `src/lib/invalidate.js` (new),
+    `src/pages/{LeaseDetailPage,PropertyFinancialsPage}.js`, `src/components/{EscalationScheduleEditor,
+    AbatementEditor,BuildingSizeEditor,CamSection,TaxSection}.js`,
+    `src/lib/__tests__/estimateResync.test.js`. No DB, edge-fn, CSS or demo-seed change.
+  - **Verified:** unit **703/703** (`vitest run`) — the 7 new cases run against the demo mock on
+    **prop-2** (the open-year property, whose Sunrise Yoga lease starts Jul 1 → exactly 6 in-term
+    months, so its figures are date-stable): a closed year is refused (`skipped: 'closed'`, invoice
+    byte-identical) · an SF change doubles that tenant's CAM and tax while base rent stays put · a roof
+    toggle moves the roof line to $1,000 and back to $0 · an applied rent step re-prices base
+    $18,000 → $24,000 · a **property** CAM change moves **both** tenants' invoices (`leases: 2`) · and
+    an `import_id`-carrying and a noted payment still survive the new automatic path untouched.
+    `npm run build` compiles; demo bundle grepped **free of the live ref** `awgrjmbcghdjgnqeiqkt`
+    before deploying; live 200s on all four URLs. Browser drive-through skipped per George's standing
+    preference (the tests drive the real resync + invalidation path against the mock).
+  - **⚠ Flag — this moves real invoices the first time it fires.** It reverses a prior default on
+    purpose: on **2026-07-21** I deliberately did *not* regenerate drifted invoices, because changing a
+    billed amount was George's call. That entry recorded roughly **3–4% CAM drift** across several
+    Pershing tenants and a **~$23k outlier on D&D Dental** — invoices generated before their expenses
+    grew. The first CAM, tax, building-size or lease-figure edit on a property now snaps every affected
+    invoice to current figures in one go, which will read as a **visible jump in Outstanding**. Nothing
+    is lost (the figures are recomputed from live data, no real payment is rewritten, and closed years
+    are untouched) — but it shouldn't arrive as a surprise. If George would rather see the drift before
+    it settles, a quiet *"this invoice is out of date · refresh"* line with a one-click resync is a
+    small follow-on on exactly this plumbing.
+
+- **2026-07-27** — **The Overview stopped accusing tenants of being late: the per-tenant "behind on rent" alert
+  is replaced by ONE calm "import your bank statement" reminder per property, and it never fires until the month
+  has actually ENDED** (George: *"The notifications page put a bunch of notifications saying that a lot of tenants
+  were behind on rent. But the user of this platform usually only gets their bank statements the end of the month
+  … the payment shouldn't say that they're late until after the month has passed. And it shouldn't say they're
+  late. It should maybe say, like, upload your bank statement for the month of x to log payments and expenses …
+  it shouldn't have like fifty notifications if the landlord just forgets. So it should just be a reminder to
+  upload the statement."*). Deployed: frontend Cloudflare version `6cd28f6c`, demo worker `ae7f1d16`.
+  **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing
+  destructive.** Tests **683/683** (was 663 — +12 unloggedMonths, +3 statementReminderData, +5 net in
+  notifyLeadAlerts).
+  - **Why he saw a screenful, precisely.** `computeUnpaidRent` (api.js) walked EVERY annual invoice and pushed one
+    alert per lease with `monthsBehind >= 1`, where `ledgerRowSummary` counts a month as behind once its **1st**
+    has passed (plus a 7-day grace). So on **July 8** every tenant with no July deposit — which is all of them,
+    because the bank statement hasn't arrived yet — became "1 month behind". Nine Pershing tenants + four GENA
+    tenants = thirteen red rows about a month nobody could possibly have logged. **Two separate mistakes:** the
+    timing judged a month still in progress, and the granularity turned one forgotten upload into a per-tenant
+    accusation. The app cannot tell "the tenant didn't pay" from "the landlord hasn't logged it yet" — so it
+    should never have claimed the first.
+  - **The reframe.** An empty closed month is the **landlord's** to-do, so that is what the reminder says:
+    *"Import your June statement — Pershing Plaza / Nothing recorded for June — import the bank statement to log
+    payments and expenses."* Tone **info** (a task, not a problem); it only firms to **warn** once 3+ months have
+    piled up. Several unlogged months stay **one** alert — *"Import your bank statements — Pershing Plaza /
+    Nothing recorded for January, February and June…"*, capped at three names then "and N more" so a full-year
+    backlog can't run long. Clicking it lands on that property's **Ledger**, where ⬆ Import statement lives.
+    A test asserts the title, detail and chip contain **no** "behind / late / overdue / unpaid".
+  - **Timing, stated as a rule.** New pure `monthClosedForLogging(year, month, today, graceDays)` (`ledger.js`):
+    the grace now runs from the month's **END**, not its 1st. June opens for logging on **July 8**; July stays
+    silent until **August 8**. The old bug is replayed as a named regression (`monthClosedForLogging(2026, 7,
+    '2026-07-08')` → **false**). The grace is still the owner's configurable lead.
+  - **What counts as "logged" — the coarseness is the point.** New pure `unloggedMonths({year, rows, today,
+    graceDays})` reads the SAME arrays the Ledger grid paints (`owedByMonthForInvoice` + `allocatePayments().
+    received`), so it can never disagree with the grid. A month qualifies only when the property actually
+    **billed** something (never nag about an out-of-term or free month) and **not one tenant** has money on it —
+    a single recorded payment proves the statement was imported, and whether an individual tenant paid is the
+    Ledger's job to show in context, not the bell's. **Untagged lumps work correctly**: Bright Coffee's $78,000
+    cheque FIFO-fills every month, so nothing is raised; a $19,500 lump covers Jan–Mar and only Apr–Jun are
+    raised.
+  - **`alertKey` gained a `property_id` fallback** — last in the chain (`contract_id || report_id || lease_id ||
+    property_id`), so only this alert reaches it and no saved key is disturbed. The key is anchored to the
+    **latest** unlogged month's end date, which is what makes a dismissal **re-arm** when the NEXT month goes
+    unlogged (test-pinned: June's key ≠ June+July's key). Sorting moved off the old `-1000 - monthsBehind` hack
+    to `days: -months.length` — above what isn't due yet, below anything genuinely overdue.
+  - **Settings copy follows.** The Notifications row is now **"Bank statement reminder"** — *"How long after a
+    month ends before reminding you to import that month's bank statement"* (was "Tenant behind on rent" /
+    "Grace period after a rent month comes due before flagging it unpaid"). **The stored key stays
+    `unpaid_rent`** so any saved lead survives, with a comment saying so.
+  - **Files:** `src/lib/ledger.js` (`monthClosedForLogging`, `unloggedMonths`), `src/lib/api.js`
+    (`computeUnpaidRent` → `computeUnloggedMonths`, now aggregating per property), `src/lib/alerts.js` (the
+    `statement_reminder` block + `MONTH_NAMES`/`joinMonths` + the `alertKey` fallback; the now-unused `money0`
+    import dropped), `src/lib/notifyPrefs.js`, `src/pages/DashboardPage.js` (nav), tests
+    (`unloggedMonths.test.js` + `statementReminderData.test.js` new; `notifyLeadAlerts.test.js` rewritten).
+    **No demo-seed change** — a seeded unlogged month would ripple the pinned $22,300 / $78,000 / $109,800
+    figures, so the demo keeps showing the fully-logged "nothing to nag about" state and the new path is covered
+    by the integration test instead (it removes the lump against the mock, asserts ONE alert, then restores).
+  - **Verified:** unit **683/683** (`vitest run`) incl. the end-to-end `fetchAlertData` → `buildAlerts` run
+    against the demo mock, written date-independent so it keeps holding as the calendar moves; `vite build`
+    compiles; demo bundle grepped free of the live ref `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all
+    four URLs. **George: hard-refresh (Cmd+Shift+R) — the behind-on-rent notifications are gone. Nothing will be
+    raised about July until August 8; if July still isn't imported by then you'll get one line per property, not
+    one per tenant.**
+  - **✅ FOLLOW-ON, SAME DAY — the second tier George asked for** (*"yes i would like to still have an alert for
+    a tenant who is missing on the month the user has imported"*). Deployed: frontend Cloudflare version
+    `5702e9ae`, demo worker `132e2431`. **Still $0, no migration, no edge functions.** Tests **696/696**
+    (was 683 — +8 missingOnImportedMonths, +4 alert-shape, +1 integration).
+    - **What decides it — and why it can't recur as a wall of alarms.** New pure `missingOnImportedMonths`
+      (`ledger.js`): for months the property **imported**, name each tenant with nothing on them. The proof of an
+      import is a payment carrying a non-null **`import_id`** with a `period_month` (both columns exist since
+      0063 — no migration), which is precisely what separates *"I reconciled this month against the bank"* from
+      *"I ticked one box by hand"*. Without that proof it stays silent, so hand-marking one tenant can never
+      accuse the other eight. It still only judges a **closed** month — a statement imported mid-month covers a
+      partial period, and a tenant absent from it may simply not have paid yet.
+    - **One alert per TENANT, listing every month they're missing** — never one per month. `No payment recorded
+      — Michuacana` / *"April, May and June are imported with no payment from this tenant — $15,900
+      outstanding."* Warn at 1–2 months, danger at 3+. Sorts above the statement reminder (a real gap beats a
+      to-do) and below anything with a genuinely overdue date. Click → the property's **Ledger**.
+    - **Mutually exclusive with tier 1 by construction, and test-pinned:** an imported month has money on it, so
+      it can never also read as unlogged. A **short** payment is not a missing one either — that difference is
+      the Collected column's job, not the bell's.
+    - **`computeUnloggedMonths` → `computeLedgerAlerts`**, one pass over the year's invoices returning BOTH
+      lists (`{ unloggedMonths, missingPayments }`, spread into `fetchAlertData`'s result); the payments select
+      gained `import_id`. `alerts.js` adds the `missing_payment` block (gated by the same Rent Ledger module);
+      `DashboardPage` routes both reminders to the Ledger.
+    - **No ✉ button, deliberately** — chasing a tenant in writing is a decision, not a side effect of an alert
+      rendering. `buildPaymentShortfallEmail` already exists (it powers the statement-review ✉), so wiring one
+      on is a small change if George wants it.
+    - **Integration test pins the whole chain** against the demo mock with the clock fixed to Aug 15 (Date
+      faked only, so the mock's promises still resolve): remove Bright Coffee's lump → one statement reminder
+      for Apr–Jul; then add City Dental's July deposit **with an `import_id`** → July drops off the reminder and
+      Bright Coffee is named for July at $6,500. `vitest run` **696/696**; `vite build` compiles; demo bundle
+      grepped free of the live ref; live 200s on all four URLs.
+  - **Flags (no action needed):** ① A property with no annual invoice for the year raises nothing at all —
+    there's no billing shape to judge months against. ② An import whose lines are all UNTAGGED lumps marks no
+    month as imported, so tier 2 stays quiet there — silence rather than a false accusation. ③ The full
+    behind-on-rent picture (amber cells, the "N mo behind" badge, the Collected column) still lives on the
+    **Ledger** grid, where the month-by-month context makes it readable.
+
+- **2026-07-26** — **README rewritten as the public repo's front door, with four screenshots — it was
+  documenting features deleted a fortnight ago and omitting the Rent Ledger that replaced them** (George:
+  *"what does the read me say this project is"* → *"do you think you could update it and make it more
+  comprehensive?"*; his two scoping picks: screenshots **yes — "make some of them the financials page and ledger
+  page"**, and **one thorough README** rather than a README + ARCHITECTURE split). **DOCS ONLY — NO Cloudflare
+  deploy (the README isn't in the bundle), no `src/` change, no migration, no edge functions, $0, no tenant
+  emails, nothing destructive.** Tests **663/663 across 84 files** (unchanged — run to prove nothing was
+  touched). Commit + push only.
+  - **Why it needed doing, precisely.** The repo has been **public since 2026-07-07**, made public so reviewers
+    could read the source — so the README is the front door. It failed at that three ways. ① It described an app
+    that no longer exists: it listed "a monthly rent tracker, AR aging" and a "receivables" Overview card, all
+    **deleted 2026-07-13** (`cfe506f`). ② It never mentioned most of what shipped since — the **Rent Ledger**
+    (the replacement for exactly those three), bank-statement import, CAM/tax reconciliation, the two Excel
+    exports, the Settings hub, the feature switchboard, per-type notification leads, insurance, contracts,
+    annual reports, riders, TOTP 2FA, auto sign-out. ③ It linked **neither the live app nor the demo sandbox** —
+    for a repo meant to be evaluated, the zero-setup demo link is the single most valuable line in the file.
+  - **A correction I made to myself before writing.** I'd told George "Ask Amlak" was stale copy, from a
+    7/07 deploy-log entry describing a rename to "Ask AI". The code says otherwise (`Sidebar.js:114`,
+    `AskPage.js:27,104` all read "Ask Amlak"; no "Ask AI" string exists in the tree) — that rename was reversed
+    when the app was re-branded Amlak. The README keeps "Ask Amlak". **Lesson: read the code, not the log.**
+  - **Screenshots — demo sandbox ONLY, never the live app**, because the live account holds real tenant names,
+    rents and balances and the repo is public. Built `build-demo`, served it locally, drove system Chrome
+    headless via `node_modules/playwright-core` (the shared MCP browser was held by a concurrent session).
+    1440×900 at DSF 2, ledger at 1720 wide so the Collected column isn't clipped; **1.2 MB for all four**, well
+    inside the ~3 MB budget, so DSF 2 stayed. **Zero console errors on every capture.** The demo seed happens to
+    be the better subject anyway — it shows **every ledger cell state at once** (Bright Coffee's untagged
+    $78,000 lump filling Jan→Dec FIFO · City Dental's tagged Jan/Feb ✓, a ◐ short March, amber unpaid Apr–Jul,
+    a "4 mo behind" badge and an "expired — held over" flag).
+  - **The four:** `financials.png` + `ledger.png` (**George's two picks**), `ai-review.png` (the differentiator —
+    AI badges with the source clause and page ref for each field, above the **code-built** rent schedule showing
+    $96,000 → $98,880/yr "ROLLED FORWARD"), `overview.png`. Each carries a caption saying what it *demonstrates*,
+    not what it is.
+  - **The README (87 → 355 lines), eleven parts:** live + demo links first → screenshots → what it does (7 areas
+    + a short list of the rest) → how it fits together (the 3 views, the triggers, the 3 cron jobs, year-close) →
+    **the rules this codebase holds itself to** (money math never runs through a model · the model reads raw
+    figures and code multiplies · nothing writes without review · undo on every consequential action · honest
+    failure over a plausible lie) → the AI pipeline with its time boxes, the 16-union ceiling, and a
+    **cost-per-operation table** → security → testing → repo layout → running it → notes.
+  - **Every claim traced to code before it was written**, and four were corrected mid-draft as a result:
+    ① `ask-leases` is 10/min, not the 30/min the other Q&A functions use, so the rate-limit line now names all
+    three tiers; ② the alert list sorts by `days`, not severity (`alerts.js:303`), so "ranked by urgency" became
+    "ordered by how soon each one bites"; ③ **not** every alert row has a ✉ (the behind-on-rent one has no
+    outside recipient — visible in the screenshot), so the caption now says "where there's someone to write to";
+    ④ "RLS on every table" → "every **data** table" (`security_events` is service-role only). Also verified
+    against source: 66 migrations · 19 edge functions · 19 pages · 45 components · the 3 `security_invoker`
+    views · cron at 06:00/06:15/13:00 · the 25 MiB pinned-MIME bucket · the 2-account beta cap · `unpdf` ·
+    CHUNK_PAGES 10 × 9 chunks = 90 pages · every one of the 13 test files cited exists.
+  - **Files:** `README.md` (rewritten), `docs/screenshots/{overview,ai-review,financials,ledger}.png` (new).
+    Nothing else — `.claude/` tooling left untracked as always.
+  - **Flagged, deliberately NOT changed** (say the word and I'll do any separately): ① two live copy bugs found
+    while researching — `dashboardWidgets.js:9` labels the card *"Expiring ≤ 90 days"* while the page renders
+    **"≤ 6 months"** over a 183-day filter (`DashboardPage.js:149,182`), and `features.js:14` still describes a
+    "collected/owes column on Financials" removed in `60c9d69`; ② dead code — `src/lib/arStatus.js` and
+    `src/components/InvoiceButton.js` are imported by nothing; ③ `api.js:2924` builds an email for
+    `insurance_chase`, but `alertCanEmail` never returns true for it, so that ✉ can't render; ④ **`CLAUDE.md`
+    is public** — several thousand lines of internal working notes, visible to anyone reading the repo. Nothing
+    sensitive in it, but worth a conscious decision to keep, trim, or move out of the public tree.
+
+- **2026-07-25** — **The sign-in mark is now genuinely square on the wordmark (yesterday's nudge had the right
+  size, the wrong sign AND the wrong anchor) and the lockup is centred on the card** (George: *"lineup and center
+  the logo on the log in page with the word AMLAK"* — the second time he's raised the alignment, correctly).
+  Deployed: frontend Cloudflare version `a974d4db`, demo worker `e1371040`. **CSS only — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, nothing destructive.** Tests **663/663** (unchanged — no test
+  asserts the auth heading's markup).
+  - **Measured, and the measurement contradicted the code.** Drove the built app in a real browser and read the
+    geometry off the rendered glyphs (baseline via a zero-width `vertical-align:baseline` probe; ink height via
+    canvas `measureText().actualBoundingBoxAscent`, so it's the face's real metrics, not a guess). The tile sat
+    **9.6px below** the centre of the word's ink band — overshooting 12.28 under the baseline while ending 6.93
+    *short* of the letter tops. Visibly low, exactly as George said.
+  - **Why yesterday's fix didn't hold.** The rule was `align-items:center` + `translateY(-0.08em)`. The 0.08em is
+    right and its derivation was right — half the difference between the 30px tile and the word's ~24.65px ink —
+    but that figure only means anything measured **from the baseline**, and the rule centred on the **line box**
+    then pushed the tile *up*. Cormorant carries deep descenders, so at line-height 1.2 the ink sits high in its
+    line box and the two errors compounded instead of cancelling. The comment even said "the nudge is half that
+    descender" — the code just wasn't anchored where the comment thought it was.
+  - **The fix — anchor on the baseline, which is a real typographic reference.** `align-items:baseline` puts the
+    tile's bottom edge **exactly** on the baseline (verified: `below: 0.00` with no transform at all — proof the
+    anchor is exact rather than approximately right), and from there the tile only has to straddle the ink
+    symmetrically: `translateY(0.08em)`, the same magnitude, now downward. Re-measured: centre offset **0.05px**,
+    overshoot **2.63 above / 2.72 below**. Unlike the line-box approach it doesn't move if the heading's
+    line-height ever changes. **Four variants were measured before choosing** — a line-height:1 reset made it
+    *worse* (12.33px), and a plain `translateY(-0.362em)` on the old centring also lands at 0.02px but is a magic
+    number pinned to line-height 1.2, so it was rejected as brittle.
+  - **Centred, and the line under it follows.** `justify-content:center` centres the pair as one unit (measured
+    **0px** off the card's inner centre), and `.brand-lockup + .muted` centres the single line beneath it, so the
+    header reads as a masthead over the left-aligned form rather than a centred title above stray left-aligned
+    copy. Applies to all three auth screens — the sibling selector matches one short line on each ("Sign in to
+    continue." / "Two-factor verification" / "Set a new password for your account."), never the body copy below.
+  - **Files:** `src/App.css` (the `.brand-lockup` rules) — nothing else; the three pages' markup is untouched.
+  - **Verified:** unit **663/663** (`vitest run`); `vite build` compiles; the built app driven in a real browser
+    with the numbers above, **zero console errors**, screenshot reviewed; demo bundle grepped free of the live ref
+    `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. **George: hard-refresh (Cmd+Shift+R).**
+  - **Answered, no code needed — Chrome's "install Amlak" prompt.** That's the real app, not a different one:
+    `public/manifest.json` (added 2026-07-25 with the brand mark) declares a name, icons, `start_url` and
+    `display: standalone`, which is what makes a site installable. Installing gives it its own window with no
+    browser chrome, its own dock/home-screen icon and its own entry in the app switcher — same live account, same
+    data, nothing to sign into twice. **It is not offline-capable** (there's no service worker registered
+    anywhere in the tree — grepped), so it still needs a connection exactly like the website. Same on a phone via
+    Share → Add to Home Screen.
+
+- **2026-07-25** — **BUGFIX (same rider, next wall): saving the Denny's addendum died with `date/time field value
+  out of range: "2033-04-31"` — the document prints a date that does not exist, and every date guard in the app
+  waved it through because `new Date()` silently rolls it to May 1** (George: *"i got this: date/time field value
+  out of range: '2033-04-31' when i tried to save it"*). Deployed: `extract-addendum` + `extract-lease` edge fns
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `4e413988`, demo worker `f8e8193c`, plus a
+  four-statement repair of the half-saved live lease. **$0, NO DB migration, no tenant emails, nothing deleted**
+  (every repair statement guarded on the exact wrong value → re-running is a no-op). Tests **663/663** (was 656 —
+  +5 realIsoDate, +5 isoDateOrNull calendar cases, +2 apply-path refusal, +1 render).
+  - **The trap, precisely.** `"2033-04-31"` satisfies a `\d{4}-\d{2}-\d{2}` regex **and** V8's parser, which
+    quietly rolls it to May 1 — so `isNaN` never fires. `isoDateOrNull` (api.js, shipped 2026-07-02 to stop prose
+    dates) checked exactly those two things, so it returned the string unchanged and Postgres refused it. Its own
+    test even asserted `'2026-13-40'` → null and called that "impossible calendar date" — month **13** makes the
+    parser give up; month 04 day 31 does not. **The one place that got it right was yesterday's `addMonths`,
+    because a test caught it there** — that round-trip check is now the shared rule.
+  - **Three layers, because one guard is how this happened.** ① New exported **`realIsoDate`** in
+    `_shared/rentSchedule.js` (round-trips the parse and rejects any date that comes back as a different day);
+    `addMonths` now delegates to it. ② `extract-addendum` sanitizes `new_termination_date` **unconditionally**
+    (was only inside the `extension_months` branch, so a rider printing an impossible date with no length stated
+    sailed through): an unusable printed date now **prefers the computed `old_end + N months`**, else is cleared,
+    and either way raises `term_extension_flag = { reason: 'impossible_date_printed', stated }`; `amendment_date`
+    and `new_base_rent_effective_date` get the same treatment. ③ `isoDateOrNull` gained the calendar round-trip —
+    **which fixes the whole app's date lane at once** (`buildEscalations`, `buildRenewals`, `buildAbatements`,
+    `anchorLeaseSchedule`), not just riders; a lease printing "February 30" would have 400'd its save too.
+  - **The partial write is now impossible, and the form can't produce one.** `applyAddendum` validated
+    `extensionEnd` **before any write** and throws a plain-English error — because the escalation insert runs
+    BEFORE the term update, so the old failure left rent steps behind and no extension (exactly what happened
+    live). All six `changes.extensionEnd` uses route through the one validated local. On the review screen,
+    `canSave` now requires a **real** date rather than a filled box — a date input renders an impossible value as
+    **blank** while the string stays in state, which is why Save looked ready — and the extension card **stays
+    ticked** when the printed date was unusable (clearing it would silently lose the extension) with a line naming
+    what the rider printed.
+  - **Live repair — George's Denny's lease `5e0bac78`, four guarded statements.** The extraction itself had worked:
+    **ONE** step at **2023-07-01 → $151,140** (the quoted June 1 row correctly suppressed) and the PDF **linked**
+    (`storage_path` non-null — yesterday's fix, confirmed on real data). But the save died at the term update, so
+    the lease sat half-applied: step inserted, term still 2028-04-30, `base_rent` still **$137,553** (under-billing
+    by $13,587/yr). Fixed: term → **2033-04-30** (2028-04-30 + 60 months, matching the document's intent), the
+    missing `term_extended` history event logged, `base_rent` → **$151,140**, and the past-dated step marked
+    `applied` — written in `applyEscalation`'s own order (rent first, then the status) so an interruption stays
+    re-appliable. Read-back: 2 steps, both applied, active, term 2033-04-30; Pershing's 2026 revenue
+    **$354,899.52**.
+  - **Files:** `supabase/functions/_shared/rentSchedule.js` (`realIsoDate`), `supabase/functions/extract-addendum/
+    index.ts`, `src/lib/api.js` (`isoDateOrNull` + the `applyAddendum` gate), `src/components/AddendumEditor.js`,
+    tests (`supersededRider`, `extractionDates`, `addendumPercentApply`, `addendumReview` — all extended).
+    **`extract-lease` redeployed unchanged** — it imports the shared module I edited.
+  - **Verified:** unit **663/663** (`vitest run`) incl. the exact failure replayed end to end (an impossible
+    `extensionEnd` is refused with **nothing written** — no orphaned rent steps, term untouched — and the real
+    date applies cleanly) and the render test driving the review form to a disabled Save; `vite build` compiles;
+    both edge fns deployed clean with unauth POST → **401**; demo bundle grepped free of the live ref; live 200s on
+    all four URLs. **George: hard-refresh (Cmd+Shift+R) — the Denny's lease already reads $151,140 through
+    April 30 2033; nothing to re-upload.**
+  - **Flag (no action needed):** that rider's **Dated** field reads **2023-06-30** while the document is dated
+    July 3 2023 — the model took the date from the rent clause it amends. Harmless and editable on the addendum.
+
+- **2026-07-25** — **Full audit + overhaul of the addendum / rider extractor: it now knows that an amendment
+  RECITES the clause it replaces (the Denny's bug), keeps percent rent steps instead of silently deleting them,
+  links the uploaded document, reads an extension stated as a LENGTH, and is led by a Sonnet analyst read with a
+  disagreement alarm** (George: *"need to do a full audit of the lease addendums and riders extraction its not
+  nearly as good as the lease extractor AI. i gave it that dennys rider and it gave me that screenshot back. find
+  the bugs as well as any others. YOU decide if you want to use the lease extractor AI as a guide after you do
+  your research."* — his two scoping picks: **add the analyst read** (~2–5¢/rider) and **fix forward only** for the
+  6 orphaned rider documents; plan `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed:
+  `extract-addendum` + `extract-lease` edge fns (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `f7267648`, demo worker `8659b9a3`. **NO DB migration, no tenant emails, nothing destructive, no live-data
+  repair needed.** The only cost change is the analyst read George approved: **~2–5¢ per rider upload** (a rider is
+  1–3 pages vs 10–15¢ for a full lease); manual entry stays $0. Tests **656/656** (was 623 — +12 supersededRider,
+  +11 rider analystVerdicts, +7 addendumPercentApply, +4 addendumReview render). **Decision on the guide: yes** —
+  `extract-lease` has been hardened over ~15 rounds and the rider lane received almost none of it; this ports what
+  applies and adds the one thing a lease never needs.
+  - **The Denny's diagnosis.** The one-page scanned "THIRD ADDENDUM" reads: *"Number 4 of the agreement reads 'The
+    Monthly Base Rent … shall be increased to $12,595 beginning **June 1, 2023** to April 31, 2028.'"* — the clause
+    being **replaced** — then *"This will be changed to … $12,595 beginning **July 1, 2023** to April 31, 2033."* —
+    the clause that **governs**. The review screen came back with **two rent steps, both $151,140**. Nothing in any
+    of the extractor's three prompts mentioned recitals, which is the defining feature of the genre. Here the damage
+    is cosmetic (both figures match); the identical shape with a *changed* rent ("the rent **was** $10,000; it will
+    be changed to $12,595") writes a false $120,000 step dated a month early, and `effective_rent` then misreports
+    that fiscal year permanently.
+  - **12 findings, all verified in code, two against live data.** ① superseded clause read as operative ·
+    ② a step that changes nothing survives (`periodKey` dedupes on date, never compares the amount) · ③ **percent
+    rent steps silently dropped** — `intake` only pushed a step with a dollar figure, so `{percent, 3, null}`
+    vanished and `formToChanges` then hard-coded `manual`; **the demo mock shipped a live reproduction**, its canned
+    rider's summary promising a "3% bump" the form never showed · ④ the merge wiped the main call's escalations
+    whenever the rent call returned one row, destroying any percent step it *had* found · ⑤ no analyst read, no
+    disagreement alarm (the 2026-07-03 lesson never applied here) · ⑥ four model calls strictly **serial**, three at
+    the default 90 s box — the same HTTP 546 class fixed twice in extract-lease, latent · ⑦ **the uploaded rider PDF
+    was never linked** — `onFile` uploaded and discarded the path (**live: all 6 addendums have `storage_path`
+    null**) · ⑧ an extension stated as a LENGTH unreadable · ⑨ no lease-year rent tables · ⑩ no option rent tables ·
+    ⑪ both non-fatal catches silent · ⑫ header comment said "Sonnet 4.6" while `MODEL` is Haiku.
+  - **Live data is otherwise clean** — all 7 addendum-derived `rent_escalations` rows have distinct amounts per
+    lease, so **no rent repair was needed**. Per George, the 6 orphaned rider documents stay orphaned (their
+    extracted text is on the record; only the file link was lost, and matching by upload time is ambiguous).
+  - **The superseded fix (the core).** A **required** `superseded: boolean` on `RENT_SCHEMA.rent_schedule` items —
+    a required, single-typed field costs **ZERO** of Anthropic's 16-union budget (the `is_assignment` precedent), so
+    it was free; the schema moved 7 → 8 only because `months_from_start` was added beside it. A shared
+    `SUPERSEDED_RULE` paragraph now leads BOTH rent prompts, naming the trigger phrasing ("currently reads",
+    "deleted and replaced with", "amended in its entirety", "in lieu thereof", "This will be changed to") and
+    spelling out the Denny's shape explicitly — **because the identical dollar figure on both rows is exactly what
+    makes the quotation look like a second table row**. The edge fn splits the rows before any of them becomes a
+    schedule and keeps the dropped ones on `parsed.superseded_rent`, so the review says quietly *"This rider quotes
+    a prior rent it replaces — not applied: $120,000.00 from Jan 1 2023"* rather than dropping it silently.
+    **The all-superseded edge case is specified, not left to chance:** if every row is flagged, `rebuilt.baseRent`
+    is null, the merge guard never fires and the main call's superseded figure would leak through as the new rent —
+    so it's explicitly cleared and flagged `all_rent_rows_superseded`. **Deliberately NOT** mirrored onto
+    `SCHEMA.escalations`: on Denny's the superseded row is the *earliest*, so it lands in `new_base_rent`, which has
+    nowhere to carry a flag — flagging escalations alone would drop the operative step and keep the superseded base,
+    strictly worse than nothing.
+  - **Second line of defence — a step that changes nothing isn't a step** (`rentSchedule.js`, **dated mode only**,
+    placed AFTER `crossCheck` so the divergence flag sees exactly what it saw before). Walks the steps tracking the
+    last *kept* amount and drops any within a cent of it. Two contracts are load-bearing: it returns **`[]`, never
+    `null`** (extract-lease reads `if (rebuilt.escalations)` — `null` means "we priced nothing, keep the model's
+    rows", `[]` means "we priced them and there are none"), and `withFormula`'s `tableRowCount` stays at the
+    **pre**-dedupe count so a printed table of equal rents still beats a prose "2%/yr" formula. **Not applied to
+    relative mode**: `relativeRentSchedule.test.js` pins the real Wingstop lease, whose Year 1 and Year 2 are *both*
+    $30,525 — equal consecutive periods genuinely occur, and the rider lane can't reach relative mode anyway. The
+    test documents the fallback's known imperfection too: without the flag the pair collapses to one period, but the
+    surviving date is the quoted June 1, a month early. Only the flag gets the date right.
+  - **Percent steps survive end to end.** One shared `stepIsUsable` predicate now governs `intake`, `formToChanges`
+    and `canSave` alike (a step qualifies on a dollar amount **or** a percent/CPI type with a value > 0), the steps
+    table gained a **Type** column (Amount $/yr · +% per step) that binds the percent to `escalation_value` and says
+    so, and a percent step is saved with `new_base_rent: null` so the formula — not a stale figure — wins. Verified
+    through the real apply path: base $151,140 + 3% → **$155,674.20**. The merge now keeps the model's dollar-less
+    percent/CPI steps on dates the rebuild doesn't own, sorted in; anything carrying dollars stays owned by
+    `rebuildRentSchedule`, so the model's arithmetic still can't re-enter.
+  - **Analyst read + disagreement alarm** (Sonnet 4.6, unconstrained prose, best-effort, 45 s box). Its headline
+    section is **WHAT THIS DOCUMENT CHANGES vs WHAT IT MERELY QUOTES** — the one judgment the rigid form-fillers
+    keep getting wrong — and it closes with a rider-specific VERDICTS line (`rent_change`, `superseded_quote`,
+    `term_extension`, `extension_months`, `new_end_date`, `renewal_options`, `assignment`, `abatement`,
+    `expense_estimate`). New `riderMismatches()` in `_shared/analystVerdicts.js`: `extractionMismatches` couldn't be
+    reused because for a rider "the rent was captured" includes `new_base_rent`, not just a non-empty escalations
+    array, and a rider has two effects a lease doesn't. Only an affirmative verdict against an empty form flags —
+    `unclear`/absent never cry wolf. The review renders the warning plus a collapsed **"Read the AI analyst's
+    notes"**. `stripVerdicts` + `MISMATCH_LABELS` were hand-mirrored in `LeaseNewPage.js` with a comment admitting
+    the drift risk; both are now lifted into shared `src/lib/analystBrief.js` and imported by both screens.
+  - **Parallelized and boxed.** The transcription starts first and isn't awaited; the analyst is awaited; then the
+    three structured calls + the transcript resolve in ONE `Promise.all`. `ANALYST 45 s · FORM 35 s/attempt ·
+    TRANSCRIBE 75 s / 8 k` → worst case ≈ **130 s**, inside the ~150 s edge budget (the old serial path had no upper
+    bound at all). The two best-effort reads are wrapped in `extractAssignment()` / `extractRent()` that catch →
+    **log** → return null, because `Promise.all` rejects on any member — without them a transient 429 on the cheap
+    assignment call would have taken down an extraction that survives it today. That also closes finding ⑪.
+  - **Extension stated as a LENGTH.** `extension_months` **cannot** live on `SCHEMA` (it is at exactly 16/16), so it
+    comes off the analyst's VERDICTS line — zero schema budget, and the stronger model is the better reader of *"an
+    additional five (5) years"*. The lease's current end is threaded `LeaseDetailPage → AddendumEditor →
+    extractAddendum → api.js → the edge fn`; a new shared `addMonths` computes `old_end + N`, fills the date when
+    the rider printed none, and flags a disagreement when it printed a different one. Denny's: 2028-04-30 + 60 =
+    **2033-04-30** — and the document literally prints *"April 31, 2033"*, a date that does not exist, which is the
+    whole argument for computing it. **A test caught a real hole here:** `"2033-04-31"` passes a `\d{4}-\d{2}-\d{2}`
+    regex AND V8's lenient parser, which quietly rolls it to May 1 — so `addMonths` now rejects any date that
+    doesn't round-trip, rather than returning a plausible lie.
+  - **The last two parity gaps.** Lease-year rent tables in riders (`months_from_start` + an anchor rule: the
+    operative rent's own date, else — only for a committed extension — the term end it begins from, **never** the
+    amendment/signing date), and option rent tables (`renewal_options[].rent_schedule`, all-required items → 0
+    unions, `annualizeOptionSchedule`). Two client-side pieces nobody had flagged: `formToChanges` dropped
+    `rent_schedule` on the floor, and **`applyAddendum` never called `buildRenewalScheduleSteps`** — it does now,
+    with `termEnd = changes.extensionEnd || lease.lease_termination_date` (a rider often extends the term in the
+    same document, so the option window must start after the *new* end) and the just-built escalation rows as
+    `existingSteps` so the ±45-day guard can't double-book.
+  - **Files:** `supabase/functions/extract-addendum/index.ts`, `supabase/functions/_shared/{rentSchedule.js,
+    analystVerdicts.js}`, `src/lib/analystBrief.js` (new), `src/components/AddendumEditor.js`, `src/lib/api.js`,
+    `src/pages/{LeaseDetailPage,LeaseNewPage}.js`, `src/lib/demo/mockClient.js` (the canned rider now recites the
+    clause it replaces and carries an analyst brief, so the new behaviour is demoable), tests
+    (`supersededRider.test.js`, `addendumPercentApply.test.js`, `addendumReview.test.js` new;
+    `analystVerdicts.test.js` extended). **`extract-lease` was redeployed unchanged** — it imports both shared
+    modules I edited, and leaving its deployed copy on the old ones would have been exactly the source-vs-deployed
+    drift the standing rule warns about.
+  - **Verified:** unit **656/656** (`vitest run`); `vite build` compiles (809 modules); both edge fns deployed clean
+    with unauth POST → **401** (RLS-gated, *not* a schema 500 — proof the new schema was accepted); demo bundle
+    grepped free of the live ref `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. Browser
+    drive-through skipped per George's standing preference — the render test mounts the real AddendumEditor and
+    drives the actual paste → review → save path against the demo mock. **George: hard-refresh (Cmd+Shift+R), then
+    re-upload the Denny's rider (~2–5¢) — expect ONE rent step at July 1 2023, $151,140, the term at 2033-04-30, a
+    quiet line naming the June figure it recognized as replaced, and the analyst's notes readable on the review.**
+  - **Flags (no action needed):** ① The 6 existing riders keep `storage_path` null — forward-only, as you chose;
+    re-upload any rider whose file you want reachable from its record. ② A percent step is priced from the rent in
+    effect *just before it*, so editing an earlier step re-prices it — that's the formula behaving correctly, not
+    drift. ③ The analyst is best-effort: if it times out, the brief is null, no mismatch can flag, and extraction
+    proceeds exactly as it did before — you lose the alarm, never the extraction.
+
+- **2026-07-25** — **The "This uses a paid AI call" line is gone from the addendum-upload description** (George:
+  *"take out anything that says paid ai call in the description"*). Deployed: frontend Cloudflare version
+  `c71c0950`, demo worker `31d8d66c`. **One sentence of copy — $0, NO DB migration, NO edge functions, no AI
+  calls, no tenant emails, nothing destructive.** Tests **623/623** (unchanged — no test asserted the sentence).
+  - **Where it was:** the "Add an addendum / rider" panel's upload description (`AddendumEditor.js:288`) ended
+    with a bolded **"This uses a paid AI call."** — the last surviving bit of cost wording in the app's
+    user-facing copy. The 2026-06-30 insurance round had stripped the same kind of line out of `InsuranceVault.js`
+    and the demo mock; this one was missed. The description now reads "Upload the rider (PDF, scan, photo, or
+    Word .docx). The AI reads it and pre-fills every change it finds — you just confirm or correct."
+  - **Swept the rest of the app for the same phrasing** — `paid AI call` / `a paid read` / `paid extraction`
+    appear nowhere else in user-facing copy (the only other hits are code comments in `api.js`, `App.css` and two
+    edge functions, which nobody sees). **Deliberately left alone:** the ¢ figures that sit on *click-gated*
+    actions — the 🤖 Suggest tenants/buckets tooltips, the ⬆ Import statement title, and Ask Amlak's "📄 Read my
+    leases (~a few cents)". Those aren't a warning attached to a description; they're the price shown on a button
+    before you press it, which is the whole reason those actions are click-gated. Say the word if you'd rather
+    those went too.
+  - **Files:** `src/components/AddendumEditor.js`.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles; the built bundle grepped **free of the
+    phrase**; demo bundle grep-free of the live ref `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four
+    URLs. **George: hard-refresh (Cmd+Shift+R) — open any lease → Add addendum / rider → the description no longer
+    mentions a paid call.**
+
+- **2026-07-25** — **Follow-up: the mark now lines up with the "Amlak" wordmark on the sign-up / sign-in card
+  (it was hanging below the word's feet)** (George: *"line up the logo with AMLAK on the sign up page"*). Deployed:
+  frontend Cloudflare version `ea0ea2fd`, demo worker `f7174ffe`. **Frontend + CSS only — $0, NO DB migration, NO
+  edge functions, no AI calls, no tenant emails, nothing destructive.** Tests **623/623** (unchanged — no test
+  asserts the auth heading's markup).
+  - **Measured, not eyeballed.** Drove the built app in a real browser and read the geometry: the word "Amlak"
+    occupies cap-top **117.35px → baseline 142px** (cap height 24.65 at 34px Cormorant), while the 30px tile sat
+    **120.44 → 150.44** — hanging **8.4px below the baseline**, its centre **5.8px low**. Root cause: the tile was an
+    `inline-grid` with `vertical-align:middle`, which aligns to *baseline + half the x-height* — and Cormorant's
+    x-height is small, so the box sinks. The three auth pages each carried their own copy of that inline style.
+  - **Fix — one shared class, and the nudge is derived.** New `.brand-lockup` in `App.css` (beside `.login-wrap h1`)
+    makes the heading a flex row with `align-items:center` + `gap:12px`, matching the sidebar `.brand` idiom already
+    in the file. Centring on the LINE box alone still reads low, because *"Amlak" has no descenders* — the word's real
+    band is cap-top-to-baseline and the empty descender space below drags the midpoint down — so the tile is lifted by
+    half that descender: `transform:translateY(-0.08em)`. Expressed in **em**, so it holds if the heading size ever
+    changes. Result on re-measure: tile **114.61 → 144.61**, overshooting the caps by 2.74 above and the baseline by
+    2.61 below — centre offset **−0.07px**, i.e. centred on the word to a fraction of a pixel.
+  - **Applied to all three auth screens, not just the one named** — `Login.js:83`, `TwoFactorChallenge.js:58`,
+    `ResetPasswordPage.js:50` are byte-identical lockups, so fixing one and leaving two crooked would have been worse
+    than the original bug. Each drops its inline `display/verticalAlign/marginRight` for `className="brand-lockup"`;
+    the triplicated inline styles are gone, so the three can't drift apart again. The **sidebar mark is untouched** —
+    it was already correct (its `.brand` is flex-centred, and at 23px the mismatch never showed).
+  - **Files:** `src/App.css` (`.brand-lockup`), `src/pages/{Login,TwoFactorChallenge,ResetPasswordPage}.js`.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles; the built app driven in a real browser
+    before AND after with the numbers above, **zero page errors**; demo bundle grepped free of the live ref
+    `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs. **George: hard-refresh (Cmd+Shift+R) — the
+    tile now sits square on the word instead of dangling under it.**
+
+- **2026-07-25** — **Amlak finally has its own brand mark — the Create React App atom is gone from the browser
+  tab, the home screen, the sidebar and the login screen, and pasting amlakre.com now shows a real link-preview
+  card** (George: *"can you use claude design to come up with some cool design ideas to replace the cover photo
+  that shows up for amlak? like in the chrome browser i think its just the react native one"* — he was right, and
+  it was broader than the tab; his scoping picks via AskUserQuestion: **build several, then I pick** + **all four
+  surfaces** (tab icon · home-screen icon & manifest · in-app sidebar/login mark · link-preview card). Three design
+  rounds: round one (Seal/Plat/Stamp) rejected — *"none of those really worked for me"*; his steer — *"amlak means
+  properties in arabic maybe put a little arabic spin in there? i dont want any arabic letters persay but just an
+  inspo"* — produced four Islamic-geometry marks; he chose the Portal but *"not a fan of the goldish color on the
+  bottom … give me a couple more versions of E on the same color pallate"*; from those five he picked **#5, the
+  plain portal**). Deployed: frontend Cloudflare version `8e2f0aeb`, demo worker `27c42ef2`. **Frontend + static
+  assets only — $0, NO DB migration, NO edge functions, no AI calls, no tenant emails, nothing destructive.**
+  Tests **623/623** (unchanged — no test asserted the literal "A"; the four render sites swapped cleanly).
+  - **What was actually broken (all three confirmed by inspection, not assumed).** `public/favicon.ico`,
+    `logo192.png` and `logo512.png` were still CRA's **cyan React atom**, dated Jun 25, never touched — that's the
+    icon in every tab, his and the beta user's. `public/manifest.json` still read `"short_name": "React App"` /
+    `"name": "Create React App Sample"` with `theme_color: "#000000"`, so an add-to-home-screen copy would have
+    been called *React App* in black. And `index.html` carried **no `og:image`**, so amlakre.com pasted into
+    iMessage/Slack as a bare link with no card — which matters now the repo is public.
+  - **The mark: a pointed archway (a portal) cut into an olive tile.** Islamic-architecture inspired per his
+    steer — the *pishtaq*, a gateway set into a flat wall — with **zero Arabic letterforms**, exactly as he asked.
+    Three shapes total (tile · arch · doorway), which is the hard ceiling for a 16px tab icon; no gradients, no
+    stroke thinner than 2 device px, no interior text. Drawn on a **32-unit grid** so one unit lands on one device
+    pixel at tab size and the same paths scale cleanly ×16 to 512. Colors are the app's own tokens — `--accent`
+    olive `#5C6B3C` field, `--panel` ivory `#FBF8F1` figure.
+  - **The brass rail is gone, and not just deleted — four other homes for the gold were built and rejected**
+    (each rendered and read back at 16px before discarding): in the doorway it went muddy against the olive; as a
+    crossbar it broke the "A" George had spotted in the shape (a letter's crossbar has to match its legs); as a
+    keystone at the crown it read as a plumb bob dangling from the apex; as a cap it flattened the arch's point,
+    which is the whole reason the silhouette reads as architecture. So the mark is olive + ivory only, and gold
+    keeps its real in-app job: *look here*.
+  - **One artwork, not two.** `public/favicon.svg` and the new `src/components/BrandMark.js` carry the **same
+    paths**, with a comment on each pointing at the other — the classic way a logo drifts is a hand-tuned favicon
+    and a separately-drawn in-app mark. Pure geometry, no `<text>` and no font: **an SVG favicon cannot load a
+    webfont**, so anything letter-shaped has to survive as paths (this is the single most common way a favicon
+    ships silently broken).
+  - **New in `public/`:** `favicon.svg` (crisp at any size, what Chrome/Edge/Firefox take) · `favicon.ico`
+    (**16/32/48 PNG-in-ICO**, Safari + legacy fallback — written by a ~30-line python3 stdlib script, since this
+    machine has no ImageMagick/rsvg/sharp; verified with `file` → *"MS Windows icon resource - 3 icons"* and by
+    parsing the directory back and checking each payload's PNG signature) · `apple-touch-icon.png` (180,
+    **square corners** — iOS applies its own mask) · `logo192.png` / `logo512.png` (replacing CRA's) ·
+    `maskable-512.png` (**a separate padded file**, mark at 62% — the full-bleed art pokes outside Android's 80%
+    safe circle, so reusing logo512 as maskable would have clipped the arch) · `og.png` (1200×630).
+  - **The rasterizer:** `node_modules/playwright-core` + system Chrome, each icon screenshotted at an exact N×N
+    viewport at `deviceScaleFactor: 1` — pixel-exact, no resampling. The **og card renders as a real HTML page**
+    in the same headless Chrome, so unlike the favicon it *can* use the actual Cormorant Garamond + Hanken
+    Grotesk: paper ground, the wordmark at 132px, a gold hairline, one line of copy, and a full-height olive band
+    on the right with the mark reversed out — so it reads instantly at chat-thumbnail size.
+  - **Edited:** `index.html` — SVG icon first with the `.ico` as fallback, apple-touch repointed off `logo192`,
+    plus `og:type/url/title/description/image(+width/height/alt)` and `twitter:card=summary_large_image`
+    (`theme-color` was already correct). `public/manifest.json` — name/short_name → **Amlak**, theme `#5C6B3C`,
+    background `#F1ECE1`, maskable entry added. `src/App.css:195` `.brand-mark` — the letter styling
+    (`color`/`font-family`/`font-weight`/`font-size`) is gone and it becomes a **30px wrapper** for the SVG, so
+    the collapsed-rail (line ~219) and ≤768px mobile (line ~836) rules keep working untouched; the olive stays
+    behind it as insurance against a blank frame. The four `<span className="brand-mark">A</span>` sites now
+    render `<BrandMark/>`: `Sidebar.js:109` · `Login.js:83` · `TwoFactorChallenge.js:58` ·
+    `ResetPasswordPage.js:50`.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles and all seven assets + the rewritten
+    manifest land in `build/`; the built app served locally and driven in a real browser — `.brand-mark` renders a
+    30×30 SVG with both paths, the SVG icon link resolves, **zero page errors**, and the mark screenshots cleanly
+    beside the Cormorant wordmark on the login card; demo bundle grepped **free of the live ref**
+    `awgrjmbcghdjgnqeiqkt` before deploying; live 200s on all four URLs with correct content-types
+    (`favicon.svg` → `image/svg+xml`, `.ico` → `image/vnd.microsoft.icon`, `og.png` → `image/png`, 1200×630).
+    **George: hard-refresh (Cmd+Shift+R) — and if the tab still shows the old atom, close that tab and open a new
+    one; Chrome caches favicons harder than pages. Then paste amlakre.com into iMessage to see the new card.**
+  - **Flags (no action needed):** ① The `.ico` carries 16/32/48 only — no 256px entry; that's the normal set and
+    every modern browser prefers the SVG anyway. ② The og card's copy reads *"Commercial leases, expenses and
+    rent. Read, tracked and reconciled."* — say the word if you'd rather it said something else, it's a one-line
+    change plus a re-render. ③ Chrome/Slack/iMessage each cache link previews independently, so an old bare-link
+    preview may persist in an existing thread even though a fresh paste shows the card.
+
+- **2026-07-24** — **A professional "Are you sure?" pop-up (with the consequences highlighted) now guards every
+  destructive delete, replacing the bare browser prompt · AND Infinite Mobile's Jan–Jun ledger boxes are green
+  again — they were reading ~$2.53 "under" because a stray roof actual was billed on top of the all-in estimate**
+  (George: *"needs to be an are you sure when deleting things and the implications listed … if not it needs to be a
+  professional looking pop-up window with implications highlighted and such. infinite mobile isnt underpaid for months
+  jan-june please fix that box to a green number please."*). Deployed: frontend Cloudflare version `f8f32b84`, demo
+  worker `4cbc4c42`, plus a one-row live data fix. **Frontend + one guarded DB write — $0, NO migration, NO edge
+  functions, no tenant emails, non-destructive.** Tests **623/623** (was 620 — +3 confirmDialog; the learnedPayees
+  remove test rewritten to click through the new dialog).
+  - **1) The confirm dialog (the delete-guard George asked for).** New shared **`ConfirmDialog.js`** — a
+    `ConfirmProvider` (mounted once around the app in `App.js`) + a `useConfirm()` hook returning an imperative
+    `askConfirm(opts) → Promise<boolean>`, so a call site stays a one-liner: `if (await askConfirm({ title, message,
+    implications, confirmLabel, tone })) remove.mutate(id)`. The dialog uses the app's `.modal` idiom + `useModalA11y`
+    (Escape/scrim/✕ = cancel, focus trapped, opens on the ✕ so a stray Enter never deletes) and renders the
+    consequences in a **highlighted box** (`.confirm-imp`, left-accent bar + uppercase eyebrow, tinted by severity —
+    red `danger` for permanent deletes, gold `warn` for reversible/undo, accent `default` for consequential-but-safe).
+    Resolves true on confirm, false otherwise; the default context is a no-op returning false, so a component still
+    renders fine without a provider (tests).
+  - **Wired into every destructive DELETE / permanent-removal / undo** (each with a specific, plain-English implications
+    list): Learned-payee remove, archived-policy delete (permanent + docs), addendum delete (notes it does NOT reverse
+    applied changes), service-contract delete, renewal-option delete, rent-abatement delete (months revert to full
+    rent), invoice remove (reversible → warn) + payment delete, escalation delete (×2), History clear (the big one) +
+    remove-archived-lease + close/reopen year, and the Ledger's statement-import undo (warn). Left as the plain browser
+    prompt on purpose (not deletes / reversible / benign): the demo-reset, mark-all-paid + catch-up, turn-off-2FA, and
+    the renew/decline actions — say the word and I'll upgrade those for consistency too.
+  - **2) Infinite Mobile Jan–Jun → green (a data fix, no code).** The lease is flagged `roof_responsible = true` but
+    had **no roof ESTIMATE** (`est_roof_annual` was null), so `billedComponents` fell back to the tenant's tiny ACTUAL
+    roof share ($30.36/yr) and billed it ON TOP of the all-in $10,855 CAM & tax estimate — pushing each month's owed
+    from $2,716.00 to **$2,718.53**, so the $2,716 deposits read ~$2.53 "under" (gold) for all of Jan–Jun. But the
+    $10,855 combined estimate (from the 7/24 all-in-deposit reconstruction) already covers roof — there is no separate
+    roof line. Fix: set **`est_roof_annual = 0`** on that one lease (guarded `where est_roof_annual is null`; keeps the
+    roof-responsible flag, just says "no separate roof estimate — it's inside the combined figure"). Now
+    `billedComponents.roof = 0`, owed Jan–Jun = base $1,811.42 + $904.58 = **$2,716.00** = the deposit → **green**, and
+    the year's owed sums to exactly the existing invoice ($36,096.04, roof_annual already 0) — so the ledger and the
+    invoice now agree to the cent. Reversible (set back to null); no bill changed.
+  - **Files:** `src/components/ConfirmDialog.js` (new), `src/App.js`, `src/App.css` (`.confirm-*`),
+    `src/components/{LearnedPayeesPanel,InsuranceVault,AddendumEditor,ServiceContractsSection,RenewalOptionsEditor,
+    AbatementEditor,InvoicesPanel,EscalationScheduleEditor}.js`, `src/pages/{HistoryPage,LedgerPage}.js`, tests
+    (`confirmDialog.test.js` new; `learnedPayees.test.js` updated to drive the dialog). Data: one `leases` UPDATE.
+  - **Verified:** unit **623/623** (`vitest run`); `vite build` compiles; live DB read-back confirms
+    `est_roof_annual = 0`; live 200s (amlakre.com + www + workers.dev + demo, demo bundle grep-free of the live ref).
+    Browser drive-through skipped per George's standing preference (the confirmDialog + learnedPayees jsdom tests drive
+    the real provider → dialog → confirm/cancel flow). **George: hard-refresh (Cmd+Shift+R). Infinite Mobile's Jan–Jun
+    boxes now read $2,716.00 in green; deleting anything now opens a proper pop-up listing exactly what it will do.**
+
+- **2026-07-24** — **The statement-derived CAM & tax estimate readout now shows EVERY figure to 4 decimals (was
+  only the $/SF), so George can validate the whole arithmetic chain** (George: *"show the rounding of all numbers to
+  the 4th decimal place as well. i want to verify the math … statement payment − monthly base rent = monthly
+  estimated cam and tax, ×12 = annual, ÷ SF = psf rate rounded to 4th decimal — is that what we have it as?"*).
+  Deployed: frontend Cloudflare version `9f1b777c`, demo worker `66b81954`. **Frontend + one pure return-shape tweak
+  — $0, NO DB migration, NO edge functions, no tenant emails, ZERO math/storage change.** Tests **620/620** (the
+  `statementEstimate` render test's two `/yr` regexes updated `.00`→`.0000`).
+  - **The math, confirmed exactly as George stated it** (`deriveEstimateFromDeposit`, `statementMatch.js`):
+    `monthly = round2(deposit − base − roof)` → `annual = round2(monthly × 12)` → `psf = annual ÷ SF`. The base is
+    exact from the lease's escalation-aware per-month schedule (`componentizeSchedule`), so a stepped tenant derives
+    off the right month's base. **One addition beyond his formula:** a **roof-responsible** tenant's all-in deposit
+    includes the separately-billed roof line, so the code subtracts roof too (`− roof`) to avoid folding it into the
+    CAM & tax estimate — for a non-roof tenant `roof = 0`, so it's exactly his `deposit − base`. The Boost replay
+    still holds: $2,716 − $1,811.42 = $904.58/mo → $10,854.96/yr · $13.0000/SF.
+  - **What changed (display only):** previously only the **$/SF** was shown to 4 decimals; the deposit/base/roof/
+    monthly/annual dollar figures used 2-decimal `money()`. Now a new `money4()` helper (`format.js`) renders all of
+    them to 4 decimals in that readout — `$2,716.0000 deposit − $1,811.4200 base = $904.5800/mo → $10,854.9600/yr ·
+    $13.0000/SF` — so each step visibly ties out (the dollar figures end in `00`; the $/SF is the one with genuine
+    sub-cent content). The **stored** annual stays penny-exact (`round2`) so the deposit still settles its month to
+    the cent — 4 decimals is a validation view, never the stored value.
+  - **`deriveEstimateFromDeposit` now returns the exact `base`/`roof` it subtracted** (the round2 figures) so the
+    review reads them straight off `s.derived` instead of re-deriving from the raw `baseByMonth` — guaranteeing the
+    shown `deposit − base − roof = monthly` can't drift from the arithmetic actually performed.
+  - **Files:** `src/lib/format.js` (`money4`), `src/lib/statementMatch.js` (return `base`/`roof`),
+    `src/components/StatementReview.js` (use `money4` + `s.derived.base/roof`), `src/components/__tests__/
+    statementEstimate.test.js` (regex `.0000/yr`). No math/api/DB/edge/demo-seed change.
+  - **Verified:** unit **620/620** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev
+    + demo, demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference.
+    **George: hard-refresh (Cmd+Shift+R) → import a statement → the "CAM & tax estimates read from this statement"
+    section shows deposit − base = monthly → ×12 = /yr → ÷SF = $/SF, every figure to 4 decimals for you to check.**
+
+- **2026-07-24** — **Follow-up: the per-tenant breakdown's "Sort by" bar now reads as the panel's own toolbar
+  instead of floating flush in the top-left corner** (George: *"the sort by formatting on the per tenant break down
+  isnt the best looking please format correctly"*). Deployed: frontend Cloudflare version `954ea081`, demo worker
+  `60839106`. **Frontend + CSS only — $0, NO DB migration, NO edge functions, no tenant emails.** Tests **620/620**
+  (unchanged — markup/CSS only; the `tenantSortUi` render test still passes with the wrapper).
+  - **Root:** the shared `TenantSortBar` was dropped directly inside the bordered breakdown panel
+    (`.table-wrap.share-ledger`), which has no padding of its own — so the bar hugged the panel's top-left corner,
+    its left edge didn't align with the 20px gutter of the column-header band + rows below it, and it collided with
+    the tinted "Tenant / Base rent / CAM & tax…" band right beneath. On the Leases + Ledger pages the same bar sits
+    in the padded page flow, so it already looked fine there — the fix had to be scoped to the breakdown only.
+  - **Fix:** `TenantShareTable.js` wraps `<TenantSortBar/>` in a new `.ledger-toolbar` div; `App.css` styles that
+    toolbar to match the column-header band directly below it — same `--panel-2` tint, same 20px gutter (16px at the
+    ≤880px breakpoint, matching the mobile grid), a bottom hairline — so the sort control + column labels read as one
+    connected header zone, with "Sort by" aligned above the "Tenant" column it reorders. The bar's own
+    `margin-bottom` is zeroed in this context. **Scoped by the `.ledger-toolbar` wrapper**, so the Leases/Ledger
+    pages' plain page-flow look is untouched.
+  - **Files:** `src/components/TenantShareTable.js`, `src/App.css`.
+  - **Verified:** unit **620/620** (`vitest run` — the `tenantSortUi` test mounts the real TenantShareTable and still
+    reorders through the wrapper); `vite build` compiles; live 200s (amlakre.com + www + workers.dev + demo, demo
+    bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference. **George:
+    hard-refresh (Cmd+Shift+R) → Financials → the per-tenant breakdown's Sort-by bar now sits cleanly in its own
+    header strip above the columns.**
+
+- **2026-07-24** — **Four features in one round: a change-password flow · sort the Ledger + per-tenant breakdown
+  (name/size/rent/suite) · CAM & tax estimate READ from a bank deposit · a downloadable Excel reconciliation
+  report** (George: *"set up a change password option in settings … i want to be able to sort by size and space and
+  rent … i want to have this software … find the estimated CAM and tax when I upload a bank statement into the ledger.
+  It should take that total number … subtract the monthly base rent, multiply that by twelve, divide by the square
+  footage … the remainder should be stored as the estimated cam and tax in the per tenant breakdown. round all numbers
+  on cam and tax estimate to the 4th number when people want to validate"* — plus a mid-build "# Feature 4: Excel Export"
+  reconciliation-report spec he pasted; his scoping picks via AskUserQuestion: password = **email link** flow · estimate
+  apply = **smart pre-tick** · recalc = **re-import only** (his two conditions: *"can this just be code with no AI after
+  the AI extracts data?"* → yes, pure arithmetic; *"the user should have the option to recalc every time it shouldnt be
+  automatic"* → suggestion-only, tick+Save gated) · sort fields = **all four**; and his propagation check: *"just to
+  confirm this repopulates all areas of the software that need to be changed correct?"* → yes, verified in code — plan
+  `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed: frontend Cloudflare version `e2b2ee03`, demo worker
+  `a4fe8258`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no tenant emails, no destructive
+  data.** Tests **620/620** (was 591 — +8 tenantSort, +8 estimateFromStatement, +7 reconciliationReport, +2 tenantSortUi,
+  +1 statementEstimate, +3 passwordReset). Vite build compiles (806 modules; exceljs stays lazily chunked).
+  - **1) Change password (email-link flow).** Settings → Security gains a **Password** card → *Change password* sends
+    `supabase.auth.resetPasswordForEmail(user.email, { redirectTo: origin + '/' })`. The reset link lands back in the app
+    with a recovery session, which `AuthContext` catches via the **`PASSWORD_RECOVERY` auth event** (not a route — so it's
+    robust even if `redirectTo` isn't allow-listed and Supabase falls back to the Site URL) → a new
+    `passwordRecovery` state → `App.js` renders the new branded **`ResetPasswordPage`** (AFTER the `needsTwoFactor` gate,
+    since Supabase requires aal2 to change the password when MFA is enrolled). Setting the password → `updateUser` →
+    `signOut({ scope: 'global' })` (all sessions out, per George) → back to Login. `Login.js` gained a signed-out
+    **"Forgot your password?"** button (same machinery — a locked-out user can't reach Settings) and now exports
+    `passwordProblem` (the shared 10-char/upper/lower/digit policy). Demo: mock `auth` gained no-op
+    `resetPasswordForEmail`/`updateUser` stubs (the cards say it's inactive in demo).
+  - **2) Sorting on the Ledger + the per-tenant breakdown.** New `sortTenantRows(rows, { mode, dir, pick })` +
+    `TENANT_SORTS` (George's four: **Tenant name · Size (SF) · Base rent · Suite/address**) in `leaseSort.js` — nulls/blanks
+    always last both directions, name tiebreak, numeric suite compare ("Suite 2" < "Suite 10"). New shared
+    **`TenantSortBar.js`** reuses the Leases-page `.lease-sortbar` styling + its optimistic-save shape, persisting to
+    `user_preferences.lease_sort.tenants` ({mode,dir}) — a **nested key** the top-level merge in `setLeaseSort` keeps
+    separate from the page's own prefs, so **NO migration**. Mounted on `LedgerPage` (sorts `derived`) and inside
+    `TenantShareTable` (sorts `rowsData`); the vacant + Totals bands render after the map, so they stay pinned. Roll rows
+    gained `base_rent`/`premises_address`/`anyEstimate` (`getPropertyMonthlyRoll`). Default = name asc (the demo seed is
+    already alphabetical → pinned suites unchanged).
+  - **3) CAM & tax estimate read from a statement.** New pure `deriveEstimateFromDeposit(amount, tenant, month)`
+    (`statementMatch.js`): the base rent is exact from the lease, so `CAM&tax/mo = deposit − base − roof → ×12 = /yr →
+    ÷SF = $/SF` (the Boost repair automated: $2,716 − $1,811.42 = $904.58/mo → $10,854.96/yr, penny-exact so the deposit
+    settles its month to the cent; $/SF shown to **4 decimals** for George's validation). Escalation-aware by construction
+    (base comes from `componentizeSchedule`), with guards → null: month bills no base (out of term/abated), remainder < $1
+    (gross lease/partial), deposit at the PRE-raise rate on a post-step month (the escalation explains it), or the derived
+    annual already on file. `getStatementMatchContext` now carries `baseByMonth`/`roofByMonth`/`square_footage`/
+    `camTaxAnnual`/`anyEstimate` per tenant. The review shows a **"CAM & tax estimates read from this statement"** section
+    (per checked tenant deposit, latest month per lease): `$2,716.00 deposit − $1,811.42 base = $904.58/mo → $10,854.96/yr
+    · $13.0000/SF`, with the **smart pre-tick** — a NEW estimate pre-ticked, a CHANGE to an existing one **unticked** (a
+    short deposit can't quietly lower a good estimate). Ticked rows apply through the EXISTING estimate write path: a new
+    `type:'estimate'` entry processed **FIRST** in `applyStatementImport` (so the year's billing resyncs to base + estimate
+    BEFORE the deposits book → each settles its month exactly), storing the 7/20 combined convention (whole figure on
+    `est_cam_annual`, `est_tax_annual=0`) + stamping `est_confirmed_year`, then `resyncYearBillingToEstimate`; logged as an
+    `estimate_set` history event. Undo reverses estimates **LAST** (prior restored + resync). **No AI, $0** — pure
+    arithmetic; re-import IS the recalc (George's pick), suggestion-only, nothing writes without his tick + Save.
+    `settleStatementImport` gained `['leases']`/`['lease']` so the lease-terms page + Leases list repaint too.
+  - **The propagation, verified in code (George's question):** the statement-derived estimate uses the IDENTICAL write as
+    the hand-typed editor, so every surface reading the lease row / `v_tenant_shares` / the regenerated invoice / the
+    re-recorded months repopulates — per-tenant breakdown (Estimated·Total·Difference·⚖ Reconcile), lease-terms field
+    (carried-over nag clears), Leases columns, Ledger boxes + left rail (deposits settle exactly), year invoice/AR, monthly
+    tracker, the next import's match context, behind-on-rent alerts, Ask AI (v4 fingerprint flips), and year-end
+    Reconcile/History. Undo reverses the whole chain.
+  - **4) Excel reconciliation report.** New pure `shapeTenantReport` + `buildReconciliationReport` (`reconciliationData.js`)
+    + `downloadReconciliationXlsx` (`reconciliationExcel.js`, lazy ExcelJS, brand olive/cream headers, green/red variance
+    fills, landscape, frozen header, one tab per tenant) + `ExportReconciliationModal` (tenant checklist, default all) +
+    an **⬇ Export reconciliation** button on the Financials "Per-tenant breakdown" head. The spec's SQL used imagined
+    table names; this maps to Amlak's real model and reuses `reconcileFigures`/`billedComponents`/`componentizeSchedule`,
+    so the workbook can't disagree with the on-screen breakdown. **The one honest mapping:** the estimate is a single
+    combined figure per tenant (no per-item estimate), so the report **itemizes the ACTUALS** (each CAM bucket, each tax
+    line, roof — the tenant's pro-rata share, scaled to reconcile to the tenant's actual component even under a share
+    override), shows the combined estimate, and computes variance at the total level. Each tab: header block → base rent +
+    CAM&tax est/actual + total owed + variance (monthly) → itemized actuals → summary card → auto-insights (refund/balance
+    due, per-line over/under) → lease-terms reference (initial term + renewal options). **No AI, $0.**
+  - **Files:** `src/context/AuthContext.js`, `src/App.js`, `src/pages/{ResetPasswordPage (new),Login,SecuritySettings}.js`,
+    `src/lib/leaseSort.js`, `src/components/{TenantSortBar (new),TenantShareTable}.js`, `src/pages/LedgerPage.js`,
+    `src/lib/{statementMatch,api}.js`, `src/components/{StatementReview,ImportStatementButton}.js`,
+    `src/lib/{reconciliationData (new),reconciliationExcel (new)}.js`, `src/components/ExportReconciliationModal (new)`,
+    `src/pages/PropertyFinancialsPage.js`, `src/lib/demo/mockClient.js`, tests (`tenantSort`, `estimateFromStatement`,
+    `reconciliationReport`, `tenantSortUi`, `statementEstimate`, `passwordReset` — all new). No DB/edge/CSS/seed changes.
+  - **Verified:** unit **620/620** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev +
+    demo, demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference (the jsdom
+    tests mount the real ResetPasswordPage / SecuritySettings / Login, the real LedgerPage + TenantShareTable sort bars, and
+    the real StatementReview estimate section against the demo mock). **George: hard-refresh (Cmd+Shift+R). Settings →
+    Security → Change password to get the reset email. On the Ledger or per-tenant breakdown, use "Sort by" to order by
+    name/size/rent/suite. Import a statement → an all-in deposit shows its derived CAM & tax estimate to tick + Save. On
+    Financials, "⬇ Export reconciliation" downloads the per-tenant workbook.**
+  - **Flag (needs your OK if the reset link misroutes):** I couldn't reach the Supabase Management API from here to confirm
+    the hosted Auth **redirect allow-list / Site URL** covers amlakre.com + www + workers.dev. The PASSWORD_RECOVERY event
+    catch makes the flow work even on the Site-URL fallback, so it should be fine — but if a reset link ever lands on the
+    wrong origin, add those three URLs under Supabase → Authentication → URL Configuration (a 30-second dashboard step).
+    The reset EMAIL round-trip can't be driven from here — your proof is clicking Change password and following the link.
+
+- **2026-07-24** — **Five asks in one round: the For-month column follows the STATEMENT's date · the "Always" column
+  is gone (payees are remembered by saving) · Est. roof off the lease-terms panel · a Management fee entered as a
+  % of base rent · property taxes itemized, one line per statement payment** (George: *"again for the ledger the
+  months under the for month column should correspond with the date of the statement. Also, i dont understand the
+  always collumn on the ledger. take out estimated roof box on lease terms. we need to add an option in the CAM
+  total entry as management fee but this is special because when it is clicked i need it to offer a percentage of
+  base rent as that calcuation then it needs to be added to the expenses. also when taxes are pulled from the
+  statement they shouldnt upload to expenses rather to the property taxes box in the expense entry and it should
+  put a new line per time it sees it on the statement make it look like the CAM / maintenance - itemized give it
+  its own line item"*). Deployed: DB migration `0067` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare
+  version `05aa229a`, demo worker `5d912f89`. **$0, NO edge functions, no tenant emails, NO live-data repair, no
+  destructive data** (0067 is two additive columns + two CHECKs + an index). Tests **591/591** (was 582 — +7
+  expenseEntry, +2 expenseEntryUi; five existing assertions intentionally reversed, listed below).
+  - **1) The month follows the statement** (`statementMatch.js` `corroborateAmount`). It preferred the earliest
+    month a tenant still OWED, so importing a June statement onto a ledger with January open tagged the line
+    January — the second time George has asked for this ("again…"). Now the date the bank printed on a line
+    **decides** the month: `target = txnMonth` when the line carries one, else (2-arg calls) the earliest owed
+    month exactly as before. A **lump still wins** — a check matching several months' gaps, the whole invoice, or
+    an open true-up is returned untagged so the ledger's pool spreads it (tagging it would settle one month and
+    lose the rest), and the review now says **"covers several months"** under an empty month box instead of
+    leaving it blank. One tightening fell out of it: corroboration now requires the month to be **open**
+    (`gap > DUST`) — a deposit matching a month already recorded corroborates nothing, so it no longer pre-ticks;
+    the "already recorded as paid" warning handles it. The month select's tooltip states the new rule, and the
+    "earliest month still owed" hint is gone with the behavior it explained.
+  - **2) The Always column is gone** (`StatementReview.js`). It was a no-op on deposits ("auto") and an opt-in tick
+    on expenses — one more thing to understand for no gain. Now **every checked line teaches its payee**, deposits
+    and expenses alike, and the row says so on itself: a quiet *remembers "GREENLEAF LANDSCAPING"* under the Match
+    chip, plus a footer line stating that only the payee is remembered, never the month, and where to change it.
+    The boilerplate screen (`screenRulePatterns`, 7/23) still refuses a pattern that matches two different payees,
+    so auto-learning an expense can't produce a rule that swallows the statement. Table is 8 columns → **7**.
+  - **3) Est. roof off the lease-terms panel** (`LeaseDetailPage.js`) — the field is removed; roof responsibility
+    (the On/Off toggle) and the Financials estimate editor are untouched.
+  - **4) Management fee = a percentage of base rent** (`CamSection.js` + `api.js` + 0067 `rent_pct`). Typing a
+    label that reads like a fee flips the amount box to a **%** entry (a checkbox does the same for anything else
+    priced that way) with a live reading — *"5% of $144,000.00 base rent = $7,200.00"*. The row stores BOTH the
+    dollars that bill and the rate they came from, so it can say what it is and **follow the rent**: new
+    `syncRentPctCamItems` re-prices it against `v_property_totals.total_revenue` whenever the year is opened
+    (idempotent, writes only on real drift, and never zeroes the fee when the rent hasn't loaded — the
+    `syncContractCamItems` precedent). It bills through CAM like any other component; the "not billed" tick still
+    applies. `Management fee` joins the bucket datalist.
+  - **5) Property taxes are itemized** (0067 `kind` + new `TaxSection.js` + `PropertyFinancialsPage.js`). One
+    table, two lists: `kind='cam'` rolls into `cam_total` exactly as today, `kind='tax'` into `taxes_total` — so
+    every downstream figure (tax PSF, tenant shares, invoices, views) is unchanged in shape. The Expense entry
+    gains a **"Property taxes — itemized"** block that reads like the CAM one (a line per payment, a total, an
+    "imported" badge, ✕ per row, single-figure entry only while nothing is itemized); `ExpenseForm` is now
+    **roof-only** and preserves taxes. An imported tax line books **its own row named after the payee**
+    ("COOK COUNTY TREASURER" → *Cook County Treasurer*) instead of accumulating onto a running total, and undo
+    deletes that row (the pre-0067 decrement branch is kept for statements imported before today).
+  - **The safety property that shaped #5:** re-summing taxes from items would have re-priced a hand-typed year
+    down to the first instalment — $25,000 → $3,100 — and silently under-billed every tenant. So the first time
+    anything is itemized, the flat figure is **carried into its own line** ("Entered by hand"); the year becomes
+    the sum, nothing is lost, and the carried row is a normal row to rename, split or delete. Net effect on the
+    existing figures: identical (the import test's $25,000 + $3,100 = $28,100 still holds, and undo returns it to
+    $25,000). **No live-data repair needed** — the carry-over is lazy, so George's entered tax totals are
+    untouched until he itemizes.
+  - **Files:** `supabase/migrations/0067_expense_line_kinds.sql` (new), `src/components/TaxSection.js` (new),
+    `src/lib/statementMatch.js`, `src/lib/api.js` (kind-aware list/add/delete + `syncTaxTotal` +
+    `carryFlatTaxesIntoItems` + `syncRentPctCamItems` + the import/undo tax branches),
+    `src/components/{StatementReview,CamSection,ImportStatementButton}.js`,
+    `src/pages/{PropertyFinancialsPage,LeaseDetailPage,LedgerPage}.js`, `src/App.css` (`.stmt-learn`), tests
+    (`expenseEntry.test.js` + `expenseEntryUi.test.js` new). **Intentional assertion reversals** (the behavior
+    George asked to change): a May-dated check now tags May, not the earliest owed month
+    (`statementMatch` ×3, `statementImport` ×1), and rows carry one checkbox, not two (`statementReview*` ×3).
+    No demo-seed change.
+  - **Verified:** unit **591/591** (`vitest run`); `vite build` compiles; live read-back confirms both columns,
+    both CHECKs, and all 4 existing rows reading `kind='cam'`; live 200s (amlakre.com + www + workers.dev + demo,
+    demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference (the
+    jsdom tests drive the real CamSection/TaxSection/StatementReview against the demo mock).
+    **George: hard-refresh (Cmd+Shift+R). Re-import a statement — every line is dated to the month on the line,
+    there's one tick per row, and a tax payment lands as its own line under Property taxes. In the Expense entry,
+    type "Management fee" and enter 5 to price it off the rent.**
+  - **Flags (no action needed):** ① A deposit that pays a month EARLY (a June check for July's rent) now reads
+    June, where it may bill nothing — the row says so and the dropdown fixes it; back-filling old statements was
+    the far more common case. ② The first tax line you add to a property carries its existing total in as
+    "Entered by hand" — if that figure already included the instalment you're importing, delete or reduce that
+    row so the year isn't counted twice. ③ A management fee re-prices itself when the rent changes; delete the
+    row if you'd rather pin a fixed dollar figure.
+
+- **2026-07-24** — **Boost Mobile's ledger now bills AND shows Jan–Jun at $2,716 — the tenancy predates the lease
+  document it was filed under** (George: *"add 2716 for months jan-jun for boost mibile on the ledegr and update to
+  annual rent roll and such"*). **LIVE DATA ONLY — no code change, NO deploy, NO migration, $0, no tenant emails,
+  nothing deleted** (every statement guarded + additive; re-running is a no-op). Tests unchanged at **582/582**; the
+  working tree is clean.
+  - **The diagnosis (read-only, from his live rows).** "Boost Mobile" is the lease **Infinite Mobile Inc.** (Pershing
+    Plaza, 835 SF). Its lease RECORD starts **2026-07-01** — that's when the current lease document begins — so FY2026
+    billed **Jul–Dec only** ($19,800.02) and Jan–Jun were out of term, worth $0. The tenant's real **$2,716/mo** had
+    nowhere to land: that's the same shape as the 7/23 import round, where his May and June Boost deposits couldn't
+    settle a month that bills nothing. The tenancy itself is older than the paperwork — a lease **renewed in place**.
+  - **The fix used the app's own model for exactly that, so no date was rewritten.** `occupancyStart` takes
+    **min(lease_start, earliest APPLIED escalation)** — precisely to tell a genuinely new tenancy from one renewed in
+    place — and `monthlyBases` bills the old rate before a mid-year step and the new rate after. So the repair is two
+    **applied** escalation rows, not an edit to the lease: **2026-01-01 → $21,737.04** (the era before July) and
+    **2026-07-01 → $28,745.04** (the current rent, = `base_rent`, so today's rent and the rent roll are untouched).
+    `lease_start` stays **2026-07-01** and the term end stays 2031-06-30 — the lease still says what it says.
+  - **The split, stated plainly.** $2,716.00/mo is what arrives in the bank, all-in. The CAM & tax **estimate** on this
+    lease is $10,855/yr = **$904.583…/mo**, which leaves **$1,811.42/mo of base** = **$21,737.04/yr**. (That estimate
+    is an ANNUAL figure — the tenant's pure pro-rata annual share is $8,878.32, so $10,855 is a year's estimate, not a
+    half-year's; spreading it over 12 months is what the field means.) Every figure was generated by the app's own
+    `buildLeaseSchedule`/`monthlyBases` (the 7/23–7/24 precedent), so the invoice, the ledger boxes and the left rail
+    agree to the cent: **Jan–Jun $2,716.00 · Jul–Nov $3,300.00 · Dec $3,300.04** (the penny-fold) = **$36,096.04**.
+  - **What changed (one transaction).** 2 applied escalation rows; the 2026 annual invoice regenerated over the full
+    year (base **$25,241.04** + CAM & tax **$10,855.00** = **$36,096.04**, was $19,800.02); and **five** payments of
+    $2,716.00 stamped to months 1–5 as system marks (no `import_id`, no note, so a later estimate change can still
+    re-stamp them). **June was already there** — George had just re-imported the June Chase statement, so month 6
+    carries his real deposit *"Online ACH Debit 9031496326 From Boost"*; the not-exists guard skipped it rather than
+    double-recording. **Verified on read-back:** six months at $2,716.00, invoice total $36,096.04 with
+    `amount_paid` **$16,296.00** and balance **$19,800.04** (exactly Jul–Dec, not yet paid).
+  - **Why nothing else moved.** `effective_rent(2026)` is unchanged at **$28,745.04** — 2026 is the current era (no
+    applied step dated after it), so `base_rent` still wins and the Annual rent roll / property revenue read the
+    contract rent as before. `reconcileRenewalOptions` can't touch this lease either: its evidence gate needs a rent
+    step at/after the initial term end (2031-07-01) and there is none. Pershing's 2026 revenue reads **$313,034.92**
+    — the move from $309,582.48 is **George's own D&D Dental and Hong Kong edits earlier tonight**, not this repair.
+  - **What George sees:** Financials → Ledger → Infinite Mobile now reads **12 billed months**, Jan–Jun forest ✓ at
+    $2,716.00 each, an olive **"↗ rent raised to $3,300.00/mo in July"** note with the accent on July's box, and the
+    year reading **$16,296.00 of $36,096.04 billed** instead of a half-year that started in July.
+  - **Flags (no action needed):** ① The $1,811.42 / $904.58 split of the $2,716 is a reconstruction — the bank only
+    ever shows the all-in figure. The month totals and the year invoice are exact either way; only the base-vs-CAM
+    line inside them rests on that split. Say the word if the pre-July rent was carved differently and I'll re-cut the
+    January step. ② The Overview "Annual rent roll" card is the annualized CURRENT rent, so it correctly did **not**
+    move — what moved is the year's billed/collected picture. ③ Jan–Jun now carry the same $10,855 CAM & tax estimate
+    as the rest of the year; year-end ⚖ Reconcile settles it against the actual as usual.
+
+- **2026-07-24** — **A rounded $/SF rate now admits it's rounded (George checked the arithmetic and the rate
+  didn't reproduce the rent above it) + Ricki's-Lyons shifted one year later, so today's rent reads the
+  $27,793.08 it should** (George: *"math for 5pointwings is off check the per tenant break down something is off
+  i did 19.72 * 2100 = 41412 which is off by 8 dollars. ricky cafe lease is one year behind can you shift it back
+  one year we should be at 27793 rent so make that quick fix by shifting everything one year"*). Deployed:
+  frontend Cloudflare version `72b9d174`, demo worker `d5103ffc`, plus a one-time live repair of the Ricki's
+  lease. **Frontend + `src/lib` + tests — $0, NO DB migration, NO edge functions, no tenant emails.** Tests
+  **582/582** (was 576 — +5 psfRounding, +1 breakdownMonthly).
+  - **The $9, explained (nothing was wrong with the money — the DISPLAY was overconfident).** FIVE POINTS WINGS
+    pays **$41,403** on **2,100 SF**, which is **$19.7157/SF**. The breakdown printed the rate to the cent —
+    `$19.72/SF` — and $19.72 × 2,100 = **$41,412**, nine dollars above the rent sitting directly above it.
+    (George said eight; the figure is nine.) Every stored number is correct and every bill is unchanged: the
+    annual is what's stored, the rate is derived, and rounding a derived rate to two decimals means you can't
+    multiply it back. The same trap sat on the **monthly** figure added the day before — twelve rounded months
+    don't always sum to the year ($34,100/yr → $2,841.67/mo × 12 = $34,100.04).
+  - **The fix — a rate that can't be multiplied back says so.** New pure `dividesEvenly(total, parts)` +
+    `approx(total, parts)` in `format.js`: round to the cent exactly as the display does, multiply back, and
+    compare within half a cent (so float dust never flips an exact figure). `SfRate` now takes the **annual and
+    the area** instead of a pre-divided rate — the one change that makes the check possible — and renders
+    **`≈ $19.72/SF`** with the exact `$19.7157/SF` in its tooltip; an even rate like `$30.00/SF` is byte-identical
+    to before. `PerMo` follows the same rule against 12. Applied to all six $/SF figures in the per-tenant
+    breakdown (base · CAM & tax actual · roof · total · the vacancy row · the estimate cell) and to the **Leases
+    page** rows, which pair the same exact annual with the same rounded rate. Deliberately **not** applied to the
+    property summary's blended rate cards — those are portfolio aggregates nobody reconciles a single figure
+    against, and an `≈` on every card would be noise rather than information.
+  - **Ricki's-Lyons — the whole lease was dated one year early, and the lease's own paperwork proved which end
+    was wrong.** Its committed term end, entered by hand, is **2031-05-01**. Chaining from the stored start:
+    2015-05-01 + 60mo original + 60 (option 1) + 60 (option 2) = **2030-04-30** — a year short of that end;
+    from 2016-05-01 it lands on **2031-04-30**. The rent table agrees independently: option 1's stated opening
+    rent (**$25,173**) sat on 2020-05-01 and option 2's (**$27,793.08**) on 2025-05-01 — each exactly one year
+    before its own option window. Shift +1 year and both land precisely on their option start. So the **start**
+    was wrong, not the end.
+  - **The repair (one transaction, figures generated by the app's own `buildLeaseSchedule`/`monthlyBases`, the
+    7/23 precedent).** All **19** rent steps moved +1 year in ONE statement (a per-row update would move
+    2016→2017 and then re-match the real 2017 row, cascading the whole ledger); statuses re-derived against
+    today, so 10 read `applied` (last **2026-05-01 → $27,793.08**) and 9 `scheduled` (next **2027-05-01**);
+    `lease_start` 2015-05-01 → **2016-05-01**; `base_rent` → **$27,793.08**. **The term end and option 3's
+    notice date were deliberately left alone** — they already matched the shifted schedule. The 2026 invoice was
+    rebuilt from the shifted lease + the $9,440 CAM estimate (Jan–Apr at $27,248.16/yr, May–Dec at $27,793.08/yr
+    → base **$27,611.44** + $9,440 = **$37,051.44**), and the six system-marked months re-stamped at the new owed
+    (**$3,057.35** Jan–Apr, **$3,102.76** May–Jun) — all six were system marks (no `import_id`, no note), so no
+    real deposit was touched. **Verified on read-back:** the view serves $27,793.08, the 12 owed months sum to
+    exactly the invoice total, Pershing's 2026 revenue moved by exactly the $555.84 difference.
+  - **Files:** `src/lib/format.js` (`dividesEvenly`, `approx`), `src/components/TenantShareTable.js` (`SfRate`
+    takes annual+area, `PerMo` marked, `psf2` retired), `src/pages/LeasesPage.js` (both `.psf-sub` rates),
+    `src/lib/__tests__/psfRounding.test.js` (new — George's exact figures, the exact-rate no-op, the monthly
+    rule, float dust, degenerate inputs), `src/components/__tests__/breakdownMonthly.test.js` (+1: the real
+    component fed $41,403 on 2,100 SF renders `≈ $19.72/SF` while `$3,450.25/mo` stays plain). No demo-seed,
+    migration, edge-fn or CSS change.
+  - **Verified:** unit **582/582** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+    workers.dev + demo, demo bundle grep-free of the live ref). Browser drive-through skipped per George's
+    standing preference. **George: hard-refresh (Cmd+Shift+R). Five Points' base rent still reads $41,403 with
+    the rate now written `≈ $19.72/SF` — the rent is right, the rate is just rounded. Ricki's reads $27,793.08
+    with its next raise on May 1, 2027.**
+  - **Flags (no action needed):** ① Ricki's Jan–Apr 2026 now correctly bills the pre-May rate **$27,248.16/yr**
+    ($3,057.35/mo), so those four months read $45.41 lower than the marks you'd clicked — that's the shift being
+    honest, not money lost. ② Pershing's 2026 revenue is now **$309,582.48** (was $310,138.32) — the $555.84 is
+    exactly the year's worth of the step that shouldn't have applied yet. ③ Most $/SF rates in a real portfolio
+    don't divide evenly, so `≈` will appear on many of them; that's the truth about a rate derived from a stored
+    annual, and the exact figure is always in the tooltip.
+
+- **2026-07-24** — **A rider's CAM & tax is finally read (it had no field to land in) + the per-tenant breakdown
+  states each figure per MONTH under the annual** (George: *"need a monthly base rent in the per tenant break down
+  under the annual. i just added an addendum/rider to beauty and barber shop but it didnt extract the cam and tax
+  correctly"*). Deployed: `extract-addendum` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `7ec8148e`, demo worker `794555ae`. **$0 recurring** (the estimate rides the EXISTING non-fatal rent-supplement
+  call — no new AI call, ~20 extra tokens), **NO DB migration**, no tenant emails, **no live-data change**. Tests
+  **576/576** (was 566 — +8 addendumEstimate, +2 breakdownMonthly).
+  - **The diagnosis (read-only, from his live rows).** The 4th Addendum uploaded today reads, verbatim:
+    `Monthly Figures — Base Rent: $2,650.08 / Real Estate Taxes & CAM: $1,100.00 / Total $3,750.08 Monthly rent`.
+    The AI read it fine — its own summary even says *"Lessee continues to pay proportionate share of real estate
+    taxes and additional operating/maintenance expenses"* — but **`extract-addendum` had no field for an expense
+    estimate anywhere in any of its four schemas**, so the $1,100.00 was read and silently dropped. Exactly the
+    shape of the 2026-07-03 prose-escalation bug: *no model, however good, can output what the form can't hold.*
+    (The rent half was already right — `rebuildRentSchedule` correctly annualized the printed $2,650.08/mo to
+    **$31,800.96**, not the document's rounded "$31,801.00". The lease's stored estimate, `$13,204.02`, is
+    1,077 SF × $12.26 — a hand-typed $/SF rate, $4.02 above the $13,200.00 the rider actually states.)
+  - **1) The rider's estimate now has a home** (`extract-addendum/index.ts`). `RENT_SCHEMA` gains
+    `expense_estimates` — the same all-REQUIRED single-typed array `extract-lease` uses, so it costs **ZERO** of
+    the 16-union structured-output budget (this schema sits at 7/16). The prompt names the exact shape his riders
+    print (a "Monthly Figures" summary block, an *"additional rent of $X per month for taxes and common area
+    costs"* clause) and pins the two traps: **never** the block's Total, and a bare *"proportionate share"* with no
+    dollar figure is not an estimate. The model reads the figure RAW + basis; the shared pure
+    `estimateAnnualsFrom` does the arithmetic in code — **$1,100.00/mo → $13,200.00/yr exactly**, never 12 × a
+    rounded $/SF.
+  - **2) A new effect card on the review** (`AddendumEditor.js`). "**Sets the CAM & tax estimate**" joins the
+    extension / rent / option / assignment / abatement cards — pre-ticked and filled when the AI finds a figure,
+    quoting the rider's own words underneath. Entry is the **annual** dollar figure (riders print dollars, so this
+    stays penny-exact) with the field stating its own monthly back plus the $/SF: *"= $1,500.00/mo · $9.00/SF/yr"*.
+    No new `lease_addendums.kind` — the 0021 CHECK constrains it, so an estimate-only rider stays `other`.
+  - **3) Applying it bills it** (`api.js applyAddendum`). Saves the merged way the whole app bills from (the whole
+    figure on `est_cam_annual`, `est_tax_annual` zeroed — the 7/20 convention, so cam + tax reads back as exactly
+    what the rider stated), stamps `est_confirmed_year` (clearing the carried-over nag), then calls
+    `resyncYearBillingToEstimate` so the year invoice AND the system-marked paid months move to base + the new
+    estimate — George's 7/23 rule that the estimate is the source of truth all year and the actual only settles it
+    at ⚖ Reconcile. A roof-only rider never wipes an existing CAM & tax figure. Logged as a new
+    `estimate_set` history event (free-text column → no migration) and labeled on the property History page; the
+    editor's refresh now also invalidates the Ledger / tracker / invoices / payments keys the resync moves.
+  - **4) The monthly figure** (`TenantShareTable.js` + one CSS line). Each numeric cell's sub-line already carried
+    the $/SF rate; the **monthly now leads it** — `$5,000.00/mo · $30.00/SF` — on **Base rent** (his ask) and on
+    the all-in **Total**, which is the figure that ties to that month's Ledger box and to a rider's own "Total
+    $3,750.08 Monthly rent" line. The Totals band carries both too, so the property's monthly rent roll reads off
+    the page. Row heights are unchanged (one sub-line, as before); `.mo-rate` shares `.sf-rate`'s bold-ink
+    treatment so both read as real figures. **CAM & tax is deliberately left alone** — that column already holds
+    the estimate's $/SF, a carried-over hint and the click-to-edit affordance; its monthly is Total − Base.
+  - **Universal by construction:** the extractor change is in the shared schema/prompt + the shared pure
+    `estimateAnnualsFrom`; the apply path and the breakdown are shared components. No migration, no per-account
+    data, no hardcoded lease id, tenant or property anywhere — his rider's wording appears only as a test fixture,
+    so it became a permanent regression rather than a special case.
+  - **Files:** `supabase/functions/extract-addendum/index.ts` (schema + prompt + the annualize/merge),
+    `src/components/AddendumEditor.js` (the effect card + `PerMonth` readout + invalidations),
+    `src/lib/api.js` (`applyAddendum` estimate block), `src/components/TenantShareTable.js` (`PerMo`),
+    `src/pages/HistoryPage.js` (label + badge), `src/App.css` (`.mo-rate`), `src/lib/demo/mockClient.js` (the
+    canned rider now prints a Monthly Figures block so the demo shows the card), tests
+    (`addendumEstimate.test.js` + `breakdownMonthly.test.js`, both new).
+  - **Verified:** unit **576/576** (`vitest run`); `vite build` compiles; edge fn deployed clean, unauth POST →
+    **401**; live 200s (amlakre.com + www + workers.dev + demo, demo bundle grep-free of the live ref). Browser
+    drive-through skipped per George's standing preference (the jsdom tests mount the real TenantShareTable and
+    drive the real AddendumEditor's AI lane → card → save against the demo mock).
+    **George: re-upload the beauty-and-barber 4th Addendum (~10–15¢, the normal rider read) — the review now shows
+    a "Sets the CAM & tax estimate" card pre-filled at $13,200.00 with "= $1,100.00/mo" under it. Saving replaces
+    the $13,204.02 currently on the lease with the exact figure and re-syncs the year's invoice and paid months.**
+  - **Flags (no action needed):** ① I did **not** touch the live lease — its estimate still reads $13,204.02
+    ($4.02 high) until you re-upload the rider or edit it in Financials; say the word and I'll correct the one row.
+    ② That rider's `amendment_date` extracted as **2008-01-25** because the document itself says *"entered into
+    effective as of January 25, 2008"* while extending 6/1/2025–5/31/2030 (a copy-paste slip in your own paperwork
+    — the model read it faithfully). Harmless, but the Dated field on the addendum is editable. ③ A rider that
+    only says *"proportionate share as described in the first Addendum"* with no dollar figure still yields no
+    estimate — by design; there's nothing to annualize.
+
+- **2026-07-23** — **Statement import → ledger: the month you choose wins, and the payee it learns is the payee —
+  plus the billed-vs-received difference finally visible on the grid** (George, across three messages: *"i want to
+  make sure that the difference in payments is clear and easy to read but also clean and sleek and professional"* ·
+  *"the always boxes are still not in the always collumn"* · *"add an ignore button for money out"* · *"i clicked
+  save ledger and the buttons didnt press"* · *"every statement should be read and autodated that should be simple"* ·
+  *"it only learned 4 payees"* · *"when i close the fiscal year the logs should reset"* · *"we need to store a real
+  copy of the statements uploaded"* · *"the remembered payee is recognized the ach debit to all the tenants but it
+  should match to something more specific"* · Infinite Mobile *"doesnt have any prior base rent … the code doesnt
+  upload the previous rent on the ledger"* · **"im trying to upload previous statements and when i put the correct
+  month it doesnt upload to the coressponding month on the ledger"**; his two scoping picks: Infinite Mobile →
+  *"it should bill it as the month chosen on the statement breakdown"*, May duplicates → *"dont worry im going to
+  remove that myself"*). Deployed: frontend Cloudflare version `6c629b1d`, demo worker `3dfe4682`. **Frontend +
+  `src/lib` + tests — $0, NO DB migration, NO edge functions, no tenant emails, no live-data repair** (George had
+  already undone both imports). Tests **566/566** (was 534 — +21 statementMatch, +2 ledger, +11 ledgerVariance,
+  +6 statementReviewSave, +1 ledgerPage).
+  - **The diagnosis (read-only, from his live rows before he cleared them) — one chain, four defects.** Two imports
+    had run: June (13 applied records) and May (9). **Every payment from the May import saved with `period_month:
+    null` — all nine** — while June's were correctly tagged. (1) **`suggestRulePattern` learned the bank's rail, not
+    the payee**: it picked the longest digit-free run, which on a Chase line is the wording every ACH share —
+    `Online ACH Debit 9031521835 From Gustavo` → **`ONLINE ACH DEBIT`** (16 chars, beating `FROM GUSTAVO` at 12). So
+    Gustavo · Samsnails · Lyonsvapez · Chinese · Boost · Hiarcut collapsed onto ONE rule, last-write-wins (→ beauty
+    and barber shop), and a second rule was pure boilerplate. That is both *"it only learned 4 payees"* and *"the ach
+    debit is recognized to all the tenants."* (2) Those rules were **live when May was imported**, so every deposit
+    arrived pre-matched AND pre-ticked as the wrong tenant. (3) **Re-picking the tenant never recomputed the month** —
+    `resolved` fell back to `row.month`, computed against the RULE's tenant, so a hand-corrected line kept an answer
+    about someone else: null. **That is his "when i put the correct month it doesnt upload to the corresponding
+    month."** (4) An untagged deposit **pools forward**, and with Jan–May hand-marked and June tagged, each May
+    deposit drew into **July**. Separately, **Infinite Mobile** (lease starts 2026-07-01) bills nothing Jan–Jun, and
+    `allocatePayments` **silently re-pooled any tag on a $0 month** — so even a correct May tag was thrown away.
+  - **1) The month follows the statement** (`statementMatch.js` + `StatementReview.js`). `corroborateAmount(amount,
+    t, txnMonth?)` — **every existing 2-arg call is byte-identical**, which is what keeps the pinned cases green.
+    With the line's own month: the earliest-owed answer may reach at most **one month ahead** (rent is due on the
+    1st, so paying a few days early is normal; two months out is not a payment for that month) — that's the back-fill
+    fix; and when nothing corroborates, the line is **dated from itself** rather than dropped into the pool
+    (*"every statement should be read and autodated"*). Uncorroborated on purpose, so confidence is untouched and
+    nothing newly auto-ticks. And `resolved` now **re-dates on re-pick** — the proven cause of the nine nulls.
+  - **2) A month tag is never silently dropped** (`ledger.js` + `LedgerPage.js`). A tag holds whatever the month
+    bills; coverage stays bill-shaped (it settles no charge), the month reads a new **`'unbilled'`** state, and
+    `projected` counts a settled month only when it bills, so unbilled receipts can't inflate the year. The grid
+    paints a gold dashed **`↓ $2,716`** box — *"$2,716 received — this lease bills nothing for May"* — instead of
+    quietly moving the money to July. Per his answer, **his lease was not touched**: the month he picks wins.
+  - **3) Learn the payee, not the rail** (`statementMatch.js`). A `BANK_NOISE` token now **breaks a run exactly like
+    a digit** (never spliced out — splicing would fuse two runs into a phrase matching neither next month): `ORIG CO
+    NAME ID DESC DATE ENTRY DESCR ACH SEC CCD PPD WEB TEL TRACE ONLINE DEBIT CREDIT FROM TO PMT PAYMENT DEPOSIT
+    TRANSFER CHECK MOBILE BANKING EFT XFER REF INDN BANK ACCT ACCOUNT`. His nine lines now yield **nine distinct
+    payees** (GUSTAVO · SAMSNAILS · LYONSVAPEZ · CHINESE · BOOST · HIARCUT · FIVE POINTS WING · LAREDO HOSPITALI ·
+    DENTALOFFICE); an all-boilerplate line learns **nothing**. **And the guarantee that doesn't depend on the word
+    list:** new pure `screenRulePatterns` — before a rule is kept, count the lines in the SAME statement containing
+    it; if any resolve to a **different** target, it's boilerplate, not a payee → learn nothing and say so in the
+    footer. `ONLINE ACH DEBIT` matched six other tenants, so it would have been rejected on the spot with no stopword
+    involved. Holds for any bank, any wording, any account.
+  - **4) Warn before recording a month twice.** The old collision guard only fired on a fully-covered tenant and
+    hard-coded `collision:false` on a rule hit. A precise row-level test now reads the ledger's own coverage: a line
+    settling an already-covered month shows *"January is already recorded as paid — ticking this records it twice"*
+    and stays unticked (still tickable — it's a warning, not a lock).
+  - **5–7) The review's affordances.** Save is never a silent grey button (an explicit *"Nothing is ticked yet…"*
+    line); **🤖 Suggest tenants reaches every unconfident deposit** (was gated on `kind === 'unmatched'`, which hid
+    exactly the abbreviated payees it's for) plus a **✓ Accept N AI matches** bulk tick (still unchecked on arrival);
+    the **Always column is never blank** (`auto` on a deposit, a tick on an expense, a muted `—` on an unresolved
+    row) with both checkbox columns centred under their headers and a tooltip that answers his question in place —
+    *"the month is never remembered; each statement is dated from its own lines"*; and money-out gets a one-click
+    **✕ Ignore / ↩ Undo ignore** beside the dropdown.
+  - **8–9) A real copy, and a log that resets with the year.** `statement_imports.storage_path` existed since 0063
+    and was never written — and the PDF lane already uploaded the file and threw the path away. Both lanes now keep
+    it (CSV too: a few KB, no AI, best-effort so a storage hiccup can't block an import) and the register gains an
+    **Open** button via the existing `signDocUrl`. `listStatementImports(propertyId, year)` filters by year and the
+    query key carries it, so a new fiscal year starts with a clean log. **No migration.**
+  - **10) The difference, readable at a glance.** `ledgerRowSummary` gains **`billed`** (Σ owed — what the lease says,
+    untouched by receipts) and **`variance`** (Σ received − owed over months that have come due AND settled).
+    `projected` keeps its exact meaning, so both pinned forward-only tests stay green; `closeYear` freezes the new
+    pair too. The Collected column reads **"$X of $Y billed"** with a gold **`short $649.44`** / forest **`over $X`**
+    chip; **"paid = paid" does not return as an amber cell** — the box stays forest ✓ and clickable, only the FIGURE
+    goes gold (or gains a `+`), and `.rr-cell.paid.short` is still asserted absent. A pool-covered ✓ now shows the
+    amount it drew (a faded figureless one read as a button that hadn't pressed). The run-on help paragraph is
+    replaced by his *"brief chart at the top"* — a compact `.rr-key` strip whose swatches are **real `.rr-cell`
+    elements wearing the live classes**, so it can't drift from the grid it explains.
+  - **Universal by construction:** every change is in shared pure code (`statementMatch.js`, `ledger.js`) or the
+    shared review/ledger components. No migration, no per-account data, **no hardcoded lease id, tenant name,
+    property or bank name anywhere** — his real descriptions appear only as test fixtures, so they became permanent
+    regressions rather than special cases.
+  - **Files:** `src/lib/statementMatch.js` (`BANK_NOISE`, `screenRulePatterns`, `monthOfDate`, `txnMonth`),
+    `src/lib/ledger.js` (`'unbilled'`, `billed`, `variance`), `src/components/StatementReview.js`,
+    `src/components/ImportStatementButton.js`, `src/pages/LedgerPage.js`, `src/pages/PropertyFinancialsPage.js`,
+    `src/lib/api.js` (storage_path, year-scoped register, closeYear), `src/App.css`, tests
+    (`ledgerVariance.test.js` + `statementReviewSave.test.js` new; `statementMatch`/`ledger`/`ledgerPage` extended).
+    **One intentional assertion change:** `suggestRulePattern('ACH A HEGAZY 2211')` is now `'A HEGAZY'` — "ACH" is the
+    payment rail, not the payee. No demo-seed change (a seeded short month would ripple the pinned $22,300 /
+    $109,800 / $78,000 figures).
+  - **Verified:** unit **566/566** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev +
+    demo, demo bundle grep-free of the live ref). Browser drive-through skipped per George's standing preference (the
+    jsdom tests mount the real StatementReview + LedgerPage against the demo mock). **George: hard-refresh
+    (Cmd+Shift+R), then re-import June and then May. Every line pre-matches to a payee you'd recognize — no ACH line
+    claiming to be beauty and barber shop — and each is already dated to its OWN month, so May lands on May. Infinite
+    Mobile's May and June deposits sit on May and June marked "received, not billed" instead of settling July.
+    Learned payees should list nine rules, one per tenant. On the grid, a month paid under the bill keeps its ✓ but
+    shows its figure in gold and the row reads "short $X".**
+  - **Flags (no action needed):** once real deposits sit on the ledger, raising a CAM estimate mid-year makes those
+    months read short — because they are; the estimate is what's billed, and year-end ⚖ Reconcile settles it. Five
+    Points already shows the shape (billed $5,025.25/mo, deposits $5,324). Single-word payee patterns (`BOOST`,
+    `CHINESE`) match on *contains*, so an unrelated line carrying that word would pre-match — every rule is visible
+    and removable under Learned payees. Statements imported before today have no stored copy; the column fills from
+    the next import.
+
+- **2026-07-23** — **Statement review made readable: full transaction descriptions, named columns (the "Always"
+  mystery solved), a tenant list scoped to the property you're standing in, a plain-English reason for the
+  auto-picked month, and one "Suggesting…" instead of two** (George, reading his real Chase import on screen for
+  the first time: "does it know how to read dates that correspond with the ledger … it seemd like it recognizes
+  the month on the side that auto mark on the for month collumn but obviously let the user change. the always
+  boxes arent there so i cant check those - actually there are on the left side they should be under always -
+  also i cant see the full line of the transaction description. if im in pershing plaza it should show only
+  pershing plaza tenants. when it says suggesting, two different suggesting... comes up and also the suggesting
+  stuff is a bit off design fix that"). Deployed: frontend Cloudflare version `2e103e76`, demo worker `2b2e8207`.
+  **Frontend + CSS + tests — $0, NO DB migration, NO edge functions, no tenant emails, zero matcher/money-math
+  change.** Tests **534/534** (was 530 — +4 `statementReviewUi`).
+  - **Answering his first question (no code needed — it already worked this way):** the "For month" pick is NOT
+    the month printed on the line; `corroborateAmount` tags the **earliest month the tenant still owes**, so a
+    deposit that lands in August settling a missed June reads June. That IS "if i entered for a previous month
+    it would know." What was missing was any way to *see* that, so a June tag on an August line looked like a
+    bug. Now the select carries a full explanation in its tooltip and, whenever the tagged month differs from
+    the line's own month, a muted **"earliest month still owed"** sits under it — which disappears the moment
+    the landlord picks a month by hand (his own choice is never second-guessed).
+  - **The "Always boxes" mystery — two unnamed columns.** The include tick (col 1) and the confidence chip
+    (col 7) sat under **blank** `<th>`s, and the Always column rendered *nothing* on a tenant row unless it was
+    checked. So the eye read: a stray checkbox on the far left, and an "Always" header over an empty column —
+    exactly George's "the always boxes arent there … there are on the left side". Fixed both ends: a new shared
+    `HeadRow` names every column (**Import · Date · Description · Amount · Record as · For month · Match ·
+    Always**, each with a tooltip) and can't drift between the two tables; and a tenant row now *always* shows
+    the muted **"auto"** with "No tick needed — saving this deposit remembers the payee automatically." Money-out
+    keeps its opt-in tick (include + Always), so `statementReviewMismatch`'s 2-checkbox assertion is untouched.
+  - **Full description lines.** `.stmt-desc` was `max-width:260px` + `text-overflow:ellipsis` + `nowrap` — and a
+    bank puts the payee at the END ("Orig CO Name:Five Points Wing Orig ID:9200502235 Desc Date:…"), so the
+    ellipsis hid the only part worth reading. Now wraps (`white-space:normal`, `overflow-wrap:anywhere`,
+    max 340px) so the odd unbroken token breaks instead of pushing the table sideways.
+  - **The tenant dropdown leads with your property.** The "All tenants" optgroup listed the entire portfolio.
+    Now the first group is **"{Property} tenants"** (names only, no property suffix) and everything else drops to
+    a secondary **"Other properties"** group. Deliberately kept reachable rather than removed: one bank account
+    serves the portfolio, so a Pershing check imported on Maple must still be postable — and an auto-matched
+    cross-property candidate needs its option to exist or the `<select>` would show a blank value. The Duplicates
+    table (no expense property) still shows one plain "All tenants" group.
+  - **One "Suggesting…".** Both 🤖 helpers shared a single `aiBusy` boolean, so clicking either flipped BOTH
+    labels — it read as two operations starting. Now `aiOp` names which one is running (`'tenants' | 'buckets' |
+    null`): only the clicked button says "Suggesting…", the other keeps its label and is merely disabled.
+  - **The 🤖 design.** Two long full-size `ghost` buttons ("🤖 Suggest buckets for 5 lines") sat in the header
+    beside Accept-all/Cancel, wrapping awkwardly and reading as primary controls. They're now one tinted pair
+    (`.stmt-ai` — accent-soft fill, small, sentence case, matching `--radius`) with the count in a small pill
+    (`.stmt-ai-n`), grouped in `.stmt-ai-row`. The tint alone does the separating, so the cluster survives
+    wrapping with no stray divider — assistance that reads as assistance, not as a decision.
+  - **Files:** `src/components/StatementReview.js` (`HeadRow`, `aiOp`, property-scoped optgroups, month tooltip +
+    hint, always-on "auto", `monthPicked` on the resolved row), `src/App.css` (`.stmt-desc` wrap, `.stmt-ai*`,
+    `.stmt-monthhint`), `src/components/__tests__/statementReviewUi.test.js` (new — 4 cases: scoped dropdown with
+    Northwind still reachable under "Other properties"; all 8 headers named on BOTH tables + auto/tick counts;
+    August deposit tagged June with the hint, which clears on a manual pick; exactly one "Suggesting…" while a
+    held-open 🤖 call is in flight), plus the two label matchers in `ledgerPage`/`statementReviewEscalation`
+    loosened to `/🤖 Suggest (tenants|buckets)/`. No matcher, api, edge-fn, migration or demo-seed changes.
+  - **Verified:** unit **534/534** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+    workers.dev + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (the jsdom tests mount the real StatementReview against the demo mock). **George: hard-refresh
+    (Cmd+Shift+R) and open the statement review again — full descriptions, named columns, only Pershing tenants
+    in the dropdown, and the month column explains itself.**
+
+- **2026-07-23** — **BUGFIX #2 (same import, next wall): every line of George's Chase statement was skipped "no valid
+  date" — the bank prints "06/01" and states the year ONCE, in the period header** (George, right after re-importing
+  post-fix #1: "this is what happened when i uploaded it nw: 0 lines parsed · 10 skipped … line 1: no valid date —
+  {"date":"06/01",…"). Deployed: `extract-bank-statement` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `09db3650`, demo worker `af8d2e8d`. **Frontend + `src/lib` + one edge fn — $0 recurring (same
+  single Haiku read per PDF, no new call), NO DB migration, no tenant emails.** Tests **530/530** (was 525 — +5
+  year-resolution).
+  - **The AI was right again.** It transcribed all 10 lines correctly and, per its own instruction ("date = the
+    posting date as printed"), copied Chase's bare `06/01`. **`toIsoDate` required a year** — `^(\d{1,2})[/-](\d{1,2})
+    [/-](\d{2,4})$` — so every row failed the shared gate and the review screen read "0 lines parsed · 10 skipped".
+    The transcription, the matcher, the escalation cue and the learned payees were all fine and simply never reached.
+  - **Fix — the model transcribes, code does the date math (the house rule).** The edge fn's schema gains required
+    `period_start` / `period_end` (all-required single-typed → **zero** union-budget cost) and the prompt now says to
+    copy the bare `06/01` verbatim and NEVER invent a year. Client side, `toIsoDate(raw, yearCtx)` accepts a year-less
+    `MM/DD` **only when a year context is supplied** (with none it still returns null — that's what stops the CSV
+    lane's column inference reading a stray "1/2" as a date), and new pure `yearForMonthDay` picks the year that lands
+    the month/day **inside the statement period** — so a Dec→Jan statement splits 12/28 → 2025 and 01/03 → 2026
+    instead of stamping both. `normalizeStatementRows(rows, {periodStart, periodEnd})` threads it and adds a free
+    fallback: the year the fully-dated lines agree on (a statement that dates even ONE line in full tells us its year).
+  - **Second bug, fixed pre-emptively in the same prompt:** Chase describes an INCOMING rent payment as
+    "Online ACH **Debit** 9031473238 From Samsnails" — the word "debit" refers to the payer's account. The prompt now
+    pins direction to the statement's own section heading ("Deposits and Additions" → in; "Electronic Withdrawals" /
+    "Checks Paid" → out) and states explicitly that "debit"/"credit" inside a description never override it. Chase
+    prints no per-line running balance in those sections, so the balance self-check can't catch a mis-signed rent
+    deposit — the prompt is the guard.
+  - **Same mock-divergence lesson as fix #1, closed the same way.** The demo mock's canned statement dated every line
+    `03/05/2026` — tidy, and nothing a bank actually prints — so 525 tests passed over a lane that imported nothing.
+    The canned rows now print bare `03/05` / `03/09` with a `period_start`/`period_end` header, exactly like a real
+    statement. **Proved it:** disabling the year-resolution branch now fails **5** tests including the full
+    `ledgerPage` sample → review → save → undo round-trip (it used to pass silently).
+  - **Honesty fix on the same screen:** a skipped line now says what was wrong with THAT line — `the date "06/01" has
+    no year, and the statement period wasn't captured` — and shows the line as `06/01 · Orig CO Name:Five Points Wing
+    · 5,324.00` instead of a truncated JSON blob.
+  - **Files:** `src/lib/statementParse.js` (`yearForMonthDay`, `toIsoDate` ctx, gate + skip reasons),
+    `src/components/ImportStatementButton.js` (thread the period, both lanes),
+    `supabase/functions/extract-bank-statement/index.ts` (period fields + direction/date prompt),
+    `src/lib/demo/mockClient.js` (canned rows print like a real statement),
+    `src/lib/__tests__/statementParse.test.js` (+5). No DB/CSS/seed changes; `extract-lease/index.ts` in the tree is
+    another session's WIP and was deliberately left untouched and undeployed.
+  - **Verified:** unit **530/530** (`vitest run`); the reintroduce-the-bug proof (5 failures); `vite build` compiles;
+    edge fn deployed clean, unauth POST → **401**; live 200s (amlakre.com + www + workers.dev + demo, demo bundle free
+    of the live ref). **George: hard-refresh (Cmd+Shift+R) and re-import the Chase statement one more time (~5–15¢,
+    the normal PDF read). Expect 10 lines parsed, 0 skipped — the 9 June deposits matched to Pershing tenants and the
+    $65,000 Vanguard Buy in Skipped as an investment transfer. Check the direction on the deposits before saving:
+    they must read as money IN despite the "Online ACH Debit" wording.**
+
+- **2026-07-23** — **BUGFIX: statement import hung forever on "Reading the statement…" — a malformed database filter
+  meant it had NEVER worked on live data (only in demo)** (George: "its taking a really long time to read the bank
+  statements its been like 5 minutes and no response", with his real Chase statement attached). Deployed: frontend
+  Cloudflare version `ddbcdb6b`, demo worker `a468649e`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge
+  functions, no tenant emails.** Tests **525/525** (was 524 — +1 named regression guard).
+  - **The AI was never the problem.** The edge log for George's upload reads `POST | 200 | extract-bank-statement,
+    execution_time_ms: 11389` — the 77 KB / 2-page PDF transcribed in **11.4 seconds** and returned fine. The hang
+    was entirely client-side, AFTER the transcript came back.
+  - **Root cause (`api.js:3132`, live-reproduced).** `getStatementMatchContext` called
+    `supabase.from('payments').select('import_hash').not('import_hash')` — but postgrest-js's signature is
+    **`not(column, operator, value)`**, so a single-arg call builds the query string
+    `import_hash=not.undefined.undefined`. Verified against live PostgREST: **HTTP 400 PGRST100** `"failed to parse
+    filter (not.undefined.undefined)"`. That threw → the whole `Promise.all` rejected → the `['statementContext']`
+    query failed → `ctx` stayed undefined. Fixed to `.not('import_hash', 'is', null)` (the intended "has an import
+    hash"), which returns 200. Swept the other 7 queries in that function against live PostgREST — **all 200**, this
+    was the only one.
+  - **Why it looked like a 5-minute AI read (the second bug).** `StatementReview` destructured only `data` from the
+    query — no `isError` — and line 264 read `if (!ctx || !matched) return <p>Reading the statement…</p>`. So a
+    failed context load showed a loading line **forever**, and one that blames the AI even though the statement was
+    already transcribed. Now the component reads `isError`/`error`/`refetch` and renders an honest panel — "Your
+    statement was read fine — N lines — but the ledger it needs to match them against didn't load … Nothing was
+    saved" + **Try again** / **Cancel** — and the loading text became "Loading your ledger to match these lines…".
+  - **Why 524 tests + a demo drive-through all passed (the divergence that hid it).** The demo mock's query builder
+    defined `not(field)` taking **one** argument and treating it as "is not null" — exactly what the api.js author
+    assumed the real client did. So the bug was invisible in demo and fatal on live. The mock's `not()` now mirrors
+    postgrest-js's real `(column, operator, value)` signature and **throws** on a malformed call, so this class of
+    live-only failure is catchable in the suite. **Proved it:** reintroducing the bug now fails 4 tests (it used to
+    pass silently); a named regression test (`getStatementMatchContext resolves — no malformed PostgREST filter`)
+    documents it.
+  - **Honest scope note:** statement import shipped 2026-07-21 (`f871b32`) with this line, so **every statement round
+    since — the matching, escalation cue, learned payees, month grouping — was validated against the demo mock only
+    and could never have run on George's real data.** All of that logic is unchanged and now actually reachable; it
+    gets its first real exercise on his next import.
+  - **Files:** `src/lib/api.js` (the filter), `src/components/StatementReview.js` (error state + honest loading
+    copy), `src/lib/demo/mockClient.js` (strict `not()` signature), `src/lib/__tests__/statementImport.test.js`
+    (+1 guard). No DB/edge/CSS/seed changes.
+  - **Verified:** unit **525/525** (`vitest run`); the reintroduce-the-bug test proving the suite now catches it;
+    live PostgREST 400→200 on the exact filter; `vite build` compiles; live 200s (amlakre.com + www + workers.dev +
+    demo, demo bundle free of the live ref). **George: hard-refresh (Cmd+Shift+R) and re-import that Chase statement
+    — it should reach the review screen in a few seconds. Your 9 June deposits (Five Points Wing $5,324 · Samsnails
+    $4,418 · Chinese $3,600 · Laredo $3,535.09 · Boost $2,716 · Dentaloffice $6,315 · Gustavo $5,300 · Lyonsvapez
+    $3,987.50 · Hiarcut $3,750) should match Pershing tenants; the $65,000 Vanguard transfer should land in Skipped
+    as an investment transfer, NOT an expense — check that one before saving.**
+
+- **2026-07-23** — **A scanned lease no longer loses pages SILENTLY: a failed transcription chunk now leaves an
+  explicit gap marker (and gets one bounded retry) instead of vanishing — plus a live repair of Khaled's Busey Bank
+  lease, which had cached only pages 16–36** (George: "for khaled.akkawis account is there no way to cache the whole
+  lease it looks cut off"). Deployed: `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`) + a one-time
+  `leases.lease_text` repair. **Edge-function only — NO frontend build, NO DB migration, $0** (the repair was
+  transcribed by reading the stored scan directly, so no AI billing), no tenant emails, nothing deleted (the repair
+  PREPENDS; the previously-cached text is byte-identical). Tests **525/525** (unchanged — edge fns aren't in Vitest).
+  - **Diagnosis (definitive, live).** The lease cached **53,051 chars** and *ended* correctly (`Exhibit "E" Page 4 of
+    4`) — but **began mid-sentence**, inside an Article 11 subletting clause. Rendering the stored 36-page scan showed
+    that fragment is the **first line of page 16**. So the cache was missing **pages 1–15**: parties, premises, term,
+    Tenant's Share, contacts, Articles 1–11 — and the **entire base-rent table**. Nothing on screen said so, because
+    the text read as a complete document that merely started oddly.
+  - **Root cause (`transcribeScan`, extract-lease/index.ts).** The 7/21 parallel-chunk fix splits a scan into
+    page-range sub-PDFs transcribed concurrently, then stitched. The stitch did
+    `.map(p => (p.text||'').trim()).filter(t => t.length > 0)` — so a chunk that timed out was **silently discarded**
+    and the survivors joined seamlessly. `if (!ordered.length) return single()` only rescued the *all*-failed case; a
+    partial failure produced a plausible-looking lie. The "first N of M pages" note also couldn't fire (36 ≤ the
+    90-page ceiling, so `coveredPages === totalPages`). **This is also why the 7/21 log's claim that Busey "cached in
+    full" was wrong — it verified the page-32 renewal option and Exhibit E at the END and never checked the BEGINNING.**
+  - **Fix.** (a) **Never drop silently** — a failed chunk now emits `[Pages X-Y could not be read for search. Re-upload
+    this lease to try again.]` **in its own position**, so a hole is visible instead of invisible. (b) **One bounded
+    retry** via new `transcribeChunk()`: a whole-chunk budget (`CHUNK_BUDGET_MS` 110s) shared ACROSS attempts, so a
+    chunk that fails FAST (transient 429/5xx, upload hiccup — the case worth rescuing) retries with nearly the full
+    budget, while a chunk that fails by TIMEOUT gives up rather than pushing past the edge's ~150s wall. The uploaded
+    file id is registered before the call so the cleanup `finally` can't leak it, and is reused across attempts.
+    (c) **`CHUNK_PAGES` 15 → 10** (~7k tokens ≈ ~55s vs ~80s) so a chunk has real headroom inside its box and rarely
+    times out at all; `MAX_TRANSCRIBE_CHUNKS` 6 → 9 keeps the **90-page ceiling identical**.
+  - **Live repair (additive, idempotent).** Transcribed pages 1–15 verbatim from the stored scan and PREPENDED them:
+    **53,051 → 112,859 chars**. The seam is exact — p15 ends "…but upon ten (10) days prior notice", p16 begins "to
+    Landlord, to (a) sublet…". Guarded with `and left(lease_text,30) = 'to Landlord, to (a) sublet all'` so a re-run
+    can't double-prepend. Read-back confirms it opens `OFFICE LEASE / …executed this 7th day of May, 2020…`, still
+    ends at Exhibit E, and now contains 9,176 SF · Tenant's Share 64.44% · the full rent table · the notice addresses.
+  - **Files:** `supabase/functions/extract-lease/index.ts` (constants, new `transcribeChunk`, gap-marker stitch,
+    `type PdfChunk` import). No `src/` change → no frontend deploy.
+  - **Verified:** deployed clean (server-side bundle + type-check); unauth POST → **401**; Vitest **525/525**; live
+    read-back of the repaired text as above.
+  - **✅ FOLLOW-ON, SAME DAY — the rent ledger corrected to the printed table (George: *"yes correct all 6 rows"*).**
+    The restored page 1 exposed a disagreement between `rent_escalations` and the lease's own "Period / Monthly
+    Installment(s) of Base Rent" table. Today's billing was already CORRECT ($364,629.12 = the Sep 2025–Aug 2026 rate)
+    and 2022/2024/2025/2027 matched to the cent, **but from Sept 2028 the schedule was shifted a year late and
+    under-billed ~$10k/yr**. **Six changes in ONE guarded transaction** — five updates + one delete, each keyed on the
+    exact wrong value so a re-run is a no-op: **2023-09-01** $347,053.20 → **$347,059.32** · **2026-09-01** $373,741.48
+    → **$373,744.92** · **2028-09-01** $382,664.68 → **$392,665.68** · **2029-09-01** $391,465.68 → **$402,482.28** ·
+    **2030-09-01** $402,481.68 → **$412,544.40** · and the **spurious 2031-09-01 step** ($412,542.40, past the Aug 31
+    2031 term end) **deleted** — the option period is covered by the pending $422,858.04 renewal option, not by a
+    primary-term escalation. **No code change, NO deploy, NO migration, $0, no tenant emails.**
+    - **Every figure is the printed monthly × 12** — the app's own convention, never a model's arithmetic. Read-back
+      confirms all nine surviving rows now divide back to the exact printed monthly (28,216.20 · 28,921.61 · 29,644.65
+      · 30,385.76 · 31,145.41 · 31,924.04 · 32,722.14 · 33,540.19 · 34,378.70).
+    - **Nothing else moved.** `base_rent` stays **$364,629.12**, term end 2031-08-31, lease active, the renewal option
+      untouched at $422,858.04 pending, and `lease_text` still 112,859 chars. The property's **2026** revenue is
+      **unchanged** at $364,629.12 — era-aware `effective_rent` (0054) lets `base_rent` win for the current era, so a
+      future-dated step can't disturb today's figures; **2023** moved by exactly the $6.12 correction to $347,059.32.
+    - **Self-cleaning side effect:** the `escalations_reminders` AFTER-DELETE trigger regenerated the lease's key dates,
+      so the stale 2031-09-01 escalation key date + its reminders are gone (verified: 0 escalation key dates past term).
+      `notifications` has no `escalation_id`, so nothing was orphaned.
+    - **Flag (no action needed):** there is still **no ledger row for the opening 2021-09-01 period** ($27,528.00/mo =
+      $330,336.00/yr) — outside the six you approved, and it only affects how FY2021 reads in historical reporting, not
+      any bill. Say the word and I'll add it.
+
+- **2026-07-23** — **Statement import v2: the review screen now GROUPS each statement by month (all-matched months
+  collapsed, months needing a look open, live "N matched · M need review" counts in every header), and the Ledger tab
+  gained a "Learned payees" manager to audit / retarget / remove the auto-learned payee rules** (George dropped a
+  "Bank Statement Import Feature — Complete Design Brief"; cross-referencing the deploy log showed **~90% already
+  shipped** in the 7/21–7/23 rounds — pattern learning via `import_rules` + account hints, escalation-aware variance,
+  🤖 Suggest tenants/buckets, dup guards, full undo, expense buckets — so this adds the two genuinely-NEW pieces he
+  scoped via AskUserQuestion: **month-grouped review** + **learned-payees manager**. His other picks: keep the review
+  **full-page** (not the brief's slide-in modal — a deliberate prior choice) · header format = **counts + $ + review
+  flag** · **skip** multi-statement upload + split payments). Deployed: frontend Cloudflare version `48436f96`, demo
+  worker `623f413a`. **Frontend + one pure helper + tests — $0, NO DB migration, NO edge functions, NO demo-seed
+  changes, no tenant emails.** Tests **524/524** (was 506 — +11 statementMonths, +4 statementReviewMonths, +3
+  learnedPayees; the three pinned statement/ledger suites stayed **byte-identical and green**).
+  - **1) Month-grouped review (`statementMonths.js` new + `StatementReview.js`).** A 40–100-line statement often
+    spans a Dec→Jan boundary or two pay periods; the flat "Money in · N / Money out · N" pair is now wrapped in one
+    collapsible section PER MONTH (each line's OWN date decides its month, string-sorted so a fiscal-year boundary
+    splits right). New pure `buildMonthGroups(resolved)` + `rowNeedsReview(r)` (consistent with the footer's mismatch
+    count — a duplicate never flags, a balance-check flag always does, a checked row is settled unless it's ≠ projected
+    with no escalation to explain it, an unchecked row is fine only when it's a resolved ignore). Each `MonthGroup`
+    header reads "**July 2026 — 12 lines · $48,500 in · $4,742 out · 10 matched · 2 need review**" (or "all matched ✓")
+    with a ▸/▾ disclosure; `defaultOpen = monthGroups.length === 1 || g.needsReview > 0` via **lazy `useState`**, so an
+    all-matched month starts collapsed, a month needing review starts open, and ticking a row never snaps its month
+    shut while the header counts stay live. The SAME `<Group>`/`ReviewRow` tables render inside each month (nothing
+    rewritten); Save still iterates `resolved`, so a **collapsed month's checked rows still write** (test-locked).
+    **Load-bearing:** a single-month statement ALWAYS starts open — which is what keeps the three pinned single-month
+    fixtures (mismatch=April, escalation=June/March, ledgerPage's all-March demo sample) green with zero edits.
+  - **2) Learned-payees manager (`LearnedPayeesPanel.js` new, mounted in `LedgerPage.js` after the import register).**
+    Every checked tenant deposit auto-teaches a "always match {payee} → {tenant}" rule (and an expense does on its
+    "Always" tick), so the panel is where the landlord audits that memory: a count-gated **▸ Learned payees (N)**
+    disclosure (mirrors the register's plain-table idiom — no new CSS) listing THIS property's rules with their target,
+    account hint (••4821), a family-constrained **retarget** dropdown, and a confirm-gated **✕ Remove**. A retarget
+    re-saves the SAME (property, pattern) key → hits `saveImportRule`'s 23505 update path which **preserves the rule id**,
+    so an import's `applied[].rule_id` stays valid and its ↩ Undo still works (`resolvePick` exported from StatementReview
+    for the shared pick vocabulary). `settleStatementImport` now also invalidates `['importRules']` (an import learns
+    rules, undo un-learns them — either must refresh the panel).
+  - **Flags (no action needed):** the matcher deliberately ignores `property_id`, so a foreign property's rule can still
+    classify this property's lines — the panel carries a one-line muted footnote saying so. And undoing an import whose
+    learned rule carried a `prior` will re-create/overwrite a rule you edited in the manager (undo restores the
+    pre-import world); deleting a rule an import references is safe (prior:null → best-effort delete).
+  - **Files:** `src/lib/statementMonths.js` (new), `src/components/LearnedPayeesPanel.js` (new),
+    `src/components/StatementReview.js` (month grouping + `picked` field + export `resolvePick`), `src/pages/LedgerPage.js`
+    (mount the panel), `src/components/ImportStatementButton.js` (one invalidation), `src/App.css` (4 `.stmt-month*`
+    rules), tests (`statementMonths`, `statementReviewMonths`, `learnedPayees` — all new; the pinned
+    `statementReviewMismatch`/`statementReviewEscalation`/`ledgerPage` suites untouched, `git diff --stat` confirmed).
+  - **Verified:** unit **524/524** (`vitest run`); `vite build` compiles (800 modules); live 200s (amlakre.com + www +
+    workers.dev + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (the jsdom render tests mount the real StatementReview → two-month collapse/expand + a single-month
+    always-open, and the real LedgerPage → the Learned-payees list/retarget-preserves-id/remove flow against the demo
+    mock). **George: import a statement that spans more than one month → each month is its own collapsible section,
+    all-matched months collapsed; open a property's Ledger tab → "Learned payees (N)" lists every payee you've taught,
+    where you can point one at a different tenant/bucket or drop it.**
+
+- **2026-07-23** — **Statement import learns smarter: a mid-year rent escalation now EXPLAINS a deposit still at the
+  pre-raise rate (quiet cue, auto-matched — no more false "short"), learned payee rules remember which bank ACCOUNT
+  taught them, and a click-gated 🤖 "Suggest tenants" names the deposits nothing recognized** (George's spec: "Bank
+  Statement Pattern Learning & Auto-Matching" — learn tenant-payment patterns, auto-match future deposits, smart
+  escalation-aware variance; his two scoping picks via AskUserQuestion: storage = **"Extend import_rules"** (not a new
+  table), AI = **"Click-gated 🤖"** (not per-import)). Deployed: DB migration `0066` (Supabase `awgrjmbcghdjgnqeiqkt`,
+  migration-reviewer APPROVE), NEW `suggest-tenant-match` edge fn, frontend Cloudflare version `d7ca14b1`, demo worker
+  `62c4dbae`. **$0 recurring** (normal imports stay fully deterministic; only the explicit 🤖 click costs ~1–2¢),
+  **NO destructive data** (0066 is one additive nullable column), **no tenant emails** (the shortfall letter still
+  only opens in the compose modal). Tests **506/506** (was 487 — +14 statementMatch escalation/two-pass, +5
+  statementImport account-hint, +2 new statementReviewEscalation render).
+  - **Most of the spec already shipped** in the 7/21–7/22 statement rounds (pattern learning + reuse via
+    `import_rules` with auto-learn + prior-based undo, auto-matching with the "rule" chip, variance detection, dup/
+    collision guards, full undo, expense buckets). The three genuinely-NEW pieces this round adds:
+  - **1) Escalation-aware variance (the core, live on George's real data immediately).** Before, a deposit at the
+    PRE-raise rate for a post-step month (Sam Nails' June $4,106.08 after the step to $4,160.20) failed amount
+    corroboration AND flagged the amber "≠ projected — short $Y" chip — even though a mid-year escalation explains it
+    perfectly. Now the import screen reads the SAME per-month components the Ledger boxes paint from:
+    `getStatementMatchContext` (api.js) derives each tenant's `steps` via the ledger's own
+    `componentizeSchedule` + `escalationStepMonths` (so the import can never disagree with the boxes).
+    `statementMatch.js` gains `stepAtOrBefore(steps, m)` + a local `preStepOwed(owedM, s) = owedM − (base step)`;
+    `corroborateAmount` accepts the pre-step rate for the first open post-step month (`{corroborated, month,
+    escalated:true}` → auto-checked); `depositProjectionDelta` returns a **conditional** `escalation:{stepMonth,
+    prevOwed}` marker. The review renders a quiet olive **"↗ matches the pre-raise rate — rent stepped to $X in
+    {month}"** cue instead of the amber chip, the footer's mismatch count excludes it, and the ✉ Draft letter stays
+    (the tenant genuinely owes the difference).
+  - **2) Account dimension on learned rules (migration `0066`).** `import_rules.account_hint` (nullable, metadata not
+    identity — the `(owner, property, lower(pattern))` unique index is unchanged, so re-learning a pattern from a new
+    account UPDATES the one rule, last-import-wins). `findMatchingRule` is now two-pass: a rule learned from THIS
+    statement's masked account (••4821) wins (pass 1), else any pattern match (pass 2 — a tenant who switched banks
+    is still recognized). Threaded through `matchStatement`, `saveImportRule` (insert + 23505 update),
+    `applyStatementImport` (prior carries the hint; a same-target re-learn from a new account refreshes the hint with
+    NO applied record — intentionally lossy on undo), `undoStatementImport` (restores target + hint), and the session
+    draft rules (stamped so a same-session "always" fix still outranks a saved hinted rule).
+  - **3) 🤖 Suggest tenants (click-gated, ~1–2¢, the deposit twin of 🤖 Suggest buckets).** New `suggest-tenant-match`
+    edge fn (Haiku, `cors`/`enforceRateLimit`, closed all-required schema, name-matching ONLY — never computes
+    amounts, never invents an id; server-side filter drops any hallucinated lease_id). Shows only when unmatched
+    money-in remains; suggestions land UNCHECKED with the existing AI chip (nothing books without the user's tick).
+    `suggestTenantMatches` in api.js; `unmatchedDeposits` memo + handler in StatementReview (validates index +
+    lease_id client-side as a second guard). Demo mock's canned route resolves the seeded "MOBILE DEPOSIT J PAK 2211"
+    line → Northwind Books (contact Jordan Pak) with ZERO seed changes.
+  - **Demo seeds deliberately unchanged** (a visible escalation step would need TWO seeded escalations + ripple pinned
+    test figures — 7/23 precedent); the escalation path is unit/render-test-covered and live on George's real data.
+  - **Files:** `supabase/migrations/0066_import_rule_account_hint.sql` (new), `supabase/functions/suggest-tenant-match/
+    index.ts` (new), `src/lib/{statementMatch,api}.js`, `src/components/StatementReview.js`, `src/lib/demo/mockClient.js`,
+    tests (`statementMatch`/`statementImport` extended; `statementReviewEscalation.test.js` new — a sibling of the
+    pinned `statementReviewMismatch` so that file stays byte-identical). No data-layer/CSS/store changes.
+  - **Verified:** unit **506/506** (`vitest run`); `vite build` compiles; migration read-back shows
+    `import_rules.account_hint` (nullable); edge fn unauth POST → **401**; live 200s (amlakre.com + www + workers.dev
+    + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing preference (the
+    jsdom render test drives the real StatementReview → the escalation cue + the 🤖 flow against the demo mock).
+    **George: next month's statement — a Sam Nails/Ricki's/Vape Store deposit still at the old rate now auto-matches
+    with the quiet "matches the pre-raise rate — rent stepped to $X in {month}" cue instead of an amber short flag;
+    re-imports auto-recognize learned payees, now account-aware; and any deposit nothing recognized gets a 🤖 Suggest
+    tenants button.**
+
+- **2026-07-23** — **The Rent Ledger's per-tenant "$X/mo" sub-line now reads the CURRENT rent, not a year-average —
+  so a stepped tenant's headline dollars tie its own base·CAM&tax breakdown AND that month's box** (George, after the
+  step-cue round: "there's still a small discrepancy — Sam Nails says $4,137/mo but the ledger says $4,106 in the box
+  … same for Ricki's Lyons and Hong Kong, and I'm seeing it in the vape store in GENA property too"). Deployed:
+  frontend Cloudflare version `9d15fbbe`, demo worker `ff6b3fb4`. **Frontend + one pure helper + unit tests — $0, NO
+  DB migration, NO edge functions, NO data-layer/roll/demo-mock/CSS changes, no tenant emails.** Tests **487/487**
+  (was 481 — +6 representativeMonth).
+  - **Root cause (live-verified, penny-exact — a DISPLAY bug, the data is all correct):** the identity sub-line under
+    each tenant (`LedgerPage.js`) led with `money(r.monthly)`, and `r.monthly = annual / owedMonths` (`api.js:1876`) is
+    the **blended year-average**. On a mid-year-stepped tenant that average equals NO box AND doesn't even match its
+    own base·CAM&tax breakdown right beside it (which already read `rep` = a single representative month's components,
+    via `componentizeSchedule`'s per-month split). Sam Nails 2026 (applied June step $32,472.96→$33,122.40): boxes
+    $4,106.08 Jan–May / $4,160.20 Jun–Dec, but the sub-line printed the average **$4,137.65** — the "$4,137 vs $4,106"
+    George saw. Same shape on **Ricki's-Lyons** (applied May step → $3,102.76 → $3,149.08) and the **Vape Store**
+    (GENA/Joliet, applied May step $35,109.12→$36,162.36 → $2,925.76 → $3,013.53). **Hong Kong is NOT a stepped
+    tenant** — no 2025/2026 escalation, flat $25,730.56/yr; every recorded month = $2,849.60 = the sub-line, fully
+    consistent (George grouped it in from his original question; verified its 2026 invoice + all seven paid months are
+    $2,849.60 to the penny — nothing to fix there).
+  - **The fix (pure helper, one line in the view):** new `representativeMonth({ owedByMonth, schedule, isCurrentFy,
+    curMonth })` in `src/lib/ledger.js` returns the month that represents what the tenant pays **right now** — the
+    current month in the current FY when it's a normal billed, non-abated month (so the sub-line tracks a mid-year
+    raise the day it lands), else the first billed non-abated month (past/future FY, or a mid-year lease whose current
+    month is out of term / free → its starting rate); 0 when nothing is billed. `LedgerPage.js` replaces the inline
+    repM logic with it and the sub-line lead becomes `money(round2(alloc.owed[repM-1]))`. Because
+    `componentizeSchedule`'s binding invariant is `base + camTax + roof === owed` per month, the headline now equals
+    its own breakdown AND that month's box, always. For a UNIFORM tenant the representative month's owed == the
+    average, so Hong Kong and every non-stepped tenant read exactly as before. Composes with the existing "↗ rent
+    raised to $X/mo in {month}" step note (7/23 earlier), which explains the lower earlier figure.
+  - **Files:** `src/lib/ledger.js` (`representativeMonth`), `src/pages/LedgerPage.js` (import + repM via the helper +
+    `repMonthly` lead), `src/lib/__tests__/ledger.test.js` (+6: Sam Nails current-month post-step ≠ the average;
+    headline ties the breakdown + the box; pre-step current month; non-current FY → first billed; mid-year lease skips
+    out-of-term months; abated current month + all-unbilled → 0). No demo-seed change (the demo has no mid-2026 step,
+    so the sub-line is byte-identical there and the existing `ledgerPage` render test still asserts the same figures).
+  - **Verified:** unit **487/487** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev
+    + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing preference (the pure
+    helper is unit-tested; the change is a single displayed figure). **George: hard-refresh (Cmd+Shift+R) → Financials
+    → Ledger. Sam Nails now reads "$4,160.20/mo" (its current rent) under the name, matching the box + the "↗ rent
+    raised to $4,160.20/mo in June" note; Ricki's and the Vape Store likewise; Hong Kong stays $2,849.60 (it was never
+    actually off).**
+
+- **2026-07-23** — **A mid-year rent escalation is now visible in the Rent Ledger: a stepped tenant's two different
+  monthly box values read as the intended raise, not a mismatch** (George: "why do sam nails ricky lyons and hong
+  kong all have slightly off values? did they go through a rent escalation … it should show in the boxes as well";
+  his AskUserQuestion pick: **"Show the step in the Ledger"**). Deployed: frontend Cloudflare version `e64967af`,
+  demo worker `57fe1bbc`. **Frontend + one pure helper + a unit test — $0, NO DB migration, NO edge functions, NO
+  data-layer/roll/demo-mock changes, no tenant emails.** Tests **481/481** (was 472 — +9 ledgerEscalationStep).
+  - **Diagnosis (live DB + code, verified to the penny — everything was already CORRECT, the gap was UX):**
+    **Ricki's-Lyons** has an *applied* escalation dated **2026-05-01** ($27,793.08 → $28,348.92/yr) → Jan–Apr boxes
+    $3,102.76, May–Dec $3,149.08. **Sam Nails** — same, one month later: applied **2026-06-01** ($32,472.96 →
+    $33,122.40/yr) → Jan–May $4,106.08, Jun–Dec $4,160.20. **Hong Kong** is actually **uniform** ($2,849.60 every
+    month — last escalation June 2023, no 2026 step); it only *looks* odd because base $25,730.56 + est $8,464.64 ÷ 12
+    isn't a round number. The full chain ties out (lease `base_rent` → escalation ledger → invoice `base_rent_annual`
+    = blended old+new months → boxes). The only real problem was that two different box values read like an error at a
+    glance — which is exactly what prompted George's question.
+  - **The cue (pure helper, derived from the same data the boxes paint from):** new `escalationStepMonths({ schedule,
+    comp })` in `src/lib/ledger.js` returns `[{ month, owed, base, prevBase }]` for each month whose `comp[m].base`
+    steps **up** vs `m-1`, **guarded** to skip if either month is `outsideTerm` (a mid-year lease START is not a raise
+    — its prior month is out-of-term, base 0) or `abated` (an abatement ENDING shows base 0 → X), and requiring
+    `prevBase > 0 && curBase > prevBase + 0.02` (increases only, cents-safe). Normally length 1; returns all when a
+    lease steps twice. Because it reads `componentizeSchedule`'s per-month base (the exact figures the boxes show), the
+    cue can never disagree with the boxes; and because `monthlyBases` (via `buildLeaseSchedule`) reflects only
+    **applied** steps, a not-yet-applied future step correctly produces no cue.
+  - **UI (`src/pages/LedgerPage.js` + `.rr-*` in `App.css`):** the `derived` map adds `steps`; a small olive note
+    under the tenant name — **↗ rent raised to $3,149.08/mo in May** (`.rr-step-note`) — and an olive **left accent**
+    on the step month's box (`.rr-cell.rr-step` = `box-shadow:inset 3px 0 0 var(--accent)`, no box-model shift,
+    distinct from the gold used by late/partial cells, composes with the paid/late state classes) with a "↗ Scheduled
+    rent escalation — the higher amount from here on is the raise, not an error" tooltip prefix on every cell state
+    (settled/pool/partial/late-mark). Hong Kong (no 2026 step) stays uniform with no note.
+  - **Files:** `src/lib/ledger.js` (`escalationStepMonths`), `src/pages/LedgerPage.js` (import + `steps` in `derived`
+    + row note + per-cell `rr-step` class/tooltip), `src/App.css` (`.rr-cell.rr-step`, `.rr-step-note`),
+    `src/lib/__tests__/ledgerEscalationStep.test.js` (new — 9 cases: Ricki's→May, Sam Nails→June, Hong Kong uniform→
+    [], mid-year start→[], abatement-end→[], two steps→[4,9], base decrease→[], sub-2¢ wobble→[], missing input).
+    No demo-seed change (the demo has no mid-2026 applied step, so no note renders and the existing `ledgerPage` render
+    test still mounts — feature is immediately live on George's own Ledger).
+  - **Verified:** unit **481/481** (`vitest run`); `vite build` compiles (798 modules); live 200s (amlakre.com + www +
+    workers.dev + demo, demo bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (the pure helper is unit-tested; the cue is CSS/text). **George: hard-refresh (Cmd+Shift+R) →
+    Financials → Ledger. Ricki's and Sam Nails now show a small "↗ rent raised to $X/mo in May/June" note under the
+    tenant and an olive accent on the step month's box; Hong Kong (no 2026 step) stays uniform with no note.**
+
+- **2026-07-23** — **The estimate is now the source of truth all year: changing a tenant's CAM & tax estimate re-syncs
+  its invoice AND its recorded "mark paid" months to base + estimate, and the ledger boxes stop reading the stale
+  actual** (George: "the box should show whatever number is in the left hand column … michuacana should show 5300 in
+  those boxes not 4795 because the tenants pay base + the CAM & tax ESTIMATE, not the actual. the actual is only used
+  at year-end reconciliation — everything up to that point uses the estimate. make sure that logic flows throughout";
+  his AskUserQuestion pick: **"all 9 + auto-sync"**). Deployed: frontend Cloudflare version `b2235c32`, demo worker
+  `727e3ff3`, plus a one-time live repair of the 9 Pershing Plaza tenants. **Frontend + `src/lib` only — $0, NO DB
+  migration, NO edge functions, no tenant emails.** Tests **472/472** (was 467 — +5 estimateResync).
+  - **Root cause (live-verified):** the ledger's LEFT rail already projects base + the estimate-preferred CAM&tax
+    (`getPropertyMonthlyRoll` → `buildLeaseSchedule`, projection mode — correct), but each tenant's 2026 invoice was
+    generated *before* the estimate was typed, so it billed the **actuals** at that moment and was never regenerated,
+    and every "mark paid" month was recorded at that stale monthly. New marks already used the estimate; the stale
+    invoice + already-recorded payments did not. Michuacana: left rail $63,601.44/yr = **$5,300.12/mo** (base
+    $39,451.44 + est $24,150) but its boxes read $4,794.84 (the old invoice $57,538.02 ÷ 12, billed off actuals).
+  - **Durable fix (`api.js` new `resyncYearBillingToEstimate(leaseId, propertyId, year)`):** reuses the SAME pure
+    builders the ledger paints from — `billedComponents` (estimate-preferred), `buildLeaseSchedule` (term-aware
+    per-month owed), and the exact `draft-invoice` proration (`monthlyBases` + in-term ratio) — so a resync'd invoice
+    is identical to the manual flow AND its total equals the sum of the monthly boxes to the penny (a mid-year lease
+    prorates: Infinite Mobile stays $19,800.02 / Jul–Dec only). It regenerates the year invoice in place
+    (`upsertYearInvoice`, preserving issue/due dates + status) and re-records each **system** "mark paid" month at the
+    new owed — ONLY where every payment is a system mark (`import_id == null && note == null`), so a real bank-imported
+    or manually-noted deposit is left untouched and still trues up at reconcile. No-op unless a live annual invoice
+    already exists (new-lease creation does nothing). Idempotent.
+  - **Auto-sync wiring (George's "auto-sync"):** the resync runs after every estimate save — the Financials inline
+    editor (`TenantShareTable.js` `saveEst`, and its ↩ Undo, so undoing the estimate re-syncs back) and the lease
+    page's combined CAM & tax field (`LeaseDetailPage.js` `saveEstCamTax`) — then invalidates the Ledger roll
+    (`['propertyRentRoll', …]`), the monthly tracker (`['monthlyRent']`), and the invoices/payments panels so every
+    surface repaints. So an estimate change can never go stale again.
+  - **Live repair — the 9 Pershing Plaza tenants** (all payments were system marks — zero bank imports — so this was a
+    clean 1:1 correction, not a distortion of real deposits): a scratchpad generator imported the SAME pure functions,
+    fed each lease's live data, and emitted a reviewed `BEGIN…COMMIT` transaction (9 invoice updates + 55 stale
+    system-marked months deleted & re-recorded at their estimate-based owed). Verified on read-back: every invoice now
+    totals base + est CAM&tax (Michuacana $63,601.44, D&D $73,308, Infinite Mobile $19,800.02 prorated); each month
+    reads the estimate-based owed (**Michuacana $5,300.12**, D&D $6,109, Infinite Mobile $3,300); the two mid-2026-step
+    leases show their unequal months (Ricki's $3,102.76 Jan–Apr → $3,149.08 May–Dec; Sam Nails $4,106.08 Jan–May →
+    $4,160.20 Jun–Dec); Hong Kong + Five Points correctly came DOWN. Michuacana's already-correct months 1–2 (prior
+    top-ups summing to $5,300.12) were left untouched.
+  - **Files:** `src/lib/api.js` (`resyncYearBillingToEstimate` + `monthlyBases` import), `src/components/TenantShareTable.js`
+    (saveEst + ledger-roll invalidations), `src/pages/LeaseDetailPage.js` (saveEstCamTax), `src/lib/__tests__/estimateResync.test.js`
+    (new — 5 cases against the demo mock: raise-estimate moves invoice + system months; idempotent; a bank-imported /
+    noted month is left untouched; mid-year proration ties invoice total to the sum of the unequal months; no-invoice
+    → no-op). No DB/edge/mock/store changes (resync rides the demo mock's generic handlers; the jsdom tests exercise
+    the real functions against it). Left the ledgerPage render test unchanged — the estimateResync unit test covers the
+    box values (`getMonthlyRent`'s per-month amounts) more directly.
+  - **Verified:** unit **472/472** (`vitest run`); `vite build` compiles; live DB read-back confirms all 9 invoices +
+    every marked month; live 200s (amlakre.com + www + workers.dev + demo, bundle free of the live ref). Browser
+    drive-through skipped per George's standing preference (the jsdom tests mount the real ledger math against the demo
+    mock). **George: hard-refresh (Cmd+Shift+R) → Financials → Ledger. Every paid box now reads the same $x,xxx/mo as
+    the left rail — Michuacana $5,300.12, D&D shows its full CAM&tax, the over-billed tenants came down. Changing an
+    estimate now flows straight through to the invoice + the paid boxes; the actual only appears at year-end ⚖ Reconcile.**
+
+- **2026-07-23** — **Financials/History hover fly-outs now stop at the property — the tenant/lease level is
+  Portfolio-only** (George: "financials hover should only show the corporations and properties not leases because
+  when i click a lease on it it goes to the portfolio leases"). Deployed: frontend Cloudflare version `a95e7070`,
+  demo worker `52e41dc5`. **Frontend-only — $0, NO DB migration, NO edge functions, no tenant emails.** Tests
+  **467/467** (was 466 — +financialsPropertiesNoLease; sidebarFlyout tightened to a per-tab count).
+  - **Root:** yesterday's hover-to-lease round added a tenant third level to the shared sidebar `NavFlyout` (all
+    three tabs) AND a `PropLeaseFlyout` to the shared `FinancialsPropertiesPage` cards (which serves BOTH Financials
+    and History, routes 48/54). But the lease **detail page lives only in the Portfolio workspace** (`/leases/:corp/
+    :prop/:lease` — `App.js:44`); Financials/History have no per-lease route, so every lease link targets
+    `/leases/…` and yanks you out of the workspace you're standing in. George only named Financials; History has the
+    identical jump, so I applied it to both (flagged).
+  - **Sidebar** (`Sidebar.js`): the fly-out's third level is now gated `{mode === 'leases' && …}` — Portfolio still
+    nests each property's tenants (linking to their lease page), Financials/History stop at the property. The
+    batched `['sidebarLeases', …]` query stays (Portfolio's fly-out + the property-card fly-outs still read the
+    `['leases', propId]` caches it warms).
+  - **Financials/History property cards** (`FinancialsPropertiesPage.js`): dropped `PropLeaseFlyout` + its
+    `leasesByPropertiesQuery` seed + the now-unused `corpId` prop; the card reverts from a `<div role="button">`
+    (needed only to hold links) to a plain `<Link className="prop-card" to={…}>` into the property's Financials/
+    History page. **Portfolio cards keep their hover-to-lease fly-out** (`PropertiesPage.js` unchanged).
+  - **Files:** `src/components/Sidebar.js`, `src/pages/FinancialsPropertiesPage.js`, tests
+    (`financialsPropertiesNoLease` new — Financials cards link to `/financials/corp-1/prop-1`, zero `/leases/…`
+    hrefs, no "Go to a lease" header; `sidebarFlyout` now asserts each lease link appears EXACTLY ONCE = Portfolio
+    only, not 3×).
+  - **Verified:** unit **467/467** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www + workers.dev
+    + demo, bundle free of the live ref). Browser drive-through skipped per George's standing preference (the jsdom
+    tests mount the real Sidebar + FinancialsPropertiesPage against the demo mock). **George: hard-refresh
+    (Cmd+Shift+R) → hovering a Financials or History tab (or a Financials/History property card) now stops at the
+    property; the tenant/lease jump stays in Portfolio.** Separately — see the chat reply — I traced your Michuacana
+    ledger question: nothing dropped; the left rail is the *projected* rent (base + your CAM&tax **estimate** =
+    $5,300/mo) and the boxes are what was actually *collected* (the invoice's $4,795/mo, billed off the old actuals
+    before the estimate was raised). No data changed pending your call on how to reconcile it.
+
+- **2026-07-22** — **Four follow-up fixes to yesterday's UI-polish round: ledger "everything went short" reverted to
+  "paid = paid" · Notifications Save shows "Saved ✓" instead of silently greying · per-tenant breakdown figures
+  re-aligned · sidebar fly-out no longer vanishes when you reach for it + hover straight into a specific lease
+  (property cards AND a sidebar third level)** (George: "need hover for the properties page … when i hover and try
+  to click the box disappears … when i clicked save changes in the notifications tab it just went grey … why did
+  everything change to short? how do you know its short? … on the per tenant break down the numbers of the base
+  rent and cam and taxes arent aligned"; his two AskUserQuestion picks: ledger **"Remove it — paid = paid"** and
+  lease-hover in **"Both"** places — plan `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed: frontend
+  Cloudflare version `63798f45`, demo worker `e8ca8fcc`. **Frontend + CSS only — $0, NO DB migration, NO edge
+  functions, no tenant emails.** Tests **466/466** (was 464 — +propertiesFlyout, +notificationSaveCue; ledgerPage's
+  settled-short case rewritten to paid=paid; sidebarFlyout gained a lease-link assertion).
+  - **1) Ledger "short" removed (`LedgerPage.js` + `.rr-*` CSS).** The amber per-cell **"✓ short $X"** badge + its
+    one-click top-up compared each paid month's frozen dollars against the CURRENTLY re-priced owed
+    (`getPropertyMonthlyRoll` rebuilds `owed` from the live lease base + estimate on every render), so raising an
+    estimate/rent mid-year retroactively flipped every already-paid month to "short" — the exact retroactive-repricing
+    signal "paid = paid" was built to kill. Now a settled month reads **✓ for whatever was recorded**; the
+    received-vs-projected gap lives only in the **Collected** column (forward-only) + the year-end reconcile. Dropped
+    the `topup` cell action (markMonthPaid's `opts.additional` param stays dormant — its moneyCollection test is
+    green), the `.rr-cell.paid.short` / `.rr-short` rules, and the legend's short line.
+  - **2) Notifications "Saved ✓" (`NotificationSettings.js` + `.notify-save button.saved` CSS).** After a save there's
+    nothing left to save, so `disabled={!dirty || …}` correctly greys the button — but with no success cue it read as
+    broken (George: "it just went grey and i cant click it again"). New `saved = save.isSuccess && !dirty &&
+    !save.isPending` flips the label to a green **"Saved ✓"**; the next edit sets `dirty` and it returns to an enabled
+    **"Save changes"**. Behavior unchanged, just the affordance.
+  - **3) Per-tenant breakdown alignment (`App.css` `.ledger-*`).** The six numeric mains rode at 0 / 4 / 7px: plain
+    `.ledger-stat` (Base/Roof/Total/Diff) had no top padding, `.lg-actual` +4px, and `.lg-est`'s click-to-edit
+    `.est-cell-btn` added another +3px. Now every `.ledger-stat` gets a uniform `padding:4px 8px`, and the est button
+    carries `margin-top:-3px` to counteract its own pill padding — so all six figures land on one 4px baseline down
+    each row (and the vacant/totals rows' direct-Stat est cells align too, which the plan's simpler `.lg-est{2px}`
+    approach would have broken). Header cells gained a matching `padding-right:8px`.
+  - **4) Sidebar fly-out gap (`App.css` `.side-flyout`).** It opened 16px to the right (`left:calc(100% + 16px)`)
+    bridged by a `::before` pad — but `overflow-y:auto` forces `overflow-x:auto`, which CLIPPED that bridge, so the
+    panel vanished the instant you crossed the gap toward it. Now it opens **flush** (`left:calc(100% - 2px)`, a 2px
+    overlap → zero dead zone) and the dead `::before` bridge is gone; `overflow-y:auto` kept for long lists.
+  - **5) Hover into a specific lease — both places (George's "Both" pick).** New shared **`PropLeaseFlyout.js`** (reads
+    the already-seeded `['leases', propId]` cache): a downward **"Go to a lease"** fly-out on every property card,
+    wired into `PropertiesPage.js` (Portfolio) and `FinancialsPropertiesPage.js` (Financials/History — its card
+    changed from a `<button>` to a `<div role="button">` so it can hold links, + a batched `leasesByPropertiesQuery`
+    seed). And a **third level in the sidebar fly-out** (`Sidebar.js`): a batched `['sidebarLeases', …]` query nests
+    each property's tenants inline-indented under it (`.side-flyout-lease`), every tenant a `<Link>`. Corp/property
+    links keep `/${mode}/…`; a lease link is ALWAYS `/leases/${corp}/${prop}/${lease}` — the lease detail page lives
+    only in the Portfolio workspace.
+  - **Files:** `src/App.css`, `src/pages/{LedgerPage,NotificationSettings,PropertiesPage,FinancialsPropertiesPage}.js`,
+    `src/components/{Sidebar,PropLeaseFlyout (new)}.js`, tests (`propertiesFlyout`, `notificationSaveCue` new;
+    `ledgerPage`, `sidebarFlyout` updated). No DB/edge/mock/store changes.
+  - **Verified:** unit **466/466** (`vitest run` — the jsdom tests mount the real LedgerPage / Sidebar / PropertiesPage
+    / NotificationSettings against the demo mock: ledger settled-short → ✓ paid with no `.rr-cell.paid.short`; sidebar
+    + property-card lease links to `/leases/corp-1/prop-1/lease-1`; the "Saved ✓" → re-enable cycle); `vite build`
+    compiles (798 modules); live 200s (amlakre.com + www + workers.dev + demo, bundle free of the live ref). Browser
+    drive-through skipped per George's standing preference — the two remaining items are pixel alignment (all six
+    `.cell-main` tops resolve to 4px) and the CSS hover reveal. **George: hard-refresh (Cmd+Shift+R) → the Ledger no
+    longer says "short" everywhere · Notifications Save shows "Saved ✓" · the breakdown figures line up · hover a
+    sidebar tab OR a property card and jump straight into a specific lease (the box no longer disappears when you
+    reach for it).**
+
+- **2026-07-22** — **UI-polish round + statement rent-mismatch handling: sidebar hover fly-out (jump straight
+  into a corp/property) · Settings › Notifications reformatted to the house style · the Financials per-tenant
+  "CAM & tax · actual" total no longer collides with the Roof column · bold $/SF rates + a much more noticeable
+  estimate-edit hover · AND a full "a deposit came in short of the ledger's projection" flow — warn at review,
+  a drafted tenant letter, a one-click ledger top-up, and auto-learned payees** (George: "hover format for the
+  side bar … fix the formatting of the notifications page … fix formatting of cam and tax actual total …
+  bold the square footage rates … make the hover effect of editing the estimated cam and tax more noticeable";
+  plus his two questions → an AskUserQuestion where he chose **corps + properties nested** for the fly-out and,
+  for the rent mismatch, the custom four-part answer: warn at review + a drafted "you didn't follow the rent
+  escalation" letter he can send + a go-back-and-update ledger top-up + auto-classify a payee once pinpointed —
+  plan `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`). Deployed: frontend Cloudflare version `72157ca7`,
+  demo worker `507998d2`. **Frontend + `src/lib` only — $0, NO DB migration, NO edge functions, no tenant emails**
+  (the shortfall letter opens in the compose modal; nothing auto-sends). Tests **464/464** (was 441 — +10
+  statementMatch, +5 statementImport, +1 moneyCollection, +4 paymentShortfallEmail, +1 sidebarFlyout, +2
+  statementReviewMismatch, +1 ledgerPage; camReconciliation updated for the new totals shape).
+  - **1) Sidebar hover fly-out (`Sidebar.js` + `.side-flyout` CSS).** The three workspace nav items (Portfolio /
+    Financials / History) each reveal a fly-out on hover/focus listing every corporation with its properties
+    nested, each a direct `<Link>` to `/${mode}/${corp}` or `/${mode}/${corp}/${prop}`. One shared
+    `useQuery(['corporations'])` + `useQuery(['corpProperties', ids])` — the exact keys the Corporations grid
+    warms, so it's usually a cache hit (zero extra round-trip). Opens rightward (`left:calc(100% + 16px)`, z-index
+    60 above the bell's 40) with a transparent `::before` bridge so crossing the gap never drops the hover; works
+    from the collapsed 72px rail too (reveal is on the item, not the label).
+  - **2) Notifications page (`NotificationSettings.js` + `.notify-*` CSS).** Dropped the bare inline-styled rows for
+    a real grid (label+hint | input+reading), grouped under two `.fin-subhead` sections ("How far ahead to notify" /
+    "Follow-ups & grace periods"), maxWidth 620→560 to match Display/Security, and the reading line reserves its
+    height so a row never jumps. Fixed two token bugs George's page inherited — the info card used `--panel-soft`
+    (undefined → cold #f6f8fa) and `--line` (near-black ink!) for its border → now `--panel-2` / `--hair`; the same
+    two fallbacks fixed in `DisplaySettings.js` (info card + the toggle-row borders) for consistency.
+  - **3) CAM & tax actual total (`TenantShareTable.js` + `.cell-sub.wrap`).** The totals band's
+    "+ $X vacant = $Y entered" sub was `white-space:nowrap` in a `minmax(74px,1fr)` track → it overflowed into the
+    Roof column. Now it stacks onto two wrapping lines (`+ $X vacant` / `= $Y entered`) via a `.cell-sub.wrap`
+    variant — reconciliation still visible, never overflowing.
+  - **4) $/SF bold + estimate hover (`TenantShareTable.js` + `.sf-rate`/`.est-cell-btn`).** New `<SfRate>` wraps
+    every $/SF figure (base/actual/roof/total/estimate/vacant) in a bold-ink `.sf-rate` (matches the bolder SF
+    treatment). The click-to-edit estimate cell now wears a faint dashed underline at rest and, on hover/focus,
+    lifts onto the ivory panel with a gold ring + a ✎ glyph (it sits inside the gold-tinted estimate column, so the
+    lift-out is what reads as "editable") + a `:focus-visible` outline (was missing).
+  - **5) Rent-mismatch at statement import — the four-part flow George scoped.**
+    - **Warn at review** (`statementMatch.js` new `depositProjectionDelta` + `StatementReview.js`): a deposit tagged
+      to a month whose amount doesn't match the ledger's projected owed (tolerance = `amountMatches` ±$1/1%, so a
+      "confident" match never flags; a legit gap top-up excluded) shows a small amber **"≠ projected $X — short $Y"**
+      chip under the month picker, and the footer counts "N ≠ projected".
+    - **Drafted letter** (`emailTemplates.js` new `buildPaymentShortfallEmail` + `getStatementMatchContext` widened
+      with tenant email/contact + per-property business identity via the existing `businessFromCorp`): a **short**
+      deposit gets a **✉ Draft letter** ghost button → the compose modal, prefilled with a professional
+      "your payment came in below the scheduled rent — most often a scheduled escalation" letter. Nothing auto-sends.
+    - **Ledger top-up** (`api.js markMonthPaid` gains `opts.additional`; `LedgerPage.js` settled-cell splits 3 ways):
+      a month settled SHORT (one payment) reads an amber **✓ + "short $X"** and one click records the remaining gap
+      as a second same-month payment (the allocation sums them); a month with >1 same-month payment goes inert
+      (manage on the lease's Invoices & payments — undo would delete both); a fully/over-settled single payment still
+      click-undoes. Register expense count now filters explicit expense kinds (the new 'rule' records aren't
+      expenses).
+    - **Auto-learn** (`StatementReview.js` save + `api.js applyStatementImport`/`undoStatementImport`): every CHECKED
+      tenant deposit is remembered automatically (a `type:'rule'` entry rides the import, on the tenant's OWN
+      property) so the next statement auto-classifies that payee with the existing 'rule' chip — no "Always" tick
+      needed (money-out keeps the explicit tick). Deduped by pattern; each rule record carries its `prior` target so
+      **undo reverses exactly what the import taught** (delete a new rule, restore an overwritten one). The rule
+      record carries NO `hash` (stays out of the duplicate-guard universe) and doesn't inflate the money counters.
+      Tenant rows show a muted "auto" hint.
+  - **Files:** `src/components/{Sidebar,StatementReview,TenantShareTable}.js`, `src/pages/{NotificationSettings,
+    DisplaySettings,LedgerPage}.js`, `src/lib/{statementMatch,emailTemplates,api}.js`, `src/App.css`, tests
+    (`paymentShortfallEmail`, `sidebarFlyout`, `statementReviewMismatch` new; `statementMatch`, `statementImport`,
+    `moneyCollection`, `ledgerPage`, `camReconciliation` extended). **No DB/edge/mock/store changes** (the widened
+    context rides the demo mock's generic handlers; verified 464/464 against it).
+  - **Verified:** unit **464/464** (`vitest run`); `vite build` compiles (797 modules); demo bundle free of the live
+    ref; live 200s (amlakre.com + www + workers.dev + demo). Browser drive-through skipped per George's standing
+    preference — the jsdom render tests mount the real Sidebar / StatementReview / LedgerPage / TenantShareTable
+    against the demo mock. **George: hard-refresh (Cmd+Shift+R) → hover Portfolio/Financials/History in the sidebar
+    for the corp+property jump menu · Settings › Notifications reads cleanly · the Financials actual total no longer
+    collides + $/SF is bold + the estimate cell is clearly clickable on hover · import a statement with an off rent
+    → the "≠ projected" chip + ✉ Draft letter, and on the Ledger a short month shows "short $X" (one click records
+    the rest); re-import next month → the payee auto-classifies.**
+
+- **2026-07-22** — **Eight-in-one batch: carried-over CAM/tax estimate note at fiscal-year close · custom
+  "notify me N ahead" per notification type (Settings › Notifications) with a per-lease lease-ending
+  override · ledger cells now show the dollar figure marked (was a bare ✓) · corp-card hover fly-out
+  straight to a property · estimated-vs-actual CAM & tax columns visually distinct · ONE combined "Est.
+  CAM & tax" field on the lease side, synced both ways with Financials · a Total (base + CAM & tax + roof)
+  column · bigger SF + "actual so far" removed from the Leases page · plus a new "tenant behind on rent"
+  bell alert** (George: "Theres a lot of changes here make sure to address them all" — plan
+  `~/.claude/plans/theres-a-lot-of-splendid-sunrise.md`; his AskUserQuestion picks: per-notification-type
+  timing in Settings with a freeform months/days/years value, per-lease override ONLY for lease-ending,
+  Total = Base + CAM & tax + roof). Deployed: DB migration `0065` (Supabase `awgrjmbcghdjgnqeiqkt`,
+  migration-reviewer APPROVE after one fix), `send-reminders` edge fn redeployed, frontend Cloudflare
+  version `7cb7d8b7`, demo worker `e922e06d`. **$0, no tenant emails, no destructive data** (0065 is
+  additive: 3 nullable columns + a widened CHECK + a view rebuild + two behavior-neutral function refreshes
+  + one new RPC). Tests **441/441** (was 415 — +14 notifyPrefs, +12 custom-lead/unpaid-rent/Total/carried/
+  ledger-amount).
+  - **1) Fiscal-year close (confirmed George's mental model — the behavior already existed).** `closeYear`
+    only snapshots; actuals are naturally per-year (expense_records/cam_line_items keyed by year; contract
+    CAM self-heals via `syncContractCamItems` on year open), estimates carry over as single lease columns.
+    NEW: `leases.est_confirmed_year` (0065) stamped by every estimate-save surface (Financials editor +
+    the lease-page combined field + LeaseForm). The Financials breakdown shows a quiet **"Estimates carried
+    over from last year"** banner + a per-row "carried over — last year $X" hint (prior-year annual
+    invoice's cam+tax, else the estimate itself) when the lease has an estimate that hasn't been re-saved
+    for the selected FY and FY ≥ this year. Re-saving (even the same number) clears it.
+  - **2) Custom notification lead times.** New pure `src/lib/notifyPrefs.js` — `NOTIFY_TYPES` registry with
+    per-type DEFAULTS that EXACTLY match today's behavior (lease_end/renewal/escalation/insurance 183 ·
+    annual_report/abatement 31 · insurance_chase 21 · unpaid_rent 7), `parseLeadTime("3 months"/"90 days"/
+    "1 year"→days)`, `formatLeadDays`, `leadDaysFor`/`resolveLeadDays`. Stored in
+    `user_preferences.notify_lead_times jsonb`; `getNotifyLeadTimes`/`setNotifyLeadTimes` (the latter calls
+    the new `regenerate_owner_reminders()` RPC so email reminders re-arm immediately). New **Settings ›
+    Notifications** page (`NotificationSettings.js` + a NavLink + a nested route) with a freeform input per
+    type showing the interpreted "= N days" reading, one Save + an UndoStrip; the info card moved here from
+    Display & features (its stale overdue-rent-email line fixed). `alerts.js` `buildAlerts` now takes a
+    `leadDays` map and each block's horizon is the configured lead (new `bucketFor()` generalizes `bucket()`,
+    which now just delegates at 183d); the termination block honors the per-lease
+    `leases.notify_lease_end_days` override. DashboardPage folds the leads into the `['alerts']` query key.
+    Server side (0065 + the redeploy): `regenerate_lease_reminders` adds ONE optional earlier reminder when
+    a custom lead >30d is set (byte-identical to 0051 when unset), `apply_due_renewals` uses the owner's
+    renewal lead (default 183 ≈ the old 6 months), and `send-reminders`' insurance/contract/annual sweeps
+    gain a **'custom'** first-notice bucket that fires earlier without suppressing the built-in 1m/2w/1w.
+    **The migration-reviewer caught a hard blocker** — `'custom_lead'` violated the 0001
+    `reminders_interval_label_check` (which also fires from the leases/escalations/renewals triggers) — so
+    0065 widens that CHECK to include it (additive; verified live).
+  - **3) "Tenant behind on rent" bell alert (new).** In-app only (no email — matches the removed
+    behind-on-rent precedent), gated by the Rent Ledger module. `fetchAlertData` precomputes it from the
+    SAME ledger math the grid paints (`owedByMonthForInvoice` → `allocatePayments` → `ledgerRowSummary`),
+    honoring the `unpaid_rent` grace lead; warn at 1 month behind, danger at 2+, click → the property's
+    Ledger tab.
+  - **4) Ledger fix.** A settled month cell now ALWAYS renders its received dollar figure (`money0`) under
+    the ✓ (was gated on received≠projected, so a normal mark showed a bare ✓); `.rr-amt`/`.rr-cell.paid`
+    CSS widened to fit.
+  - **5) Corp-card hover fly-out.** New batched `listPropertiesByCorps`; `CorporationsPage` CorpCard (all
+    three modes — Financials/Portfolio/History) gets a `:hover`/`:focus-within` fly-out linking straight to
+    `/${mode}/${corp}/${prop}`.
+  - **6) Per-tenant breakdown.** 6→7-column grid: new **Total** = base + billed CAM & tax (estimate-
+    preferred) + roof, in each row + the totals band; the estimated (warm) and actual (green) CAM & tax
+    columns are tinted a distinct pair; the SF figure in `.ledger-meta` is bolder/bigger.
+  - **7) One combined estimate field.** LeaseDetailPage's two Est. CAM / Est. taxes EditFields → one **"Est.
+    CAM & tax ($/SF/yr)"** field saving the combined convention (`est_cam_annual = whole figure`,
+    `est_tax_annual = 0`) + stamping `est_confirmed_year`; same merge in `LeaseForm` and `LeaseNewPage`'s
+    `initialFromExtraction` prefill (extractor edge fn untouched — it already lands combined figures). The
+    lease page ↔ Financials sync George asked for holds via the existing `['tenantShares']`/`['leases']`/
+    `['lease']` invalidations.
+  - **8) Leases page.** Removed the "actual so far $X" sub-line.
+  - **Files:** `supabase/migrations/0065_notify_leads_and_est_confirm.sql` (new),
+    `supabase/functions/send-reminders/index.ts`, `src/lib/{notifyPrefs (new),alerts,api}.js`,
+    `src/pages/{NotificationSettings (new),SettingsPage,DisplaySettings,DashboardPage,CorporationsPage,
+    LedgerPage,LeaseDetailPage,LeaseNewPage,LeasesPage}.js`, `src/components/{TenantShareTable,LeaseForm}.js`,
+    `src/App.{js,css}`, `src/lib/demo/{store,mockClient}.js`, tests (`notifyPrefs`, `notifyLeadAlerts`,
+    `camBreakdownV2` new; `expenseEstimates`, `ledgerPage` updated).
+  - **Verified:** unit **441/441** (`vitest run`); `vite build` compiles (797 modules); live DB read-back
+    confirms the widened CHECK, the 3 new columns, and `v_tenant_shares.est_confirmed_year` (col 23);
+    `send-reminders` deployed clean; live 200s (amlakre.com + www + workers.dev); demo redeployed
+    (`e922e06d`, bundle free of the live ref). Browser drive-through skipped per George's standing
+    preference (jsdom tests mount the real TenantShareTable/LedgerPage/alerts against the demo mock).
+    **George: hard-refresh (Cmd+Shift+R) → Settings › Notifications to set your lead times · Financials
+    breakdown shows the tinted est/actual pair + Total + the carried-over note · the Ledger boxes now show
+    the amount · hover a corporation card for the property links · a lease page has one combined Est. CAM &
+    tax field.**
+
+- **2026-07-22** — **Removed the "Collected" column from the Financials per-tenant breakdown — that live
+  collections figure now lives only on the Rent Ledger tab** (George, right after the Ledger UX round: "no
+  need to have collected on the per tenant breakdown since its on the ledger"). Deployed: frontend Cloudflare
+  version `64400f73`, demo worker `3722e314`. **Frontend + CSS only — $0, NO DB migration, no edge functions,
+  no tenant emails; pure column removal, zero billing-math change.** Tests **415/415** (unchanged — no test
+  asserted the breakdown's Collected column; the `camReconciliation` totals-row "—" count is Estimated +
+  Difference, still ≥2). `vite build` compiles.
+  - **`TenantShareTable.js`:** dropped the 7th **Collected** column end to end — the header cell, the per-row
+    `<CollectedStat>`, the vacant-row + Totals-row Collected stats, the footnote's Collected-vs-Difference
+    paragraph, and the `CollectedStat` component itself. With it went the `ledgerOn`-gated `getPropertyMonthlyRoll`
+    query + the `allocatePayments`/`ledgerRowSummary` derivation, the `.with-ledger` grid-switch (the table is
+    always the 6-column layout now), and the now-unused `Link`/`useParams`/`useFeatures` imports. The estimate /
+    actual / Difference / Reconcile view is byte-identical otherwise. The month-by-month collections picture is
+    unchanged on the **Ledger** tab (`LedgerPage`), which is where it belongs.
+  - **`App.css`:** removed the dead `.share-ledger.with-ledger .ledger-grid` 7-column rule and the
+    `.collected-cell` / `.cell-sub.owes` rules.
+  - **Files:** `src/components/TenantShareTable.js`, `src/App.css`,
+    `src/components/__tests__/camReconciliation.test.js` (stale router comment only).
+  - **Verified:** unit **415/415** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+    workers.dev); demo redeployed (`3722e314`, bundle free of the live ref). Browser drive-through skipped per
+    George's standing preference (the jsdom camReconciliation test mounts the real table). **George: hard-refresh
+    (Cmd+Shift+R) → Financials → the per-tenant breakdown no longer carries Collected; open the Ledger tab for it.**
+
+- **2026-07-22** — **Rent Ledger made intuitive: "paid = paid" checkmarks, a Collected-of-total column with a
+  red "N months behind" badge (the Owes column is gone), forward-only estimates, faster clicks, and self-
+  explanatory wording** (George, voice memo on fakkawi3's account: the ledger seemed to "auto-calculate partial
+  rent by what the tenant owes from their common tax", it's "super slow when I press the buttons", "a couple
+  checkboxes that don't match", "the collected part is a bit weird … I don't know what the total amount is", "the
+  Owes column just doesn't really make sense", and "explain … where are these numbers coming from". Via
+  AskUserQuestion he picked all four recommended options: **Paid = paid · Forward-only estimates · Collected-of-
+  total column · clear Ricki's $0 estimate**). Deployed: frontend Cloudflare version `8d4f941a`, demo worker
+  `1cbae978`. **Frontend + `src/lib` only — $0, NO DB migration, no edge functions, no tenant emails; the planned
+  live data repair turned out MOOT (see below).** Tests **415/415** (was 409 — +6: settled-month model +
+  bulk-skip).
+  - **What George saw + the diagnosis (all confirmed on live data + code).** (1) **Surprise ◐ partials:** every
+    Pershing tenant's Jan–Jul payments are tagged at the OLD billed monthly (D&D $3,953, Michuacana $4,794.83…)
+    while the grid re-priced each month from the CURRENT lease + estimate (D&D $6,109 — his mid-year $25,872
+    estimate re-priced the whole year retroactively), so 6 of 9 genuinely-paid months read ◐. (2) **Phantom ✓
+    ("checkboxes that don't match"):** a lease with `est_cam_annual=0 AND est_tax_annual=0` stored (the estimate
+    editor saved a 0, not null, on an empty/zero input) → projected base-only vs the higher payments → the tagged
+    **EXCESS rolled into the pool** and painted ✓ on future months never marked. (3) **Owes column** literally
+    duplicated the per-tenant breakdown's "owes $X" sub-line, and "owes" there (unpaid rent) collided with the
+    Difference column's "tenant owes" (year-end CAM true-up) — one word, two meanings. (4) **No denominator:** the
+    Collected figure had nothing to be relative to. (5) **Slow:** the optimistic paint was a no-op for the common
+    open→mark click (it pushed `{amount: undefined}`), one pending click disabled the WHOLE grid, and catch-up was
+    a serial loop of full-roll reads.
+  - **The model change (the core) — `src/lib/ledger.js` "settled month".** `allocatePayments` now: a tag
+    **SETTLES** its month at the received amount (`settled = tagged > 0`), reads ✓ whatever the amount, and its
+    EXCESS **no longer rolls into the pool** (that rollover WAS the phantom-✓, and killing it is what makes a
+    mid-year estimate forward-only). Untagged money still pools and tops up each month's **residual** need (so a
+    partial completes and the bulk "mark through Dec" still settles the year to the cent — a subtlety caught in
+    TDD: skipping settled months entirely orphaned an untagged partial and broke the total). New
+    `coverage = settled ? owed : min(owed, poolDraw)` (bill-shaped → a settled month reads satisfied for
+    owes/bulk/statement-matching), new `received = tagged + poolDraw` (real dollars, for the cells + closeYear;
+    invariant `Σ received + credit = totalPaid`). `ledgerRowSummary` gains **`projected` = Σ (settled ? received :
+    owed)** — the forward-only Y, so a fully-settled year reads exactly 100% (not stuck at D&D's 65%) with zero new
+    storage — plus `rate`; `monthsBehind` now counts only due months with NOTHING received (a settled-short or
+    pool-partial month feeds the running figure, not the red badge).
+  - **UI — `src/pages/LedgerPage.js` + `.rr-*` in `App.css`.** A tagged ✓ shows a small received sub-amount when
+    it differs from the projection; a lump-covered ✓ is an inert dashed/faded cell (managed on the lease's
+    payments panel); a pooled ◐ is one glyph/one action (records the gap). The two Collected/Owes columns collapse
+    into ONE **"Collected"** — `$X of $Y`, a slim progress bar, `Z%`, a green `credit` chip, and a **red "N mo
+    behind"** badge only when genuinely behind (Owes removed). **Speed:** every write now carries a real amount
+    (open→owed, gap→residual) so `markMonthPaid` skips the schedule rebuild and the paint moves instantly; a
+    per-cell `pendingCells` Set replaces the grid-wide disable (parallel clicks work); "✓ all" renders only on
+    months that have come due; catch-up is ONE `markMonthsPaidAllTenants(propId, year, months)` round-trip.
+  - **`src/lib/api.js`:** `closeYear` freezes `projected` = the forward-only Y + `collected_by_month` = the
+    received dollars; `markMonthPaid` runs `ensureInvoice` concurrently with the schedule fetch and skips the
+    rebuild when an amount is passed; `unmarkMonthPaid` deletes in parallel; new
+    **`markMonthsPaidAllTenants(propertyId, year, months, opts)`** (one roll read, deduped parallel `ensureInvoice`,
+    ONE batched insert) with the single-month `markMonthPaidAllTenants` now a thin wrapper.
+  - **Wording George asked to have explained — `src/components/TenantShareTable.js`.** The breakdown's Collected
+    column now reads **`$X of $Y`** with a **`behind $X`** sub-line (the word "owes" leaves this column, ending the
+    collision), the Totals sub reads `behind $X` / `all collected`, and the footnote gains: "**Collected** is money
+    in — payments received this year against the projected year total … separate from **Difference**, which
+    compares the year's actual expenses to the estimate you billed." (So: the breakdown's "owed/paid" is money-in
+    vs the projected rent+estimate total; the **Difference** column is actual expenses vs the estimate billed —
+    George's guess for the Difference column was right.)
+  - **The 0/0 root cause fixed at every save path** (`TenantShareTable` EstimateEditor, `LeaseDetailPage` commit,
+    `LeaseForm`): a blank OR zero/negative estimate now saves as **NULL**, never a stored 0 — so the phantom-✓ can't
+    recur.
+  - **Live repair — MOOT (verified read-only).** The plan was to clear Ricki's $0/$0 estimate, but by deploy time
+    Ricki's already carried a real combined estimate (`est_cam_annual=9440`), and a DB-wide scan found **zero**
+    leases with the `est_cam_annual=0 AND est_tax_annual=0` signature (and zero `est_roof_annual=0`) — so nothing
+    needed changing; the code guard prevents recurrence.
+  - **Files:** `src/lib/{ledger,api}.js`, `src/pages/{LedgerPage,LeaseDetailPage}.js`,
+    `src/components/{TenantShareTable,LeaseForm}.js`, `src/App.css`, tests (`ledger.test.js` +5 settled-model,
+    `moneyCollection.test.js` +1 bulk-skip, `ledgerPage.test.js` updated for the new column). No `store.js` seed
+    change — every state (Bright's lump-✓ 100%, City Dental's ✓✓/pool-◐/behind badge/"$22,300 of $109,800") still
+    demos on the existing seed.
+  - **Verified:** unit **415/415** (`vitest run`) incl. the TDD guard that a settled-short month is skipped by the
+    bulk action and the year still settles EXACTLY to $109,800; `vite build` compiles; live 200s (amlakre.com +
+    www + workers.dev); demo redeployed (`1cbae978`, bundle free of the live ref). Browser drive-through skipped
+    per George's standing preference (the jsdom LedgerPage test mounts the real grid). **George: hard-refresh
+    (Cmd+Shift+R) → Financials → Ledger. A recorded payment now reads ✓ no matter the amount (the difference shows
+    in Collected + the year-end reconcile), the Collected column reads "$X of $Y · Z%" with a red "N mo behind"
+    badge only when a due month has nothing on it, and the buttons respond instantly.** Flags (no action needed):
+    a settled-short tenant reads "no months behind" while its invoice still shows a balance — that gap IS the
+    running collected-vs-projected figure, settled at year-end ⚖ Reconcile; and tagged overpayments no longer
+    prepay future months (untagged lumps still do).
+
+- **2026-07-22** — **A renewal option priced YEAR BY YEAR now shows its projected rent (was "Not listed"): the
+  extractor reads the option's own rent table, CODE annualizes it, the option's new_rent auto-fills, and the
+  stepped rents show as a muted "pending renewal" group** (George, after re-uploading the Busey Bank scan post
+  whole-document-caching fix: "the cashed lease contains the lease renewal option and also the rent escalation
+  terms for that renewal option. But for some reason, the renewal options tab for that lease doesn't show the
+  new projected rent for that renewal option. Can you find out why its not extracting correctly?"). Deployed:
+  `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `9da555ab`, plus a
+  one-time live repair of the existing Busey lease. **$0 recurring** (same paid per-lease read, one extra field —
+  no new model call), **NO DB migration** (the option schedule rides existing rent_escalations + the option's
+  own new_rent; renewal_options has no schedule column and needs none), no tenant emails. Tests **409/409** (was
+  394 — +15 renewalOptionSchedule).
+  - **Root cause (live-verified, NOT a reading failure).** The whole-document caching fix worked — the Busey
+    lease cached in full (53,325 chars incl. the page-32 renewal option AND the Exhibit E rules & regs), and the
+    AI DID read the option. But the option's rent is a **year-by-year schedule** (Exhibit D: five monthly
+    installments, $35,238.17/mo in 2031-32 stepping to $38,896.34/mo in 2035-36), which fits neither of the two
+    shapes the extraction schema offered per option — `new_rent` (one flat annual) or `annual_escalation_pct`
+    (a percent/yr) — so the model nulled both and dumped the schedule as prose in `notes`. `renewalRent()` needs
+    one of them non-null → "Not listed — enter at renewal". And `reconcileRenewalOptions` couldn't self-heal:
+    zero `rent_escalations` steps existed past the committed term (option rents are correctly kept out of the
+    committed schedule). **Bonus proof of the never-let-the-model-multiply rule:** the model's own prose
+    annualizations in `notes` were WRONG on 3 of the 5 years (year 5: it wrote $467,357.08; the printed
+    $38,896.34 × 12 = $466,756.08 — $601 off).
+  - **Fix — give the option schedule a structured home; CODE does the math; reuse the existing renewal
+    machinery.** (1) **Schema + prompt** (`extract-lease/index.ts`): a new per-option `rent_schedule` array —
+    items `{months_from_option_start:int, amount:number, period:enum}`, all-REQUIRED single-typed → **ZERO cost
+    against the 16-union structured-output ceiling** (the `expense_estimates` precedent; the MAIN SCHEMA sits at
+    exactly 16/16, so this was the only safe shape). Prompt: one entry per option year, offset from the OPTION
+    start, amount EXACTLY as printed, never multiplied; empty array for flat/percent/unpriced options. (2)
+    **Annualize in code** (`_shared/rentSchedule.js` new `annualizeOptionSchedule`): `annualRentFrom` per row,
+    drop unusable ($/SF w/o sqft, unknown basis), dedupe same-offset rows (plain-dollar wins), sort, normalize
+    offsets to 0. (3) **Edge merge** (`extract-lease/index.ts`, runs even if the supplement call failed): fills
+    each option's `new_rent` from its first option year when null, keeps the normalized rows on the option
+    (persisted in `extraction_raw`). (4) **Save path** (`api.js` new `buildRenewalScheduleSteps`, wired into
+    `LeaseNewPage.createFromAi`): lays DATED `scheduled` rent_escalations for the option years — option 1's
+    window starts at **termEnd + 1 day** (load-bearing: `portfolio.js` gates un-exercised option rent with
+    `d > end` while every other gate uses `>=`, so a step ON the term end would leak into Ask-AI facts), chained
+    per option, **past-window guard** (an already-begun window synthesizes nothing — imported clause-rents must
+    never read as "exercised"), ±45-day dedupe vs printed steps. These steps are gated everywhere (applyDueEsc
+    skips them, ledger/rent-roll/`currentPhase` ignore them) until the option is confirmed, which extends the
+    term and releases them. **No changes needed** to `rollLeaseIntoRenewal` or `reconcileRenewalOptions` (the
+    ±45d dedupe + evidence gate already cover the Busey shape — verified by a Plan agent + tests).
+  - **Small extras:** notice-parser now handles "twelve (12) months prior" (months, digits-in-parens) not just
+    "180 days prior" (`reconcileRenewalOptions`); a "steps to $X" sub-line on the option row when its flat rent
+    opens a multi-year climb (`RenewalOptionsEditor` + `LeaseDetailPage` passes escalations); a review-screen
+    line noting the captured option rent (`LeaseNewPage` SchedulePreview).
+  - **Files:** `supabase/functions/extract-lease/index.ts` (schema + prompt + edge merge),
+    `supabase/functions/_shared/rentSchedule.js` (`annualizeOptionSchedule`), `src/lib/api.js`
+    (`buildRenewalScheduleSteps` + notice-months regex), `src/pages/LeaseNewPage.js` (createFromAi wiring +
+    preview), `src/components/RenewalOptionsEditor.js` + `src/pages/LeaseDetailPage.js` (steps-to sub-line),
+    `src/lib/__tests__/renewalOptionSchedule.test.js` (new — 15 tests: cent-exact Busey annuals, $/SF, offset
+    normalization, dedupe, window chaining + past-window guard + ±45d + null-termEnd, full DEMO import replay,
+    future/past confirm).
+  - **Live repair (existing Busey lease `212c46fa`):** set the option's `new_rent = 422858.04` + `notice_by_date
+    = 2030-08-31` (12 months before 2031-08-31), and inserted 5 gated `scheduled` steps from the PRINTED
+    monthlies ×12 (NOT the model's wrong prose figures): 2031-09-01 → 422,858.04 · 2032 → 433,429.44 · 2033 →
+    444,265.20 · 2034 → 455,371.80 · 2035 → 466,756.08, each behind a not-exists ±45d guard. The lease itself is
+    untouched (base_rent 364,629.12, term end 2031-08-31, active).
+  - **Verified:** unit **409/409** (`vitest run`); `vite build` compiles (795 modules); `extract-lease` deployed
+    clean, union count unchanged (16/16 — the new array adds zero), unauth POST → **401** (RLS-gated, not a
+    schema 500); frontend live (amlakre.com + www + workers.dev all 200); live DB read-back shows the option +
+    5 gated steps, and the property's 2026 `v_property_totals` revenue is UNCHANGED ($364,629.12 — the future
+    option rent does not leak into money surfaces). **George: hard-refresh (Cmd+Shift+R) → open the Busey lease →
+    Renewal options now reads "$422,858 · steps to $466,756", and the Rent escalations list shows the five
+    2031–2035 steps under the muted "Pending renewal — if renewed" group.** Re-uploading a lease that prices its
+    option year-by-year now captures the projected rent automatically (the definitive schema smoke-test).
+  - **Flag for George (separate from this fix):** the PRIMARY-term 2028-09-01 rent step reads **$382,664.68** —
+    LOWER than 2027's $383,088.48 (2029 is $392,665.68). Likely a 382↔392 scan misread, but the primary rent
+    table isn't in the cached transcript to verify. Eyeball the printed table; one-line data fix if it's wrong.
+
+- **2026-07-21** — **A big scanned lease now caches its ENTIRE text, not just the first ~15 pages: the scan
+  transcription is split into page-range chunks read in PARALLEL** (George, after the first-15-pages fix below:
+  "what if there's important information on the other pages? … I just reuploaded it in the renewal option, which
+  is on page thirty two — did not get uploaded, as well as the rules and regulations that are down there. there
+  has to be some sort of fix for this"). Deployed: `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`).
+  **Edge-function only — NO frontend build, NO DB migration, $0** (same paid transcription lane, same total
+  tokens — just split across parallel calls instead of one serial call), no tenant emails. Tests **394/394**
+  (unchanged — edge fns aren't in the Vitest suite; no `src/` change).
+  - **Root cause (why the 15-page cap existed).** A SCAN has no text layer, so the AI must visually read and
+    RE-TYPE every page — its binding cost is OUTPUT-generation TIME (~600–700 tokens/page; the 40s form-fill
+    proves all pages RENDER fast, it's the writing that's slow). A SINGLE serial transcription call can only
+    generate ~12–15 pages before the edge function's ~150s wall clock, so the prior fix (box 90→115s, 12k-token
+    cap) guaranteed a NON-null cache but only of the first ~15 pages — losing Busey's page-32 renewal option and
+    the rules & regs after it. A DIGITAL/text PDF is unaffected: its text layer is pulled in full, instantly, free
+    (which is why George saw "the whole one works unless it's a … scan").
+  - **Fix — parallel page-range chunking** (`_shared/pdf.ts` new `splitPdfIntoChunks` + `extract-lease/index.ts`
+    new `transcribeScan`). For a multi-page PDF scan, `pdf-lib` splits the document into consecutive **15-page
+    sub-PDFs** (up to 6 → **90 pages**), each uploaded to the Files API + transcribed by its OWN Haiku call, all
+    **concurrently** (`Promise.all`), then stitched back in page order. Because the calls run in parallel the
+    wall-clock cost is ~ONE chunk (~80s), not the sum — so a 45-page scan now caches in about the time 15 pages
+    used to take, page 32 included. And because each chunk is a **physically small PDF**, the model transcribes it
+    in full and stops on its own — no page-counting to disobey, no mid-document truncation (the reliability win of
+    splitting the bytes vs. prompting "only pages X–Y"). `useObjectStreams:false` on save keeps the split cheap on
+    the edge's CPU budget (a scan's bulk is already-compressed images).
+  - **Safe by construction — never worse than before.** A single image, a small scan (≤15 pages), or ANY
+    `pdf-lib` failure (encrypted/malformed/OOM) falls back to the exact single-call path from the prior fix
+    (`splitPdfIntoChunks` returns null → one whole-doc transcription). If every chunk somehow fails, a last-ditch
+    single pass runs. Digital PDFs / pasted text skip transcription entirely, unchanged. The chunk pipeline runs
+    CONCURRENTLY with the ~100s analyst→form chain and is time-boxed (115s/chunk), so wall ≈ ~100–110s < 150s;
+    the sub-PDF uploads + deletes are parallel + best-effort (a leaked free file ages out).
+  - **Honest ceiling (flagged, unchanged in spirit):** up to **90 pages** are cached per upload; a scan beyond
+    that caches its first 90 pages with a one-line note pointing to the full-copy path. A truly enormous scan
+    still can't be transcribed verbatim in one 150s call — a **digital/text PDF** caches fully for free. For a
+    normal 30–60-page commercial lease (Busey included), the whole document now caches.
+  - **Files:** `supabase/functions/_shared/pdf.ts` (`splitPdfIntoChunks` via `pdf-lib`),
+    `supabase/functions/extract-lease/index.ts` (`transcribeScan` + chunk constants + wiring; the single-call
+    `transcribeWithTimeout` now takes a maxTokens arg). No `src/` change → no frontend deploy.
+  - **Verified:** `extract-lease` deployed clean (server-side bundle + type-check pass, incl. the `npm:pdf-lib`
+    dynamic import); unauthenticated POST → **401** (RLS-gated); Vitest **394/394** (no `src/` change). Evidence
+    the edge already parses a 23 MB scan within budget: `extractPdfText` (unpdf) runs on every PDF today — it
+    parsed the Busey scan (returned null, no text layer) before the transcription even started — so `pdf-lib`
+    load+split is within the same CPU headroom. **The real proof is George re-uploading the Busey scan** — the
+    page-32 renewal option and the rules & regulations should now be in the cached lease text and answerable by
+    the assistant.
+
+- **2026-07-21** — **Follow-up to the Files-API 546 fix: a big scanned lease now CACHES its text (was "read but
+  didn't cache"), + the lease/insurance/contract assistant Q&A now shows only the CURRENT question** (George, on
+  Khaled's account, re-uploaded his 22.9 MB "Busey Bank Fully Executed Lease.pdf": after the 546 fix the main
+  terms filled but "the lease didnt cache in the lease document," and separately "the questions arent going away
+  in the lease document and assistant … questions should just disappear after another one is asked"). Deployed:
+  `extract-lease` edge fn (Supabase `awgrjmbcghdjgnqeiqkt`) + frontend Cloudflare version `0c8f1d8d`. **$0, NO DB
+  migration, no tenant emails.** Tests **394/394**, `vite build` compiles.
+  - **Root cause (issue #1, confirmed on live data).** The Busey upload is a **22.9 MB scan** (no text layer → the
+    vision path). On the vision path the app runs a Sonnet **analyst** read (60s box), the Haiku **form-fill** (40s
+    box), and a Haiku **full-text transcription** (was a 90s box, 16k-token cap) — the transcription is what
+    populates `lease_text` for the assistant / lease search. Verified against the DB: the created lease
+    `1f56e064` had **`lease_text_len = 0`** and its `lease_files.extraction_raw` had **no `analysis_brief`** — i.e.
+    on this big scan BOTH the 60s analyst and the 90s transcription **timed out** (returned null), while only the
+    fast 40s form-fill finished (which is why the main terms filled but nothing cached). The transcription's
+    binding cost is OUTPUT-generation time (writing ~16k tokens runs past 100s), not input — the form-fill proves
+    all pages render inside 40s.
+  - **Fix #1 (`extract-lease/index.ts` + `_shared/anthropic.ts`), inside the ~150s edge budget.** (a) Transcription
+    box **90s → 115s** — it runs CONCURRENTLY with the ~100s analyst→form chain, so it's the long pole: wall ≈
+    upload + 115s, comfortably under 150s for a cloud-to-cloud upload. (b) Transcript **max_tokens 16k → 12k** so
+    the generation reliably STOPS *inside* the box → a **guaranteed non-null** transcript (a timeout discards the
+    output → null; a clean max_tokens stop keeps it). A short lease still transcribes in full and finishes early;
+    a long scan now caches its **first ~15 pages** — where the main terms live and enough for most assistant
+    questions — instead of nothing. (c) `transcribeDocument(model, docBlock, opts)` gained `{timeoutMs, maxTokens}`
+    (default 16k / 90s, so insurance/contract/addendum are unchanged); `callClaude`'s per-attempt abort is now
+    threaded to match the box. (d) `deleteFile`'s best-effort cleanup abort **15s → 5s** — it runs in the request's
+    `finally` (on the wall clock), so a hung cleanup must never push a completed extraction past 150s; this buys
+    back ~10s, so the net wall-clock increase over the current *working* run is only ~+5s worst case.
+  - **Honest limit (unchanged, flagged):** a truly enormous scan (30–40+ pages) can't be transcribed **verbatim**
+    in a single 150s edge call at all — physics of token-generation speed. Such a scan now caches its **first ~15
+    pages** (partial, non-null) rather than nothing; the fields still fill regardless. The way to get a FULL
+    searchable copy of a long lease is a **digital/text PDF** (text layer → full text cached for free), not a scan.
+  - **Fix #2 (`src/components/DocAssistant.js`).** The shared doc-assistant kept every Q&A in an accumulating
+    `log` array (`onMutate` appended). Now `onMutate` **replaces** the log with the single new entry, so only the
+    current question+answer shows and the previous one disappears the moment a new one is asked — exactly George's
+    ask. One-line behavior change; applies consistently to the lease, insurance-policy, and contract assistants
+    (all render through `DocAssistant`). Suggested-question chips still show before the first ask (unchanged).
+  - **Files:** `supabase/functions/extract-lease/index.ts` (box + max_tokens + threaded timeout),
+    `supabase/functions/_shared/anthropic.ts` (`transcribeDocument` opts, shorter `deleteFile` abort),
+    `src/components/DocAssistant.js` (replace-not-append). No new tests (edge timing isn't in the Vitest suite; the
+    DocAssistant change is a UI-state tweak with no test asserting the old accumulating behavior).
+  - **Verified:** unit **394/394** (`vitest run`); `vite build` compiles; `extract-lease` deployed clean
+    (server-side bundle + type-check pass); frontend live (amlakre.com + www + workers.dev all 200). **The real
+    proof is George re-uploading the Busey scan** — the main terms should fill AND the lease text should now cache
+    (fully if it's ≲15 pages, first ~15 pages if larger), and the lease-page assistant should replace the prior
+    Q&A on each new question.
+
+- **2026-07-21** — **Big-scan AI reads no longer time out (HTTP 546): every extractor now uploads the document
+  to Anthropic's Files API ONCE and references it by `file_id` across all reads, instead of re-sending the whole
+  ~34 MB base64 payload 3–4 times** (George hit "The document took too long to read" right after the 25 MB bump
+  above — bigger scans now clear the size gate but a big multi-page scan's analyst + form + transcription passes
+  ran past the edge function's ~150s wall-clock / 256 MB budget. Via AskUserQuestion he chose the **long-term
+  fix**: "a full read so it can cache the lease and then fill out the main terms"). Deployed: all **6 extract edge
+  functions** redeployed (Supabase `awgrjmbcghdjgnqeiqkt`). **Edge-function only — NO frontend build, NO DB
+  migration, $0 (file upload/delete are free on the Files API; message input is priced identically to inline —
+  same tokens, just not re-uploaded), no tenant emails.**
+  - **Root cause:** the pipeline inlined the base64 bytes (≈1.37× the file) in EVERY model call — analyst (Sonnet),
+    the two Haiku form-fills, and the vision transcription. On a large scan that's ~34 MB × 3–4 concurrent
+    `JSON.stringify`s → memory pressure + repeated upload time → the platform kills the worker (546) before the
+    internal per-call timeouts can fire cleanly. The 25 MB bump made it reachable by letting bigger files through.
+  - **Fix (shared `_shared/anthropic.ts`):** new `uploadFile(bytes, filename, mediaType)` → POSTs multipart to
+    `https://api.anthropic.com/v1/files` with header `anthropic-beta: files-api-2025-04-14`, returns the `file_id`;
+    new best-effort `deleteFile(fileId)` (never throws). The `Block` type now accepts `source: {type:'file',
+    file_id}` for `document`/`image` blocks, and `callClaude` sends the files-api beta header on every Messages
+    request (harmless for non-file calls). A `safeFilename` helper strips the Files-API forbidden name chars.
+    Verified against the live Anthropic docs (upload shape, the `document/source/type:'file'` block, the beta
+    header, 500 MB/600-page limits) before writing — not from memory.
+  - **Every extractor's vision branch** now does `uploadedFileId = await uploadFile(...)` → builds the doc/image
+    block as a `file_id` reference (all reads in that function share the one upload — extract-addendum's THREE
+    reads too) → a `finally { if (uploadedFileId) await deleteFile(uploadedFileId) }` cleans it up after the reads
+    complete. Removed each function's now-dead local `base64()` helper. The PDF text-layer / paste-text paths are
+    unchanged (they never inlined a file). The 25 MB `MAX_VISION_BYTES` guard stays as a backstop (storage bucket
+    caps uploads at 25 MB anyway).
+  - **Why this fixes it:** one ~25 MB multipart upload instead of 3–4× ~34 MB inline JSON bodies → the per-read
+    Messages requests are tiny (just the id), so both the memory blowup and the repeated-upload wall-clock cost
+    are gone, AND the file is no longer bound by the 32 MB inline request cap (Files API reads PDFs up to ~600
+    pages on the 1M-context Sonnet analyst / ~100 pages on the 200K Haiku form calls). George keeps the FULL read
+    he asked for — analyst brief + cached transcription + main-terms fill — it just fits the budget now.
+  - **Honest limit (flagged):** a truly enormous scan (100+ pages, or very dense image-heavy pages) can still hit
+    Claude's per-request page/context ceiling even via the Files API — the `supabaseClient.js` 546 message
+    (split/downscale) stays as the last-resort net for those. For normal 20–25 MB leases this removes the timeout.
+  - **Files:** `supabase/functions/_shared/anthropic.ts` (uploadFile/deleteFile + file-source Block + beta header),
+    and the vision branch of all six `extract-*/index.ts` (`extract-lease`, `-insurance`, `-contract`,
+    `-annual-report`, `-addendum`, `-bank-statement`).
+  - **Verified:** all 6 deployed clean (server-side bundle + type-check pass); grep confirms zero dangling
+    `base64(` calls and zero leftover inline `type:'base64'` blocks, one `file_id: uploadedFileId` doc + image
+    block per function, uploadFile+deleteFile wired in each; all 6 live (unauth POST → 401). **The real proof is
+    George re-uploading his big scanned lease** — it should now complete the full read instead of "took too long."
+    No `src/` change, so no unit run / frontend deploy needed. (Edge functions aren't in the Vitest suite;
+    validation is the clean bundle + the verified Files API contract.)
+
+- **2026-07-21** — **Rent Ledger now builds UP from the lease + expense entries, not backwards from the invoice —
+  base rent shows the lease's real constant $/mo instead of a residual squeezed to a stale invoice** (George,
+  after asking why Infinite Mobile's ledger base read $2,211.65 when the lease says $2,395.42: "base rent always
+  stays the same … why are numbers getting pulled from the invoice?? everything should build from the leases and
+  expense entries and estimated cam and actual cam into the invoice not the opposite. am i wrong?" → I confirmed
+  he's right; he replied "yes do both and work upwards from the data not backwards from the invoice"). Deployed:
+  frontend Cloudflare version `6dc6c693`, demo worker `fc3e8bc1`, plus a live-data repair of the one stale
+  invoice. **Frontend + `src/lib` only — $0, NO DB migration, no edge functions, no tenant emails; the live
+  repair is one invoice UPDATE (no data lost).** Tests **394/394** (was 392 — +2 base-from-lease regression).
+  - **Root cause:** `getPropertyMonthlyRoll` / `getMonthlyRent` / `markMonthPaid` passed the year invoice's
+    total into `buildLeaseSchedule`, which **scaled** the whole term-aware schedule to settle that invoice to
+    the cent (the 0055 penny goal). `componentizeSchedule` then derived base as a **residual** (`owed − CAM&tax
+    − roof`). So when a stored invoice diverged from the current lease + estimate, the scale factor dragged the
+    base off its true value. Infinite Mobile (mid-year 6-month lease, base $28,745.04/yr, $10,855 CAM&tax est):
+    its 7/13 hand-repaired invoice ($18,280.99, CAM $213 — billed off the OLD actuals before the estimate was
+    typed) was lower than the data gross ($19,800.02), so factor 0.9233 shrank base $2,395.42 → **$2,211.65**.
+    (And the lone July payment $3,046.83 = exactly $18,280.99 ÷ 6 — a system default from the scaled schedule,
+    which is what George's "where did 3,046 come from?" was.)
+  - **Fix (the direction George endorsed — build UP from the data):** the three ledger builders now pass **no
+    `invoiceTotal`**, so `buildLeaseSchedule` builds purely from the lease's own base (constant, escalation-
+    aware, prorated for the term) + estimated-else-actual CAM/tax/roof (`billedComponents`), factor stays 1, and
+    base is the lease's real per-month rent — **never a residual, never reshaped by a stale invoice**. The
+    invoice is a downstream OUTPUT of the same data, not a source the ledger reads back. `buildLeaseSchedule`
+    keeps its scaling capability for the ONE path that legitimately reconciles to an *issued* bill —
+    `owedByMonthForInvoice` → the AR / "behind on rent" math — which still passes `invoiceTotal` (documented as
+    the two modes at the top of `leaseSchedule.js`). Infinite Mobile now reads base **$2,395.42/mo** ($3,300.00
+    total = base $2,395.42 + CAM&tax $904.58), exactly the lease figure.
+  - **Live-data repair (Part 2, confirmed):** regenerated Infinite Mobile's stale annual invoice
+    (`f1c9e13e…`) from the current lease + estimate — base $14,372.52 (6mo of $28,745.04), CAM $5,427.50 (6mo of
+    the $10,855 estimate), tax/roof $0, **total $19,800.02** (was $18,280.99). No payments deleted.
+  - **Blast radius + what's left for George (flagged, NOT changed — those are money actions):** removing the
+    scaling means every tenant's ledger now reflects the CURRENT lease + expense entries. For full-year tenants
+    whose entered expenses grew since their invoice was generated, the ledger now shows the higher current
+    figure (e.g. FIVE POINTS ~+$2,669, Michuacana ~+$2,455 — a consistent ~3-4% CAM drift; D&D Dental is a ~$23k
+    outlier worth a look). That gap is the year-end CAM true-up surfacing — exactly the "projected vs actual"
+    signal. I did **not** regenerate those invoices (changing billed amounts needs George's OK); George can
+    ⚖ Reconcile at year-end or ask me to regenerate them from current data. Also flagged: Infinite Mobile's
+    July payment stays recorded at **$3,046.83** (the old scaled default), so July shows ~$253 short of the new
+    $3,300 — if July was paid in full, click the July cell to top it up (or tell me the real deposit). And its
+    `est_cam_annual` $10,855 is a touch above pure pro-rata (~$8,878) — editable in the Financials estimate box.
+  - **Demo made consistent (so the walkthrough shows the fixed behavior):** the two prop-1 invoices were seeded
+    inconsistent with their lease+estimate (the scaling hid it). Rebuilt them FROM the data — inv-1 Bright Coffee
+    = base 60,000 + est 16,500 + roof 1,500 = **78,000** (lump 78,000 settles it, no phantom credit); inv-2 City
+    Dental = base 84,000 + actual share (0.6 × 25,000 tax + 0.6 × 18,000 CAM) = **109,800** (monthly **9,150**;
+    Jan/Feb full-month tagged checks = ✓, March $4,000 partial = ◐).
+  - **Files:** `src/lib/api.js` (3 call sites drop `invoiceTotal`), `src/lib/leaseSchedule.js` (two-mode doc),
+    `src/lib/demo/store.js` (inv-1/inv-2 + pay-1/2/3 rebuilt from data), tests (`ledger.test.js` +2
+    base-from-lease regression; `moneyCollection` / `collectionSnapshot` / `ledgerPage` / `statementImport`
+    figures updated to the data-derived values).
+  - **Verified:** unit **394/394** (`vitest run`); `vite build` compiles; live DB shows the regenerated invoice
+    (total $19,800.02, CAM $5,427.50); live 200s (amlakre.com + www + workers.dev); demo redeployed
+    (`fc3e8bc1`, bundle free of the live ref). **George: hard-refresh (Cmd+Shift+R) → Infinite Mobile's Ledger
+    now reads $2,395.42 base · $904.58 CAM&tax = $3,300.00/mo.**
+
+- **2026-07-21** — **AI file-size limit raised 20 MB → 25 MB, so a larger scanned lease / insurance / contract /
+  bank statement can be read by the AI** (George: "increase lease download size for the ai to 25 megabites").
+  Deployed: the 6 extract edge functions redeployed (Supabase `awgrjmbcghdjgnqeiqkt`) — `extract-lease`,
+  `extract-insurance`, `extract-annual-report`, `extract-contract`, `extract-addendum`, `extract-bank-statement`.
+  **Edge-function only — NO frontend build, NO DB migration, $0 (no per-request cost change; the existing paid
+  AI lane just accepts bigger files), no tenant emails.**
+  - **One shared constant:** `MAX_VISION_BYTES` in `supabase/functions/_shared/anthropic.ts` bumped
+    `20 * 1024 * 1024` → `25 * 1024 * 1024` (25 MiB) — now matching the storage bucket (migration 0020) and the
+    client upload guard (`api.js` `MAX_UPLOAD_BYTES`), which were **already** 25 MiB. A 20–25 MB file previously
+    uploaded and stored fine but the AI reader rejected it as "about 20 MB max"; the six per-function guard
+    messages were updated to "about 25 MB max" to match.
+  - **Caveat (in the code comment + flagged to George):** the Anthropic request cap is ~32 MB and base64 inflates
+    a file ~1.37×, so a source file near the very top of the range (~24 MB+) can still be rejected by the
+    provider; nearly all scans sit well below it. CSV bank-statement imports are unaffected (they never touch the
+    vision path).
+  - **Files:** `supabase/functions/_shared/anthropic.ts` (the constant + comment) + the six `extract-*/index.ts`
+    guard-message strings.
+  - **Verified:** all 6 functions deployed clean; grep confirms the constant reads 25 MiB and zero "20 MB max"
+    strings remain. No unit run needed (no `src/` logic changed).
+
+- **2026-07-21** — **Per-tenant breakdown: a muted "Vacant space" line makes the unbilled slice of
+  taxes+CAM visible, reconciling the tenant shares back to the Expense entry total** (George asked why the
+  CAM & tax actuals didn't "sync" with the Expense entry; live-verified it was the 0042 building-SF design —
+  Pershing FY2026: $146,200 entered × 12,868/13,750 leased = $136,821.93 across tenants, the $9,378.07 gap
+  being the vacant 882 SF's share — and he confirmed "we could add the vacancy as a visual help for the user
+  to see whats missing"). Deployed: frontend Cloudflare version `09f7e78c`. **Frontend-only — $0, no DB
+  migration, no edge functions, no tenant emails; display-only, zero billing-math changes.** Tests **392/392**
+  (was 391 — +1 vacancy-row render).
+  - **`TenantShareTable.js`:** a muted italic **Vacant space** ledger entry above the Totals band — "{sf} ·
+    {pct}% of the building — billed to no one" with the vacant slice of taxes+CAM
+    (`(taxes_total+cam_total) × vacantSf / buildingSf`) and its $/SF (= every pro-rata tenant's rate); the
+    Totals "CAM & tax · actual" gains the sub-line `+ $X vacant = $Y entered` (the "= entered" part only
+    when the figures genuinely tie within 5¢ — a share override can bill off pro-rata); footnote updated to
+    point at the row. Expense totals read via the SAME `['expenseRecord', propId, year]` query key the
+    Financials page already uses → React Query dedupes, zero extra network. Hidden when no building size is
+    set (fallback splits over leased SF — nothing missing, e.g. Harlem ties out exactly), fully leased, or
+    no expenses entered — so the demo (fully leased) is unchanged and no demo redeploy was needed.
+  - **Files:** `src/components/TenantShareTable.js`, `src/App.css` (`.ledger-vacant`),
+    `src/components/__tests__/camReconciliation.test.js` (+1: shrink Bright Coffee 2,000→1,500 SF → 500 SF
+    vacant row, $4,300.00 at $8.60/SF, totals sub "+ $4,300.00 vacant = $43,000.00 entered"; fully-leased →
+    no row; seed restored).
+  - **Verified:** unit **392/392** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+    workers.dev). Browser check skipped per George's standing preference (the jsdom test mounts the real
+    table against the demo mock). **George: hard-refresh (Cmd+Shift+R) → Pershing's Financials now shows
+    "Vacant space · 882 SF — billed to no one · $9,378.07" and the totals line reconciles to the $146,200
+    entered.**
+
+- **2026-07-21** — **Rent Ledger round 2: named expense BUCKETS (incl. a "not billed to tenants" kind),
+  statement import from the Expense entry, a click-gated 🤖 bucket-suggest, estimates pulled from the
+  lease, and the demo refreshed for George's walkthrough** (George after reviewing Stages 1–3: statements
+  should be submittable "into the expense entry", AI sorts money in/out, "the user is able to create
+  buckets — expenses or cleaning or garbage or snow or HVAC or electricity", "most of it is gonna go in
+  the expense entry just so I have an itemized list of what I'm spending money on", "show me it in the
+  demo mode"; plus "estimated CAM and tax should be pulled from leases but of course still be editable".
+  His 2 AskUserQuestion picks: buckets = **both kinds** (billable CAM + one not-billed family) · AI =
+  **click-gated suggest button**). Deployed: DB migration `0064` (pre-reviewed APPROVE), NEW
+  `suggest-buckets` edge fn, frontend Cloudflare version `af27c300`, demo worker version `7233decc`.
+  **$0 everywhere except the optional 🤖 click (~1–2¢) and the existing PDF lane (unchanged); 0064 is
+  additive-only (one defaulted column + a widened CHECK); no tenant emails.** Tests **391/391** (was 383 —
+  +6 expenseBuckets, +2 bucketUi).
+  - **Buckets (migration `0064` + api.js + StatementReview + CamSection):** `cam_line_items.billable`
+    (default true) — the CAM re-sum counts ONLY billable rows, so "Other — not billed to tenants" items
+    are itemized for George's records but never touch `v_tenant_shares`/bills/reconciliation (stated in
+    the UI; folding them into NOI = v2). The review's money-out dropdown is now **Property taxes · Roof ·
+    optgroup "CAM buckets — billed to tenants" (the owner's saved labels + rules' labels + the keyword
+    table's built-ins) · optgroup "Not billed to tenants" · ＋ New bucket… (inline name + billable tick) ·
+    Ignore**; picks encode `cam:{label}`/`other:{label}` and save as labeled cam items with `billable`.
+    "Always" rules now persist from the FINAL row decisions (a tick on an untouched suggestion saves too)
+    and **carry `cam_label` + the new `expense_other` kind** (0064 widens the CHECK), so a bucket learned
+    once auto-sorts forever. The Expense entry groups items by bucket with per-bucket subtotals
+    ("Snow removal · 2 items · $4,600"), shows the not-billed group with its own total, adds an
+    "imported" badge on statement rows, and the add form gains a bucket datalist + "not billed" tick.
+  - **Import from the Expense entry:** the LedgerPage import machinery extracted into shared
+    `ImportStatementButton.js` (+ `ImportResultsStrip` + the one shared `settleStatementImport`
+    invalidation set) — the ⬆ Import statement / Try-a-sample buttons now ALSO sit on the Financials
+    page's "Expense entry · FY" header, with the same full-page review swap + results strip + ↩ Undo.
+    Two doors, one pipeline; the Ledger tab keeps its button.
+  - **🤖 Suggest buckets (new `suggest-buckets` edge fn, Haiku, rate-limited 10/min, naming-ONLY):** shows
+    on the review only when money-out lines are unrecognized; one click (~1–2¢) suggests a bucket +
+    billable flag per line, STRONGLY preferring existing bucket names. Suggestion-only: picks land with an
+    "AI" chip and stay UNCHECKED — unknown money-out still never books without George's tick. Verified
+    live: unauthenticated POST → 401.
+  - **Estimates pulled from the lease:** new `getLeaseStatedEstimate` reads the cached AI read
+    (`lease_files.extraction_raw`'s 7/13 `expense_estimates` fields, fetched on-demand). The Financials
+    estimate editor now OPENS PRE-FILLED with the lease-stated $/SF + a "from the lease: '…quote…' — Save
+    to start billing it" line for a tenant with no estimate set; the lease page's Est-CAM/taxes hints say
+    "the lease states $X/yr". Deliberate safety rule: nothing auto-applies — the figure only starts
+    billing when saved (new uploads keep pre-filling on the review form as since 7/13).
+  - **Demo (worker `amlak-demo` version `7233decc` — was on the pre-Ledger `d3d7123a`, so George couldn't
+    see any of Stages 1–3 there):** canned statement enriched 6→9 lines (garbage→Waste removal,
+    snow→Snow removal buckets + an unrecognized HOME DEPOT line that demos the 🤖 button via a canned
+    `suggest-buckets` route); seeded a not-billed "Owner legal fees $1,200" bucket; City Dental's lease
+    file seeded with a cached "$4.00/SF" estimate read so the editor demos the from-the-lease prefill.
+    Bundle verified free of the live Supabase ref.
+  - **Files:** `supabase/migrations/0064_expense_buckets.sql` (new), `supabase/functions/suggest-buckets/
+    index.ts` (new), `src/lib/{api,statementMatch}.js`, `src/components/{StatementReview,CamSection,
+    TenantShareTable,ImportStatementButton (new)}.js`, `src/pages/{PropertyFinancialsPage,LedgerPage,
+    LeaseDetailPage}.js`, `src/lib/demo/{store,mockClient}.js`, tests (`expenseBuckets.test.js` +
+    `bucketUi.test.js` new, `ledgerPage.test.js` extended).
+  - **Verified:** unit **391/391** (`vitest run`); `vite build` compiles; live DB (read-only): `billable`
+    default true + the widened `import_rules_target_kind_check` present; live 200s (amlakre.com + www +
+    workers.dev). **Full 12-step real-browser drive-through of the deployed demo — 12/12 pass, ZERO
+    console errors** (per-tenant est-vs-actual +$800 → estimate prefill "from the lease" → buckets in the
+    Expense entry → sample statement → 🤖 on Home Depot → J-PAK assigned cross-property with an "always"
+    rule → save books 2 payments/$14,625 + 5 expenses/$4,742.48 → CAM total $19,642.48 with imported
+    badges + subtotals → City Dental March ◐→✓ → undo restores $18,000.00 exactly). **George: the
+    walkthrough script for the demo is in the chat reply of this session.**
+
+- **2026-07-21** — **Rent Ledger Stage 3 of 3: closing a year now freezes each tenant's COLLECTION picture,
+  and History charts the collection trend year over year** (same approved plan; the partners' "resets yearly
+  and saves history for trends" ask). Deployed: frontend Cloudflare version `f7fc6a15`. **Frontend +
+  `src/lib` only — $0, NO DB migration** (the figures ride the existing `financial_snapshots.breakdown`
+  jsonb), no edge-function redeploy (`trends-narrative` stringifies its whole series into the prompt, so the
+  new keys flow in as-is), no tenant emails. Tests **383/383** (was 381 — +2 collectionSnapshot).
+  - **`closeYear` (api.js)** now also builds the ledger roll and freezes per tenant: `projected` (the year's
+    billed total), `collected`, `collection_rate` (raw/unclamped — an overpaid tenant truthfully reads
+    >100%), and `collected_by_month` (the 12-array from the same allocatePayments derivation the grid
+    paints from). Old snapshots simply lack the keys — every consumer renders "—", never NaN.
+  - **Pure selectors in `ledger.js`:** `snapshotCollectionSummary(snap)` (property totals, null on a
+    pre-ledger snapshot) + `collectionSeries(snaps)` (the YoY series, key-less years skipped, oldest first).
+  - **History page:** a **Collected** DeltaCard joins the YoY strip (only when the snapshot has the data)
+    and the YoY table gains **Collected** + **Rate** columns; the AI trends summary's series now carries
+    `rent_collected`/`collection_rate` for years that have them. **Ledger tab:** a quiet "FY {N−1}
+    collection rate: 96%" chip (from the closed year's snapshot) links to History. (The 12-month collected
+    bar strip stays v2 — `collected_by_month` is stored from day one, so it's render-only later.)
+  - **Demo:** snap-1/snap-2 breakdowns enriched with collection figures (snap-0 left key-less to demo the
+    "—" fallback), so the demo History shows the trend and the demo Ledger shows the prior-year chip.
+  - **Files:** `src/lib/{api,ledger,demo/store}.js`, `src/pages/{HistoryPage,LedgerPage}.js`,
+    `src/lib/__tests__/collectionSnapshot.test.js` (new).
+  - **Verified:** unit **383/383** (`vitest run`) incl. closeYear freezing the lump payer at rate 1.0 +
+    penny-exact by-month sum, the null-summary/series-skip guarantees; `vite build` compiles. Browser check
+    skipped per George's standing preference. Live 200s (amlakre.com + www + workers.dev). **All three Rent
+    Ledger stages are now live** — George: Financials → **Ledger** tab per property (grid + import), the
+    **Collected** column on the per-tenant breakdown, and collection trends on **History** once you close a
+    year.
+
+- **2026-07-21** — **Rent Ledger Stage 2 of 3: bank-statement import — drop a statement on the Ledger tab,
+  the app recognizes every line in/out, and one Save books tenant payments + expenses with a full ↩ Undo**
+  (same approved plan as Stage 1; the partners' headline ask — "drop a bank statement in; the app recognizes
+  money in/out and classifies each payment", replacing their manual Excel deposits/rent-receipts tabs).
+  Deployed: DB migration `0063` (Supabase `awgrjmbcghdjgnqeiqkt`, pre-reviewed APPROVE by the
+  migration-reviewer agent), NEW `extract-bank-statement` edge fn, frontend Cloudflare version `6ad7832e`.
+  **A CSV statement imports through pure client-side code — $0, NO AI; only a PDF statement uses one Haiku
+  transcription read (~5–15¢, rate-limited 10/min). Classification/matching is ALWAYS deterministic code.
+  No tenant emails; 0063 is additive-only (two new owner tables + nullable provenance columns).** Tests
+  **381/381** (was 337 — +12 statementParse, +22 statementMatch, +9 statementImport apply/undo, +1 LedgerPage
+  import round-trip render).
+  - **Two lanes, one pipeline:** CSV read in the browser (`statementParse.js` — delimiter/header/junk-preamble
+    detection, BOM, quoted commas, $-and-comma amounts, parentheses negatives, signed-amount OR Debit/Credit
+    pairs) · PDF via the new transcribe-ONLY edge fn (verbatim lines, never computes/classifies). BOTH lanes
+    pass the same `normalizeStatementRows` validation gate + the **running-balance self-check** (a mis-signed
+    line flags "check" instead of silently booking; works newest-first or oldest-first) and the honest
+    "N lines parsed · M skipped (with reasons)" header.
+  - **Matching (`statementMatch.js`, pure, suggest-only):** each line's fiscal year comes from ITS OWN date
+    (a Dec/Jan statement books each line into the right year; closed-FY lines get an amber chip but import
+    normally — verified closeYear only snapshots). Duplicate guard = line-hash vs LIVE `payments.import_hash`
+    (hand-deleted payments become importable again; "import anyway" override supported — NO unique index).
+    **Rules = the payee memory**: tick "always" on a garbled payee once (pattern auto-derived as the longest
+    digit-free run, so CHECK 1044/1045 both match) → every future import auto-books it; rules pin to lease_id
+    and re-apply to the rest of the SAME file live. Deposits: tenant-name token fuzzy (LLC/INC noise dropped)
+    across **ALL properties** (one bank account serves the portfolio — a Pershing check imported on Maple
+    still posts to Pershing), corroborated by amount (billed month / gap / k-months / invoice total / an open
+    **reconciliation true-up**, which books against THAT invoice with no month tag and never touches monthly
+    coverage). Hand-entry collision guard un-checks a deposit whose months are already covered ("possibly
+    already recorded by hand"). Withdrawals: keyword table (tax/roof/CAM-with-label; MORTGAGE/LOAN/TRANSFER/
+    DRAW → ignore with the reason shown); **unknown money-out is never auto-booked**.
+  - **Which statement is which property — 3 layers:** the review header states "**Expenses will be recorded
+    on: {property}**" with a dropdown (deposits self-route regardless); a **majority vote** over matched
+    deposits raises "N of M deposits match {other property} — record expenses there instead? [Switch]"; and
+    the masked **account hint** (••4821, captured from the CSV preamble/filename) remembers each account's
+    property ("Account ••4821 — last imported into …") and shows in the register.
+  - **Review & save (`StatementReview.js`, full-page):** Money in · Money out · Duplicates (collapsed) ·
+    Skipped (collapsed); per-row match dropdown (suggested + all tenants + expense kinds + ignore), month
+    picker (— = lump → the Stage-1 FIFO pool absorbs it), confidence chip, "always" tick; **✓ Accept all
+    confident**; footer confirm-summary BEFORE anything writes + warnings (reconciled tenants on the target
+    FY / closed-year lines). `applyStatementImport` books deposits via ensureInvoice+recordPayment (identical
+    row shape to hand entry — every downstream surface updates automatically), CAM → line items with an
+    import badge **that keep their ✕**, taxes/roof → **accumulate** onto the FY record; every write recorded
+    in `applied`. **Undo** (results strip + per-import in the register) reverses exactly the import's delta:
+    payments delete-if-exists, CAM items removed + re-synced, taxes/roof decremented **clamped ≥0** (a manual
+    edit up survives), hashes leave the dedupe universe — apply→undo→re-apply lands the same figures once
+    (test-locked). History logs `statement_imported`/`statement_import_undone`.
+  - **Demo:** "Try a sample statement" on the Ledger tab runs canned lines through the REAL gate + matcher +
+    apply — the whole partner pitch with zero AI and zero files.
+  - **Files:** `supabase/migrations/0063_statement_imports.sql` (new), `supabase/functions/
+    extract-bank-statement/index.ts` (new), `src/lib/{statementParse (new),statementMatch (new),api,
+    demo/store,demo/mockClient}.js`, `src/components/StatementReview.js` (new), `src/pages/{LedgerPage,
+    HistoryPage}.js`, `src/App.css`, tests (`statementParse/statementMatch/statementImport.test.js` new,
+    `ledgerPage.test.js` +1).
+  - **Verified:** unit **381/381**; `vite build` compiles; live DB (read-only): both tables present with
+    owner_all + require_aal2, `payments.import_id/import_hash` + `cam_line_items.import_id` present; edge fn
+    deployed clean. Browser check skipped per George's standing preference — the jsdom round-trip test drives
+    sample → review → save → strip → undo against the demo mock. Live 200s. **George: open a property's
+    Financials → Ledger tab → ⬆ Import statement and drop your bank's CSV export** (free, instant); a PDF
+    statement works too (~5–15¢).
+
+- **2026-07-21** — **Rent Ledger Stage 1 of 3: a per-property projected-vs-actual collections grid (new
+  Ledger tab), month-tagged payments, and a Collected/Owes column on Financials** (George approved the plan
+  `~/.claude/plans/is-there-a-way-melodic-lemur.md` — built from his partners' voice-memo asks: live
+  per-tenant "tenant owes $X / is owed $X", resets yearly, history for trends, Yardi as the model; his 4
+  scoping picks: new tab + compact breakdown column · projected shows base and est CAM & tax separately ·
+  import handles money in AND out (Stage 2) · manual entry stays). Deployed: frontend Cloudflare version
+  `14749008`. **Frontend + `src/lib` only — $0, NO DB migration, no edge functions, no tenant emails**
+  (`payments.period_month` from 0037 already existed). Tests **337/337** (was 280 — +17 ledger unit, +24
+  resurrected arStatus, +4 midYearRent, +3 holdoverRoll, +5 money-collection marking, +4 LedgerPage render).
+  - **Resurrected the 7/13-deleted schedule math as the foundation** (byte-identical from `cfe506f^`):
+    `src/lib/leaseSchedule.js` (buildLeaseSchedule — now also returns `factor`, the invoice-scaling ratio —
+    + owedByMonthForInvoice), `src/lib/arStatus.js`, and api.js's getMonthlyRent / getPropertyMonthlyRoll /
+    markMonthPaid / unmarkMonthPaid / markMonthPaidAllTenants (both roll readers now also return each row's
+    raw `payments` array).
+  - **New pure `src/lib/ledger.js` — the ONE money derivation everything renders from.**
+    `allocatePayments`: month-tagged payments cover their own month (same-month payments sum), untagged
+    money pools and fills months 1→12 FIFO (a lump that runs out mid-June reads Jan–May ✓ · Jun ◐ · rest
+    open), a tagged month's excess rolls forward as prepayment, leftover past December = credit (owed to the
+    tenant, ≈ the invoice's negative balance). `componentizeSchedule`: base | CAM&tax | roof per month with
+    the binding invariant components-sum-to-owed — a FREE month forces base $0 and CAM&tax absorbs the
+    penny-fold cents (both folds can land on a free December, whose owed stays >0 because CAM/tax never
+    abate). `ledgerRowSummary`: Collected / Owes-to-date / months-behind / credit — all from the SAME
+    allocation, so the grid and the figures can never disagree (a test documents the tag-divergence case
+    where arStatus's tag-blind FIFO names different months; arStatus stays as legacy fallback + a no-tags
+    parity cross-check).
+  - **New Ledger tab** (`src/pages/LedgerPage.js`, route `/financials/:corpId/:propId/ledger`; new
+    `FinancialsTabs` seg strip Financials | Ledger on both pages): tenants × 12 months, ✓/◐/open/Free/—
+    cells (tooltips carry each month's owed + base·CAM&tax·roof split), holdover badge, vacant-space row,
+    per-tenant "$X/mo = $B base · $C CAM&tax" sub-line, Collected + Owes columns with an all-tenants totals
+    row, ✓-all per month + "mark everyone paid through {month}" catch-up. Click semantics honor the
+    allocation: an open month records in full, a pool-partial month records only its GAP (never
+    double-collects), a pool-covered month isn't a toggle (manage the lump on the lease's payments panel),
+    a tagged month click-undoes. `markMonthPaidAllTenants` rewritten gap-based for the same reason.
+  - **Financials per-tenant breakdown** gains a 7th **Collected** column (linked to the Ledger; grid
+    template switches via `.with-ledger` so the layout is byte-identical when the module's off) · **Invoices
+    & payments** payment form gains an optional **"For month"** tag (annual invoices only; shown in the
+    payments table) · new optional feature key `ledger` (Settings → Display picks it up automatically;
+    ships ON — null = on) · demo seeds City Dental with Jan/Feb tagged checks + a $4,000 untagged partial
+    so the demo grid shows every state at once.
+  - **Files:** `src/lib/{leaseSchedule (new),arStatus (new),ledger (new),api,features,demo/store}.js`,
+    `src/pages/{LedgerPage (new),PropertyFinancialsPage}.js`, `src/components/{FinancialsTabs (new),
+    TenantShareTable,InvoicesPanel}.js`, `src/App.js`, `src/App.css`, tests (`ledger.test.js`,
+    `ledgerPage.test.js` new; `arStatus`, `midYearRent`, `holdoverRoll` resurrected; `moneyCollection`
+    re-expanded; `camReconciliation` wrapped in MemoryRouter for the new link).
+  - **Verified:** unit **337/337** (`vitest run`) incl. the audit-derived cases (free-December fold-cents
+    componentization, tag-on-free-month → pool, gap-based bulk settle to exactly $98,500, no-tags parity
+    vs arStatus); `vite build` compiles. Browser check skipped per George's standing preference (jsdom
+    render smokes mount the real LedgerPage + TenantShareTable against the demo mock). Live 200s
+    (amlakre.com + www + workers.dev). **Stages 2 (bank-statement import, migration 0063 + edge fn) and 3
+    (year-close collection history) follow in this same task.**
+
+- **2026-07-21** — **Financials friction removed: quiet reconcile outcome + ↩ Undo on every action + the
+  Invoice button dropped from the per-tenant rows** (George: "i just dont like … 'owed - xxx - invoiced' …
+  i also need an undo button for each section on the financials page if i want to go back and change the fact
+  that i clicked reconcile … i just want to eliminate user friction"; via AskUserQuestion he picked: Undo on
+  EVERY action · outcome as quiet muted text · remove the ⚖ Reconcile confirm popup, adding "i also think
+  that invoice is not necessary all we need is the reconcile button which is what really matters at the end
+  of the year"). Deployed: frontend Cloudflare version `974e4bcc`. **Frontend + `src/lib` only — $0, NO DB
+  migration** (history_events.type is free text; owner_all RLS covers the delete; the 0060 kind-scoped
+  `where status<>'void'` unique index makes void-then-recreate legal), **zero demo-mock changes** (undo rides
+  the mock's generic delete/update handlers), no edge functions, no tenant emails. Tests **280/280** (was
+  275 — +3 undo unit, +1 undo-flow render, +1 CamSection-undo render).
+  - **Quiet outcome (`TenantShareTable.js` + `.recon-note` in App.css):** the loud uppercase colored badge
+    ("OWED $985.04 — INVOICED") is now one small muted lowercase line — `reconciled — owed $X · invoiced|
+    overdue|partly paid|collected ✓`, `reconciled — you owe $X`, `reconciled — refunded $X ✓`, `reconciled —
+    even` — with ✉ Statement / ✓ Mark refunded as small secondary buttons beside it.
+  - **⚖ Reconcile is instant** — the `window.confirm` popup is gone; the persistent **↩ Undo** is the safety
+    net (Gmail-style act-then-undo).
+  - **↩ Undo everywhere.** (1) **Un-reconcile** (persistent, on every outcome state, any time later): new
+    `undoReconciliation(recon)` in api.js — **voids** the linked reconciliation invoice FIRST (never deletes —
+    payments stay attached, recoverable under the lease page's "removed"; void-first means an interrupted undo
+    completes cleanly on a second click), hard-deletes the `cam_reconciliations` row (its unique index isn't
+    status-scoped, so only deletion reopens the year), logs a `cam_reconcile_undone` history event. Undo's
+    tooltip warns when money was already collected on the invoice. (2) **Transient strips** (new shared
+    `UndoStrip.js`, the Dashboard undo-banner pattern shrunk inline — quiet "saved · ↩ Undo · ✕", component
+    state, latest-wins, cleared on fiscal-year switch): estimate save (restores the exact prior `est_*`
+    values), Mark refunded (new `undoReconciliationRefund` reverts to open + logs `cam_refund_reopened`),
+    taxes/roof save (restores prior figures; a first-ever save undoes to zeros — the undo re-reads the record
+    at undo time so a CAM total synced meanwhile is never clobbered), building size save, CAM line add (undo
+    deletes it; `addCamLineItem` now returns the created row) and remove (undo re-adds label+amount), flat
+    CAM save.
+  - **Invoice button removed from the Financials rows** (UI-only): `InvoiceButton` un-wired from
+    `TenantShareTable` — it was its ONLY usage, so annual-invoice generation has no UI now; the component/
+    template/api plumbing stays dormant in the codebase (George reversed course on invoicing once before).
+    Reconciliation invoices are still created by ⚖ Reconcile. `InvoicesPanel` empty-state copy updated to
+    point at Reconcile instead of the removed Invoice modal.
+  - **Files:** `src/lib/api.js` (undoReconciliation, undoReconciliationRefund, addCamLineItem returns the
+    row), `src/components/{TenantShareTable,UndoStrip (new),BuildingSizeEditor,CamSection,InvoicesPanel}.js`,
+    `src/pages/{PropertyFinancialsPage,HistoryPage}.js` (labels for the 2 new event types), `src/App.css`
+    (`.recon-note`, `.undo-strip`), tests (`reconciliation.test.js`, `camReconciliation.test.js`,
+    `camSectionUndo.test.js` new).
+  - **Verified:** unit **280/280** (`vitest run`) incl. the full undo round-trips (un-reconcile → invoice
+    void + record gone + re-reconcile clean; estimate save→undo restores the seed's split 6,500/10,000; CAM
+    remove→undo re-adds + re-syncs the 18,000 total); `vite build` compiles. Browser check skipped per
+    George's standing preference. Live 200s (amlakre.com + www + workers.dev).
+  - **George — your Ricki's-Lyons row on fakkawi3:** it now reads the quiet `reconciled — owed $985.04 ·
+    invoiced` line; if you never wanted that true-up, click **↩ Undo** on the row — one click removes it and
+    voids the $985.04 invoice (hard-refresh first: Cmd/Ctrl+Shift+R).
+
+- **2026-07-21** — **Demo sandbox refreshed to current `main`** (George: "open the demo … make sure the fields
+  in financials are present so i can show how they work specifically the per tenant breakdown and expenses").
+  The `amlak-demo` worker was running a pre-7/11 build (old "Leases" nav, Outstanding-AR card, un-merged
+  CAM/tax columns). Rebuilt (`npx vite build --config vite.demo.config.js --outDir build-demo`) + redeployed
+  (`npx wrangler deploy -c wrangler.demo.jsonc`) → demo Cloudflare version `d3d7123a`. **No code change, no
+  commit needed, $0, no live-app touch** (bundle verified free of the live Supabase ref). Browser-verified on
+  https://amlak-demo.akkawigeo-5.workers.dev — Maple Plaza Financials shows the current per-tenant breakdown
+  (merged CAM & tax est/actual columns, +$800 Difference, estimate editor with the single CAM & tax $/SF/yr
+  input, Invoice/⚖ Reconcile) and the full Expense entry section (building size, taxes & roof, itemized CAM);
+  corp cards one-line Rev/Exp/NOI; zero console errors.
+
+- **2026-07-21** — **Financials per-tenant breakdown: the Estimated column now reads "CAM & tax / estimated"
+  to mirror the actual "CAM & tax / actual" column** (George: "Estimated on the financials page should follow
+  the cam and tax format of the actual in the top column. it should say CAM and tax … make sure the base rent
+  line item is also visually in line with those"). Deployed: frontend Cloudflare version `42e68154`.
+  **Frontend-only — label/wording in `TenantShareTable.js`, zero logic/math changes; no DB migration, no edge
+  function, $0, no tenant emails.** Tests **275/275**.
+  - The two CAM & tax figures now read as an obvious pair: header col 3 = **"CAM & tax"** / sub-cap
+    "estimated · billed to tenant", col 4 = **"CAM & tax"** / sub-cap "actual". The estimated figure already
+    used the identical format as the actual (amount + $/SF sub-line); only the header/labels changed. Updated
+    the screen-reader stat label ("CAM & tax · estimated · billed to tenant"), the Totals label ("CAM & tax ·
+    estimated"), and the footnote wording ("The estimated CAM & tax is what the tenant actually pays…"). Base
+    rent stays the leftmost numeric column in the same shared 5-column grid, so it lines up with both CAM & tax
+    columns unchanged.
+  - **Files:** `src/components/TenantShareTable.js` only.
+  - **Verified:** unit **275/275** (`vitest run`) incl. the camReconciliation + reconciliation suites (no test
+    asserted the old "Estimated" header, and the duplicated "CAM & tax" header text doesn't collide with any
+    getByText); `vite build` compiles. Browser check skipped per George's standing preference. Live 200s.
+
+- **2026-07-21** — **Financials corporation cards: Revenue / Expenses / NOI now always on ONE line, so every
+  card is formatted identically** (George: "nasa vs gena property on financials page looks different in terms
+  of formatting the cards. rev expenses and noi should be one line"). Deployed: frontend Cloudflare version
+  `6aca3315`. **Frontend-only — CSS in `src/App.css`, zero logic/math changes; no DB migration, no edge
+  function, $0, no tenant emails.** Tests **275/275** (unchanged — CSS-only).
+  - **Root cause:** the three fin figures (`.corp-fin`) were a **wrapping flex row** with
+    `justify-content:space-between`, so their line layout depended on each figure's width. Beta account
+    fakkawi3's GENA card (Revenue $203,759.52 · Expenses **$0.00** · NOI $203,759.52 — one short "$0.00") and
+    NASA card (three wide 6-figure values: $302,537.36 / $146,200.00 / $156,337.36) wrapped **differently** in
+    the same-width grid cell — one showed the trio on a single line, the other broke it across two. That's the
+    "looks different" George saw.
+  - **Fix:** `.corp-fin` is now a fixed **3-column grid** (`repeat(3,minmax(0,1fr))`), so Revenue/Expenses/NOI
+    always occupy exactly one row of three equal columns — identical on every card regardless of figure width.
+    Dropped `flex-wrap`/`justify-content:space-between`. To guarantee even NASA's three 6-figure values fit one
+    line at the grid's narrowest 320px cell, the figure font now **scales with card width** via a container
+    query: `.corp-card.fin{container-type:inline-size}` + `.corp-fin b{font-size:clamp(13px,4.5cqw,20px)}`
+    (full 20px on wide cards, shrinking only when a cell gets tight), plus `white-space:nowrap` and `min-width:0`
+    on the cells so a figure never wraps or overlaps its neighbor.
+  - **Files:** `src/App.css` only (the `.corp-card.fin`, `.corp-fin`, `.corp-fin>div`, `.corp-fin b` rules).
+  - **Verified:** unit **275/275** (`vitest run`); `vite build` compiles. Per George's standing preference the
+    real-browser check was skipped (CSS-only tweak). Live sites 200 (amlakre.com + www + workers.dev).
+
+- **2026-07-20** — **Financials per-tenant breakdown: CAM & tax merged into ONE combined figure** (George:
+  "estimated cam and tax for the leases on the financials page should be one number" → via AskUserQuestion he
+  scoped it: "merge the estimate entry into one cam and tax number PSF that the user inputs — i also want the
+  actuals columns which pulls from the expense entries (the actual) to be merged into one CAM and tax line as
+  well"). Deployed: frontend Cloudflare version `41667b7f`. **Frontend + `src/lib` only — $0, no DB migration,
+  no edge-function redeploy, no tenant emails, no destructive data.** Tests **275/275** (was 274 — +1
+  combined-estimate `billedComponents` case).
+  - **What changed on the Finances → Per-tenant breakdown (`TenantShareTable`):** the two separate **actual**
+    columns "Property taxes" + "CAM" are now ONE **"CAM & tax"** actual column (= `cam_amount + tax_amount`,
+    with a combined $/SF sub-line); the inline **estimate editor** is now ONE **"CAM & tax $/SF/yr"** input
+    (was separate CAM and Tax fields); the Totals row merges the two actual totals; the Estimated column was
+    already combined (unchanged). **Roof stays its own separate line throughout.** Reconciliation follows
+    automatically — CAM & tax true up as a single line (Difference is unchanged, still actual − estimate incl.
+    roof in the total).
+  - **Storage (no migration):** the merged editor saves the whole combined figure into `est_cam_annual` with
+    `est_tax_annual = 0`, so `cam + tax` always reads back as the single number entered. Older leases that had
+    CAM and tax typed separately still sum correctly (the editor prefills from their sum). New pure
+    `billedComponents().camTax` (= `cam + tax`) is the one combined figure the display/editor use.
+  - **Reconciliation + statement:** `reconcileFigures` now emits one `camtax` line (label "CAM & tax") + roof;
+    `draftCamReconciliationEmail` (api.js) builds one combined "CAM & tax" statement line (sums the stored
+    est/actual cam+tax); the letter's charge-names phrasing renders "CAM and tax" cleanly.
+  - **Tenant invoice (necessary consequence):** `invoiceTemplate.js` bills CAM + property tax as ONE
+    **"CAM & property tax (YYYY est.)"** line (= `cam_annual + tax_annual`) instead of two lines — the total is
+    unchanged, and this avoids a mislabeled/`$0` tax line once the estimate is stored combined. `draft-invoice`
+    edge fn NOT touched (it already returns `cam_annual`/`tax_annual`; the template sums them) — so **no
+    Supabase redeploy**. NOTE for George: this drops the separate "Property tax (prior-year est.)" line on the
+    invoice — say the word if you'd rather invoices keep CAM and tax itemized while the Finances page shows them
+    merged.
+  - **Files:** `src/lib/reconciliation.js`, `src/components/TenantShareTable.js`, `src/lib/api.js`,
+    `src/lib/emailTemplates.js`, `src/lib/invoiceTemplate.js`, `src/App.css` (ledger grid 6→5 numeric columns),
+    `src/lib/__tests__/reconciliation.test.js`, `src/components/__tests__/camReconciliation.test.js`. Demo mock
+    needed no change (its draft-invoice path already returns cam/tax the template sums; the seed's split
+    estimates display merged).
+  - **Verified:** unit **275/275** (`vitest run`); `vite build` compiles (788 modules). Per George, the
+    real-browser drive-through was skipped this round. Live sites 200 (amlakre.com + www + workers.dev).
+    Committed only this task's files.
+
+- **2026-07-13** — **Removed the monthly rent tracker, receivables, and monthly rent roll** (George: "i want
+  to remove the following from this platform: monthly rent tracker, receivables, and monthly rent role"). He
+  chose the **"Keep invoicing"** scope via an AskUserQuestion — remove the money-*tracking* UI + its dead
+  plumbing, but KEEP the **Invoices & payments** panel and the Invoice / Statement / year-end CAM-reconciliation
+  tools. Deployed: frontend Cloudflare version `6490e831`, `send-reminders` edge fn redeployed (Supabase
+  `awgrjmbcghdjgnqeiqkt`). **Frontend + one edge-fn redeploy — $0, no DB migration (invoices/payments/
+  cam_reconciliations tables kept, non-destructive), no AI, no tenant emails, no destructive data.** Tests
+  **274/274** (was 317 — −43 from the removed monthly-tracker/roll/AR test files).
+  - **What was removed:** the **monthly rent tracker** (the 12 month-boxes on each lease page), the **monthly
+    rent roll** (the per-month "mark all tenants paid" grid on each property's Financials page), and
+    **receivables tracking** — the Overview **"Outstanding (AR)"** card, the Financials **"Receivables ·
+    outstanding"** section, the **"Behind on rent"** dashboard alerts, and the **overdue-rent reminder emails**.
+  - **What stayed (the "Keep invoicing" scope):** the **Invoices & payments** panel on each lease + its
+    `lease_receivables` Display toggle; **Invoice / Statement / ⚖ Reconcile** generation (`TenantShareTable`,
+    `InvoiceButton`, all CAM-reconciliation code); the Overview **"Annual rent roll"** card + **"⬇ Download rent
+    roll (Excel)"** export; and the invoices/payments/`cam_reconciliations` DB tables + `draft-invoice` edge fn.
+  - **Code:** deleted `MonthlyRentTracker.js` + `PropertyRentRoll.js` (components) and `arStatus.js` +
+    `leaseSchedule.js` (fully-dead libs). `LeaseDetailPage.js` dropped the Monthly-rent panel + the fiscal-year
+    selector (Invoices & payments doesn't follow it). `PropertyFinancialsPage.js` dropped the `ARSummary` section
+    + the monthly roll (per-tenant breakdown + expense entry untouched). `DashboardPage.js` dropped the
+    Outstanding-AR card + its `portfolioAR` query + the dead `focus==='invoice'` email branch.
+    `api.js` removed getMonthlyRent/markMonthPaid/unmarkMonthPaid/getPropertyMonthlyRoll/markMonthPaidAllTenants/
+    occInfoForInvoices/getPropertyAR/getPortfolioAR/summarizeAR + their imports, the behind-on-rent invoice fetch
+    from `fetchAlertData`, and the invoice branch in `draftAlertEmail`. `alerts.js` removed the behind-on-rent +
+    overdue-reconciliation block; **the free-rent-ending alert stays and is no longer gated by the receivables
+    display pref** (it's a lease/abatement signal). `dashboardWidgets.js` dropped the `ar` /
+    `lease_monthly_rent` / `property_rent_roll` toggles (kept `rent_roll` + `lease_receivables`). `prefetch.js`
+    dropped the portfolioAR prefetch. `emailTemplates.js` dropped `buildPaymentReminderEmail`. Dead query-key
+    invalidations (`propertyAR`/`portfolioAR`/`monthlyRent`/`propertyRentRoll`) cleaned out of the KEPT
+    components (`TenantShareTable`, `InvoicesPanel`, `InvoiceButton`, `AbatementEditor`, `BuildingSizeEditor`).
+  - **Edge fn (`send-reminders`):** removed the overdue-reconciliation email sweep + its `overdueBucket`/
+    `widgetOn` helpers and the `overdue` field from the JSON result (insurance/contract/annual-report sweeps
+    untouched). Redeployed clean.
+  - **Tests:** deleted `arStatus.test.js`, `midYearRent.test.js`, `holdoverRoll.test.js`,
+    `rentRollHoldover.test.js`; pruned `moneyCollection.test.js` (kept penny-true schedule + invoice-dedupe +
+    invoice-template; dropped monthly/mark-all/summarizeAR/payment-reminder), `reconciliation.test.js` (dropped
+    the getMonthlyRent ÷12 case, kept the year-vs-recon distinction via getYearInvoice + all CAM cases),
+    `notificationGating.test.js` + `sixMonthAlerts.test.js` (dropped the behind-on-rent + `ar`-gate assertions;
+    added a "free-rent not gated by receivables prefs" case).
+  - **Verified:** unit **274/274** (`vitest run`); `vite build` compiles (788 modules). **Real-browser check**
+    (system playwright vs the demo dev server, run inline): Overview has **no** Outstanding-AR card (3 cards:
+    Annual rent roll · Occupancy · Expiring; Download-rent-roll button present); property Financials has **no**
+    Receivables section and **no** monthly roll (Per-tenant breakdown + Expense entry present); the lease page
+    has **no** Monthly-rent panel and **no** FY selector (Invoices & payments present); Settings → Display no
+    longer lists the three removed toggles (Invoices & payments + Annual rent roll toggles remain) — **zero
+    console errors** (a one-off dev-server 500 on SecuritySettings.js was a warm-up transform hiccup; the
+    production build transformed all 788 modules clean and a reload rendered it fine). Live sites 200
+    (amlakre.com + www + workers.dev). Committed only this task's files.
+
+- **2026-07-13** — **Bugfix: the auto sign-out feature was locking returning users out the instant they
+  signed in** (George: "i cant sign into my fakkawi email account"). Deployed: frontend Cloudflare version
+  `27b462c9`. **Frontend-only — $0, no DB migration, no edge function, no tenant emails, no destructive data.**
+  Tests **317/317** (was 312 — +5 `initialActivityStamp`).
+  - **Diagnosis (read-only live DB, `supabase db query --linked`):** the beta account `fakkawi3@gmail.com`
+    (`2efba6de-…`) was healthy — email confirmed, **not banned, NO 2FA factor enrolled** — and its
+    `last_sign_in_at` had just updated to today (so the **password worked**), yet `auth.sessions` held **no
+    live session**. Classic "auth succeeds but the session never sticks" → a client-side sign-out firing
+    immediately after login.
+  - **Root cause — the auto sign-out (0062) inherited a stale activity stamp.** `AutoLogout.js` tracks
+    idleness via `localStorage['amlak:lastActivity']`, which **survives sign-out**. A returning user whose
+    previous stamp is older than their idle window (default 30 min) hit this: the seed line only wrote a fresh
+    stamp when the key was **absent** (`if (!localStorage.getItem(ACTIVITY_KEY)) …`), so a *stale* leftover key
+    was kept, and the very first idle poll (runs on mount) read it as long-expired → `doSignOut()` instantly.
+    Signing in / loading the page is itself activity, so the stamp should have been reset, not inherited.
+  - **Fix.** New pure **`initialActivityStamp(storedMs, nowMs, minutes)`** in `idleLogout.js` — **keep** a
+    RECENT stored stamp (so genuine cross-tab activity still counts) but fall back to **now** when it's
+    missing, unparseable, in the future, or already past the idle window. `AutoLogout.js` reconciles the stamp
+    through it on (re)start (replacing the absent-only seed), and the effect now depends on `minutes` too, so a
+    preference that loads AFTER mount (e.g. a tighter 15-min window than the 30-min default) re-reconciles
+    before the poll can act on the old value. Net: a sign-in / reload always starts the idle clock fresh;
+    walk-away-and-leave-it-open still signs out as designed.
+  - **Files:** `src/lib/idleLogout.js`, `src/components/AutoLogout.js`, `src/lib/__tests__/idleLogout.test.js`
+    (+5: the stale-stamp lockout → reset; recent kept; missing/invalid/future → now; the tighter-window
+    pref-loads-late edge; null-default vs off).
+  - **Verified:** unit **317/317** (`vitest run`); `vite build` compiles; live sites 200 (amlakre.com + www +
+    workers.dev). **George: try signing in again** (a hard refresh — Cmd+Shift+R — helps the new bundle load).
+    If it still bounces, open a private/incognito window once (no leftover stamp) to get in immediately; the
+    fix means it won't recur.
+
+- **2026-07-13** — **Receivables panel on the Finances page: name WHO's behind (+ link to each lease), define
+  "Outstanding", and judge "behind" against each tenant's real rent schedule** (George's three asks: the
+  "behind on rent / 1 month behind" boxes "dont make sense if i dont know which tenants its applied to"; "what
+  number is the outstanding balance refering to where it says 10 invoices still owed"; and "some leases start
+  mid year … that logic must be affecting something — evaluate". He approved the plan
+  `~/.claude/plans/the-receivables-on-the-fluffy-pillow.md`; his three scoping picks were the recommended ones:
+  keep all-years totals with per-row FY tags · named tenant list replaces the count boxes · fix the math
+  everywhere). Deployed: frontend Cloudflare version `6648163b`. **Frontend + `src/lib` only — $0 (no AI), no
+  DB migration, no edge function, no tenant emails, no destructive data.** Tests **312/312** (was 306 — +5
+  arStatus schedule-aware cases, +1 summarizeAR detail).
+  - **What George saw + the evaluation (all confirmed in code).** (1) The AR boxes were pure aggregates with
+    nothing to click; `byMonthsBehind.m1/m2plus` even counted *invoices*, not tenants (a tenant with an unpaid
+    annual AND an overdue reconciliation counted once in "N tenants" but twice across the boxes), and an
+    overdue reconciliation was mislabeled "2+ months behind". (2) "Outstanding · N invoices still owed" = Σ
+    unpaid balances across **every** saved invoice for the property — **all fiscal years, annual +
+    reconciliation** — while the query key `['propertyAR', propId]` carried no year, so it silently ignored the
+    FY selector the rest of the page follows. (3) Mid-year lease STARTS were already handled right
+    (`occupancyStart` → `inTermMonths`/`monthsDueByNow`; invoices prorated since 0061; holdover months keep
+    owing) — BUT a real blind spot: `monthsBehindForInvoice` assumed LEVEL rent (total ÷ in-term months) while
+    the rent roll **on the same page** is schedule-aware. Worked example: $1,000/mo gross, Jan–Mar free, net
+    invoice $9,000 → the cards' flat $750/mo made a tenant who'd properly paid April's $1,000 read "$2,000 / 3
+    months behind" while the roll showed every due month settled. The dashboard bell shared the blind spot.
+  - **Fix — one schedule-aware definition, used everywhere.** New pure **`src/lib/leaseSchedule.js`**:
+    `buildLeaseSchedule` moved out of `api.js` unchanged (3 call sites updated), plus new
+    **`owedByMonthForInvoice(invoice, {leaseStart, escalations, abatements})`** → a length-12 owed-per-month
+    array built from the invoice's own gross figures (base/cam/tax/roof_annual) + the escalation ledger +
+    abatement windows, **scaled to the invoice total** so free months are $0, pre-tenancy months are $0, and a
+    mid-year rate step bills the old rate before it. Returns null when an invoice has no gross breakdown → the
+    caller falls back to the even-split (never reads an all-$0 schedule as "never behind").
+    `arStatus.monthsBehindForInvoice` gained an optional `ctx.owedByMonth` path (walks the DUE months —
+    earliest-first — counting the ones a payment doesn't cover; **byte-identical even-split fallback** when
+    absent). `summarizeAR` now precomputes the schedule for the **current fiscal year's annual invoices only**
+    (a past year has all months due → the even-split is already exact) and returns a new **`detail`** list —
+    one row per owing invoice `{invoice_id, lease_id, tenant_name, year, kind, balance, behind, isReconciliation,
+    monthsBehind, amountBehind, due_date}`, sorted most-behind first — while every existing aggregate field
+    (`outstanding, count, tenantsBehind, amountBehind, byMonthsBehind`) is unchanged, so the Dashboard AR foot
+    keeps working untouched. `occInfoForInvoices` enriched (leases select adds `tenant_name, base_rent`; batches
+    abatements). **The same fix reaches the dashboard bell** — `alerts.js`'s behind-on-rent block builds the
+    identical owed-per-month for current-year annual invoices (fetchAlertData's invoice select widened to carry
+    the gross components; leases select gained `base_rent`).
+  - **UI (`PropertyFinancialsPage.js` + `.ar-*` in `App.css`).** The two count boxes are **replaced by a named
+    list**: each behind tenant by name, tags reading "N months behind · $X" / "Reconciliation overdue · $X"
+    with an **FY** chip, every row a link to `/leases/{corp}/{prop}/{lease}`. Two cards stay — **Outstanding**
+    (foot now reads "N invoices · all years", finally answering George's question) and **Behind on rent** (foot
+    "N tenants"). A quiet **"Show the N outstanding invoices"** toggle expands a full breakdown (tenant · FY ·
+    Reconciliation badge · balance · link); an **"All tenants are current"** empty state when nothing's owed.
+    Rewritten explainer states the total spans all years and that free / pre-lease months don't count as behind.
+  - **Files:** `src/lib/leaseSchedule.js` (new), `src/lib/arStatus.js`, `src/lib/api.js`, `src/lib/alerts.js`,
+    `src/pages/PropertyFinancialsPage.js`, `src/App.css`, `src/lib/__tests__/arStatus.test.js`,
+    `src/lib/__tests__/moneyCollection.test.js`. (Demo mock needed no change — its generic query builder already
+    serves the widened selects; `v_invoice_balances` mock carries the gross components + kind defaults to
+    'annual'.)
+  - **Verified:** unit **312/312** (`vitest run`) incl. the Jan–Mar-free worked example (schedule-aware = NOT
+    behind where the old even-split said 3 months), a genuinely-behind-with-abatement case, a mid-year step
+    where the amount-behind uses the NEW rate (not total/12), malformed-owedByMonth fallback parity, and the
+    `detail`-list naming/sort/kind assertions. `vite build` compiles (792 modules). **Real-browser check**
+    (system playwright vs the demo dev server): Maple Plaza shows **City Dental · "7 months behind ·
+    $57,458.31" · FY 2026** linking to its lease, Outstanding **$98,500 · 1 invoice · all years**, the breakdown
+    expands to the single invoice, the row click lands on the lease page, and Oak Center (no invoices) shows the
+    "All tenants are current" empty state — the behind figure ties to the schedule-scaled roll — **zero console
+    errors**. Live sites 200 (amlakre.com + www + workers.dev). Committed only this task's files.
+
+- **2026-07-13** — **Corporation cards fit + page heading matches the tab on Financials & History** (George:
+  "fix corporations tab formatting on the financials page as well as the history page" — he confirmed the two
+  symptoms: the corp NAME was cut off / cards cramped, and the page TITLE said "Corporations"). Deployed:
+  frontend Cloudflare version `071fbc53`. **Frontend-only — layout/CSS + one heading line + a test; zero
+  logic/math changes, no DB migration, no edge function, $0, no tenant emails.** Tests **306/306** (was 303 —
+  +3 heading).
+  - **Two symptoms, one shared component.** The Financials + History corp grids are the SAME
+    `CorporationsPage.js` rendered with `mode="financials"`/`"history"`. (1) Each fin card's header
+    (`.corp-head`) packed the badge + corp name + **two action pills** ("Business profile" + "Annual report")
+    onto one non-wrapping row; in the narrow grid cells the pills won the space and the name hard-truncated to
+    an ellipsis (`.corp-info strong` had `white-space:nowrap;text-overflow:ellipsis`, and the fin card
+    overrode the name column to `min-width:0`). (2) The `<h1>` was hard-coded to "Corporations" for all three
+    modes, so Financials/History both read "Corporations".
+  - **Fix.** (1) `CorporationsPage.js` — `<h1>{TITLES[mode]}</h1>` (the per-mode map already existed:
+    Financials→"Financials", History→"History"; **intended side effect** — the Portfolio/leases tab heading
+    now reads "Portfolio", finally matching its sidebar label). (2) `App.css`, **scoped to `.corp-head` which
+    is used ONLY by the fin cards** (grepped — `.corp-row` is unused dead CSS, Portfolio cards untouched):
+    `.corp-head` gains `flex-wrap:wrap` (pills drop to their own row when the cell is narrow),
+    `.corp-head .corp-info` `min-width:0`→`150px` (reserves a readable name column so wrapping triggers before
+    the name is crushed), + a new `.corp-head .corp-info strong{white-space:normal;overflow:visible}` (the
+    name wraps instead of ellipsis-ing on these cards; the base ellipsis rule still governs the Portfolio
+    cards). On a wide card everything stays on one line (unchanged look).
+  - **Files:** `src/pages/CorporationsPage.js`, `src/App.css`, `src/pages/__tests__/corporationsHeading.test.js`
+    (new — asserts the h1 per mode).
+  - **Verified:** unit **306/306** (`vitest run`); `vite build` compiles. **Real-browser check** (system
+    Chrome headless via playwright-core against the demo dev server — the shared MCP browser was held by a
+    concurrent session): at **1280px AND 360px**, both tabs — heading reads "Financials"/"History", every fin
+    card's corp name renders untruncated (`whiteSpace:normal`, `.corp-head` `flex-wrap:wrap`), both pills
+    present, and Portfolio reads "Portfolio" — **zero console errors**. Live sites 200 (amlakre.com + www +
+    workers.dev). Committed only this task's files.
+
+- **2026-07-13** — **Ask Amlak: Clear-answers button + a LOT more facts in the summary (roof, lease terms,
+  billed CAM/tax, next rent step, free rent, additional-insured, occupancy, annual-report dates) + a
+  "📄 read my leases" fallback when the facts fall short + a configurable auto sign-out** (George approved
+  the plan — `~/.claude/plans/need-a-way-to-cheerful-narwhal.md`; his picks: expand the facts AND add a
+  quick-model docs fallback, keep the visible-list Clear, idle timeout chosen in Settings, 60-second stay-
+  signed-in warning). Deployed: DB migration `0062` (Supabase `awgrjmbcghdjgnqeiqkt`), NEW `ask-leases`
+  edge fn + `ask-portfolio` redeployed, frontend Cloudflare version `9658c863`. **The only spend is the
+  explicit-click docs fallback (~5–10¢/question, repeats $0 via cache); expanding the facts is $0 per
+  question; the migration is one additive nullable column; no tenant emails, no destructive data.** Tests
+  **303/303** (was 288 — +6 idleLogout, +9 portfolio: enriched facts + v4 fingerprint + holdover-inclusion).
+  - **Why George asked:** Ask Amlak answered "which tenants pay for roof?" with *"the summary does not track
+    roof responsibility."* Root cause: it reads a compact **facts-only records summary** (never lease
+    documents), and roof wasn't one of the facts. He wanted BOTH — pack far more facts in, then a fallback
+    that reads the actual leases with a quick model. Plus a Clear button and an auto-logout.
+  - **1) Clear answers (`AskPage.js`):** the Q&A log is component state (memory only — zero storage; the
+    saved-answer cache is one tiny per-user row per question with stale rows auto-deleted, so no scaling
+    concern), so a quiet "Clear answers" ghost button just wipes the visible list.
+  - **2) Richer facts (`portfolio.js` + `fetchPortfolioSnapshot` in `api.js`):** per tenant now — **roof
+    share billed yes/no** (`leases.roof_responsible`, the reported gap), lease-terms note, contact/email/
+    suite, **this year's billed CAM+tax(+roof) share and total** (from `v_tenant_shares`), **next scheduled
+    rent step** (gated to within the committed term), **active/upcoming free-rent window** (`rent_abatements`),
+    **additional-insured** (gated under the Insurance feature). Per property — **occupancy / vacant SF /
+    annual revenue** (`v_property_totals`). New **CORPORATIONS** section — each corp's annual-report due/last-
+    filed (`annual_reports`, core/never gated). **Holdover (is_active=false) tenants are now INCLUDED and
+    flagged "held over"** (were dropped entirely) — matches George's rule that outdated tenants count until
+    removed. Feature gating unchanged in shape (insurance/contract facts vanish when the module's off).
+    Fetch adds the extra lease/insurance columns + 4 bulk queries (escalations, abatements, annual_reports,
+    the two views by property_id + current year).
+  - **Cache-staleness fix — fingerprint `v3→v4`:** bumping the version kills every thinner-summary cached
+    answer instantly (so the wrong "doesn't track roof" answer dies), and new components (escalations /
+    abatements / annual_reports count+max-stamp, plus a **value-based shares sum** so an expense edit that
+    re-splits CAM/tax flips the cache with no updated_at to key on) keep future edits invalidating correctly.
+  - **3) "📄 Read my leases" fallback:** new `ask-leases` edge fn (Haiku 4.5, user-scoped RLS client from the
+    caller's JWT — reads ALL the caller's `lease_text` + `lease_addendums` server-side, corpus in a
+    `cache_control` block, per-doc 30k / total 250k caps with an honest truncation note, grouped-by-tenant +
+    quote-the-clause). `ask-portfolio` now ends a can't-answer reply with a `[NEEDS_DOCS]` token which the fn
+    strips and returns `{answer, needs_docs}`; `askLeasesDocs()` (client) is cache-first under a `docs::`
+    key + a light corpus fingerprint (leases+riders count/updated_at) so repeats are $0. AskPage shows a
+    prominent **"📄 Read my leases to answer this (~a few cents)"** when `needsDocs`, and a quiet ghost
+    "Answer from the lease documents instead" on every answer (for when the fact answer is wrong, not just
+    missing); the docs answer appends under the same entry with the saved-answer tag on cache hits. Only ever
+    runs on an explicit click (George's cost-sensitivity). Demo: `mockClient` routes `ask-leases` → a canned
+    grouped answer, `demoAskPortfolio` now answers roof from facts + returns `needs_docs` for off-topic asks.
+  - **4) Auto sign-out (migration `0062` + `idleLogout.js` + `AutoLogout.js` + Settings→Security picker):**
+    `0062` adds nullable `user_preferences.auto_logout_minutes` (null=default 30, 0=off). Pure
+    `idlePhase(lastActivity, now, minutes)` → active/warn/expired (WARN_SECONDS=60), unit-tested at the
+    boundaries. `AutoLogout` (mounted in `Layout`, inert in demo / signed-out / when Off) stamps
+    `localStorage['amlak:lastActivity']` (throttled ~1/10s, so activity in ANY tab counts), polls every 15s,
+    shows a `useModalA11y` "Still there? …signed out in {n}s / Stay signed in" modal for the last 60s (any
+    activity or the button resets), and on expiry does `queryClient.clear()` + `supabase.auth.signOut()`.
+    Settings→Security gains an **Auto sign-out** card with an Off / 15 min / 30 min / 1 hour segmented picker
+    (`getAutoLogoutMinutes`/`setAutoLogoutMinutes`, plain-English line; shown-but-inactive in demo).
+  - **Files:** `supabase/migrations/0062_auto_logout_pref.sql` (new), `supabase/functions/ask-leases/index.ts`
+    (new), `supabase/functions/ask-portfolio/index.ts`, `src/lib/{portfolio,api,idleLogout}.js` (idleLogout
+    new), `src/components/{AutoLogout.js (new),Layout.js}`, `src/pages/{AskPage,SecuritySettings}.js`,
+    `src/lib/demo/mockClient.js`, `src/App.css`, tests (`idleLogout.test.js` new; `portfolio.test.js` updated).
+  - **Verified:** unit **303/303** (`vitest run`); `vite build` compiles. **Real-browser click-through 8/8**
+    (system Chrome headless via playwright-core — the shared MCP browser was held by a concurrent session —
+    against the demo dev server): roof chip → answer names the roof-billed tenant **from the facts** (the
+    reported gap fixed); Clear answers empties the log; an off-topic question shows the 📄 docs button →
+    canned grouped docs answer; Settings→Security shows the Auto sign-out picker with all four options —
+    **zero console errors**. **Live verified:** `user_preferences.auto_logout_minutes` present; both edge fns
+    deployed clean; `ask-leases` unauthenticated POST → **401** (RLS-gated, reads only the caller's own
+    leases); site 200s (amlakre.com + www + workers.dev). **George: ask "which tenants pay for the roof?" —
+    it now answers from the "Roof share billed" flag (flip that toggle On for the tenants whose leases make
+    them pay), or click 📄 to have the lease documents read (~5–10¢).** Committed only this task's files.
+
+- **2026-07-13** — **Receivables audit: calendar/term-aware rent tracking + "months behind" replaces 30/60/90
+  aging** (George approved the plan — `~/.claude/plans/do-a-full-audit-floating-eagle.md`; full scope: bug
+  fixes + overdue-model reframe + UI simplification; behind-on-rent = **in-app alert only**, no owner emails
+  for monthly lateness). Deployed: DB migration `0061` (Supabase `awgrjmbcghdjgnqeiqkt`), `draft-invoice` +
+  `send-reminders` edge functions redeployed, frontend Cloudflare version `23e569fb`. **$0 (no AI calls) · no
+  tenant emails (in-app alerts only) · migration is a non-destructive view rebuild/append · the only data
+  writes are Phase 4's two named repairs on unpaid/mistagged rows.** Tests **288/288** (was 265 — +19
+  arStatus, +4 midYearRent; updated money/notification/sixMonth/camRecon). Migration pre-reviewed by the
+  migration-reviewer agent (APPROVE).
+  - **BUG 1 (urgent, root cause) — `v_invoice_balances` froze its `i.*` column list at the 0055 rebuild;
+    0057 + 0060 added `overdue_notice_bucket` + `kind` to `invoices` without rebuilding it.** Live symptoms
+    (all confirmed): `isAnnualInvoice()` read undefined → Ricki's monthly tracker showed **"No rent on file
+    for FY 2026"** (its $985 reconciliation invoice was mistaken for the year invoice); the Reconciliation
+    badge never rendered; and send-reminders' overdue sweep selected a non-existent column → **400'd every
+    night since 7/09** (overdue owner emails silently never sent). `0061` DROPs+recreates the view with the
+    byte-identical 0055 body (±5¢ dust clamp preserved) so the fresh `i.*` picks up both columns + any future
+    ones; `security_invoker`/grants re-established. **Prevention:** added rule #7 to the migration-reviewer
+    agent (any `add column` to a table a view selects `X.*` from must rebuild that view same-migration).
+  - **BUG 2 — "overdue" was judged from the ANNUAL invoice's due date** (issue+30d), so from ~Aug 1 every
+    tenant's entire remaining year read red. Replaced with a **months-behind** model: a month is *due* only
+    once its 1st has arrived; behind = perMonth × monthsDue − amount_paid (≤$0.05 dust → not behind). A
+    lump-annual payer is never "behind". Reconciliation invoices keep plain due-date overdue.
+  - **BUG 3 — calendar-naive monthly model, three parts, all fixed by ONE shared term-aware schedule.**
+    (3a) mid-year starts over-billed — **Infinite Mobile (lease_start 2026-07-01) was invoiced $36,561.97 for
+    a 6-month tenancy (~$18,281 over)**; (3b) no today-awareness (a missed March looked like a not-yet-due
+    December, no current-month marker, counters read "2/12" when only 7 were due); (3c) mid-year escalations
+    billed the new rate all year. New `occupancyStart(lease, applied)` = `min(lease_start, earliest APPLIED
+    escalation date)` distinguishes a genuinely new tenancy (step AT start → pre-months not owed) from a
+    renewed-in-place lease (old applied steps → full year owed); `monthlyBases(escalations, base, year)` makes
+    each month's rent era-aware. Extended `monthlyScheduleForYear` (abatement.js) with `occupancyStartIso` +
+    per-month bases → out-of-term months become `{owed:0, outsideTerm:true}`, proration falls out. New pure
+    **`src/lib/arStatus.js`** (`inTermMonths`/`monthsDueByNow`/`monthsBehindForInvoice`).
+  - **The tracker↔invoice consistency guarantee:** new shared `buildLeaseSchedule({year, grossBase,
+    otherAnnual, abatements, escalations, leaseStart, invoiceTotal})` in `api.js` builds the calendar/term-
+    aware schedule, then **scales it to the invoice total when one exists** (penny-folded so Σ owed ==
+    invoice total — preserves the 0055 penny invariant) so the monthly tracker and the invoice agree to the
+    cent while staying term-aware. `getMonthlyRent`/`markMonthPaid`/`getPropertyMonthlyRoll` all route
+    through it; `draft-invoice` + `invoiceTemplate` prorate to the owed months (note: "Prorated — lease
+    begins {date} ({n} of 12 months)"). `0061` also **appends `lease_start` to `v_tenant_shares`** (append-
+    only after the 0060 columns) so the roll builds schedules without an extra query.
+  - **Reframe + gating (George's notifications-follow-settings rule):** `alerts.js` overdue-invoice alert →
+    **"Behind on rent — {tenant}"** (warn 1mo / danger 2+) for annuals + a due-date "Reconciliation overdue"
+    for recon invoices — both under the SAME `arOn` (receivables Settings toggle) gate. `summarizeAR` returns
+    `{outstanding, count, tenantsBehind, amountBehind, byMonthsBehind:{m1,m2plus}}` (30/60/90 buckets gone);
+    Dashboard AR foot → "N tenant(s) behind · $X" (danger only when N>0); ARSummary cards → Outstanding /
+    Behind on rent / 1 month behind / 2+ months behind. `send-reminders` overdue email sweep filtered to
+    **`kind='reconciliation'` only** (annual lateness is in-app only) — its per-owner `ar`-toggle check kept.
+  - **UI (calendar-aware + declutter):** MonthlyRentTracker + PropertyRentRoll now read the calendar via
+    `localDateIso` — month states `—` not-owed / `Free` abated / `✓` paid / **late** (amber) / upcoming, a
+    ring on the current month, honest counters ("Paid {n} of {m} due · {b} behind"), and one-click catch-up
+    ("✓ Mark paid through {month}" per tenant, "✓ Mark everyone paid through {month}" on the roll).
+    InvoicesPanel: dropped 'draft', single **"Remove invoice"** (= void; voided collapse under "N removed —
+    show"); LeaseDetailPage panel title "Receivables" → "Invoices & payments".
+  - **Phase 4 — live-data repair** (the two named writes): Infinite Mobile's FY2026 invoice re-prorated to
+    the 6-month figure **$18,280.99** (base $14,372.52 · CAM $213.00 · tax $3,695.47; balance $12,187.33) and
+    its two $3,046.83 payments re-tagged period_month **1→7 / 2→8** (amounts unchanged — they were already
+    the correct in-term monthly). **NOT executed** (destructive, needs George's separate OK): deleting the
+    empty duplicate Infinite Mobile lease (created 6/27, re-imported 7/01 — double-counts SF/rent). One
+    sentence back — "yes, delete the empty duplicate Infinite Mobile lease" — and it's gone.
+  - **Files:** `supabase/migrations/0061_invoice_balances_rebuild.sql` (new), `src/lib/arStatus.js` (new),
+    `src/lib/{abatement,escalations,alerts,api,emailTemplates,invoiceTemplate,dashboardWidgets}.js`,
+    `src/lib/demo/{mockClient,store}.js`, `src/components/{MonthlyRentTracker,PropertyRentRoll,InvoicesPanel}.js`,
+    `src/pages/{DashboardPage,LeaseDetailPage,PropertyFinancialsPage}.js`, `src/App.css`,
+    `supabase/functions/{draft-invoice,send-reminders}/index.ts`, tests (`arStatus.test.js`,
+    `midYearRent.test.js` new; money/notification/sixMonth/camRecon updated).
+  - **Verified:** unit **288/288** (`vitest run`) incl. the mid-year integration tests vs the demo mock
+    (July-start lease → 6 owed months, Jan–Jun unbillable, "✓ all" skips them; occupancyStart new-vs-renewed;
+    mid-year escalation penny-true; holdover months stay owed) and the component renders. `vite build`
+    compiles; both edge functions deployed clean. **Live post-push verified:** `v_invoice_balances` now
+    exposes kind + overdue_notice_bucket; `v_tenant_shares` carries lease_start (col 22); Ricki's annual
+    ($39,395.59) is now distinguishable from its $985.04 reconciliation; Infinite Mobile invoice reads
+    $18,280.99 with payments on July + August. Live site 200s (amlakre.com + www + workers.dev). Committed
+    only this task's files.
+
+- **2026-07-13** — **Finances page fits the screen — no more scrolling right** (George: "can you make it so
+  that i dont have to scroll right to get to the end of that page? use that design skill and make it look
+  nice"). Deployed: frontend Cloudflare version `39e5dfbe`. **Frontend-only — layout/CSS, zero logic or math
+  changes; no DB migration, no edge function, $0, no tenant emails.** Tests **265/265** (unchanged count —
+  the component test's totals-row selector updated to the new DOM).
+  - **1) Per-tenant breakdown rebuilt as a LEDGER, not a 13-column spreadsheet** (`TenantShareTable.js` +
+    the `.ledger-*` CSS replacing the `table.grouped` rules in `App.css`, designed with the frontend-design
+    skill inside the app's existing paper/serif language). One entry per tenant: identity on the left
+    (name, "2,000 SF · 40.0% share", and the Invoice / ⚖ Reconcile / ✉ Statement actions moved UNDER the
+    name — killing the widest column), six figure columns on the right (Base rent · Estimated · Taxes ·
+    CAM · Roof · Difference) whose $/SF rides each figure's existing sub-line (the roof rider gets its own
+    sub-line so long combos can't bleed into a neighbor). Header band, every entry, and the totals band
+    share ONE grid template, so figures still align down the page — ~800px natural width vs ~1,300px
+    before. The **Difference** column is styled as the entry's closing balance (display serif, signed
+    gold/red, behind a hairline rule) — the one emphasized element. **Responsive for real:** below 880px
+    the header band hides, each figure self-labels (labels are screen-reader-only on desktop), and figures
+    wrap 3-across (2-across under 520px) — no sideways scroll at ANY width. The estimate editor now opens
+    as a roomy full-width band under the row (same $/SF inputs + × SF preview) instead of the cramped
+    150px cell. Two leaks caught in the browser pass and fixed: the global `button` uppercase/letter-spacing
+    bled into the estimate click-target ("＋ SET ESTIMATE"), and the long est sub-line overflowed its column.
+    Totals band also gained the Base rent sum (was an empty cell). All figures/logic/actions byte-identical.
+  - **2) Monthly rent roll fits too** — the page's other wide panel. Its 12 month columns carried the
+    generic 16px cell padding; a scoped `.rent-roll` rule tightens the month columns to 5px (tenant/last
+    columns keep 16px), so Jan–Dec + Paid fit the panel at laptop width with no inner scrollbar.
+  - **Files:** `TenantShareTable.js`, `App.css`, `camReconciliation.test.js` (totals selector `tr` →
+    `.ledger-totals`).
+  - **Verified:** unit **265/265** (`vitest run`); `vite build` compiles; **real-browser check at 1280px
+    and 800px** (playwright vs the demo dev server): page + both panels report zero horizontal overflow
+    (`scrollWidth == clientWidth`), estimate editor opens/saves, narrow reflow self-labels, **zero console
+    errors** — screenshots reviewed at each pass. Live site 200s (amlakre.com + www + workers.dev).
+    Committed only this task's files.
+
+- **2026-07-13** — **Extractor reads estimated CAM/tax from the lease + the invoice/statement emails no
+  longer break in Gmail** (George: "sometimes certain leases will have an estimated cam and tax can you make
+  the AI extractor also look for that? also when i click the invoice button or statement button it formats
+  weird in gmail can you fix that?"). Deployed: `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`),
+  frontend Cloudflare version `3692adfe`. **$0 new AI cost** (the estimates ride the EXISTING supplement +
+  analyst calls — no new model call), **no DB migration, no tenant emails, no destructive data.** Tests
+  **265/265** (was 258 — +7 expenseEstimates).
+  - **1) AI extractor reads estimated CAM/tax (and roof).** New `expense_estimates` array on the supplement
+    schema — read RAW + basis (`per_month/per_year/per_sqft_year/…`), exactly the rent_schedule contract, so
+    CODE does every ×12/×SF (never the model). **Schema-ceiling safe:** every item field is REQUIRED
+    (non-nullable), so the whole array costs ZERO of the 16-union budget — the supplement stays at 15/16.
+    New shared `estimateAnnualsFrom(estimates, sqft)` (`_shared/rentSchedule.js`, unit-tested from the same
+    module the edge fn runs): first stated figure per charge wins, a 'combined' CAM+tax figure lands on cam
+    only when no separate CAM figure exists, unusable rows (unknown basis, $/SF with no sqft) are skipped —
+    better no prefill than a wrong one. Merged onto the extraction as field-shaped
+    `est_cam_annual`/`est_tax_annual`/`est_roof_annual` (value + confidence + source_quote → the review form
+    shows the AI badge and the quoted clause). Analyst brief's OTHER NOTABLE TERMS now asks for stated
+    estimated charges, steering the form-filler to the clause.
+  - **Review-form prefill with an exact round-trip:** `initialFromExtraction` (LeaseNewPage, now exported for
+    the test) divides the annual estimate to the $/SF rate the form multiplies back at save — 6-dp quotient so
+    an awkward figure ($10,000 over 1,077 SF) still saves as exactly $10,000.00, not $10,005.33; with no SF
+    the annual prefills directly. `buildAiConfidence` carries the two est fields. Roof estimates are read +
+    stored on the extraction but NOT silently saved (the form has no roof field — roof responsibility is a
+    manual toggle; enter the roof estimate on the lease page after toggling it). Demo mock's canned extraction
+    gained a stated "$3.50/SF per annum" CAM estimate (prefills 3.5) for parity.
+  - **2) Gmail formatting fix — root cause: space-padded columns.** Both the invoice (`invoiceTemplate.js`)
+    and the reconciliation statement (`buildCamReconciliationEmail`) aligned their tables with runs of spaces,
+    which collapse in Gmail's proportional font (compose window AND received mail) → ragged "weird" columns.
+    Both rebuilt as one self-labeled line per charge with NO alignment to break: invoice
+    `• Base rent — $5,000.00/mo · $60,000.00/yr · $2.50/SF/mo · $30.00/SF/yr` (all four detail figures kept,
+    per George's 6/30 preference; /SF figures omitted when no SF) + `AMOUNT DUE: $/yr ($/mo)`; statement
+    `• CAM — billed $6,500.00 · actual $7,200.00 · difference +$700.00` + `BALANCE DUE: $X` /
+    `REFUND DUE TO TENANT: $X`. Letterhead/BILL TO/dates unchanged in content, just unpadded. usd() is now
+    sign-aware (`-$83.33`, not `$-83.33`). New regression invariant in the tests: **no run of two spaces
+    anywhere** in either document — the "won't break in a proportional font" property itself.
+  - **Files:** `extract-lease/index.ts` (schema + prompt + merge), `_shared/rentSchedule.js`
+    (estimateAnnualsFrom), `LeaseNewPage.js` (est prefill + export), `mockClient.js` (demo extraction),
+    `invoiceTemplate.js` + `emailTemplates.js` (proportional-safe rewrites), `expenseEstimates.test.js` (new),
+    `reconciliation.test.js` (alignment tests → Gmail-proof assertions).
+  - **Verified:** unit **265/265** (`vitest run`) incl. the round-trip-to-the-cent prefill case and both
+    no-double-space invariants; `vite build` compiles; edge fn deployed clean; live site 200s (amlakre.com +
+    www + workers.dev). **George: upload a lease that states estimated CAM/tax charges (~10–15¢, the normal
+    per-lease read) — the Est. CAM / Est. taxes fields on the review screen arrive pre-filled with the quoted
+    clause under them.** Committed only this task's files.
+
+- **2026-07-13** — **Reconciliation math fix: the estimated/difference view now ties out and stays dormant
+  until an estimate is typed** (George: "the current math doesnt look right to me … how is it getting an
+  estimate of about 101 thousand if there are no estimates set?"). Deployed: frontend Cloudflare version
+  `58a1ba99`. **Frontend-only — no DB migration, no edge function, $0, no tenant emails, no effect on any
+  bill.** Tests **258/258** (was 257 — +1 "no-estimate → dormant totals" regression).
+  - **The two symptoms George caught, one root cause each.**
+    - **Phantom ~$101k "Estimated" total.** The Finances per-tenant table's **Totals** row summed every
+      tenant's `fig.estTotal`, and for a tenant with NO estimate typed `reconcileFigures` fell back to that
+      tenant's ACTUAL share (or its annual invoice's billed CAM+tax+roof) — so the Totals "Estimated (billed
+      to tenant)" cell added up real actuals and printed them as an *estimate* (~$101k on George's live data),
+      even though every individual row correctly read "＋ set estimate". No bills were affected — purely a
+      misleading total.
+    - **Difference didn't equal Estimated − Actual on screen.** The **Estimated column** displayed the current
+      typed estimate (`billedComponents`), but the **Difference column** (and the Reconcile settlement)
+      compared against the year invoice's frozen **snapshot** (0060's "snapshot-wins"). When the two differed
+      (e.g. the demo seed, or George's case where his tenants' pre-feature invoices billed actuals), the
+      on-screen subtraction didn't tie out — 18,800 actual − 18,000 shown estimate looked like +$800 but read
+      +$700 because it was secretly using the $18,100 snapshot.
+  - **Fix — one estimate basis everywhere + gate the view on an estimate being set.**
+    - `reconciliation.js` `reconcileFigures({ share })` — dropped the invoice-snapshot preference; the estimate
+      side is now **always the tenant's current typed estimate** (`billedComponents`, the exact figure the
+      Estimated column shows), so `Estimated − Actual = Difference` always holds on screen, and the Reconcile
+      settlement matches what the landlord sees. (Trade-off, flagged: reconciliation is no longer "immune to a
+      later estimate edit" — editing the estimate now re-bases the true-up; for George that's the intuitive
+      behavior, and the invoice PDF still records what was actually billed.)
+    - `api.js` `reconcileCamTax` — settles against `reconcileFigures({ share })` (same basis; removed the now-
+      unused `getYearInvoice` fetch), so the confirm dialog, the Difference column, and the created recon
+      invoice are one number.
+    - `TenantShareTable.js` — the Estimated total, the Difference column, and the **⚖ Reconcile** button now
+      **only engage when an estimate is actually set** (`billed.anyEstimate`): a no-estimate tenant shows "＋
+      set estimate", a dormant "—" Difference, and no Reconcile; the Totals "Estimated"/"Difference" cells read
+      **—** when no tenant on the property has an estimate (killing the phantom $101k). Removed the dead
+      `annualInvByLease`/`isAnnualInvoice` snapshot plumbing.
+  - **Files:** `reconciliation.js`, `api.js` (reconcileCamTax), `TenantShareTable.js`, `reconciliation.test.js`
+    (snapshot-basis test repurposed to assert the estimate basis; demo diff 700→800), `camReconciliation.test.js`
+    (700→800 + new dormant-totals regression).
+  - **Verified:** unit **258/258** (`vitest run`) incl. the component test mounting the real TenantShareTable —
+    Bright Coffee shows Estimated $16,500 (+roof $1,500) and a Difference of **+$800** that now ties to
+    18,800 − 18,000; City Dental / Northwind (no estimate) show "＋ set estimate", a "—" Difference, no
+    Reconcile, and a "—" Totals estimate. `vite build` compiles; live site 200s (amlakre.com + www +
+    workers.dev). Committed only this task's files.
+
+- **2026-07-12** — **Follow-up on the CAM/tax estimates: $/SF entry, invoice alignment fix, invoice-style
+  reconciliation statement** (George, same day: "the landlord should enter the prices in dollars per square
+  foot … show the total number and the number per square foot like the actual column. the invoice format
+  it a bit off. for reconcile i want it to be email format … similar to the invoice that explains the
+  situation based on the numbers to the tenant"). Deployed: frontend Cloudflare version `81667426`.
+  **Frontend-only — no DB migration, no edge function, $0, no tenant emails** (the statement still opens in
+  the compose modal; nothing auto-sends). Tests **257/257** (was 255 — +1 invoice-alignment regression,
+  +1 $/SF save round-trip).
+  - **1) Estimates are now entered in $/SF (stored annualized — the `est_*_annual` lease columns and the
+    whole billing spine are untouched).** The Finances inline editor's inputs became **CAM/Tax/Roof
+    $/SF/yr** rates (prefilled from the saved annual ÷ the tenant's SF; placeholders = the actual $/SF)
+    with a live "× 2,000 SF = $18,000.00/yr" preview; Save multiplies back to the annual figure. The
+    lease-page fields and the new-lease form got the same treatment (labels flip to "$/SF/yr"; the
+    lease-page hint shows the computed "= $X/yr"). A lease with **no square footage on file falls back to
+    plain $/yr entry** everywhere — the one edge case. Display: the Estimated column now shows the billed
+    total **plus a $/SF sub-line** ("$8.25/SF · + roof $1,500.00"), matching the actual columns.
+  - **2) Invoice alignment bug fixed** (`invoiceTemplate.js`): the new "Property tax (2025 est.)" label is
+    24 chars vs the fixed 22-char label column, so that row's four dollar columns shifted right ("Rent
+    abatement (credit)" at 23 chars had the same latent off-by-one). The label column is now sized
+    dynamically to the longest label; ui-verified every row at identical width with identical $-column
+    end positions [39, 52, 65, 78].
+  - **3) Reconciliation statement rebuilt as an invoice-style document** (`buildCamReconciliationEmail`):
+    business letterhead → right-aligned `REC-{year}-{TEN}` statement number → statement date/period →
+    BILL TO block → an aligned **CHARGE / BILLED (EST.) / ACTUAL / DIFFERENCE** table (signed per-line
+    diffs) → TOTAL row → **BALANCE DUE** (or **REFUND DUE TO TENANT**) — followed by the "Dear {tenant}"
+    letter explaining the outcome from those numbers (remit within 30 days / we will refund / settled
+    even). Same `{subject, body, to}` contract, so the ✉ Statement button and `draftCamReconciliationEmail`
+    needed no changes.
+  - **Files:** `TenantShareTable.js` (EstimateCell $/SF editor + preview + $/SF sub-line),
+    `LeaseDetailPage.js` + `LeaseForm.js` ($/SF entry with annual fallback), `invoiceTemplate.js` (dynamic
+    label width), `emailTemplates.js` (statement document), `App.css` (`.est-preview`), both test files.
+  - **Verified:** unit **257/257** (`vitest run`); **real-browser click-through 6/6** (ui-verifier, demo
+    dev server): $16,500.00 est. + $8.25/SF sub-line; editor prefilled 3.25/5/0.75 with the ×SF preview;
+    CAM 3.5 → $17,000.00/$8.50/SF live and back; invoice rows all 78 chars, columns aligned; Reconcile →
+    "Owed $700.00 — invoiced" → statement modal shows the aligned 56-char table + "BALANCE DUE … $700.00"
+    + the Dear-paragraph — zero console errors (it also caught a "SF SF" double-unit in the preview,
+    fixed before deploy). Live site 200s. Committed only this task's files.
+
+- **2026-07-12** — **Estimated CAM & tax billing + year-end reconciliation** (George approved the plan —
+  `~/.claude/plans/need-to-add-a-jazzy-creek.md`; his picks: estimates typed **per tenant**, ONE combined
+  Leases-page column with the in-depth detail on Finances, overpayments settled by **refund**, roof gets
+  the identical estimate→reconcile treatment as its own separate line). Deployed: DB migration `0060`
+  (Supabase `awgrjmbcghdjgnqeiqkt`), `draft-invoice` edge fn redeployed, frontend Cloudflare version
+  `0d307b7d`. **$0** (no AI calls anywhere in the feature), **no tenant emails** (the reconciliation
+  statement opens in the compose modal like every letter — nothing auto-sends), **no destructive data**
+  (0060 is additive; the one structural change: 0055's `invoices_one_live_per_lease_year` unique index was
+  REPLACED by two kind-scoped ones — constraint-only, verified created-before-dropped, no rows touched).
+  Tests **255/255** (was 238 — +14 reconciliation, +3 component smoke). Migration pre-reviewed by the
+  migration-reviewer agent (APPROVE); UI verified by a real-browser click-through (8/8, zero console errors).
+  - **The concept (George's ask):** the true CAM is only known once the year closes, so during the year the
+    tenant pays a typed **estimate**; the app tracks the **actual** share in the background, shows the live
+    difference, and at year end a **Reconcile** button settles it — tenant underpaid → a reconciliation
+    invoice for the shortfall; tenant overpaid → a refund George marks paid once he's paid the tenant back.
+  - **Data (`0060_cam_tax_estimates.sql`):** `leases.est_cam_annual/est_tax_annual/est_roof_annual`
+    (nullable — **null = that component keeps billing actuals exactly as before**, so all of George's real
+    tenants bill byte-identically until he types an estimate; he can enter only the CAM estimate and let
+    the known tax bill as-is). `v_tenant_shares` recreated appending those 3 columns (19–21; 0058 body
+    otherwise identical, security_invoker re-asserted). `invoices.kind` ('annual' default backfills, |
+    'reconciliation') + the two kind-scoped partial unique indexes. New owner-scoped `cam_reconciliations`
+    (billed-est vs actual snapshot per component, signed `diff`, direction, refund open/settled state,
+    linked `invoice_id`; unique lease+year; owner_all + require_aal2 policies — 0059 pattern).
+  - **Billing spine flipped in ONE choke point:** `draft-invoice` now bills each component
+    estimate-else-actual and returns `estimated` flags — so the Invoice modal, `ensureInvoice`, the monthly
+    tracker, and the property rent roll all follow automatically. `getYearInvoice` +
+    `getPropertyMonthlyRoll` filter `kind='annual'` (**the ÷12 gotcha:** a $700 true-up must never be
+    mistaken for the year invoice and divided into monthly boxes — unit-tested). Invoice template tags
+    "est." lines dynamically + notes "estimated charges are reconciled against actual expenses after year
+    end"; monthly-roll previews use the same est-preferred math (`billedComponents`).
+  - **Reconciliation core:** pure `src/lib/reconciliation.js` (`billedComponents` / `reconcileFigures`;
+    est side = the year invoice's **billed snapshot** when one exists — immune to later estimate edits —
+    else the current estimates; ±5¢ = even, the 0055 dust convention) — the ONE math both the live
+    Difference column and the Reconcile action use. `api.js`: `reconcileCamTax` (idempotent per lease-year;
+    tenant_owes → `kind='reconciliation'` invoice with the NET in total_amount (per-component diffs can be
+    negative and invoice components are ≥0-checked; breakdown lives on the recon row + letter) → flows into
+    AR/aging/the overdue alert + owner overdue emails automatically, all already gated by the `ar` Settings
+    toggle — **no new notification gating needed**; landlord_owes → refund record, `markReconciliationRefunded`
+    settles it; both log `cam_reconciled`/`cam_refunded` history events), `draftCamReconciliationEmail` →
+    new `buildCamReconciliationEmail` letter (est/actual/difference table + "balance due in 30 days" vs
+    "we will refund $X").
+  - **UI:** Leases page — the CAM+tax column now shows the **billed figure** ("$16,500 est." + sub-line
+    "actual so far $17,200"; Total rent follows; untouched look when no estimate). Finances per-tenant
+    table — new **Estimated (billed)** column (click-to-edit inline: CAM/tax/+roof-when-responsible inputs
+    saved onto the lease, placeholder = the actual it would fall back to) and a live signed **Difference**
+    column ("+$700 tenant owes" / "−$X you owe tenant"; recomputes on every expense/CAM/contract/building
+    edit via the existing `tenantShares` invalidations), totals row sums est/actual/net; per-row
+    **⚖ Reconcile** (confirm names the figures) → outcome badge ("Owed $700 — invoiced/collected ✓/overdue",
+    "You owe $X" + **Mark refunded**, or "Reconciled ✓" even) + **✉ Statement**. Estimate fields also
+    editable on the lease page (beside the share override; roof one only when roof-responsible) + the
+    new-lease form. Receivables panels tag `Reconciliation` invoices; History page labels the new events.
+  - **Demo parity:** Bright Coffee seeded with estimates (6,500/10,000/1,500) — its saved inv-1 snapshot
+    (18,100) vs actual share (18,800) demos a live **"+$700 tenant owes"** and the full Reconcile flow;
+    City Dental stays estimate-free (demos the bill-actuals fallback). Mock: est columns on tenantShares,
+    est-preferred demo invoice facts, kind-scoped 23505 + recon-unique emulation.
+  - **Verified:** unit **255/255** (`vitest run`) incl. `reconciliation.test.js` (per-component fallback;
+    both directions + dust→even; invoice-snapshot-wins; recon invoice created only when tenant owes;
+    idempotent; refund settle; the ÷12 isolation; est. invoice labels) and `camReconciliation.test.js`
+    (mounts the real TenantShareTable: est cell + inline editor + live diff + reconcile → badge + invoice).
+    **Real-browser click-through 8/8** (vite demo dev server + playwright): combined Leases column, est
+    edit round-trip, tax 25k→26k moved the Difference +$700→+$1,100 live and back, Reconcile dialog names
+    billed 18,100 vs actual 18,800 → "Owed $700 — invoiced" + statement letter with the breakdown, lease
+    receivables show BOTH invoices (78,100 paid + 700 Reconciliation) while the tracker stays $6,508.33/mo,
+    "est." lines + reconciliation note on the invoice — zero console errors. **Live DB verified** (3 lease
+    columns, view cols 19–21, kind, both indexes present/old one gone, both recon policies); live site 200s.
+    Committed only this task's files.
+
+- **2026-07-11** — **"📨 Send now": landlord letters send directly from the app under their business
+  identity** (George's explicit OK — he asked that "the emails the landlord sends to their tenants come
+  from their business email that they enter," while owner reminders keep coming from Amlak; the Resend
+  domain `amlakre.com` verified earlier the same day is the prerequisite that made this safe). Deployed:
+  new `send-tenant-email` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `36dd662d`. **$0** (Resend free tier — 3,000 emails/mo; no AI calls), **no DB migration, no destructive
+  data.** Tests **238/238** (was 236 — +2 sendNowEmail). **Landlord-initiated only — nothing auto-sends;
+  a letter goes out solely on a Send-now click.**
+  - **What changed for George:** every tenant letter (renewal notices, insurance requests, invoices) used
+    to only *open Gmail* pre-filled for him to send himself. Now each compose screen also has a **"📨 Send
+    now"** button that delivers the letter **directly from the app in one click** — no Gmail window. The
+    Gmail / Other app / Copy / Download buttons all stay as alternatives (Gmail demoted from primary to a
+    quiet secondary). Owner reminder/2FA/health emails are untouched (still from `reminders@amlakre.com` /
+    `alerts@amlakre.com`).
+  - **Sender identity (the one anti-spoofing constraint, handled the industry-standard way):** DMARC
+    forbids a server sending literally "from" an address on a domain it doesn't own (e.g. a landlord's
+    @gmail.com), so — exactly like DocuSign/QuickBooks — the message goes out as **From: `"{Business name}"
+    <letters@amlakre.com>`** with **Reply-To: the corporation's business email** (the one in its Business
+    profile). The tenant sees the **business name** as the sender; hitting Reply reaches the landlord's
+    business inbox; delivery rides the verified amlakre.com domain so it passes spam checks. The business
+    NAME is looked up under the caller's **own JWT** (`corporations.name` where `contact_email = reply_to`,
+    RLS-scoped `.limit(1)` — a landlord can only ever borrow one of *his* business names; fallback "Amlak";
+    sanitized header-safe, ≤60 chars).
+  - **Edge fn `send-tenant-email/index.ts`** (13th `cors.ts` importer; keeps default `verify_jwt=true`):
+    `cors(req)` + preflight (ask-portfolio scaffold). **Real auth is a separate gate** — an anon-key client
+    with the caller's Authorization header → `auth.getUser()` → **401 if no signed-in user** (because
+    `enforceRateLimit` FAILS OPEN on a limiter fault, so it's a cost guard, not the gate); then
+    `enforceRateLimit(req, 10, 60)`. Validates `{to, subject, body, reply_to}` (email regex on to/reply_to,
+    non-empty subject/body, subject ≤300, body ≤50k). Friendly **503** if `RESEND_API_KEY` unset → "use the
+    Gmail button"; Resend rejection → friendly **502** → same fallback; success → `{id}`. Sends via the
+    same Resend `fetch` pattern as `send-reminders`. From-address env-tunable via `TENANT_FROM_EMAIL`
+    (default `letters@amlakre.com`); **no new secrets needed** — `RESEND_API_KEY` was already set.
+  - **Frontend:** new shared `src/components/SendNowButton.js` (idle → "Sending…" → `✓ Sent to {to}` via
+    `.badge good`; inline `.note-msg danger` on failure that points at the Gmail button; disabled until
+    To/subject/body are all filled; `onSent` keeps the caller's existing logging). New
+    `sendTenantEmail({to,subject,body,replyTo})` in `api.js` (next to `listSenderEmails`) → `invokeFunction
+    ('send-tenant-email', …)`. Wired into `EmailComposeModal.js`, `NotificationEmailModal.js` (Send-now
+    success fires the existing `onSend({to,subject})` so insurance-request logging still records; **"Mark
+    sent & dismiss" stays manual** — a Send-now does NOT auto-dismiss the reminder), and `InvoiceButton.js`
+    (footer, using its own from/to/subject/text). "Send from" field-notes reworded. Demo: `mockClient.js`
+    routes `send-tenant-email` → `ok({id:'demo-email'})` (the sandbox never emails anyone).
+  - **Verified:** unit **238/238** (`vitest run`) incl. new `src/components/__tests__/sendNowEmail.test.js`
+    (mounts the real EmailComposeModal vs the demo mock → click Send now → `✓ Sent` + `onSend` fires with
+    `{to,subject}`; Send now disabled with an empty To). `vite build` compiles. **Live function verified
+    gated:** an unauthenticated POST → platform **401**; a valid anon JWT with no signed-in user → my
+    `auth.getUser` **401 "Please sign in and try again."** Live site 200s. **Live end-to-end send NOT
+    re-driven from here** — an authenticated send needs George's own logged-in session (I can't/shouldn't
+    mint his JWT from the shell); the delivery path is the same verified Resend/amlakre.com setup already
+    sending his owner emails. **George: click "📨 Send now" on any tenant letter to your OWN email to watch
+    it land** (make sure each corporation's Business profile has its business email filled in — that's the
+    reply-to + what names the sender). Committed only this task's files.
+
+- **2026-07-11** — **Custom domain AmlakRE.com attached to the live app + edge-function CORS updated**
+  (Part B of the approved plan `~/.claude/plans/precious-stirring-puppy.md`; George registered
+  `amlakre.com` himself via Cloudflare Registrar on his own card — ~$10–12/yr, his purchase, nothing
+  spent by Claude). Deployed: worker version `bf88d77c` (assets unchanged — config-only), **12 edge
+  functions redeployed** (ask-doc, ask-lease, ask-portfolio, draft-invoice, extract-addendum,
+  extract-annual-report, extract-contract, extract-insurance, extract-lease, send-2fa-code,
+  trends-narrative, verify-2fa-code), secret `ALLOWED_ORIGINS` set. **No DB migration, no AI calls,
+  no tenant emails.**
+  - **App now serves on** `https://amlakre.com` + `https://www.amlakre.com` (Cloudflare Custom
+    Domains, added via `wrangler.jsonc` `routes` with `custom_domain: true` — DNS + TLS auto-
+    provisioned) **and still on** `https://amlak.akkawigeo-5.workers.dev`. Gotcha caught mid-deploy:
+    adding `routes` silently disables workers.dev by default — fixed with explicit
+    `"workers_dev": true` and redeployed, so the URL George + the beta user use never broke.
+  - **CORS:** `_shared/cors.ts` `DEFAULT_ORIGINS` now lists amlakre.com (primary), www, and the
+    workers.dev origin; `ALLOWED_ORIGINS` secret set to the same three. Verified live: an OPTIONS
+    preflight with `Origin: https://amlakre.com` reflects that origin back.
+  - **Verified:** apex + www + workers.dev all 200 and serve the app (`<title>Amlak</title>`); the
+    apex initially looked dead from this machine — stale local negative-DNS cache from before the
+    registration, confirmed fine against Cloudflare's authoritative NS + direct-IP HTTPS.
+  - **Resend domain DONE (same day):** George added `amlakre.com` in Resend and used Resend's
+    built-in "authorize via Cloudflare" flow (one-time OAuth — Resend added its own MX/SPF/DKIM
+    records on the `send` subdomain + `resend._domainkey`, all DNS-only; no manual paste needed,
+    no ongoing access). Domain shows **Verified**. Secrets set: `REMINDER_FROM_EMAIL=
+    reminders@amlakre.com` + `HEALTH_FROM_EMAIL=alerts@amlakre.com` — covers send-reminders,
+    send-2fa-code (falls back to REMINDER_FROM_EMAIL), and health-check; no code change, no
+    redeploy needed (secrets restart the functions). Verified end-to-end: a one-time test email
+    from `reminders@amlakre.com` to George (owner — allowed) accepted by Resend (id `9a9049a1`).
+    All owner emails are branded from now on. Emailing REAL TENANTS from the server remains a
+    separate feature needing George's explicit OK — the domain is the prerequisite, not the trigger.
+
+- **2026-07-11** — **"Clear history" button on the property History page + the Leases tab renamed
+  "Portfolio"** (George approved the plan — `~/.claude/plans/precious-stirring-puppy.md`; the plan's
+  third part, the AmlakRE.com domain, is a separate collaborative runbook George drives — nothing of
+  it shipped here). Deployed: frontend Cloudflare version `545aee6b`. **Frontend-only — no DB
+  migration, no edge function, no AI calls, $0, no tenant emails.** Tests **236/236** (was 234 —
+  +2 clearPropertyHistory).
+  - **Clear history (Part A):** each property's "Lease & tenant history" timeline now has a
+    **"Clear history"** button (shown only when events exist, disabled while clearing) that
+    permanently deletes that property's `history_events` after a confirm that names the consequences
+    — including that it also clears the "📨 Last requested" insurance markers (same table). Scope
+    guardrails: the "Expired & renewed leases" archive and closed-year snapshots are untouched. New
+    `clearPropertyHistory(propertyId)` in `api.js` (beside `deleteExpiredLease`); RLS `owner_all`
+    scopes the delete, demo mock needed zero changes. Invalidates `['historyEvents', propId]` +
+    `['insuranceRequests']`.
+  - **Portfolio rename (Part C):** label-only — the route stays `/leases` so every deep link keeps
+    working. Sidebar label + collapsed-rail tooltip (`Sidebar.js`), `TITLES.leases`
+    (`CorporationsPage.js` — its h1 "Corporations" now reads naturally under a Portfolio tab), and
+    the breadcrumb root in `PropertiesPage` / `LeasesPage` / `LeaseNewPage` / `LeaseDetailPage` /
+    `ContractsPage`.
+  - **Verified:** unit **236/236** (`vitest run`) incl. new `clearPropertyHistory.test.js` (wipes only
+    that property's timeline incl. its insurance-request trail; other property + expired-lease archive
+    untouched). **Real-browser click-through** (shared MCP browser held by a concurrent session again,
+    so drove system Chrome headless via the existing playwright-core against a local demo dev server):
+    **11/11** — sidebar reads Portfolio (no "Leases"), tab lands on the corporations grid at `/leases`,
+    breadcrumb roots read Portfolio, Clear history shows with events → confirm names Maple Plaza +
+    "can't be undone" → timeline empties to "No recorded changes yet" → button hides → expired archive
+    2 before/2 after → snapshots still present — zero console errors. Live site 200s; deployed bundle
+    carries the new strings. Committed only this task's files.
+
+- **2026-07-11** — **Additional-insured notice: center pop-up + persistent red banner on a tenant
+  certificate that doesn't name the landlord** (George: the current amber "No" badge is "pretty subtle";
+  he chose a MIX of a quickly-dismissible center pop-up AND a red banner, dismissal quiet-until-the-cert-
+  changes, with an email button — plan `~/.claude/plans/for-the-insurance-section-modular-bonbon.md`).
+  Deployed: frontend Cloudflare version `a5a56d8c`. **Frontend-only — no DB migration, no edge function,
+  no AI calls, $0, no tenant emails** (the letter opens in the compose modal; nothing auto-sends).
+  Tests **234/234** (was 221 — +10 insuranceNotices, +3 render smoke).
+  - **What shows now** (tenant Insurance section, when `additional_insured !== true` — explicit "No" AND
+    "not stated on the document" both warn, same rule as the old badge): (1) a **center pop-up** the
+    moment the tenant's policy loads — "⚠ Not listed as additional insured", names the insurer, explains
+    the risk; Dismiss / ✕ / Escape closes it; (2) a **persistent red banner** on the policy ("You are not
+    listed as additional insured on this certificate") that stays after the pop-up is dismissed; (3) the
+    badge upgraded from amber "No" to red **"No — not listed"**. Pop-up + banner each carry
+    **"✉ Request corrected certificate"** → a new professional letter (`buildAdditionalInsuredRequestEmail`,
+    subject "Additional Insured Endorsement Needed — {property}") asking the tenant's agent to issue an
+    endorsement naming the landlord; sending logs the `insurance_requested` history event ("📨 Last
+    requested" + property History both update). The pop-up's email button also dismisses it.
+  - **"Quiet until the cert changes" mechanic:** dismissal is stored in the existing `alert_states`
+    dismiss store (server-synced, cross-device, works in demo via the mock's generic table handling) under
+    key `addins:{policy.id}:{expiry_date}` (new pure `src/lib/insuranceNotices.js` —
+    `missingAdditionalInsured` + `additionalInsuredAlertKey`). Replacing a policy updates the SAME row
+    (`saveInsurance`), so keying on the expiry makes a renewed cert (new expiry) that still omits George
+    **re-arm the pop-up**; a cert that names him clears everything (condition false). The pop-up renders
+    only after the alert-states query resolves — no flicker on an already-dismissed cert.
+  - **Files:** `InsuranceVault.js` (banner + badge + new `AdditionalInsuredPopup` on the shared
+    modal-scrim/`useModalA11y` pattern; `onRequestRenewal(policy, reason?)` now passes an
+    `'additional_insured'` reason), `LeaseDetailPage.js` (`renewalPolicy` is now `{policy, reason}`;
+    reason branches to the new letter + "Request corrected certificate" title — the expired/current
+    renewal-request flow is unchanged), `emailTemplates.js` (new letter on the `letter()` scaffold),
+    `insuranceNotices.js` (new), demo `store.js` (Bright Coffee's ins-2 flipped to
+    `additional_insured: false` + its policy_text line, so the pop-up/banner are demoable; City Dental
+    keeps demoing the expired-cert flow). **Settings gating free:** everything lives inside the
+    Insurance-feature-gated panel; no new dashboard alert or owner email, so nothing to add in
+    buildAlerts/send-reminders/Ask AI.
+  - **Verified:** unit **234/234** (`vitest run`) incl. `insuranceNotices.test.js` (warn on false/null,
+    quiet on true/none; key stable per cert, flips on expiry change = the re-arm guarantee; letter
+    content) and `insuranceAdditionalInsured.test.js` (mounts the real InsuranceVault against the demo
+    mock: pop-up + banner + badge, dismiss persists across remount, reason callback, compliant cert
+    quiet). **Real-browser click-through** (the shared MCP browser was held by a concurrent session, so I
+    drove system Chrome headless via playwright-core, installed `--no-save`, against a local demo dev
+    server): 17/17 checks — pop-up on open naming Harbor Casualty, email button → modal with the exact
+    subject/recipient/letter, dismissal sticks while the banner stays, Escape works, City Dental shows no
+    notice and its "Request renewed certificate" (expired) flow still opens the old letter — zero console
+    errors. `vite build` compiles; live site 200s. Committed only this task's files.
+
+- **2026-07-10** — **Live-data repair (beta user fakkawi3@gmail.com): GENA promoted from a property under
+  NASA Property to its own corporation; the property renamed "Joliet"** (George approved the plan —
+  `~/.claude/plans/the-user-under-fakkawi3-gmail-com-serene-breeze.md`). **DB-only** — no code change, no
+  deploy, no migration (one-off row repair, Supabase `awgrjmbcghdjgnqeiqkt`), **no money, no tenant emails,
+  nothing deleted**. The user had created "GENA Property, LLC" as a *property* inside his "NASA Property"
+  corporation. One atomic statement (insert + 2 updates): created corporation **GENA Property, LLC**
+  (`e44da7bf-c53d-4dc9-8e35-df80b9a63db3`); moved property `d70b45c6…` onto it and renamed it **"Joliet"**
+  (address kept: 2545 Plainfield rd; same row id, so its whole subtree rode along); repointed the 3
+  `renewal_applied` notifications' `corporation_id` NASA→GENA so their deep-links stay right. **Verified
+  live:** GENA → Joliet holds all 4 leases (Eye 2 Eye, Mario Jirjess (Cards), Mario Thaeir Jirjess, Ruiz
+  Saldivar Victor) + 10 history events; `v_property_totals`/`v_tenant_shares` still serve the property;
+  NASA → Pershing Plaza (9 leases) untouched; the one Pershing notification correctly stays on NASA. The
+  new corporation's Business-profile fields (address/contact) start empty — the user can fill them via the
+  corporation card's "Business profile" button.
+
+- **2026-07-09** — **Annual reports: a new AI-read filing-deadline tab on every corporation + a
+  1-month reminder (bell + owner email)** (George approved the plan —
+  `~/.claude/plans/we-also-need-to-snappy-gizmo.md`). Deployed: DB migration `0059` (Supabase
+  `awgrjmbcghdjgnqeiqkt`), new `extract-annual-report` edge function, `send-reminders` redeployed,
+  frontend Cloudflare version `4accb8fc`. **Costs money** (George approved, disclosed): one small Haiku
+  read per uploaded report ≈ **1¢ or less** (no transcription call — the cheapest possible read);
+  manual date entry is **$0**; **no recurring cost**. **No tenant emails** (owner-only), **no
+  destructive data** (0059 is a brand-new additive table). Tests **221/221** (was 161 — +9
+  annualReportAlerts, +3 corp/modal render smoke; sibling sessions had already pushed the count up).
+  - **What George asked:** every corporation must file a state annual report yearly. He wanted an
+    **"Annual report" button on each corporation card** (next to "Business profile") where he uploads
+    the report; the **AI reads only one thing — the date it must be filed each year**; and the app
+    **reminds him 1 month ahead, every year**. No other details extracted. Two decisions he made:
+    notification = **dashboard bell + one email to him at the 1-month mark**; and **if the deadline
+    passes unfiled the alert turns red "Overdue" and stays** until he clicks "Mark filed" (which rolls
+    the date forward a year and re-arms next year's reminder).
+  - **Data (`0059_annual_reports.sql`):** new owner-scoped `annual_reports`, **one row per corporation**
+    (unique index on `corporation_id`) — `due_date`, `last_filed_date`, `docs jsonb` (`{path,
+    uploaded_at}` so every year's report stays on file), `due_notice_bucket` (email dedupe, exact 0057
+    pattern). RLS = `owner_all` PERMISSIVE **plus** the `require_aal2` RESTRICTIVE policy every other
+    owner table carries (0052) — dormant until 2FA is enrolled. Additive/idempotent; verified live (9
+    columns + both policies present).
+  - **Edge fn `extract-annual-report`:** clone of `extract-insurance` **minus** the transcription call
+    (nothing to Q&A here), single field `due_date`. The landlord's LOCAL today is injected so a
+    recurring rule ("by April 1 each year", "anniversary of incorporation") resolves to the NEXT
+    upcoming occurrence; returns null / never guesses if no deadline is stated. Haiku 4.5, vision path
+    for uploads / paste-text path otherwise, rate-limited, 20 MB guard.
+  - **Frontend:** new `src/components/AnnualReportModal.js` (upload/paste → AI pre-fills the date field
+    for review → Save appends the doc to `docs[]` + saves the date; a plain date input for $0 manual
+    entry; **"✓ Mark filed"** rolls the deadline +1 year; "Reports on file" list with Open buttons).
+    `CorporationsPage.js` gained the second `corp-edit` pill ("Annual report", `DocIcon`) wrapped in a
+    new `.corp-actions` flex span (App.css). `api.js` — `getAnnualReport` / `listAnnualReports` /
+    `saveAnnualReport` (upsert; **nulls `due_notice_bucket` when the due date changes** so the reminder
+    re-arms) / `markAnnualReportFiled` (stamps today, advances the date) / `extractAnnualReport`;
+    `fetchAlertData` now also pulls `annual_reports` + `corporations (id,name)`. New pure
+    `src/lib/annualReports.js` `advanceDueDate` (+1 yr, Feb-29 → Feb-28 clamp).
+  - **Notifications:** `alerts.js` — new `focus:'annual_report'` section, shown **only within 31 days**
+    (warn "Within 1 month"), past due → **red "Overdue", always shown** until filed; **`alertKey`
+    gained a `report_id` anchor** (`a.contract_id || a.report_id || a.lease_id`) so two corps due the
+    same day don't collide. `DashboardPage.js` — clicking the alert routes to the corporations grid
+    (`/leases`); **no ✉ button** (no outside recipient — like the landlord's own insurance).
+    `send-reminders` — new owner-email sweep (single **1-month** threshold per George, deduped by
+    `due_notice_bucket`, **not** gated by any Settings module — filing is core). Past-due sends no email
+    (the red bell covers it).
+  - **Demo parity:** `store.js` seeds one `annual_reports` row (Acme Holdings due ~3 weeks out → the
+    demo bell shows the 1-month alert; Northwind has none). `mockClient.js` — canned
+    `extract-annual-report` route (returns a due date ~2 months out) + the generic mock QB handles the
+    new table.
+  - **Verified:** unit **221/221** (`vitest run`) incl. `annualReportAlerts.test.js` (45d → no alert;
+    ~20d → warn "Within 1 month"; past due → red "Overdue" still shown; two corps same day → distinct
+    keys; `advanceDueDate` +1yr + Feb-29 clamp) and `corporationsAnnualReport.test.js` (2 render smoke
+    tests: the "Annual report" button on both corp cards + the modal reading the seeded record / empty
+    state). `vite build` compiles (785 modules). **Live DB verified:** table + 9 columns + both RLS
+    policies present; migration 0059 applied clean. Live site 200s. **Note:** the shared Playwright
+    browser was held by a concurrent session, so the live-browser click-through wasn't re-driven — the
+    jsdom render tests mount the real modal + corp card against the demo mock in its place. Committed
+    only this task's files (left the untracked `.claude/` tooling alone).
+
+- **2026-07-09** — **Follow-up: the downloadable rent-roll Excel now shows holdover tenants AND vacancy too**
+  (George: "i didn't see the vacancy or the lease that needs an extension as holdover listed in the
+  downloadable rent roll excel file"). Deployed: frontend Cloudflare version `61eac44b`. **No DB, no edge
+  function, no money, no tenant emails.** Tests **209/209** (was 201 — +8 rentRollExcel).
+  - **Root cause:** the on-screen roll got the holdover + vacancy fix (0058, prior entry) but the **Excel
+    export is a separate code path** (`src/lib/rentRollExcel.js`, built from `fetchSearchIndex` leases +
+    properties, NOT the view). It (a) hard-filtered `leases.filter(l => l.is_active !== false)` — dropping
+    every held-over/outdated tenant from the workbook — and (b) never rendered a vacancy row at all.
+  - **Fix:** extracted a pure, exported `rentRollRows(property, leases, now)` that builds the ordered data
+    rows — tenant rows first (sorted by name), then a **"Vacant space"** row when `building_sf − ALL leases'
+    SF > 0` (the same figure the Overview/Leases page use since 0049). Holdover leases are **included and
+    flagged**, never dropped: a lease with `is_active === false` OR past its term end gets `kind:'holdover'`,
+    an amber row fill, `In Term? = "Holdover"`, and a Notes prefix **"Expired — held over"** (+ "· needs
+    extension" when `is_active===false`) — mirroring the on-screen badge. The vacant row is muted italic,
+    `In Term? = "Vacant"`, "Unleased — nothing to collect", no rent. `downloadRentRollXlsx` dropped the
+    `is_active` filter (so a property whose leases are ALL outdated still gets a sheet) and now buckets ALL
+    leases by property. `addPropertySheet` just maps `rentRollRows` output onto the COLS by key and styles
+    by `kind`; the summary occupancy/rent/Wtd-PSF now correctly count held-over tenants too (they were
+    under-counted before). Both callers (`LeasesPage` per-property, `DashboardPage` portfolio-wide) already
+    pass all leases + `building_sf`, so no caller change.
+  - **Verified:** new `src/lib/__tests__/rentRollExcel.test.js` (8 tests — holdover incl. is_active=false and
+    past-term, "needs extension" wording, in-term untouched, vacant row = building−leased & last, no vacancy
+    when fully leased / no building size, purity). Full suite **209/209** (`vitest run`), `vite build`
+    compiles, live site 200s. Committed only this task's 2 files. (Live-browser download not re-driven —
+    the pure `rentRollRows` unit tests cover the row logic; the styling is unchanged plumbing.)
+
+- **2026-07-09** — **Rent-roll holdover sync + Leases-page CAM/tax & Total columns + sorting/drag + a
+  per-lease Address box (replacing the second-email feature)** (George approved the plan —
+  `~/.claude/plans/make-sure-that-the-shiny-platypus.md`). Deployed: DB migration `0058` (Supabase
+  `awgrjmbcghdjgnqeiqkt`), `extract-lease` edge function redeployed, frontend Cloudflare version `d86de65b`.
+  **No money** (the address rides the existing supplement extraction call — zero new AI cost), **no tenant
+  emails**, **no destructive data** (0058 is two additive nullable columns + a non-destructive view replace).
+  Tests **201/201** (was 178 — +16 leaseSort, +3 holdover-roll, +4 render smoke tests).
+  - **1) Rent roll now shows holdover/outdated tenants (the core ask).** Root cause: the monthly rent roll is
+    built from `v_tenant_shares` (`getPropertyMonthlyRoll` → `getTenantShares`), and that view filtered
+    `where l.is_active` (0042) — so a lease flagged `is_active=false` ("Outdated — needs extension") vanished
+    from the roll even though the Leases page/Overview still counted it. `0058` recreates `v_tenant_shares`
+    WITHOUT the `is_active` filter (body + `periods` CTE), **appends** `is_active` / `lease_termination_date` /
+    `premises_address` (create-or-replace can only append, so the 15 prior columns keep their exact 0042 order),
+    switches the active-SF fallback-denominator subquery `pt` to a `left join` (so a property whose leases are
+    ALL outdated still surfaces its holdover rows), and keeps `pt` active-only so **no existing tenant's
+    CAM/tax/roof bill changes**. `getPropertyMonthlyRoll` carries `is_active` + `lease_termination_date` onto
+    each roll row; `PropertyRentRoll.js` shows an amber **"Expired — held over"** badge (adds "· needs
+    extension" when `is_active=false`) with a title explaining rent still collects until removal. **Side
+    benefit:** the lease-page MonthlyRentTracker + `draft-invoice` now work for a holdover lease too (the share
+    row exists). **Live-verified:** George's real outdated tenant ("beauty and barber shop", term ended
+    2025-05-31) now returns a share row (was 0 holdover rows before, 1 now) with its correct CAM/tax split;
+    every active tenant's figures unchanged.
+  - **Vacancy row (George's follow-up).** The roll also shows a muted **"Vacant space · {sf} SF — nothing to
+    collect"** final row (months as non-clickable "—", excluded from "✓ all"/Paid count), driven by
+    `v_property_totals.vacant_sf` (the same building-minus-all-leases figure the Overview/Leases page use since
+    0049), passed from `PropertyFinancialsPage.js`.
+  - **2) Leases page: CAM+tax and Total-rent columns.** Each `LeaseRow` now shows **"CAM + tax"** and
+    **"Total rent"** (= base + CAM + tax + roof, matching the real invoice, with a $/SF sub-line) next to Base
+    rent, pulled from `getTenantShares(propId, currentYear)`. "—" with a hint when no expenses are entered for
+    the year. `.lease-row` grid widened to 7 columns (empty-slot vacancy row keeps its own grid).
+  - **3) Sorting + drag-and-drop.** A sort bar (Term ending · Base rent · $/SF · Total rent · Address · Custom
+    order) with an ↑/↓ direction toggle; nulls/blanks always sort last in BOTH directions. New pure
+    `src/lib/leaseSort.js` (`LEASE_SORTS` + `sortLeases`). Custom order = HTML5 drag-and-drop; dropping a row
+    reorders + persists per-property. Saved to `user_preferences.lease_sort` (jsonb) via new
+    `getLeaseSort`/`setLeaseSort` (merge-patch so mode/dir and per-property manual orders don't clobber each
+    other), React Query key `['leaseSort']` with optimistic updates. `api.listLeases` keeps its `byTermEnd`
+    default (property cards / Excel export untouched).
+  - **4) Address box replaces the second email (George: "remove it completely").** New nullable
+    `leases.premises_address` (0058); `create_lease_tx` populates it automatically via `jsonb_populate_record`
+    (no RPC change) and `LEASE_LIST_COLS` swapped `tenant_email_2` → `premises_address`. The extractor reads it
+    in the existing `SUPPLEMENT_SCHEMA` (swapped `tenant_email_2` → `premises_address` — **union-neutral**, no
+    schema-ceiling risk) with a prompt for "the leased premises' street address, never the landlord's notice
+    address". The **Second email** field became an **Address** field on the review form (`LeaseForm.js`) + lease
+    page (`LeaseDetailPage.js`) + review mapping (`LeaseNewPage.js`). The Primary/Second/Both send picker is
+    gone: deleted `RecipientField.js` and un-wired it from `EmailComposeModal.js` / `NotificationEmailModal.js`
+    / `InvoiceButton.js` back to a plain "To" line. **Data-safe:** the `leases.tenant_email_2` /
+    `notifications.email_to_2` columns + trigger stay in the DB (1 live lease has a 2nd email) — simply unread.
+  - **Demo parity:** `mockClient.js tenantShares` includes outdated leases + the 3 new fields (active-only
+    fallback denominator, mirroring the SQL); `store.js` seeds premises addresses; `user_preferences` Just Works
+    through the mock's generic table handler, so demo sorting persists too.
+  - **Verified:** unit **201/201** (`vitest run`) incl. two **render smoke tests** that mount the real
+    `PropertyRentRoll` (holdover badge + vacancy row) and `LeasesPage` (CAM+tax/Total columns + sort bar) against
+    the demo mock; `vite build` compiles (783 modules); live DB confirmed the 3 new view columns in order + the
+    holdover tenant now returns a share row + `user_preferences.lease_sort` present; live site 200s. **Note:** the
+    shared Playwright browser was held by a concurrent session, so the live-browser click-through wasn't run —
+    the jsdom render tests cover the same components instead. Committed only this task's files (left the
+    untracked `.claude/` tooling alone).
+
+- **2026-07-09** — **Follow-up: the "Request certificate" button now shows on ANY tenant policy on file**
+  (George couldn't see it — all his live tenant certs are current/2027, and the button only appeared on an
+  expiring/expired one; his only expired policy is his own building/landlord policy, which has no ✉). Deployed:
+  frontend Cloudflare version `fe7e2a3a`, commit `5908c70`. No DB/edge/money/tenant-emails. Now: a prominent
+  **"✉ Request renewed certificate"** warning box when the tenant cert is expiring/expired, and a quiet
+  **"✉ Request updated certificate"** action whenever a current cert is on file. `buildInsuranceRenewalRequestEmail`
+  wording adapts — "expired on {date}" (compliance ask) vs a neutral "…on file, with coverage through {date} …
+  requesting your most recent certificate" that never sounds alarmist for a far-from-expiry policy (subject
+  flips too). Files: `InsuranceVault.js` (button condition `status?.stale` → `policy`), `emailTemplates.js`,
+  `LeaseDetailPage.js` (modal title adapts). Tests **178/178**; verified in demo the amber/red policies show the
+  renewed-cert button; live bundle carries the new copy, site 200s.
+
+- **2026-07-09** — **Notifications: full audit + synced to the Settings switchboard + expiry-focused
+  additions** (George approved the plan — `~/.claude/plans/i-want-to-go-federated-whale.md`). Deployed: DB
+  migration `0057` (Supabase `awgrjmbcghdjgnqeiqkt`), `send-reminders` edge function redeployed, frontend
+  Cloudflare version `24435051`, commit `e7593e3`. **No money** (owner-only emails on the existing Resend
+  setup; zero AI calls), **no tenant emails** (every tenant letter stays behind a ✉ click), **no destructive
+  data** (0057 is two additive nullable columns). Tests **178/178** (was 161 — +17 gating tests).
+  - **What George asked (three rounds):** (1) audit every notification + how far ahead it fires; (2) add
+    notifications a landlord needs and **tie them to the Settings page** so hiding a module silences its
+    notifications everywhere; (3) focus insurance on **policies EXPIRING** (not "no policy on file"), add a
+    professional **"your certificate expired — please send the renewed one"** tenant email with neat UI; and
+    (4) **link the notifications to the emails**: show WHICH email they go to, guarantee he's never emailed
+    about something he hid, and **explain it in Settings**.
+  - **The audit (4 channels, verified in code):** dashboard alert list (`buildAlerts`) — escalations / lease
+    ending / renewal-notice / contract ending / insurance expiry (both landlord + tenant), 6 months out; +
+    overdue invoices (until paid). Bell (stored) — renewal Yes/No prompt (6mo), escalation-applied, key-date
+    copies (1mo/2wk/1wk). Owner emails (daily 13:00 UTC cron, Resend live) — lease dates 30/14/7d, insurance
+    1mo/2wk/1wk/at-expiry. Health email — backend only. **Gap closed:** nothing respected the feature toggles.
+  - **Part 1 — every notification now obeys Settings.** `buildAlerts(data, states, now, {features,
+    hiddenWidgets})` gates insurance (+ chase-up) by the **Insurance** feature, contract alerts by
+    **Service contracts**, overdue-invoice + free-rent alerts by the **Outstanding (receivables)** display
+    toggle; core lease dates never gated (`src/lib/alerts.js`; `DashboardPage.js` passes `useFeatures().enabled`
+    + hidden set, folded into the `['alerts', …]` query key so a toggle re-filters instantly). Server side:
+    `send-reminders` loads all `user_preferences` once/run and skips insurance/contract/overdue-rent emails for
+    owners who toggled them off. **Ask Amlak** (`portfolio.js`) omits a switched-off module's facts entirely
+    (off ≠ "none on file") and folds the enabled set into `snapshotFingerprint` (v3) so cached answers can't
+    leak a hidden section; `AskPage.js` drops the matching suggestion chips and re-keys the snapshot query.
+  - **Part 2A — the headline "policy expired → send the renewed certificate" flow.** New
+    `buildInsuranceRenewalRequestEmail` (`emailTemplates.js`, on the shared professional `letter()` scaffold) —
+    names the policy on file + insurer, "expired on {date}" vs "set to expire on {date}", asks for the renewed
+    cert naming the landlord as additional insured. `InsuranceVault.js`: an expiry status **badge** on every
+    policy card (green Current / amber Expiring soon / red Expired) and, on an expiring/expired **tenant**
+    policy, a prominent **"✉ Request renewed certificate"** button → the existing `EmailComposeModal` prefilled
+    with the new letter (logs the `insurance_requested` history event, so "📨 Last requested" updates). The
+    dashboard tenant-insurance alert's ✉ (`draftAlertEmail`) now uses the same expiry-aware letter; the
+    landlord's own building-policy alert still has no ✉ (no outside recipient).
+  - **Part 2B — new alerts.** Free-rent period ending within a month (`rent_abatements`; calm info→warn, owner
+    heads-up, no tenant email); holdover wording (a still-active lease past term end reads "Tenant in holdover"
+    not a generic overdue); insurance chase-up (a cert requested 21+ days ago with no policy saved/updated
+    since → "renewed certificate not received", ✉ re-opens the letter). `fetchAlertData` now also selects
+    rent_abatements, insurance_requested events, and policy created/updated stamps.
+  - **Part 2C — new owner-email sweeps** in `send-reminders`, same 1mo/2wk/1wk/ended cadence + once-per-threshold
+    dedupe as insurance: **contract expiry** (via new `service_contracts.end_notice_bucket`, re-armed by
+    `updateServiceContract` when the end date changes) and **overdue rent** at 1 day / 1 week / 1 month late
+    with the exact balance (via new `invoices.overdue_notice_bucket`; no reset needed — a paid invoice drops out
+    of `v_invoice_balances`). Both gated by the owner's Settings toggles.
+  - **Part "link + explain" (George's 4th ask) — new "Notifications & emails" card** at the top of Settings →
+    Display & features (`DisplaySettings.js`): shows **"Reminder emails go to {your sign-in email}"** (live from
+    `useAuth().user?.email`; demo shows a "no emails in demo" line), a plain-English schedule of what's emailed
+    and when, and the promise **"Anything you turn off below is silenced everywhere — dashboard alerts AND
+    emails. You'll never be emailed about something you've hidden"** + the reminder that tenants are never
+    emailed automatically. Per-toggle hints (`features.js`/`dashboardWidgets.js`) gained "…also silences its
+    reminders and emails."
+  - **Deliberately deferred (flagged):** rent-renegotiation date as a dashboard alert (needs the date promoted
+    out of `extraction_raw` first), "rent due soon" pre-due notices (noise for annual invoices), sign-in
+    security alerts.
+  - **Verified:** unit **178/178** (`vitest run`), `vite build` compiles, and end-to-end in demo with a real
+    browser — City Dental's seeded lapsed cert shows the red **Expired** badge + **✉ Request renewed
+    certificate**, and the compose modal opens with the professional "Expired Certificate of Insurance — Maple
+    Plaza" letter naming Summit Indemnity + the expiry date; the Settings card renders the schedule + promise;
+    toggling **Insurance off** dropped the 3 insurance alerts (8→5 active) AND made Ask Amlak reply "the
+    Insurance module is turned off in Settings" — zero console errors. **Live DB verified:** both 0057 columns
+    present. Live site 200s. Committed only this task's files (left the untracked `.claude/` tooling alone).
+
+- **2026-07-07** — **Project renamed Amlak → "Lease Extractor V2" + GitHub repo made PUBLIC** (George is
+  submitting it and wants reviewers to read the source). **⚠️ THE REPO IS NOW PUBLIC** —
+  `GeorgeAkkawi/lease-extractor-v2` (was `my-dashboard`; old URL 301-redirects). **Never commit a secret**:
+  real keys live only in `.env.local` / `.env.secrets.local` (gitignored) and Supabase edge-function
+  secrets. `.env.production` is committed but holds ONLY the public `sb_publishable_` key + the
+  `GENERATE_SOURCEMAP` flag (the block-secrets hook still guards it). Before flipping public I audited the
+  full tree AND git history — zero service-role keys / API keys / passwords / private keys anywhere.
+  - **Rename (commit `e56f01b`):** all user-visible "Amlak" → "Lease Extractor V2" (sidebar wordmark + "L"
+    mark, browser `<title>` + meta description, Login/2FA headings, Excel `wb.creator`, the insurance-email
+    footer) and the **"Ask Amlak" assistant → "Ask AI"** (sidebar nav, AskPage, README bullet); `package.json`
+    name → `lease-extractor-v2`; internal comments updated. **Left untouched on purpose:** applied SQL
+    migrations (immutable) and edge-function internals (avoid deployed-vs-source drift) — those keep
+    historical "Amlak" mentions; and CLAUDE.md (this file — internal notes, now public; George may want it
+    trimmed/removed). No behavior change; suite **161/161**. The DEMO sandbox was rebuilt + redeployed with
+    the new name (Cloudflare `amlak-demo`, version `6d876f32`) — verified live: wordmark wraps cleanly to two
+    lines, nav reads "Ask AI", zero console errors. The **live `amlak` app was NOT redeployed** (still shows
+    "Amlak"); redeploy it if the production app should rebrand too — but that also rebrands tenant-facing
+    invoice/email copy, so confirm with George first.
+  - **GitHub:** `gh repo rename lease-extractor-v2` (auto-updated the local `origin` remote) + `gh repo edit
+    --visibility public`. The Cloudflare **demo worker name is still `amlak-demo`** (renaming a worker changes
+    its URL, which would break the link already shared — left as-is deliberately).
+
+- **2026-07-07** — **Standalone demo sandbox for a submission** (George is submitting Amlak and needed a
+  shareable demo with fake data and no reviewer setup). Deployed a **separate** Cloudflare Worker
+  **`amlak-demo`** at **https://amlak-demo.akkawigeo-5.workers.dev** (version id `ef551d7d`). **No money**
+  (same free `*.workers.dev` subdomain, no domain bought; demo AI answers are canned so no API spend),
+  **no real data exposed** (the bundle has no Supabase creds — verified it contains zero references to the
+  live project ref `awgrjmbcghdjgnqeiqkt`), **no production DB writes**, no beta-account slot used. The live
+  `amlak` worker (version `e580d0d3`) and its `./build` were untouched.
+  - **What George chose (via questions):** standalone sandbox (not a real seeded account on the live app),
+    **auto-enter** (no login — just share the URL), **built-in demo data** as-is.
+  - **How it works:** the app already has a full DEMO path — empty Supabase creds flip `DEMO_MODE`
+    (`src/lib/supabaseClient.js`) so everything runs on the in-memory mock (`src/lib/demo/mockClient.js`)
+    seeded from `src/lib/demo/store.js` (Acme Holdings / Northwind Group, Maple Plaza & Oak Center, tenants
+    with leases/escalations/invoices/AR/insurance/history). Demo auth auto-returns a session
+    (`mockClient.js:245`), so the reviewer lands straight in a populated Overview; 2FA is skipped
+    (`AuthContext.js:22`). The app **already ships** a "🧪 Demo mode — seeded sample data, no backend" banner
+    + a "Reset demo data" button, so **no app-source changes were needed** — this was purely build + deploy.
+  - **New files (committed):** `vite.demo.config.js` (reuses the base build but points `envDir` at an empty
+    `./demo-env/` so Vite loads NO creds → deterministic DEMO_MODE — the `.env*` files are hook-protected and
+    never touched), `wrangler.demo.jsonc` (the `amlak-demo` worker → `./build-demo`), `demo-env/.gitkeep`,
+    and `/build-demo` added to `.gitignore`. Build: `npx vite build --config vite.demo.config.js --outDir
+    build-demo`; deploy: `npx wrangler deploy -c wrangler.demo.jsonc`.
+  - **Trade-offs (agreed):** sandbox resets each visit (a plus — always pristine, unbreakable); AI features
+    return canned demo answers, not live AI. **To redeploy the demo** after future changes: rebuild with the
+    command above, then `wrangler deploy -c wrangler.demo.jsonc`. **Verified:** demo URL 200s, auto-enters to
+    a populated dashboard + Leases list, **zero console errors**; live app still 200s and still shows its real
+    login; demo bundle confirmed free of the live backend ref.
+
+- **2026-07-07** — **Comprehensive review + 6 fix groups** (George approved the full findings report —
+  plan file `~/.claude/plans/you-are-doing-a-wobbly-steele.md` — then the fixes shipped one reviewable
+  commit per group). Deployed: DB migrations `0055`+`0056` (Supabase `awgrjmbcghdjgnqeiqkt`), **8 edge
+  functions** redeployed (shared anthropic.ts timeout) + **`query-portfolio` deleted** (dead, no live
+  caller), frontend Cloudflare version `e580d0d3`. **No money, no tenant emails, no destructive data**
+  (0055's dedupe-void step was verified a no-op on live — zero duplicate invoices existed; the
+  index/view/policies are additive). Tests **161/161** (was 147 — new money suite). Commits `6e16b2d`,
+  `fdc4bf8`, `7142b24`, `72c9c74`, `23b930d`, `4eb1936` (one per group — review each with `git show`).
+  - **Group 1 — billing integrity (the two live-reproduced bugs).** (a) *Duplicate invoices*: nothing
+    stopped a second "Save to receivables" (or the monthly tracker racing the invoice modal) from creating
+    TWO live invoices for the same tenant+year — Outstanding AR doubled ($98,500→$208,300 in demo). `0055`
+    voids any existing duplicates (live had none) + partial unique index `invoices(lease_id, year) where
+    status<>'void'`; `ensureInvoice` treats the 23505 as "use the existing one"; new `upsertYearInvoice`
+    refreshes-in-place (InvoiceButton badge now says *updated* vs *saved*). (b) *Penny leak*: $98,500/12 →
+    $8,208.33×12 = $98,499.96, so a fully-paid year read "partial" with 4¢ owed forever.
+    `monthlyScheduleForYear` is now penny-true (last owed month absorbs the rounding cents) and `0055`
+    rebuilds `v_invoice_balances` with a ±5¢ dust clamp (drop+create — the live view predated
+    `invoices.abatement_annual`, so REPLACE couldn't line up columns; grants + security_invoker
+    re-established; the view now also exposes abatement_annual). Also: `markMonthPaid` is idempotent per
+    month (double-click / two screens can't double-pay), bulk "✓ all" skips tenants whose year invoice is
+    already settled (an annual lump payment no longer gets 12 extra charges), deleting a payment in
+    Receivables refreshes the tracker/roll caches. **New `moneyCollection.test.js`** (13 tests): dedupe,
+    exact 12-month reconciliation, bulk mark-all, AR aging, abatement credit line.
+  - **Group 2 — alerts & freshness.** The overdue-invoice reminder (the one about money!) was the only
+    alert with no ✉ — new `buildPaymentReminderEmail` letter wired through `draftAlertEmail` (the alert now
+    carries balance + invoice year). Ask-Amlak cache fingerprint (v2) includes open balances, so recording
+    a payment invalidates stale "who owes money?" answers. New `localDateIso()` — the browser's "today" is
+    now the LOCAL calendar date, not UTC (after ~8pm Eastern the on-load engine could apply an escalation a
+    day early; JS twin of `app_today()`/0051) — applied to the engine, renewal windows, reconcile, the
+    once-a-day gate, and the portfolio snapshot. `promptDueRenewalDecisions` selects `LEASE_LIST_COLS`
+    instead of `*` (stops downloading every lease's full text daily).
+  - **Group 3 — security/config.** `0056`: `require_aal2` extended to the 4 tables 0052 missed
+    (**`portfolio_qa_cache`** — cached answers naming tenants/balances were readable by a bare-password
+    aal1 session — plus `user_preferences`, `user_security`, `email_2fa_codes`); and
+    `apply_due_escalations()` notifications now carry `email_to`/`email_to_2` (the bell's send modal opened
+    blank for cron-applied escalations). `config.toml` `[auth.mfa.totp]` flipped to true so a future config
+    push can't silently disable 2FA.
+  - **Group 4 — resilience.** `callClaude` attempts now run under `AbortSignal.timeout` (default 90s,
+    caller-tunable); a hung connection gets ONE retry then a clear error. extract-lease's form calls run at
+    40s so the whole function fits the 150s edge wall clock — a hung Anthropic call can no longer burn a
+    paid extraction into an HTTP 546.
+  - **Group 5 — hygiene.** Deleted dead code: `getCorpCounts`/`getCorpRollup`, the email-2FA client
+    helpers (native TOTP replaced them; the dormant send/verify-2fa-code edge fns stay deployed),
+    `query-portfolio` (source + deployed fn + demo route), `reportWebVitals.js` + `web-vitals` dep.
+    `@testing-library/*` → devDependencies. README rewritten (was "PropManager"/CRA/3 migrations).
+    `.page-head` actions wrap on phones instead of clipping. NOTE: `.env.production` still carries the dead
+    CRA `GENERATE_SOURCEMAP` flag — the block-secrets hook protects that file; harmless (Vite ignores it),
+    remove by hand whenever.
+  - **Group 6 — accessibility.** New shared `useModalA11y` hook (Escape closes, focus moves in / traps /
+    returns to the opener) wired into all 7 modals (now `role="dialog"`); Dashboard's clickable
+    notification/alert bodies + expiring-lease rows are Enter/Space-activatable.
+  - **Verified:** unit (161/161), `vite build`, and end-to-end in demo with a real browser — the exact
+    dup-invoice repro now shows "✓ Receivables updated" with ONE invoice; 12 tracker clicks settle
+    $98,500.00 to $0.00 / "paid"; the overdue alert's ✉ opens the full letter with the right figures;
+    Escape closes modals. **Live DB verified:** unique index present, 4 aal2 policies present, rebuilt view
+    serves 8 rows, zero duplicate invoices, zero dust balances. Live site 200s.
+  - **Still open from the review (deliberately deferred):** **A-1** transactional RPC ports for
+    confirmRenewal/applyAddendum/reconcile (the long-staged item — do next, now that the money tests
+    exist); **S-2** storage-file cleanup on delete; **T-2** component/render tests; P-2/P-3 minor batching;
+    the corp/property-card ARIA nesting nit.
+
+- **2026-07-06** — Fix: **Overview "Annual rent roll" ≠ property-page revenue** for a renewed lease.
+  Deployed: DB migration `0054` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `931cb67a`. **No money, no tenant emails**; migration is a non-destructive function replace, and the
+  live-data repair is additive (2 ledger rows + one already-approved invoice correction).
+  - **What George saw:** the Overview rent-roll card showed a different number than a property's revenue
+    (Leases → property). Verified live: Pershing Plaza card **$302,537.36** vs Overview **$295,359.36** —
+    a **$7,178** gap, entirely from **FIVE POINTS WINGS, LLC** (Wingstop).
+  - **Root cause:** two sources. The property card sums raw `leases.base_rent`
+    (`PropertiesPage.js:96`); the Overview + property Financials read `v_property_totals.total_revenue` =
+    Σ SQL `effective_rent(lease, year)` (`0001_init.sql`). `effective_rent` ALWAYS preferred the latest
+    APPLIED escalation over `base_rent`. Confirming a renewal (`rollLeaseIntoRenewal`, `api.js`) writes
+    the new rent onto `base_rent` but **never recorded a matching applied escalation**, so Wingstop's
+    ledger still ended at its 2017 step ($34,225) while `base_rent` was the renewed $41,403. Difference =
+    41403 − 34225 = **7178**, exactly. (Only this one lease mismatched portfolio-wide.)
+  - **Root fix — era-aware `effective_rent`** (`0054_effective_rent_era.sql`, non-destructive
+    `create or replace`; both views pick it up unchanged): `base_rent` is the CURRENT rent (kept live by
+    applyDueEscalations, renewals, manual edits), so it wins for the **current era**. The ledger is only
+    consulted for a **historical year** — one that has an applied step dated AFTER it. For a healthy
+    lease (ledger in sync) the output is IDENTICAL to before, so no other number shifts. Mirrored in the
+    JS `effectiveRent` (`src/lib/escalations.js`, used only by the demo mock) for demo parity.
+  - **Prevention** (`api.js` `rollLeaseIntoRenewal`, catch-up branch): after moving `base_rent`, it now
+    inserts an **applied** escalation at the new term start with the renewal's rent (when the rent
+    changed and no step already sits there), so the ledger stays in sync going forward. Written AFTER the
+    lease update, so an interruption still leaves `base_rent` right and the era-aware function correct.
+  - **Live-data repair** (via `supabase db query`): added Wingstop's two option-period rents to the
+    ledger as applied steps — `2018-01-01 → 37,648` and `2023-01-01 → 41,403` — so PAST fiscal years read
+    the rent that actually applied (2018-2022 → 37,648; 2023+ → 41,403). Corrected the 2026 invoice
+    (`ffae6313…`, still `sent`) from the stale $34,225 base ($53,884.33 total) to $41,403
+    (**$61,062.33** total; CAM/tax lines are SF-based, unchanged). January's recorded payment untouched —
+    the shortfall now correctly shows as owed. Both guarded (idempotent).
+  - Verified: new `src/lib/__tests__/effectiveRentEra.test.js` (6 tests — era-aware parity + the
+    stale-ledger bug + post-repair history + scheduled-step-doesn't-shift + the renewal→ledger→rent-roll
+    e2e). Full suite **147/147 green** (`vitest run`); `vite build` compiles. **Verified on LIVE data:**
+    zero leases mismatch base_rent vs effective_rent(2026); Pershing `v_property_totals` 2026
+    total_revenue = **$302,537.36** = the card sum; Wingstop year-by-year history correct. Committed only
+    this task's files. (Renumbered my migration 0051→0054 — sibling sessions had shipped 0051-0053.)
+
+- **2026-07-06** — **Build tooling: Create React App → Vite** (audit item L2). Deployed: frontend
+  Cloudflare version `bbd6b928`, commit `958a3c2`. No DB, no edge functions, no money, no tenant emails.
+  Purely under-the-hood — no user-visible change; faster builds.
+  - **Why:** react-scripts (CRA) is EOL. Swapped to **Vite 7** (build/dev) + **Vitest 3** (tests).
+  - **Config (`vite.config.js`):** esbuild `loader:'jsx', jsx:'automatic'` for `src/**.js` (the app keeps
+    JSX in `.js` files and uses the automatic runtime — components don't `import React`); **`envPrefix:
+    ['VITE_','REACT_APP_']`** so `.env.production`/`.env.local` and the live Supabase creds are untouched
+    (`supabaseClient.js` now reads `import.meta.env.REACT_APP_*`); `build.outDir:'build'` so `wrangler.jsonc`
+    (`assets.directory: ./build`) is unchanged; **`test.env`** forces the two Supabase vars empty so the
+    suite stays in DEMO mode (Vite loads `.env.local` in test mode, unlike CRA).
+  - **Files:** `public/index.html` → root `index.html` (drop `%PUBLIC_URL%`, add the `/src/index.js` module
+    script); `package.json` scripts now `vite`/`vite build`/`vitest run` (react-scripts + the `react-app`
+    eslintConfig removed); added `vite`/`@vitejs/plugin-react`/`vitest`/`jsdom` dev deps.
+  - **Gotcha hit + fixed:** `vite@latest` (v8, Rolldown bundler) failed to parse JSX-in-`.js`; pinned to the
+    proven **Vite 7 / plugin-react 4 / Vitest 3** stack where the esbuild jsx-loader recipe is stable.
+  - Verified: **141/141** via `vitest run`; `vite build` compiles (782 modules); the built bundle embeds the
+    live Supabase URL (NOT demo); and the built app boots in a real browser (login renders, **zero console
+    errors**) before deploy. Committed only this task's files.
+
+- **2026-07-06** — **Audit follow-through** (the held-back + open items George green-lit: real 2FA,
+  atomic lease creation, overdue-invoice alerts, timezone pin, CORS lockdown, error surfacing).
+  Deployed: DB migrations `0051`/`0052`/`0053` (Supabase `awgrjmbcghdjgnqeiqkt`), 12 edge functions
+  redeployed (shared CORS change), `ALLOWED_ORIGINS` secret set, frontend Cloudflare version
+  `d203539c`. Commit `ab55940`. **No money, no tenant emails, no destructive data** (migrations are
+  additive: new fns/policies/column-free). Tests **141/141**.
+  - **C2 (Critical) — real authenticator 2FA, server-enforced.** Replaced the client-only email-OTP
+    (which a valid aal1 JWT bypassed via PostgREST) with Supabase **native TOTP MFA**: `SecuritySettings.js`
+    enrolls via QR + verify; `TwoFactorChallenge.js` steps the session up to aal2; `AuthContext.js` gates on
+    the real `getAuthenticatorAssuranceLevel()` (not a client flag). **Server enforcement** = `0052`:
+    `user_has_verified_mfa()` (SECURITY DEFINER, reads `auth.mfa_factors`) + a `require_aal2` RESTRICTIVE
+    RLS policy on **all 22 owner-scoped data tables** — `aal2 OR not user_has_verified_mfa()`. **Safe by
+    construction:** dormant for any user with no verified factor (there are **0** now → zero impact on
+    George today); it only bites after a user enrolls (which itself proves the code + elevates that session
+    to aal2). service_role/anon unaffected → cron/edge keep working. Email-2FA (0030 tables, send/verify
+    fns) left dormant (non-destructive). **George: enroll your authenticator in Settings → Security to turn
+    it on; if you ever lose the device, I can reset it from the backend.**
+  - **C3 (money path) — atomic lease creation.** `0053 create_lease_tx(jsonb…)` (SECURITY INVOKER, so RLS
+    still applies) inserts a lease + its escalations/renewals/abatements in ONE transaction;
+    `createLeaseFromExtraction` (`api.js`) now calls it via a new `callRpc` helper (owner_id forced
+    server-side), and `mockClient.js` mirrors the RPC so demo + the replay tests exercise the same path. A
+    failed import can no longer leave a half-built lease with missing rent steps. **Deliberately staged
+    (NOT done — flagged):** the `confirmRenewal`/`applyAddendum`/`reconcileRenewalOptions` (H4) RPC ports —
+    they're entangled read-modify-writes that already self-heal via `backfillLeaseToToday`, and hand-written
+    heterogeneous money-SQL is untestable in Jest, so rushing it into this batch risked corrupting live
+    lease/rent data. Recommend doing them as a focused, separately-verified step.
+  - **4a — overdue-invoice alerts.** `buildAlerts` (`alerts.js`) + `fetchAlertData` (`api.js`) now surface
+    any unpaid, past-due invoice (from `v_invoice_balances`, balance > 0) as a danger alert on the
+    dashboard, always shown until paid (no 6-month horizon). Mock `QB` gained `.gt`/`.lt`.
+  - **M1 — timezone.** `0051` adds `public.app_today()` (= Eastern date) and swaps `current_date` →
+    `app_today()` in `apply_due_escalations`/`apply_due_renewals`/`regenerate_lease_reminders` (byte-identical
+    otherwise). Behavior-neutral at the 13:00-UTC cron time (UTC date already == Eastern there); future-proofs
+    off-hours/manual runs.
+  - **M6 — CORS lockdown.** `_shared/cors.ts` now resolves the allowed origin **per request** via a
+    `cors(req)` factory (reflects the request origin when it's the prod origin or any localhost; else the
+    primary). Threaded through the 12 functions that import it (one destructure line each; no json() callsite
+    churn). Backward-compatible standalone exports kept. `ALLOWED_ORIGINS` secret set; built-in default also
+    hard-codes the prod origin so a deploy without the secret is still locked (not `*`).
+  - **6-residual — error surfacing + lighter loads.** New shared `MutationError` component drops a friendly
+    line when a save/delete fails, added to the money editors (CAM, building size, escalations, abatements,
+    invoices+payments, renewals, service contracts) — no more silent failed clicks. `listLeases`/
+    `listLeasesByProperties` now select an explicit `LEASE_LIST_COLS` (everything **except** the big
+    `lease_text` blob) so property/tenant lists load lighter; `getLease` (detail page) keeps `select('*')`.
+  - **Still open / not attempted:** the confirm/addendum/reconcile RPC ports (above); the **Vite** build swap
+    (large + touches build+test tooling — being done as an isolated follow-up so its risk doesn't co-mingle
+    with these security/data migrations).
+
+- **2026-07-06** — Security/quality **audit fixes** (10 items from the read-only audit; the two
+  biggest-risk architectural ones deliberately held back — see note). Deployed: DB migration `0050`
+  (Supabase `awgrjmbcghdjgnqeiqkt`), 8 edge functions redeployed (shared retry), frontend Cloudflare
+  version `1a5a716d`. **No money, no tenant emails, no destructive data** (migration is additive:
+  new column + index + function replace + grant revokes).
+  - **C1 (Critical) — tenant removal no longer destroys billing history.** Deleting a lease cascades to
+    its invoices+payments (0023 `on delete cascade`), and `archiveLease` only copied summary fields — so
+    an entire tenant's AR/payment ledger was lost for good, silently. `0050` adds `expired_leases.financials
+    jsonb`; `archiveLease` (`api.js`) now snapshots `listInvoices`+`listPayments` into it BEFORE the delete
+    (best-effort — a read hiccup never blocks removal). `RemoveTenantModal.js` copy updated.
+  - **C3 partial (Critical vector) — `applyEscalation` reordered.** It marked the step `applied` THEN
+    wrote `base_rent`; a tab death between the two left the step applied with a stale rent forever
+    (`applyDueEscalations` skips applied rows). Now writes `base_rent` first → an interruption leaves it
+    `scheduled` and re-appliable. (Full transactional RPC rewrite NOT done — held back.)
+  - **H1 (High) — duplicate renewal prompts killed at the DB.** `0050` adds a partial unique index
+    `(lease_id) where kind='renewal_decision'`, recreates `apply_due_renewals()` with `on conflict … do
+    nothing`, and `promptDueRenewalDecisions` (`api.js`) swallows the 23505 race.
+  - **H2 (High) — write-on-read gated.** `Layout.js` fired the escalation+prompt engine on EVERY load,
+    duplicating the nightly cron; now gated to once/calendar-day/browser via localStorage in live mode
+    (demo still runs each load).
+  - **H3 (High) — AI extraction survives a load spike.** `_shared/anthropic.ts callClaude` retries
+    transient 429/500/502/503/529 with backoff (≤3 tries). Redeployed the 8 functions that use it
+    (extract-lease/-addendum/-contract/-insurance, ask-portfolio/-lease/-doc, trends-narrative).
+  - **M4** — `ask-portfolio` appends a "summary truncated" note instead of silently dropping tenants.
+    **M5** — `0050` revokes `anon`/`public` EXECUTE on `log_security_event` + `ai_rate_check` (audit
+    spoofing; app calls them as service-role/authenticated, which keep working). **M3** — `App.css`
+    `@media (max-width:768px)`: sidebar → 64px icon rail, rows stack. **L1** — removed the dead
+    `currentRenewalId` archive branch in `backfillLeaseToToday`. **L3** — deleted leftover `vercel.json`.
+  - **Held back on purpose (need a careful, tested rollout — flagged to George):** **C2** 2FA is a
+    client-side UI gate only (a valid JWT bypasses it via PostgREST); the real fix is server-side
+    enforcement/native MFA and a wrong RLS change could lock George out. **C3-full** RPC-transactionalize
+    confirmRenewal/applyAddendum/createLeaseFromExtraction + **H4** port `reconcileRenewalOptions` to SQL
+    (large money-path rewrite, needs tests). **M6** set `ALLOWED_ORIGIN` (would break local dev), **M1**
+    timezone (local-vs-UTC decision touching the cron), **L2** CRA→Vite. Verified token-free: full suite
+    **139/139 green**; `CI=true` build compiles (+82 B); migration verified live. Committed only this
+    task's files.
+
+- **2026-07-06** — Overview / property pages now count an **outdated ("needs extension") tenant as
+  occupied**, matching the Leases page (fixes my earlier "Overview↔property sync", which synced them to
+  each OTHER via `v_property_totals` instead of to the Leases page). Deployed: DB migration `0049`
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `a1e5d492`. No money, no tenant emails,
+  no destructive data (non-destructive `create or replace view`).
+  - **What George caught:** the Leases page sums EVERY lease's SF (`LeasesPage.js:34`, no `is_active`
+    filter), so an expired-but-not-removed tenant (his beauty/barbershop) still counts as occupied and
+    the bottom "Vacant space → Available" reads **882 SF**. But the Overview, property Financials page,
+    and property cards read `v_property_totals`, whose `leased` CTE filtered `where is_active` — so that
+    tenant's space showed as *vacant* and its rent dropped from the rent roll. George's rule: an
+    outdated tenant counts **fully** (space + rent) until HE removes it; a lapsed date shouldn't auto-evict
+    it from the numbers.
+  - **Fix (migration `0049` recreates `v_property_totals`):** added an `occupied` CTE = **all** leases
+    that now drives `total_sf` / `building_sf` fallback / `vacant_sf` / `occupancy`; dropped `and l.is_active`
+    from `total_revenue`/`noi` so the outdated lease's rent counts (`effective_rent` falls back to
+    `base_rent`); dropped the `periods` CTE's `is_active` filter. **Billing untouched** — the active-only
+    `leased` CTE still feeds `resp_sf` + `tax_psf`/`cam_psf`/roof denominators, so the summary $/SF rate
+    cards keep matching the per-tenant bills (`v_tenant_shares`, 0042). `DashboardPage.js` +
+    `PropertyFinancialsPage.js` read the view → both fixed by the one migration, no frontend edits there.
+  - **Frontend:** `PropertiesPage.js` property card now counts ALL leases for tenant count / SF /
+    occupancy / revenue (dropped the `is_active !== false` filter). `mockClient.js propertyTotals` mirrors
+    the SQL split (all leases for occupancy/revenue; active leased SF for the $/SF denominators).
+  - Verified token-free: `contractCam.test.js` +2 (an outdated lease counts in total_sf/vacant/occupancy/
+    revenue; with no building size, occupancy uses ALL leases but $/SF still divides by ACTIVE SF). Full
+    suite **139/139 green**; `CI=true` build compiles (−16 B). **Verified on LIVE data** (read-only query):
+    Pershing Plaza `v_property_totals` now reads total_sf **12,868** (was 11,791), vacant **882**, occupancy
+    **93.6%** — exactly matching the Leases page (the 1,077-SF outdated tenant is now counted). Committed
+    only this task's files.
+
+- **2026-07-06** — Six-in-one round: notifications audit + repairs, Overview↔property number sync,
+  insurance send-log, renewal timing verify + guard, rent-roll speed, and Receivables toggle reaching
+  the Finances page. Deployed: DB migrations `0047`+`0048`, `send-reminders` edge function scheduled
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `3409280c`. **No money, no tenant
+  emails** (reminder emails go to the OWNER only), no destructive data.
+  - **Item 5 — rent roll no longer slow.** The "✓ all" bulk mark was a sequential N+1 (per tenant:
+    fetch invoice → list payments → full markMonthPaid, 60–100 queries). Rewrote `markMonthPaidAllTenants`
+    (`api.js`) to reuse the roll the component already has, `Promise.all` the missing-invoice creates, and
+    insert ALL payments in one batched `insert`. Added **optimistic updates** to `PropertyRentRoll.js` +
+    `MonthlyRentTracker.js` (the click paints instantly, rolls back on error) and **scoped** the cache
+    invalidations to the affected lease/property (was a blanket `['payments']`/`['invoices']` sweep that
+    restaled the whole app). Added `onError` so failures show a message instead of silently doing nothing.
+  - **Item 2 — Overview matches the property page.** The dashboard summed raw `base_rent` and computed
+    its own occupancy; the property Financials page reads the year-aware `v_property_totals` view
+    (escalated `effective_rent`, building-SF occupancy). `DashboardPage.js` now sums the SAME view
+    (`listPropertyTotalsByYear`, keyed on the shared fiscal year) for rent roll / leased SF / occupancy /
+    vacant SF. Property **cards** (`PropertiesPage.js`) now filter out inactive leases so their tenant
+    count / SF / revenue align too. Demo mock (`mockClient.js`) view branch handles the `.in(ids)` rollup.
+  - **Item 3 — insurance requests are logged.** "Request from tenant" (lease page) and the dashboard
+    insurance-expiry ✉ now record a dated `insurance_requested` **history event** when sent
+    (`EmailComposeModal`/`NotificationEmailModal` gained an `onSend` hook; `api.js`
+    `logInsuranceRequest`/`listInsuranceRequests`). The tenant Insurance panel shows **"📨 Last requested
+    {date}"** (with an honest "sent from Amlak — delivery isn't tracked" note); the property **History**
+    page lists each request. Demo seeds one event. No migration (reuses `history_events`, 0035/0040).
+  - **Item 1 — notifications inventoried + the nightly cron actually fixed.** Migration **0047** pins
+    `search_path = public` on the three 0002 reminder trigger functions (the empty search_path under the
+    SECURITY-DEFINER cron was crashing every night), adds the JS **term-end gate** to SQL
+    `apply_due_escalations` (un-exercised option rents stay scheduled until the renewal is confirmed), and
+    **schedules `send-reminders`** daily at 13:00 UTC (it was never scheduled — owner-only emails, first
+    due 8/31). Running the job then surfaced a SECOND latent bug — `apply_due_renewals()`'s cleanup
+    `delete … using public.leases l` collided with its own `l` record variable (`record "l" is not
+    assigned yet`), so the renewals half never ran; migration **0048** renames that alias. **Verified
+    live:** `apply_due_changes()` now runs clean (2 changes applied) and the stuck **Infinite Mobile
+    2026-07-01 → $28,745.04** escalation is now `applied`. Also fixed `alerts.js`: a *declined* renewal
+    option no longer mutes the red "lease ending — no renewal" warning (only pending/applied soften it).
+  - **Item 4 — renewals already behave correctly (verify-only) + a guard.** Confirmed: clicking Renew on
+    a FUTURE option only extends the end date and lays the new rent in as dated steps — today's rent and
+    `lease_start` are untouched until each step's date arrives. Added a guard so confirming a renewal on a
+    lease with **no term-end date** refuses with a friendly message (was silently nulling the lease dates):
+    `confirmRenewal` returns `{ needsTermEnd }`, surfaced in `RenewalOptionsEditor.js` + the dashboard bell.
+  - **Item 6 — hiding Receivables now also hides it on Finances.** `PropertyFinancialsPage.js` gates
+    `ARSummary` behind the same `ar` Display toggle (was unconditional); updated the toggle's hint.
+  - Verified token-free: `sixMonthAlerts.test.js` +1 (declined vs pending renewal → red vs softened
+    lease-ending alert), `futureRenewalConfirm.test.js` +1 (no-term-end lease refuses renewal, changes
+    nothing). Full suite **137/137 green**; `CI=true` build compiles (+1.56 kB). Committed only this
+    task's files. **George — two follow-ups on the email cron:** (1) the daily `send-reminders` emails
+    only YOU (never tenants) about due lease/insurance dates; (2) for those emails to actually send it
+    needs `REMINDER_FROM_EMAIL` (set to `onboarding@resend.dev` until a domain is verified) + `CRON_SECRET`
+    set as edge-function secrets — until then it still creates the in-app reminders, just no email.
+
+- **2026-07-06** — Removed the lease-search box; built **"Ask Amlak"** — a sidebar page that answers
+  natural-language questions about the account's OWN records (tenants, insurance, contracts, rent,
+  who owes money). Deployed: DB migration `0046` (drops `lease_qa_cache`, adds `portfolio_qa_cache`;
+  Supabase `awgrjmbcghdjgnqeiqkt`), new `ask-portfolio` edge function, frontend Cloudflare version
+  `d5e81cf2`. **Costs money** (George approved): a fresh question is **well under ½¢**; repeats on an
+  unchanged portfolio are **$0** (cached); nothing runs without a click → a month is cents.
+  - **What George asked:** he did NOT want the earlier AI feature that read lease *documents*
+    ("nah i dont like that … i meant being able to read the website not the leases"). He wants to
+    ask the app about its **records** — e.g. "which tenants have an insurance contract saved and
+    which don't?", "who owes money?" — and click through to the tenant. He also said to **take out
+    the whole lease-search box** and **drop** its cache table.
+  - **Part 1 — removal.** Deleted `src/components/LeaseSearch.js` + the `ask-leases` edge function;
+    stripped `src/lib/leaseSearch.js` to just `byTermEnd` (the soonest-expiring tenant sort, a
+    SEPARATE feature — kept); removed `askLeasesQuestion`/`COMMON_QUESTION_TERMS`/cache
+    helpers/`listAddendumsByLeases` from `api.js`, the search box from `LeasesPage.js`, the
+    `ask-leases` demo route, and the `.lease-search*`/`.ai-answer*`/`.chip` CSS. Migration `0046`
+    `drop table if exists lease_qa_cache` (George OK'd — it only held regenerable cached answers).
+  - **Part 2 — Ask Amlak (cheap, facts-only).** The app assembles a compact **summary** of the
+    portfolio (per property → each tenant's insurance-on-file + expiry, rent, lease dates, renewal
+    option, balance owed; landlord insurance; service contracts) — **no documents**, a few KB — and a
+    small model (Haiku 4.5) answers over it. Sub-cent per question; cached per user keyed by a
+    portfolio **fingerprint** (`snapshotFingerprint` = row counts + latest `updated_at`) that flips
+    on any lease/insurance/contract change, so repeats are $0 and stale answers never match. Pieces:
+    new pure `src/lib/portfolio.js` (`buildPortfolioSnapshot` + `snapshotToText` + `snapshotFingerprint`
+    + `normalizeQuestion`); `api.js` `fetchPortfolioSnapshot`/`askPortfolioQuestion` + cache helpers;
+    `supabase/functions/ask-portfolio` (owner-scoped, rate-limited, summary in a `cache_control` block,
+    answer-only/no-arithmetic); new `src/pages/AskPage.js` (question box + suggested chips + Q&A log +
+    **"· saved answer (free)"** tag + **Open:** click-through links to each tenant/property named in an
+    answer); route `/ask` + a **Ask Amlak** sidebar item (reused `SparkIcon`); `.ask-*` CSS. Demo:
+    `demoAskPortfolio` answers from the seeded data so demo never calls out.
+  - Verified token-free: new `src/lib/__tests__/portfolio.test.js` (insurance-on-file flag incl.
+    archived-ignored; renewal option; balance owed w/ draft excluded; soonest-end sort + click-through
+    ids; expiry flips; inactive-lease exclusion; `snapshotToText` facts; fingerprint stable/flips;
+    `normalizeQuestion`); `leaseSearch.test.js` trimmed to `byTermEnd`. Full suite **135/135 green**;
+    `CI=true` build compiles (−214 B — the removal outweighed the new page). Migration pushed (only
+    0046 pending), edge fn deployed clean (Deno bundled the shared modules). **UI-verified inline in
+    demo:** the "no insurance" chip → "Tenants with NO insurance on file (2): City Dental — Maple
+    Plaza · Northwind Books — Oak Center" with working **Open:** links (clicking City Dental opened its
+    lease); the Leases page no longer shows a search box and still sorts tenants soonest-first; zero
+    console errors. Committed only this task's files.
+  - **Live check:** open **Ask Amlak** in the sidebar → tap "Which tenants have no insurance on file?"
+    (or type any question) → named answer + **Open:** links; ask again → instant "saved answer" with no
+    second model call. ~½¢ first time, $0 repeats.
+
+- **2026-07-06** — Hybrid AI lease answers: the free keyword search now has an optional "🤖 Answer
+  this across these leases" that reads ONLY the matched clauses and answers by tenant (e.g. "who
+  pays for the roof?"). Built for cost: three levers stacked. Deployed: DB migration `0045`,
+  `ask-leases` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `db33f513`. **Costs money** (George approved): a fresh question is **under ½¢**; repeats /
+  unchanged corpus are **$0**; common questions warm once. A normal month → well under $1.
+  - **What George asked:** make the earlier free search *answer* the question, but as cheaply as
+    possible without hurting quality. His insight (correct): don't re-read every lease's full text
+    per question — let the keyword search narrow it, then send the AI only the matched clauses. He
+    chose to **stack all three** cost levers.
+  - **Lever 1 — send less** (`src/lib/leaseSearch.js` new pure `gatherAnswerContext`): for each
+    lease that matches the term, widen each hit to its whole clause/paragraph (~600–900 chars,
+    deduped, capped per lease), labeled by tenant — the AI's evidence, far richer than the 60-char
+    display snippet, but a tiny fraction of the full library. Recall safety net: if the property's
+    whole corpus is small (≲ ~30k tokens, e.g. Harlem), send each matched lease's FULL text instead
+    (perfect coverage, still ~3¢). ~½¢ vs ~8¢ full-corpus at Pershing, and **flat as the library
+    grows** (unmatched leases are never sent).
+  - **Lever 2 — answer once, reuse free** (migration `0045_lease_qa_cache.sql` + `api.js`
+    `askLeasesQuestion`): every answer is cached per property, keyed by a **corpus fingerprint**
+    (`leaseCorpusFingerprint` — max lease/rider `updated_at` + text lengths). Re-asking the same
+    thing on an unchanged corpus returns the stored answer for **$0** and never calls the model; any
+    lease edit/add/remove flips the fingerprint so stale answers stop matching. New owner-scoped
+    `lease_qa_cache` table (RLS mirrors `user_preferences`/0038; additive, non-destructive). Cache
+    read misses degrade gracefully (feature still works if the table is absent); writes are
+    best-effort.
+  - **Lever 3 — warm the common questions** (`precomputeCommonQuestions` + `COMMON_QUESTION_TERMS`
+    = roof/HVAC/property taxes/CAM/insurance/structural): a row of **common-question chips** under
+    the search box; clicking one fills the search and answers it (cached after, so free next time).
+    **Implementation choice:** warming is done as a property-level cache — *not* by editing the
+    at-ceiling `extract-lease` import path (one field from the 16-union limit, and heavily touched
+    by other sessions). And warming is **never auto-fired** on page load (George is money-sensitive)
+    — it happens only on an explicit chip/button click. `precomputeCommonQuestions` exists (exported)
+    for a future bulk/automated warm but isn't wired to auto-run.
+  - **The keyword-vs-question gotcha (caught in planning):** the free search requires EVERY word to
+    appear in the lease, so a natural-English question ("who pays the roof?") would match nothing.
+    So the AI is keyed off the **search TERM** ("roof"); `buildLeaseQuestion(term)` templates the
+    per-tenant tenant-vs-landlord question around it, and the cache key is the normalized term.
+  - **Edge function `ask-leases`** (clone of `ask-lease`, array input): owner-scoped,
+    `enforceRateLimit`, Haiku 4.5, excerpts in a `cache_control` block (prompt caching for bursts),
+    tight `max_tokens`, group-by-tenant + quote-the-clause + no-arithmetic instruction, 40k-char
+    input backstop. Stateless — caching lives client-side. `ask-lease` (single-lease Q&A) untouched.
+  - **UI** (`LeaseSearch.js` + `App.css`): the answer panel renders **above** the snippet rows (which
+    stay as the visible evidence), with a "· saved answer (free)" tag on a cache hit and a "confirm
+    against the lease" footnote. Demo mode (`mockClient.js` `demoAskLeases`) returns a canned grouped
+    answer so demo never calls out.
+  - Verified token-free: `src/lib/__tests__/leaseSearch.test.js` +11 (normalizeQuestion;
+    buildLeaseQuestion; leaseCorpusFingerprint stable/flips on text|updated_at|rider change;
+    gatherAnswerContext matched-only + whole-clause widening + per-lease cap + small-corpus full-text
+    + rider label). Full suite **142/142 green**; `CI=true` build compiles (+1.91 kB). Migration
+    pushed (only 0045 pending), edge fn deployed clean (Deno bundled the shared modules). **UI-verified
+    inline in demo:** the roof chip → grouped answer "City Dental: Landlord responsible … Bright
+    Coffee: Tenant responsible …" with highlighted clauses below and tenants still sorted soonest
+    first. Committed only this task's files.
+  - **Live check:** open a property → Leases → type "roof" (or click the roof chip) → "🤖 Answer" →
+    grouped who-pays-what with clauses; ask again → instant "saved answer" with no second Haiku call
+    (edge logs). ~½¢ first time, $0 repeats.
+
+- **2026-07-06** — Per-property lease search (free, no AI) + tenants sorted soonest-expiring
+  first. Deployed: frontend Cloudflare version `78fe1932`. No migration, no edge functions,
+  **$0 per search** — no AI call anywhere.
+  - **What George asked:** a search bar inside a property that reads through the cached leases
+    (e.g. "which of my tenants must pay for the roof?"), preferably without AI calls and without
+    a canned list of preloaded questions; plus the tenant list ordered by soonest term end.
+  - **Search (new `src/lib/leaseSearch.js` + `src/components/LeaseSearch.js`, wired into
+    `LeasesPage.js`):** a pure in-browser keyword scan of the text already cached at import —
+    `leases.lease_text` (ships with `listLeases`'s `select('*')`, no new fetch) plus every
+    rider's `addendum_text` (new `listAddendumsByLeases` in api.js — one batched query, loaded
+    lazily only when a search starts). Free text, any words: every word must appear in the
+    tenant name / lease / riders; a match shows up to 3 highlighted clause snippets (60 chars
+    of context, rider label when the hit came from an amendment) so George judges "Tenant shall
+    repair the roof" vs "Landlord shall…" himself in seconds. Leases with no document on file
+    are listed as unsearchable with a nudge to upload/paste one. Clicking a hit opens the lease.
+  - **Not built (George picked "cheapest meaningful version"):** an "Ask AI" layer. If snippets
+    ever prove insufficient, one Haiku call over all cached texts per property (patterned on
+    `ask-lease`) would run ~3¢/question at Harlem Plaza, ~8–10¢ at Pershing (~1–2¢ repeats
+    within 5 min via prompt caching). Also noted: the structured `roof_responsible` column can't
+    answer the roof question — the extractor never fills it (manual toggle, set on 1 of 12 live
+    leases); the text search is the reliable path.
+  - **Sort (`api.js` `listLeases` + `listLeasesByProperties`):** new `byTermEnd` comparator —
+    soonest `lease_termination_date` first, no-end-date leases last, ties alphabetical — applied
+    in JS after fetch so live and demo behave identically. Flows everywhere those helpers feed:
+    the property's Tenants list, property-card tenant lists, and the rent-roll Excel export.
+  - Verified token-free: new `src/lib/__tests__/leaseSearch.test.js` (9 tests — dated order /
+    nulls last / ties; roof-clause snippet; case-insensitive; multi-word AND; tenant-name hit;
+    rider hit carries its label; snippet cap vs full count; empty query). Full suite **131/131
+    green**; `CI=true` build compiles. UI-verified inline in demo mode: City Dental (May 2026)
+    now lists above Bright Coffee (Dec 2027); typing "roof" surfaced "Landlord maintains the
+    roof" (City Dental) vs "Tenant is responsible for its pro-rata share of roof expenses"
+    (Bright Coffee) with highlights; clicking a hit opened the lease. Committed only this
+    task's files.
+
+- **2026-07-03** — New Hong Kong 2: the 2%/yr prose escalation now actually lands as yearly steps.
+  Deployed: `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`). **No frontend deploy**
+  (fix is entirely edge-side; the review form already dates + saves the steps), no migration, no
+  money (re-extraction is George's own upload).
+  - **What George reported (correctly, this time it's a real bug):** he uploaded a copy that DOES
+    contain "Base rent will increase annually by 2% and will be renegotiated in the 8th year" (the
+    `New Hong Kong 2 (1).docx` / `.pdf` — 3.64 MB, byte-identical to `Downloads/New Hong Kong 2.pdf`;
+    the *without*-clause copy is the 3.9 MB `NASA/Leases/Hong Kong/New Hong Kong 2.pdf`). The app
+    "reads it but can't implement the yearly escalation in the rent escalations tab."
+  - **Root cause (found in the stored `extraction_raw`, id `f85a9dcd`):** Haiku DID capture
+    `escalation_pct=2`, `escalation_stop_months=84`, `term_months=120`, base `$22,848` — everything
+    `percentEscalations` needs for 6 steps. But the lease prints the SAME base rent two ways ("$21.00
+    PSf" **and** "Monthly Base Rent: $1904.00"), so Haiku returned TWO `rent_schedule` rows both at
+    `months_from_start:0`. `rebuildRentSchedule` treated the second as a step-up → one bogus escalation
+    of $22,848 at month 0 → escalations looked "non-empty" → the guard that only synthesizes the
+    prose-%/yr steps when there are NO real step rows was tripped, so the 2% formula never ran. The
+    stored escalations were exactly `[{months_from_start:0, new_base_rent:22848, manual}]` (and the
+    disagreement alarm stayed silent because that degenerate row counts as "a step"). So: read fine,
+    dropped by a dedupe gap — matches George's symptom exactly.
+  - **Fix A (the real fix) — collapse same-period rows** (`_shared/rentSchedule.js`): before splitting
+    base vs steps, group rows by period identity (printed date if any, else month offset) and keep the
+    most reliable one (resolvable > unresolvable; plain-dollar > $/SF). Two rows at offset 0 collapse to
+    one → escalations empty → the 2% formula fires → 6 steps ($23,304.96 … $25,730.56, months 12–72).
+    Rows at genuinely different offsets/dates (real graduated tables — Wingstop/Gzim/Ricki's) have
+    distinct keys and never merge. Superseded $/SF row no longer raises a false "missing sqft" flag.
+  - **Fix B (robustness) — analyst-fed percent fallback** (`extract-lease/index.ts`,
+    `_shared/analystVerdicts.js`): the same clause read differently across George's repeat uploads —
+    one got `pct=null` (Haiku missed it entirely), another `stop=96` (wrong). So the Sonnet analyst's
+    VERDICTS line now also emits `escalation_pct` + `escalation_stop_months`; the parser captures
+    numeric values; and the merge uses them as a FALLBACK when Haiku's supplement comes up empty
+    (Haiku still wins when present → no regression). The strong reader that nails the clause now feeds
+    the implementation, not just a yes/no. Verdicts parsed once and reused for the disagreement alarm.
+  - Verified token-free: `percentEscalationClause.test.js` +2 (the dup-row New Hong Kong case → 6
+    percent steps, order-independent, no false flag) and `analystVerdicts.test.js` +2 (numeric verdict
+    parsing incl. "none"). Full suite **122/122 green**; edge fn deployed clean (Deno bundled the shared
+    modules). Committed only this task's files. **Live check:** re-upload `New Hong Kong 2 (1).docx`
+    (~10–15¢) — expect base $22,848/yr and six 2% steps in the Rent escalations tab (dated from the
+    2017-06-01 start), NOT a single month-0 row.
+
+- **2026-07-03** — Universal "extraction disagreement alarm" — when the AI analyst read finds a
+  term the form-filler dropped, warn instead of silently showing nothing. Deployed:
+  `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `763b9e72`. No migration. No new AI call (the analyst pass already runs); adds ~20 tokens/lease.
+  - **What George caught (New Hong Kong 2):** he re-uploaded the lease and got NO 2% escalation even
+    after the Sonnet analyst work shipped earlier today, and insisted the sentence is "literally in
+    the PDF." **Root cause was a file mix-up, not the extractor:** George has TWO near-identical copies
+    under the same name. The **July 2** copy has *"Base rent will increase annually by 2% and will be
+    renegotiated in the 8th year"* at the end of §1 RENT; the copy he **re-uploaded today** (and the
+    one attached to the chat) does NOT — §1 ends at "…may designate in writing." I pixel-verified both
+    scans (rendered page 2 of each stored PDF via macOS PDFKit) and diffed both docx text layers: byte
+    sizes differ (WITH clause = 3.6 MB pdf / 36 KB docx; without = 3.9 MB / 33 KB) and the ONLY textual
+    difference is that one sentence. The Sonnet analyst DID run on today's upload and correctly reported
+    "no base-rent escalation stated"; the only % in that file is the §4 103% CAM cap (not a base-rent
+    escalation). So the extractor behaved correctly on BOTH files — it was handed the copy without the
+    clause. Put the correct copies on George's Desktop as `New Hong Kong 2 — WITH escalation clause.pdf`
+    / `.docx` (pulled from the app's own July-2 storage).
+  - **The universal fix George asked for** (so this can't silently happen on any hard-to-read lease,
+    not just this one) — a three-layer safety net:
+    - **1) Analyst verdicts.** `ANALYST_SYSTEM` now ends every brief with a machine-readable line:
+      `VERDICTS: escalation=<yes|no|unclear>; renewal_options=…; abatement=…; start_date=<stated|not_stated>`,
+      with explicit guidance that a CAM/Additional-Rent cap is NOT a base-rent escalation and an
+      "Option to Extend: None" is renewal_options=no.
+    - **2) Disagreement alarm.** New pure `_shared/analystVerdicts.js` (`parseAnalystVerdicts` +
+      `extractionMismatches`, Deno+Jest dual-use like `rentSchedule.js`). After the form calls,
+      `extract-lease` compares each affirmed verdict against what actually landed: analyst says
+      escalation=yes but no steps AND no % captured → flag `escalation`; same for `renewal_options` /
+      `abatement`. Flags stored as `extraction_mismatch` on `extraction_raw` (no migration). Only
+      **yes** + empty flags — `no`/`unclear`/missing-line never cry wolf, so it degrades to prior
+      behavior when the analyst times out. Catches BOTH failure classes: prose clauses the rigid form
+      can't hold, and messy scans where strong Sonnet sees a term cheap Haiku misses.
+    - **3) Review screen explains itself** (`LeaseNewPage.js SchedulePreview`): a strong ⚠ banner when
+      `extraction_mismatch` is set ("the analyst found X but it wasn't captured — add it or re-upload");
+      the vague "no steps detected" warning is replaced, when a brief exists, by an honest "the analyst
+      read the whole document and found no rent escalation stated — check you uploaded the right file";
+      and a collapsible **"Read the AI analyst's notes"** panel on every import with a brief (VERDICTS
+      line stripped) so the chat-quality read is visible before saving. `extraction` already flows
+      untouched to the review screen — no new plumbing. Mismatch labels mirrored inline (CRA can't
+      import across into `supabase/functions`).
+  - Verified token-free: new `src/lib/__tests__/analystVerdicts.test.js` (16 cases — verdict parsing incl.
+    markdown/last-occurrence/junk; escalation=yes+empty flags, +%/+steps/+relative-steps don't; no/unclear/
+    missing never flag; options + abatement; multi-flag; New Hong Kong both-copies end-to-end). Full suite
+    **118/118 green**; `CI=true` build compiles (+503 B). Edge fn deployed clean (Deno bundled the new
+    shared module). Committed only this task's files. **Live check pending:** import the Desktop
+    `…WITH escalation clause.docx` (~10–15¢) — expect base $22,848/yr, six 2% steps (months 12–72,
+    $23,304.96…$25,730.56), the year-8 renegotiation note, the analyst-notes panel, and NO mismatch warning.
+
+- **2026-07-03** — Make the property summary "$/SF" rate cards divide by the entered **building
+  size**, not leased SF (finishes what `0042` started for the per-tenant bills). Deployed: DB
+  migration `0044` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `a19be56a`. No edge
+  functions, no money, no tenant emails, no destructive data.
+  - **What George caught:** the Financials page's **"CAM / maintenance — charged per sq ft"** and
+    **"Property taxes"** cards read `cam_psf`/`tax_psf` from `v_property_totals`, which `0042` never
+    updated — so those headline rates still divided by **leased** SF and read *higher* than what each
+    tenant is actually billed just below (e.g. CAM 7,320 ÷ 11,791 leased = $0.62 shown vs. 7,320 ÷
+    13,750 building = $0.53 billed). George's framing: keep it codebase-generic, works for **every**
+    account, and re-divide **every time** the building size changes.
+  - **1) `0044_property_totals_building_sf.sql`** recreates `v_property_totals` identical to 0021
+    except `tax_psf`, `cam_psf`, and the roof `roof_recovered`/`roof_unrecovered` split now use the
+    building-first divisor `coalesce(nullif(p.building_sf,0), ls.total_sf)` — mirroring 0042 exactly, so
+    the summary matches `v_tenant_shares`. Falls back to leased SF until a building size is entered;
+    `roof_psf_rate` and the page's revenue/expense "per **leased** sq ft" figures deliberately left
+    leased-based. `security_invoker` re-asserted; non-destructive create-or-replace. (Named `0044`
+    because another session already shipped `0043_enabled_features.sql`.)
+  - **2) Re-divide on change** — `BuildingSizeEditor.js` `onSuccess` now also invalidates
+    `['tenantShares', propId]`, `['propertyRentRoll', propId]`, `['monthlyRent']` (plus the existing
+    property/propertyTotals/leases keys), so the rate cards, per-tenant breakdown, invoices, and rent
+    roll all recompute the instant the size is saved — no reload.
+  - **3) Per-tenant breakdown total** — `TenantShareTable.js` already had a Totals row summing every
+    tenant's SF; added a sub-line ("of N building") and a reconciliation note that the leased total may
+    differ from the building size (the difference is vacant space), for the landlord to reconcile.
+  - **4) Demo parity** — `mockClient.js propertyTotals()` now divides `tax_psf`/`cam_psf`/`roofRecovered`
+    by `buildingSf` too, matching the live view.
+  - Verified: new assertions in `contractCam.test.js` (building-SF → cam_psf/tax_psf; leased-SF
+    fallback). Full suite **102/102 green**; `CI=true` build compiles. Live check confirmed
+    `cam_psf × building_sf = cam_total` and `tax_psf × building_sf = taxes_total` for every property
+    with a building size. Committed only this task's files (left the untracked `.claude/` items alone).
+
+- **2026-07-03** — Chat-quality lease reads: an "analyst read" stage + prose rent-escalation
+  clauses ("Base rent will increase annually by 2%"). Deployed: `extract-lease` edge function
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `c2bbe895`. No migration.
+  **Costs money:** the new analyst read runs on **Sonnet 4.6**, adding **~10–15¢ per lease import**
+  (George approved). Form-filling stays on Haiku; a few leases/month → well under $2/mo.
+  - **What George saw (New Hong Kong 2.pdf):** import got start/end/term right but produced NO rent
+    escalation — the lease's only escalation language is one prose sentence ("Base rent will increase
+    annually by 2% and will be renegotiated in the 8th year"; §1, p.2). Pasting the same lease into a
+    regular AI chat reads it perfectly. He asked why the app can't match that.
+  - **Root causes (compounding):** (1) every extraction call uses **structured output** — the model
+    must emit the rigid form directly, no chat-style reasoning first; (2) the 16-union ceiling forced
+    the read into three narrow schema-locked calls, none reading holistically; (3) the supplement's
+    `rent_schedule` only accepted discrete rent **rows** — a prose formula had **no field to land in**,
+    so it was silently dropped (no model, however smart, can output what the form can't hold).
+    Everything downstream already supported it (`rent_escalations.escalation_type='percent'` (0001),
+    `computeEscalatedRent` compounding, `buildEscalations` dating `months_from_start`) — only the
+    reader was missing the concept.
+  - **Fix A — analyst read (the structural fix).** `extract-lease/index.ts`: a NEW first pass
+    (`analystRead`, `ANALYST_MODEL='claude-sonnet-4-6'`, plain text / NO schema so it can reason like
+    chat, `effort:'medium'`, **best-effort + time-boxed 60s + non-fatal**) writes a factual brief
+    (parties · term & dates: signing-vs-commencement · full rent progression incl. **prose escalation
+    formulas + where they stop** · renewal options · abatements). The two Haiku form-fillers then run
+    concurrently with the brief appended (`briefBlock`) so they inherit its interpretation of tricky
+    dates/terms while still quoting the document themselves ("if the brief and the document disagree,
+    trust the document"). Sequencing preserves the 546-timeout fix: transcription starts first (90s
+    cap), analyst awaited (≤60s), then the two form calls in parallel (~30s) — well under the 150s
+    edge ceiling. Brief persisted to `extraction_raw.analysis_brief` for audit. **No prompt caching**
+    — infeasible here (Sonnet analyst vs Haiku forms = model-specific caches can't share); Sonnet cost
+    is George-approved instead.
+  - **Fix B — prose escalation formula gets a home.** `SUPPLEMENT_SCHEMA` gains `escalation_pct` +
+    `escalation_stop_months` (both `field()`-wrapped → schema now 15/16 unions, main SCHEMA untouched).
+    New prompt paragraph: read the % + where it stops, never compute. New pure helper
+    `percentEscalations(baseAnnual, pct, termMonths, stopMonths)` (`_shared/rentSchedule.js`)
+    synthesizes one **percent** step per lease year, compounded round-each-step to the cent (matches
+    `computeEscalatedRent`). Wired into `rebuildRentSchedule` — applied ONLY when the printed schedule
+    prices ≤1 period (**a real rent TABLE always wins**; Wingstop/Ricki's regressions safe) — plus a
+    merge-block fallback off the model's own base_rent when the supplement priced no row. New Hong
+    Kong: base $1,904/mo → $22,848/yr; six 2% steps months 12–72 ($23,304.96 … $25,730.56, years
+    2–7); nothing past month 84 (renegotiated). Extraction stamps `rent_escalation_pct` /
+    `rent_renegotiation_months` onto the read for the UI.
+  - **Frontend (notes only; existing machinery dates & saves the steps):** `LeaseNewPage`
+    SchedulePreview shows "↗ raises base rent 2%/yr — N yearly steps" + the renegotiation note;
+    `LeaseDetailPage` shows a self-clearing "💬 Rent was set to be renegotiated ({date})" reminder
+    once that date passes and no step covers it (reads `extraction_raw` via a self-contained
+    `supabase` query, NOT `api.js`). **Zero changes to `api.js`/`leaseTerm.js`/EscalationScheduleEditor**
+    (other sessions' modified files) — my steps ride their existing functions unchanged.
+  - Verified token-free: new `src/lib/__tests__/percentEscalationClause.test.js` (9 tests) replays the
+    New Hong Kong shape — `percentEscalations` → 6 compounded steps; table-wins regression; pct-null =
+    unchanged; `buildEscalations` dates them 2018-06-01…2023-06-01. Full suite **100/100 green**;
+    `CI=true` build compiles; edge fn deployed clean (Deno accepted the TS). Committed only this task's
+    files (`30d4d04`); built + deployed frontend from an isolated git worktree at that commit so no
+    other session's uncommitted WIP shipped. **Live check:** re-upload New Hong Kong 2.pdf (~25–35¢,
+    scanned PDF through the Sonnet analyst) — expect base $22,848/yr, six 2% steps, the renegotiation
+    note, and NO invented options (§27 "Option to Extend: None").
+
+- **2026-07-03** — Remove the first-run onboarding picker. Deployed: frontend Cloudflare version
+  `3d479b2d`. No migration, no edge functions, nothing that costs money.
+  - **Why:** George didn't like the one-time Welcome screen. Settings alone is the place to pick
+    features — Display & features first, Security & 2FA second — no upfront picker.
+  - **What changed:** deleted `src/components/WelcomeOnboarding.js` and stripped its gate from
+    `src/components/Layout.js` (removed the `['enabledFeatures']` onboarding query, the
+    `needsOnboarding` flag, the `WelcomeOnboarding`/`getEnabledFeatures` imports, and the unused
+    `useQuery` import — CI treats warnings as errors). Layout now always renders `children`.
+  - **The switchboard core is untouched** and still works: `enabled_features` stays `null` for
+    everyone until they toggle a module in Settings, and `isFeatureOn(null, …)` reads null as "on",
+    so every feature shows by default (same result the pre-checked picker gave) — just without the
+    intro screen. `features.js`, the api.js pair, and the Display & features toggles are unchanged.
+  - Verified token-free: no remaining `WelcomeOnboarding` references; full suite **91/91 green**
+    (features.test.js unchanged — it only tests the pure helpers); `CI=true` build compiles.
+    Committed only this task's files (`Layout.js` + the deletion); left the other session's
+    in-progress lease-extraction edits and the untracked `.claude/` items alone.
+
+- **2026-07-03** — Feature switchboard (opt-in modules) + a real Settings page. Deployed: DB
+  migration `0043` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `9b971c06`. No
+  edge functions, no AI calls, nothing that costs money. First round of a larger plan
+  (`~/.claude/plans/can-you-do-a-structured-flask.md`) — this builds ONLY the foundation that
+  makes features opt-in; the four coming modules (expenses, maintenance, deposits, paper-trail)
+  each register into it later.
+  - **Why:** George is about to add several feature modules but doesn't want to force them on
+    anyone. Each user should pick what they want at first sign-in and add/remove features anytime.
+    He also wanted the old standalone "Display" page turned into a **Settings** page we can grow,
+    with "Display & features" as its first section.
+  - **Data (one additive column):** `0043_enabled_features.sql` adds `enabled_features jsonb` to
+    `user_preferences` (same per-user row as `hidden_widgets`, migration 0038; client-writable
+    under the existing RLS). `null` = never chosen → show the onboarding picker + treat everything
+    as on; an array = the explicit set of optional modules on. Turning a module off only hides it —
+    data is never deleted. Only pending migration (0042 already remote), pushed alone via `db push`.
+  - **Switchboard:** new `src/lib/features.js` — the `FEATURES` registry (`{key,label,hint}`,
+    mirrors `dashboardWidgets.js`), pure helpers `isFeatureOn` (null/undefined → on) + `toggleFeature`
+    (materializes the full set on first toggle-off), and a `useFeatures()` hook. api.js gained
+    `getEnabledFeatures`/`setEnabledFeatures` mirroring the widget pair (returns `null` when unset,
+    never `undefined`), cached under `['enabledFeatures']`. Optional modules live today: `insurance`,
+    `contracts` (new ones append one line each when built).
+  - **Onboarding (kept — George likes it):** new `src/components/WelcomeOnboarding.js`
+    ("What should Amlak handle for you?", all pre-checked, Save or "Skip — keep everything on").
+    Gated in `Layout.js`: when `enabled_features === null` (and not DEMO) it renders in place of the
+    app; saving makes it non-null so it shows exactly once. Existing accounts (George + beta user)
+    see it once, pre-checked to match today.
+  - **Settings page:** new `src/pages/SettingsPage.js` — sections down the left (reusing
+    `side-item`), content on the right via `<Outlet/>`. `App.js` nested `/settings` → index redirect
+    to `display`, `/settings/display`, `/settings/security`; old `/display` + `/security` now
+    `<Navigate>` redirects. `Sidebar.js` footer's two items collapse into one **Settings** item.
+    `DisplaySettings.js` retitled "Display & features" and grew a **Features** toggle group
+    (same row UI) above the existing widget/panel toggles — the single place to hide/restore both.
+    `SecuritySettings.js` gained a "Settings › Security & 2FA" breadcrumb.
+  - **Made the switch real on day one:** `useFeatures().isOn(...)` gates the two existing optional
+    modules — Contracts (hide the tab in `PropertyTabs.js`, redirect the Contracts route when off)
+    and Insurance (hide the property-card button in `PropertiesPage.js` + the tenant Insurance panel
+    in `LeaseDetailPage.js`). `isOn` defaults on while loading, so nothing flash-hides.
+  - Verified token-free: new `src/lib/__tests__/features.test.js` (null → all on; undefined → on;
+    `[]` → all off; subset honored; first toggle-off materializes full set minus one; pure/no-mutate;
+    unique keys). Full suite **91/91 green**; `CI=true` build compiles. Committed only this task's
+    files (left the untracked `.claude/` items alone). Live check: fresh load shows the Welcome
+    picker once; Settings shows the left rail with Display & features selected; toggle Contracts /
+    Insurance off → their UI vanishes, back on → returns.
+
+- **2026-07-03** — Five asks in one round: (1) bill CAM/taxes per SF of the WHOLE building,
+  (2) show notifications up to 6 months ahead, (3) redesign the renewal-options table, (4) fix the
+  broken "Renew" on a future option + stop un-exercised option rents reading as committed, (5)
+  contract year-over-year escalations that auto-feed CAM, plus (6) contract-expiry reminders and a
+  ✉ email button on every reminder. Deployed: DB migration `0042`, `extract-contract` edge function
+  (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `f524e422`. No money, no tenant
+  emails sent, no destructive data. No live-data repair needed.
+  - **1) CAM/taxes per building SF** (`0042` recreates `v_tenant_shares` with denominator
+    `coalesce(nullif(p.building_sf,0), pt.total_sf)`, `security_invoker` preserved; mirrored in
+    `mockClient.js`). Each tenant now pays `their SF ÷ building SF` for tax/CAM/roof, so the vacant
+    share stays with the landlord (standard net-lease practice) instead of being split across only the
+    leased tenants. Falls back to the old leased-SF split until a building size is entered, so nothing
+    breaks first. `TenantShareTable.js` shows a nudge to enter Building size when it's unset and the
+    footer note reflects building-wide vs leased-only. Only one invoice exists (D&D Dental 2026, CAM/tax
+    $0) so no bill repair; every downstream (draft-invoice, monthly tracker, rent roll, AR) reads the
+    view → fixed automatically. **George: enter Harlem Plaza's building SF** (Pershing already 13,750).
+  - **2) 6-month notifications** — `alerts.js bucket()` gains "Within 3 months" (warn) and "Within 6
+    months" (info — calm, not red) bands; all alert types inherit. `isRenewalDecisionDue` +
+    `apply_due_renewals()` (in `0042`) open the renewal prompt 6 months before term end (was 3).
+    Dashboard "Expiring ≤ 6 months" card + "next 6 months" panel (was 90 days). Owner reminder EMAILS
+    (`send-reminders`) keep their near-date schedule — untouched.
+  - **3) Renewal table redesign** (`RenewalOptionsEditor.js` + new `.btn-sm`/`.btn-row` App.css
+    classes) — Renew as a compact primary button, Not renewing / ✉ Email tenant as quiet secondary
+    ones (no more inline 3px/12px styling); Term reads "60 mo (5 yr)"; Notice-by a real date or muted
+    "—"; applied rows show "Applied · date".
+  - **4) The "Renew" fix (root cause) + gating.** `rollLeaseIntoRenewal` (`api.js`) always moved
+    `lease_start` to the old term end — right for catching up a PAST/lapsed option, but wrong for
+    confirming a FUTURE option early: it pushed the start into the future and wiped today's rent, so the
+    page looked unchanged (the Five Points Wings symptom). Now it branches on whether the option's
+    window has begun: begun → today's catch-up behaviour (unchanged, keeps the other session's
+    retro-chaining + `{newRent}` entry); future → **extend `lease_termination_date` only, leave
+    `lease_start` + base rent alone, and lay the option's rent in as DATED steps** (skipping any the
+    imported schedule already has within ±45 days, so no duplicate). Un-exercised option rents no longer
+    pose as committed: steps dated on/after the committed term end are gated out of `applyDueEscalations`,
+    `leaseTerm.js` (`nextStep` + the expired "last-known rent"), `alerts.js`, and shown in
+    `EscalationScheduleEditor.js` as a muted "Pending renewal — if renewed" group that rejoins the
+    schedule automatically once the renewal is confirmed. `reconcileRenewalOptions` untouched.
+  - **5) Contracts → CAM.** New pure `src/lib/contracts.js` (`contractCoversYear` / `contractAnnualCost`
+    — annualize by frequency, compound `escalation_pct` per year since start). `api.js
+    syncContractCamItems(prop, year)` upserts one CAM line item per covering contract at the escalated
+    amount (`contract_id` links it), refreshes drift, removes rows a contract no longer covers, re-sums
+    the CAM total — idempotent, writes only on a real change. `CamSection.js` syncs-then-lists (opening
+    any fiscal year self-heals it — the "fiscal-year carry-over"); contract rows show a "from contract"
+    badge + no ✕. `ServiceContractsSection.js` gained Escalation %/yr + Vendor email fields (AI
+    pre-fills them), a "+X%/yr · CAM {year}: $…" sub-line, and CAM-invalidating saves. `extract-contract`
+    reads `escalation_pct` + `vendor_email` in the same single Haiku call (no new AI cost).
+  - **6) Contract-expiry reminders + email on every reminder.** `buildAlerts` takes `contracts` →
+    `focus:'contract'` alerts off `end_date` (same 6-month buckets), keyed by contract id; `fetchAlertData`
+    fetches contracts; the dashboard row navigates to that property's Contracts tab. New `draftAlertEmail`
+    (`api.js`) drafts the right letter per reminder — escalation → `buildEscalationEmail`, lease-ending →
+    `buildNonRenewalEmail`, renewal → `buildRenewalApproachingEmail`, tenant insurance →
+    `buildInsuranceRequestEmail`, contract → new `buildContractRenewalEmail` (to the vendor). Every alert
+    row gets a ✉ button (except the landlord's own insurance — no outside recipient); sending does NOT
+    dismiss the reminder. Owner-only send rule unchanged.
+  - Verified token-free: new `contractCam.test.js`, `sixMonthAlerts.test.js`, `futureRenewalConfirm.test.js`
+    (Ricki's future Option-3 confirm → term 2031→2036-05-01, `lease_start` stays 2015-05-01, rent stays
+    $28,348.92, no duplicate 2031 step; leaseTerm gating; bucket 3m/6m; contract compounding + sync
+    idempotency; per-building-SF shares; contract alerts + `draftAlertEmail` per type). Full suite
+    **83/83 green**; `CI=true` build compiles. Committed only this task's files. **George: re-upload the
+    Five Points Wings lease and its renewal chain will apply cleanly; enter Harlem Plaza's building SF.**
+
+- **2026-07-02** — Wingstop round 3: use the signing date as the lease start + date the rent
+  schedule from rent commencement (after the free period). Deployed: frontend Cloudflare version
+  `22c33669`. **No edge function, no migration** — the deployed extractor already returns everything
+  needed (execution_date, the abatement's month count, and unshifted lease-year offsets); the fix is
+  entirely in how the app USES that read.
+  - **What George saw:** re-uploaded Wingstop still came out wrong — the app "didn't identify the
+    start date (May 4 2012)," "didn't account for the 8 months of free rent," and the rent steps
+    "didn't correspond with the renewal options." Claude.ai / ChatGPT read it "on the dot."
+  - **Root cause (my own, from rounds 1–2):** I had hardened the extractor + `LeaseForm` to REFUSE
+    the "entered into as of" signing date as the start (prompt: "do not use it as the lease start …
+    return null"; a gold ⚠ warned the user off typing it). Wingstop prints no commencement date —
+    the signing date is the ONLY date on the page — so `lease_start` came back null and stayed empty.
+    With no start, nothing downstream could be placed on a timeline: the 8-month abatement (start
+    null) was **dropped on save** (`buildAbatements` needs a start+end), the 5 rent steps stayed
+    undated, and the 3 renewal options had no term end to chain from. The extractor was actually
+    reading the doc correctly — the app was throwing the one date away.
+  - **Fix A — use the signing date as a suggested, editable start.** `LeaseNewPage.initialFromExtraction`
+    now falls `lease_start` back to `execution_date` when no commencement is printed, and pre-fills the
+    end from `start + term_months − 1 day`. `LeaseForm` swaps the scolding ⚠ ("that's the signing
+    date, the term usually starts later — double-check") for a neutral, derived hint that shows on load
+    ("Pre-filled from the signing date — change it if the term actually began later"). Extraction stays
+    honest (`lease_start` still null); the UI makes the helpful, correctable suggestion. No prompt change.
+  - **Fix B — a leading FREE period defers rent commencement.** New pure helper
+    `leadingFreeMonths(leaseStart, abatements)` (`src/lib/abatement.js`): months of fully-free rent
+    anchored at the start (reduced/percent periods and mid-term windows don't count). When it's > 0,
+    the lease-year rent table is dated from **rent commencement = start + freeMonths**, not the lease
+    start — so Wingstop's steps land Jan 2014/15/16/17 (12/24/36/48 mo after the 8 free months), inside
+    the term, instead of May 2013…. Wired into `LeaseNewPage` (`createFromAi` + `SchedulePreview`) and
+    `api.js anchorLeaseSchedule`. `createFromAi` also anchors the undated abatement's `start_date` to
+    the confirmed `lease_start` so the free window is actually **saved** (was silently dropped). The
+    review screen shows a "🎁 first N months free — paid rent starts {date}" note.
+  - **Options need no date work:** each option is term-length and rolls forward from the term END when
+    confirmed (round-2 chaining) — once the start (→ 2012) and end (→ Jan 2018) are right, Option 1 →
+    2023, Option 2 → 2028, Option 3 → 2033 fall out automatically. That's the "increments of five."
+  - Verified token-free: new `src/lib/__tests__/rentCommencementShift.test.js` (`leadingFreeMonths`
+    reads 8; reduced/mid-term/empty → 0; steps date from start+8mo = Jan 2014…2017 with rents
+    31450/32375/33300/34225; no-abatement regression dates from the start). Full suite **67/67 green**;
+    `CI=true` build compiles. Committed only this task's files. Live check: re-upload Wingstop.pdf —
+    start pre-fills to the signing date (adjust the day to the 4th), end auto-fills to ~Jan 2018, the
+    8 months show free, steps date from Jan 2013, and the 3 options chain forward in 5-year increments.
+
+- **2026-07-02** — Sync renewal options with the rent schedule + collapsible escalation list.
+  Deployed: frontend Cloudflare version `1ac93011`; live-data repair of the Ricki's lease rows.
+  No edge functions, no migrations, no new AI calls.
+  - **The bug (Ricki's-Lyons):** the lease prints rents for ALL 20 years (5-yr initial term + three
+    5-yr option periods), so on import the rent schedule correctly stepped through 2034 and the app
+    is already charging year-12 (Second-Option-Period) rent — but the three renewal-option ROWS never
+    learned their own windows. All three sat **Pending** with no rent + no notice date, and the First
+    Option Period (2020–2025, clearly lived through) still showed Renew/Not-renewing buttons. Options
+    had no concept of their time slot: `isLapsed` only compared the LEASE end (2031, future) so
+    nothing lapsed, and `resolveCurrentTerm` ignores options by design (0034).
+  - **Fix — `reconcileRenewalOptions(lease, today)`** (`src/lib/api.js`): derives each option's 5-yr
+    window from `lease_start` + the initial `term_months` (read from the cached `extraction_raw`),
+    chained in `cmpRenewal` order. Walks them: a window that has begun **and** has a matching dated
+    rent step at its start is marked **applied** (the rent proves the tenant exercised it), its
+    `new_rent` filled from that step, the committed term extended to cover it (via `max`, never
+    shrinking a landlord-entered date), logged as a silent `renewal_confirmed` history event (no
+    emails). The first still-future option stays **pending** but gets its `new_rent` (from the
+    scheduled step) and its `notice_by_date` (from a "N days prior" notes clause → committed end − N
+    days). **No rent evidence past the initial term → it stops (never guesses a renewal).**
+    Evidence-gated + idempotent: only runs on a clean AI-imported lease whose options are ALL still
+    pending — once any is applied/declined the manual confirm/decline flow (which moves `lease_start`)
+    owns it and this bails, so window math can't drift. Wired into `backfillLeaseToToday`'s active
+    branch (imports reconcile immediately) and the `promptDueRenewalDecisions` loop (app-load
+    self-heal via `Layout.js`).
+  - **Collapsible escalations** (`src/components/EscalationScheduleEditor.js`): a lease with >8 dated
+    steps now collapses to the slice that matters — the 3 nearest upcoming + 3 most recent — with a
+    "N earlier · M later steps hidden" line and a **Show all N steps / Show fewer** toggle (`useState`
+    only, no data change).
+  - Verified token-free: new `src/lib/__tests__/renewalScheduleSync.test.js` replays the exact live
+    Ricki's shape (start 2015-05-01, term 60, steps through 2034, three "180 days prior" pending
+    options) → Options 1-2 applied at $25,173 / $27,793.08, Option 3 pending at $30,685.80 + notice
+    2030-11-02, header label "Second Option Period"; term-end preserved (2031) and the extend case;
+    guards (manual lease w/ no cached file, no-evidence Vibhakar shape, idempotent re-run all no-op).
+    Full suite **60/60 green**; `CI=true` build compiles. Committed only this task's files.
+  - **Live data repaired** (lease `e9f51d85`): Options 1-2 → applied w/ the above rents, Option 3 →
+    pending w/ rent + notice 2030-11-02, term left at George's 2031-05-01, two `renewal_confirmed`
+    history events added — matching exactly what the deployed code computes (verified by re-query).
+    Options are now non-all-pending, so the deployed reconcile skips this lease (guard) — no
+    double-apply. No stale renewal bell prompt existed.
+
+- **2026-07-02** — Wingstop follow-up: make an old lease's term structure ACTIONABLE (renewal
+  options that reach past-term leases + a "Not listed → enter" rent affordance). Deployed:
+  `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version
+  `bd1f6e51`. No migrations.
+  - **The problem (two screenshots):** the newest Wingstop extraction was actually CORRECT (verified
+    in `lease_files` id `add46dfb` — null start/end, `term_months` 68, four relative rent steps, and
+    **3 renewal options** with the 60-mo terms). What broke was everything downstream once the lease
+    was saved with a **past** term: (1) the only date the doc prints is the **May-4-2012 signing
+    date**, which got typed as the Lease start → end prefilled to ~Jan 2018 → whole term in the past;
+    (2) a term entirely in the past made the 3 renewal options — the lease's own way to reach today —
+    **hidden** as "lapsed" with no way to act on them; (3) options 2–3 state no rent ("greater of
+    $41,403 or CPI" / "mutually agreed"), so they showed "—" and confirming would silently carry the
+    old rent. So "5 years 8 months + three 5-year options" couldn't be turned into an actionable item.
+  - **Fix A — lapsed options stay actionable & chain** (`RenewalOptionsEditor.js`): a pending option
+    whose term window has passed is now shown (badged **"Lapsed"**), not hidden, and KEEPS its
+    **Renew** / **Not renewing** buttons (Renew copy → "apply retroactively"; the ✉ heads-up email is
+    hidden on lapsed rows). Applying one rolls the term forward from where it ended
+    (`rollLeaseIntoRenewal`, unchanged) — chain Option 1 → Option 2 … until the lease is current;
+    `backfillLeaseToToday` (already called by `confirmRenewal`) rolls the rent to today. A guidance
+    note replaces the old "N lapsed not shown" line.
+  - **Fix B — "Not listed → please enter" rent** (`RenewalOptionsEditor.js` + `api.js` + bell in
+    `DashboardPage.js`): an option with no `new_rent`/`%` now reads **"Not listed — enter at renewal"**.
+    Clicking Renew on it opens an inline row (shows the lease's own words from `notes`) to type the
+    agreed **new base rent**; the bell "Yes" does the same via a new `confirmRenewalForLease(...,
+    {needsRent})` handshake. `confirmRenewal(id, today, {newRent})` threads the override into
+    `rollLeaseIntoRenewal` (precedence: entered → option `new_rent` → `%` → carry old) and records the
+    entered figure back on the option row. Options that DO state a rent are unchanged (one-click).
+  - **Fix C — banners point at the options** (`LeaseDetailPage.js`): the "outdated" + holdover banners
+    now say "apply its N renewal option(s) below to bring it current" when pending options exist,
+    instead of only mentioning addendums. `LeaseNewPage` `SchedulePreview` expired note gains the same
+    nudge.
+  - **Fix D — don't let the signing date pose as the start** (`extract-lease/index.ts` + `LeaseForm.js`):
+    the supplement call now also reads `execution_date` (the signing / "entered into as of" date —
+    NOT commencement; merged onto `parsed` like `term_months`, +1 union → 13/16, prompt-only, no new
+    AI cost). If the user types that exact date as Lease start, a non-blocking **gold warn** appears
+    under the field ("that's the signing date — the term usually starts later").
+  - Verified token-free: new `src/lib/__tests__/renewalChainReplay.test.js` replays a past-term (2018)
+    Wingstop-shaped lease with three 60-mo options — Option 1 (listed rent) applies → term 2023;
+    Option 2 (unlisted) applies with an entered rent → term 2028, lease active again + rent recorded;
+    `confirmRenewalForLease` returns `{needsRent}` and touches nothing on an unlisted option; a
+    listed-rent option still one-clicks (regression). Full suite **63/63 green**; `CI=true` build
+    compiles. Committed only this task's files. Live check: re-upload Wingstop.pdf (~2 small Haiku
+    reads, ≈ a cent) — save with a past start → options listed as **Lapsed** with Renew, options 2–3
+    read "Not listed", chaining Option 1 rolls the lease forward.
+
+- **2026-07-02** — Fix big-scan lease extraction timeout (HTTP 546) + "no start date → ask the
+  landlord, then date the whole schedule" flow. Deployed: `extract-lease` edge function (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `db1bf70e`. No migrations.
+  - **The real failure (Ricki's Cafe Lease.pdf):** George blamed the missing start date, but the
+    Supabase edge log showed `POST | 546 /extract-lease` — the function was **killed at the ~150s
+    wall-clock ceiling**, not a data error. Ricki's is a 12.9 MB, 36-page **scan** (no PDF text
+    layer → vision path), and the function ran its **three** AI reads of the full doc
+    **sequentially** — main fields → rent/contact supplement → `transcribeDocument` (16k-token
+    transcription). The serial sum blew past 150s and the request died before returning (its
+    `lease_files` row had `extraction_raw = null`). Wingstop (9.7 MB *digital* PDF) worked because
+    the free text-layer path skips the vision reads. The generic "non-2xx" reached George because a
+    runtime kill returns no `{error}` body for `invokeFunction` to read.
+  - **Fix A — parallelize + time-box** (`extract-lease/index.ts`): the three reads are independent,
+    so they now run under one `Promise.all` (wall time = slowest single call, **zero** new AI cost —
+    same three calls). The transcription (vision-only, best-effort) is additionally capped at 90s via
+    `Promise.race` (`transcribeWithTimeout`) so its long output can't dominate the budget on a huge
+    scan; on timeout the lease still saves, only the cached Q&A text is missing (existing degrade
+    path). `supabaseClient.js invokeFunction` now maps `status === 546` to a plain "took too long —
+    try again / split the PDF" message as a safety net.
+  - **Fix B — "no start date on file" is now a first-class flow** (the machinery from the Wingstop
+    relative-schedule fix, but nothing asked for the date). A start-less lease keeps its **full read
+    cached** on the linked `lease_files.extraction_raw` (undated steps aren't inserted — they can't
+    be placed yet). New `anchorLeaseSchedule(leaseId, start)` (`api.js`) reads that cache and, once
+    the landlord enters the real start: sets `lease_start`, fills `lease_termination_date` from
+    `term_months` (start + term − 1 day), dates every rent step (`months_from_start` → real dates via
+    existing `buildEscalations`) and abatements, then `backfillLeaseToToday` rolls the current rent
+    forward. **Guarded** — only inserts rows the lease is missing, never duplicating or touching
+    hand-entered steps. Surfaced two ways: a prominent ask above the review form
+    (`LeaseNewPage.js`) and a **"📅 No start date on file"** banner + date input on the lease page
+    (`LeaseDetailPage.js`); the "Lease start" field edit routes through the same helper so both paths
+    behave identically. No migration — `extraction_raw`/`lease_file_id` already exist (0001).
+  - Verified token-free: new `src/lib/__tests__/leaseStartAnchor.test.js` replays Ricki's shape
+    (per-month lease-year rows, `term_months` 60) — relative rebuild → base $22,800 + undated steps;
+    save with no start keeps the cache but inserts no steps; `anchorLeaseSchedule('2016-01-01')`
+    dates the 4 steps (2017–2020-01-01), sets end 2020-12-31, rolls to today's rent; re-anchoring
+    doesn't duplicate. Full suite **53/53 green**; `CI=true` build compiles. Committed only this
+    task's files. Live check: re-upload Ricki's Cafe Lease.pdf (one Haiku vision read, ~cents) — it
+    now completes; enter the start date to date the schedule.
+
+- **2026-07-02** — Lease extractor: read undated "Year 1 / Year 2…" rent tables as RELATIVE, and
+  suggest a term-based end date. Deployed: `extract-lease` edge function (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `dedc9a4b`. No migrations.
+  - **The bug (Wingstop.pdf):** the lease prints no start/end dates (commencement is a formula —
+    "120 days after delivery" / "when the tenant opens") and its rent table is labeled by lease
+    year ("Year 1 … Year 6"), not by date. The schema only accepted an absolute `effective_date`,
+    so the model was **forced to invent dates** — it anchored the years to the May-2012 *signing*
+    date and got them off by a year. The blank start/end were actually correct (verified in
+    `lease_files.extraction_raw`); the invented escalation dates were the real problem. The lease
+    was never saved, so no live data to repair.
+  - **Fix — model reads relative, code does the date math** (same split as the rent-amount fix):
+    `SUPPLEMENT_SCHEMA.rent_schedule` gains `months_from_start` (Year 1→0, Year 2→12, …) and the
+    supplement returns `term_months` (e.g. "five years and eight months" → 68). Prompts updated so
+    a lease-year table returns `effective_date: null` + an offset and NEVER anchors to the signing
+    date; `SYSTEM_FIELDS` also hardened so the execution date isn't used as the lease start.
+    `_shared/rentSchedule.js` `rebuildRentSchedule` grew a RELATIVE mode (no dated rows + offsets →
+    base = smallest offset, later rows become undated steps carrying `months_from_start`); dated
+    mode unchanged, so the addendum path is untouched.
+  - **Frontend:** `buildEscalations(base, escs, anchorDate)` gains an optional anchor — a relative
+    step gets its real date from `addMonths(start, months_from_start)` (reused `renewals.addMonths`)
+    at save; with no anchor the step is dropped, never crashing the save. `LeaseNewPage` passes the
+    confirmed `lease_start`; `SchedulePreview` lists undated steps as "After N months: $X" with a
+    note instead of the false "no steps detected" warning. `LeaseForm` prefills Lease termination =
+    start + `term_months` − 1 day (editable) once the user sets the start.
+  - Layered cleanly on top of the same session's rent-abatement commit (`3f35c10`) — its
+    `abatements` schema/prompt/preview additions preserved. Verified token-free: new
+    `relativeRentSchedule.test.js` replays the real Wingstop table (base $30,525; steps land on
+    2013-09-01…2017-09-01 off a Sep-1 start, no off-by-one; no-anchor → `[]`; end-of-month clamp;
+    dated-mode regression). Full suite 49/49 green; `CI=true` build compiles. Committed only this
+    task's files. Live check: re-upload Wingstop.pdf (~2 small Haiku reads).
+
+- **2026-07-02** — Rent abatement (free / reduced rent periods) — brand-new feature, end to end.
+  Deployed: DB migration `0041` + edge functions `extract-lease`, `extract-addendum`, `draft-invoice`
+  (Supabase `awgrjmbcghdjgnqeiqkt`); frontend Cloudflare version `bb85704e`.
+  - **Why:** a lease/addendum often grants free or reduced base rent for a stretch ("months 1-8 free").
+    The app had **no concept of it anywhere** — the AI reader had no field, the DB couldn't store a $0
+    period (rent rows are NOT NULL and the rent math discards $0), and nothing showed it, so a free
+    period was silently dropped and the tenant still read as owing full rent. George asked for the full
+    version: AI auto-reads it, supports fully-free OR reduced, and it flows all the way through billing
+    and receivables. **Assumption (flagged):** abatement is BASE-RENT-only — CAM / taxes still accrue.
+  - **Data model** (`0041_rent_abatement.sql`): new owner-scoped `rent_abatements` table (window +
+    `kind` free/percent/amount + value + optional `addendum_id`); new SQL `abatement_credit(lease, year)`
+    that walks the 12 months and credits the strongest window per month; `v_tenant_shares` recreated to
+    append `abatement_amount`; `invoices.abatement_annual` column. All additive/idempotent.
+  - **Shared math** (`src/lib/abatement.js`): the ONE source of truth (per-month schedule, annual credit,
+    active-window, end-date-from-months) — mirrors `abatement_credit()` so JS + SQL agree to the cent
+    (same pattern `leaseTerm.js` has with `effective_rent`).
+  - **Reads it automatically:** `extract-lease` (supplement schema) + `extract-addendum` (rent schema)
+    gained an `abatements[]` array + prompt lines — folded into the existing supplement/rent calls, so
+    **no new AI calls** (negligible token bump only). `LeaseNewPage` maps them onto the review screen;
+    `AddendumEditor` gained a "Grants free / reduced rent" effect card (pre-ticked when the AI finds one).
+  - **Shows everywhere:** new `AbatementEditor` panel on the lease page (add/see/fix windows by hand);
+    the "Currently in" header + AI-assistant context note when a window is active; the **Monthly Rent
+    Tracker** + property rent roll now compute per-month owed (`getMonthlyRent`/`getPropertyMonthlyRoll`)
+    so abated months show **"Free"** (or the reduced amount) and aren't billed.
+  - **Billing & receivables:** `draft-invoice` returns `abatement_annual`; `InvoiceButton` +
+    `invoiceTemplate` show a **"Rent abatement (credit)"** line and net the total; `ensureInvoice` /
+    `markMonthPaid` net per-month owed → AR/receivables drop the free months automatically. `applyAddendum`
+    inserts the windows + logs a `rent_abated` history event (`HistoryPage` labels it).
+  - Verified: new `src/lib/__tests__/abatement.test.js` replays 8-month free (tracker 8 free + 4 full,
+    year-1 net = 4 months, reconciles to gross − credit), 50%/fixed-$ reduced, and a window spanning two
+    years; full suite **41/41 green**; `CI=true` build compiles; live DB confirmed `v_tenant_shares`
+    exposes `abatement_amount` and `abatement_credit` runs. Committed only this task's files.
+
+- **2026-07-02** — Fix lease-import date crash + review-box text wrapping. Deployed:
+  `extract-lease` + `extract-addendum` edge functions (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `02970cf7`. No migration.
+  - **Crash on save fixed** (`invalid input syntax for type date: "180 days prior to expiration of
+    Original Term"`). A renewal's notice deadline was written in the lease relative to another event, so
+    the model returned that prose in `notice_by_date` — which is a Postgres `date` column, so the whole
+    lease save 400'd. New `isoDateOrNull()` in `api.js` accepts only a real `YYYY-MM-DD`; `buildRenewals`
+    now nulls a prose deadline and preserves the wording in the option's `notes` ("Notice: 180 days prior
+    …"), and `buildEscalations` drops any step without a real ISO date. Also hardened both extractor
+    prompts (`extract-lease` + `extract-addendum`) so a relative deadline returns null + goes to notes,
+    never prose in the date field. Prompt-only; no added AI cost.
+  - **Review-box text no longer runs off the page.** The long warning/error messages in the "What gets
+    saved — rent schedule" box (and the addendum review) used `.badge`, which is `white-space:nowrap` —
+    designed for short pills, so full sentences overflowed. Added a wrapping `.note-msg` style
+    (`App.css`) and switched the sentence-length warnings/errors in `LeaseNewPage.js` + `AddendumEditor.js`
+    to it. Short status badges are unchanged.
+  - Verified token-free: new `src/lib/__tests__/extractionDates.test.js` (isoDateOrNull + buildRenewals
+    prose-deadline → notes + buildEscalations drops prose dates). Full suite 28/28 green; `CI=true` build
+    compiles. Committed only this task's files.
+
+- **2026-07-02** — History tenant attribution + lease extractor business-vs-people. Deployed:
+  `extract-lease` edge function + DB migration `0040` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `2871c109`.
+  - **"Lease & tenant history" now shows WHICH tenant each event is about** (George couldn't tell them
+    apart). Kept the feature, made it clear: migration `0040` adds a `tenant_name` column to
+    `history_events`; `logHistoryEvent` records the tenant at write time and all five call sites pass it
+    (extension/renewal events → the current tenant; an assignment → the new tenant). Old rows fall back to
+    the lease's current tenant at read time (`listHistoryEvents`). `HistoryPage` timeline gains a
+    **Tenant** column. Denormalized so attribution stays correct even after a later reassignment.
+  - **Lease extractor differentiates business vs people.** `tenant_name` = the business/company entity
+    (e.g. "D & D Dental, LLC" — full legal name incl. LLC/Inc./PC), `tenant_contact_name` = the person(s)
+    who run it (signer/owner/guarantor, e.g. "Dr. Ahmed Hegazy"). Hardened `SYSTEM_FIELDS` (tenant_name is
+    the entity, never a person) and `SUPPLEMENT_SYSTEM` (contact is a human, never the company, null if no
+    person is named) in `extract-lease/index.ts` — prompt-only, no new AI calls / no added cost. Review
+    form (`LeaseForm.js`) + lease page (`LeaseDetailPage.js`) now label the two fields with plain hints
+    ("the business / company" vs "person(s) who run it") and business/person example placeholders.
+  - Verified token-free: `addendumRenewalReplay.test.js` now also asserts each history event carries the
+    right `tenant_name` (assignment → new tenant, extension → tenant at the time). Full suite 23/23 green;
+    `CI=true` build compiles. Committed only this task's files.
+
+- **2026-07-02** — Lease-page overhaul: addendum rent math, escalation→base-rent, current-phase
+  header, lapsed-option hiding, hide toggles, declutter. Deployed: `extract-addendum` edge function +
+  DB migration `0039` (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `380885ee`.
+  - **Addendum base-rent math was wrong (the core bug).** `extract-addendum` asked the *model* to
+    multiply ($/mo×12, $/SF×sqft) — models read reliably but multiply unreliably. Ported the fix
+    extract-lease already uses: a separate non-fatal **rent-supplement call** returns the RAW figure +
+    basis and the shared `_shared/rentSchedule.js` `rebuildRentSchedule()` does the math in code, to the
+    cent, overriding the model's own new_base_rent/escalations. The app now passes the lease's own
+    `square_footage` so a $/SF row annualizes even when the rider doesn't restate the size; a bad-math /
+    missing-sqft row raises the same "double-check these amounts" badge as lease import. Files:
+    `extract-addendum/index.ts`, `_shared/rentSchedule.js` (now also returns `baseDate`), `api.js`
+    (`extractAddendum` passes `squareFootage`), `AddendumEditor.js` (sends sqft + shows the badge),
+    `LeaseDetailPage.js`.
+  - **Applied escalations now always update the base rent up top.** `backfillLeaseToToday`'s *expired*
+    branch marked past steps "applied" but never wrote `base_rent` — so a step like "Jun 1 2020 →
+    $24,200" showed applied while the header stayed stale forever (applyDueEscalations skips applied
+    rows). Fixed to also write the last-known rent. `EscalationScheduleEditor` now re-resolves the lease
+    (backfill) + refreshes `['lease']` on add/delete so a past-dated step takes effect immediately.
+  - **Lease terms header shows the CURRENT phase, not the lease from its original start.** New
+    `currentPhase()` in `leaseTerm.js` → label / current rent-period window / rent in effect / next
+    scheduled step. `currentTermLabel` now recognizes an applied EXTENSION addendum ("Extended term —
+    First Amendment"). Wired into `LeaseDetailPage` header + holdover banner and `leaseContext.js` (so the
+    AI assistant's stated phase matches).
+  - **Past-due renewal options no longer listed.** A *pending* option lapses once its term slot has
+    ended: hidden from `RenewalOptionsEditor` (with a small "N lapsed not shown" line),
+    `isRenewalDecisionDue` returns false past term end, `promptDueRenewalDecisions` clears any stale
+    prompt, and migration `0039` gives the SQL cron `apply_due_renewals()` the same cutoff (non-destructive
+    `create or replace`).
+  - **Monthly rent / Receivables / property rent roll are now hideable** (George: "give the option to
+    hide it"). Reused the per-account Display-settings store (`user_preferences.hidden_widgets`, no
+    migration) — new `PAGE_PANELS` group in `dashboardWidgets.js`, a second section in `DisplaySettings.js`,
+    gates in `LeaseDetailPage.js` (panels + the fiscal-year selector) and `PropertyFinancialsPage.js`.
+    Default shown; nothing deleted from the DB.
+  - **Decluttered** the long explainer paragraphs on the lease page (renewal, addendum, assistant,
+    insurance, monthly-rent) and the 5-bullet renewal help list → 2 bullets.
+  - Verified token-free: new `src/lib/__tests__/leasePhaseAndBackfill.test.js` replays the $24,200
+    expired-term symptom (base rent now updates), `currentPhase` label/date/rent/next-step, the addendum
+    $/SF math, and lapsed-prompt clearing. Full suite 28/28 green; `CI=true` build compiles. Committed only
+    this task's files.
+
+- **2026-07-01** — Renewal emails, follow-up: a lease-page **"✉ Email tenant"** button. Frontend
+  Cloudflare version `f7920f34`. No migrations, no edge functions.
+  - **Why:** the "renewal approaching" heads-up only appeared in the dashboard bell, and only inside the
+    ~3-month due window — George couldn't find a way to send it proactively. Now every **pending**
+    renewal option on the lease page has a "✉ Email tenant" button that opens the same send modal with a
+    ready-to-send "your renewal is coming up" draft, sendable **any time**.
+  - `src/lib/api.js` — new `draftRenewalApproachingEmail(renewalId)` builds the letter (reuses
+    `buildRenewalApproachingEmail` + property/corp business) and returns the modal's email fields; no
+    notification is created. `src/components/RenewalOptionsEditor.js` — the button + `NotificationEmailModal`
+    (onSent just closes; nothing to dismiss) + a help-text line. New test case in `renewalEmails.test.js`
+    (5/5 green).
+  - **Deploy note (regression I caught + fixed):** while I was building, the widgets deploy (`8a06310e`)
+    had advanced the live frontend past my earlier renewal base. My first button build from the stale
+    `cc6f9e0` base (`35746a7c`) briefly dropped the widgets/monthly-tracker from live; I immediately
+    redeployed from the **latest committed `main`** (`f7920f34` = all committed work + my button), which is
+    a strict superset — nothing lost. This deploy also brings live the already-committed, held-back
+    rent-steps warning badge (`LeaseNewPage.js`), which is now safe since all sessions' work is committed.
+  - Built + deployed from an isolated `git worktree` at `origin/main` (no session's uncommitted WIP), and
+    committed only my two files + the test.
+
+- **2026-07-01** — Database catch-up (migrations `0034`–`0038`) + monthly rent tracker. DB: Supabase
+  `awgrjmbcghdjgnqeiqkt` — all 5 pending migrations applied via `supabase db push`. My deploy was
+  Cloudflare `fb694246`; the live frontend has since rolled forward to `f7920f34` (entry above), a
+  superset that includes this tracker.
+  - **Feature (this task):** a friendly *monthly* layer over the annual invoices/payments. Each tenant's
+    lease page gets a "Monthly rent — FY {year}" strip of 12 boxes (year total ÷ 12); one click records a
+    payment tagged with the new `payments.period_month` against that year's invoice (auto-created), so the
+    balance/AR/dashboards update automatically. `PropertyFinancialsPage` gets a rent roll with a per-month
+    **"mark all tenants paid"** bulk action. Follows the shared fiscal-year selector — each year resets on
+    its own. Files: `MonthlyRentTracker.js`, `PropertyRentRoll.js`, `api.js` helpers, `App.css`, migration
+    `0037_payment_month.sql` (nullable `period_month`, additive). Committed as `5c4dabf`.
+  - **The DB was 5 migrations behind the code** (`0034`–`0038`): several other sessions' feature screens
+    (renewal-decision timing, assignment/history, dashboard Display settings) were already live but missing
+    their database pieces. George OK'd bringing the DB fully up to date — `supabase db push` applied all 5
+    (all additive/non-destructive; idempotent guards skipped objects that already existed). This repaired
+    those features and enabled the rent tracker.
+  - Committed only this task's files (staged just my `api.js` hunk).
+
+- **2026-07-01** — Fix $/SF rent steps computed wrong on lease import. Deployed: `extract-lease` edge
+  function (Supabase `awgrjmbcghdjgnqeiqkt`). **Frontend NOT pushed to Cloudflare** — see note below.
+  - **Root cause (Gzim Mila lease):** the design has the model read RAW rent figures + a basis and the
+    code do the math (`annualRentFrom`). Years 4-5 are written ONLY as a $/SF rate ($16.17, $16.97/sf);
+    the model returned dollar amounts it multiplied itself ($17,478.72, $18,499.92 — inconsistent, they
+    imply 1,081 and 1,090 sf, not the lease's 1,077), so the code's safety net had nothing to correct.
+    Correct steps are $17,415.09 / $18,276.69.
+  - **Fix:** hardened `SUPPLEMENT_SYSTEM` so a $/SF-only period is returned as the raw rate
+    (`per_sqft_year`), never pre-multiplied — each row classified independently (mixed dollar/$SF
+    schedules are normal). Added `square_footage` to `SUPPLEMENT_SCHEMA` as a fallback sqft so a $/SF row
+    is never dropped for want of a size. Extracted the rent math to a shared, dependency-free
+    `supabase/functions/_shared/rentSchedule.js` (`annualRentFrom` + new `rebuildRentSchedule`) so the
+    edge function and a Jest test share ONE source; `extract-lease/index.ts` now calls it. The rebuild
+    cross-checks the code's exact figure against the model's OWN `new_base_rent` and sets
+    `parsed.rent_schedule_flag` on a wide gap (or an unresolvable $/SF row).
+  - **Review screen** (`src/pages/LeaseNewPage.js` `SchedulePreview`): shows a "double-check these
+    amounts" warning badge when `rent_schedule_flag` is set.
+  - Verified token-free: new `src/lib/__tests__/rentScheduleSqft.test.js` replays the Gzim $/SF table —
+    base $16,584, steps land exactly on $17,415.09 / $18,276.69, and the flag fires on the bad model
+    math / missing-sqft cases. Full suite 16/16 green; `CI=true` frontend build compiles.
+  - **NOTE for George — frontend held back:** the working tree carries another session's in-progress
+    edits (`src/lib/api.js`, `emailTemplates.js`, `pages/DashboardPage.js`, `renewalEmails.test.js`), so a
+    Cloudflare build would push their unfinished work live. The actual rent-math fix is 100% in the edge
+    function and is already LIVE; the only frontend piece is the inert warning badge. Deploy the frontend
+    (`CI=true npx react-scripts build` → `npx wrangler deploy`) once that session's work is ready, or tell
+    me to push it. Committed only this task's files.
+
+- **2026-07-01** — Hide/show dashboard widgets: new **Display** settings page. Deployed: DB migration
+  `0038` (`user_preferences` table, applied via `supabase db query`), frontend Cloudflare version
+  `8a06310e`.
+  - **What it does for George:** on the Overview page he can now hide any of the six widgets he doesn't
+    want — the four top cards (Annual rent roll, **Outstanding/receivables**, Occupancy, Expiring ≤ 90
+    days) and the two panels (Lease expirations table, Alerts & notifications). Choices live in a new
+    **Display** page in the sidebar footer (slider icon, next to Security) and are saved to his account,
+    so they follow him across devices.
+  - **New:** `src/pages/DisplaySettings.js` (the toggle page), `src/lib/dashboardWidgets.js` (shared
+    widget keys/labels), `supabase/migrations/0038_dashboard_prefs.sql` (per-user `user_preferences`
+    table, client-writable under RLS — same shape as `alert_states`).
+  - **Edited:** `src/lib/api.js` (`getHiddenWidgets`/`setHiddenWidgets`), `src/pages/DashboardPage.js`
+    (each widget gated by `show(key)`; the receivables query is skipped via `enabled` when its card is
+    hidden; panels collapse to full-width when only one shows), `src/App.js` (route `/display`),
+    `src/components/Sidebar.js` (nav item), `src/components/icons.js` (`SlidersIcon`). Prefs shared via
+    React Query key `['dashboardPrefs']`. UI-verified end-to-end (hide receivables → card gone; hide a
+    panel → other goes full-width; re-check → all back; zero console errors).
+  - **Shared-file note:** `src/lib/api.js` and `src/pages/DashboardPage.js` also carried two other
+    sessions' uncommitted WIP (monthly-rent tracking block in api.js; an `onSent` renewal tweak in
+    DashboardPage). Deployed from an isolated `git worktree` at HEAD holding **only** my changes
+    (symlinked node_modules), so their work was never bundled or touched. Committed only my hunks to the
+    two shared files (via clean patches) plus my own files — their WIP left untouched in the tree.
+
+- **2026-07-01** — Tenant renewal emails (approaching / renewed / not-renewed). Frontend-only,
+  Cloudflare version `28324d8e`. No migrations, no edge functions. All three letters are generated in
+  code (no AI cost) and sent by the landlord via the existing bell modal (Gmail/mail app) — nothing
+  auto-sends.
+  - `src/lib/emailTemplates.js` — two new letter builders on the shared `letter()` scaffold:
+    `buildRenewalApproachingEmail` (a "your renewal is coming up" heads-up, with the option's term/rent
+    and the notice-by date if stated) and `buildNonRenewalEmail` (a neutral lease-end / non-renewal
+    notice). The "renewed" letter (`buildRenewalEmail`) already existed and is unchanged.
+  - `src/lib/api.js` — `promptDueRenewalDecisions` now attaches the *approaching* email to the
+    `renewal_decision` prompt (populates `email_*`), and **enriches a bare prompt** the SQL cron
+    (`apply_due_renewals`) drops with no email — patches once, never duplicates. `declineRenewal` now
+    drops a `renewal_declined` notification carrying the non-renewal letter (mirrors how `confirmRenewal`
+    carries the renewed letter). `restoreRenewal` (undo) deletes that stale `renewal_declined` notice.
+  - `src/pages/DashboardPage.js` — the email modal's "Mark sent" no longer dismisses a `renewal_decision`
+    prompt (the Yes/No decision stays open after sending the heads-up); terminal notices still dismiss.
+  - No DB change: `notifications.kind` is free text (`0007`), so `renewal_declined` needs no migration.
+  - Verified token-free: new `src/lib/__tests__/renewalEmails.test.js` (4 tests) replays a due lease —
+    approaching email on the prompt, bare-prompt enrichment (no dup), renewed email on confirm,
+    non-renewal email on decline, and undo cleanup. All green.
+  - Note: another session had heavy uncommitted WIP in the shared tree (dashboard widgets / Display
+    Settings / monthly rent tracker, migrations `0037`/`0038`) intermixed in `api.js` + `DashboardPage.js`.
+    Deployed from an isolated `git worktree` at `origin/main` with only my renewal-email changes
+    re-applied (symlinked node_modules) — the other session's work was never bundled, touched, or shipped,
+    and their migrations were not run.
+
+- **2026-07-01** — Renewal "New rent" column formatting. Frontend Cloudflare version `69672db8`.
+  - `src/components/RenewalOptionsEditor.js` — the +%/yr estimate was one cramped string in a
+    right-aligned tabular-number cell; split into a main amount (`≈ $X`) with `+%/yr` on a `.cell-sub`
+    line. Flat rents unchanged.
+  - Note: another session had uncommitted WIP in the tree (renewal emails, dashboard widgets, Display
+    Settings, migrations 0037/0038). Committed only `RenewalOptionsEditor.js`, and deployed from an
+    isolated `git worktree` checkout of HEAD (symlinked node_modules, copied `.env.local`) so the build
+    shipped **only** committed code — the other session's work was never bundled or touched.
+
+- **2026-07-01** — Addendums follow-ups: assistant sees the whole lease, undo declines, renewal polish.
+  Deployed: DB migration `0036`, `ask-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend
+  Cloudflare version `43616e53`.
+  - **Assistant now reads original + riders + current phase.** New `src/lib/leaseContext.js`
+    `buildLeaseAskContext({lease, renewals, addendums})` assembles a CURRENT PHASE summary (authoritative
+    today) + the ORIGINAL LEASE text + every AMENDMENT (chronological). `LeaseAssistant.js` gains an
+    `askContext` prop the AI reasons over, while the editable/save box still binds to `lease_text` only.
+    `LeaseDetailPage.js` fetches addendums and passes it (+ a hint line). `ask-lease/index.ts` system
+    prompt updated to treat current-phase/later-amendments as authoritative and pending options as
+    not-yet-exercised. Unit-tested via `src/lib/__tests__/leaseContext.test.js`.
+  - **Undo a declined renewal** — `restoreRenewal(id)` (api.js) puts an option back to pending, logs a
+    `renewal_reopened` event, and re-raises the decision prompt if still due. UI: **↩ Undo** on a Declined
+    row (`RenewalOptionsEditor.js`) and a transient **"Marked … not renewing · Undo"** banner on the
+    dashboard right after clicking No (`DashboardPage.js`; `declineRenewalForLease` now returns the id).
+  - **Renewal polish**: `renewalRent()` uses a new whole-dollar `money0()` (`format.js`) for both the flat
+    and +%/yr cases (was cents-vs-no-cents); the dense helper became a 4-item bulleted list; the "build
+    your lease in layers" note added to the Addendums section.
+  - **Prompt timing**: the "Is the tenant renewing?" prompt now opens ~3 months before term end (was 6),
+    or at the notice-by date — `isRenewalDecisionDue` (api.js) + SQL cron in migration `0036`. The verified
+    ready-to-send renewal email (subject + letter body + recipient) confirmed populating in demo.
+
+- **2026-07-01** — Addendums Phase 2+3: AI-led multi-effect review, tenant assignments, per-building
+  history. Deployed: DB migration `0035`, `extract-addendum` edge function (Supabase
+  `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `d8c133f4`.
+  - **Assignment detection** (`supabase/functions/extract-addendum/index.ts`): the main schema is at
+    Anthropic's 16-union ceiling, so a change-of-tenant ("Assignment and Assumption of Lease") is read
+    by an **isolated, non-fatal second Haiku call** (`ASSIGNMENT_SCHEMA` — new tenant name/contact/
+    email(s) + effective date; `is_assignment` is a plain boolean, not union-typed). Adds one cheap
+    call per addendum upload only; if it fails the term/rent/renewal fields still return.
+  - **AI-led multi-effect review** (`src/components/AddendumEditor.js`): replaced the single "This
+    addendum…" picker with toggleable effect cards — Extends term / Changes rent (dated step rows) /
+    Adds renewal option (now **pre-filled**, framed as *Pending — won't change your term until you
+    confirm*) / **Assigns to a new tenant**. The AI pre-ticks + fills everything it found; each card
+    is the override. A single addendum can now apply several effects at once.
+  - **Apply** (`src/lib/api.js` `applyAddendum`): an assignment swaps `tenant_name`/`contact`/emails on
+    the lease and logs the prior tenant. Also logs `term_extended`, and `confirmRenewal`/
+    `declineRenewal` log `renewal_confirmed`/`renewal_declined`.
+  - **Per-building history** (migration `0035` `history_events` table + `kind='assignment'`;
+    `src/pages/HistoryPage.js` new "Lease & tenant history" timeline). New `logHistoryEvent` /
+    `listHistoryEvents` in api.js.
+  - Verified token-free: `addendumRenewalReplay.test.js` now also replays the D&D Dental assignment —
+    tenant swaps to D&D Dental, term stays 2026, prior tenant preserved in history. UI smoke-test
+    passed (effect cards toggle, assignment changes the tenant, timeline shows the event, added option
+    is Pending & term-neutral, zero console errors).
+  - **Live data corrected** (lease `2258272a`): tenant → **D & D Dental, LLC / Dr. Ahmed Hegazy** with a
+    `tenant_assigned` history event (eff Aug 1 2021); the assignment addendum reclassified `kind=
+    'assignment'`. Left `tenant_email`/`2` untouched (no D&D email in the doc — George can add it).
+
+- **2026-07-01** — Addendums Phase 1: renewal options no longer auto-extend the term. Deployed:
+  DB migration `0034`, frontend Cloudflare version `86be8d83`. (Phase 2 = assignment/tenant
+  detection + multi-effect review; Phase 3 = per-building history — both still to come. Plan file:
+  `~/.claude/plans/couple-things-for-the-happy-kay.md`.)
+  - **Root bug:** the app stored a committed *extension* and an optional *renewal* in the same
+    `renewal_options` bucket, and `resolveCurrentTerm` chained every **pending** option into the
+    term — so an un-exercised option pushed `lease_termination_date` into the future (George's lease
+    read 2031 instead of 2026) and options auto-stamped "Applied" with a phantom duplicate row.
+  - `src/lib/leaseTerm.js` — `resolveCurrentTerm` no longer chains renewal options at all; the
+    lease's own dates are the committed term. `src/lib/api.js` — `applyAddendum` now moves the term
+    **directly** for an extension (+ lays its opening rent in as a dated step) and never creates an
+    extension-as-renewal row; renewals insert `pending` and are term-neutral.
+  - **No more silent auto-apply.** `applyDueRenewals` → `promptDueRenewalDecisions` (and the SQL
+    cron `apply_due_renewals` in migration `0034`) now drop a one-time `renewal_decision`
+    notification ("Is [tenant] renewing?") when a decision is due (notice-by date, else ~6mo before
+    term end). New `confirmRenewal`/`declineRenewal` (+ `…ForLease` bell helpers) apply or close it;
+    Yes/No buttons in the Dashboard bell (`DashboardPage.js`) and Renew/Not-renewing on the lease
+    (`RenewalOptionsEditor.js`, status now pending/applied/declined). `Layout.js` calls the prompt;
+    `LeaseDetailPage.js` copy updated. Migration `0034` also allows `status='declined'`.
+  - Verified token-free: `src/lib/__tests__/addendumRenewalReplay.test.js` replays George's real
+    Vibhakar docs through the fixed pipeline — term holds at 2026 with the option Pending; confirming
+    rolls it to 2031. UI smoke-test passed (pending≠extend; Renew extends; bell prompt renders).
+  - **Live data corrected** (lease `2258272a`): removed the phantom 180-mo renewal row, restored the
+    trapped Oct-2021 $43,128 escalation step, set the real Section 4 option back to `pending`, and
+    pulled the committed term back to `2026-09-30`. NOTE for George: there's a second, already-correct
+    lease for this space (`Kamal Vibhakar`, term 2026) — possible duplicate, left untouched.
+
+- **2026-06-30** — Lease rent accuracy + review-form alignment. Deployed: `extract-lease` edge
+  function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `fe17b9e1`.
+  - Rent was off by cents and step-ups were wrong because the model did the arithmetic. The
+    isolated supplement call now reads the whole **rent_schedule** (one row per period: raw amount
+    + basis + effective date) and `annualRentFrom()` computes every annual figure in code, to the
+    **cent** — base rent = earliest period, later periods become the (manual) escalations. Main
+    lease `SCHEMA` still untouched; supplement stays non-fatal. (`supabase/functions/extract-lease/index.ts`)
+  - `src/components/LeaseForm.js` — field labels reserve a constant height so the AI confidence
+    badge no longer pushes a field's input box below its un-badged neighbours.
+  - Follow-up (frontend Cloudflare version `fdd9685b`): shortened the long "Tax/CAM share override
+    (%) — blank = pro-rata by SF" label (it wrapped and misaligned its box) to just "Tax/CAM share
+    override (%)" and moved "Blank = pro-rata by SF" into a `hint` note under the input; `Field` now
+    takes an optional `hint` prop.
+
+- **2026-06-30** — Two tenant emails + contact/email extraction. Deployed: DB migration `0033`,
+  `extract-lease` edge function (Supabase `awgrjmbcghdjgnqeiqkt`), frontend Cloudflare version `692cbb61`.
+  - A lease can now hold **two** emails (primary + secondary). Anywhere a tenant email is sent —
+    Invoice, the bell renewal/escalation email, the "Email tenant" box — a **Primary / Second / Both**
+    picker appears when a second email exists (defaults to primary; "Both" comma-joins). One email = the
+    old plain field, unchanged. The daily reminder cron only emails the owner, so it's untouched.
+  - `migration 0033` — `leases.tenant_email_2`, `notifications.email_to_2`, recreated `v_tenant_shares`
+    with `tenant_email_2`, extended the `fill_notification_recipient` trigger to carry the 2nd email.
+  - New `src/components/RecipientField.js` (the picker); wired into `InvoiceButton.js`,
+    `EmailComposeModal.js`, `NotificationEmailModal.js`. Edit UI in `LeaseForm.js` + `LeaseDetailPage.js`;
+    plumbing in `lib/api.js` + demo `store.js`/`mockClient.js`.
+  - `extract-lease/index.ts` — now also extracts `tenant_contact_name` + two tenant-side emails (primary
+    first, never the landlord's). Added a non-nullable `strField()` so the 3 new fields cost **zero**
+    union-typed params — the schema was already at Anthropic's hard 16-union structured-output limit; a
+    17th would 400 every extraction. `LeaseNewPage.js` maps the new fields onto the review form.
+  - Note: committed only this task's files. Left `CLAUDE.md` (carries another session's pending
+    status-line standing instruction + their deploy-log entries) uncommitted — flagged to George.
+
+- **2026-06-30** — Lease upload copy tweak. Deployed: frontend Cloudflare version `19f713ec`.
+  - `src/components/LeaseUpload.js` — added a one-line note under "Add a lease with AI": "Word docs and
+    PDFs give the fastest, most accurate read — scans and photos work great too" (positively framed so
+    scans/photos don't read as second-rate); removed the obsolete "if the file dialog doesn't open…" tip.
+  - Note: the Cloudflare build was taken from the working tree, which also carried another session's
+    in-progress frontend edits (`EmailComposeModal.js`, `InsuranceVault.js`, `InvoiceButton.js`,
+    `LeaseForm.js`, `NotificationEmailModal.js`, `lib/api.js`, `LeaseDetailPage.js`, new
+    `RecipientField.js`) — not my task; flagged to George. Committed only `LeaseUpload.js`.
+
+- **2026-06-30** — Fix scanned-PDF AI extraction (was failing with "Edge Function returned a
+  non-2xx status code"). Deployed: edge functions `extract-lease`, `extract-insurance`,
+  `extract-contract`, `extract-addendum` (Supabase `awgrjmbcghdjgnqeiqkt`); frontend Cloudflare
+  version `e9fad0ae`.
+  - Root cause: the vision fallback asked the model to transcribe the whole document into a
+    structured-output field capped at 8192 tokens, so real multi-page scans truncated → invalid
+    JSON → 500. Split into two reads: a constrained fields-only call (reliable, small) + a
+    separate best-effort transcription call that can't truncate the fields.
+  - `functions/_shared/anthropic.ts` — new `transcribeDocument()` (non-fatal, its own call) and
+    `MAX_VISION_BYTES` (20 MB guard with a friendly message past it).
+  - The four `extract-*/index.ts` — vision branch now uses fields-only `SCHEMA`/`SYSTEM_FIELDS`,
+    size guard, then `transcribeDocument()` for the searchable copy (George chose to keep it,
+    costs a 2nd AI read per scan). Removed the unused `SCHEMA_VISION`/`SYSTEM_VISION`.
+  - `src/lib/supabaseClient.js` — `invokeFunction` now reads the function's JSON `{ error }` body
+    so real messages surface instead of the generic "non-2xx".
+  - Note: the Cloudflare build was taken from the working tree, which also carried unrelated
+    in-progress edits to `App.css`, `Sidebar.js`, `icons.js` (not my task) — flagged to George.
+
+- **2026-06-30** — Insurance overhaul. Deployed: DB migrations `0031`+`0032`, `send-reminders` edge
+  function, frontend Cloudflare version `5ca45592`.
+  - Removed cost/token wording from user-facing copy (`InsuranceVault.js`, `lib/demo/mockClient.js`).
+  - Landlord insurance is now property-only — removed from the lease level
+    (`pages/LeaseDetailPage.js`, `PropertyInsuranceModal.js`).
+  - Extra documents per policy + a Premium field; **Remove policy → Save to history** (archive) with an
+    "Expired & archived" list (`InsuranceVault.js`, `lib/api.js`, migration `0032`).
+  - Insurance expiry: in-app alerts already existed (wording tweak in `lib/alerts.js`); added owner
+    **email** reminders with per-threshold dedupe (`functions/send-reminders/index.ts`).
+  - Note: migration `0031` (beta account cap) was also applied — it was pending on the remote and is
+    idempotent, so it just re-established the intended 2-account cap.
+
+- **2026-06-30** — Invoice email redesign + cross-account cache fix. Cloudflare version `45fb280b`.
+  - `src/lib/invoiceTemplate.js` — removed the "Notes" section, cleaner letterhead/header
+    (right-aligned invoice no., two-line date/due), renamed the total row to **AMOUNT DUE**,
+    kept all four detail columns (monthly / annual / $·SF·mo / $·SF·yr). No AI involved.
+  - `src/context/AuthContext.js` — clear the React Query cache when the signed-in user
+    changes, so one account's data no longer lingers under the next.
+  - `src/components/Sidebar.js` — clear cached data instantly on sign-out.

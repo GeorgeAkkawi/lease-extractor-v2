@@ -3,7 +3,7 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit } from '../lib/api';
 import { depositReconciliation } from '../lib/deposits';
-import { settleBillingChange } from '../lib/invalidate';
+import { settleBillingChange, settleLeaseListChange } from '../lib/invalidate';
 import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
 import { buildLeaseAskContext } from '../lib/leaseContext';
@@ -108,7 +108,10 @@ export default function LeaseDetailPage() {
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['lease', leaseId] });
-    qc.invalidateQueries({ queryKey: ['leases', propId] });
+    // Every list that names this tenant — including the two batch keys the sidebar
+    // fly-out reads. Removing or renaming a tenant has to reach them or the fly-out
+    // keeps showing the old name for the whole session (see invalidate.js).
+    settleLeaseListChange(qc, { propertyId: propId });
     qc.invalidateQueries({ queryKey: ['propertyTotals'] });
     qc.invalidateQueries({ queryKey: ['tenantShares'] });
     qc.invalidateQueries({ queryKey: ['corpRollups'] }); // rent changes affect the corp revenue roll-up

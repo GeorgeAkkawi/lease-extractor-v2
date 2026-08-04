@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals, buildRenewalScheduleSteps, buildAbatements, isoDateOrNull, discardDocument } from '../lib/api';
+import { settleLeaseListChange } from '../lib/invalidate';
 import { resolveCurrentTerm } from '../lib/leaseTerm';
 import { abatementKindLabel, leadingFreeMonths } from '../lib/abatement';
 import { addMonths } from '../lib/renewals';
@@ -27,7 +28,9 @@ export default function LeaseNewPage() {
   const [extractedDoc, setExtractedDoc] = useState(null);
 
   const afterCreate = (row) => {
-    qc.invalidateQueries({ queryKey: ['leases', propId] });
+    // Reaches the sidebar fly-out's batch key too, so a new tenant shows up there
+    // without a reload — same omission that stranded a removed one (see invalidate.js).
+    settleLeaseListChange(qc, { propertyId: propId });
     qc.invalidateQueries({ queryKey: ['propertyTotals'] });
     qc.invalidateQueries({ queryKey: ['tenantShares'] });
     qc.invalidateQueries({ queryKey: ['corpCounts'] });   // tenant count grew

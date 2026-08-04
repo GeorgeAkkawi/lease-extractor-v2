@@ -7,6 +7,9 @@ import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
+import { getLease, archiveLease } from '../../lib/api';
+import { settleLeaseListChange } from '../../lib/invalidate';
+import { supabase } from '../../lib/supabaseClient';
 
 vi.mock('../../context/AuthContext', () => ({
   AuthProvider: ({ children }) => children,
@@ -15,9 +18,9 @@ vi.mock('../../context/AuthContext', () => ({
 
 import Sidebar from '../Sidebar';
 
-function renderSidebar() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+function renderSidebar(client) {
+  const qc = client || new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
         <ChromeProvider>
@@ -26,6 +29,7 @@ function renderSidebar() {
       </QueryClientProvider>
     </MemoryRouter>
   );
+  return { ...view, qc };
 }
 
 const hrefs = () => Array.from(document.querySelectorAll('a')).map((a) => a.getAttribute('href'));
@@ -57,5 +61,35 @@ describe('Sidebar hover fly-out', () => {
     await waitFor(() => expect(hrefs()).toContain('/leases/corp-1/prop-1/lease-1'));
     expect(hrefs().filter((h) => h === '/leases/corp-1/prop-1/lease-1').length).toBe(1);
     expect(hrefs().filter((h) => h === '/leases/corp-1/prop-1/lease-2').length).toBe(1);
+  });
+
+  // ⚠ THE REGRESSION THIS FILE EXISTS FOR, and it can only be caught here.
+  //
+  // George removed a tenant and the name kept showing in this fly-out (2026-08-04). The
+  // row was genuinely deleted — archiveLease hard-deletes it — but the fly-out reads its
+  // OWN batch key ['sidebarLeases', ids], which nothing invalidated. Sidebar is mounted
+  // for the life of the app, so that query's observer never unmounts and a stale query
+  // with no refetch trigger never refetches: the tenant survived until a hard reload.
+  //
+  // The test therefore renders ONCE and never remounts — a remount would refetch and go
+  // green with the bug still in place. It drives the REAL removal (archiveLease) and the
+  // REAL invalidation, so it fails against a hand-rolled list that only names
+  // ['leases', propId].
+  it('drops a removed tenant from the fly-out with no remount', async () => {
+    const { qc } = renderSidebar();
+    await waitFor(() => expect(hrefs()).toContain('/leases/corp-1/prop-1/lease-2'));
+    expect(screen.getAllByText('City Dental').length).toBe(1);
+
+    const lease = await getLease('lease-2');
+    await archiveLease(lease, { status: 'Vacated', note: null, endDate: null });
+    settleLeaseListChange(qc, { propertyId: 'prop-1' });
+
+    await waitFor(() => expect(hrefs()).not.toContain('/leases/corp-1/prop-1/lease-2'));
+    expect(screen.queryByText('City Dental')).toBeNull();
+    // The tenant beside it is untouched — the fix refreshes the list, it doesn't empty it.
+    expect(hrefs()).toContain('/leases/corp-1/prop-1/lease-1');
+
+    // Put the seed back so this file stays order-independent.
+    await supabase.from('leases').insert(lease);
   });
 });
