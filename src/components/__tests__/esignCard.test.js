@@ -147,6 +147,21 @@ describe('countersigning', () => {
     expect((await listAddendums('lease-1')).length).toBe(addendumsBefore.length);
   });
 
+  // George, 2026-08-04: *"make sure the user knows that when he saves his signature a copy
+  // will be sent to the tenant."* It has to be against the button, not in the grey paragraph
+  // at the top — and it has to name who it reaches, because that is the irreversible half.
+  it('warns, beside the button, that signing emails the tenant', async () => {
+    mount(AddendumEnvelopeRows);
+    fireEvent.click(await screen.findByRole('button', { name: '✎ Countersign' }));
+    const warn = await screen.findByText(/Signing sends it/);
+    const note = warn.closest('.note-msg');
+    expect(note.textContent).toContain('Sam Rivera');
+    expect(note.textContent).toContain('sam@brightcoffee.example');
+    expect(note.textContent).toContain('can’t be recalled');
+    // Directly above the control it is warning about — not scrolled off the top of a dialog.
+    expect(note.nextElementSibling.querySelector('button').textContent).toContain('Sign and complete');
+  });
+
   it('will not complete without a name and a signature', async () => {
     mount(AddendumEnvelopeRows);
     fireEvent.click(await screen.findByRole('button', { name: '✎ Countersign' }));

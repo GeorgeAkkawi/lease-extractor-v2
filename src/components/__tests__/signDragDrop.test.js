@@ -117,7 +117,7 @@ describe('the tenant places their own signature on the document', () => {
     fireEvent.click(screen.getByText('⌨ Type'));
     await waitFor(() => expect(screen.getByText('drop-signature').disabled).toBe(false));
 
-    expect(screen.getByText(/tap your signature onto the signature line/i)).toBeTruthy();
+    expect(screen.getByText(/drag your signature onto the signature line/i)).toBeTruthy();
     fireEvent.click(screen.getByText('drop-signature'));
     expect(await screen.findByText(/Your signature is placed on page 1/)).toBeTruthy();
   });

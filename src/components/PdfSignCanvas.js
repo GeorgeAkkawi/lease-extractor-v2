@@ -34,6 +34,9 @@ export default function PdfSignCanvas({
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const pdfRef = useRef(null);
+  const ghostRef = useRef(null);
+  const dragRef = useRef(null);       // the live drag; a ref, never state — see below
+  const clickBlockRef = useRef(false);
   const [pageNum, setPageNum] = useState(1);
   const [pageCount, setPageCount] = useState(0);
   const [geom, setGeom] = useState(null);   // { boxW, boxH, pageW, pageH, rotation }
@@ -103,25 +106,6 @@ export default function PdfSignCanvas({
     return () => { clearTimeout(t); window.removeEventListener('resize', onResize); };
   }, [phase, draw]);
 
-  // A click or a drag-release anywhere on the page places the signature there. Both, because
-  // on a phone "drag" is fiddly and a tap is what people actually do.
-  function place(e) {
-    if (disabled || !signature || !geom) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const pt = dropToPdfPoint({
-      cssX: e.clientX - rect.left,
-      cssY: e.clientY - rect.top,
-      boxW: rect.width,
-      boxH: rect.height,
-      pageW: geom.pageW,
-      pageH: geom.pageH,
-      width: DEFAULT_SIG_WIDTH_PT,
-      imgW: imgDims?.w,
-      imgH: imgDims?.h,
-    });
-    onPlace({ page: pageNum, x: pt.x, y: pt.y, w: pt.w });
-  }
-
   // Where to draw something that's already placed on THIS page, in CSS pixels.
   const boxFor = (p, w, h) => (
     !geom || !p || p.page !== pageNum ? null : pdfPointToBox({
@@ -133,6 +117,112 @@ export default function PdfSignCanvas({
   const mine = placement?.page === pageNum
     ? boxFor(placement, placement.w, sigHeight(placement.w, imgDims?.w, imgDims?.h))
     : null;
+
+  // The signature's size on screen, in CSS pixels — what a drag has to carry around before
+  // there is any placement to measure.
+  const sigBox = geom ? {
+    w: (DEFAULT_SIG_WIDTH_PT / geom.pageW) * geom.boxW,
+    h: (sigHeight(DEFAULT_SIG_WIDTH_PT, imgDims?.w, imgDims?.h) / geom.pageH) * geom.boxH,
+  } : null;
+
+  // Commit a CENTRE point, in CSS pixels measured from the page's top-left, as a placement.
+  function commit(cssX, cssY) {
+    if (!geom) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const pt = dropToPdfPoint({
+      cssX,
+      cssY,
+      boxW: rect.width,
+      boxH: rect.height,
+      pageW: geom.pageW,
+      pageH: geom.pageH,
+      width: DEFAULT_SIG_WIDTH_PT,
+      imgW: imgDims?.w,
+      imgH: imgDims?.h,
+    });
+    onPlace({ page: pageNum, x: pt.x, y: pt.y, w: pt.w });
+  }
+
+  // A tap drops the signature where you tapped. Kept alongside the drag below because on a
+  // phone a tap is what people actually do, and because it is the path that survives when
+  // pointer events don't fire (an old browser, a screen reader driving the page).
+  function place(e) {
+    if (disabled || !signature || !geom) return;
+    if (clickBlockRef.current) return;   // a drag just ended here; it has already committed
+    const rect = canvasRef.current.getBoundingClientRect();
+    commit(e.clientX - rect.left, e.clientY - rect.top);
+  }
+
+  // ── The drag ────────────────────────────────────────────────────────────────────────────
+  // George, 2026-08-04: *"the drag feature for the sign needs to be more fluid."* It was:
+  // tap to place, then a "Move it" button, then tap again. Now the mark follows the finger.
+  //
+  // ⚠ THE MOVE HANDLER WRITES TO THE DOM DIRECTLY AND DELIBERATELY. Re-rendering React on
+  // every pointermove — 120/second on a modern phone — is what made the old version feel
+  // sticky. The drag lives in a ref, the ghost's transform is set on the element itself, and
+  // React is told about it exactly twice: once when the drag starts, once when it ends.
+  const EDGE_PT = 4;   // mirrors EDGE in signPlacement.js, so the ghost lands where it lands
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+
+  const paintGhost = (left, top) => {
+    if (ghostRef.current) ghostRef.current.style.transform = `translate(${left}px, ${top}px)`;
+  };
+
+  function onPointerDown(e) {
+    clickBlockRef.current = false;   // never let a stale block swallow a later tap
+    if (disabled || !signature || !geom || !sigBox) return;
+    if (typeof e.button === 'number' && e.button > 0) return;   // right / middle click
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect?.width) return;
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const w = mine?.width || sigBox.w;
+    const h = mine?.height || sigBox.h;
+    // Grabbing your own mark keeps the grip point under your finger; starting anywhere else
+    // picks it up by its middle, which is where someone aims when they mean "here".
+    const onMine = !!mine
+      && px >= mine.left && px <= mine.left + mine.width
+      && py >= mine.top && py <= mine.top + mine.height;
+    dragRef.current = {
+      id: e.pointerId, w, h, onMine, moved: false,
+      startX: px, startY: py,
+      dx: onMine ? px - mine.left : w / 2,
+      dy: onMine ? py - mine.top : h / 2,
+      left: onMine ? mine.left : px - w / 2,
+      top: onMine ? mine.top : py - h / 2,
+    };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+  }
+
+  function onPointerMove(e) {
+    const d = dragRef.current;
+    if (!d || d.id !== e.pointerId || !geom) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect?.width) return;
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    if (!d.moved && Math.hypot(px - d.startX, py - d.startY) < 3) return;  // a shaky tap
+    const edgeX = (EDGE_PT / geom.pageW) * rect.width;
+    const edgeY = (EDGE_PT / geom.pageH) * rect.height;
+    d.left = clamp(px - d.dx, edgeX, rect.width - d.w - edgeX);
+    d.top = clamp(py - d.dy, edgeY, rect.height - d.h - edgeY);
+    paintGhost(d.left, d.top);
+    if (!d.moved) { d.moved = true; setDragging(true); }
+    if (e.cancelable) e.preventDefault();
+  }
+
+  function endDrag(e, keep) {
+    const d = dragRef.current;
+    dragRef.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+    if (!d || d.id !== e.pointerId) return;
+    if (d.moved) setDragging(false);
+    // A drag has already decided where the mark goes; a tap on your own mark means "I'm
+    // holding this", not "move it here". Either way the click that follows must not re-place.
+    if (d.moved || d.onMine) clickBlockRef.current = true;
+    if (d.moved && keep) commit(d.left + d.w / 2, d.top + d.h / 2);
+  }
 
   if (phase === 'failed') return null; // the caller shows its own fallback
 
@@ -149,20 +239,21 @@ export default function PdfSignCanvas({
         {placement && (
           <button type="button" className="ghost btn-sm" disabled={disabled}
             onClick={() => onPlace(null)}
-            title="Remove your signature from the page and place it somewhere else">
-            Move it
+            title="Take your signature back off the page. To move it, just drag it.">
+            Take it off
           </button>
         )}
       </div>
 
       <div className="pdfsign-wrap" ref={wrapRef}>
         <div
-          className={`pdfsign-stage${signature && !disabled ? ' placing' : ''}`}
+          className={`pdfsign-stage${signature && !disabled ? ' placing' : ''}${dragging ? ' dragging' : ''}`}
           style={geom ? { width: geom.boxW, height: geom.boxH } : undefined}
           onClick={place}
-          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(e) => { e.preventDefault(); setDragging(false); place(e); }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={(e) => endDrag(e, true)}
+          onPointerCancel={(e) => endDrag(e, false)}
         >
           <canvas ref={canvasRef} className="pdfsign-canvas" />
 
@@ -180,16 +271,28 @@ export default function PdfSignCanvas({
             );
           })}
 
-          {/* The signer's own mark, where they put it. */}
+          {/* The signer's own mark, where they put it. Hidden while it is being dragged —
+              the ghost below is the one under their finger. */}
           {mine && signature && (
             <img src={signature} alt="Your signature" className="pdfsign-placed mine"
-              style={{ left: mine.left, top: mine.top, width: mine.width, height: mine.height }} />
+              style={{
+                left: mine.left, top: mine.top, width: mine.width, height: mine.height,
+                visibility: dragging ? 'hidden' : 'visible',
+              }} />
+          )}
+
+          {/* The thing that follows the finger. Positioned by `transform` written straight to
+              the element — React never re-renders during a drag, which is the whole point. */}
+          {signature && !disabled && (
+            <img ref={ghostRef} src={signature} alt="" aria-hidden="true"
+              className={`pdfsign-ghost${dragging ? ' on' : ''}`}
+              style={{ width: mine?.width || sigBox?.w || 0, height: mine?.height || sigBox?.h || 0 }} />
           )}
 
           {/* The prompt, only while there is a signature to place and nowhere to put it yet. */}
-          {signature && !placement && !disabled && (
-            <div className={`pdfsign-hint${dragging ? ' over' : ''}`}>
-              Tap or drag your signature onto the signature line
+          {signature && !placement && !disabled && !dragging && (
+            <div className="pdfsign-hint">
+              Drag your signature onto the signature line — or just tap where it goes
             </div>
           )}
         </div>

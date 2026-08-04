@@ -378,7 +378,7 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
           </p>
           <p className="muted" style={{ fontSize: 12.5 }}>
             Amlak builds the signed PDF — the document with both signatures on it, plus a certificate
-            recording the whole trail — and emails a copy to both of you.
+            recording the whole trail.
             <strong> Nothing on this lease changes</strong>; you decide separately whether to apply it.
           </p>
 
@@ -420,12 +420,24 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
           {signature && !noRender && docUrl && (
             <p className={`note-msg ${placement ? 'good' : 'info'}`}>
               {placement
-                ? `✓ Your signature is placed on page ${placement.page}. Tap the document again to move it.`
-                : 'Tap your signature onto the signature line above. You can complete it without placing it — it will go on a page at the end instead.'}
+                ? `✓ Your signature is placed on page ${placement.page}. Drag it if you want to move it.`
+                : 'Drag your signature onto the signature line above — or just tap where it goes. You can complete it without placing it: it will go on a page at the end instead.'}
             </p>
           )}
 
           {err && <p className="note-msg danger">{err}</p>}
+
+          {/* George, 2026-08-04: *"make sure the user knows that when he saves his signature a
+              copy will be sent to the tenant."* It WAS said — in the grey 12.5px paragraph at
+              the top of the dialog, which is where a warning goes to die. Sending is the
+              irreversible half of this button, so it says so against the button, names the
+              person it reaches, and says there is no separate send step to change your mind at. */}
+          <p className="note-msg warn" style={{ marginBottom: 0 }}>
+            ✉ <strong>Signing sends it.</strong> The moment you click below, the completed PDF is
+            emailed to <strong>{envelope.signer_typed_name || envelope.signer_name || 'the tenant'}</strong>
+            {envelope.signer_email ? <> at <strong>{envelope.signer_email}</strong></> : null} and a
+            copy to you. There is no separate send step, and it can’t be recalled.
+          </p>
 
           <div className="row" style={{ marginTop: 14 }}>
             <button type="button" onClick={() => sign.mutate()} disabled={!ready}>

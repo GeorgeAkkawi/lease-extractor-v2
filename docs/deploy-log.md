@@ -14,6 +14,63 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **E-signature Phase 1.6: the mark follows the finger, and the countersign button says out
+  loud that it emails the tenant** (George: *"make sure the user knows that when he saves his signature a copy
+  will be sent to the tenant and the drag feature for the sign needs to be more fluid"*). Deployed: frontend
+  Cloudflare version **`e5d8c11e`**, demo worker **`ea9e3cf0`**. **No migration, no edge-function change** —
+  the stored placement shape is untouched, so `sign-envelope` / `countersign-envelope` are unchanged and were
+  deliberately NOT redeployed. **$0**, no tenant emails sent. Tests **1662/1662** (was 1652).
+  - **The drag.** It was never a drag: you tapped, then pressed a **Move it** button that *cleared* the
+    placement, then tapped again. Now `PdfSignCanvas` handles `pointerdown/move/up` — press anywhere and the
+    mark follows you, press **on a mark you already placed** and it comes with you *from the point you grabbed
+    it*. Four things make it feel right rather than merely work:
+    - **The grip point is preserved.** Grabbing your own signature 10px in from its corner keeps it 10px in
+      from your finger. Re-centring it under the finger is what makes a drag feel like it is fighting you, and
+      it is now asserted in a test that would fail if someone "simplified" it back.
+    - **The move handler writes to the DOM directly and deliberately.** A ghost `<img>`'s `transform` is set on
+      the element; React is told about the drag exactly twice, at the start and the end. Re-rendering React at
+      120 Hz is what made the old version feel sticky. **Do not add a CSS `transition` to `.pdfsign-ghost`'s
+      transform** — it would park the signature permanently behind the finger. Only the fade is animated.
+    - **`touch-action:none`, scoped to `.placing`.** Without it a phone claims the gesture as a scroll and the
+      signature never moves at all. Scoped, because before there is a signature to drop the document must
+      still scroll.
+    - **The tap survives.** A tap is what people do on a phone, and it is the path that still works if pointer
+      events never fire. A drag suppresses the browser's trailing `click` so one gesture is never two
+      placements; the block is cleared on the next `pointerdown`, so a stale flag can't swallow a later tap.
+    - **Move it → Take it off**, because moving it is now the drag's job. Copy on both screens changed to
+      *"Drag your signature onto the signature line — or just tap where it goes"* (`signDragDrop.test.js:120`
+      was asserting the old wording and was updated with it).
+  - **"A copy will be sent to the tenant."** It *was* being said — in the grey 12.5px paragraph at the top of
+    the countersign dialog, which is where a warning goes to die, and it was the only place. Now a `warn` note
+    sits **directly above the button**, names the person and the address it reaches
+    (*"emailed to Sam Rivera at sam@brightcoffee.example"*), and says there is no separate send step and it
+    can't be recalled. Sending is the irreversible half of that button; it belongs against it. A test asserts
+    the notice's `nextElementSibling` is the row holding **Sign and complete** — i.e. it fails if someone moves
+    it back to the top.
+  - **Files:** `PdfSignCanvas.js` (the drag) · `App.css` (`.pdfsign-ghost`, `touch-action`, grab cursors) ·
+    `AddendumEnvelopeRows.js` (the notice + copy) · `SignPage.js` (copy) · new
+    `src/components/__tests__/pdfSignCanvas.test.js` (9) · `esignCard.test.js` (+1) · `signDragDrop.test.js`
+    (copy assertion).
+  - **Verified on the deployed demo, with a real mouse drag** (not a synthetic click): dragged from PDF
+    (300,620) to the tenant's `By: ____` line and the mark landed at **PDF x = 320.0** — the line's exact x —
+    with the ghost's mid-drag transform `translate(362.876px, 376.751px)` **identical to the committed
+    position**, which is the proof there is no jump on release. Signed through to "Signed". Countersign dialog:
+    notice renders with the tenant's address, `Sign and complete` immediately below it, canvas painted (59,133
+    inked px), **zero console errors**.
+  - **⚠ A trap for the next person driving this in Playwright.** `.fill()` on the name field scrolls the
+    document canvas out of the viewport, so a `boundingBox()` taken afterwards yields mouse coordinates that
+    land nowhere and the drag silently does nothing. That is a *test* artifact, not a bug — it cost a full
+    round of investigation. Scroll the canvas into view and re-measure immediately before dragging.
+  - **jsdom 25 has no `PointerEvent`** (checked, not assumed), so RTL's `fireEvent.pointerDown` would build a
+    bare `Event` and `clientX` would arrive `undefined`. `pdfSignCanvas.test.js` fires a **`MouseEvent`
+    carrying the pointer event's name** instead — React dispatches on the type string, so the handler runs and
+    the coordinates survive. Note it before "fixing" those tests to use `fireEvent.pointerDown`.
+  - **Bundle:** main chunk 1,721 → **1,725 kB** (+4). pdf.js still isolated (`pdf-DMRcuM1e.js` 434 kB,
+    `pdf.worker.min` 1.26 MB).
+  - **George:** hard-refresh. The demo is still the fastest way to feel it —
+    https://amlak-demo.akkawigeo-5.workers.dev/sign/env-3 — press on your signature and move it around before
+    letting go. On a phone it now drags properly instead of scrolling the page.
+
 - **2026-08-04** — **E-signature Phase 1.5: the signature now lands ON the signature line. The signer drags
   their own mark onto the PDF, the executed copy is stamped for real, the tenant's copy is ATTACHED, and a
   signed envelope can finally be removed** (George, after a real test run: *"they arent signing the actual

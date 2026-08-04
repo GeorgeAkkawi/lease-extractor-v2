@@ -230,8 +230,8 @@ export default function SignPage({ token }) {
           {signature && !noRender && state.document_url && (
             <p className={`note-msg ${placement ? 'good' : 'info'}`}>
               {placement
-                ? `✓ Your signature is placed on page ${placement.page}. Tap the document again to move it.`
-                : 'Now tap your signature onto the signature line in the document above. If you’d rather not, you can still sign — it will be added on a page at the end.'}
+                ? `✓ Your signature is placed on page ${placement.page}. Drag it if you want to move it.`
+                : 'Now drag your signature onto the signature line in the document above — or just tap where it goes. If you’d rather not, you can still sign: it will be added on a page at the end.'}
             </p>
           )}
 
