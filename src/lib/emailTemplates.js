@@ -285,6 +285,35 @@ export function buildContractRenewalEmail({ business, vendorName, vendorEmail, c
   return { subject, body, to: vendorEmail || '' };
 }
 
+// The other half of a service contract's life, and the one with a deadline on it: NOT
+// renewing. An auto-renewing agreement commits the landlord to another full term unless
+// written notice lands by a specific date, so this is the letter the cancellation-notice
+// alert drafts. It states the decision plainly, cites the provision it is given under, and
+// asks for the housekeeping that ends a service relationship cleanly.
+//
+// ⚠ It DRAFTS. Nothing here sends: the ✉ opens the send modal and the landlord sends it.
+export function buildContractNonRenewalEmail({ business, vendorName, vendorEmail, contractName, propertyName, endDate, noticeDays, noticeByDate }) {
+  const what = contractName || 'our service agreement';
+  const subject = `Notice of Non-Renewal — ${contractName || 'service agreement'}${endDate ? ` (ends ${longDate(endDate)})` : ''}`;
+  const body = letter({
+    business,
+    toBlock: [
+      vendorName || contractName || 'Service Provider',
+      propertyName ? `Service provider at ${propertyName}` : null,
+      vendorEmail || null,
+    ],
+    reLine: `RE: Non-renewal of ${what}${propertyName ? ` at ${propertyName}` : ''}`,
+    paragraphs: [
+      `Dear ${vendorName || 'Service Provider'},`,
+      `This letter serves as written notice that we do not intend to renew ${what}${propertyName ? ` for ${propertyName}` : ''}${endDate ? `, which ends on ${longDate(endDate)}` : ''}. This notice is given${noticeDays ? ` in accordance with the ${noticeDays}-day written notice provision of the agreement` : ' in accordance with the notice provision of the agreement'}${noticeByDate ? `, on or before the ${longDate(noticeByDate)} deadline it sets` : ''}.`,
+      `Please confirm receipt of this notice in reply, and confirm the date on which service will conclude so we can plan accordingly.`,
+      `Kindly send any final invoicing for work performed through the end of the term, and arrange for the return of any keys, access cards, remotes or equipment belonging to the property.`,
+      `Thank you for your service over the term of the agreement.`,
+    ],
+  });
+  return { subject, body, to: vendorEmail || '' };
+}
+
 // Sent when a rent payment came in SHORT of what the ledger projects for a month —
 // most often because a scheduled rent adjustment (escalation) took effect and the
 // tenant is still remitting the old amount. Names the month, what was received, the

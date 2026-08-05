@@ -22,6 +22,14 @@ export const NOTIFY_TYPES = [
     hint: 'A landlord or tenant insurance policy nearing its expiry date.' },
   { key: 'contract',        label: 'Service contract ending', defaultDays: 183, kind: 'before',
     hint: 'A service contract approaching its end date.' },
+  // ⚠ 60 days, deliberately NOT the 183 every other contract lead uses. This one counts
+  // down to a window that is itself usually 30 days wide, so a six-month heads-up would sit
+  // on the dashboard for four months with nothing to do about it — and an alert that is
+  // always there is an alert nobody reads on the day it matters.
+  { key: 'contract_notice', label: 'Contract cancellation notice', defaultDays: 60, kind: 'before',
+    hint: 'The date by which written notice must be given to cancel a service contract — after it, an auto-renewing contract commits you to another term.' },
+  { key: 'contract_escalation', label: 'Contract fee increase', defaultDays: 60, kind: 'before',
+    hint: 'A dated step in a service contract’s fee is about to take effect and raise what it carries into CAM.' },
   { key: 'annual_report',   label: 'Annual report filing',  defaultDays: 31,  kind: 'before',
     hint: 'A corporation’s annual report filing deadline.' },
   { key: 'abatement',       label: 'Free rent ending',      defaultDays: 31,  kind: 'before',

@@ -267,11 +267,23 @@ describe('snapshotFingerprint — flips when the portfolio changes', () => {
     );
   });
 
-  // 0073 bumped v4 → v5: a gross lease's total annual bill used to be reported as rent
-  // PLUS its expense share, overstating what the tenant actually pays. Every cached
-  // answer built on the old arithmetic has to stop matching.
-  test('bumped to v5 (kills every v4-era cached answer)', () => {
-    expect(snapshotFingerprint({}).startsWith('v5|')).toBe(true);
+  // 0091 bumped v5 → v6: the snapshot now carries each contract's renewal / cancellation-
+  // notice terms and its dated fee schedule, which no v5-era answer could mention.
+  // (v5 itself bumped v4 for the 0073 gross-lease fix.)
+  test('bumped to v6 (kills every v5-era cached answer)', () => {
+    expect(snapshotFingerprint({}).startsWith('v6|')).toBe(true);
+  });
+
+  // A fee step carries no service_contracts.updated_at, so without its own component a
+  // corrected fee schedule would keep serving the answer built from the old figure.
+  test('flips when only a contract FEE STEP moves', () => {
+    const base = { contracts: [{ id: 'c1', updated_at: '2026-01-01T00:00:00Z' }] };
+    const f0 = snapshotFingerprint(base);
+    const f1 = snapshotFingerprint({
+      ...base,
+      contractSteps: [{ contract_id: 'c1', effective_date: '2027-01-01', new_amount: 9000, updated_at: '2026-08-05T00:00:00Z' }],
+    });
+    expect(f1).not.toBe(f0);
   });
 
   test('flips when a new source changes — escalation, abatement, annual report, or expense', () => {

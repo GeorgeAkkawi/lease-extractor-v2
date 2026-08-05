@@ -4,7 +4,7 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths, optionLapsed, renewalFirstYearRent, optionScheduleSteps } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildContractNonRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents, monthlyEstimates } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import {
@@ -15,7 +15,8 @@ import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalatio
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
 import { newLeaseTargets, buildAiConfidence, leaseCamTaxAnnual } from './newLeaseTerms';
-import { contractCoversYear, contractAnnualCost } from './contracts';
+import { contractCoversYear, contractAnnualCost, stepsByContract } from './contracts';
+import { contractTargets, buildContractFeeSteps, buildContractConfidence, noticeDueDate } from './contractTerms';
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
 import { advanceDueDate } from './annualReports';
@@ -1194,13 +1195,19 @@ export async function askLease(leaseId, question, leaseText) {
 // questions from records alone — never any documents.
 export async function fetchPortfolioSnapshot(features) {
   const year = Number(localDateIso().slice(0, 4)); // current calendar/fiscal year for the views
-  const [corporations, properties, leases, insurance, contracts, renewals, balances, escalations, abatements, annualReports] =
+  const [corporations, properties, leases, insurance, contracts, contractSteps, renewals, balances, escalations, abatements, annualReports] =
     await Promise.all([
       rows(supabase.from('corporations').select('id,name,address')),
       rows(supabase.from('properties').select('id,name,address,corporation_id,building_sf')),
       rows(supabase.from('leases').select('id,tenant_name,tenant_email,tenant_contact_name,premises_address,property_id,square_footage,base_rent,lease_start,lease_termination_date,is_active,roof_responsible,lease_terms,lease_type,updated_at,created_at')),
       rows(supabase.from('insurance_policies').select('id,party,property_id,lease_id,insurer,expiry_date,additional_insured,archived_at,updated_at,created_at').is('archived_at', null)),
-      rows(supabase.from('service_contracts').select('id,property_id,service_type,vendor,amount,frequency,end_date,updated_at,created_at')),
+      // Widened 2026-08-05: the assistant could not answer "when do I have to give notice
+      // on the snow contract?" at all, because the notice terms were never in the snapshot.
+      rows(supabase.from('service_contracts').select('id,name,property_id,service_type,vendor,amount,frequency,start_date,end_date,auto_renew,notice_days,notice_by_date,renewal_term_months,updated_at,created_at')),
+      // ⚠ The fingerprint below reads service_contracts.updated_at, so a bare FEE-STEP edit
+      // would not flip it and every cached answer would keep quoting the old fee. The steps
+      // are in the snapshot AND in the fingerprint for that reason.
+      rows(supabase.from('contract_escalations').select('contract_id,effective_date,new_amount,updated_at,created_at')),
       rows(supabase.from('renewal_options').select('lease_id,status')),
       rows(supabase.from('v_invoice_balances').select('lease_id,balance,display_status,due_date')),
       rows(supabase.from('rent_escalations').select('lease_id,effective_date,status,new_base_rent,updated_at,created_at')),
@@ -1221,7 +1228,7 @@ export async function fetchPortfolioSnapshot(features) {
   }
 
   return buildPortfolioSnapshot({
-    corporations, properties, leases, insurance, contracts, renewals, balances,
+    corporations, properties, leases, insurance, contracts, contractSteps, renewals, balances,
     escalations, abatements, annualReports, shares, totals, features,
   });
 }
@@ -1396,9 +1403,12 @@ export async function askDoc(text, question, kind) {
 // which removes the file AND the row. An explicit cancel is the only thing that
 // ever deletes an uploaded file — no cron, nothing silent.
 
+// ⚠ Must hold every value the DB's own CHECK allows, or registerDocument THROWS on a type
+// the database would have accepted. 'property' (0081) and 'envelope' (0085) were added to
+// the CHECK and never here.
 const DOC_ENTITY_TYPES = new Set([
   'lease', 'addendum', 'insurance_policy', 'service_contract',
-  'statement_import', 'annual_report',
+  'statement_import', 'annual_report', 'property', 'envelope',
 ]);
 
 // Upload a document to storage (shared bucket) and register it. Returns its
@@ -1497,6 +1507,25 @@ export async function discardDocument(storagePath) {
   await rows(supabase.from('documents').delete().eq('storage_path', storagePath));
   await removeStorageObjects([storagePath]);
 }
+
+// ---- The signed copy (0092) --------------------------------------------------
+// George, 2026-08-05: *"after the contract is signed the signed copy should be saved as a
+// pdf in the contracts tab - that should be the same of the leases in the respective tab
+// as well."*
+//
+// ONE nullable column on `documents` — the registry every uploaded file for every record
+// type already files into — so contracts, leases, riders and insurance certificates all
+// get this at once, which IS the "and the same on the leases" half of the ask. Keyed by
+// document id rather than by entity, so these work for any entity_type without a branch.
+//
+// Deliberately not exclusive: marking one copy signed does NOT unmark the others. An
+// amended contract legitimately has an original signed copy and a signed amendment, and
+// deciding for the landlord which of two executed documents is "the" one would be wrong.
+export const markDocumentSigned = (id, when = null) =>
+  one(supabase.from('documents').update({ signed_at: when || new Date().toISOString() }).eq('id', id).select().single());
+
+export const unmarkDocumentSigned = (id) =>
+  one(supabase.from('documents').update({ signed_at: null }).eq('id', id).select().single());
 
 // Delete one saved version from a record's document list (the ✕ button).
 export async function deleteDocument(id) {
@@ -2074,25 +2103,321 @@ export async function signDocUrl(storagePath) {
 export const listServiceContracts = (propertyId) =>
   rows(supabase.from('service_contracts').select('*').eq('property_id', propertyId).order('created_at'));
 
+export const getServiceContract = (id) =>
+  one(supabase.from('service_contracts').select('*').eq('id', id).maybeSingle());
+
 export const addServiceContract = async (c) =>
   one(supabase.from('service_contracts').insert({ ...c, owner_id: await ownerId() }).select().single());
 
-// Changing the end date re-arms the contract-expiry reminder emails: clear
-// end_notice_bucket so the send-reminders sweep notifies again for the new date
-// (same pattern saveInsurance uses for expiry_notice_bucket).
+// ---- Dated fee steps (contract_escalations, 0091) ---------------------------
+// DERIVED, never applied: nothing writes service_contracts.amount, so there is no status
+// column and no nightly sweep. contractAnnualCost(contract, year, steps) picks the step in
+// effect; an empty list falls back to the scalar amount + escalation_pct exactly as before.
+export const listContractEscalations = (contractId) =>
+  rows(supabase.from('contract_escalations').select('*').eq('contract_id', contractId).order('effective_date'));
+
+// Steps for a SET of contracts in ONE query — the shape every bulk caller needs so a
+// property with eight contracts costs one round trip, never eight.
+export async function listContractEscalationsFor(contractIds) {
+  const ids = [...new Set((contractIds || []).filter(Boolean))];
+  if (!ids.length) return [];
+  return rows(supabase.from('contract_escalations').select('*').in('contract_id', ids).order('effective_date'));
+}
+
+export async function listContractEscalationsByProperty(propertyId) {
+  const contracts = await listServiceContracts(propertyId);
+  return listContractEscalationsFor(contracts.map((c) => c.id));
+}
+
+// Replace a contract's whole fee schedule. Delete-then-insert is safe HERE in a way it is
+// not on rent_escalations: there is no `status`, so no row is history — every step is a
+// statement about what the fee is, and the document that supersedes them supersedes all.
+export async function replaceContractEscalations(contractId, steps) {
+  const uid = await ownerId();
+  await rows(supabase.from('contract_escalations').delete().eq('contract_id', contractId));
+  const list = (steps || []).filter((s) => s?.effective_date && Number(s.new_amount) >= 0);
+  if (!list.length) return 0;
+  await rows(
+    supabase.from('contract_escalations').insert(
+      list.map((s) => ({ ...s, contract_id: contractId, owner_id: uid }))
+    )
+  );
+  return list.length;
+}
+
+// The single choke point for a contract edit, which is why both notice derivations live
+// here rather than at each caller:
+//   • end_notice_bucket is cleared when the END date moves, so the expiry reminder re-arms
+//     (the pattern saveInsurance uses for expiry_notice_bucket);
+//   • notice_by_date is DERIVED from end_date − notice_days when the caller didn't supply
+//     one, because most contracts state the window in prose and print no deadline — and the
+//     date is what arms the reminder at all; and
+//   • cancel_notice_bucket is cleared whenever that date moves, so a rescheduled notice
+//     notifies again instead of being deduped against the old one.
+// A notice date the caller DID supply always wins: a contract that prints a real deadline
+// beats our arithmetic.
 export async function updateServiceContract(id, patch) {
   const body = { ...patch };
-  if ('end_date' in patch) {
-    const existing = await one(supabase.from('service_contracts').select('end_date').eq('id', id).maybeSingle());
-    if (existing && patch.end_date !== existing.end_date) body.end_notice_bucket = null;
+  const touchesNotice = 'end_date' in patch || 'notice_days' in patch || 'notice_by_date' in patch;
+  if (touchesNotice) {
+    const existing = await one(
+      supabase.from('service_contracts').select('end_date, notice_days, notice_by_date').eq('id', id).maybeSingle()
+    );
+    if ('end_date' in patch && existing && patch.end_date !== existing.end_date) body.end_notice_bucket = null;
+    if (!('notice_by_date' in patch)) {
+      const days = 'notice_days' in patch ? patch.notice_days : existing?.notice_days;
+      const end = 'end_date' in patch ? patch.end_date : existing?.end_date;
+      // Only ever WRITES a date it can compute; never nulls one already stored. Clearing
+      // notice_days on a contract that printed its own deadline must not erase the deadline.
+      const derived = noticeDueDate(end, days);
+      if (derived && derived !== existing?.notice_by_date) body.notice_by_date = derived;
+    }
+    const nextNotice = 'notice_by_date' in body ? body.notice_by_date : existing?.notice_by_date;
+    if ((nextNotice || null) !== (existing?.notice_by_date || null)) body.cancel_notice_bucket = null;
   }
   return one(supabase.from('service_contracts').update(body).eq('id', id).select().single());
 }
 
-export async function deleteServiceContract(id) {
-  const c = await one(supabase.from('service_contracts').select('storage_path').eq('id', id).single()).catch(() => null);
+// ⚠ Deleting a contract STOPS money that was flowing through CAM, so it carries through
+// exactly like applying one does. The FK cascade removes the derived cam_line_items row,
+// but nothing re-summed expense_records.cam_total — so the deleted contract's fee stayed in
+// the property's CAM, and therefore in every tenant's share and every stored invoice, until
+// somebody happened to open that fiscal year's Expenses page.
+export async function deleteServiceContract(id, { today = new Date() } = {}) {
+  const c = await one(supabase.from('service_contracts').select('storage_path, property_id').eq('id', id).single()).catch(() => null);
   await deleteDocumentsFor('service_contract', id, [c?.storage_path]);
-  return rows(supabase.from('service_contracts').delete().eq('id', id));
+  await rows(supabase.from('service_contracts').delete().eq('id', id));
+  const carried = c?.property_id
+    ? await carryContractChange(c.property_id, Number(localDateIso(today).slice(0, 4)))
+    : { synced: false, resynced: false, leasesResynced: 0 };
+  return { propertyId: c?.property_id || null, ...carried };
+}
+
+/**
+ * The contract → CAM → invoice carry-through (CLAUDE.md §1), in ONE place so every writer
+ * runs the identical pair in the identical order.
+ *
+ * ⚠ THE ORDER IS FORCED. resyncYearBillingToEstimate prices from v_tenant_shares, which
+ * reads expense_records.cam_total — and syncContractCamItems is what MOVES that total.
+ * Resync first and every invoice is rebuilt from the OLD CAM, then the total moves under it.
+ * Same reason backfillLeaseToToday runs before the resync on the lease side.
+ *
+ * ⚠ AND NOTHING HERE TOUCHES AN ESTIMATE. George, 2026-08-05: *"this only affects the ACTUAL
+ * CAM and Tax not estimated."* That holds because billedComponents PREFERS a tenant's
+ * estimate and falls back to the actual share: write no estimate and a tenant on one keeps
+ * paying it (settling at ⚖ Reconcile), while a tenant without one is billed the new actual
+ * now. resyncPropertyBilling skips a CLOSED year outright, so a bill already sent never moves.
+ */
+async function carryContractChange(propertyId, year) {
+  const sync = await syncContractCamItems(propertyId, year);
+  if (!sync.changed) return { synced: false, resynced: false, leasesResynced: 0 };
+  const res = await resyncPropertyBilling(propertyId, year);
+  return {
+    synced: true,
+    resynced: !res?.skipped,
+    leasesResynced: Number(res?.leases) || 0,
+    closedYear: res?.skipped === 'closed',
+  };
+}
+
+// How many tenants at this property already hold a bill for the year — the honest count for
+// the review screen's consequence list, because that is exactly the set resyncPropertyBilling
+// touches (it rebuilds leases with a non-void ANNUAL invoice, not every tenant).
+export async function countBilledTenants(propertyId, year) {
+  const list = await rows(
+    supabase.from('invoices').select('id, lease_id, status, kind')
+      .eq('property_id', propertyId).eq('year', year)
+  );
+  const ids = new Set(
+    (list || [])
+      .filter((i) => i.status !== 'void' && (i.kind == null || i.kind === 'annual'))
+      .map((i) => i.lease_id)
+      .filter(Boolean)
+  );
+  return ids.size;
+}
+
+// ---- A NEW contract document over an existing contract ----------------------
+// The contract-side twin of uploadNewLeaseDocument. It stops at READING: it writes the
+// file, the wiring and the cached text — never a billed figure. applyNewContractTerms
+// below is what commits the terms, after the landlord has seen the list of what changes.
+//
+// ⚠ contract_text IS WRITTEN HERE, at read time, not at apply. DocAssistant answers "what
+// is the cancellation notice?" out of service_contracts.contract_text, so leaving the OLD
+// document's transcription in place after a new file is filed is precisely the "one screen
+// says X, the document beside it says Y" failure this whole round exists to kill. The text
+// belongs to the FILE; the figures belong to the review.
+//
+// Order matters: the new file is stored, wired up and registered BEFORE anything is
+// deleted, so a failure halfway through leaves the landlord with more than he started with
+// rather than less.
+export async function uploadNewContractDocument({ contractId, file, oldDocId = null, keepOld = true }) {
+  if (!contractId) throw new Error('A contract is required.');
+  validateUploadFile(file);
+  const uid = await ownerId();
+  const safe = file.name.replace(/[^\w.-]+/g, '_');
+  const path = `${uid}/${Date.now()}-${safe}`;
+
+  const up = await supabase.storage.from('lease-documents').upload(path, file, {
+    contentType: file.type || undefined,
+    upsert: false,
+  });
+  if (up.error) throw up.error;
+
+  const existing = await one(supabase.from('service_contracts').select('name').eq('id', contractId).maybeSingle());
+  await rows(supabase.from('service_contracts').update({ storage_path: path }).eq('id', contractId));
+  await registerDocument({
+    entityType: 'service_contract', entityId: contractId, storagePath: path,
+    filename: file.name, bytes: file.size ?? null, mime: file.type || null,
+  });
+
+  // The old copy goes only if he said so, and only once the new one is safely in place.
+  if (!keepOld && oldDocId) await deleteDocument(oldDocId);
+
+  // ONE read does both jobs — the terms AND the plain text. Re-reading the file through a
+  // second call would be a second paid pass over the identical document.
+  // `name` is passed for the same reason the Add path passes it: it routes the DEMO mock's
+  // canned answer to the right kind of contract. The live edge function ignores it.
+  const { fields, contract_text } = await extractContract({ storagePath: path, name: existing?.name || '' });
+  const fresh = (contract_text || '').trim();
+  if (fresh) await rows(supabase.from('service_contracts').update({ contract_text: fresh }).eq('id', contractId));
+
+  return { storage_path: path, extraction: fields || null, length: fresh.length };
+}
+
+/**
+ * Create a contract FROM a document the landlord has just reviewed — the Add path's commit.
+ *
+ * It shares `changes` / `plan` with applyNewContractTerms rather than spreading the raw
+ * extraction into an insert (which is what Add used to do, with no diff and no confirmation),
+ * so both paths write exactly what the same review screen showed.
+ *
+ * ⚠ `vendor` is NOT defaulted to the contract's name. It used to be — `vendor: f.vendor ||
+ * name.trim()` — which quietly turned the landlord's own label ("Snow — front lot") into the
+ * 1099 PAYEE NAME for a vendor the AI simply hadn't found. Left null, the review says the
+ * vendor wasn't found and the Edit form asks for it.
+ */
+export async function createServiceContractFromDocument({
+  propertyId, name, changes, plan = null, extraction = null,
+  contractText = null, storagePath = null, today = new Date(),
+}) {
+  const NUMERIC = new Set(['amount', 'escalation_pct', 'notice_days', 'renewal_term_months']);
+  const fields = {};
+  for (const f of changes?.fields || []) {
+    fields[f.key] = NUMERIC.has(f.key) ? Number(f.to) : (f.to === '' ? null : f.to);
+  }
+  const created = await addServiceContract({
+    property_id: propertyId,
+    name: (name || '').trim() || null,
+    service_type: fields.service_type ?? null,
+    vendor: fields.vendor ?? null,
+    vendor_email: fields.vendor_email ?? null,
+    amount: fields.amount ?? null,
+    frequency: fields.frequency ?? null,
+    escalation_pct: fields.escalation_pct ?? null,
+    start_date: fields.start_date ?? null,
+    end_date: fields.end_date ?? null,
+    auto_renew: fields.auto_renew ?? null,
+    notice_days: fields.notice_days ?? null,
+    notice_by_date: fields.notice_by_date ?? null,
+    renewal_term_months: fields.renewal_term_months ?? null,
+    contract_text: contractText || null,
+    storage_path: storagePath || null,
+    extraction_raw: extraction || null,
+    ai_confidence: extraction ? buildContractConfidence(extraction) : null,
+    ai_review: extraction?.ai_review || null,
+  });
+  if (!created?.id) throw new Error('The contract could not be created.');
+  if (storagePath) await attachDocument(storagePath, { entityType: 'service_contract', entityId: created.id });
+
+  const steps = plan?.steps || [];
+  const stepCount = steps.length ? await replaceContractEscalations(created.id, steps) : 0;
+
+  const year = Number(localDateIso(today).slice(0, 4));
+  const carried = propertyId ? await carryContractChange(propertyId, year) : { synced: false, resynced: false, leasesResynced: 0 };
+  return { contract: created, feeSteps: stepCount, propertyId, year, ...carried };
+}
+
+/**
+ * Commit the new contract's terms — the half that moves money, kept separate from the read
+ * so nothing is written until the landlord has seen the list of what changes.
+ *
+ * `changes.fields` comes straight from contractChanges (src/lib/contractTerms.js), which is
+ * what the dialog rendered. Applying THAT rather than re-deriving from the extraction is
+ * deliberate: what he approved and what gets written are the same object.
+ *
+ * ⚠ NO apply_contract_tx RPC, unlike create_lease_tx (0053). A lease is created ONCE and a
+ * half-created one is unrecoverable, which is what that RPC exists for. A half-applied
+ * CONTRACT is fully recoverable by pressing the button again: the patch is a full column
+ * set, the fee steps are delete-then-insert with no status to preserve, and both syncs write
+ * only on real drift. An RPC would additionally need a demo-mock stub or the demo throws.
+ * The failed state says so in words.
+ *
+ * ⚠ NOTHING HERE WRITES AN ESTIMATE — see carryContractChange for why that is what makes
+ * George's "ACTUAL CAM and Tax, not estimated" constraint hold automatically.
+ */
+export async function applyNewContractTerms({ contractId, changes, plan = null, extraction = null, today = new Date() }) {
+  const contract = await getServiceContract(contractId);
+  if (!contract) throw new Error('That contract no longer exists.');
+
+  const NUMERIC = new Set(['amount', 'escalation_pct', 'notice_days', 'renewal_term_months']);
+  const patch = {};
+  for (const f of changes?.fields || []) {
+    patch[f.key] = NUMERIC.has(f.key) ? Number(f.to) : (f.to === '' ? null : f.to);
+  }
+  // The confidence badges and the red-flag review describe a DOCUMENT. Leaving the previous
+  // document's behind would caption this contract with an assessment of a file that is no
+  // longer on it — so they move with the document, or are cleared if it came back without.
+  if (extraction) {
+    patch.extraction_raw = extraction;
+    patch.ai_confidence = buildContractConfidence(extraction);
+    patch.ai_review = extraction.ai_review || null;
+  }
+  // Through updateServiceContract, never a bare update: that is where the notice-date
+  // derivation and BOTH bucket re-arms live, so a new end date re-arms the expiry email and
+  // a new notice date re-arms the cancellation email.
+  if (Object.keys(patch).length) await updateServiceContract(contractId, patch);
+
+  // Built from what the contract WILL BE, not from the document in isolation — a field the
+  // new document is silent on keeps the contract's own value, and the fee schedule has to be
+  // dated and annualized off those same numbers.
+  const built = plan || buildContractFeeSteps(extraction, contractTargets(contract, changes));
+  // ⚠ ONLY when the document actually printed a schedule. Silence is not an instruction to
+  // erase — the same rule the field diff follows. A renewal letter that restates the fee as
+  // one flat figure and prints no table must not delete a fee schedule (hand-added steps
+  // among them) that nothing in the document contradicts.
+  const steps = built.steps || [];
+  const stepCount = steps.length ? await replaceContractEscalations(contractId, steps) : 0;
+
+  const moved = (changes?.fields || []).map((f) => f.label).join(', ');
+  await logHistoryEvent({
+    property_id: contract.property_id || null, lease_id: null, type: 'contract_replaced',
+    tenant_name: null,
+    description: `New contract document applied — ${contract.name || contract.vendor || 'service contract'}${moved ? ` (updated ${moved})` : ''}`,
+    event_date: localDateIso(today),
+    meta: {
+      contract_id: contractId,
+      fields: (changes?.fields || []).map((f) => ({ key: f.key, from: f.from ?? null, to: f.to })),
+      fee_steps: stepCount, undated_steps: built.undated || 0, unusable_steps: built.unusable || 0,
+    },
+  });
+
+  // The invoice does not rebuild itself (CLAUDE.md §1). Last, so one carry-through covers a
+  // fee change, a term change and a new fee schedule together rather than firing per effect.
+  const year = Number(localDateIso(today).slice(0, 4));
+  const carried = (changes?.touchesBilling || stepCount || (built.steps || []).length) && contract.property_id
+    ? await carryContractChange(contract.property_id, year)
+    : { synced: false, resynced: false, leasesResynced: 0 };
+
+  return {
+    fields: (changes?.fields || []).length,
+    feeSteps: stepCount,
+    undatedSteps: built.undated || 0,
+    unusableSteps: built.unusable || 0,
+    propertyId: contract.property_id || null,
+    year,
+    ...carried,
+  };
 }
 
 // ---- Escalations & renewals -------------------------------------------------
@@ -2933,15 +3258,19 @@ export async function syncContractCamItems(propertyId, year) {
     listServiceContracts(propertyId),
     listCamLineItems(propertyId, year),
   ]);
+  // The dated fee steps (0091) for EVERY contract on the property in one query, folded into
+  // the same await — never a per-contract waterfall. A contract with no steps yields an empty
+  // list, and contractAnnualCost then takes its pre-0091 scalar path unchanged.
+  const steps = stepsByContract(await listContractEscalationsFor(contracts.map((c) => c.id)));
   const autoByContract = new Map();
   for (const it of items) if (it.contract_id) autoByContract.set(it.contract_id, it);
 
-  const covering = contracts.filter((c) => contractCoversYear(c, year) && contractAnnualCost(c, year) > 0);
+  const covering = contracts.filter((c) => contractCoversYear(c, year) && contractAnnualCost(c, year, steps.get(c.id)) > 0);
   const coveringIds = new Set(covering.map((c) => c.id));
   let changed = false;
 
   for (const c of covering) {
-    const amount = contractAnnualCost(c, year);
+    const amount = contractAnnualCost(c, year, steps.get(c.id));
     const label = c.name || c.vendor || 'Service contract';
     const existing = autoByContract.get(c.id);
     if (!existing) {
@@ -3989,7 +4318,9 @@ export async function draftCamReconciliationEmail(recon) {
 
 // ---- Alerts (computed from lease key dates, portfolio-wide) -----------------
 export async function fetchAlertData({ leadDays = null, ledgerOn = true, esignOn = true } = {}) {
-  const [leasesR, escR, renR, propR, insR, conR, abaR, insReqR, corpR, arR] = await Promise.all([
+  // ⚠ THIS DESTRUCTURING IS POSITIONAL. A new read goes at the END of BOTH the array and
+  // the binding, or every query after the insertion point is bound to the wrong result.
+  const [leasesR, escR, renR, propR, insR, conR, abaR, insReqR, corpR, arR, conEscR] = await Promise.all([
     supabase.from('leases').select('id,tenant_name,property_id,lease_start,lease_termination_date,no_renewal_option,is_active,base_rent,notify_lease_end_days'),
     supabase.from('rent_escalations').select('lease_id,effective_date,status,new_base_rent'),
     supabase.from('renewal_options').select('id,lease_id,notice_by_date,status'),
@@ -3997,7 +4328,9 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true, esignOn
     // created_at/updated_at let buildAlerts tell whether a tenant answered an insurance
     // request (a policy saved AFTER the request) for the chase-up alert.
     supabase.from('insurance_policies').select('id,party,property_id,lease_id,insurer,expiry_date,created_at,updated_at').is('archived_at', null),
-    supabase.from('service_contracts').select('id,name,vendor,vendor_email,end_date,property_id'),
+    // Widened for the renewal / notice alerts (0091). notice_by_date is the deadline that
+    // costs money; auto_renew and renewal_term_months are what the alert has to SAY.
+    supabase.from('service_contracts').select('id,name,vendor,vendor_email,end_date,property_id,amount,frequency,auto_renew,notice_days,notice_by_date,renewal_term_months'),
     // Free-rent-ending alerts: abatement windows about to close.
     supabase.from('rent_abatements').select('lease_id,start_date,end_date,kind,value'),
     // Insurance chase-up: when each tenant was last asked for a certificate.
@@ -4005,6 +4338,9 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true, esignOn
     // Annual-report alerts need the corporation name for the alert title/click target.
     supabase.from('corporations').select('id,name'),
     supabase.from('annual_reports').select('corporation_id,due_date,last_filed_date'),
+    // APPENDED, never inserted — see the positional-destructuring note above. The dated fee
+    // steps behind the "fee step coming due" alert.
+    supabase.from('contract_escalations').select('contract_id,effective_date,new_amount'),
   ]);
   const leases = leasesR.data || [];
   const escalations = escR.data || [];
@@ -4016,6 +4352,7 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true, esignOn
     properties: propR.data || [],
     insurance: insR.data || [],
     contracts: conR.data || [],
+    contractSteps: conEscR.data || [],
     abatements,
     insuranceRequests: insReqR.data || [],
     corporations: corpR.data || [],
@@ -4841,6 +5178,28 @@ export async function draftAlertEmail(alert) {
       contractName: contract.name || contract.vendor,
       propertyName: prop?.name,
       endDate: contract.end_date,
+    });
+    return { kind: 'contract_renewal', email_to: contract.vendor_email || '', email_to_2: '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body };
+  }
+
+  // Cancellation notice due → the NON-renewal letter. The opposite decision to the one
+  // above, with a deadline on it: an auto-renewing agreement commits the landlord to
+  // another full term unless written notice lands by that date. It DRAFTS — the landlord
+  // reads it in the send modal and sends it himself.
+  if (focus === 'contract_notice') {
+    const contract = await one(supabase.from('service_contracts').select('*').eq('id', alert.contract_id).maybeSingle());
+    if (!contract) return null;
+    const prop = contract.property_id ? await getProperty(contract.property_id) : null;
+    const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
+    const email = buildContractNonRenewalEmail({
+      business,
+      vendorName: contract.vendor || contract.name,
+      vendorEmail: contract.vendor_email,
+      contractName: contract.name || contract.vendor,
+      propertyName: prop?.name,
+      endDate: contract.end_date,
+      noticeDays: contract.notice_days,
+      noticeByDate: contract.notice_by_date,
     });
     return { kind: 'contract_renewal', email_to: contract.vendor_email || '', email_to_2: '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body };
   }

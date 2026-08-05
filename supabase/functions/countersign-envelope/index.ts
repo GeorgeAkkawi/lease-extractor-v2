@@ -219,6 +219,10 @@ Deno.serve(async (req) => {
       storage_path: executedPath, filename: execName,
       bytes: built.byteLength, mime: 'application/pdf',
       label: isPdf ? 'Executed copy' : 'Signature certificate',
+      // 0092 — the executed copy IS the signed copy, so it designates itself. One field
+      // here is why "the signed copy is stored in the tab" needs no second documents row
+      // (which would leave an orphan the moment the envelope was deleted).
+      signed_at: now,
     });
 
     await supabase.from('signature_envelopes').update({

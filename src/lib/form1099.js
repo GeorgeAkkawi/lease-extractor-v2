@@ -20,11 +20,12 @@
 //
 // Nothing in this file writes. No AI, no charge.
 import { categoryFor, categoryLabel } from './expenseCategories';
-import { contractCoversYear, contractAnnualCost } from './contracts';
+import { contractCoversYear, contractAnnualCost, stepsByContract } from './contracts';
 import {
   getCorporation, listProperties, listExpenseBuckets, listEntityLedger,
   getExpenseRecord, listCamLineItems, listTaxLineItems, listRoofLineItems,
-  listServiceContracts, listImportRules, listStatementImports, listStatementLines,
+  listServiceContracts, listContractEscalationsByProperty, listImportRules,
+  listStatementImports, listStatementLines,
 } from './api';
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -223,7 +224,12 @@ function unattributedTotal(items, expense) {
  * Returns { vendors, unattributed, skipped } — never filtered by threshold, because
  * the threshold is a line across the list rather than a gate on it.
  */
-export function vendorRowsFor({ property, items = [], contracts = [], expense = {}, buckets = [], rules = [], lines = [], year }) {
+// ⚠ `contractSteps` is a Map(contract_id → contract_escalations rows), from stepsByContract.
+// It is not optional decoration: THIS IS A TAX FORM. A contract whose fee is priced by a
+// dated schedule (0091) and read here without its steps reports the contract's base amount,
+// so the vendor's 1099 understates what they were paid — and the same contract's CAM line
+// item, which does read the steps, would disagree with it.
+export function vendorRowsFor({ property, items = [], contracts = [], contractSteps = null, expense = {}, buckets = [], rules = [], lines = [], year }) {
   const y = Number(year);
   const propName = property?.name || 'Unnamed property';
 
@@ -331,7 +337,7 @@ export function vendorRowsFor({ property, items = [], contracts = [], expense = 
   const seenContract = new Set(items.filter((i) => i.contract_id).map((i) => i.contract_id));
   for (const c of contracts) {
     if (!c || seenContract.has(c.id) || !contractCoversYear(c, y)) continue;
-    const amount = round2(contractAnnualCost(c, y));
+    const amount = round2(contractAnnualCost(c, y, contractSteps?.get?.(c.id) || null));
     if (!(amount > 0)) continue;
     push({
       name: c.vendor || c.name, source: 'contract', amount,
@@ -444,13 +450,16 @@ export async function build1099Worksheet({ corporationId, year }) {
   ]);
 
   const parts = await Promise.all((properties || []).map(async (property) => {
-    const [expense, cam, tax, roof, contracts, imports] = await Promise.all([
+    const [expense, cam, tax, roof, contracts, imports, steps] = await Promise.all([
       getExpenseRecord(property.id, y).catch(() => ({})),
       listCamLineItems(property.id, y).catch(() => []),
       listTaxLineItems(property.id, y).catch(() => []),
       listRoofLineItems(property.id, y).catch(() => []),
       listServiceContracts(property.id).catch(() => []),
       listStatementImports(property.id, y).catch(() => []),
+      // The dated fee steps for every contract on the property, in the SAME await — a
+      // 1099 built without them under-reports a stepped contract's vendor.
+      listContractEscalationsByProperty(property.id).catch(() => []),
     ]);
     // Round 6's audit rows are what make the card check possible. They are forward-only
     // — a statement imported before that round has none — which is exactly why a vendor
@@ -461,6 +470,7 @@ export async function build1099Worksheet({ corporationId, year }) {
 
     return vendorRowsFor({
       property, items: [...tax, ...cam, ...roof], contracts,
+      contractSteps: stepsByContract(steps),
       expense: expense || {}, buckets, rules, lines, year: y,
     });
   }));

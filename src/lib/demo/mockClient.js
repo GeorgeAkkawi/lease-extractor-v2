@@ -9,6 +9,7 @@ import { fmtDate } from '../format';
 // The same flag definitions the live edge functions use, so the demo's canned review
 // carries the real titles/notes/severities rather than a second set that could drift.
 import { LEASE_FLAG_DEFS } from '../../../supabase/functions/_shared/leaseFlags.js';
+import { CONTRACT_FLAG_DEFS } from '../../../supabase/functions/_shared/contractFlags.js';
 
 const db = seed();
 let seq = 1000;
@@ -783,8 +784,13 @@ function demoAskDoc(body) {
   return { answer: `From the document: ${snippet}` + tail };
 }
 
-// Demo stand-in for extract-contract: guesses the type from the contract name and
-// returns plausible key-terms + a sample contract transcription (the user edits).
+// Demo stand-in for extract-contract: guesses the type from the contract name and returns
+// the SAME shape the rewritten edge function does — every scalar wrapped as
+// {value, confidence, source_quote, page}, a dated fee schedule, an analyst brief ending in
+// the machine-readable VERDICTS line, and a red-flag review.
+//
+// ⚠ The flag titles/notes are imported from the shared CONTRACT_FLAG_DEFS, exactly as the
+// lease mock imports LEASE_FLAG_DEFS — so the demo cannot drift from what live actually says.
 function demoExtractContract(body) {
   const name = (body?.name || '').toLowerCase();
   const y = new Date().getFullYear();
@@ -792,15 +798,63 @@ function demoExtractContract(body) {
   if (/snow|ice|plow/.test(name)) { service_type = 'snow_removal'; vendor = 'Arctic Snow Services'; amount = 8000; services = 'plowing and salting of the lot and walkways'; }
   else if (/landscap|lawn|garden|grounds/.test(name)) { service_type = 'landscaping'; vendor = 'GreenScape Inc.'; amount = 12000; services = 'weekly mowing, seasonal planting, and leaf removal'; }
   else if (/secur|guard|patrol|alarm/.test(name)) { service_type = 'security'; vendor = 'SecureCo'; amount = 6000; services = 'nightly mobile patrol and alarm response'; }
+
+  const fld = (value, confidence = 0.95, quote = '') => ({ value, confidence, source_quote: quote, page: 1 });
+  const flagKeys = ['auto_renew_short_notice', 'scope_excludes_major_items'];
+  const flags = CONTRACT_FLAG_DEFS
+    .filter((d) => flagKeys.includes(d.key))
+    .map((d) => ({ key: d.key, severity: d.severity, title: d.title, note: d.note, quote: null }));
+
+  const full_text = [
+    'SERVICE AGREEMENT',
+    `By and between Acme Holdings LLC (owner) and ${vendor} (contractor).`,
+    `Services: ${services}.`,
+    `Fee: $${amount.toLocaleString('en-US')} per year for the first year, increasing to $${(amount + 500).toLocaleString('en-US')} per year effective January 1, ${y + 1}.`,
+    'Excluded and billed separately: materials, storm cleanup and after-hours call-outs.',
+    `Term: January 1, ${y} to December 31, ${y + 1}. Auto-renews annually unless cancelled with 30 days written notice.`,
+  ].join('\n');
+
   return {
-    fields: { service_type, vendor, amount, frequency: 'annual', start_date: `${y}-01-01`, end_date: `${y}-12-31` },
-    full_text: [
-      'SERVICE AGREEMENT',
-      `By and between Acme Holdings LLC (owner) and ${vendor} (contractor).`,
-      `Services: ${services}.`,
-      `Fee: $${amount.toLocaleString('en-US')} per year, billed monthly.`,
-      `Term: January 1, ${y} to December 31, ${y}. Auto-renews annually unless cancelled with 30 days written notice.`,
-    ].join('\n'),
+    fields: {
+      service_type: fld(service_type),
+      vendor: fld(vendor, 0.97, `By and between Acme Holdings LLC (owner) and ${vendor} (contractor).`),
+      vendor_email: fld(null, 0, ''),
+      amount: fld(amount, 0.96, `Fee: $${amount.toLocaleString('en-US')} per year`),
+      frequency: fld('annual', 0.93),
+      escalation_pct: fld(null, 0, ''),
+      start_date: fld(`${y}-01-01`, 0.94, `Term: January 1, ${y}`),
+      end_date: fld(`${y + 1}-12-31`, 0.94, `to December 31, ${y + 1}`),
+      auto_renew: fld(true, 0.92, 'Auto-renews annually unless cancelled with 30 days written notice.'),
+      cancellation_notice_days: fld(30, 0.92, 'cancelled with 30 days written notice'),
+      // No printed deadline — the app derives it from end_date − 30 days, and the review
+      // screen says so. That is the commonest real shape and the one worth demoing.
+      notice_by_date: fld(null, 0, ''),
+      renewal_term_months: fld(12, 0.85, 'Auto-renews annually'),
+      fee_schedule: [
+        { effective_date: `${y}-01-01`, months_from_start: null, amount, period: 'per_year', quote: `$${amount.toLocaleString('en-US')} per year for the first year` },
+        { effective_date: `${y + 1}-01-01`, months_from_start: null, amount: amount + 500, period: 'per_year', quote: `increasing to $${(amount + 500).toLocaleString('en-US')} per year effective January 1, ${y + 1}` },
+        // Deliberately undated and unbasis'd — the review screen must SAY a row was dropped
+        // rather than let it vanish, and the demo is where that gets seen.
+        { effective_date: null, months_from_start: null, amount: 250, period: 'per_visit', quote: 'Additional salt applications billed at $250 per visit.' },
+      ],
+      ai_review: {
+        flags,
+        model: 'claude-sonnet-4-6',
+        source: 'extract_contract',
+        reviewed_at: new Date().toISOString(),
+      },
+      analysis_brief: [
+        '• PARTIES & PROPERTY — Acme Holdings LLC (owner) and ' + vendor + ' (contractor).',
+        '• SCOPE OF SERVICE — ' + services + '. Materials, storm cleanup and after-hours call-outs are excluded and billed separately.',
+        `• FEE & ESCALATION — $${amount.toLocaleString('en-US')} per year, rising to $${(amount + 500).toLocaleString('en-US')} on January 1, ${y + 1}. Additional salt applications at $250 per visit.`,
+        `• TERM, RENEWAL & NOTICE — January 1, ${y} to December 31, ${y + 1}; renews automatically for successive twelve-month terms unless cancelled on thirty (30) days written notice. No calendar deadline is printed.`,
+        '• TERMINATION, LIABILITY & INSURANCE — the contract is silent on termination for convenience.',
+        '• RED FLAGS — the renewal is automatic on a short notice window, and the headline fee excludes several items.',
+        `VERDICTS: escalation=yes; escalation_pct=none; fee_schedule=yes; auto_renew=yes; cancellation_notice_days=30; notice_date=not_stated; start_date=stated; recurring=yes`,
+        'FLAGS: ' + CONTRACT_FLAG_DEFS.map((d) => `${d.key}=${flagKeys.includes(d.key) ? 'yes' : 'no'}`).join('; '),
+      ].join('\n'),
+    },
+    full_text,
   };
 }
 

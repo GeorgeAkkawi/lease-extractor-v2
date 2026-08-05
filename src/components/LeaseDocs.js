@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   listDocuments, deleteDocument, deleteLeaseFile, updateLease, uploadDoc, signDocUrl,
   uploadNewLeaseDocument, applyNewLeaseTerms, getLease, buildScheduleFromExtraction,
+  listEnvelopes,
 } from '../lib/api';
 import { fmtDate, money } from '../lib/format';
 import { initialFromExtraction } from '../pages/LeaseNewPage';
@@ -49,6 +50,15 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
     queryFn: () => listDocuments('lease', leaseId),
     enabled: !!leaseId,
   });
+
+  // The same key AddendumEnvelopeRows already uses, so on a lease page that renders both
+  // this is a cache hit rather than a second round trip.
+  const { data: envelopes = [] } = useQuery({
+    queryKey: ['envelopes', leaseId],
+    queryFn: () => listEnvelopes(leaseId),
+    enabled: !!leaseId,
+  });
+  const executed = envelopes.filter((e) => e.status === 'executed' && e.executed_path);
 
   const hasText = !!(leaseText && leaseText.trim());
   // coversLabel's "nothing known" fallback — don't print a dash as if it were a period.
@@ -231,6 +241,33 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
             </span>
           </span>
         </div>
+
+        {/* ── THE SIGNED COPY ──────────────────────────────────────────────────────────
+            George, 2026-08-05, on the contracts round: *"that should be the same of the
+            leases in the respective tab as well."* On a lease the executed document is the
+            envelope's own file — countersign-envelope files it and stamps signed_at (0092).
+
+            ⚠ Rendered FROM THE ENVELOPE, not from a second `documents` row of our own. A
+            row pointing at executed_path would survive deleteEnvelope (which sweeps the
+            storage object) and offer "Open" on a file that is gone; and deleteDocumentsFor
+            would delete the object out from under a live envelope. One object, one owner.
+            ⚠ No ✕ for the same reason: deletion belongs to the envelope, where the confirm
+            already names everything that is lost. */}
+        {executed.map((env) => (
+          <div className="rider-row" key={`env-${env.id}`}>
+            <span className="rider-row-name">
+              Signed copy
+              <span className="rider-row-dates"> · {env.title || 'executed document'}
+                {env.executed_at ? ` · ${fmtDate(env.executed_at)}` : ''}</span>
+            </span>
+            <span className="doc-actions">
+              <span className="doc-act2">
+                <button type="button" className="ghost btn-sm" onClick={() => openFile(env.executed_path)}>Open file</button>
+              </span>
+              <span className="doc-act3" />
+            </span>
+          </div>
+        ))}
 
         {older.map((d) => (
           <div className="rider-row" key={d.id}>

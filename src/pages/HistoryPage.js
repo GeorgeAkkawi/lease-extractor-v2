@@ -30,6 +30,7 @@ const EVENT_LABEL = {
   // carries every field that moved, from → to, which is the record of a billed figure
   // changing off the back of a document.
   lease_replaced: 'New lease applied',
+  contract_replaced: 'New contract applied',
   insurance_requested: 'Insurance requested',
   // Building-wide, so it carries a property_id and no lease_id — deliberately absent from
   // the tenantStory.js allowlist so it doesn't repeat on every tenant's story.
@@ -54,6 +55,7 @@ const EVENT_BADGE = {
   term_extended: 'good',
   premises_resized: 'info',
   lease_replaced: 'info',
+  contract_replaced: 'info',
   renewal_confirmed: 'good',
   renewal_declined: 'danger',
   renewal_reopened: 'warn',

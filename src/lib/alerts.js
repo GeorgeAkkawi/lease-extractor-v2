@@ -1,6 +1,7 @@
 import { fmtDate, money0 } from './format';
 import { DEFAULT_LEAD_DAYS } from './notifyPrefs';
 import { optionLapseReason } from './renewals';
+import { nextContractStep } from './contracts';
 
 const DAY = 86400000;
 
@@ -177,7 +178,7 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 //   • hiddenWidgets — the hidden_widgets array (reserved; no widget currently gates an alert).
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, abatements, insuranceRequests, annualReports, corporations, unloggedMonths, missingPayments, envelopes },
+  { leases, escalations, renewals, properties, insurance, contracts, contractSteps, abatements, insuranceRequests, annualReports, corporations, unloggedMonths, missingPayments, envelopes },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
   { features = null, hiddenWidgets = [], leadDays = null } = {}, // eslint-disable-line no-unused-vars
@@ -274,22 +275,83 @@ export function buildAlerts(
   // Service-contract expiry — the same 6-month horizon as leases, so a contract can be
   // renewed or replaced before it lapses. Not tied to a lease; keyed by the contract id.
   // Silenced when the Service-contracts module is turned off in Settings.
+  const stepsByContractId = {};
+  (contractSteps || []).forEach((s) => { if (s?.contract_id) (stepsByContractId[s.contract_id] ||= []).push(s); });
+
   (contractsOn ? contracts || [] : []).forEach((c) => {
-    if (!c.end_date) return;
-    const contractLead = lead('contract');
-    const b = bucketFor(c.end_date, now, contractLead);
-    if (!b) return;
     const prop = propMap[c.property_id];
     const label = c.name || c.vendor || 'service contract';
-    out.push({
-      focus: 'contract', contract_id: c.id, lease_id: null,
+    // Every contract alert carries the same anchors, so alertKey's contract_id link holds
+    // and three focuses on one contract produce three distinct dismissal keys.
+    const ctx = {
+      contract_id: c.id, lease_id: null,
       property_id: c.property_id, corporation_id: prop?.corporation_id || null,
       vendor_email: c.vendor_email || null, contract_name: c.name || c.vendor || 'Service contract',
-      tone: b.tone, bucketLabel: b.label, date: c.end_date, days: daysUntil(c.end_date, now),
-      horizonDays: contractLead,
-      title: `Contract ending — ${label}`,
-      detail: `${c.vendor ? c.vendor + ' · ' : ''}ends ${fmtDate(c.end_date)}`,
-    });
+    };
+
+    if (c.end_date) {
+      const contractLead = lead('contract');
+      const b = bucketFor(c.end_date, now, contractLead);
+      if (b) {
+        out.push({
+          ...ctx, focus: 'contract',
+          tone: b.tone, bucketLabel: b.label, date: c.end_date, days: daysUntil(c.end_date, now),
+          horizonDays: contractLead,
+          title: `Contract ending — ${label}`,
+          detail: `${c.vendor ? c.vendor + ' · ' : ''}ends ${fmtDate(c.end_date)}`,
+        });
+      }
+    }
+
+    // ── THE CANCELLATION-NOTICE DEADLINE (0091) ──────────────────────────────────────
+    // The deadline on a service contract that actually costs money. Miss it and the
+    // agreement renews for another full term at the vendor's figure — which then flows
+    // into CAM, and therefore into what the tenants are billed, for another year.
+    //
+    // ⚠ Fires whenever notice_by_date is set, REGARDLESS of auto_renew. The flag drives
+    // the WORDING, not the alert's existence: a contract that merely ends still needs the
+    // notice served to end cleanly, and a contract whose renewal terms were never read
+    // (auto_renew null) is exactly the one nobody should be relying on silence from.
+    if (c.notice_by_date) {
+      const noticeLead = lead('contract_notice');
+      const b = bucketFor(c.notice_by_date, now, noticeLead);
+      if (b) {
+        const renews = c.auto_renew === true;
+        out.push({
+          ...ctx, focus: 'contract_notice',
+          tone: b.tone, bucketLabel: b.label, date: c.notice_by_date, days: daysUntil(c.notice_by_date, now),
+          horizonDays: noticeLead,
+          auto_renew: c.auto_renew ?? null,
+          notice_days: c.notice_days ?? null,
+          renewal_term_months: c.renewal_term_months ?? null,
+          contract_end: c.end_date || null,
+          title: `Cancellation notice due — ${label}`,
+          detail: renews
+            ? `Give notice by ${fmtDate(c.notice_by_date)} or it renews${c.renewal_term_months ? ` for ${c.renewal_term_months} more months` : ' automatically'}`
+            : `Written notice due ${fmtDate(c.notice_by_date)}${c.notice_days ? ` (${c.notice_days} days)` : ''}`,
+        });
+      }
+    }
+
+    // ── A FEE STEP COMING DUE ────────────────────────────────────────────────────────
+    // Dashboard-only, mirroring the lease's own `escalation` focus, which likewise has no
+    // email sweep: there is no outside party to tell that your own cost is going up.
+    const next = nextContractStep(stepsByContractId[c.id], localIso(now));
+    if (next) {
+      const escLead = lead('contract_escalation');
+      const b = bucketFor(next.effective_date, now, escLead);
+      if (b) {
+        const per = c.frequency === 'monthly' ? '/mo' : '/yr';
+        out.push({
+          ...ctx, focus: 'contract_escalation',
+          tone: b.tone, bucketLabel: b.label, date: next.effective_date, days: daysUntil(next.effective_date, now),
+          horizonDays: escLead,
+          new_amount: next.new_amount ?? null,
+          title: `Contract fee increasing — ${label}`,
+          detail: `${money0(next.new_amount)}${per} from ${fmtDate(next.effective_date)}`,
+        });
+      }
+    }
   });
 
   // Insurance expiry — the landlord is notified for both their own building policy

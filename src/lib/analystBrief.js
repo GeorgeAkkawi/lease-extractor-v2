@@ -31,6 +31,11 @@ export const MISMATCH_LABELS = {
   term_extension: 'an extension of the term',
   assignment: 'an assignment to a new tenant',
   expense_estimate: 'a stated CAM / tax estimate',
+  // service-contract-only codes
+  fee_escalation: 'an increase in the fee',
+  fee_schedule: 'a printed fee schedule',
+  auto_renew: 'an automatic renewal',
+  cancellation_notice: 'a cancellation-notice period',
 };
 
 // "a rent escalation and an extension of the term"

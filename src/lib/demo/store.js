@@ -207,6 +207,19 @@ export function seed() {
       // single flat $4,000 that hid which was which.
       { id: 'roof-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'roof', label: 'Apex Roofing — leak repair', amount: 1500, billable: true, paid_date: iso(Y, 5, 14), created_at: iso(Y, 1, 8) },
       { id: 'roof-2', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'roof', label: 'Apex Roofing — section replacement', amount: 2500, billable: true, paid_date: iso(Y, 8, 27), created_at: iso(Y, 1, 9) },
+      // OAK CENTER — the contract-derived rows (contract_id set) plus one hand-typed line.
+      // Each auto row is EXACTLY contractAnnualCost(contract, year), so the first time the
+      // year's Expenses page opens, syncContractCamItems finds them already correct and
+      // writes nothing: prop-2's cam_total stays 30,000 (Y) / 27,000 (Y-1) and no tenant's
+      // share, invoice or roll-up moves because contracts were seeded.
+      //   Y   : svc-1 step 8,000 + svc-2 12,000×1.03 = 12,360 + janitorial 9,640 = 30,000
+      //   Y-1 : svc-1 step 7,000 + svc-2 12,000              + janitorial  8,000 = 27,000
+      { id: 'cam-5', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y, kind: 'cam', label: 'Snow removal — Arctic', amount: 8000, billable: true, contract_id: 'svc-1', created_at: iso(Y, 1, 2) },
+      { id: 'cam-6', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y, kind: 'cam', label: 'Landscaping — GreenScape', amount: 12360, billable: true, contract_id: 'svc-2', created_at: iso(Y, 1, 2) },
+      { id: 'cam-7', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y, kind: 'cam', label: 'Janitorial', amount: 9640, billable: true, paid_date: iso(Y, 3, 6), created_at: iso(Y, 1, 3) },
+      { id: 'cam-8', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y - 1, kind: 'cam', label: 'Snow removal — Arctic', amount: 7000, billable: true, contract_id: 'svc-1', created_at: iso(Y - 1, 1, 2) },
+      { id: 'cam-9', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y - 1, kind: 'cam', label: 'Landscaping — GreenScape', amount: 12000, billable: true, contract_id: 'svc-2', created_at: iso(Y - 1, 1, 2) },
+      { id: 'cam-10', owner_id: DEMO_USER.id, property_id: 'prop-2', year: Y - 1, kind: 'cam', label: 'Janitorial', amount: 8000, billable: true, created_at: iso(Y - 1, 1, 3) },
     ],
     // Bucket records (0075) — the tax category a bucket rolls up to. Exactly ONE is
     // seeded, on purpose: it demos the "chosen" chip while Landscaping and Snow removal
@@ -284,8 +297,67 @@ export function seed() {
       // the "Request renewed certificate" flow in demo.
       { id: 'ins-3', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-2', insurer: 'Summit Indemnity Group', coverage_amount: 1000000, expiry_date: lapsed, additional_insured: true, policy_text: policyText['lease-2'], storage_path: null, created_at: iso(Y - 1, 6, 1) },
     ],
-    // Starts empty — the landlord adds contracts via the Contracts tab.
-    service_contracts: [],
+    // Two contracts on OAK CENTER (prop-2), never Maple Plaza (prop-1) — prop-1's CAM is
+    // already itemized to exactly its cam_total and is the property every money test
+    // hammers. The matching cam_line_items below (one per contract, per year) hold
+    // prop-2's cam_total at its seeded figure, so seeding contracts moves no money:
+    // syncContractCamItems finds the rows already correct and writes nothing.
+    //
+    // svc-1 is the whole point of this round — it auto-renews, and the deadline that
+    // costs money is the CANCELLATION NOTICE, not the end date. notice_by_date is ~3
+    // weeks out so the dashboard bell shows the "notice due" alert on load.
+    // svc-2 is the other shape: monthly (×12) with a scalar escalation_pct and NO dated
+    // steps, so the fallback path stays visible beside the dated one.
+    service_contracts: [
+      {
+        id: 'svc-1', owner_id: DEMO_USER.id, property_id: 'prop-2', name: 'Snow removal — Arctic',
+        service_type: 'snow_removal', vendor: 'Arctic Snow Services', vendor_email: 'billing@arcticsnow.example',
+        amount: 8000, frequency: 'annual', escalation_pct: null,
+        start_date: iso(Y - 2, 11, 1), end_date: iso(Y + 1, 10, 31),
+        auto_renew: true, notice_days: 30, notice_by_date: soon, renewal_term_months: 12,
+        cancel_notice_bucket: null, end_notice_bucket: null,
+        contract_text: [
+          'SNOW REMOVAL SERVICE AGREEMENT',
+          'By and between Acme Holdings LLC (the "Owner") and Arctic Snow Services (the "Contractor").',
+          'Premises: Oak Center, 250 Oak Ave.',
+          'Services: plowing and salting of the parking lot and walkways at a trigger depth of two (2) inches.',
+          `Fee: $7,000.00 per season for the ${Y - 2}–${Y - 1} season, increasing to $8,000.00 per season effective November 1, ${Y}.`,
+          `Term: Commencing ${fmtDate(iso(Y - 2, 11, 1))} and expiring ${fmtDate(iso(Y + 1, 10, 31))}.`,
+          'Renewal: This Agreement renews automatically for successive twelve (12) month terms unless either party gives thirty (30) days written notice of cancellation prior to the expiration of the then-current term.',
+          'Excluded: hauling of accumulated snow off site, ice-melt applied at Owner’s request beyond two applications per event, and storm cleanup, each billed separately at the Contractor’s published rates.',
+        ].join('\n'),
+        storage_path: `${DEMO_USER.id}/arctic-snow-agreement.pdf`,
+        extraction_raw: null, ai_confidence: null, ai_review: null,
+        created_at: iso(Y - 2, 10, 15), updated_at: iso(Y - 2, 10, 15),
+      },
+      {
+        id: 'svc-2', owner_id: DEMO_USER.id, property_id: 'prop-2', name: 'Landscaping — GreenScape',
+        service_type: 'landscaping', vendor: 'GreenScape Inc.', vendor_email: 'ar@greenscape.example',
+        amount: 1000, frequency: 'monthly', escalation_pct: 3,
+        start_date: iso(Y - 1, 1, 1), end_date: null,
+        auto_renew: null, notice_days: null, notice_by_date: null, renewal_term_months: null,
+        cancel_notice_bucket: null, end_notice_bucket: null,
+        contract_text: [
+          'GROUNDS MAINTENANCE AGREEMENT',
+          'By and between Acme Holdings LLC (the "Owner") and GreenScape Inc. (the "Contractor").',
+          'Services: weekly mowing, seasonal planting, and leaf removal at Oak Center.',
+          'Fee: $1,000.00 per month, increasing three percent (3%) on each anniversary of the commencement date.',
+          `Term: Commencing ${fmtDate(iso(Y - 1, 1, 1))} and continuing until cancelled by either party.`,
+        ].join('\n'),
+        storage_path: null,
+        extraction_raw: null, ai_confidence: null, ai_review: null,
+        created_at: iso(Y - 1, 1, 1), updated_at: iso(Y - 1, 1, 1),
+      },
+    ],
+    // Dated fee steps (0091). DERIVED, never applied — nothing writes service_contracts.amount,
+    // so `amount` stays the contract's own base and the step in effect for a year wins over it.
+    // new_amount is in the contract's OWN frequency (svc-1 is annual, so these are annual).
+    // The closing row at the ORIGINAL fee is what keeps Y-1 priced at $7,000 rather than
+    // re-pricing the whole term at today's figure — the same reason a lease needs one.
+    contract_escalations: [
+      { id: 'cesc-1', owner_id: DEMO_USER.id, contract_id: 'svc-1', effective_date: iso(Y - 2, 11, 1), new_amount: 7000, escalation_type: 'manual', escalation_value: null, source: 'contract', note: 'Original season fee.', created_at: iso(Y - 2, 10, 15), updated_at: iso(Y - 2, 10, 15) },
+      { id: 'cesc-2', owner_id: DEMO_USER.id, contract_id: 'svc-1', effective_date: iso(Y, 11, 1), new_amount: 8000, escalation_type: 'fixed', escalation_value: 1000, source: 'contract', note: null, created_at: iso(Y - 2, 10, 15), updated_at: iso(Y - 2, 10, 15) },
+    ],
     // One corporation's annual state filing due ~3 weeks out, so the demo bell shows
     // the "Annual report due" 1-month alert on load. Northwind has none on file yet.
     annual_reports: [
@@ -326,10 +398,15 @@ export function seed() {
     // copies — the version history George asked for ("keep every version but allow
     // deletes") only reads as history when something actually has two.
     documents: [
-      { id: 'doc-1', owner_id: DEMO_USER.id, entity_type: 'lease', entity_id: 'lease-2', storage_path: `${DEMO_USER.id}/city-dental-lease.pdf`, filename: 'city-dental-lease.pdf', bytes: 2_410_000, mime: 'application/pdf', label: null, note: null, created_at: iso(Y - 1, 5, 20) },
+      // signed_at (0092) designates the executed copy. One nullable column serves leases,
+      // riders, contracts and policies, because they all file in this one registry.
+      { id: 'doc-1', owner_id: DEMO_USER.id, entity_type: 'lease', entity_id: 'lease-2', storage_path: `${DEMO_USER.id}/city-dental-lease.pdf`, filename: 'city-dental-lease.pdf', bytes: 2_410_000, mime: 'application/pdf', label: null, note: null, signed_at: `${iso(Y - 1, 5, 20)}T12:00:00.000Z`, created_at: iso(Y - 1, 5, 20) },
       { id: 'doc-2', owner_id: DEMO_USER.id, entity_type: 'lease', entity_id: 'lease-2', storage_path: `${DEMO_USER.id}/city-dental-lease-scan.pdf`, filename: 'city-dental-lease.pdf', bytes: 2_380_000, mime: 'application/pdf', label: null, note: null, created_at: iso(Y - 2, 11, 2) },
       { id: 'doc-3', owner_id: DEMO_USER.id, entity_type: 'addendum', entity_id: 'add-1', storage_path: `${DEMO_USER.id}/first-amendment.pdf`, filename: 'first-amendment.pdf', bytes: 184_000, mime: 'application/pdf', label: 'First Amendment to Lease', note: null, created_at: iso(Y - 2, 6, 30) },
       { id: 'doc-4', owner_id: DEMO_USER.id, entity_type: 'insurance_policy', entity_id: 'ins-3', storage_path: `${DEMO_USER.id}/city-dental-coi.pdf`, filename: 'city-dental-coi.pdf', bytes: 96_000, mime: 'application/pdf', label: null, note: null, created_at: iso(Y - 1, 6, 1) },
+      // The snow contract's executed copy — the "signed copy stored in the contracts tab"
+      // George asked for, on the same registry and the same column as the lease's.
+      { id: 'doc-5', owner_id: DEMO_USER.id, entity_type: 'service_contract', entity_id: 'svc-1', storage_path: `${DEMO_USER.id}/arctic-snow-agreement.pdf`, filename: 'arctic-snow-agreement-signed.pdf', bytes: 148_000, mime: 'application/pdf', label: null, note: null, signed_at: `${iso(Y - 2, 10, 15)}T12:00:00.000Z`, created_at: iso(Y - 2, 10, 15) },
     ],
     // Bank-statement import (0063): the register + the "always match" rules both
     // start empty; the demo Import button offers a bundled sample CSV instead.

@@ -111,6 +111,39 @@ The first four fit the rule — the landlord typed a billed figure on that year'
 it. **The two statement-import ones do not** (the figure is inferred from a bank deposit) and are
 worth revisiting.
 
+**THE SERVICE CONTRACT IS THE SECOND SOURCE OF CAM**, and it feeds the same spine from the
+other end (0091, George 2026-08-05: *"we need to add the same system to the contracts tab"*):
+
+```
+service_contracts (amount · frequency · escalation_pct · start/end) + contract_escalations
+        │
+        └─→ contractAnnualCost → syncContractCamItems → cam_line_items (contract_id)
+                 └─→ syncCamTotal → expense_records.cam_total
+                          └─→ v_tenant_shares.cam_amount   ← THE ACTUAL, never an estimate
+                                   ├─→ Financials + Ledger  (build up — follow on their own)
+                                   └─→ invoices  ← FROZEN. resyncPropertyBilling carries it.
+```
+
+- **The order is FORCED**: `syncContractCamItems(propertyId, year)` **first** (it moves
+  `cam_total`), then `resyncPropertyBilling` — which reads `v_tenant_shares` ← `cam_total`.
+  Resync first and every invoice rebuilds from the *old* CAM. One place does both:
+  `carryContractChange` (`api.js`), called by `applyNewContractTerms`,
+  `createServiceContractFromDocument`, `deleteServiceContract` and the inline Save-terms path.
+- **NOTHING on the contract path may write an estimate** — no `est_*` column, no
+  `lease_estimates` row. That is not a restraint, it is the mechanism behind George's
+  *"this only affects the ACTUAL CAM and Tax not estimated"*: `billedComponents` prefers a
+  tenant's estimate and falls back to `share.cam_amount`, so writing nothing means a tenant on
+  an estimate keeps paying it and settles at ⚖ Reconcile while a tenant without one re-prices
+  now. Pinned by `contractCarryThrough.test.js`.
+- **`contract_escalations` is DERIVED, never applied** — no `status` column and no sweep,
+  because nothing writes `service_contracts.amount`. The step in effect for a fiscal year is
+  the **last** step whose `effective_date` falls in that year **or earlier** (year-of, so a
+  November step prices the whole of its own year). An empty table reproduces the pre-0091
+  scalar path byte for byte, which is why there is no back-fill.
+- ⚠ `syncContractCamItems` → `syncCamTotal` has **no closed-year guard** — it will move
+  `expense_records.cam_total` for a closed year (only the invoice is protected). Pre-existing;
+  `CamSection` triggers it on every year open.
+
 **A change to a billed figure has a DATE**, and the months before it belong to the old lease
 (George, 2026-08-04). Rent carries this in `rent_escalations` → `monthlyBases`; the CAM & tax
 estimate carries it in **`lease_estimates` (0089) → `monthlyEstimates`** (`reconciliation.js`).
@@ -137,7 +170,7 @@ about occupancy.
 schedule-vs-invoice and the Ledger row offers **Rebuild** — the backstop for every writer,
 including ones nobody has thought of.
 
-### 2. The three choke points
+### 2. The four choke points
 
 Change one of these and you have changed every money screen at once. Read all the callers first.
 
@@ -146,6 +179,7 @@ Change one of these and you have changed every money screen at once. Read all th
 | `buildLeaseSchedule` | `src/lib/leaseSchedule.js` | `ledger.js`, `api.js` (5 call sites) — and note its **two documented modes**: projection (no `invoiceTotal`) vs reconcile-to-bill (scales + penny-folds to settle an issued invoice exactly) |
 | `allocatePayments` / `componentizeSchedule` | `src/lib/ledger.js` | the Ledger grid, the reminders, `closeYear`. `componentizeSchedule` holds the invariant **base + camTax + roof === owed** per month |
 | `billedComponents` | `src/lib/reconciliation.js` | `TenantShareTable`, `LeasesPage`, `ledger.js`, `reconciliationData.js`, `api.js` |
+| `contractAnnualCost` | `src/lib/contracts.js` | `syncContractCamItems` (`api.js` — → `cam_line_items` → `cam_total` → shares → a stored invoice), `vendorRowsFor` (`form1099.js` — **a tax form**), `ContractItem` (`ServiceContractsSection.js`), `ContractReview` (`ContractDocs.js`). Signature is `(contract, year, steps)`; **every caller must pass the 0091 steps**, in ONE bulk read, or the CAM the tenant is billed stops matching the 1099 the vendor is issued |
 
 ### 3. Mirrors that must move together
 
@@ -168,6 +202,15 @@ Two implementations of one rule always drift unless changed in the same commit.
   the column default.** The mock applies no defaults, so a row written without it is `'system'`
   live and `undefined` in demo, and the guard reads undefined as *not* system: the two behave
   oppositely and the tests only ever see the demo side (`markMonthsPaidAllTenants`, 2026-08-05).
+- **The CONTRACT extractor's mirrors (0091):** `CONTRACT_FLAG_DEFS` (`_shared/contractFlags.js`)
+  is a second *vocabulary*, not a second engine — `leaseFlags.js`'s parser takes an optional
+  `defs` argument (`flagsFromVerdicts`, `normalizeReviewFlags`, `buildReviewRecord`,
+  `flagInstructionFor`, `flagLineSpecFor`), defaulting to `LEASE_FLAG_DEFS` so nothing on the
+  lease path moved. `contractMismatches` (`_shared/analystVerdicts.js`) ↔ its labels in
+  `src/lib/analystBrief.js` — that pair genuinely IS a twin and must move together.
+  **`noticeDueDate` (`src/lib/contractTerms.js`) is deliberately ONE implementation** with two
+  callers — the review dialog and `updateServiceContract` — because a second copy would let
+  the reminder fire on one date while the screen printed another.
 - **`isoDateOrNull` lives in `src/lib/isoDate.js`** — dependency-free on purpose, so pure libs can
   guard a date without an import cycle into `api.js` (which re-exports it). Its twin is
   `realIsoDate` in `_shared/rentSchedule.js`; that copy is unavoidable (the app build can't import
@@ -187,6 +230,15 @@ Two implementations of one rule always drift unless changed in the same commit.
   `alertCanEmail` + `goToAlert` (`DashboardPage.js:100,119`) · the `fetchAlertData` payload ·
   and, if it emails, a `send-reminders` sweep plus a `*_notice_bucket` column to dedupe on
   (`0057`/`0059`).
+- **The three CONTRACT alert focuses** — `contract` (expiry), `contract_notice` (the
+  cancellation deadline, and the only one of the three that costs money if missed) and
+  `contract_escalation` (a fee step coming due, dashboard-only) — all live inside one
+  `contractsOn` gate in `alerts.js` and share one `ctx` so `alertKey`'s `contract_id` anchor
+  gives three distinct dismissal keys. `contract_notice` fires whenever `notice_by_date` is
+  set, **regardless of `auto_renew`**: the flag drives the wording, not the alert's existence.
+  Leads default to **60** days, not 183 — a six-month countdown to a 30-day window is noise.
+  No `features.js` change and **no backfill**: `contracts` is already in every production
+  `enabled_features` array (`0084`), which only holds because this extends an existing module.
 - **A new optional module** touches `FEATURES` (`features.js:11`) plus every gate that reads it —
   tabs, route redirects, page sections, `buildAlerts`, `fetchAlertData`, the email sweep, the Ask
   facts, and the demo mock. `grep -rl "isOn('insurance')"` is the fastest way to see the full set.
@@ -206,18 +258,25 @@ Two implementations of one rule always drift unless changed in the same commit.
 
 ### 5. Deploy fan-out — a shared edge module makes its importers stale
 
-`_shared/cors.ts` and `_shared/ratelimit.ts` → **17** functions · `_shared/anthropic.ts` → **13** ·
-`_shared/pdf.ts` and `_shared/docx.ts` → **3** each · `_shared/rentSchedule.js` and
-`_shared/analystVerdicts.js` → **2** each. Redeploy every importer in the same round, or the
+Measured 2026-08-05 (`grep -rl "_shared/<file>" supabase/functions --include=index.ts | wc -l`
+— re-measure rather than trust these; the previous numbers here were three rounds stale):
+`_shared/cors.ts` and `_shared/ratelimit.ts` → **26** functions · `_shared/anthropic.ts` → **18** ·
+`_shared/pdf.ts` and `_shared/docx.ts` → **4** each · `_shared/analystVerdicts.js` and
+`_shared/leaseFlags.js` → **3** each · `_shared/rentSchedule.js` and `_shared/transcribe.ts` →
+**2** each · `_shared/contractFlags.js` → **1**. Redeploy every importer in the same round, or the
 deployed copy silently drifts from source.
 
 ### 6. Query-key invalidation
 
-Two shared sets exist, and they are deliberately different: **`settleBillingChange`**
-(`src/lib/invalidate.js`) for "a billed figure moved", and **`settleStatementImport`**
-(`ImportStatementButton.js:98`) for the wider statement-specific set (register, learned payees,
-history). Use one of them rather than hand-rolling a third list — hand-rolled lists drift apart by
-omission, which is how the invoice drift above survived unnoticed.
+Named sets exist, and they are deliberately different: **`settleBillingChange`**
+(`src/lib/invalidate.js`) for "a billed figure moved", **`settleLeaseScheduleChange`** /
+**`settleLeaseListChange`** for a lease's own page and the three lists that render it,
+**`settleContractChange`** (0091 — the contract, its fee steps, the derived CAM row, the 1099
+and the history log; called **alongside** `settleBillingChange`, never instead), and
+**`settleStatementImport`** (`ImportStatementButton.js:98`) for the wider statement-specific set
+(register, learned payees, history). Add a NAMED one rather than hand-rolling a list at the call
+site — hand-rolled lists drift apart by omission, which is how the invoice drift above survived
+unnoticed, and how editing a contract's end date left the dashboard bell showing the old expiry.
 
 ## Deploying to production
 

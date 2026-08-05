@@ -99,4 +99,35 @@ export function settleLeaseListChange(qc, { propertyId } = {}) {
   qc.invalidateQueries({ queryKey: ['leasesByProperties'] });
 }
 
+// One place that knows what goes stale when a SERVICE CONTRACT changes — added, edited,
+// replaced by a new document, or deleted.
+//
+// A NAMED set rather than a hand-rolled one. The rule this file exists for forbids a third
+// hand-rolled list, not a third named one (settleLeaseScheduleChange is already exactly
+// that): the failure mode is lists that drift by omission, and a named export has one
+// definition to keep right. The list it replaces — ServiceContractsSection's inline
+// invalidate() — never invalidated ['alerts'], so editing a contract's end date left the
+// dashboard bell showing the OLD expiry until a hard reload.
+//
+// Called ALONGSIDE settleBillingChange, never instead of it: a contract's fee reaches a
+// stored invoice through cam_total, so both sets apply. Deliberately not folded INTO
+// settleBillingChange either — otherwise every rent edit anywhere would refetch every
+// property's contract list.
+export function settleContractChange(qc, propertyId) {
+  const keys = [
+    propertyId ? ['serviceContracts', propertyId] : ['serviceContracts'],
+    // The dated fee steps (0091). Keyed by contract AND by property, so both go by prefix.
+    ['contractEscalations'],
+    // The derived CAM line item and the total it re-sums into.
+    propertyId ? ['camLineItems', propertyId] : ['camLineItems'],
+    propertyId ? ['expenseRecord', propertyId] : ['expenseRecord'],
+    // The 1099 vendor report prices its rows off the same contracts.
+    ['vendor1099'],
+    // The property's history log, and the contract's own saved copies.
+    ['historyEvents'],
+    ['documents', 'service_contract'],
+  ];
+  for (const queryKey of keys) qc.invalidateQueries({ queryKey });
+}
+
 export default settleBillingChange;

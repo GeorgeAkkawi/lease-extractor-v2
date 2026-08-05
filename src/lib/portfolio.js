@@ -34,6 +34,7 @@ export function snapshotFingerprint({
   leases = [],
   insurance = [],
   contracts = [],
+  contractSteps = [],
   balances = [],
   escalations = [],
   abatements = [],
@@ -58,12 +59,16 @@ export function snapshotFingerprint({
   // module was ON can't be served after it's turned OFF (and vice-versa).
   const feat = features == null ? 'all' : [...features].sort().join(',');
   return [
-    'v5', // bumped from v4 (0073): a gross lease's total annual bill used to be
-          // reported as rent PLUS its expense share — overstating what the tenant
-          // actually pays. Every v4-era cached answer must stop matching.
+    'v6', // bumped from v5 (0091): the snapshot now carries each contract's renewal /
+          // cancellation-notice terms and its dated fee schedule. Every v5-era cached
+          // answer was built from a summary that could not mention them at all, so it
+          // must stop matching. (v5 itself bumped from v4 for the 0073 gross-lease fix.)
     `L${leases.length}:${maxStamp(leases)}`,
     `I${insurance.length}:${maxStamp(insurance)}`,
     `C${contracts.length}:${maxStamp(contracts)}`,
+    // ⚠ Its own component, because editing a FEE STEP bumps no service_contracts.updated_at
+    // — so without this a corrected fee schedule would keep serving the old cached answer.
+    `CS${contractSteps.length}:${maxStamp(contractSteps)}`,
     `E${escalations.length}:${maxStamp(escalations)}`,
     `A${abatements.length}:${maxStamp(abatements)}`,
     `R${annualReports.length}:${maxStamp(annualReports)}`,
@@ -82,6 +87,7 @@ export function buildPortfolioSnapshot({
   leases = [],
   insurance = [],
   contracts = [],
+  contractSteps = [],
   renewals = [],
   balances = [],
   escalations = [],
@@ -97,7 +103,7 @@ export function buildPortfolioSnapshot({
   const insuranceOn = featureOn(features, 'insurance');
   const contractsOn = featureOn(features, 'contracts');
   if (!insuranceOn) insurance = [];
-  if (!contractsOn) contracts = [];
+  if (!contractsOn) { contracts = []; contractSteps = []; }
   // Local calendar date, not UTC — after ~8pm Eastern the UTC date is already
   // tomorrow, which would flip expiry/overdue flags a day early (same rule as
   // localDateIso in api.js / app_today() in SQL).
@@ -121,6 +127,8 @@ export function buildPortfolioSnapshot({
   // Service contracts grouped by property.
   const contractsByProp = {};
   for (const c of contracts) (contractsByProp[c.property_id] ||= []).push(c);
+  const stepsByContract = {};
+  for (const s2 of contractSteps) if (s2?.contract_id) (stepsByContract[s2.contract_id] ||= []).push(s2);
 
   // A lease has an available renewal option when it carries a renewal row that
   // hasn't been exercised yet (status other than 'applied').
@@ -270,12 +278,26 @@ export function buildPortfolioSnapshot({
           expired: li ? isPast(li.expiry_date) : false,
         },
         service_contracts: (contractsByProp[prop.id] || []).map((c) => ({
+          name: txt(c.name) || null,
           vendor: txt(c.vendor) || null,
           service_type: txt(c.service_type) || null,
           amount: num(c.amount),
           frequency: txt(c.frequency) || null,
           end_date: c.end_date || null,
           expired: isPast(c.end_date),
+          // The renewal / notice terms (0091) — without these the assistant could not
+          // answer "when do I have to give notice on the snow contract?" at all.
+          auto_renew: c.auto_renew ?? null,
+          notice_days: num(c.notice_days),
+          notice_by_date: c.notice_by_date || null,
+          notice_passed: isPast(c.notice_by_date),
+          renewal_term_months: num(c.renewal_term_months),
+          // The dated fee schedule, earliest first. A fee that steps is a fee the landlord
+          // will be asked about.
+          fee_steps: (stepsByContract[c.id] || [])
+            .slice()
+            .sort((a, b) => (String(a.effective_date) < String(b.effective_date) ? -1 : 1))
+            .map((s2) => ({ effective_date: s2.effective_date || null, amount: num(s2.new_amount) })),
         })),
         tenants,
       };
@@ -299,7 +321,7 @@ export function buildPortfolioSnapshot({
   const tenantCount = propsOut.reduce((n, p) => n + p.tenants.length, 0);
   return {
     today: todayIso,
-    fingerprint: snapshotFingerprint({ leases, insurance, contracts, balances, escalations, abatements, annualReports, shares, features }),
+    fingerprint: snapshotFingerprint({ leases, insurance, contracts, contractSteps, balances, escalations, abatements, annualReports, shares, features }),
     property_count: propsOut.length,
     tenant_count: tenantCount,
     // Let snapshotToText omit a whole section (rather than say "NONE on file") when the
@@ -359,7 +381,21 @@ export function snapshotToText(snapshot) {
     if (showContracts) {
       if (p.service_contracts.length) {
         const cs = p.service_contracts
-          .map((c) => `${c.service_type || 'contract'}${c.vendor ? ` — ${c.vendor}` : ''} (ends ${date(c.end_date)}${c.expired ? ', EXPIRED' : ''}${c.amount != null ? `, ${money(c.amount)}${c.frequency ? `/${c.frequency}` : ''}` : ''})`)
+          .map((c) => {
+            const bits = [`${c.name || c.service_type || 'contract'}${c.vendor ? ` — ${c.vendor}` : ''}`];
+            bits.push(`ends ${date(c.end_date)}${c.expired ? ', EXPIRED' : ''}`);
+            if (c.amount != null) bits.push(`${money(c.amount)}${c.frequency ? `/${c.frequency}` : ''}`);
+            // The renewal + notice terms, spelled out rather than implied: this is the
+            // deadline the landlord will actually ask about.
+            if (c.auto_renew === true) bits.push(`auto-renews${c.renewal_term_months ? ` for ${c.renewal_term_months} months` : ''}`);
+            else if (c.auto_renew === false) bits.push('does not auto-renew');
+            if (c.notice_by_date) bits.push(`cancellation notice due ${date(c.notice_by_date)}${c.notice_days ? ` (${c.notice_days} days)` : ''}${c.notice_passed ? ' — WINDOW CLOSED' : ''}`);
+            else if (c.notice_days) bits.push(`${c.notice_days} days written notice to cancel`);
+            if ((c.fee_steps || []).length) {
+              bits.push(`fee schedule: ${c.fee_steps.map((s2) => `${date(s2.effective_date)} ${money(s2.amount)}`).join(', ')}`);
+            }
+            return `${bits[0]} (${bits.slice(1).join(', ')})`;
+          })
           .join('; ');
         lines.push(`  Service contracts: ${cs}`);
       } else {

@@ -12,6 +12,138 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **The contracts tab gets the lease's system: an AI extractor with a review
+  screen, a dated fee schedule, renewal + cancellation-notice reminders, and a stored signed
+  copy** (George: *"we need to add the same system to the contracts tab. make sure the extractor
+  can understand the outputs thats are necessary and like before follow the spine … theres a
+  signed copy stored and the contract needs to functino on notifications."*). Deployed:
+  migrations **`0091`** + **`0092`**, edge fns **`extract-contract`, `extract-lease`,
+  `extract-addendum`, `review-lease`, `send-reminders`, `countersign-envelope`**, frontend
+  Cloudflare **`882c7ed4`**, demo worker **`8cd59a67`**. Tests **1823/1823** across 176 files
+  (was 1733/170).
+
+  **What was actually there.** The memory was half right, and the wrong half was the point.
+  Contracts *did* reach Expenses — but only as a CAM line item written **lazily**, inside the
+  `['camLineItems']` queryFn, so nothing happened when a contract was saved and the dashboard
+  could disagree with the invoices until somebody opened that fiscal year. "Escalations" were
+  one scalar (`escalation_pct`, 0042) — a printed fee table (flat year 1, +5% year 2) could not
+  be expressed at all. **Renewals did not exist**: `end_date` and nothing else, while the demo's
+  own canned contract text said *"Auto-renews annually unless cancelled with 30 days written
+  notice"* with nowhere to put it. The extractor was 8 flat scalars on Haiku — no confidence,
+  no analyst brief, no red flags, no mismatch alarm. And **Add had no review at all**: the
+  extraction was spread straight into an insert, with no way to upload a *new* contract over an
+  existing one.
+
+  **The spine, followed both ways.** `service_contracts` + the new `contract_escalations` →
+  `contractAnnualCost` → `syncContractCamItems` → `cam_line_items` → `syncCamTotal` →
+  `expense_records.cam_total` → `v_tenant_shares` → the Financials breakdown and the Ledger
+  (which build *up* and follow on their own) **and** `invoices` (frozen — carried through
+  explicitly). One function, `carryContractChange`, now runs the pair for every writer, and
+  **the order is forced**: sync first (it moves `cam_total`), resync second (it reads it).
+  Reversed, every invoice rebuilds from the old CAM. `deleteServiceContract` runs it too —
+  before this the FK cascade removed the derived CAM row and nothing re-summed the total, so a
+  deleted contract's fee stayed in the property's CAM, and in every tenant's bill, until
+  somebody happened to open that year.
+
+  **George's constraint, and why it holds by construction.** *"this only affects the ACTUAL CAM
+  and Tax not estimated."* Nothing on the contract path writes an `est_*` column or a
+  `lease_estimates` row — not as a restraint but as the mechanism: `billedComponents` already
+  prefers a tenant's estimate and falls back to `share.cam_amount`, so writing nothing means a
+  tenant on an estimate keeps paying it and settles at ⚖ Reconcile while a tenant without one
+  re-prices now. Both halves are pinned by `contractCarryThrough.test.js` and again through the
+  real UI in `contractReplaceDoc.test.js`, and the review screen says it in words.
+
+  **`contract_escalations` is derived, never applied** — deliberately no `status` column and no
+  nightly sweep. `apply_due_escalations()` exists because `leases.base_rent` is read by a dozen
+  surfaces that can't reach the escalation ledger; `service_contracts.amount` is read by four,
+  all through `contractAnnualCost`, which can simply take the steps. A sweep would have created
+  a JS↔SQL twin that buys nothing. **The rule**: the step in effect for a fiscal year is the
+  LAST step whose `effective_date` falls in that year *or earlier* — year-of, so a snow
+  contract stepping every 1 November prices the whole of its own year rather than lagging
+  twelve months. It reproduces the pre-0091 `steps = year − startYear` compounding exactly,
+  which is why an empty table needs no back-fill and why `contractEscalations.test.js` carries
+  a byte-identical regression lock over every pre-0091 case.
+
+  **`contractAnnualCost` is now a §2 choke point** and every caller moved in this commit —
+  `syncContractCamItems` (one bulk step read folded into the existing `Promise.all`, never a
+  waterfall), `vendorRowsFor` (**a tax form**: steps missing means an under-reported 1099),
+  `ContractItem` (ONE section-level query passed down), and the review dialog, so what the
+  landlord reads and what gets written are one calculation.
+
+  **The extractor**, rebuilt on `extract-lease`'s structure: a Sonnet analyst read first
+  (unconstrained, time-boxed, non-fatal), then the cheap Haiku form-fill with that brief
+  appended. **One call, one schema, 14 of the 16 union-typed parameters** — recorded in a
+  comment, because a contract has one fact family and 2–8 pages; splitting now would double the
+  cost of every read for headroom nobody is using. New: `auto_renew`, `cancellation_notice_days`,
+  `notice_by_date`, `renewal_term_months` and a raw `fee_schedule` (the model READS, the code
+  MULTIPLIES — annualization and offset-anchoring are in JS). The VERDICTS line carries
+  `recurring=`, which is **load-bearing**: a confident "no" forces `frequency='one-time'`, the
+  only thing keeping a $40k one-off roof repair out of every later year's CAM. Ten
+  owner-side red flags (`_shared/contractFlags.js`) ride the read already paid for —
+  `leaseFlags.js`'s parser took an optional `defs` argument rather than growing a second copy,
+  so nothing on the lease path moved.
+
+  **The review screen** (`ContractDocs.js`) is shared by BOTH entry points — replace *and* Add —
+  so Add stops being the only contract path with no diff and no history event. Its consequence
+  list names what the contract carries into this year's CAM, **how many tenants already hold a
+  bill** (non-void annual invoices — what `resyncPropertyBilling` actually touches, not every
+  tenant), the estimate sentence above, what the fee schedule replaces, when notice falls due,
+  and that a one-time fee never recurs. A fee row priced *per visit* is refused rather than
+  guessed, and said so; a date the document didn't print is calculated and **labelled as
+  calculated**.
+
+  **Notifications.** Two new focuses inside the existing `contractsOn` gate:
+  `contract_notice` — the deadline that actually costs money, which fires whenever
+  `notice_by_date` is set **regardless of `auto_renew`** (the flag drives the wording, not the
+  alert's existence) — and `contract_escalation`, dashboard-only, mirroring the lease's own
+  `escalation` focus. Every registry filled: `NOTIFY_COLUMNS`, `NOTIFY_TYPES` (**60 days, not
+  183** — a six-month countdown to a 30-day window is noise), `fetchAlertData` (appended to the
+  end of a **positional** destructuring), `alertCanEmail` / `goToAlert` / `alertExtras` — the
+  last of which rendered a **blank** hover panel for every contract alert until now — plus a new
+  `send-reminders` sweep deduped on `cancel_notice_bucket`, and `buildContractNonRenewalEmail`.
+  **It drafts; it never sends.**
+
+  **The signed copy** — one nullable column, `documents.signed_at` (0092), on the registry every
+  record type already files into, so contracts, leases, riders and certificates get it at once
+  (which is the *"same of the leases in the respective tab"* half of the ask).
+  `countersign-envelope` stamps it on the row it already inserts. **A second `documents` row
+  pointing at the envelope's executed PDF was considered and rejected**: `deleteEnvelope` sweeps
+  the storage object, so that row would survive and offer "Open" on a file that is gone — and
+  symmetrically `deleteDocumentsFor('lease', …)` would delete the object out from under a live
+  envelope. Two rows, one object, two owners. So the lease panel renders the *envelope*, Open
+  and no ✕.
+
+  **Ask Amlak** could not answer *"when do I have to give notice on the snow contract?"* at all
+  — a second, narrower contract select that carried none of it. Widened, fee steps added, and
+  the fingerprint bumped **v5 → v6**. It also had a hole: `C<count>:<max updated_at>` reads
+  `service_contracts.updated_at`, so a bare fee-step edit would not have flipped it; the steps
+  now carry their own component.
+
+  **Also fixed on the way past:** `AddContract` no longer defaults `vendor` to the contract's
+  name — that label was becoming the **1099 payee name** for a vendor the AI simply hadn't
+  found. `DOC_ENTITY_TYPES` was missing `'property'` (0081) and `'envelope'` (0085), both of
+  which the DB CHECK allows — `registerDocument` threw on types the database would have taken.
+  And `ServiceContractsSection`'s hand-rolled invalidation list never touched `['alerts']`, so
+  editing a contract's end date left the dashboard bell showing the old expiry until a hard
+  reload; it is now the named `settleContractChange` + `settleBillingChange` pair.
+
+  **Demo, seeded first.** `store.js` had `service_contracts: []`, so no contract path had ever
+  been verified in demo. Two contracts on **Oak Center** (never Maple Plaza, whose CAM every
+  money test hammers), with matching `cam_line_items` for both seeded years that equal
+  `contractAnnualCost` **exactly** — so seeding them moved no money: the first sync finds the
+  rows already correct and writes nothing (asserted). `demoExtractContract` was rewritten to the
+  new shape, importing `CONTRACT_FLAG_DEFS` from the shared module so the demo cannot drift from
+  what live says.
+
+  ⚠ **Flagged to George, not fixed:** `syncContractCamItems` → `syncCamTotal` has **no
+  closed-year guard** — it will move `expense_records.cam_total` for a closed year (only the
+  invoice is protected by `resyncPropertyBilling`). Pre-existing, and `CamSection` triggers it
+  on every year open, so it is not a contract bug; named here so it isn't lost. Also not
+  bundled: no `review-contract` sibling to `review-lease` (a contract's `ai_review` is only ever
+  written at extract time); `cam_line_items_contract_year_uidx` (0042) still isn't mirrored in
+  `mockClient.js`; and `prefetch.js` never warms `['serviceContracts', propId]`, so the
+  Contracts tab always cold-loads.
+
 - **2026-08-05** — **Thirteen bugs in the new-lease upload path, audited and fixed** (George,
   after the money-trail round: *"can you find any more bugs in the system we just implemented
   when it comes to uploading a new lease?"* — then, having read the findings, *"go ahead"*).

@@ -93,6 +93,33 @@ export function riderMismatches({
   return out;
 }
 
+// The same check for a SERVICE CONTRACT. It can't reuse either of the two above: a
+// contract has no rent and no tenant, and the terms that cost a landlord money here are a
+// fee that grows, a fee schedule printed as a table, an agreement that renews itself, and
+// the notice window that is the only way out of it. Same discipline: only an affirmative
+// verdict against an empty form flags.
+export function contractMismatches({ verdicts, feeSchedule, escalationPct, autoRenew, noticeDays }) {
+  const v = verdicts || {};
+  const out = [];
+
+  const gotEscalation = Number(escalationPct) > 0 || nonEmptyArray(feeSchedule);
+  if (v.escalation === 'yes' && !gotEscalation) out.push('fee_escalation');
+
+  if (v.fee_schedule === 'yes' && !nonEmptyArray(feeSchedule)) out.push('fee_schedule');
+
+  // auto_renew is a tri-state on our side (true / false / unknown), so only an analyst
+  // "yes" against a form that came back anything other than true is a disagreement.
+  if (v.auto_renew === 'yes' && autoRenew !== true) out.push('auto_renew');
+
+  // The analyst reports the window as a NUMBER of days ("cancellation_notice_days=30"), so
+  // a positive figure there against an empty notice_days is the miss worth naming — this is
+  // the deadline that costs money if nobody records it.
+  const analystDays = Number(v.cancellation_notice_days);
+  if (isFinite(analystDays) && analystDays > 0 && !(Number(noticeDays) > 0)) out.push('cancellation_notice');
+
+  return out;
+}
+
 // Human-readable label per mismatch code, used by the review screens' warning text.
 // Mirrored in src/lib/analystBrief.js (the app build can't import across into
 // supabase/functions) — keep the two in step.
@@ -105,4 +132,9 @@ export const MISMATCH_LABELS = {
   term_extension: 'an extension of the term',
   assignment: 'an assignment to a new tenant',
   expense_estimate: 'a stated CAM / tax estimate',
+  // service-contract-only codes
+  fee_escalation: 'an increase in the fee',
+  fee_schedule: 'a printed fee schedule',
+  auto_renew: 'an automatic renewal',
+  cancellation_notice: 'a cancellation-notice period',
 };

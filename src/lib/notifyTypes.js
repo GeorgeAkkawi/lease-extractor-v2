@@ -65,7 +65,9 @@ export const NOTIFY_COLUMNS = [
   {
     key: 'contract',
     label: 'Service contracts',
-    focuses: ['contract'],
+    // ⚠ notifyTypes.test.js regex-scans alerts.js for every `focus:` it emits and fails if
+    // one is unmapped — a new contract alert type must be listed here or the suite reds.
+    focuses: ['contract', 'contract_notice', 'contract_escalation'],
     kinds: ['contract_renewal'],
   },
   {

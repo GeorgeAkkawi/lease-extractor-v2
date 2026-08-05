@@ -86,13 +86,24 @@ const RANK = { high: 0, medium: 1, info: 2 };
 // The instruction block appended to the analyst prompt (extract-lease) and used whole by
 // review-lease. Kept here so the two readers ask the identical question — a flag raised at
 // import and the same flag raised by the review button must mean the same thing.
-export const LEASE_FLAG_INSTRUCTION =
-  'RED FLAGS / MISSING PROTECTIONS — read the lease as the LANDLORD\'S advisor and answer ' +
-  'each of the checks below. Answer yes ONLY when you are confident from the document; ' +
-  'answer no when the lease clearly addresses it; answer unclear when you cannot tell. ' +
-  'Never guess — an unclear is far better than a wrong yes.\n' +
-  'In every check, **yes means the concern APPLIES**:\n' +
-  LEASE_FLAG_DEFS.map((d) => `  ${d.key} = yes if ${flagQuestion(d.key)}`).join('\n');
+//
+// ⚠ THE PARSER IS SHARED, THE VOCABULARY IS NOT. Every function below takes an optional
+// `defs` argument defaulting to LEASE_FLAG_DEFS, so a service contract (CONTRACT_FLAG_DEFS,
+// ../_shared/contractFlags.js) reuses this exact engine rather than growing a second copy
+// of it. Defaulting the argument is what keeps the lease path byte-for-byte unchanged —
+// every existing call site still reads the lease definitions with no edit.
+export function flagInstructionFor(defs, questionFn, subject = 'lease') {
+  return (
+    'RED FLAGS / MISSING PROTECTIONS — read the ' + subject + ' as the LANDLORD\'S advisor and ' +
+    'answer each of the checks below. Answer yes ONLY when you are confident from the document; ' +
+    'answer no when the ' + subject + ' clearly addresses it; answer unclear when you cannot tell. ' +
+    'Never guess — an unclear is far better than a wrong yes.\n' +
+    'In every check, **yes means the concern APPLIES**:\n' +
+    defs.map((d) => `  ${d.key} = yes if ${questionFn(d.key)}`).join('\n')
+  );
+}
+
+export const LEASE_FLAG_INSTRUCTION = flagInstructionFor(LEASE_FLAG_DEFS, flagQuestion, 'lease');
 
 // The one-line test behind each key, phrased so "yes" is always the concern.
 function flagQuestion(key) {
@@ -112,8 +123,10 @@ function flagQuestion(key) {
 }
 
 // The exact machine-readable line the readers must end with.
-export const LEASE_FLAG_LINE_SPEC =
-  'FLAGS: ' + LEASE_FLAG_DEFS.map((d) => `${d.key}=<yes|no|unclear>`).join('; ');
+export const flagLineSpecFor = (defs) =>
+  'FLAGS: ' + defs.map((d) => `${d.key}=<yes|no|unclear>`).join('; ');
+
+export const LEASE_FLAG_LINE_SPEC = flagLineSpecFor(LEASE_FLAG_DEFS);
 
 // Pull the FLAGS line out of an analyst brief. Same discipline as parseAnalystVerdicts:
 // take the LAST occurrence (it's a closing line), tolerate markdown and stray whitespace,
@@ -135,9 +148,9 @@ export function parseAnalystFlags(brief) {
 // Turn parsed verdicts into the canonical flag list — only the keys we know, only the
 // ones answered "yes". Severity/title/note come from the definitions, never from the
 // model, so wording stays consistent across leases and can be improved in one place.
-export function flagsFromVerdicts(verdicts) {
+export function flagsFromVerdicts(verdicts, defs = LEASE_FLAG_DEFS) {
   const v = verdicts || {};
-  return LEASE_FLAG_DEFS
+  return defs
     .filter((d) => v[d.key] === 'yes')
     .map((d) => ({ key: d.key, severity: d.severity, title: d.title, note: d.note, quote: null }));
 }
@@ -145,12 +158,13 @@ export function flagsFromVerdicts(verdicts) {
 // Normalize whatever a reader returned into the stored shape: known keys only, one entry
 // per key, our own title/note/severity, the model's supporting quote kept when it gave
 // one. Anything malformed is dropped rather than stored — this blob is rendered directly.
-export function normalizeReviewFlags(raw) {
+export function normalizeReviewFlags(raw, defs = LEASE_FLAG_DEFS) {
+  const byKey = defs === LEASE_FLAG_DEFS ? BY_KEY : Object.fromEntries(defs.map((d) => [d.key, d]));
   const seen = new Set();
   const out = [];
   for (const f of Array.isArray(raw) ? raw : []) {
     const key = String(f?.key || '').toLowerCase().trim();
-    const def = BY_KEY[key];
+    const def = byKey[key];
     if (!def || seen.has(key)) continue;
     // A reader may downgrade to 'info' on a soft finding; it may never invent a severity.
     const sev = SEVERITIES.has(String(f?.severity)) ? String(f.severity) : def.severity;
@@ -166,10 +180,11 @@ export function normalizeReviewFlags(raw) {
   return out.sort((a, b) => (RANK[a.severity] ?? 3) - (RANK[b.severity] ?? 3));
 }
 
-// The stored blob both writers produce: leases.ai_review.
-export function buildReviewRecord({ flags, model, source, reviewedAt }) {
+// The stored blob every writer produces: leases.ai_review, and — with CONTRACT_FLAG_DEFS
+// passed as `defs` — service_contracts.ai_review.
+export function buildReviewRecord({ flags, model, source, reviewedAt, defs = LEASE_FLAG_DEFS }) {
   return {
-    flags: normalizeReviewFlags(flags),
+    flags: normalizeReviewFlags(flags, defs),
     model: model || null,
     source: source || null,
     reviewed_at: reviewedAt || new Date().toISOString(),

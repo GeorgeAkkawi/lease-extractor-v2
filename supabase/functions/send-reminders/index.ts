@@ -216,6 +216,60 @@ Deno.serve(async (req) => {
       }
     }
 
+    // --- Contract CANCELLATION-NOTICE reminders (email the owner) -----------
+    // The deadline on a service contract that actually costs money: an auto-renewing
+    // agreement commits the owner to another full term unless written notice lands by
+    // notice_by_date. The expiry sweep above watches the END of the term, which is far too
+    // late — by then the renewal has already happened.
+    //
+    // Reuses expiryBucket rather than forking the bucket maths (one cadence, one dedupe
+    // convention), but NOT its copy: a notice window does not "expire", it CLOSES — and if
+    // the contract auto-renews, what follows is not an ending but a further term.
+    // Deduped on cancel_notice_bucket, which updateServiceContract nulls whenever
+    // notice_by_date / notice_days / end_date moves, so a rescheduled notice re-arms.
+    let noticeProcessed = 0;
+    const { data: noticeRows, error: nErr } = await supabase
+      .from('service_contracts')
+      .select('id, owner_id, name, vendor, end_date, notice_by_date, notice_days, auto_renew, renewal_term_months, cancel_notice_bucket, properties(name)')
+      .not('notice_by_date', 'is', null);
+    if (nErr) {
+      await logEvent('api_error', 'service_contracts notice query failed', ip);
+    } else {
+      const now = new Date();
+      for (const c of (noticeRows ?? []) as any[]) {
+        const nb = expiryBucket(c.notice_by_date, now, leadFor(c.owner_id, 'contract_notice'));
+        if (!nb || nb === c.cancel_notice_bucket) continue;
+        if (!featureOn(c.owner_id, 'contracts')) continue; // Contracts module off → stay quiet
+        if (!RESEND_API_KEY) { await logEvent('reminder_skipped', `contract notice ${c.id} not emailed — RESEND_API_KEY unset`, ip); continue; }
+        const email = await resolveEmail(c.owner_id, emailCache);
+        if (!email) { await logEvent('reminder_skipped', `contract notice ${c.id} not emailed — no owner address`, ip); continue; }
+
+        const what = c.name || c.vendor || 'a service contract';
+        const where = c.properties?.name ? ` at ${c.properties.name}` : '';
+        const closed = nb === 'expired';
+        const renews = c.auto_renew === true;
+        const term = c.renewal_term_months ? ` for a further ${c.renewal_term_months} months` : '';
+        const subject = closed
+          ? `Cancellation window has closed — ${what}`
+          : `Cancellation notice due soon — ${what}`;
+        const text = closed
+          ? `The window to give written notice on ${what}${where} closed on ${c.notice_by_date}.` +
+            (renews
+              ? ` The agreement has renewed${term}${c.end_date ? ` past its ${c.end_date} term end` : ''}.`
+              : ` Its term ${c.end_date ? `ends on ${c.end_date}` : 'ends as stated'}.`) +
+            (c.vendor ? ` Vendor: ${c.vendor}.` : '')
+          : `Written notice to cancel ${what}${where} is due by ${c.notice_by_date}` +
+            (c.notice_days ? ` (${c.notice_days} days' notice is required)` : '') + '.' +
+            (renews ? ` If the date passes, the agreement renews itself${term}.` : '') +
+            (c.vendor ? ` Vendor: ${c.vendor}.` : '');
+
+        const delivered = await sendEmail(email, subject, text);
+        if (!delivered) { await logEvent('reminder_failed', `Resend send failed for contract notice ${c.id}`, ip); continue; }
+        await supabase.from('service_contracts').update({ cancel_notice_bucket: nb }).eq('id', c.id);
+        noticeProcessed++;
+      }
+    }
+
     // --- Annual-report filing reminders (email the owner) ------------------
     // One email ~1 month before each corporation's annual-report deadline (George's
     // choice: a single 1-month heads-up, not the 2w/1w escalation). Dedupe via
@@ -249,7 +303,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ processed, insurance: insuranceProcessed, contracts: contractProcessed, annual: annualProcessed });
+    return json({ processed, insurance: insuranceProcessed, contracts: contractProcessed, contractNotices: noticeProcessed, annual: annualProcessed });
   } catch (e) {
     console.error('[send-reminders] unhandled error:', e);
     await logEvent('api_error', String((e as any)?.message ?? e), ip);

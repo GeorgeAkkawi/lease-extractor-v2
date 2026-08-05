@@ -137,6 +137,13 @@ export default function DashboardPage() {
   // policy doesn't — it has no lease/tenant.) Drives whether the ✉ button shows.
   const alertCanEmail = (a) => {
     if (a.focus === 'contract') return true;
+    // The cancellation notice HAS an outside recipient — the vendor — and the letter is the
+    // whole point of the alert: it drafts the non-renewal notice the contract requires.
+    // ⚠ It drafts; it never sends. The ✉ opens the send modal.
+    if (a.focus === 'contract_notice') return true;
+    // A fee step has no outside party to tell. Dashboard-only, like the lease's own
+    // `escalation` focus — your cost going up is not news to the vendor who raised it.
+    if (a.focus === 'contract_escalation') return false;
     if (a.focus === 'renewal') return !!a.renewal_id;
     // Every insurance reminder writes to the same tenant, and draftAlertEmail branches on
     // the focus for the right letter: expiry → "please send the renewed certificate",
@@ -164,7 +171,7 @@ export default function DashboardPage() {
     // Both ledger reminders land on the Ledger grid — where ⬆ Import statement lives and
     // where a month's cell can be marked paid — rather than the lease page.
     else if ((a.focus === 'statement_reminder' || a.focus === 'missing_payment') && a.property_id) navigate(`/financials/${a.corporation_id}/${a.property_id}/ledger`);
-    else if (a.focus === 'contract' && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
+    else if ((a.focus === 'contract' || a.focus === 'contract_notice' || a.focus === 'contract_escalation') && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
     else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
     else navigate(`/leases/${a.corporation_id}`);
   }
@@ -485,6 +492,18 @@ function alertExtras(a) {
   if (a.expiry_date) out.push([a.expired ? 'Expired' : 'Expires', fmtDate(a.expiry_date)]);
   if (a.requested_on) out.push(['Last requested', fmtDate(a.requested_on)]);
   else if (a.focus === 'insurance_missing' && a.party === 'tenant') out.push(['Last requested', 'Never']);
+  // Every contract alert rendered a BLANK hover panel until now — it carried the vendor and
+  // the dates all along and simply listed none of them.
+  if (a.contract_id) {
+    if (a.contract_name) out.push(['Contract', a.contract_name]);
+    if (a.vendor_email) out.push(['Vendor email', a.vendor_email]);
+    if (a.focus === 'contract_notice') {
+      if (a.notice_days) out.push(['Notice required', `${a.notice_days} days`]);
+      if (a.contract_end) out.push(['Term ends', fmtDate(a.contract_end)]);
+      out.push(['Renews itself', a.auto_renew === true ? (a.renewal_term_months ? `Yes — ${a.renewal_term_months} more months` : 'Yes') : a.auto_renew === false ? 'No' : 'Not stated']);
+    }
+    if (a.focus === 'contract_escalation' && a.new_amount != null) out.push(['New fee', money(a.new_amount)]);
+  }
   return out;
 }
 

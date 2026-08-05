@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listDocuments, deleteDocument, uploadDoc, signDocUrl } from '../lib/api';
+import { listDocuments, deleteDocument, uploadDoc, signDocUrl, markDocumentSigned, unmarkDocumentSigned } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
 
@@ -57,6 +57,16 @@ export default function DocumentsList({
     onError: (e) => setErr(e.message || String(e)),
   });
 
+  // 0092 — designate a copy as THE SIGNED one. Keyed by document id, so it works for a
+  // contract, a policy or anything else that files here; the record's own panel then shows
+  // it. Deliberately not exclusive: an amended agreement has an original signed copy and a
+  // signed amendment, and picking one for the landlord would be wrong.
+  const sign = useMutation({
+    mutationFn: ({ id, on }) => (on ? markDocumentSigned(id) : unmarkDocumentSigned(id)),
+    onSuccess: refresh,
+    onError: (e) => setErr(e.message || String(e)),
+  });
+
   async function onFile(e) {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -79,6 +89,10 @@ export default function DocumentsList({
     } catch (ex) { setErr(ex.message || String(ex)); }
   }
 
+  // Signed copies first — the executed document is what somebody opening this list is
+  // almost always looking for. Within each group, newest first as before.
+  const ordered = [...docs].sort((a, b) => (a.signed_at ? 0 : 1) - (b.signed_at ? 0 : 1));
+
   if (!entityId) return null;
 
   return (
@@ -100,13 +114,14 @@ export default function DocumentsList({
         <p className="muted doc-list-empty">{emptyText}</p>
       )}
 
-      {docs.map((d, i) => (
+      {ordered.map((d, i) => (
         <div className="doc-row" key={d.id}>
           <span className="doc-row-name" title={d.filename || d.storage_path}>
             {d.filename || d.label || 'Document'}
             {/* Everything after the first is an earlier copy — say so, so a list of
                 seven identically-named uploads reads as history rather than a mess. */}
-            {i > 0 && <span className="muted doc-row-older"> · earlier copy</span>}
+            {d.signed_at && <span className="badge good" style={{ marginLeft: 6 }}>Signed copy</span>}
+            {i > 0 && !d.signed_at && <span className="muted doc-row-older"> · earlier copy</span>}
           </span>
           <span className="muted doc-row-meta">
             {[humanBytes(d.bytes), fmtDate(d.created_at)].filter(Boolean).join(' · ')}
@@ -116,6 +131,11 @@ export default function DocumentsList({
                 panel also has "Read text", and the whole point of the pair is that you
                 can tell at a glance which one gives you the signed PDF. */}
             <button type="button" className="ghost btn-sm" onClick={() => open(d.storage_path)}>Open file</button>
+            <button
+              type="button" className="ghost btn-sm" disabled={sign.isPending}
+              title={d.signed_at ? 'This copy is marked as the signed one' : 'Mark this copy as the signed one'}
+              onClick={() => sign.mutate({ id: d.id, on: !d.signed_at })}
+            >{d.signed_at ? 'Unmark signed' : 'Mark signed'}</button>
             <span className="doc-act2">
           <button
             type="button" className="icon-btn danger-btn" title="Delete this copy"

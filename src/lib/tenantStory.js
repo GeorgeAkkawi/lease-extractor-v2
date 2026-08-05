@@ -34,6 +34,10 @@ export const STORY_EVENTS = [
 export const LEDGER_EVENTS = [
   'estimate_set', 'billing_rebuilt', 'cam_reconciled', 'cam_refunded', 'cam_reconcile_undone',
   'cam_refund_reopened', 'statement_imported', 'statement_import_undone',
+  // ⚠ LEDGER, not STORY. A service contract has no lease and no tenant, so it can never
+  // belong to one tenant's story — but it changes what the year's CAM costs, which is
+  // exactly what this log is for.
+  'contract_replaced',
 ];
 
 const STORY_SET = new Set(STORY_EVENTS);
