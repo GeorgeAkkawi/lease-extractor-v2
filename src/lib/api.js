@@ -635,6 +635,11 @@ export async function reviewLeases(leases, { onProgress } = {}) {
         ok: true,
         cached,
         flags: review.flags.length,
+        // Carried per lease so the sweep's result list can rank worst-first and say WHICH
+        // tenant needs attention rather than a portfolio-wide total. Counted inline rather
+        // than through reviewSummary (leaseRisks.js) only to keep api.js free of a lib
+        // import; the severity vocabulary is the same LEASE_FLAG_DEFS one.
+        high: review.flags.filter((f) => f?.severity === 'high').length,
       });
     } catch (e) {
       results.push({ id: lease.id, tenant_name: name, ok: false, cached, error: e?.message || String(e) });

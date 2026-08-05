@@ -4,7 +4,7 @@
 //
 // Every case pins todayIso explicitly, so these stay true as the calendar moves.
 import { describe, it, expect } from 'vitest';
-import { computeLeaseRisks } from '../leaseRisks';
+import { computeLeaseRisks, reviewSummary } from '../leaseRisks';
 
 const TODAY = '2026-07-29';
 // A lease with nothing wrong with it — every case below is this, with one thing broken.
@@ -175,5 +175,36 @@ describe('the output shape', () => {
       todayIso: TODAY,
     });
     expect(out[0].severity).toBe('high');
+  });
+});
+
+// The two numbers the sweep's result list and the tenant-row badge are both built from.
+// One implementation on purpose — a second copy would let the list say "3 to look at"
+// while the row it links to says 5.
+describe('reviewSummary', () => {
+  const review = (flags) => ({ ai_review: { flags, model: 'x', reviewed_at: '2026-08-01T00:00:00.000Z' } });
+
+  it('counts the points raised and how many are severe', () => {
+    const out = reviewSummary(review([
+      { key: 'no_personal_guarantee', severity: 'high', title: 'No personal guarantee' },
+      { key: 'no_late_fee', severity: 'medium', title: 'No late fee' },
+      { key: 'exclusive_use', severity: 'info', title: 'Exclusive-use clause' },
+    ]));
+    expect(out.total).toBe(3);
+    expect(out.high).toBe(1);
+    expect(out.titles).toEqual(['No personal guarantee', 'No late fee', 'Exclusive-use clause']);
+    expect(out.reviewedAt).toBe('2026-08-01T00:00:00.000Z');
+  });
+
+  // The distinction the tenant list is built on: silence means "nobody has read this
+  // lease", which must never look the same as "read, and it came back clean".
+  it('separates never-reviewed from reviewed-and-clean', () => {
+    expect(reviewSummary({ id: 'l1', ai_review: null })).toBeNull();
+    expect(reviewSummary({ id: 'l1' })).toBeNull();
+    expect(reviewSummary(review([]))).toEqual({ total: 0, high: 0, reviewedAt: '2026-08-01T00:00:00.000Z', titles: [] });
+  });
+
+  it('survives a review row with no flags array at all', () => {
+    expect(reviewSummary({ ai_review: { model: 'x' } })).toMatchObject({ total: 0, high: 0 });
   });
 });

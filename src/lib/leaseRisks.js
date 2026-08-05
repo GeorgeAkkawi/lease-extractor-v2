@@ -193,3 +193,31 @@ export function cappedLeases(leases = []) {
   }
   return out.sort((a, b) => a.tenant_name.localeCompare(b.tenant_name));
 }
+
+/**
+ * What a saved AI review amounts to, in the two numbers every surface needs: how many
+ * points were raised and how many of them are severe.
+ *
+ * ONE implementation on purpose. The sweep's result list and the tenant-row badge are the
+ * same sentence said in two places, and a second copy would let the list say "3 to look
+ * at" while the row it links to says 5. `null` means NEVER REVIEWED, which is a different
+ * statement from `{ total: 0 }` ("read, nothing flagged") — the tenant list draws no badge
+ * for the first and can say "nothing flagged" for the second. Collapsing the two would
+ * make an unreviewed lease look clean, which is the one reading that costs money.
+ *
+ * Reads ONLY the AI half (`leases.ai_review`). The free code-side checks
+ * (computeLeaseRisks) are recomputed live on the lease page and are deliberately not
+ * counted here: the list query doesn't carry the escalations, renewals and insurance rows
+ * they need, so counting them would make the badge disagree with the panel it points at.
+ */
+export function reviewSummary(lease) {
+  const review = lease?.ai_review;
+  if (!review || typeof review !== 'object') return null;
+  const flags = Array.isArray(review.flags) ? review.flags : [];
+  return {
+    total: flags.length,
+    high: flags.filter((f) => f?.severity === 'high').length,
+    reviewedAt: review.reviewed_at || null,
+    titles: flags.map((f) => f?.title).filter(Boolean),
+  };
+}

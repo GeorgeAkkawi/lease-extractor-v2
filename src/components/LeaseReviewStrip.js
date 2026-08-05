@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { reviewLease, MIN_USABLE_TEXT } from '../lib/api';
 import { computeLeaseRisks, transcriptGaps } from '../lib/leaseRisks';
 import { fmtDate } from '../lib/format';
+import { useConfirm } from './ConfirmDialog';
 
 // "Lease review" — the one place both halves of the red-flag read are shown.
 //
@@ -23,6 +24,7 @@ const STALE_GRACE_MS = 5 * 60 * 1000;
 
 export default function LeaseReviewStrip({ lease, escalations, renewals, insurance, onJump }) {
   const qc = useQueryClient();
+  const askConfirm = useConfirm();
   const [open, setOpen] = useState(true);
 
   // The just-run result, held locally so the new flags appear the instant the read
@@ -38,8 +40,37 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
 
   const run = useMutation({
     mutationFn: () => reviewLease(lease.id),
-    onSuccess: (rec) => { setJustRun(rec); qc.invalidateQueries({ queryKey: ['lease', lease.id] }); },
+    onSuccess: (rec) => {
+      setJustRun(rec);
+      qc.invalidateQueries({ queryKey: ['lease', lease.id] });
+      // The property's tenant list wears a badge built from this review — without this it
+      // keeps showing the previous count (or none) until something else refetches.
+      qc.invalidateQueries({ queryKey: ['leaseReviews'] });
+    },
   });
+
+  // Ask before spending. This used to fire the instant the button was clicked — the only
+  // paid action in the app with no confirmation, which made the CHEAP button the one with
+  // no guard rail (George, 2026-08-05). Same dialog and the same three facts as the
+  // property-wide sweep, so the two read as one feature at two scales rather than two
+  // different things.
+  const askThenRun = async () => {
+    const again = !!review;
+    const ok = await askConfirm({
+      title: again ? 'Re-review this lease?' : 'Review this lease?',
+      message: 'This lease is read for terms that commonly cost a landlord money — no personal guarantee, no late fee, an uncapped CAM, and seven more.',
+      implications: [
+        'Only this tenant’s lease is read — use “⚑ Review leases” on the property to do all of them at once.',
+        'About 2–5¢, one time. The result is saved, so re-opening this page costs nothing.',
+        'Nothing is written to the lease’s terms — this only fills the red-flag panel below.',
+        ...(again ? ['The findings currently shown are replaced by the new read.'] : []),
+      ],
+      confirmLabel: again ? 'Re-review lease' : 'Review lease',
+      // A paid read, not a delete — see the same note on ReviewLeasesButton.
+      tone: 'default',
+    });
+    if (ok) run.mutate();
+  };
 
   const hasText = !!lease?.lease_text;
   // How much of the document the review could actually read. A finding that the lease is
@@ -74,7 +105,7 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
             className="secondary"
             disabled={run.isPending || !hasText}
             title={hasText ? 'Reads this lease and its riders for missing protections' : 'No lease text on file to review'}
-            onClick={() => run.mutate()}
+            onClick={askThenRun}
           >
             {run.isPending ? 'Reading…' : review ? '⚠ Re-review' : '⚠ Review this lease'}
           </button>

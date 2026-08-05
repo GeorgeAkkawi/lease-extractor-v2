@@ -12,6 +12,123 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **A review you can act on: the lease sweep names the leases, the leases wear
+  the flag, and the price it quotes is the true one** (George: *"there should be a popup
+  explaining what review lease does when its clicked, shouldnt fire immediately … on the demo
+  it just says leases reviewed and 10 findings. what does that mean, how does the user know
+  where to look or what to do or what happened"*). Deployed: frontend Cloudflare
+  **`9b7be0ba`**. No migration, no edge-function change. Tests **1886/1886** across 180 files
+  (+1 file, +11 tests).
+
+  **A NEW STANDING RULE IN `CLAUDE.md` CAME OUT OF THIS ROUND** — *"Following the change
+  through the user's hands"*, the twin of *Following a change through*: that one traces the
+  **figure** downstream, this one traces the **person**. Ten questions (getting in · before
+  the click · the price · during · after: what happened · after: where do I look · can the
+  user see it at all · what next · when it goes wrong · the second time), to be answered **in
+  the plan** rather than re-derived by conversation on every feature. George's words:
+  *"these are all questions that should be reviewed by you before you present a plan so we
+  don't have to do this for every single addition to the software since we are getting more
+  complex."* Running that checklist over the two review buttons is what found everything
+  below — four of the eight failures had not been reported.
+
+  **⚠ THE SWEEP'S PRICE WAS WRONG ON EVERY LIVE CLICK, AND RIGHT IN THE DEMO.**
+  `ReviewLeasesButton` decided "does this lease still need transcribing?" from
+  `lease.lease_text` — on rows from `listLeases`, whose `LEASE_LIST_COLS` **omits that column
+  on purpose** (a full lease is tens of KB and no list needs it). So `lease_text` was
+  `undefined` on every row, `leaseNeedsText` answered **true for all of them**, and the dialog
+  quoted `total × 29¢` where the truth is `total × 4¢` — **$2.61 against ~36¢ on nine
+  leases** — while also announcing "9 have no searchable text yet". At run time it then called
+  `cache-lease-text` once per lease; unbilled (the function returns early) but each spends a
+  slot on the shared 30/min AI counter, so a sweep burnt **two slots per lease** and walked
+  into its own 429 backoffs. **`mockClient`'s builder ignores column lists**
+  (`select(){return this;}`) so demo rows carry the text and the demo quoted 8¢ correctly —
+  the §3 mirror divergence in its purest form. Fixed by **deleting the count**, not correcting
+  it: quote the half the screen can derive (`total × 4¢`) and *describe* the other half
+  ("free for a digital PDF, up to ~25¢ for a large scan"). Pinned by a test that asserts the
+  quoted figure is identical with and without `lease_text` on the row.
+
+  **The result is a list, not a number.** "Reviewed 2 of 2 · 10 findings" named no lease and
+  linked nowhere; the findings live on individual tenant pages and nothing said which. Now one
+  row per lease, worst-first, each clicking through to that tenant — **including the clean
+  ones** ("nothing found"), so the sweep visibly accounts for every lease instead of leaving
+  the landlord to guess where the total came from. `reviewLeases` carries a per-lease `high`
+  count for the ranking. The panel renders **under the page head, full width**, handed up via
+  `onResults` — rendered from inside `.head-actions` it squeezed between the buttons and
+  stretched them out of shape.
+
+  **…and the tenant list now carries the durable record.** The report still dies on
+  navigation, so the answer to "where do I look" cannot be the report. Each tenant row wears a
+  flag badge built from `listLeaseReviews(propId)` — the **existing** light per-property read
+  the Financials Recoverability table already uses, sharing its `['leaseReviews', propId]`
+  key, so no blob joins the list query. **No badge at all for a lease nobody has reviewed**:
+  silence means "not looked at", which must never look like "looked at, nothing found" —
+  `reviewSummary` returns `null` for the first and `{total: 0}` for the second, and that
+  distinction is the one the badge is built on.
+
+  **Wording is load-bearing here.** The badge says "⚑ 6 **in the lease**" and the report says
+  "6 **found**", never "to look at" — because both count the **AI** half only, while the lease
+  page's panel adds the free checks read from the landlord's own **records** and therefore
+  shows more (6 vs 9 on the demo tenant). Naming the half each number counts is what stops
+  that gap reading as a bug.
+
+  **Paying for findings the app then refuses to render.** With *Lease review (lease page)*
+  hidden in Settings › Display, the sweep charged and wrote ten findings that appeared
+  **nowhere**. The preference is not overridden — it is said out loud, in the confirm dialog
+  and again in the report, and the row badges follow the same gate (a badge that opens a page
+  with no panel is worse than no badge). **The demo cannot catch this class** — it seeds no
+  `user_preferences` row — so it was verified by toggling the setting in the running app.
+
+  **The single-lease button now asks first.** "⚠ Review this lease" was the only paid action
+  in the app with no confirmation — the *cheap* button was the one without a guard rail. Same
+  dialog, same three facts as the sweep (scope · price · what it will not touch), plus "the
+  findings currently shown are replaced by the new read" on a re-review. **Both dialogs are
+  now `tone: 'default'`** — the sweep's confirm button was rendering `danger-solid` **red**,
+  because no tone was passed and `ConfirmDialog` defaults to `'danger'`: a paid *read* styled
+  as a permanent delete. ⚠ Note for future tests: `LeaseReviewStrip` now needs a
+  `ConfirmProvider` in the tree, or `useConfirm`'s default resolves false and the review never
+  runs.
+
+  **THE FINANCIALS BLANK-CANVAS SCROLL IS FIXED, AND THIS TIME IT WAS MEASURED.** Fourth
+  report, and the standing "NOT confirmed fixed" flag from 08-02 is hereby **retired**. The
+  earlier rounds guessed at hidden absolute panels (`.corp-flyout` was a real instance and its
+  fix stands); this round drove the running app instead. On `/financials/:corpId/:propId` the
+  scroll extent ran **exactly 72px past the last pixel of content, on all six fiscal years**,
+  and a sweep of every descendant of `.content` for an element hanging below the page root
+  returned **zero offenders**. 72px is `.content`'s own block-end padding — **a scroll
+  container's block-end padding is part of its scrollable region**, so every page in the app
+  scrolled that far into blank canvas; invisible on a short page, and Financials is the only
+  one long enough that anybody reaches the bottom. `padding:34px 40px 72px` → `28px`, matching
+  the gap the pages already leave between panels. It cannot go to 0 — it is the only thing
+  between the last panel and the window edge. **Measured after: 28px, `over` table empty.**
+  George reported "a full blank screen or more", which is larger than 72px, so if it persists
+  on his data the console snippet in the session plan names the culprit element directly.
+
+  **Files:** `CLAUDE.md` (the new standing section) · `src/components/ReviewLeasesButton.js`
+  (price, tone, hidden-panel note, results split out as `ReviewResults`) ·
+  `src/components/LeaseReviewStrip.js` (confirm dialog, `leaseReviews` invalidation) ·
+  `src/pages/LeasesPage.js` (the reviews query, the row badge, the report under the head) ·
+  `src/lib/leaseRisks.js` (`reviewSummary`) · `src/lib/api.js` (`high` per lease) ·
+  `src/App.css` (`.content` gutter, `.review-*`, `.review-badge`) · tests
+  `src/components/__tests__/reviewLeasesButton.test.js` (new),
+  `src/components/__tests__/leaseReviewStrip.test.js`, `src/lib/__tests__/leaseRisks.test.js`.
+
+  **Verified in the running app** (not just unit tests): the sweep dialog quotes 8¢ for two
+  leases with a non-red confirm; the report lists both tenants worst-first and clicking a row
+  lands on that lease's panel with its findings on screen; the badges appear on both rows and
+  survive navigating away and back; hiding the Display panel removes the badges and adds the
+  note to the dialog; the single-lease dialog shows "Re-review this lease?" with the
+  replacement warning; `deadSpaceBelowContent` on the property Financials page reads 28.
+
+  **Not done, deliberately** — each is real and each deserves its own round: the sweep still
+  pre-calls `cache-lease-text` for every lease rather than reviewing first and transcribing
+  only on the server's `no_lease_text` error (would halve its use of the shared rate limit,
+  but inverts an order the code calls load-bearing); it still re-reviews already-reviewed
+  leases at full price without saying so; `invokeFunction` still surfaces `body.error` and
+  drops the friendly `message` beside it, so a sweep failure prints the slug `no_lease_text`;
+  and `.nrow-pop` (`App.css`) is still a `visibility:hidden` absolute panel with no `height:0`
+  collapse — Dashboard-only, so it cannot explain this report, but it is a live instance of
+  the class 08-02 fixed elsewhere.
+
 - **2026-08-05** — **Sending is gated on placing the signature, and the executed PDF says what
   it contains** (George: *"can you make it so that the send button doesnt work unless the
   person signing has tapped their signature on the lease? and if they try that a hover on the

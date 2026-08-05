@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, listLeases, listEscalations, getTenantShares, getLeaseSort, setLeaseSort } from '../lib/api';
+import { getCorporation, getProperty, listLeases, listEscalations, getTenantShares, getLeaseSort, setLeaseSort, listLeaseReviews, getHiddenWidgets } from '../lib/api';
+import { reviewSummary } from '../lib/leaseRisks';
 import { usePageChrome } from '../context/ChromeContext';
 import { usePrefetchers, escalationsByLeasesQuery } from '../lib/prefetch';
 import { sortLeases, LEASE_SORTS } from '../lib/leaseSort';
@@ -11,7 +12,7 @@ import PropertyTabs from '../components/PropertyTabs';
 import { RowListSkeleton } from '../components/Skeleton';
 import LeaseTypeChip from '../components/LeaseTypeChip';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
-import ReviewLeasesButton from '../components/ReviewLeasesButton';
+import ReviewLeasesButton, { ReviewResults } from '../components/ReviewLeasesButton';
 import { money, psf, sf, fmtDate, approx } from '../lib/format';
 
 const CURRENT_YEAR = new Date().getFullYear();
@@ -22,6 +23,10 @@ export default function LeasesPage() {
   const qc = useQueryClient();
   const pf = usePrefetchers();
   const [showBldg, setShowBldg] = useState(false);
+  // Held here, not in the button: the sweep's report is a full-width panel under the page
+  // head. Rendered from inside .head-actions it squeezed between the buttons and stretched
+  // them out of shape.
+  const [reviewResults, setReviewResults] = useState(null);
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: leases = [], isLoading } = useQuery({ queryKey: ['leases', propId], queryFn: () => listLeases(propId) });
@@ -39,6 +44,21 @@ export default function LeasesPage() {
     enabled: leases.length > 0,
   });
   const { data: leaseSort = {} } = useQuery({ queryKey: ['leaseSort'], queryFn: getLeaseSort });
+  // The saved red-flag reviews for this property — the durable record of what "⚑ Review
+  // leases" found. Deliberately its OWN query rather than a column on the list: ai_review
+  // is a blob and LEASE_LIST_COLS keeps it out of every tenant list on purpose (api.js).
+  // Same key the Financials Recoverability table uses, so the two share one fetch.
+  const { data: leaseReviews = [] } = useQuery({
+    queryKey: ['leaseReviews', propId],
+    queryFn: () => listLeaseReviews(propId),
+    enabled: leases.length > 0,
+  });
+  // Hiding the Lease review panel hides the page these badges point AT, so they follow it
+  // — a badge that opens a lease with nowhere to read the findings is worse than none.
+  const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
+  const reviewsOn = !hiddenWidgets.includes('lease_review');
+  const reviewByLease = {};
+  if (reviewsOn) for (const r of leaseReviews) reviewByLease[r.id] = reviewSummary(r);
   usePageChrome([
     { label: 'Portfolio', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
@@ -131,11 +151,18 @@ export default function LeasesPage() {
         </div>
         <div className="head-actions">
           <button className="secondary" onClick={() => downloadRentRollXlsx({ leases, properties: [prop], fileLabel: prop?.name })} disabled={!leases.length || !prop}>⬇ Download rent roll</button>
-          <ReviewLeasesButton leases={leases} />
+          <ReviewLeasesButton leases={leases} onResults={setReviewResults} />
           <button className="secondary" onClick={() => setShowBldg((s) => !s)}>⛶ Building size</button>
           <button onClick={newLease}>+ Add tenant</button>
         </div>
       </div>
+
+      <ReviewResults
+        results={reviewResults}
+        corpId={corpId}
+        propId={propId}
+        onDismiss={() => setReviewResults(null)}
+      />
 
       <PropertyTabs corpId={corpId} propId={propId} />
 
@@ -190,6 +217,7 @@ export default function LeasesPage() {
               key={l.id}
               lease={l}
               totals={totals[l.id]}
+              review={reviewByLease[l.id]}
               pf={pf}
               onOpen={() => navigate(`/leases/${corpId}/${propId}/${l.id}`)}
               draggable
@@ -226,7 +254,7 @@ export default function LeasesPage() {
   );
 }
 
-function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd }) {
+function LeaseRow({ lease, totals, review, onOpen, pf, draggable, dragging, dragOver, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd }) {
   // Reads the cache seeded by the page's batched fetch — no own network round-trip.
   const { data: escalations = [] } = useQuery({
     queryKey: ['escalations', lease.id],
@@ -258,6 +286,26 @@ function LeaseRow({ lease, totals, onOpen, pf, draggable, dragging, dragOver, on
             so the list reads "2,000 SF · NNN" without growing every row's height. */}
         <span className="muted">{sf(lease.square_footage)}<LeaseTypeChip gross={!!totals?.gross} /></span>
         {lease.is_active === false && <span className="badge danger" style={{ marginTop: 4, alignSelf: 'flex-start' }}>Outdated — needs extension</span>}
+        {/* Only ever drawn for a lease that HAS been reviewed. A lease nobody has read
+            shows nothing at all — silence means "not looked at", and an unreviewed lease
+            must never wear the same green as one that came back clean. */}
+        {review && (
+          <span
+            className={`badge review-badge ${review.high ? 'danger' : review.total ? 'warn' : 'good'}`}
+            /* "in the lease" is load-bearing, not decoration. This counts the AI half only —
+               what the DOCUMENT says. The panel it opens adds the free checks read from your
+               RECORDS (an expired certificate, an unapplied rent step), so its total is
+               usually higher. Saying "6 to look at" here and landing on "9 points to look
+               at" there reads as a bug; naming the half each one counts does not. */
+            title={review.total
+              ? `${review.total} found in the lease document: ${review.titles.join(' · ')}. The lease page adds any checks from your own records.`
+              : 'The lease document came back clear on all ten checks. The lease page also checks your records.'}
+          >
+            {review.total
+              ? `⚑ ${review.total} in the lease${review.high ? ` · ${review.high} high` : ''}`
+              : '⚑ Lease read — clear'}
+          </span>
+        )}
       </span>
       <span className="lease-col">
         <span className="muted">Base rent</span>

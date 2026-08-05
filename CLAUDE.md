@@ -1,6 +1,6 @@
 # Amlak — project notes for Claude
 
-Commercial-property dashboard (React / CRA + Supabase), deployed on Cloudflare.
+Commercial-property dashboard (React / Vite + Supabase), deployed on Cloudflare.
 
 ## Working alongside other sessions
 
@@ -309,6 +309,49 @@ instead), and
 (register, learned payees, history). Add a NAMED one rather than hand-rolling a list at the call
 site — hand-rolled lists drift apart by omission, which is how the invoice drift above survived
 unnoticed, and how editing a contract's end date left the dashboard bell showing the old expiry.
+
+## Following the change through the user's hands
+
+> **Standing instruction (George, 2026-08-05):** *"See how I walked you through the entire
+> process? The upload, the click, during, after, explaining, UI, how does the user know? These are
+> all questions that should be reviewed by you before you present a plan, so we don't have to do
+> this for every single addition to the software now that we're getting more complex."*
+
+**The rule.** *Following a change through* above traces the **figure**. This traces the **person**.
+Walk the whole journey before presenting a plan and answer these **in the plan** — not after George
+asks. A feature that computes the right answer and leaves the landlord unable to find it is not
+finished.
+
+1. **Getting in.** How does the thing arrive — upload, drag, paste, import, a typed field? What
+   happens on the wrong file, an empty one, or one already there?
+2. **Before the click.** Does the button say what it is about to do, what it costs, and what it will
+   **not** touch? Anything paid, slow or destructive asks first (`useConfirm`, `ConfirmDialog.js`),
+   and `tone` matters — red is for permanent deletes, not for a paid read.
+3. **The price, if there is one.** Quote a figure the screen can actually derive. A number computed
+   from a column the page's query doesn't select is wrong on every live click **and right in the
+   demo**, because `mockClient`'s builder ignores column lists (§3).
+4. **During.** What is on screen while it runs — which item, how many left, is the button disabled,
+   can the user navigate away?
+5. **After: what happened.** Not a count. **Which** records changed, by how much, and where they
+   went. "10 findings" tells the landlord nothing he can act on.
+6. **After: where do I look.** The result must link to the records it describes. If the report is
+   ephemeral (a message that dies on navigation), something durable must mark those records — a
+   badge on the row, a state on the card — or the work is findable only by someone who already
+   knows where it lives.
+7. **Can the user see it at all?** Check every gate between the result and the eye: `features.js`
+   modules, the Display-settings panels (`dashboardWidgets.js`), a tab hidden when a module is off.
+   Paying for a result the app then refuses to render is the worst version of this, and the demo
+   cannot catch it — it seeds no `user_preferences` row.
+8. **What next.** Having seen it, what is the user supposed to *do*, and is that action on the same
+   screen?
+9. **When it goes wrong.** Is the failure legible — a sentence, not a slug or a status code? Does a
+   **partial** result say it is partial? A half-read document reporting "the lease is silent on X"
+   is a wrong answer stated confidently.
+10. **The second time.** Does re-running cost again, overwrite, or skip? Does the screen distinguish
+    "checked and clean" from "never looked at"?
+
+Answer each in a line. Where the answer is "nothing happens" or "the user has to already know",
+that is the gap — it belongs in the plan, not in George's next message.
 
 ## Deploying to production
 

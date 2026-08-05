@@ -271,7 +271,16 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .topbar-right{display:flex;align-items:center;gap:22px}
 .year-sel{display:flex;align-items:center;gap:8px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 .year-sel select{font-family:var(--ui);font-size:13px;font-weight:600;border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px;background:var(--panel);color:var(--ink)}
-.content{flex:1;overflow:auto;padding:34px 40px 72px}
+/* ⚠ THE BLOCK-END PADDING IS SCROLLABLE, and it is the app's only scroll container.
+   A scroll container's block-end padding is part of its scrollable overflow region, so
+   every page scrolled 72px past its last pixel of content into blank canvas. Invisible on
+   a short page; on the property Financials page — by far the longest in the app, and the
+   only one where anybody reaches the bottom — it is the whole of what George reported.
+   Measured 2026-08-05: scrollHeight − (last child's bottom) = 72px, on all six fiscal
+   years, with ZERO absolutely-positioned offenders (that class of bug was the .corp-flyout
+   fix on 08-02). 28px matches the gap the pages already leave between panels; it cannot be
+   0 — this is the only thing between the last panel and the window edge. */
+.content{flex:1;overflow:auto;padding:34px 40px 28px}
 
 /* ---- crumbs ---- */
 .crumbs{display:flex;align-items:center;gap:5px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;flex-wrap:wrap}
@@ -441,6 +450,32 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .psf-sub{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:1px}
 /* Small "est." marker on an estimated CAM/tax figure (leases list + finances table) */
 .est-tag{font-size:10px;font-weight:500;color:var(--muted);letter-spacing:.04em}
+
+/* Red-flag count on a tenant row — the DURABLE answer to "which lease did the review
+   find something on". The sweep's own summary dies the moment you navigate away, so
+   without this the findings are reachable only by someone who already knows they live on
+   the lease page. Sits on its own line under the size line (.lease-name is a column) and
+   is drawn ONLY for a lease that has actually been reviewed: no badge means "not looked
+   at", which must not read the same as "looked at, nothing found". */
+.review-badge{align-self:flex-start;margin-top:4px}
+
+/* ---- the sweep's result list ---- */
+.review-results{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
+.review-results-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.review-result-rows{display:flex;flex-direction:column;gap:3px}
+.review-result-row{display:flex;align-items:baseline;gap:10px;width:100%;
+  background:transparent;border:1px solid transparent;border-radius:var(--radius);
+  padding:5px 8px;text-align:left;color:inherit;font:inherit;font-weight:500;
+  text-transform:none;letter-spacing:0;cursor:pointer}
+.review-result-row:hover:not(:disabled){background:var(--panel);border-color:var(--border);filter:none}
+.review-result-row:disabled{cursor:default}
+.rvw-tenant{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.rvw-count{flex:none;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.rvw-count.warn{color:var(--gold)}
+.rvw-count.high{color:var(--danger);font-weight:700}
+.rvw-go{flex:none;color:var(--faint)}
+.review-result-row.failed{cursor:default}
+.review-result-row.failed .rvw-count{color:var(--danger);text-align:right}
 
 /* ---- Ask Amlak (portfolio assistant) ---- */
 .ask-page h1{display:flex;align-items:center;gap:9px}

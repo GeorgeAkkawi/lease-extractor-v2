@@ -5,20 +5,32 @@
 // The point of the panel is that a landlord shouldn't have to know or care which half a
 // finding came from, so the central assertion is that both render as one list.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import LeaseReviewStrip from '../LeaseReviewStrip';
+import { ConfirmProvider } from '../ConfirmDialog';
 import { getLease, updateLease } from '../../lib/api';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
+// The review is a PAID read and now asks first, so the panel only works under a
+// ConfirmProvider — without one useConfirm's default resolves false and nothing runs.
 function renderStrip(props) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <LeaseReviewStrip escalations={[]} renewals={[]} {...props} />
+      <ConfirmProvider>
+        <LeaseReviewStrip escalations={[]} renewals={[]} {...props} />
+      </ConfirmProvider>
     </QueryClientProvider>
   );
+}
+
+// Click the panel's review button and approve the dialog it raises.
+async function runReview(name = /Review this lease/i) {
+  fireEvent.click(await waitFor(() => screen.getByRole('button', { name })));
+  const dialog = await screen.findByRole('alertdialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: /^(Review|Re-review) lease$/i }));
 }
 
 let original;
@@ -63,8 +75,7 @@ describe('LeaseReviewStrip — the AI half', () => {
     const lease = { ...original, lease_text: 'A short commercial lease with no guaranty and no deposit.' };
     renderStrip({ lease, insurance: undefined });
 
-    const btn = await waitFor(() => screen.getByRole('button', { name: /Review this lease/i }));
-    fireEvent.click(btn);
+    await runReview();
 
     // The demo mock reads the seeded lease text for the same signals the live checklist
     // asks about — this text mentions neither a guaranty nor a deposit.
@@ -132,9 +143,45 @@ describe('LeaseReviewStrip — the AI half', () => {
   it('never calls the review it just ran stale', async () => {
     const lease = { ...original, lease_text: 'text', updated_at: '2030-01-01T00:00:00.000Z' };
     renderStrip({ lease, insurance: undefined });
-    fireEvent.click(await waitFor(() => screen.getByRole('button', { name: /Review this lease/i })));
+    await runReview();
     await waitFor(() => expect(screen.getByText('No personal guarantee')).toBeTruthy());
     expect(screen.queryByText(/changed since the AI last read it/i)).toBeNull();
+  });
+
+  // The button used to fire the instant it was clicked — the only paid action in the app
+  // with no confirmation (George, 2026-08-05). Cancel has to mean cancel: no model call,
+  // no write, nothing saved on the lease.
+  it('asks before spending, and runs nothing when the landlord cancels', async () => {
+    const lease = { ...original, ai_review: null, lease_text: 'A lease with no guaranty on file.' };
+    renderStrip({ lease, insurance: undefined });
+
+    fireEvent.click(await waitFor(() => screen.getByRole('button', { name: /Review this lease/i })));
+    const dialog = await screen.findByRole('alertdialog');
+    // It states the three facts the sweep states — scope, price, and what it won't touch.
+    expect(within(dialog).getByText(/Only this tenant’s lease is read/i)).toBeTruthy();
+    expect(within(dialog).getByText(/About 2–5¢/i)).toBeTruthy();
+    expect(within(dialog).getByText(/Nothing is written to the lease’s terms/i)).toBeTruthy();
+    // A paid read is not a delete — the confirm button must not be the red one.
+    expect(dialog.querySelector('.danger-solid')).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(screen.queryByText('No personal guarantee')).toBeNull();
+    const saved = await getLease('lease-1');
+    expect(saved.ai_review?.source).not.toBe('review_button');
+  });
+
+  it('warns that a re-review replaces the findings already on screen', async () => {
+    const lease = {
+      ...original,
+      lease_text: 'text',
+      ai_review: { flags: [], model: 'x', reviewed_at: `${TODAY}T00:00:00.000Z`, source: 'review_button' },
+    };
+    renderStrip({ lease, insurance: undefined });
+    fireEvent.click(await waitFor(() => screen.getByRole('button', { name: /Re-review/i })));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText(/replaced by the new read/i)).toBeTruthy();
   });
 });
 
