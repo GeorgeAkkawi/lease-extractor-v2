@@ -24,8 +24,15 @@ const num = (v) => {
 
 const text = (v) => (v === null || v === undefined ? '' : String(v).trim());
 
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+// The AI returns every field as { value, confidence, source_quote, page }; a few (lease_type)
+// come back as a bare string off the analyst's VERDICTS line. Read either shape.
+const val = (f) => (f && typeof f === 'object' && 'value' in f ? f.value : f);
+
 // The lease's own columns, in the order a landlord reads them. `kind` is only a formatting
-// hint for the table; nothing here depends on it.
+// hint for the table; nothing here depends on it. `billed` marks the figures that a stored
+// invoice was built from — see touchesBilling below.
 //
 // ⚠ tenant_name is NOT in this list. A new lease for the SAME tenant is the case George
 // named, and a document that prints the trading name slightly differently ("Rose's Salon"
@@ -34,6 +41,14 @@ const text = (v) => (v === null || v === undefined ? '' : String(v).trim());
 const FIELDS = [
   { key: 'base_rent', label: 'Base rent', kind: 'money', billed: true },
   { key: 'square_footage', label: 'Square footage', kind: 'number', billed: true },
+  // The combined CAM & tax estimate. It is what the tenant is billed all year (the actual
+  // only settles it at ⚖ Reconcile), so a new lease that prices it and is applied without
+  // it would bill the OLD document's estimate against the new document's rent.
+  { key: 'est_cam_annual', label: 'CAM & tax estimate', kind: 'money', billed: true, combined: true },
+  // Gross vs net decides whether CAM / tax / roof are added ON TOP of rent or carved OUT of
+  // it (billedComponents → resyncYearBillingToEstimate). Getting it wrong is a whole-invoice
+  // error, not a cosmetic one.
+  { key: 'lease_type', label: 'Lease type', kind: 'text', billed: true },
   { key: 'lease_start', label: 'Lease start', kind: 'date', billed: true },
   { key: 'lease_termination_date', label: 'Lease end', kind: 'date', billed: true },
   { key: 'security_deposit', label: 'Security deposit', kind: 'money' },
@@ -57,22 +72,83 @@ function same(kind, a, b) {
 }
 
 /**
- * @param lease     the lease as it stands
- * @param proposed  the extraction normalised through initialFromExtraction (LeaseNewPage)
- * @param counts    { escalations, renewals, abatements } the new document's child rows
- * @returns { fields, touchesBilling, escalations, renewals, abatements }
+ * The CAM & tax estimate a document states, as ONE annual figure.
+ *
+ * The app bills a single merged estimate — the combined figure on `est_cam_annual` with
+ * `est_tax_annual` zeroed — and every surface that reads it sums the two anyway. The AI
+ * reports CAM and tax separately (a lease usually prints them separately), so they are
+ * added here, in the one place, rather than at each reader.
+ *
+ * Returns null when the document prices neither, which is how "the document is silent"
+ * stays distinguishable from "the document says zero".
+ */
+export function statedCamTaxAnnual(extraction) {
+  const read = (k) => num(val(extraction?.[k]));
+  const cam = read('est_cam_annual');
+  const tax = read('est_tax_annual');
+  if (cam === null && tax === null) return null;
+  const total = (cam || 0) + (tax || 0);
+  return total > 0 ? round2(total) : null;
+}
+
+// The same merge on the lease side, so the from→to comparison is like for like. A lease
+// holding NO estimate returns null, not 0 — the diff's "Now" column must read "—" rather
+// than "$0.00", which would claim someone had entered a zero.
+export function leaseCamTaxAnnual(lease) {
+  const cam = num(lease?.est_cam_annual);
+  const tax = num(lease?.est_tax_annual);
+  if (cam === null && tax === null) return null;
+  return (cam || 0) + (tax || 0);
+}
+
+/**
+ * Per-field confidence from an AI read, for the badges on the lease page. Lives here rather
+ * than beside the intake form because BOTH the new-tenant import and a replacement document
+ * store it — and a badge left over from the previous document is a badge describing a file
+ * that is no longer on the lease.
+ */
+export function buildAiConfidence(ex) {
+  const map = {};
+  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage',
+    'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms', 'est_cam_annual',
+    'est_tax_annual', 'security_deposit'].forEach((f) => {
+    if (ex?.[f] && ex[f].confidence != null) map[f] = ex[f].confidence;
+  });
+  return Object.keys(map).length ? map : null;
+}
+
+/**
+ * @param lease       the lease as it stands
+ * @param proposed    the extraction normalised through initialFromExtraction (LeaseNewPage)
+ * @param extraction  the raw AI read, for the figures initialFromExtraction reshapes for the form
+ * @param plan        buildScheduleFromExtraction's output — the rows that would actually be
+ *                    written, NOT the raw counts. A lease-year step the document prints with
+ *                    no date can't be scheduled, and promising one that never lands is worse
+ *                    than saying so.
+ * @returns { fields, touchesBilling, escalations, renewals, abatements, optionSteps, undated }
  *
  * A field appears ONLY when the new document actually states something for it. A lease the
  * AI couldn't read a deposit out of must not blank the deposit already on file — silence in
  * a document is not an instruction to erase.
  */
-export function newLeaseChanges(lease, proposed, counts = {}) {
+export function newLeaseChanges({ lease, proposed, extraction = null, plan = null } = {}) {
+  const stated = {
+    ...(proposed || {}),
+    // Not on the form's shape: the form holds a $/SF rate and multiplies at save, but the
+    // lease column is annual dollars, so compare annuals.
+    est_cam_annual: statedCamTaxAnnual(extraction),
+  };
   const fields = [];
   for (const f of FIELDS) {
-    const to = proposed?.[f.key];
-    const stated = NUMERIC.has(f.kind) ? num(to) !== null : text(to) !== '';
-    if (!stated) continue;
-    const from = lease?.[f.key];
+    const to = stated[f.key];
+    const says = NUMERIC.has(f.kind) ? num(to) !== null : text(to) !== '';
+    if (!says) continue;
+    // A stored null lease_type MEANS net (migration 0073), so a document read as net must
+    // not present itself as a change against it — that would put a row in the table every
+    // single time an ordinary NNN lease is re-uploaded.
+    const from = f.key === 'est_cam_annual' ? leaseCamTaxAnnual(lease)
+      : f.key === 'lease_type' ? (lease?.lease_type || 'net')
+        : lease?.[f.key];
     if (same(f.kind, from, to)) continue;
     fields.push({ ...f, from: from ?? null, to });
   }
@@ -81,9 +157,34 @@ export function newLeaseChanges(lease, proposed, counts = {}) {
     // Whether the stored invoice has to be rebuilt afterwards — the asymmetry in §1: the
     // ledger and the breakdown rebuild from live data on their own, the invoice does not.
     touchesBilling: fields.some((f) => f.billed),
-    escalations: Number(counts.escalations) || 0,
-    renewals: Number(counts.renewals) || 0,
-    abatements: Number(counts.abatements) || 0,
+    escalations: plan?.escalations?.length || 0,
+    renewals: plan?.renewals?.length || 0,
+    abatements: plan?.abatements?.length || 0,
+    optionSteps: plan?.optionSteps?.length || 0,
+    // Steps the document prints by lease year with no date the lease start could anchor —
+    // they are dropped, and the dialog says so rather than letting them vanish quietly.
+    undated: plan?.undated || 0,
+  };
+}
+
+/**
+ * What the lease WILL BE once `changes` is applied — the inputs the rent schedule has to be
+ * built from. A field the document doesn't state keeps the lease's own value, so this is not
+ * the same as reading the extraction.
+ *
+ * Shared by the review dialog and applyNewLeaseTerms so the schedule shown and the schedule
+ * written are built from identical numbers. Two derivations of "the new base rent" would
+ * drift the first time either side changed.
+ */
+export function newLeaseTargets(lease, changes) {
+  const of = (key) => {
+    const hit = (changes?.fields || []).find((f) => f.key === key);
+    return hit ? hit.to : lease?.[key];
+  };
+  return {
+    baseRent: num(of('base_rent')) ?? 0,
+    leaseStart: of('lease_start') || null,
+    termEnd: of('lease_termination_date') || null,
   };
 }
 
@@ -91,4 +192,5 @@ export function newLeaseChanges(lease, proposed, counts = {}) {
 // the same as what's already on the lease" rather than showing an empty table.
 export const hasNoChanges = (changes) =>
   !changes
-  || (changes.fields.length === 0 && !changes.escalations && !changes.renewals && !changes.abatements);
+  || (changes.fields.length === 0 && !changes.escalations && !changes.renewals
+      && !changes.abatements && !changes.optionSteps);

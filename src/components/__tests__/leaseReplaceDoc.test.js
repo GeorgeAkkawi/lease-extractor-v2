@@ -25,7 +25,12 @@ import { getLease, listDocuments } from '../../lib/api';
 // i.e. the only one where uploading a replacement is a real situation. The demo's canned
 // extract-lease answers with the Summit Fitness lease, so the diff is large and obvious.
 const LEASE = 'lease-2';
-const NEW = { base_rent: 96000, square_footage: 4200, start: '2025-03-01', end: '2030-02-28' };
+const NEW = { base_rent: 96000, square_footage: 4200, start: '2025-03-01', end: '2030-02-28', camTax: 14700 };
+
+// The from→to table and the rent-schedule table share a class; only the first is a diff.
+const DIFF = '.terms-diff:not(.schedule)';
+const diffRows = () => [...document.querySelectorAll(DIFF + ' tbody tr')]
+  .map((r) => r.textContent.replace(/\s+/g, ' ').trim());
 
 function mount(leaseText = 'x'.repeat(900)) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -69,12 +74,14 @@ beforeEach(async () => {
   const { data: files } = await supabase.from('lease_files').select('*');
   const { data: escs } = await supabase.from('rent_escalations').select('*');
   const { data: rens } = await supabase.from('renewal_options').select('*');
+  const { data: abs } = await supabase.from('rent_abatements').select('*');
   const lease = await getLease(LEASE);
   snapshot = {
     docs: JSON.parse(JSON.stringify(docs || [])),
     files: JSON.parse(JSON.stringify(files || [])),
     escs: JSON.parse(JSON.stringify(escs || [])),
     rens: JSON.parse(JSON.stringify(rens || [])),
+    abs: JSON.parse(JSON.stringify(abs || [])),
     lease: JSON.parse(JSON.stringify(lease)),
   };
 });
@@ -94,8 +101,10 @@ afterEach(async () => {
       storage_path: f.storage_path ?? null, original_filename: f.original_filename ?? null,
     }).eq('id', f.id);
   }
-  for (const table of ['rent_escalations', 'renewal_options']) {
-    const seed = table === 'rent_escalations' ? snapshot.escs : snapshot.rens;
+  const seeds = {
+    rent_escalations: snapshot.escs, renewal_options: snapshot.rens, rent_abatements: snapshot.abs,
+  };
+  for (const [table, seed] of Object.entries(seeds)) {
     const { data: now } = await supabase.from(table).select('*');
     for (const r of now || []) {
       if (!seed.some((s) => s.id === r.id)) await supabase.from(table).delete().eq('id', r.id);
@@ -112,6 +121,12 @@ afterEach(async () => {
     lease_start: snapshot.lease.lease_start,
     lease_termination_date: snapshot.lease.lease_termination_date,
     lease_terms: snapshot.lease.lease_terms,
+    est_cam_annual: snapshot.lease.est_cam_annual ?? null,
+    est_tax_annual: snapshot.lease.est_tax_annual ?? null,
+    est_confirmed_year: snapshot.lease.est_confirmed_year ?? null,
+    ai_confidence: snapshot.lease.ai_confidence ?? null,
+    ai_review: snapshot.lease.ai_review ?? null,
+    is_active: snapshot.lease.is_active,
   }).eq('id', LEASE);
 });
 
@@ -164,18 +179,58 @@ describe('reading it', () => {
   // ③ Old beside new, so nothing has to be taken on trust.
   it('shows every figure that would change, old beside new', async () => {
     await toReview();
-    const rows = [...document.querySelectorAll('.terms-diff tbody tr')]
-      .map((r) => r.textContent.replace(/\s+/g, ' ').trim());
+    const rows = diffRows();
 
     expect(rows.some((r) => /Base rent.*84,000.*96,000/.test(r))).toBe(true);
     expect(rows.some((r) => /Square footage.*3,000.*4,200/.test(r))).toBe(true);
+    // This lease holds no estimate at all, so "Now" must read as a blank — "$0.00" would
+    // claim somebody had entered a zero, which is a different statement entirely.
+    expect(rows.some((r) => /CAM & tax estimate—\$14,700\.00/.test(r))).toBe(true);
     // Rent and size rebuild an invoice; they are marked as the ones that do.
-    expect(document.querySelectorAll('.terms-diff tr.billed').length).toBeGreaterThanOrEqual(2);
+    expect(document.querySelectorAll(DIFF + ' tr.billed').length).toBeGreaterThanOrEqual(2);
     // The schedule is described in words rather than left as a surprise.
     const extra = document.querySelector('.terms-extra').textContent;
     expect(extra).toContain('rent step-up');
     expect(extra).toContain('renewal option');
     expect(extra).toContain('is rebuilt');
+  });
+
+  // George, 2026-08-04: *"if the rent escalation in the new lease is found the ledger needs
+  // to show."* A count is not a schedule — the DATES are what he checks against the document
+  // in his hand, and they are the one thing a count can't be checked against.
+  it('shows the new lease’s rent steps as dates and amounts, not as a count', async () => {
+    await toReview();
+    const steps = [...document.querySelectorAll('.terms-diff.schedule tbody tr')]
+      .map((r) => r.textContent.replace(/\s+/g, ' ').trim());
+    expect(steps.length).toBe(1);
+    // 3% on $96,000, effective March 1 2026 — the step the canned lease prints.
+    expect(steps[0]).toMatch(/March 1, 2026/);
+    expect(steps[0]).toMatch(/98,880/);
+    // And the reason the rent won't read $96,000 afterwards is stated, not left to be
+    // discovered — that step is already in the past.
+    expect(document.querySelector('.terms-extra').textContent).toContain('already dated in the past');
+  });
+
+  // The option priced year by year: captured on the new-tenant import from the start, and
+  // silently dropped here until now.
+  it('says the renewal option’s own rent schedule is captured too', async () => {
+    await toReview();
+    const text = document.querySelector('.modal').textContent;
+    expect(text).toContain('priced year by year');
+    expect(text).toContain('pending renewal');
+    expect(text).toMatch(/111,300/);
+  });
+
+  // The CAM & tax estimate is what the tenant is billed all year. A new lease that prices it
+  // and is applied without it bills the OLD document's estimate against the NEW rent.
+  it('shows the CAM & tax estimate the new lease states, marked as a billed figure', async () => {
+    await supabase.from('leases').update({ est_cam_annual: 9000, est_tax_annual: 0 }).eq('id', LEASE);
+    await toReview();
+    const row = diffRows().find((r) => /CAM & tax estimate/.test(r));
+    expect(row).toBeTruthy();
+    expect(row).toMatch(/9,000.*14,700/);
+    expect([...document.querySelectorAll(DIFF + ' tr.billed')]
+      .some((r) => /CAM & tax estimate/.test(r.textContent))).toBe(true);
   });
 
   // A document that restates the figures already on file must not present them as changes.
@@ -184,11 +239,12 @@ describe('reading it', () => {
       base_rent: NEW.base_rent, square_footage: NEW.square_footage,
       lease_start: NEW.start, lease_termination_date: NEW.end,
       lease_terms: 'NNN; 3% annual escalations.',
+      est_cam_annual: NEW.camTax, est_tax_annual: 0,
     }).eq('id', LEASE);
 
     await toReview();
     // Not one row, and the dialog says why rather than showing an empty table.
-    expect(document.querySelectorAll('.terms-diff tbody tr').length).toBe(0);
+    expect(diffRows().length).toBe(0);
     expect(screen.getByText(/No stored figure changes/)).toBeTruthy();
     // The schedule is still worth applying — the new lease's steps and options replace
     // the old ones even when every stored figure happens to match.
@@ -237,6 +293,60 @@ describe('applying it', () => {
     // matching the ledger that explains it.
     const { data: now } = await supabase.from('rent_escalations').select('*').eq('lease_id', LEASE);
     expect(now.some((e) => e.id === keptId)).toBe(true);
+  });
+
+  // The whole reason the estimate is in the diff: it is billed every month of the year.
+  it('writes the CAM & tax estimate the merged way the app bills from', async () => {
+    await supabase.from('leases').update({ est_cam_annual: 9000, est_tax_annual: 4000 }).eq('id', LEASE);
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await waitFor(async () => {
+      expect(Number((await getLease(LEASE)).est_cam_annual)).toBe(NEW.camTax);
+    });
+    const after = await getLease(LEASE);
+    // ⚠ The tax half must be ZEROED, not left where it was. est_cam_annual holds the
+    // COMBINED figure and every reader sums the two, so leaving $4,000 beside it would bill
+    // $18,700 against a lease that says $14,700.
+    expect(Number(after.est_tax_annual)).toBe(0);
+    expect(Number(after.est_confirmed_year)).toBe(new Date().getFullYear());
+  });
+
+  // George: *"the renewal options need to update."* An option priced year by year has to
+  // reach the ledger as dated rent, or the Renewal Options tab knows about a term the
+  // ledger shows as "Not listed" for all five years of it.
+  it('saves the renewal option’s year-by-year rent past the term end', async () => {
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await waitFor(async () => {
+      const { data } = await supabase.from('rent_escalations').select('*').eq('lease_id', LEASE);
+      expect(data.some((e) => e.effective_date === '2030-03-01')).toBe(true);
+    });
+    const { data: now } = await supabase.from('rent_escalations').select('*').eq('lease_id', LEASE);
+    const past = now.filter((e) => e.effective_date > NEW.end);
+    // Five option years, each dated, and all still SCHEDULED — they are projections gated
+    // behind confirming the option, not rent anyone owes.
+    expect(past.length).toBe(5);
+    expect(past.every((e) => e.status === 'scheduled')).toBe(true);
+    expect(Number(past.find((e) => e.effective_date === '2030-03-01').new_base_rent)).toBe(111300);
+    // …and the option row itself is on file with the rent it opens at.
+    const { data: rens } = await supabase.from('renewal_options').select('*').eq('lease_id', LEASE);
+    expect(rens.some((r) => r.status === 'pending' && Number(r.new_rent) === 111300)).toBe(true);
+  });
+
+  // A badge saying "91% confident" beside a square footage read out of a file that is no
+  // longer on the lease is worse than no badge.
+  it('moves the AI’s confidence and red-flag review onto the new document’s read', async () => {
+    await supabase.from('leases').update({
+      ai_confidence: { base_rent: 0.11 }, ai_review: { flags: [{ key: 'stale', title: 'From the old lease' }] },
+    }).eq('id', LEASE);
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await waitFor(async () => {
+      expect(Number((await getLease(LEASE)).ai_confidence?.base_rent)).toBe(0.88);
+    });
+    const after = await getLease(LEASE);
+    expect((after.ai_review?.flags || []).some((f) => f.key === 'stale')).toBe(false);
+    expect((after.ai_review?.flags || []).some((f) => f.key === 'no_personal_guarantee')).toBe(true);
   });
 
   it('records it in the history with every figure’s old and new value', async () => {

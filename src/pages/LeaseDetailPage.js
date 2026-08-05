@@ -3,7 +3,7 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit } from '../lib/api';
 import { depositReconciliation } from '../lib/deposits';
-import { settleBillingChange, settleLeaseListChange } from '../lib/invalidate';
+import { settleBillingChange, settleLeaseListChange, settleLeaseScheduleChange } from '../lib/invalidate';
 import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
 import { buildLeaseAskContext } from '../lib/leaseContext';
@@ -153,9 +153,7 @@ export default function LeaseDetailPage() {
     },
     onSuccess: () => {
       invalidate();
-      qc.invalidateQueries({ queryKey: ['escalations', leaseId] });
-      qc.invalidateQueries({ queryKey: ['abatements', leaseId] });
-      qc.invalidateQueries({ queryKey: ['renewals', leaseId] });
+      settleLeaseScheduleChange(qc, leaseId);
       settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
       setStartInput('');
     },

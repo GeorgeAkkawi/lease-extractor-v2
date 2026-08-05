@@ -46,6 +46,22 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });
 }
 
+// One place that knows what goes stale when a lease's SCHEDULE is rewritten wholesale —
+// anchoring a start date, or applying a new lease document over the old one. Those replace
+// the rent steps, the renewal options and the abatement windows in one action, and all three
+// render from their own per-lease keys that settleBillingChange deliberately does not cover
+// (it covers the shared money screens; this is the lease's own page).
+//
+// Named rather than repeated because the omission has a long tail: the lease-review strip
+// derives its "Option 1 has lapsed" warning from the renewal rows, so a stale ['renewals']
+// key leaves the page warning about an option the new lease already replaced — a live
+// contradiction between two panels a few inches apart.
+export function settleLeaseScheduleChange(qc, leaseId) {
+  for (const name of ['escalations', 'abatements', 'renewals']) {
+    qc.invalidateQueries({ queryKey: leaseId ? [name, leaseId] : [name] });
+  }
+}
+
 // One place that knows what goes stale when a lease APPEARS, DISAPPEARS or is RENAMED.
 //
 // THREE query keys render a lease list, and two of them are BATCH keys nobody was

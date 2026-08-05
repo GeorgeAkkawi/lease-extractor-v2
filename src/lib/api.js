@@ -14,6 +14,7 @@ import {
 import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
+import { newLeaseTargets, buildAiConfidence } from './newLeaseTerms';
 import { contractCoversYear, contractAnnualCost } from './contracts';
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
@@ -801,28 +802,25 @@ export async function anchorLeaseSchedule(leaseId, startDate) {
   // 2) Date + insert any schedule rows the lease is MISSING (never touch existing ones).
   if (ex) {
     const [existingEsc, existingAb] = await Promise.all([listEscalations(leaseId), listAbatements(leaseId)]);
+    // One builder, shared with both import paths — the free-rent anchor and the
+    // option-priced steps come with it rather than being re-derived here.
+    const plan = buildScheduleFromExtraction(ex, {
+      baseRent: Number(ex?.base_rent?.value) || Number(lease.base_rent) || 0,
+      leaseStart: start,
+      termEnd: patch.lease_termination_date || lease.lease_termination_date || null,
+    });
     if (existingEsc.length === 0) {
-      const base = Number(ex?.base_rent?.value) || Number(lease.base_rent) || 0;
-      // If the lease opens with a FREE-rent period, paid rent commences after it — so a
-      // lease-year rent table is dated from that rent-commencement point, not the start.
-      const freeMo = leadingFreeMonths(start, ex.abatements);
-      const rentStart = freeMo > 0 ? (addMonths(start, freeMo) || start) : start;
-      const escs = buildEscalations(base, ex.escalations, rentStart); // anchors months_from_start → real dates
+      const escs = [...plan.escalations, ...plan.optionSteps]; // months_from_start → real dates
       if (escs.length) {
         await rows(
           supabase.from('rent_escalations').insert(escs.map((e) => ({ ...e, lease_id: leaseId, owner_id: uid, status: 'scheduled' })))
         );
       }
     }
-    if (existingAb.length === 0 && Array.isArray(ex.abatements) && ex.abatements.length) {
-      // A free-rent window usually begins at rent commencement — fall its start back to
-      // the lease start when the lease didn't print a separate date for it.
-      const abs = buildAbatements(ex.abatements.map((a) => ({ ...a, start_date: a.start_date || start })));
-      if (abs.length) {
-        await rows(
-          supabase.from('rent_abatements').insert(abs.map((a) => ({ ...a, lease_id: leaseId, owner_id: uid })))
-        );
-      }
+    if (existingAb.length === 0 && plan.abatements.length) {
+      await rows(
+        supabase.from('rent_abatements').insert(plan.abatements.map((a) => ({ ...a, lease_id: leaseId, owner_id: uid })))
+      );
     }
   }
 
@@ -1007,6 +1005,69 @@ export function buildAbatements(abatements) {
       return { start_date: start, end_date: end, kind, value: kind === 'free' ? null : (a.value ?? null), note: a.note ?? null };
     })
     .filter(Boolean);
+}
+
+// ---- One rent schedule, built one way --------------------------------------
+// Everything a lease document says about MONEY OVER TIME, turned into the rows that get
+// written: the free-rent windows, the dated rent steps, the renewal options, and the
+// year-by-year rent an option prices for a term nobody has committed to yet.
+//
+// George, 2026-08-04: *"if the rent escalation in the new lease is found the ledger needs to
+// show, the lease terms need to update, the renewal options need to update. the lease
+// extractor needs to be as good as the original one we made for the new tenants."*
+//
+// He is describing a gap that existed because this logic was written FOUR times — the
+// new-tenant import (LeaseNewPage), its review preview (SchedulePreview), anchorLeaseSchedule
+// and the new-lease-over-an-existing-one path — and the fourth copy was the thin one. It
+// dated its steps from the lease start instead of rent commencement, and never built the
+// option-priced steps at all. That is exactly the drift CLAUDE.md §3 is about: two
+// implementations of one rule always separate. Now there is one, and all four call it.
+//
+// THE THREE RULES IT ENCODES, none of which are obvious from a call site:
+//
+//   1. A free-rent window with no printed start begins at the lease start. Undated windows
+//      are dropped by buildAbatements, so without this a "first two months free" clause that
+//      names no dates is simply lost.
+//   2. Paid rent COMMENCES after any leading free period, so a rent table printed by lease
+//      year ("Year 1 … Year 5") is anchored THERE, not at the lease start. Anchor it wrong
+//      and every step in the lease is dated early — the ledger bills the step-up before the
+//      tenant owes it.
+//   3. An option priced year by year becomes dated steps PAST the committed term end, gated
+//      as "pending renewal" everywhere until the option is confirmed
+//      (see buildRenewalScheduleSteps). Without them the Renewal Options tab knows the option
+//      exists but the ledger shows "Not listed" for every year of it.
+//
+//   extraction — the raw AI read
+//   baseRent / leaseStart / termEnd — what the lease WILL BE (newLeaseTargets), not what the
+//                                     document says in isolation: a field the document is
+//                                     silent on keeps the lease's own value.
+//
+// Returns the rows to insert plus what the landlord needs told: how many months of free rent
+// pushed rent commencement, and how many printed steps could NOT be dated (`undated` is
+// measured as stated-minus-built, so it can never disagree with what actually lands).
+export function buildScheduleFromExtraction(extraction, { baseRent, leaseStart, termEnd, today = new Date() } = {}) {
+  const ex = extraction || {};
+  const start = isoDateOrNull(leaseStart);
+  const rawAbs = Array.isArray(ex.abatements) ? ex.abatements : [];
+
+  const abatements = buildAbatements(rawAbs.map((a) => ({ ...a, start_date: a.start_date || start })));
+  const freeMonths = leadingFreeMonths(start, rawAbs);
+  const rentStart = freeMonths > 0 && start ? (addMonths(start, freeMonths) || start) : start;
+
+  const escalations = buildEscalations(baseRent, ex.escalations, rentStart);
+  const optionSteps = buildRenewalScheduleSteps(ex.renewal_options, termEnd, escalations, today);
+  const renewals = buildRenewals(ex.renewal_options);
+
+  const statedSteps = Array.isArray(ex.escalations) ? ex.escalations.length : 0;
+  return {
+    abatements,
+    escalations,
+    optionSteps,
+    renewals,
+    rentStart,
+    freeMonths,
+    undated: Math.max(0, statedSteps - escalations.length),
+  };
 }
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -1520,40 +1581,69 @@ export async function uploadNewLeaseDocument({ leaseId, file, oldDocId = null, k
 //                       EVERY tenant on the property.
 //
 // Both skip a closed year, so a bill already sent can't move under the landlord.
-export async function applyNewLeaseTerms({ leaseId, changes, extraction, today = new Date() }) {
+// `plan` is buildScheduleFromExtraction's output — the same object the review dialog showed
+// the dated steps and options out of. Passing it through rather than rebuilding it here is
+// the same rule as `changes.fields`: what the landlord approved and what gets written are
+// one object. It falls back to building its own so the function stays callable on its own.
+export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = null, today = new Date() }) {
   const uid = await ownerId();
   const lease = await getLease(leaseId);
   if (!lease) throw new Error('That lease no longer exists.');
 
-  const NUMERIC = new Set(['base_rent', 'square_footage', 'security_deposit']);
+  const NUMERIC = new Set(['base_rent', 'square_footage', 'security_deposit', 'est_cam_annual']);
   const patch = {};
   for (const f of changes?.fields || []) {
     patch[f.key] = NUMERIC.has(f.key) ? Number(f.to) : (f.to === '' ? null : f.to);
   }
+  // The CAM & tax estimate is stored MERGED — the combined figure on est_cam_annual with
+  // est_tax_annual zeroed — because that is the one convention every reader of it assumes
+  // (LeaseForm:73, applyAddendumChanges:2209, the Financials estimate save). Writing the
+  // combined figure while leaving the old tax estimate beside it would double-count the
+  // tax half into every month of the invoice. est_confirmed_year stamps the estimate as
+  // belonging to THIS year, which is what clears the Financials "carried over" note.
+  if (patch.est_cam_annual != null) {
+    patch.est_tax_annual = 0;
+    patch.est_confirmed_year = Number(localDateIso(today).slice(0, 4));
+  }
+  // The confidence badges and the red-flag review describe a DOCUMENT. Leaving the previous
+  // document's behind would caption the new lease with an assessment of a file that is no
+  // longer on it — so they move with the document, or are cleared if it came back without.
+  if (extraction) {
+    patch.ai_confidence = buildAiConfidence(extraction);
+    patch.ai_review = extraction.ai_review || null;
+  }
   if (Object.keys(patch).length) await updateLease(leaseId, patch);
 
-  const baseRent = patch.base_rent ?? lease.base_rent;
-  const rentStart = patch.lease_start ?? lease.lease_start;
+  // Built from what the lease WILL BE, not from the document in isolation — a figure the new
+  // document is silent on keeps the lease's own value, and the rent schedule has to be dated
+  // off those same numbers.
+  const built = plan || buildScheduleFromExtraction(extraction, { ...newLeaseTargets(lease, changes), today });
 
   // A new lease's rent schedule supersedes the old one's. Only SCHEDULED steps go — a step
   // already applied is history, and rewriting history is how a past invoice stops matching
   // the ledger that explains it.
-  const escRows = buildEscalations(baseRent, extraction?.escalations, rentStart);
+  //
+  // The option-priced steps ride the same insert: they are rent_escalations too, dated past
+  // the committed term end and gated as "pending renewal" until the option is confirmed. The
+  // same delete clears the previous document's, so a superseded option's projected rent can't
+  // outlive the lease that granted it.
+  const escRows = built.escalations;
+  const optRows = built.optionSteps;
   await rows(
     supabase.from('rent_escalations').delete()
       .eq('lease_id', leaseId).eq('status', 'scheduled')
   );
-  if (escRows.length) {
+  if (escRows.length || optRows.length) {
     await rows(
       supabase.from('rent_escalations').insert(
-        escRows.map((e) => ({ ...e, lease_id: leaseId, owner_id: uid, status: 'scheduled' }))
+        [...escRows, ...optRows].map((e) => ({ ...e, lease_id: leaseId, owner_id: uid, status: 'scheduled' }))
       )
     );
   }
 
   // Same rule one level along: a PENDING option is a right under the old lease and the new
   // one restates it; an exercised or lapsed one is a thing that happened.
-  const renRows = buildRenewals(extraction?.renewal_options);
+  const renRows = built.renewals;
   await rows(
     supabase.from('renewal_options').delete()
       .eq('lease_id', leaseId).eq('status', 'pending')
@@ -1569,7 +1659,7 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, today =
   // Abatements are ADDED, never cleared — unlike a scheduled step, an abatement window may
   // already have credited an issued invoice, and deleting it would leave that credit
   // unexplained. A stale window is visible on the lease; an orphaned credit is not.
-  const abRows = buildAbatements(extraction?.abatements);
+  const abRows = built.abatements;
   if (abRows.length) {
     await rows(
       supabase.from('rent_abatements').insert(
@@ -1587,11 +1677,21 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, today =
     meta: {
       fields: (changes?.fields || []).map((f) => ({ key: f.key, from: f.from ?? null, to: f.to })),
       escalations: escRows.length, renewals: renRows.length, abatements: abRows.length,
+      option_steps: optRows.length, free_months: built.freeMonths || 0,
     },
   });
 
-  // The invoice does not rebuild itself. Last, so one settle covers a rent change, a resize
-  // and a new term together rather than firing once per effect.
+  // ⚠ ROLL THE SCHEDULE FORWARD *BEFORE* THE RESYNC, not after. A new lease routinely prices
+  // a step that has already passed — the demo lease commences March 2025 and steps 3% each
+  // March, so applying it in August 2026 means the first step is history the moment it lands.
+  // backfillLeaseToToday is what applies it and moves base_rent to the real current rent.
+  // Rebuilding the invoice first would rebuild it from the rent BEFORE that step, and the
+  // lease would then read a rent its own invoice was never built from — a figure going
+  // quietly stale one line after it was fixed.
+  const rolled = await backfillLeaseToToday(leaseId, today);
+
+  // The invoice does not rebuild itself (CLAUDE.md §1). Last, so one settle covers a rent
+  // change, a resize, a new estimate and a new term together rather than firing per effect.
   let resynced = false;
   const sizeChanged = (changes?.fields || []).some((f) => f.key === 'square_footage');
   if (changes?.touchesBilling && lease.property_id) {
@@ -1605,12 +1705,17 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, today =
     resynced = true;
   }
 
-  await backfillLeaseToToday(leaseId, today);
   return {
     fields: (changes?.fields || []).length,
     escalations: escRows.length,
+    optionSteps: optRows.length,
     renewals: renRows.length,
     abatements: abRows.length,
+    freeMonths: built.freeMonths || 0,
+    undated: built.undated || 0,
+    // The rent the lease actually ends on, so the dialog can name it rather than leaving the
+    // landlord to wonder why it isn't the figure printed on page one of the document.
+    currentRent: rolled?.currentRent ?? null,
     resynced,
     propertyId: lease.property_id || null,
   };

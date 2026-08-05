@@ -1421,6 +1421,12 @@ textarea.text-input{resize:vertical;min-height:90px}
 .terms-diff .was{color:var(--muted);text-decoration:line-through}
 .terms-diff .now{font-weight:700}
 .terms-diff tr.billed .now{color:var(--accent)}
+/* Same table, two columns: the new lease's dated rent steps (date → rent). It has no
+   thead — there is no "before" to compare a step against, only the schedule itself. */
+.terms-diff.schedule{margin:2px 0 10px}
+/* Same 34% row-header as the diff table above it, so the two line up as one column. */
+.terms-diff.schedule tbody th{width:34%;font-weight:600}
+.terms-diff.schedule tbody tr:last-child th,.terms-diff.schedule tbody tr:last-child td{border-bottom:0}
 .terms-extra{margin:12px 0 0;padding-left:17px}
 .terms-extra li{font-size:12.5px;line-height:1.5;margin:4px 0}
 

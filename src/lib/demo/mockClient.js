@@ -373,7 +373,21 @@ const functions = {
           lease_termination_date: { value: '2030-02-28', confidence: 0.84, source_quote: 'expiring February 28, 2030', page: 2 },
           lease_terms: { value: 'NNN; 3% annual escalations.', confidence: 0.7, source_quote: 'triple net, escalating 3% annually', page: 3 },
           escalations: [{ effective_date: '2026-03-01', escalation_type: 'percent', escalation_value: 3, new_base_rent: null }],
-          renewal_options: [{ option_label: 'Option 1', notice_by_date: '2029-08-31', term_months: 60, new_rent: null, notes: 'FMV' }],
+          // The option is priced YEAR BY YEAR, which is the case that used to be captured on
+          // the new-tenant import and dropped on a replacement lease: rent_schedule becomes
+          // dated "pending renewal" steps past the term end (buildRenewalScheduleSteps), so
+          // the ledger can show the option's projected rent instead of "Not listed".
+          renewal_options: [{
+            option_label: 'Option 1', notice_by_date: '2029-08-31', term_months: 60,
+            new_rent: 111300, annual_escalation_pct: 3, notes: 'Priced year by year in Exhibit D',
+            rent_schedule: [
+              { months_from_option_start: 0, annual: 111300 },
+              { months_from_option_start: 12, annual: 114639 },
+              { months_from_option_start: 24, annual: 118078 },
+              { months_from_option_start: 36, annual: 121620 },
+              { months_from_option_start: 48, annual: 125269 },
+            ],
+          }],
           // Stated estimated CAM (annualized in code from "$3.50/SF per annum" × 4,200 SF)
           // — prefills the review form's Est. CAM field, like the live extractor.
           est_cam_annual: { value: 14700, confidence: 0.9, source_quote: 'estimated CAM charges of $3.50 per square foot per annum', page: null },
@@ -401,7 +415,8 @@ const functions = {
           'Annual Adjustment: Base Rent shall increase by three percent (3%) on each anniversary, first effective March 1, 2026.',
           'Lease Type: Triple net (NNN). Tenant pays its pro-rata share of property taxes, CAM, and insurance,',
           'including estimated CAM charges of $3.50 per square foot per annum, reconciled annually.',
-          'Renewal: Tenant shall have one (1) option to renew for five (5) years at fair market value upon written notice no later than August 31, 2029.',
+          'Renewal: Tenant shall have one (1) option to renew for five (5) years upon written notice no later than August 31, 2029,',
+          'at the rents set out in Exhibit D: $111,300 in the first option year, escalating three percent (3%) each year thereafter.',
           'Maintenance: Landlord maintains roof and structure; Tenant maintains the interior of the Premises.',
         ].join('\n'),
       });

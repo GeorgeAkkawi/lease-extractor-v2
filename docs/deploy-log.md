@@ -14,6 +14,84 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **One rent-schedule builder, shared by all four import paths — the new-lease
+  upload now captures free rent, option-priced rent and the CAM & tax estimate like the original
+  extractor does** (George: *"usually that stuff goes by months so the rent escalations wont be hard
+  to implement. Like the claude.md says you should run through the money spine — if the rent
+  escalation in the new lease is found the ledger needs to show, the lease terms need to update, the
+  renewal options need to update. the lease extractor needs to be as good as the original one we made
+  for the new tenants."*). Deployed: frontend Cloudflare **`77674299`**, demo worker **`2e858d92`**.
+  **No migration** (`lease_type` 0073, `ai_review` 0069, `est_*_annual` and `est_confirmed_year` all
+  already exist). **No edge-function change.** Tests **1690/1690** across 166 files (was 1679/165).
+  - **The root cause was four copies of one rule.** Turning a lease document's money-over-time into
+    rows was written out four separate times — the new-tenant import (`LeaseNewPage:47-63`), its
+    review preview (`SchedulePreview:229-246`), `anchorLeaseSchedule` (`api.js:802-826`) and the
+    upload-a-new-lease path (`applyNewLeaseTerms`) — and the fourth was the thin one. Exactly the
+    drift CLAUDE.md §3 names. There is now **one**: `buildScheduleFromExtraction(extraction, {baseRent,
+    leaseStart, termEnd, today})` in `api.js`, and all four call it. Three rules ride with it, none of
+    them obvious from a call site:
+    1. **A free-rent window with no printed start begins at the lease start.** `buildAbatements` drops
+       undated windows, so a "first three months free" clause naming no dates was simply lost.
+    2. **Paid rent COMMENCES after any leading free period**, so a rent table printed by lease year is
+       anchored *there*, not at the term start. The old path anchored at the term start — every step
+       in such a lease was dated early, and the ledger billed the step-up before it was owed.
+    3. **An option priced year by year becomes dated steps past the committed term end**, gated as
+       *pending renewal*. The old path never built them: the Renewal Options tab knew the option
+       existed and the ledger read "Not listed" for all five years of it.
+  - **What the new-lease upload gained, beyond the schedule.** Each of these is a billed figure the
+    old path silently left on the previous document's value:
+    - **The combined CAM & tax estimate** (`est_cam_annual`, with `est_tax_annual` zeroed and
+      `est_confirmed_year` stamped — the merged convention every reader assumes, `LeaseForm:73` /
+      `applyAddendumChanges:2209`). It is what the tenant is billed all year; applying a new lease
+      without it billed the OLD document's estimate against the NEW rent. It is in the diff table,
+      marked billed, and a lease holding no estimate shows **"—"**, not `$0.00`.
+    - **`lease_type` (net vs gross)** — decides whether CAM/tax/roof are added on top of the rent or
+      carved out of it (`billedComponents` → `resyncYearBillingToEstimate`). A whole-invoice error,
+      not a cosmetic one. A stored `null` is treated as `net` (0073's rule) so an ordinary NNN lease
+      doesn't grow a spurious diff row on every re-upload.
+    - **`ai_confidence` + `ai_review`** now move with the document. They describe a *file*; leaving
+      the old one's behind captioned the new lease with an assessment of a document no longer on it.
+  - **⚠ ORDERING FIX — `backfillLeaseToToday` now runs BEFORE the resync, not after.** A new lease
+    routinely prices a step that has already passed (the demo lease commences March 2025 and steps 3%
+    each March, so applying it in August 2026 makes the first step history on arrival). The backfill
+    is what applies it and moves `base_rent`. Rebuilding the invoice first rebuilt it from the rent
+    *before* that step, leaving the lease reading a rent its own invoice was never built from — a
+    figure going stale one line after it was fixed. **Not fixed here, and it is the same shape:
+    `applyAddendumChanges` (`api.js:2237-2244`) still resyncs and then back-fills.** A rider stating a
+    rent effective on a past date has the same drift. Left alone deliberately — separate task, and
+    another session may be in that file — but it is the next thing to look at in there.
+  - **Query-key omission fixed (CLAUDE.md §6).** New `settleLeaseScheduleChange(qc, leaseId)` in
+    `src/lib/invalidate.js` invalidates `['escalations'|'abatements'|'renewals', leaseId]`. Both
+    `LeaseDocs` and `LeaseDetailPage`'s start-date anchor use it; the latter had the trio hand-rolled
+    inline. Without it, applying a new lease left the lease-review strip warning **"Option 1 has
+    lapsed"** about the option that document had just replaced — two panels a few inches apart
+    contradicting each other until a hard reload.
+  - **Approved === written, now for the schedule too.** The dialog shows the *dated* steps
+    (`March 1, 2026 → $98,880.00/yr`), not a count of them, plus a rent-commencement note when free
+    rent shifts them, and a warning naming any step the document prints with no date the lease start
+    can place (`undated` is measured stated-minus-built, so it can't disagree with what lands). The
+    `plan` object shown is the object passed to `applyNewLeaseTerms` — the same rule `changes.fields`
+    already followed. It also states plainly that past-dated steps apply on the way in, so the rent
+    ending at $98,880 rather than the $96,000 printed on page one reads as the feature it is.
+  - **Files.** `src/lib/api.js` (new `buildScheduleFromExtraction`; `applyNewLeaseTerms` rewritten;
+    `anchorLeaseSchedule` switched to the shared builder) · `src/lib/newLeaseTerms.js` (object
+    signature; `est_cam_annual` + `lease_type` fields; `statedCamTaxAnnual`, `leaseCamTaxAnnual`,
+    `newLeaseTargets`; `buildAiConfidence` moved here from `LeaseNewPage`) · `src/lib/invalidate.js` ·
+    `src/components/LeaseDocs.js` · `src/pages/LeaseNewPage.js` · `src/pages/LeaseDetailPage.js` ·
+    `src/App.css` (`.terms-diff.schedule`) · `src/lib/demo/mockClient.js` (the canned option now
+    carries a `rent_schedule`, so the behaviour is demonstrable) · tests
+    `src/lib/__tests__/leasePlanFromExtraction.test.js` (new, 5) and
+    `src/components/__tests__/leaseReplaceDoc.test.js` (14 → 20).
+  - **Verified on the deployed demo**, City Dental, cache disabled via CDP: diff read `Base rent
+    $84,000 → $96,000`, `Square footage 3,000 → 4,200`, `CAM & tax estimate — → $14,700.00`,
+    `Lease start Jun 1 2025 → Mar 1 2025`, `Lease end May 31 2026 → Feb 28 2030`, `Terms …`; schedule
+    `March 1, 2026 $98,880.00/yr`; *"5 further steps from March 1, 2030 at $111,300.00/yr … shown as
+    pending renewal"*. After applying: **6 figures updated**, rent in effect **$98,880.00**,
+    `EST. CAM & TAX $3.5/SF = $14,700.00/yr` on the lease, the rent schedule showing
+    `March 1, 2030 · $111,300.00 · IF RENEWED`, the red flags now those of the NEW document, and the
+    stale "Option 1 has lapsed" warning **gone**. Zero app console errors (the only entries are
+    Google-Fonts CORS failures caused by the CDP cache-disable header itself).
+
 - **2026-08-04** — **"Upload new lease" now moves the figures too — read, show the diff, then apply,
   with the bill rebuilt behind it** (George, correcting the round below: *"well if i replace a lease
   with a new one id want the figures to change based on the new lease thats the point so it should say

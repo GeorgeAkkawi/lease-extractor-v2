@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildEscalations, buildRenewals, buildRenewalScheduleSteps, buildAbatements, isoDateOrNull, discardDocument } from '../lib/api';
+import { getCorporation, getProperty, createLease, createLeaseFromExtraction, buildScheduleFromExtraction, isoDateOrNull, discardDocument } from '../lib/api';
+import { buildAiConfidence } from '../lib/newLeaseTerms';
 import { settleLeaseListChange } from '../lib/invalidate';
 import { resolveCurrentTerm } from '../lib/leaseTerm';
-import { abatementKindLabel, leadingFreeMonths } from '../lib/abatement';
+import { abatementKindLabel } from '../lib/abatement';
 import { addMonths } from '../lib/renewals';
 import { money, fmtDate } from '../lib/format';
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
@@ -44,30 +45,21 @@ export default function LeaseNewPage() {
   });
   const createFromAi = useMutation({
     mutationFn: (lease) => {
-      const rawAbs = extractedDoc.extraction.abatements;
-      // A free-rent window with no printed date of its own begins at the lease start the
-      // user just confirmed — anchor it so it's actually saved (undated windows are dropped).
-      const abatements = buildAbatements((rawAbs || []).map((a) => ({ ...a, start_date: a.start_date || lease.lease_start })));
-      // If the lease opens with FREE rent, paid rent commences AFTER it — so date the
-      // lease-year rent steps from that rent-commencement point, not the lease start.
-      const freeMo = leadingFreeMonths(lease.lease_start, rawAbs);
-      const rentStart = freeMo > 0 && lease.lease_start ? (addMonths(lease.lease_start, freeMo) || lease.lease_start) : lease.lease_start;
-      // Committed (in-term) rent steps, plus DATED steps for any renewal option priced
-      // year-by-year — the latter sit PAST the committed term end, gated as "pending
-      // renewal" until the option is confirmed (see buildRenewalScheduleSteps).
-      const committedEscs = buildEscalations(lease.base_rent, extractedDoc.extraction.escalations, rentStart);
-      const optionEscs = buildRenewalScheduleSteps(
-        extractedDoc.extraction.renewal_options,
-        lease.lease_termination_date,
-        committedEscs,
-      );
+      // The free-rent anchor, the undated-window fallback and the option-priced steps all
+      // live in ONE builder now, shared with the replacement-lease path and
+      // anchorLeaseSchedule — see buildScheduleFromExtraction (api.js) for the rules.
+      const plan = buildScheduleFromExtraction(extractedDoc.extraction, {
+        baseRent: lease.base_rent,
+        leaseStart: lease.lease_start,
+        termEnd: lease.lease_termination_date,
+      });
       return createLeaseFromExtraction({
         propertyId: propId,
         leaseFileId: extractedDoc.lease_file_id,
         lease,
-        escalations: [...committedEscs, ...optionEscs],
-        renewals: buildRenewals(extractedDoc.extraction.renewal_options),
-        abatements,
+        escalations: [...plan.escalations, ...plan.optionSteps],
+        renewals: plan.renewals,
+        abatements: plan.abatements,
         aiConfidence: buildAiConfidence(extractedDoc.extraction),
         leaseText: extractedDoc.lease_text,
         // The red-flag review the analyst answered during the same read — carried onto
@@ -203,14 +195,6 @@ export function initialFromExtraction(ex) {
     lease_type: ex?.lease_type === 'gross' ? 'gross' : ex?.lease_type === 'net' ? 'net' : '',
   };
 }
-function buildAiConfidence(ex) {
-  const map = {};
-  ['tenant_name', 'tenant_contact_name', 'tenant_email', 'premises_address', 'square_footage', 'base_rent', 'lease_start', 'lease_termination_date', 'lease_terms', 'est_cam_annual', 'est_tax_annual', 'security_deposit'].forEach((f) => {
-    if (ex[f] && ex[f].confidence != null) map[f] = ex[f].confidence;
-  });
-  return Object.keys(map).length ? map : null;
-}
-
 // Shows what will actually be saved: the dated rent schedule + the rent in effect
 // TODAY (computed by the same back-fill resolver). Makes the step-ups visible on the
 // review screen so the "starting rent" in the form isn't mistaken for today's rent —
@@ -226,9 +210,11 @@ function SchedulePreview({ ex }) {
     const after = addMonths(start, termMonths);
     if (after) { const d = new Date(after + 'T12:00:00'); d.setDate(d.getDate() - 1); end = d.toISOString().slice(0, 10); }
   }
-  const freeMo = leadingFreeMonths(start, ex.abatements);
-  const rentStart = freeMo > 0 && start ? (addMonths(start, freeMo) || start) : start;
-  const escs = buildEscalations(base, ex.escalations, rentStart).map((e) => ({ ...e, status: 'scheduled' }));
+  // The same builder the save below uses, so this preview cannot promise a schedule the
+  // save wouldn't write (buildScheduleFromExtraction, api.js).
+  const plan = buildScheduleFromExtraction(ex, { baseRent: base, leaseStart: start, termEnd: end });
+  const freeMo = plan.freeMonths;
+  const escs = plan.escalations.map((e) => ({ ...e, status: 'scheduled' }));
   // Lease-year steps with no printed date (they get real dates from the Lease start above,
   // at save). Only surfaced here when we couldn't date them yet (no extracted start).
   const rawEsc = Array.isArray(ex.escalations) ? ex.escalations : [];
@@ -237,13 +223,13 @@ function SchedulePreview({ ex }) {
     .map((e) => ({ months: Number(e.months_from_start), rent: Number(e.new_base_rent) }))
     .sort((a, b) => a.months - b.months);
   const showRelative = escs.length === 0 && relativeSteps.length > 0;
-  const rens = buildRenewals(ex.renewal_options).map((r, i) => ({ ...r, id: `r${i}`, status: 'pending' }));
+  const rens = plan.renewals.map((r, i) => ({ ...r, id: `r${i}`, status: 'pending' }));
   // Dated steps for any renewal option priced year-by-year — they sit past the committed
   // term end as a muted "pending renewal" group (see buildRenewalScheduleSteps). Surfaced
   // so the review screen tells the landlord the option's projected rent was captured.
-  const optionSteps = buildRenewalScheduleSteps(ex.renewal_options, end, escs);
+  const optionSteps = plan.optionSteps;
   const optionRentStart = optionSteps.length ? optionSteps[0].new_base_rent : null;
-  const abs = buildAbatements((ex.abatements || []).map((a) => ({ ...a, start_date: a.start_date || start })));
+  const abs = plan.abatements;
   const res = resolveCurrentTerm({ lease: { base_rent: base, lease_start: start, lease_termination_date: end }, escalations: escs, renewals: rens });
   const advanced = Math.round(res.currentRent) !== Math.round(base);
   const flag = ex.rent_schedule_flag;

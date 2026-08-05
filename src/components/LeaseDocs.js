@@ -2,12 +2,12 @@ import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   listDocuments, deleteDocument, deleteLeaseFile, updateLease, uploadDoc, signDocUrl,
-  uploadNewLeaseDocument, applyNewLeaseTerms, getLease,
+  uploadNewLeaseDocument, applyNewLeaseTerms, getLease, buildScheduleFromExtraction,
 } from '../lib/api';
 import { fmtDate, money } from '../lib/format';
 import { initialFromExtraction } from '../pages/LeaseNewPage';
-import { newLeaseChanges, hasNoChanges } from '../lib/newLeaseTerms';
-import { settleBillingChange } from '../lib/invalidate';
+import { newLeaseChanges, newLeaseTargets, hasNoChanges } from '../lib/newLeaseTerms';
+import { settleBillingChange, settleLeaseScheduleChange } from '../lib/invalidate';
 import { useConfirm } from './ConfirmDialog';
 
 // The lease's own document, in exactly the shape a rider has — George, 2026-08-04:
@@ -303,6 +303,7 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
   const [phase, setPhase] = useState('ask'); // ask | reading | review | applying | done | failed
   const [read, setRead] = useState(null);    // { extraction, length }
   const [changes, setChanges] = useState(null);
+  const [plan, setPlan] = useState(null);    // the schedule rows the review below shows
   const [applied, setApplied] = useState(null);
   const [err, setErr] = useState('');
 
@@ -318,11 +319,15 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
       const lease = await getLease(leaseId);
       const ex = res.extraction || {};
       const proposed = initialFromExtraction(ex);
-      setChanges(newLeaseChanges(lease, proposed, {
-        escalations: (ex.escalations || []).length,
-        renewals: (ex.renewal_options || []).length,
-        abatements: (ex.abatements || []).length,
-      }));
+      // Two passes, and the order is forced: the rent schedule has to be dated off the rent
+      // and start date the lease WILL HAVE, which is only known once the field diff exists —
+      // and the diff's counts have to be the rows that will actually be written, not the raw
+      // ones the document printed. Both passes read identical field inputs, so the fields
+      // they produce are the same object twice; only the counts differ.
+      const fieldsOnly = newLeaseChanges({ lease, proposed, extraction: ex });
+      const built = buildScheduleFromExtraction(ex, newLeaseTargets(lease, fieldsOnly));
+      setPlan(built);
+      setChanges(newLeaseChanges({ lease, proposed, extraction: ex, plan: built }));
       setPhase('review');
     } catch (e) {
       setErr(e?.message || String(e));
@@ -334,9 +339,15 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
   async function applyIt() {
     setPhase('applying'); setErr('');
     try {
-      const res = await applyNewLeaseTerms({ leaseId, changes, extraction: read?.extraction });
+      // The plan goes with it: the steps written are the steps he just read, not a second
+      // derivation that could have moved between the review and the button.
+      const res = await applyNewLeaseTerms({ leaseId, changes, plan, extraction: read?.extraction });
       setApplied(res);
       qc.invalidateQueries({ queryKey: ['lease', leaseId] });
+      // The rent steps, the options and the abatement windows were all replaced, and each
+      // renders from its own per-lease key — including the lease-review strip's lapsed-option
+      // warning, which would otherwise still be describing the option this document retired.
+      settleLeaseScheduleChange(qc, leaseId);
       // The billed figures moved, so every screen that reads them has to repaint. One
       // shared set rather than a hand-rolled list — hand-rolled lists drift by omission.
       settleBillingChange(qc, {
@@ -352,6 +363,11 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
   const busyPhase = phase === 'reading' || phase === 'applying';
   const show = (f, v) => {
     if (v === null || v === undefined || v === '') return '—';
+    // "net" / "gross" is the whole difference between billing CAM & tax on top of the rent
+    // and carving them out of it, so it is spelled out rather than shown as the raw word.
+    if (f.key === 'lease_type') {
+      return v === 'gross' ? 'Gross — CAM & tax inside the rent' : 'Net — CAM & tax billed on top';
+    }
     if (f.kind === 'money') return money(v);
     if (f.kind === 'date') return fmtDate(v);
     if (f.kind === 'number') return Number(v).toLocaleString();
@@ -459,6 +475,50 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
                       No stored figure changes — only the schedule below.
                     </p>
                   )}
+                  {/* The schedule itself, dated — not a count of it. George, 2026-08-04:
+                      *"if the rent escalation in the new lease is found the ledger needs to
+                      show, the lease terms need to update, the renewal options need to
+                      update."* A step is only real once it has a date; showing the dates is
+                      what lets him check them against the document in front of him before
+                      any of it reaches the ledger. */}
+                  {plan?.escalations?.length > 0 && (
+                    <>
+                      <p className="doc-choice-head">The new lease’s rent schedule</p>
+                      {plan.freeMonths > 0 && (
+                        <p className="muted" style={{ fontSize: 12.5, marginTop: -4 }}>
+                          Rent commences <strong>{plan.freeMonths} month{plan.freeMonths === 1 ? '' : 's'}</strong> after
+                          the start date — the steps below are dated from there, not from the term start.
+                        </p>
+                      )}
+                      <table className="terms-diff schedule">
+                        <tbody>
+                          {plan.escalations.map((e) => (
+                            <tr key={`e-${e.effective_date}`}>
+                              <th scope="row">{fmtDate(e.effective_date)}</th>
+                              <td className="now">{money(e.new_base_rent)}<span className="muted"> / yr</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                  {plan?.optionSteps?.length > 0 && (
+                    <p className="muted" style={{ fontSize: 12.5 }}>
+                      The renewal option is priced year by year — <strong>{plan.optionSteps.length} further
+                      step{plan.optionSteps.length === 1 ? '' : 's'}</strong> from {fmtDate(plan.optionSteps[0].effective_date)} at{' '}
+                      {money(plan.optionSteps[0].new_base_rent)}/yr are saved past the term end and shown
+                      as <em>pending renewal</em>. They only become real rent if the option is confirmed.
+                    </p>
+                  )}
+                  {changes.undated > 0 && (
+                    <p className="note-msg warn">
+                      ⚠ <strong>{changes.undated}</strong> rent step
+                      {changes.undated === 1 ? '' : 's'} in the document {changes.undated === 1 ? 'has' : 'have'} no
+                      date the lease start can place {changes.undated === 1 ? 'it' : 'them'} on, so
+                      {changes.undated === 1 ? ' it is' : ' they are'} not saved. Add{' '}
+                      {changes.undated === 1 ? 'it' : 'them'} by hand on the Rent schedule after applying.
+                    </p>
+                  )}
                   <ul className="terms-extra">
                     <li>
                       <strong>{changes.escalations || 'No'}</strong> rent step-up
@@ -483,6 +543,17 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
                       <li>
                         This tenant’s <strong>invoice for {new Date().getFullYear()} is rebuilt</strong>{' '}
                         from the new figures. A closed year is skipped.
+                      </li>
+                    )}
+                    {/* A lease whose first step is already in the past is the ordinary case,
+                        not an edge case — and the rent it lands on is NOT the figure printed
+                        on page one. Saying so here is the difference between that reading as
+                        a feature and reading as a bug. */}
+                    {plan?.escalations?.some((e) => e.effective_date <= new Date().toISOString().slice(0, 10)) && (
+                      <li>
+                        Step-ups already dated in the past are applied on the way in, so the rent
+                        ends at <strong>today’s</strong> figure from this schedule — not the starting
+                        rent printed on the document.
                       </li>
                     )}
                   </ul>
@@ -520,6 +591,16 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
                 {' '}{applied?.escalations || 0} rent step-up{applied?.escalations === 1 ? '' : 's'} and
                 {' '}{applied?.renewals || 0} renewal option{applied?.renewals === 1 ? '' : 's'} on file.
               </p>
+              {applied?.currentRent != null && (
+                <p className="muted" style={{ fontSize: 12.5 }}>
+                  The rent in effect today is <strong>{money(applied.currentRent)}/yr</strong> — the new
+                  lease’s schedule rolled forward to {fmtDate(new Date().toISOString().slice(0, 10))}.
+                  {applied?.optionSteps > 0 && (
+                    <> Another {applied.optionSteps} step{applied.optionSteps === 1 ? '' : 's'} sit past the
+                    term end as <em>pending renewal</em>.</>
+                  )}
+                </p>
+              )}
               <p className="muted" style={{ fontSize: 12.5 }}>
                 {applied?.resynced
                   ? 'This tenant’s bill for the current year has been rebuilt from the new figures; a closed year was skipped. '
