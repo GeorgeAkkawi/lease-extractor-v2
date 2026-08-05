@@ -487,29 +487,60 @@ export function buildAlerts(
   //
   // Both are standing alerts (no horizonDays) — there is no deadline to count toward, only
   // work sitting undone, which is exactly what tier 1 is for.
+  //
+  // ⚠ AN ENVELOPE NOW HAS TWO KINDS OF HOME (0093): a lease, or a SERVICE CONTRACT sent to a
+  // vendor. Both raise the same two alerts, because the landlord owes the same two acts —
+  // but the words, the anchor and the destination all differ, and getting any of them from
+  // the lease branch would send him to a lease page that does not exist for a snow contract.
   if (esignOn) {
+    const contractById = {};
+    (contracts || []).forEach((c) => { contractById[c.id] = c; });
     (envelopes || []).forEach((env) => {
-      const lease = leaseById[env.lease_id];
+      const onContract = !!env.contract_id;
+      // Both modules have to be on for a contract envelope to raise anything: turning
+      // Service contracts off hides the tab these alerts send him to.
+      if (onContract && !contractsOn) return;
       const corpId = propMap[env.property_id]?.corporation_id;
-      const who = env.signer_typed_name || env.signer_name || 'The tenant';
-      const tenant = lease?.tenant_name || 'tenant';
+      const contract = env.contract_id ? contractById[env.contract_id] : null;
+      const who = env.signer_typed_name || env.signer_name || (onContract ? 'The vendor' : 'The tenant');
+      // What the document is ABOUT, for the second half of the detail line.
+      const subject = onContract
+        ? (contract?.name || contract?.vendor || 'service contract')
+        : (leaseById[env.lease_id]?.tenant_name || 'tenant');
+      const anchors = {
+        envelope_id: env.id,
+        lease_id: env.lease_id || null,
+        contract_id: env.contract_id || null,
+        property_id: env.property_id,
+        corporation_id: corpId,
+      };
       if (env.status === 'signed') {
         out.push({
-          envelope_id: env.id, lease_id: env.lease_id, property_id: env.property_id, corporation_id: corpId,
+          ...anchors,
           focus: 'signature_countersign', tone: 'warn', bucketLabel: 'Waiting on you',
           date: env.signed_at ? String(env.signed_at).slice(0, 10) : null, days: -6,
           title: `Signed — countersign “${env.title}”`,
-          detail: `${who} signed ${env.signed_at ? fmtDate(String(env.signed_at).slice(0, 10)) : ''} · ${tenant}`,
-          action: 'Open the lease and countersign it — that builds the signed copy and emails you both.',
+          detail: `${who} signed ${env.signed_at ? fmtDate(String(env.signed_at).slice(0, 10)) : ''} · ${subject}`,
+          action: onContract
+            ? 'Open the Contracts tab and countersign it — that builds the signed copy and emails you both.'
+            : 'Open the lease and countersign it — that builds the signed copy and emails you both.',
         });
       } else if (env.status === 'executed' && !env.applied_at) {
         out.push({
-          envelope_id: env.id, lease_id: env.lease_id, property_id: env.property_id, corporation_id: corpId,
+          ...anchors,
           focus: 'signature_apply', tone: 'info', bucketLabel: 'Signed, not applied',
           date: env.executed_at ? String(env.executed_at).slice(0, 10) : null, days: -4,
-          title: `Signed but not applied — “${env.title}”`,
-          detail: `Signed by both parties · nothing on ${tenant}’s lease has changed yet`,
-          action: 'Open the lease to file it against the term, or leave it as a signed record.',
+          // On a contract the unapplied state is not merely untidy: the signed fee has not
+          // reached CAM, so every tenant is still being billed off the OLD figure.
+          title: onContract
+            ? `Signed but not read — “${env.title}”`
+            : `Signed but not applied — “${env.title}”`,
+          detail: onContract
+            ? `Signed by both parties · ${subject}’s fee, term and renewal are still the old ones`
+            : `Signed by both parties · nothing on ${subject}’s lease has changed yet`,
+          action: onContract
+            ? 'Open the Contracts tab and read the signed copy — Amlak shows what changes before anything moves.'
+            : 'Open the lease to file it against the term, or leave it as a signed record.',
         });
       }
     });

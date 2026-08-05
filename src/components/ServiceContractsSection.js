@@ -4,11 +4,17 @@ import {
   listServiceContracts, listContractEscalationsByProperty, addServiceContract,
   createServiceContractFromDocument, updateServiceContract, deleteServiceContract,
   replaceContractEscalations, extractContract, uploadDoc, askDoc, listDocuments, signDocUrl,
+  getProperty, getCorporation, draftContractAdditionalInsuredEmail,
 } from '../lib/api';
 import { contractAnnualCost, stepsByContract, nextContractStep } from '../lib/contracts';
 import { contractChanges, contractTargets, buildContractFeeSteps, hasNoContractChanges } from '../lib/contractTerms';
 import { settleBillingChange, settleContractChange } from '../lib/invalidate';
-import ContractDocs, { ContractReview } from './ContractDocs';
+import { needsApply } from '../lib/envelopes';
+import { useFeatures } from '../lib/features';
+import ContractDocs, { ContractReview, SignedContractModal } from './ContractDocs';
+import { ContractEnvelopeRows } from './AddendumEnvelopeRows';
+import SendForSignatureModal from './SendForSignatureModal';
+import NotificationEmailModal from './NotificationEmailModal';
 import DocAssistant from './DocAssistant';
 import DocumentsList from './DocumentsList';
 import { money, fmtDate, currentYear } from '../lib/format';
@@ -27,7 +33,18 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 // is the flow George asked for on 2026-08-05 ("the same system as the leases").
 export default function ServiceContractsSection({ propId }) {
   const qc = useQueryClient();
+  const { isOn } = useFeatures();
   const { data: contracts = [] } = useQuery({ queryKey: ['serviceContracts', propId], queryFn: () => listServiceContracts(propId) });
+  // Sending a contract for signature needs the property (the envelope carries property_id)
+  // and the corporation (its name is the From, its email the Reply-To). Read here on the
+  // SAME keys ContractsPage already warms, so this is a cache hit on the real page and still
+  // works when the section is mounted on its own.
+  const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId), enabled: !!propId });
+  const { data: corp } = useQuery({
+    queryKey: ['corporation', prop?.corporation_id],
+    queryFn: () => getCorporation(prop.corporation_id),
+    enabled: !!prop?.corporation_id,
+  });
   // ONE query for every contract's dated fee steps (0091), read at the section level and
   // passed down — never a useQuery per row, which on a property with eight contracts is
   // eight round trips for a figure the list needs before it can print anything.
@@ -38,6 +55,7 @@ export default function ServiceContractsSection({ propId }) {
   });
   const steps = stepsByContract(stepRows);
   const [adding, setAdding] = useState(false);
+  const [sending, setSending] = useState(false);
 
   // A contract change reaches money: its fee becomes a CAM line item → cam_total → every
   // tenant's share → a stored invoice. So BOTH named sets fire — the contract's own screens
@@ -58,7 +76,11 @@ export default function ServiceContractsSection({ propId }) {
       {contracts.length > 0 && (
         <div className="svc-list">
           {contracts.map((c) => (
-            <ContractItem key={c.id} c={c} steps={steps.get(c.id) || []} onChange={invalidate} />
+            <ContractItem
+              key={c.id} c={c} steps={steps.get(c.id) || []}
+              property={prop} corp={corp} esignOn={isOn('esign')}
+              onChange={invalidate}
+            />
           ))}
         </div>
       )}
@@ -66,17 +88,44 @@ export default function ServiceContractsSection({ propId }) {
       {adding ? (
         <AddContract propId={propId} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); invalidate(); }} />
       ) : (
-        <button type="button" onClick={() => setAdding(true)}>+ Add contract</button>
+        <div className="row">
+          <button type="button" onClick={() => setAdding(true)}>+ Add contract</button>
+          {/* George, 2026-08-05: *"on the contracts tab next to add contract it should say
+              send one for signature like it does on the lease addendums and riders."* Same
+              dialog, same machine, same place on the card — the only reason it wasn't here
+              is that an envelope had nowhere to file itself against a contract until 0093. */}
+          {isOn('esign') && prop && (
+            <button type="button" className="secondary" onClick={() => setSending(true)}
+              title="Send a contract to a vendor to sign electronically">
+              ✎ Send one for signature
+            </button>
+          )}
+        </div>
+      )}
+
+      {sending && (
+        <SendForSignatureModal
+          contracts={contracts}
+          property={prop}
+          corp={corp}
+          onClose={() => setSending(false)}
+          onSent={invalidate}
+        />
       )}
     </div>
   );
 }
 
 // One contract row: glanceable terms + Edit + Upload + Open & ask.
-function ContractItem({ c, steps, onChange }) {
+function ContractItem({ c, steps, property, corp, esignOn, onChange }) {
   const askConfirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  // The executed envelope whose signed copy is being read in (0093).
+  const [readingSigned, setReadingSigned] = useState(null);
+  // The additional-insured letter, drafted into the shared send modal (0094).
+  const [emailNotif, setEmailNotif] = useState(null);
+  const [emailBusy, setEmailBusy] = useState(false);
   const remove = useMutation({ mutationFn: () => deleteServiceContract(c.id), onSuccess: onChange });
   const saveFacts = useMutation({
     // Through updateServiceContract (the notice-date derivation and both bucket re-arms live
@@ -143,7 +192,68 @@ function ContractItem({ c, steps, onChange }) {
           Next fee step {fmtDate(upcoming.effective_date)} — {money(upcoming.new_amount)} {freqLabel(c.frequency)}
         </div>
       )}
+
+      {/* ⚠ NOT LEGAL ADVICE and not a nag: this fires only on an EXPLICIT false. A contract
+          Amlak has never read holds null, which means "the document doesn't say" — and
+          accusing a vendor of being uninsured because nobody uploaded their agreement is
+          exactly the kind of wrong the insurance vault's own version already avoids. */}
+      {c.additional_insured === false && (
+        <div className="note-msg warn" style={{ marginTop: 8, marginBottom: 0 }}>
+          <span>
+            ⚠ <strong>You are not named as additional insured</strong> on this contract. The vendor’s
+            policy answers for them, not for you — a claim arising from their work at the property
+            comes back to yours.
+          </span>
+          {c.vendor_email ? (
+            <div className="row" style={{ marginTop: 8 }}>
+              <button type="button" className="btn-sm" disabled={emailBusy} onClick={async () => {
+                setEmailBusy(true);
+                try { const n = await draftContractAdditionalInsuredEmail(c.id); if (n) setEmailNotif(n); }
+                finally { setEmailBusy(false); }
+              }}>
+                {emailBusy ? 'Drafting…' : '✉ Request additional insured endorsement'}
+              </button>
+            </div>
+          ) : (
+            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+              Add the vendor’s email in Edit and Amlak will draft the request to their broker.
+            </div>
+          )}
+        </div>
+      )}
+
       <SignedCopyRow contractId={c.id} />
+
+      {/* Documents out for signature on THIS contract, and the prompt that ends the chain:
+          an executed envelope that hasn't been read in yet. George, 2026-08-05: *"only when
+          its countersigned the user should be prompted with extract info with AI."* */}
+      {esignOn && (
+        <ContractEnvelopeRows
+          contract={c} property={property} corp={corp}
+          extraActions={(env) => (needsApply(env) ? (
+            <button type="button" className="btn-sm" onClick={() => setReadingSigned(env)}>
+              ✨ Read the signed contract
+            </button>
+          ) : null)}
+        />
+      )}
+
+      {readingSigned && (
+        <SignedContractModal
+          contract={c}
+          envelope={readingSigned}
+          onClose={() => setReadingSigned(null)}
+          onDone={onChange}
+        />
+      )}
+
+      {emailNotif && (
+        <NotificationEmailModal
+          notif={emailNotif}
+          onClose={() => setEmailNotif(null)}
+          onSent={() => setEmailNotif(null)}
+        />
+      )}
 
       {editing && (
         <div className="svc-doc">
@@ -181,6 +291,13 @@ function ContractItem({ c, steps, onChange }) {
 // signed the signed copy should be saved as a pdf in the contracts tab."* Always visible, not
 // behind "Open & ask": a signed copy nobody can see is the same as not having one. Marking a
 // copy signed happens in the documents list; this row is where it is then found.
+//
+// ⚠ A CONTRACT SIGNED THROUGH AMLAK DOES NOT APPEAR HERE, and that is deliberate. Its
+// executed PDF belongs to the ENVELOPE, which renders it as "Open signed copy" in the strip
+// below — the same decision the lease side made in 0092. A second `documents` row pointing at
+// the envelope's file would offer "Open" on a file deleteEnvelope had already swept, and
+// deleting the contract's copies would pull the file out from under a live envelope. One
+// object, one owner.
 function SignedCopyRow({ contractId }) {
   const { data: docs = [] } = useQuery({
     queryKey: ['documents', 'service_contract', contractId],
@@ -360,6 +477,9 @@ function ContractFactsForm({ c, steps, busy, onSave, onCancel }) {
     notice_days: c.notice_days ?? '',
     notice_by_date: c.notice_by_date || '',
     renewal_term_months: c.renewal_term_months ?? '',
+    // Tri-state like auto_renew: '' is "not stated", which is NOT the same as "no" and is
+    // what keeps the warning off a contract nobody has read (0094).
+    additional_insured: c.additional_insured === true ? 'yes' : c.additional_insured === false ? 'no' : '',
   });
   const [rows, setRows] = useState(
     (steps || []).map((s) => ({ effective_date: s.effective_date || '', new_amount: s.new_amount ?? '' }))
@@ -395,6 +515,14 @@ function ContractFactsForm({ c, steps, busy, onSave, onCancel }) {
         <label className="form-field" style={{ marginBottom: 0 }}><span>Notice (days)</span><input className="text-input num" type="number" step="1" placeholder="e.g. 30" value={f.notice_days} onChange={set('notice_days')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Notice due by</span><input className="text-input" type="date" value={f.notice_by_date} onChange={set('notice_by_date')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Renewal term (months)</span><input className="text-input num" type="number" step="1" placeholder="e.g. 12" value={f.renewal_term_months} onChange={set('renewal_term_months')} /></label>
+        <label className="form-field" style={{ marginBottom: 0 }}>
+          <span>You as additional insured</span>
+          <select className="text-input" value={f.additional_insured} onChange={set('additional_insured')}>
+            <option value="">Not stated</option>
+            <option value="yes">Yes — the contract requires it</option>
+            <option value="no">No — not required</option>
+          </select>
+        </label>
       </div>
 
       <p className="doc-choice-head">Fee schedule</p>
@@ -436,6 +564,7 @@ function ContractFactsForm({ c, steps, busy, onSave, onCancel }) {
             // at all, and therefore no reminder.
             ...(f.notice_by_date ? { notice_by_date: f.notice_by_date } : {}),
             renewal_term_months: num(f.renewal_term_months),
+            additional_insured: f.additional_insured === 'yes' ? true : f.additional_insured === 'no' ? false : null,
           },
           // Only rewritten when he actually touched the schedule: an untouched list must not
           // delete-and-reinsert every step (and lose the notes read off the document).

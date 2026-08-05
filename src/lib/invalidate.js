@@ -126,6 +126,11 @@ export function settleContractChange(qc, propertyId) {
     // The property's history log, and the contract's own saved copies.
     ['historyEvents'],
     ['documents', 'service_contract'],
+    // Documents out for signature on this contract (0093). Keyed ['envelopes', <lease or
+    // contract id>], so the prefix covers both homes — and it MUST be here: applying a
+    // signed contract stamps the envelope's applied_at, which is the only thing that clears
+    // the "read the signed contract" prompt and the dashboard's signature_apply alert.
+    ['envelopes'],
   ];
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });
 }

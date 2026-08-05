@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  listEnvelopes, signDocUrl, voidEnvelope, resendEnvelope, countersignEnvelope, logSignatureEvent,
-  listEnvelopeEvents, listEnvelopeSigners, deleteEnvelope,
+  listEnvelopes, listContractEnvelopes, signDocUrl, voidEnvelope, resendEnvelope,
+  countersignEnvelope, logSignatureEvent, listEnvelopeEvents, listEnvelopeSigners, deleteEnvelope,
 } from '../lib/api';
 import {
   sortEnvelopes, statusBadge, envelopeLine, canVoid, canResend, needsCountersign,
   envelopeStatus, expiryFromNow, DEFAULT_EXPIRY_DAYS, purposeLabel, deleteSeverity,
+  counterparty, isContractEnvelope,
 } from '../lib/envelopes';
 import SignaturePad from './SignaturePad';
 import PdfSignCanvas from './PdfSignCanvas';
@@ -27,6 +28,44 @@ import { useConfirm } from './ConfirmDialog';
 // or an addendum row — the strip says so in as many words, because a signed document that
 // looks filed but isn't is exactly the kind of thing that goes stale unnoticed.
 export default function AddendumEnvelopeRows({ leaseId, lease, property, corp }) {
+  return (
+    <EnvelopeRows
+      anchorId={leaseId}
+      load={() => listEnvelopes(leaseId)}
+      lease={lease} property={property} corp={corp}
+    />
+  );
+}
+
+/**
+ * The same strip, on a SERVICE CONTRACT (0093). George, 2026-08-05: *"on the contracts tab
+ * next to add contract it should say send one for signature like it does on the lease
+ * addendums and riders."*
+ *
+ * ⚠ ONE COMPONENT, TWO HOMES — not a second copy. The rows below hold a real state machine
+ * (resend retires the old link, void keeps the signature record, delete is graded by what it
+ * destroys, countersign renders the counterparty's mark under his own) and every one of
+ * those rules is identical for a vendor. Two implementations of that would drift on the
+ * first fix, and the drifting half would be the one nobody was looking at. What genuinely
+ * differs is the WORD for the other side, which `counterparty()` derives from the envelope
+ * itself, and what happens after execution — which the caller supplies.
+ *
+ * @param extraActions  (env) => nodes, rendered first in the row's action column. The
+ *                      contracts tab puts "Read the signed contract" there, because reading
+ *                      and applying a contract's terms belongs to the contract's own review
+ *                      flow, not to a component about signatures.
+ */
+export function ContractEnvelopeRows({ contract, property, corp, extraActions }) {
+  return (
+    <EnvelopeRows
+      anchorId={contract?.id}
+      load={() => listContractEnvelopes(contract.id)}
+      property={property} corp={corp} extraActions={extraActions}
+    />
+  );
+}
+
+function EnvelopeRows({ anchorId, load, lease, property, corp, extraActions }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const [err, setErr] = useState('');
@@ -36,10 +75,13 @@ export default function AddendumEnvelopeRows({ leaseId, lease, property, corp })
   // after the fact."*
   const [recordId, setRecordId] = useState(null);
 
+  // ⚠ ONE KEY FAMILY for both homes — ['envelopes', <lease or contract id>]. settleContractChange
+  // and every refresh below invalidate the bare ['envelopes'] prefix, so a contract's strip
+  // repaints off the same call that repaints a lease's.
   const { data: envelopes = [] } = useQuery({
-    queryKey: ['envelopes', leaseId],
-    queryFn: () => listEnvelopes(leaseId),
-    enabled: !!leaseId,
+    queryKey: ['envelopes', anchorId],
+    queryFn: load,
+    enabled: !!anchorId,
   });
 
   const refresh = () => {
@@ -84,16 +126,28 @@ export default function AddendumEnvelopeRows({ leaseId, lease, property, corp })
                 <span className="env-row-name">{env.title}</span>
                 <span className="env-row-sub">
                   {envelopeLine(env)}
-                  {env.purpose !== 'other' && <> · {purposeLabel(env.purpose).toLowerCase()}</>}
+                  {/* The purpose suffix answers "what is this lease document?". On a contract
+                      it would only ever read "service contract" beside the contract's own
+                      name, so it is left off rather than restating the obvious. */}
+                  {env.purpose !== 'other' && !isContractEnvelope(env) && (
+                    <> · {purposeLabel(env.purpose).toLowerCase()}</>
+                  )}
                 </span>
                 {/* The one thing a landlord could otherwise get wrong: a signed document is
-                    not an applied one. Said on the row, not in a tooltip. */}
+                    not an applied one. Said on the row, not in a tooltip. On a contract it is
+                    sharper still — the signed FEE has not reached CAM, so the tenants are
+                    still being billed off the old one. */}
                 {state === 'executed' && !env.applied_at && (
-                  <span className="env-row-note">Signed, but nothing on this lease has changed yet.</span>
+                  <span className="env-row-note">
+                    {isContractEnvelope(env)
+                      ? 'Signed, but its terms haven’t been read in yet — the fee, term and renewal on this contract are still the old ones.'
+                      : 'Signed, but nothing on this lease has changed yet.'}
+                  </span>
                 )}
               </span>
               <span className={`badge ${badge.cls} env-badge`} title={badge.title}>{badge.label}</span>
               <span className="env-row-acts">
+                {extraActions?.(env)}
                 {needsCountersign(env) && (
                   <button type="button" className="btn-sm" onClick={() => setCountersigning(env)}>
                     ✎ Countersign
@@ -115,7 +169,7 @@ export default function AddendumEnvelopeRows({ leaseId, lease, property, corp })
                     onClick={async () => {
                       if (await askConfirm({
                         title: 'Send the link again?',
-                        message: `A fresh link goes to ${env.signer_name || 'the tenant'}${env.signer_email ? ` at ${env.signer_email}` : ''}.`,
+                        message: `A fresh link goes to ${env.signer_name || `the ${counterparty(env)}`}${env.signer_email ? ` at ${env.signer_email}` : ''}.`,
                         implications: [
                           'The previous link stops working immediately.',
                           `The new one expires in ${DEFAULT_EXPIRY_DAYS} days.`,
@@ -146,13 +200,13 @@ export default function AddendumEnvelopeRows({ leaseId, lease, property, corp })
                         title: isSigned ? 'Withdraw this signed document?' : 'Cancel this signature request?',
                         message: `“${env.title}” is withdrawn.`,
                         implications: isSigned ? [
-                          `${env.signer_typed_name || env.signer_name || 'The tenant'} has already signed this — withdrawing it means it will never be countersigned or completed.`,
+                          `${env.signer_typed_name || env.signer_name || (isContractEnvelope(env) ? 'The vendor' : 'The tenant')} has already signed this — withdrawing it means it will never be countersigned or completed.`,
                           'Their signature and the full audit trail are KEPT, badged “Voided”. Nothing is destroyed.',
-                          'Nothing on the lease changes.',
+                          isContractEnvelope(env) ? 'Nothing on the contract changes.' : 'Nothing on the lease changes.',
                           'To go ahead after all, you’d send it again as a new request.',
                         ] : [
-                          'The link stops working — if the tenant opens it they’re told it was cancelled.',
-                          'The document itself stays on file. Nothing on the lease changes.',
+                          `The link stops working — if the ${counterparty(env)} opens it they’re told it was cancelled.`,
+                          `The document itself stays on file. Nothing on the ${isContractEnvelope(env) ? 'contract' : 'lease'} changes.`,
                           'To send it again you’ll start a new request.',
                         ],
                         confirmLabel: isSigned ? 'Withdraw it' : 'Cancel request',
@@ -172,18 +226,22 @@ export default function AddendumEnvelopeRows({ leaseId, lease, property, corp })
                   disabled={busy}
                   onClick={async () => {
                     const sev = deleteSeverity(env);
+                    const onContract = isContractEnvelope(env);
+                    const record = onContract ? 'contract' : 'lease';
                     const implications = sev === 'executed' ? [
                       '⚠ This document is SIGNED BY BOTH PARTIES. Deleting it destroys the executed PDF, both signatures, the certificate of completion and the whole audit trail.',
                       'If this was a real agreement, there will be no record of it in Amlak afterwards.',
-                      'Nothing on the lease changes — but you lose the evidence that it was signed.',
+                      onContract
+                        ? 'The contract’s own figures stay exactly as they are — but the signed copy shown on its row goes with this, and you lose the evidence it was signed.'
+                        : 'Nothing on the lease changes — but you lose the evidence that it was signed.',
                       'This can’t be undone.',
                     ] : sev === 'record' ? [
-                      `${env.signer_typed_name || env.signer_name || 'The tenant'} signed this — their signature, IP, timestamp and the audit trail are all destroyed with it.`,
+                      `${env.signer_typed_name || env.signer_name || (onContract ? 'The vendor' : 'The tenant')} signed this — their signature, IP, timestamp and the audit trail are all destroyed with it.`,
                       'The document file is deleted from storage too.',
-                      'Nothing on the lease changes. This can’t be undone.',
+                      `Nothing on the ${record} changes. This can’t be undone.`,
                     ] : [
                       'The document, the request and the link are removed.',
-                      'Nothing on the lease changes. This can’t be undone.',
+                      `Nothing on the ${record} changes. This can’t be undone.`,
                     ];
                     if (await askConfirm({
                       title: sev === 'executed' ? 'Delete a signed document?' : 'Delete this document?',
@@ -263,7 +321,10 @@ function SignatureRecord({ envelope }) {
       {signers.filter((s) => s.signed_at).map((s) => (
         <div key={s.id} className="env-record-signer">
           <strong>{s.typed_name || s.name}</strong>
-          <span className="muted"> · {s.role === 'tenant' ? 'tenant' : 'landlord'}</span>
+          {/* ⚠ The stored role is 'tenant' on a contract envelope too — 0085's constraint
+              allows exactly ('tenant','landlord') and it names the SIDE, not the person.
+              This is the record a landlord may hand to a lender, so it says "vendor". */}
+          <span className="muted"> · {s.role === 'tenant' ? counterparty(envelope) : 'landlord'}</span>
           {s.email && <div className="env-record-sub">{s.email}</div>}
           <div className="env-record-sub">Signed {when(s.signed_at)}</div>
           {s.consent_at && (
@@ -318,7 +379,11 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
     queryKey: ['envelopeSigners', envelope.id],
     queryFn: () => listEnvelopeSigners(envelope.id),
   });
+  // The row that HOLDS THE LINK — a tenant on a lease, a vendor on a contract. `role` is the
+  // side, not the kind of person (0085), so the lookup is the same either way.
   const tenantSigner = signers.find((s) => s.role === 'tenant');
+  const other = counterparty(envelope);
+  const record = isContractEnvelope(envelope) ? 'contract' : 'lease';
 
   // Short-lived signed URLs for the document and for the tenant's signature image.
   const [tenantSigPng, setTenantSigPng] = useState(null);
@@ -379,11 +444,14 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
           <p className="muted" style={{ fontSize: 12.5 }}>
             Amlak builds the signed PDF — the document with both signatures on it, plus a certificate
             recording the whole trail.
-            <strong> Nothing on this lease changes</strong>; you decide separately whether to apply it.
+            <strong> Nothing on this {record} changes</strong>;{' '}
+            {record === 'contract'
+              ? 'you read it in afterwards, and see what changes before any figure moves.'
+              : 'you decide separately whether to apply it.'}
           </p>
 
           {/* Their signature is already on the page. He is looking at exactly what he is
-              about to countersign, which is the entire reason the tenant signs first. */}
+              about to countersign, which is the entire reason the other side signs first. */}
           {docUrl && !noRender && (
             <PdfSignCanvas
               url={docUrl}
@@ -398,7 +466,7 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
                 place_x: Number(tenantSigner.place_x),
                 place_y: Number(tenantSigner.place_y),
                 place_w: Number(tenantSigner.place_w),
-                label: `${tenantSigner.typed_name || tenantSigner.name} (tenant)`,
+                label: `${tenantSigner.typed_name || tenantSigner.name} (${other})`,
               }] : []}
             />
           )}
@@ -434,7 +502,7 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
               person it reaches, and says there is no separate send step to change your mind at. */}
           <p className="note-msg warn" style={{ marginBottom: 0 }}>
             ✉ <strong>Signing sends it.</strong> The moment you click below, the completed PDF is
-            emailed to <strong>{envelope.signer_typed_name || envelope.signer_name || 'the tenant'}</strong>
+            emailed to <strong>{envelope.signer_typed_name || envelope.signer_name || `the ${other}`}</strong>
             {envelope.signer_email ? <> at <strong>{envelope.signer_email}</strong></> : null} and a
             copy to you. There is no separate send step, and it can’t be recalled.
           </p>

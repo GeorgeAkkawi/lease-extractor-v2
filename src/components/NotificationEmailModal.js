@@ -40,7 +40,10 @@ export default function NotificationEmailModal({ notif, onClose, onSent, onSend 
     <div className="modal-scrim" onClick={onClose}>
       <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1} style={{ width: 620 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <strong>Email to tenant</strong>
+          {/* Not every letter this modal sends goes to a tenant — the contract reminders and
+              the additional-insured request go to a VENDOR, and have since contracts got
+              their own alerts. The draft says who it is for; the header just repeats it. */}
+          <strong>{notif.email_heading || 'Email to tenant'}</strong>
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
         <div className="modal-body">

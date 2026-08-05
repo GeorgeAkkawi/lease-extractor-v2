@@ -67,6 +67,11 @@ export const FIELDS = [
   { key: 'notice_days', label: 'Cancellation notice', kind: 'number', ex: 'cancellation_notice_days' },
   { key: 'notice_by_date', label: 'Notice due by', kind: 'date' },
   { key: 'renewal_term_months', label: 'Renewal term (months)', kind: 'number' },
+  // 0094 — NOT billed. It reaches no CAM line item, no cam_total, no share and no invoice;
+  // it drives a warning line and the letter that asks the vendor's broker for the
+  // endorsement. Deliberately last: it is the one field on this list that is about risk
+  // rather than money, and the diff reads better with the money together at the top.
+  { key: 'additional_insured', label: 'You as additional insured', kind: 'bool' },
 ];
 
 const NUMERIC = new Set(['money', 'number']);

@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   uploadNewContractDocument, applyNewContractTerms, getServiceContract,
-  countBilledTenants, listContractEscalations,
+  countBilledTenants, listContractEscalations, readSignedContractEnvelope, markEnvelopeApplied,
 } from '../lib/api';
 import { fmtDate, money, currentYear } from '../lib/format';
 import { contractChanges, contractTargets, buildContractFeeSteps, hasNoContractChanges } from '../lib/contractTerms';
@@ -259,11 +259,250 @@ function NewContractModal({ contract, file, onClose, onDone }) {
   );
 }
 
+/**
+ * The countersigned contract, read in. George, 2026-08-05: *"then it should send and only
+ * when its countersigned the user should be prompted with extract info with AI then it
+ * should upload."*
+ *
+ * ⚠ THE PROMPT IS DELIBERATELY AT THE END OF THE CHAIN, not the start. Reading the document
+ * on the way OUT would transcribe terms that were still being negotiated — the point of
+ * sending it for signature is that the version that matters is the one that comes back. So
+ * the button only exists once the envelope is executed, and it reads `executed_path`: the
+ * document plus both signatures plus the certificate.
+ *
+ * Everything after that is the same machine as an uploaded document — the same review, the
+ * same diff, the same carry-through into CAM — because it is the same question: what does
+ * this contract now say, and what does that change about what the tenants are billed?
+ *
+ * ⚠ BOTH BUTTONS CLEAR THE PROMPT. "Apply" stamps applied_at through applyNewContractTerms;
+ * "File it" stamps it directly. A landlord who reads a renewal, sees it restates the same
+ * figures, and closes the dialog has ACTED on it — leaving the row nagging (and the dashboard
+ * alert with it) would teach him to ignore the one prompt that means money hasn't moved yet.
+ */
+export function SignedContractModal({ contract, envelope, onClose, onDone }) {
+  const qc = useQueryClient();
+  const [phase, setPhase] = useState('ask'); // ask | reading | review | applying | done | failed
+  const [read, setRead] = useState(null);
+  const [changes, setChanges] = useState(null);
+  const [plan, setPlan] = useState(null);
+  const [applied, setApplied] = useState(null);
+  const [err, setErr] = useState('');
+
+  async function readIt() {
+    setPhase('reading'); setErr('');
+    try {
+      const res = await readSignedContractEnvelope({ envelopeId: envelope.id, contractId: contract.id });
+      setRead(res);
+      // The cached text is the signed document's from this moment, so the assistant answers
+      // from it whatever the landlord decides about the figures.
+      onDone?.();
+      const fresh = res.contract || await getServiceContract(contract.id);
+      const ex = res.extraction || {};
+      // Two passes, same forced order as the upload path: the fee schedule has to be dated
+      // and annualized off the frequency and start date the contract WILL HAVE.
+      const fieldsOnly = contractChanges({ contract: fresh, extraction: ex });
+      const built = buildContractFeeSteps(ex, contractTargets(fresh, fieldsOnly));
+      setPlan(built);
+      setChanges(contractChanges({ contract: fresh, extraction: ex, plan: built }));
+      setPhase('review');
+    } catch (e) {
+      setErr(e?.message || String(e));
+      setPhase('failed');
+      onDone?.();
+    }
+  }
+
+  async function applyIt() {
+    setPhase('applying'); setErr('');
+    try {
+      const res = await applyNewContractTerms({
+        contractId: contract.id, changes, plan, extraction: read?.extraction, envelopeId: envelope.id,
+      });
+      setApplied(res);
+      settleContractChange(qc, res.propertyId);
+      settleBillingChange(qc, { propertyId: res.propertyId, year: res.year });
+      setPhase('done');
+    } catch (e) {
+      setErr(e?.message || String(e));
+      setPhase('failed');
+    }
+  }
+
+  async function fileWithoutChanges() {
+    setPhase('applying'); setErr('');
+    try {
+      await markEnvelopeApplied(envelope.id);
+      settleContractChange(qc, contract.property_id);
+      setApplied({ fields: 0, feeSteps: 0, filedOnly: true });
+      setPhase('done');
+    } catch (e) {
+      setErr(e?.message || String(e));
+      setPhase('failed');
+    }
+  }
+
+  const busyPhase = phase === 'reading' || phase === 'applying';
+  const nothingToApply = hasNoContractChanges(changes);
+
+  return (
+    <div className="modal-scrim" onClick={busyPhase ? undefined : onClose}>
+      <div className="modal" role="dialog" aria-modal="true" style={{ width: 620 }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <strong>
+            {phase === 'done' ? 'Signed contract filed'
+              : phase === 'review' ? 'Apply the signed contract?'
+                : 'Read the signed contract'}
+          </strong>
+          {!busyPhase && <button className="icon-btn" onClick={onClose}>✕</button>}
+        </div>
+        <div className="modal-body">
+          {phase === 'ask' && (
+            <>
+              <p className="note-msg good" style={{ marginTop: 0 }}>
+                ✓ <strong>{envelope.title}</strong> is signed by both parties
+                {envelope.executed_at ? <> — completed {fmtDate(String(envelope.executed_at).slice(0, 10))}</> : null}.
+              </p>
+              <div className="confirm-imp info">
+                <p className="confirm-imp-title">What this does</p>
+                <ul>
+                  <li>
+                    Amlak reads the <strong>signed copy</strong> — not the draft you sent — for its
+                    fee, term, fee schedule, renewal, cancellation notice and whether it names you
+                    as additional insured.
+                  </li>
+                  <li>
+                    Then it shows you <strong>exactly which figures change</strong> on{' '}
+                    <strong>{contract?.name || contract?.vendor || 'this contract'}</strong>, old and
+                    new. Nothing is updated until you say so.
+                  </li>
+                  <li>
+                    Applying it <strong>updates what this contract carries into CAM</strong> for the
+                    current year, and rebuilds this year’s bills from it. A year you have already
+                    closed is left alone.
+                  </li>
+                </ul>
+              </div>
+              <div className="row" style={{ marginTop: 16 }}>
+                <button type="button" onClick={readIt}>Read the signed contract</button>
+                <button type="button" className="ghost" onClick={onClose}>Not now</button>
+              </div>
+            </>
+          )}
+
+          {phase === 'reading' && (
+            <p className="note-msg info" style={{ marginTop: 0 }}>
+              Reading the signed copy of <strong>{envelope.title}</strong>… A scanned contract can
+              take a minute.
+            </p>
+          )}
+
+          {phase === 'review' && (
+            <>
+              <p className="note-msg good" style={{ marginTop: 0 }}>
+                ✓ Read <strong>{Number(read?.length || 0).toLocaleString()} characters</strong> from
+                the signed copy. The saved text now comes from it.
+              </p>
+              <ContractReview
+                contract={read?.contract || contract}
+                extraction={read?.extraction}
+                changes={changes}
+                plan={plan}
+              />
+              <div className="row" style={{ marginTop: 16 }}>
+                {!nothingToApply && (
+                  <button type="button" onClick={applyIt}>Apply the signed contract</button>
+                )}
+                <button type="button" className={nothingToApply ? undefined : 'ghost'}
+                  onClick={fileWithoutChanges}>
+                  {nothingToApply ? 'File it' : 'File it — keep the current figures'}
+                </button>
+              </div>
+              <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                Either way this document stops asking to be read. The signed copy stays on the
+                contract, and its text is already saved.
+              </p>
+            </>
+          )}
+
+          {phase === 'applying' && (
+            <p className="note-msg info" style={{ marginTop: 0 }}>
+              Filing the signed contract and rebuilding what it carries into CAM…
+            </p>
+          )}
+
+          {phase === 'done' && (
+            <>
+              <p className="note-msg good" style={{ marginTop: 0 }}>
+                ✓ <strong>{envelope.title}</strong> is filed.
+                {applied?.filedOnly
+                  ? ' Its figures were left exactly as they were.'
+                  : <> {applied?.fields || 0} figure{applied?.fields === 1 ? '' : 's'} updated,
+                    {' '}{applied?.feeSteps || 0} dated fee step{applied?.feeSteps === 1 ? '' : 's'} on file.</>}
+              </p>
+              {!applied?.filedOnly && (
+                <p className="muted" style={{ fontSize: 12.5 }}>
+                  {!applied?.synced && 'The CAM line item was already at this figure, so nothing needed rebuilding. '}
+                  {applied?.closedYear && `${applied.year} is closed, so its bills were left exactly as they were. `}
+                  {applied?.resynced && (
+                    <><strong>{applied.leasesResynced} tenant{applied.leasesResynced === 1 ? '’s bill' : 's’ bills'}</strong>{' '}
+                    for {applied.year} were rebuilt from the new CAM total. Tenants on a CAM &amp; tax
+                    estimate were not touched — they settle the difference at ⚖ Reconcile. </>
+                  )}
+                  It is recorded in the property’s history, with every figure’s old and new value.
+                </p>
+              )}
+              <div className="row" style={{ marginTop: 14 }}>
+                <button type="button" onClick={onClose}>Done</button>
+              </div>
+            </>
+          )}
+
+          {phase === 'failed' && (
+            <>
+              <p className="note-msg warn" style={{ marginTop: 0 }}>
+                {read
+                  ? <>
+                      The signed contract was read, but filing it stopped part way through.{' '}
+                      <strong>Some figures may already have changed and others not</strong> — check
+                      the contract against the signed copy, then try again. Doing it twice is safe:
+                      the fee schedule is replaced rather than added to, and the CAM line item only
+                      moves when the figure actually differs.
+                    </>
+                  : <>
+                      The signed copy couldn’t be read. <strong>Every figure on this contract is
+                      unchanged</strong>, and the signed document is still on file — nothing was lost.
+                    </>}
+              </p>
+              <p className="note-msg danger">{err}</p>
+              <div className="row" style={{ marginTop: 14 }}>
+                {read
+                  ? <button type="button" onClick={applyIt}>Try applying again</button>
+                  : <button type="button" onClick={readIt}>Try reading again</button>}
+                <button type="button" className="ghost" onClick={onClose}>Close</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ⚠ A BOOLEAN'S WORDS BELONG TO ITS FIELD, not to its type. "Yes" and "No" mean different
+// things on "does this renew itself?" than on "are you named as additional insured?", and a
+// single pair for kind==='bool' printed "Yes — renews unless cancelled" against an insurance
+// answer the moment a second boolean field existed.
+const BOOL_WORDS = {
+  auto_renew: ['Yes — renews unless cancelled', 'No — ends at the term'],
+  additional_insured: ['Yes — the contract requires it', 'No — not required by this contract'],
+};
+
 const show = (f, v) => {
   if (v === null || v === undefined || v === '') return '—';
   if (f.key === 'frequency') return FREQ_LABEL[v] || String(v);
   if (f.key === 'service_type') return TYPE_LABEL[v] || String(v);
-  if (f.kind === 'bool') return v ? 'Yes — renews unless cancelled' : 'No — ends at the term';
+  if (f.kind === 'bool') return (BOOL_WORDS[f.key] || ['Yes', 'No'])[v ? 0 : 1];
   if (f.kind === 'money') return money(v);
   if (f.kind === 'date') return fmtDate(v);
   if (f.kind === 'number') return Number(v).toLocaleString();

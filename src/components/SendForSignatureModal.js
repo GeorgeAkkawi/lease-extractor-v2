@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { uploadDoc, sendForSignature, logSignatureEvent, discardDocument } from '../lib/api';
-import { PURPOSE, EXPIRY_CHOICES, DEFAULT_EXPIRY_DAYS, expiryFromNow } from '../lib/envelopes';
+import { uploadDoc, sendForSignature, logSignatureEvent, discardDocument, addServiceContract } from '../lib/api';
+import { PURPOSE, EXPIRY_CHOICES, DEFAULT_EXPIRY_DAYS, expiryFromNow, CONTRACT_PURPOSE } from '../lib/envelopes';
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
 
@@ -19,24 +19,63 @@ import { useConfirm } from './ConfirmDialog';
 // rider review, and for the same reason: an orphaned file in the bucket is invisible and
 // permanent. The edge function then hashes those stored bytes itself; a client-supplied
 // hash would be a seal chosen by the sealer.
+//
+// ── THE CONTRACTS TAB USES THE SAME DIALOG (0093) ───────────────────────────────────────
+// Pass `contracts` instead of `lease` and it sends to a VENDOR. Three things change and
+// nothing else: the counterparty defaults to the vendor rather than the tenant, the purpose
+// question disappears (an executed service contract IS the contract — there is no filing
+// decision left to make), and a "which contract?" question appears in its place, because an
+// envelope has to have a home before it can be sent.
+//
+// ⚠ "A new contract" CREATES THE SHELL FIRST, deliberately. The alternative — send now, file
+// it later — means an executed agreement with nowhere to land, which is the state this whole
+// feature exists to prevent. The shell carries a name and nothing else: no fee, no term, no
+// CAM line. The signed document fills it in, after the landlord has seen the diff.
+const NEW_CONTRACT = '__new__';
+
 export default function SendForSignatureModal({
-  lease, property, corp, defaultPurpose = 'other', defaultTitle = '', renewalOptionId = null, onClose, onSent,
+  lease, contracts = null, property, corp,
+  defaultPurpose = 'other', defaultTitle = '', renewalOptionId = null, onClose, onSent,
 }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const modalRef = useModalA11y(onClose);
+  const forContract = Array.isArray(contracts);
 
   const [file, setFile] = useState(null);
   const [uploaded, setUploaded] = useState(null); // { path, filename }
-  const [purpose, setPurpose] = useState(defaultPurpose);
+  const [purpose, setPurpose] = useState(forContract ? CONTRACT_PURPOSE : defaultPurpose);
   const [title, setTitle] = useState(defaultTitle);
-  const [signerName, setSignerName] = useState(lease?.tenant_contact_name || lease?.tenant_name || '');
-  const [signerEmail, setSignerEmail] = useState(lease?.tenant_email || '');
+  // ⚠ NO DEFAULT. '' is "not chosen yet" and NEW is "a contract that doesn't exist yet";
+  // pre-selecting the first contract on the list would silently attach a renewal to whatever
+  // happened to sort first, and an envelope filed against the wrong contract is a signed
+  // agreement that re-prices the wrong vendor's CAM line when it is read in.
+  const [contractId, setContractId] = useState('');
+  const [newName, setNewName] = useState('');
+  const isNewContract = contractId === NEW_CONTRACT;
+  const picked = forContract && !isNewContract ? contracts.find((c) => c.id === contractId) || null : null;
+  const [signerName, setSignerName] = useState(
+    forContract ? '' : (lease?.tenant_contact_name || lease?.tenant_name || '')
+  );
+  const [signerEmail, setSignerEmail] = useState(forContract ? '' : (lease?.tenant_email || ''));
   const [message, setMessage] = useState('');
   const [days, setDays] = useState(DEFAULT_EXPIRY_DAYS);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [result, setResult] = useState(null);
+
+  // Choosing a contract fills in whoever Amlak already knows to write to — overwritable, and
+  // only ever a default: a vendor's billing address and its signatory are often different
+  // people, and the person who signs is the one who needs the link.
+  function chooseContract(id) {
+    setContractId(id);
+    const c = contracts.find((x) => x.id === id);
+    if (c) {
+      setSignerName((n) => n || c.vendor || '');
+      setSignerEmail((e) => e || c.vendor_email || '');
+      setTitle((t) => t || (c.name ? `${c.name} — renewal` : ''));
+    }
+  }
 
   async function onFile(e) {
     const f = e.target.files?.[0];
@@ -62,8 +101,16 @@ export default function SendForSignatureModal({
 
   const send = useMutation({
     mutationFn: async () => {
+      // The shell, when he chose "a new contract". Created BEFORE the send so a successful
+      // send always has a home; a failed create stops here, before an envelope exists.
+      let targetContract = picked;
+      if (forContract && isNewContract) {
+        targetContract = await addServiceContract({ property_id: property.id, name: newName.trim() });
+        if (!targetContract?.id) throw new Error('The contract could not be created.');
+      }
       const res = await sendForSignature({
-        leaseId: lease.id,
+        leaseId: forContract ? null : lease.id,
+        contractId: forContract ? targetContract.id : null,
         propertyId: property.id,
         renewalOptionId,
         purpose,
@@ -78,21 +125,26 @@ export default function SendForSignatureModal({
         landlordName: corp?.name || null,
       });
       await logSignatureEvent({
-        propertyId: property.id, leaseId: lease.id, tenantName: lease.tenant_name,
+        propertyId: property.id,
+        leaseId: forContract ? null : lease.id,
+        tenantName: forContract ? null : lease.tenant_name,
         type: 'signature_sent', title: title.trim(), signerName: signerName.trim(),
       });
       return res;
     },
     onSuccess: (res) => {
       setResult(res);
-      ['envelopes', 'historyEvents', 'alerts'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+      // ['serviceContracts'] too, because "a new contract" just added a row to the list this
+      // dialog was opened from — without it the shell is invisible until a reload.
+      ['envelopes', 'historyEvents', 'alerts', 'serviceContracts'].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
       onSent?.(res);
     },
     onError: (e) => setErr(e.message || String(e)),
   });
 
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signerEmail.trim());
-  const canSend = !!uploaded && !!title.trim() && !!signerName.trim() && emailOk && !busy && !send.isPending;
+  const homeOk = !forContract || (isNewContract ? !!newName.trim() : !!picked);
+  const canSend = !!uploaded && !!title.trim() && !!signerName.trim() && emailOk && homeOk && !busy && !send.isPending;
 
   async function confirmAndSend() {
     if (await askConfirm({
@@ -101,8 +153,13 @@ export default function SendForSignatureModal({
       implications: [
         'They get a private link that opens straight to the document — no account needed.',
         `The link stops working after ${EXPIRY_CHOICES.find((c) => c.days === days)?.label || `${days} days`}, and you can cancel it any time before they sign.`,
-        'Nothing changes on this lease until it is signed by both parties and you apply it.',
-      ],
+        forContract && isNewContract
+          ? `“${newName.trim()}” is added to this property’s contracts now, with a name and nothing else — no fee, no term, and nothing in CAM until you read the signed copy in.`
+          : null,
+        forContract
+          ? 'No figure on the contract changes until it comes back signed and you read it in — and Amlak shows you what moves before it moves.'
+          : 'Nothing changes on this lease until it is signed by both parties and you apply it.',
+      ].filter(Boolean),
       confirmLabel: 'Send it',
       tone: 'warn',
     })) send.mutate();
@@ -156,13 +213,15 @@ export default function SendForSignatureModal({
       <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1}
         style={{ width: 680 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <strong>Send a document for signature</strong>
+          <strong>{forContract ? 'Send a contract for signature' : 'Send a document for signature'}</strong>
           <button className="icon-btn" onClick={() => close()}>✕</button>
         </div>
         <div className="modal-body">
           <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
-            Your document, sent as it is. {lease?.tenant_name} gets a private link that opens straight
-            to it — no account, no software. You sign after they do.
+            {forContract
+              ? 'Your contract, sent as it is. The vendor gets a private link that opens straight to it — no account, no software. You countersign after they do, and read the signed copy in afterwards.'
+              : <>Your document, sent as it is. {lease?.tenant_name} gets a private link that opens straight
+                to it — no account, no software. You sign after they do.</>}
           </p>
 
           <div className="dropzone">
@@ -179,18 +238,58 @@ export default function SendForSignatureModal({
             </p>
           )}
 
-          <label className="form-field" style={{ marginTop: 14 }}>
-            <span>What is this document?</span>
-            <select className="text-input" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
-              {PURPOSE.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-            </select>
-          </label>
-          <p className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 14 }}>
-            {PURPOSE.find((p) => p.key === purpose)?.hint}
-          </p>
+          {/* The lease dialog asks WHAT the document is, because that decides where an
+              executed copy files itself. The contract dialog asks WHICH CONTRACT instead:
+              a service contract's filing question has one answer, but its home does not. */}
+          {forContract ? (
+            <>
+              <label className="form-field" style={{ marginTop: 14 }}>
+                <span>Which contract is this for?</span>
+                <select className="text-input" value={contractId}
+                  onChange={(e) => chooseContract(e.target.value)}>
+                  <option value="">Choose the contract…</option>
+                  {contracts.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name || c.vendor || 'Contract'}</option>
+                  ))}
+                  <option value={NEW_CONTRACT}>A new contract…</option>
+                </select>
+              </label>
+              {isNewContract ? (
+                <>
+                  <label className="form-field">
+                    <span>Name the new contract</span>
+                    <input className="text-input" value={newName} onChange={(e) => setNewName(e.target.value)}
+                      placeholder="e.g. Snow removal — Arctic" maxLength={120} />
+                  </label>
+                  <p className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 14 }}>
+                    It’s added to this property now with a name and nothing else. Its fee, term and
+                    renewal are filled in from the signed copy, after you’ve seen what changes.
+                  </p>
+                </>
+              ) : (
+                <p className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 14 }}>
+                  {picked
+                    ? 'When it comes back signed, Amlak reads it and shows you what changes on this contract before any figure moves.'
+                    : 'The signed copy files itself against this contract, so pick the one it replaces.'}
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <label className="form-field" style={{ marginTop: 14 }}>
+                <span>What is this document?</span>
+                <select className="text-input" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
+                  {PURPOSE.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+                </select>
+              </label>
+              <p className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 14 }}>
+                {PURPOSE.find((p) => p.key === purpose)?.hint}
+              </p>
+            </>
+          )}
 
           <label className="form-field">
-            <span>Title (what the tenant sees)</span>
+            <span>Title (what the {forContract ? 'vendor' : 'tenant'} sees)</span>
             <input className="text-input" value={title} onChange={(e) => setTitle(e.target.value)}
               placeholder="First Amendment to Lease" maxLength={300} />
           </label>

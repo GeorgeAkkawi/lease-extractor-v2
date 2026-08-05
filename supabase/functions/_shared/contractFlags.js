@@ -7,7 +7,7 @@
 // raise a flag: this is a prompt to go look, never an accusation, and a contract that simply
 // wasn't read clearly should stay quiet rather than invent a problem.
 //
-// Why these ten and not a lease's ten: a service contract costs money in different ways. A
+// Why these eleven and not a lease's ten: a service contract costs money in different ways. A
 // lease's risk is the tenant leaving; a contract's risk is that it QUIETLY CONTINUES —
 // renewing itself on a notice window nobody watched, at a fee nobody capped, for work that
 // excludes the thing you actually needed done.
@@ -43,7 +43,19 @@ export const CONTRACT_FLAG_DEFS = [
     key: 'no_vendor_insurance',
     severity: 'high',
     title: 'No insurance required of the vendor',
-    note: 'The contract does not require the vendor to carry liability insurance, or does not require you to be named as an additional insured. A claim arising from their work then lands on your policy.',
+    note: 'The contract does not require the vendor to carry liability insurance at all. A claim arising from their work then lands on your policy.',
+  },
+  // ⚠ SPLIT OUT of no_vendor_insurance on 2026-08-05 (0094). The two used to be one flag —
+  // "no insurance required, OR you're not named on it" — which meant a vendor carrying
+  // $1,000,000 who simply hadn't named the owner produced the same words as one carrying
+  // nothing. They are different problems with different fixes: the first is renegotiate the
+  // contract, the second is one phone call to their broker. Only the second has a letter,
+  // and only the second has a stored column (service_contracts.additional_insured).
+  {
+    key: 'owner_not_additional_insured',
+    severity: 'high',
+    title: 'You are not named as additional insured',
+    note: 'The vendor carries insurance but the contract does not require you to be named as an additional insured on it. Their policy answers for them, not for you — so a slip on a badly ploughed lot, or an injury to their own employee on your roof, comes back to your policy and your deductible. Ask their broker for the endorsement; it is normally free.',
   },
   {
     key: 'no_termination_for_convenience',
@@ -85,7 +97,8 @@ export function contractFlagQuestion(key) {
     case 'evergreen_no_end': return 'the contract states NO end / expiration date and continues until terminated';
     case 'uncapped_escalation': return 'the fee may increase with NO stated cap — by CPI, by the vendor\'s "then-prevailing rates", or by an amount the contract does not fix';
     case 'landlord_indemnifies_vendor': return 'the OWNER / landlord indemnifies or holds harmless the VENDOR (rather than the other way round)';
-    case 'no_vendor_insurance': return 'the vendor is NOT required to carry liability insurance, or NOT required to name the owner as an additional insured';
+    case 'no_vendor_insurance': return 'the vendor is NOT required to carry liability insurance at all';
+    case 'owner_not_additional_insured': return 'the contract requires the vendor to carry insurance but does NOT require the OWNER / landlord to be named as an ADDITIONAL INSURED on that policy (answer no if the contract expressly requires the owner to be named)';
     case 'no_termination_for_convenience': return 'the owner has NO right to terminate for convenience or on notice (only for a defined breach, or not at all)';
     case 'no_lien_waiver': return 'the contract does NOT require the vendor or its subcontractors to waive or release mechanics\' lien rights on payment';
     case 'price_increase_without_notice': return 'the vendor may change the price WITHOUT a stated period of prior written notice';

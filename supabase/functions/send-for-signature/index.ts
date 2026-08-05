@@ -30,7 +30,10 @@ import { enforceRateLimit } from '../_shared/ratelimit.ts';
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY');
 const FROM_ADDRESS = Deno.env.get('TENANT_FROM_EMAIL') ?? 'letters@amlakre.com';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PURPOSES = ['extension', 'new_lease', 'other'];
+// 0093 — 'service_contract' is the contracts-tab purpose. Unlike the three lease purposes it
+// asks the landlord nothing: an executed service contract IS the contract, so there is no
+// "does this amend or replace?" question to answer and the send dialog doesn't show one.
+const PURPOSES = ['extension', 'new_lease', 'other', 'service_contract'];
 
 // Strip anything that could break the RFC 5322 display-name / header, and cap it.
 function sanitizeName(raw: string): string {
@@ -73,8 +76,8 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const {
-      lease_id, property_id, renewal_option_id, purpose, title, storage_path, filename,
-      message, signer_name, signer_email, expires_at, reply_to, resend_envelope_id,
+      lease_id, contract_id, property_id, renewal_option_id, purpose, title, storage_path,
+      filename, message, signer_name, signer_email, expires_at, reply_to, resend_envelope_id,
     } = body ?? {};
 
     if (!signer_email || !EMAIL_RE.test(String(signer_email))) {
@@ -129,7 +132,12 @@ Deno.serve(async (req) => {
         .eq('role', 'tenant');
       if (sgErr) throw sgErr;
     } else {
-      if (!lease_id || !property_id) return json({ error: 'Missing the lease this document belongs to.' }, 400);
+      // 0093 — an envelope belongs to a lease OR to a service contract, never both and never
+      // neither. ck_env_one_owner enforces it in the database; this is the same rule stated
+      // where the error message can be readable.
+      if (!property_id) return json({ error: 'Missing the property this document belongs to.' }, 400);
+      if (!lease_id && !contract_id) return json({ error: 'Missing the lease or contract this document belongs to.' }, 400);
+      if (lease_id && contract_id) return json({ error: 'A document belongs to a lease or to a contract, not both.' }, 400);
       if (!storage_path) return json({ error: 'Upload the document first.' }, 400);
       if (!title || !String(title).trim()) return json({ error: 'Give the document a title.' }, 400);
       if (purpose && !PURPOSES.includes(String(purpose))) return json({ error: 'Unknown document type.' }, 400);
@@ -143,7 +151,8 @@ Deno.serve(async (req) => {
         .from('signature_envelopes')
         .insert({
           owner_id: user.id,
-          lease_id,
+          lease_id: lease_id ?? null,
+          contract_id: contract_id ?? null,
           property_id,
           renewal_option_id: renewal_option_id ?? null,
           purpose: purpose ?? 'other',

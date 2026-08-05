@@ -129,6 +129,15 @@ service_contracts (amount · frequency · escalation_pct · start/end) + contrac
   Resync first and every invoice rebuilds from the *old* CAM. One place does both:
   `carryContractChange` (`api.js`), called by `applyNewContractTerms`,
   `createServiceContractFromDocument`, `deleteServiceContract` and the inline Save-terms path.
+- **A CONTRACT NOW HAS A SECOND WAY IN — e-signature (0093).** `signature_envelopes.lease_id`
+  is nullable and `contract_id` is its alternative (`ck_env_one_owner`: exactly one). Sending
+  and countersigning book **nothing** (0085's rule, unchanged); the money moves only when
+  `SignedContractModal` → `readSignedContractEnvelope` (reads `executed_path`, writes
+  `contract_text`, moves no figure) → `applyNewContractTerms({ envelopeId })`, which runs the
+  identical carry-through above and stamps `applied_at`. **`applied_at` is the only thing
+  that clears the "Read the signed contract" prompt and the `signature_apply` alert**, so any
+  new path that files a signed contract must stamp it — `markEnvelopeApplied` exists for the
+  "read it, nothing changes" case for exactly that reason.
 - **NOTHING on the contract path may write an estimate** — no `est_*` column, no
   `lease_estimates` row. That is not a restraint, it is the mechanism behind George's
   *"this only affects the ACTUAL CAM and Tax not estimated"*: `billedComponents` prefers a
@@ -211,6 +220,17 @@ Two implementations of one rule always drift unless changed in the same commit.
   **`noticeDueDate` (`src/lib/contractTerms.js`) is deliberately ONE implementation** with two
   callers — the review dialog and `updateServiceContract` — because a second copy would let
   the reminder fire on one date while the screen printed another.
+- **The extract-contract SCHEMA is at 15 of Anthropic's 16 union-typed parameters (0094).**
+  One slot left. The 17th 400s **every** contract extraction, silently, until someone reads
+  the logs — so whoever needs the next scalar splits it into two calls the way `extract-lease`
+  already does, rather than spending the last one. The count is stated above `SCHEMA`; keep it
+  accurate.
+- **`counterparty(env)` (`src/lib/envelopes.js`) is the ONLY place that decides "tenant" vs
+  "vendor"**, derived from `env.contract_id` rather than passed in. `envelope_signers.role` is
+  still `'tenant'` on a contract envelope — 0085's CHECK allows exactly (`tenant`,`landlord`)
+  and widening it would touch `sign-envelope`, the one unauthenticated endpoint in the project.
+  The role names the SIDE that holds the link, not the kind of person. Any new surface that
+  prints who is on the other end must call this, never re-derive it.
 - **`isoDateOrNull` lives in `src/lib/isoDate.js`** — dependency-free on purpose, so pure libs can
   guard a date without an import cycle into `api.js` (which re-exports it). Its twin is
   `realIsoDate` in `_shared/rentSchedule.js`; that copy is unavoidable (the app build can't import
@@ -239,6 +259,15 @@ Two implementations of one rule always drift unless changed in the same commit.
   Leads default to **60** days, not 183 — a six-month countdown to a 30-day window is noise.
   No `features.js` change and **no backfill**: `contracts` is already in every production
   `enabled_features` array (`0084`), which only holds because this extends an existing module.
+- **The two SIGNATURE focuses now have two kinds of home (0093).** `signature_countersign` and
+  `signature_apply` are raised for a lease envelope *and* a contract envelope from one block,
+  and every branch differs: the word for the other side (`counterparty`), the anchor
+  (`contract_id` instead of `lease_id`, both carried so `alertKey` never sees `undefined`),
+  the destination (`goToAlert` routes anything with a `contract_id` and no `lease_id` to the
+  Contracts tab), and the wording — an unread signed CONTRACT means the tenants are still
+  being billed the old fee, which is a money statement, not untidiness. **Both gates must
+  pass**: `esignOn && contractsOn`, because turning Service contracts off hides the tab the
+  alert points at. No new `NOTIFY_COLUMNS` / `NOTIFY_TYPES` entries — same two focuses.
 - **A new optional module** touches `FEATURES` (`features.js:11`) plus every gate that reads it —
   tabs, route redirects, page sections, `buildAlerts`, `fetchAlertData`, the email sweep, the Ask
   facts, and the demo mock. `grep -rl "isOn('insurance')"` is the fastest way to see the full set.
@@ -254,7 +283,7 @@ Two implementations of one rule always drift unless changed in the same commit.
   `LEDGER_EVENTS` (`tenantStory.js`) — an unknown type falls to the ledger log rather than
   vanishing, so a missing entry is quiet rather than loud.
 - **A new Ask Amlak fact** must bump the `snapshotFingerprint` version prefix (`portfolio.js:61`,
-  now `v5`) — otherwise every previously cached answer keeps serving the thinner summary.
+  now `v6`) — otherwise every previously cached answer keeps serving the thinner summary.
 
 ### 5. Deploy fan-out — a shared edge module makes its importers stale
 
@@ -271,8 +300,11 @@ deployed copy silently drifts from source.
 Named sets exist, and they are deliberately different: **`settleBillingChange`**
 (`src/lib/invalidate.js`) for "a billed figure moved", **`settleLeaseScheduleChange`** /
 **`settleLeaseListChange`** for a lease's own page and the three lists that render it,
-**`settleContractChange`** (0091 — the contract, its fee steps, the derived CAM row, the 1099
-and the history log; called **alongside** `settleBillingChange`, never instead), and
+**`settleContractChange`** (0091 — the contract, its fee steps, the derived CAM row, the 1099,
+the history log, and since 0093 `['envelopes']` — the prefix covers both `['envelopes', leaseId]`
+and `['envelopes', contractId]`, and without it applying a signed contract stamps `applied_at`
+while the prompt and the alert keep asking; called **alongside** `settleBillingChange`, never
+instead), and
 **`settleStatementImport`** (`ImportStatementButton.js:98`) for the wider statement-specific set
 (register, learned payees, history). Add a NAMED one rather than hand-rolling a list at the call
 site — hand-rolled lists drift apart by omission, which is how the invoice drift above survived

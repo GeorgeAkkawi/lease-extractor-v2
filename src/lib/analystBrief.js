@@ -36,6 +36,7 @@ export const MISMATCH_LABELS = {
   fee_schedule: 'a printed fee schedule',
   auto_renew: 'an automatic renewal',
   cancellation_notice: 'a cancellation-notice period',
+  additional_insured: 'a requirement to name you as additional insured',
 };
 
 // "a rent escalation and an extension of the term"

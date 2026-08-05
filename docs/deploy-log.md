@@ -12,6 +12,132 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **You can now send a CONTRACT out for signature, and the copy that comes
+  back signed reads itself in** (George: *"i dont see how it actually works to send a document
+  to someone. on the contracts tab next to add contract it should say send one for signature
+  like it does on the lease addendums and riders. none if that is there so i cant send one for
+  signature. then it should send and only when its countersigned the user should be prompted
+  with extract info with AI then it should upload… the contracts should also be read to see if
+  the user is listed as additional insured and if thhey are not the same email as the insurance
+  template should be added as a button."*). Deployed: migrations **`0093`** + **`0094`**, edge
+  fns **`send-for-signature`, `extract-contract`, `extract-lease`, `extract-addendum`**,
+  frontend Cloudflare **`050294dd`**, demo worker **`99854bbc`**. Tests **1844/1844** across
+  177 files (was 1823/176).
+
+  **The gap was ONE COLUMN, not a missing button.** `signature_envelopes.lease_id` was
+  `not null references leases` (0085), so an envelope had exactly one kind of home. That is the
+  whole reason the contracts tab had no "Send one for signature" — there was nowhere to file
+  the record, and a button would have had nothing to write. Everything *else* in e-signature
+  turned out not to be lease-shaped: `sign-envelope` (the unauthenticated signer side) reads no
+  lease at all, and `countersign-envelope` *selects* `lease_id` and never uses it — it builds
+  its sender name from `property_id`, which a service contract has. So `countersign-envelope`
+  needed **no change whatsoever**, and the rest is `alter column lease_id drop not null` plus
+  `contract_id`.
+
+  **`0093`** — nullable `lease_id`, `contract_id uuid references service_contracts on delete
+  cascade`, index `(contract_id, sent_at desc)`, `purpose` widened with `'service_contract'`,
+  and **`ck_env_one_owner`: `(lease_id is not null) <> (contract_id is not null)`**. Adding a
+  CHECK to a live table is normally the thing this schema refuses (the `service_contracts`
+  enums deliberately carry none, because live rows predate them) — it is safe *here* only
+  because every existing row satisfies it by construction: `lease_id` was NOT NULL and
+  `contract_id` did not exist yet. The migration header says so, so nobody reads it as a
+  precedent.
+
+  **`0094`** — `service_contracts.additional_insured boolean`. **Three-state, and null is
+  load-bearing**: null means "the document does not say", which is not "no". The warning and the
+  letter fire only on an explicit `false`, so a contract Amlak has never read stays quiet rather
+  than accusing a vendor of being uninsured — the same rule `insurance_policies.additional_insured`
+  already follows on the tenant side.
+
+  **The flow, end to end.** ✎ Send one for signature (next to + Add contract, gated on the
+  E-signature module) → the *same* dialog the lease uses, with two swaps: it asks **which
+  contract** instead of "what kind of lease document is this?" (a service contract's filing
+  question has one answer; its home does not), and the counterparty defaults to the vendor. →
+  the vendor signs on the existing public page → the landlord countersigns in the existing
+  dialog → **only then** does the row offer **✨ Read the signed contract**, which reads
+  `executed_path` (the document plus both signatures plus the certificate — never the draft
+  that went out, whose terms may have been struck through before signing), replaces
+  `contract_text`, and shows the *same* review screen an uploaded contract gets. Applying it
+  runs the identical `carryContractChange` — fee → CAM line → `cam_total` → shares → the frozen
+  invoice — and stamps `applied_at`.
+
+  **"A new contract" creates the shell FIRST.** The alternative (send now, file it later) leaves
+  an executed agreement with nowhere to land, which is the exact state this feature exists to
+  prevent. The shell carries a name and nothing else — no fee, no term, nothing in CAM — until
+  the signed copy is read in and confirmed. And **nothing is pre-selected** in the contract
+  picker: an envelope filed against the wrong contract is a signed agreement that re-prices the
+  wrong vendor's CAM line the moment it is read.
+
+  **ONE component, two homes — not a copy.** `AddendumEnvelopeRows` held a real state machine
+  (resend retires the old token, void keeps the signature record, delete is graded by what it
+  destroys, countersign renders the counterparty's mark under your own). All of it is identical
+  for a vendor, so it was lifted into a shared `EnvelopeRows` with `AddendumEnvelopeRows` and
+  the new `ContractEnvelopeRows` as thin wrappers. What genuinely differs is **the word for the
+  other side**, and that comes from **`counterparty(env)`** — derived from `env.contract_id`, so
+  no caller can get it wrong. ⚠ `envelope_signers.role` is STILL `'tenant'` on a contract
+  envelope: 0085's CHECK allows exactly (`tenant`,`landlord`), widening it would touch
+  `sign-envelope` — the one unauthenticated endpoint in the project — and the role names the
+  SIDE that holds the link, not the kind of person. The UI says "vendor" in one place instead.
+
+  **`applied_at` is the only thing that stops the asking**, so both buttons write it: "Apply the
+  signed contract" through `applyNewContractTerms({ envelopeId })`, and **"File it — keep the
+  current figures"** through `markEnvelopeApplied`. Reading a renewal, seeing it restates the
+  same figures and closing the dialog IS acting on it; leaving the prompt (and the dashboard's
+  `signature_apply` alert) up afterwards would teach George to ignore the one signal that means
+  money has not moved yet. `settleContractChange` gained `['envelopes']` for the same reason —
+  without it the stamp lands and the screen keeps nagging.
+
+  **The alerts learned they have two homes.** `signature_countersign` / `signature_apply` are
+  still the only two focuses (no new `NOTIFY_TYPES` / `NOTIFY_COLUMNS` entries), but every
+  branch inside them differs: the anchors carry `contract_id` *and* `lease_id` so `alertKey`
+  never sees `undefined`; `goToAlert` sends anything with a `contract_id` and no `lease_id` to
+  the Contracts tab rather than a lease page that does not exist for it; both gates must pass
+  (`esignOn && contractsOn`, because turning Service contracts off hides that tab); and the
+  wording is different on purpose — an unread signed CONTRACT is not untidiness, it means every
+  tenant is still being billed off the old fee.
+
+  **Additional insured (0094).** The extractor gained one scalar plus an analyst verdict and
+  fallback, and `CONTRACT_FLAG_DEFS` **split** `no_vendor_insurance` in two: a vendor carrying
+  $1,000,000 who simply has not named you produced the same words as one carrying nothing, and
+  they are different problems with different fixes (renegotiate the contract vs one call to
+  their broker). Only the second gets a stored column, a warning line and a letter —
+  `buildVendorAdditionalInsuredEmail`, the vendor-side twin of the insurance vault's own
+  request. It **drafts**; nothing sends. While wiring it: `NotificationEmailModal` said "Email
+  to tenant" over every letter it has ever sent to a vendor, including the contract expiry and
+  cancellation-notice ones that predate this round — it now reads the heading off the draft.
+
+  **⚠ THE EXTRACTOR IS NOW AT 15 OF ANTHROPIC'S 16 UNION-TYPED PARAMETERS.** One slot left. The
+  17th 400s **every** contract extraction, for every contract, silently until someone reads the
+  logs. The comment above `SCHEMA` says the next person splits it into two calls the way
+  `extract-lease` already does rather than spending the last slot — that split is cheap to make
+  while the schema still works and impossible to make in a hurry after it stops.
+
+  **Demo.** Two contract envelopes seeded on prop-2: `env-4` out with Arctic (so the strip shows
+  a live vendor countdown) and `env-5` executed and unread on GreenScape (the ✨ prompt, and the
+  full read → diff → apply → CAM → invoice chain). svc-1 seeded `additional_insured: false` with
+  matching contract text, svc-2 `true` — both answers visible side by side.
+
+  **Verified.** 1844 tests across 177 files, +21 this round. The new
+  `contractSignature.test.js` (17) drives the real UI against the demo mock: the button next to
+  + Add contract, the which-contract question, refusal to send with no home chosen, the envelope
+  landing with `lease_id` null and `contract_id` set, "a new contract" creating a fee-less shell
+  first, "Awaiting vendor" never "Awaiting tenant", the ✨ prompt appearing only on the executed
+  envelope, reading moving the text but not one figure, applying moving the fee → the CAM line →
+  `cam_total` → the stored invoice while writing **no estimate on any lease**, "File it"
+  clearing the prompt without touching a figure, and the additional-insured warning firing on
+  the `false` contract only and drafting a vendor-addressed letter.
+  `signatureAlerts.test.js` grew the contract half of the same chain (+4).
+
+  **Flagged, not fixed** (unchanged from the last round unless noted): `syncContractCamItems` →
+  `syncCamTotal` still has **no closed-year guard** — it will move `expense_records.cam_total`
+  for a closed year, while only the invoice is protected. Pre-existing and not contract-specific
+  (`CamSection` triggers it on every year open). There is still no `review-contract` sibling to
+  `review-lease`, so a contract's `ai_review` is only ever written at extract time.
+  `cam_line_items_contract_year_uidx` (0042) is still unmirrored in `mockClient.js`.
+  `prefetch.js` still never warms `['serviceContracts', propId]`. **New this round:**
+  `additional_insured` is not in the Ask Amlak snapshot, so the assistant cannot answer "which
+  vendors don't name me as additional insured?" — adding it means a `v7` fingerprint bump.
+
 - **2026-08-05** — **The contracts tab gets the lease's system: an AI extractor with a review
   screen, a dated fee schedule, renewal + cancellation-notice reminders, and a stored signed
   copy** (George: *"we need to add the same system to the contracts tab. make sure the extractor

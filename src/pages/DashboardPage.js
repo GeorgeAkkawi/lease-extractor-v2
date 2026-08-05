@@ -171,7 +171,11 @@ export default function DashboardPage() {
     // Both ledger reminders land on the Ledger grid — where ⬆ Import statement lives and
     // where a month's cell can be marked paid — rather than the lease page.
     else if ((a.focus === 'statement_reminder' || a.focus === 'missing_payment') && a.property_id) navigate(`/financials/${a.corporation_id}/${a.property_id}/ledger`);
-    else if ((a.focus === 'contract' || a.focus === 'contract_notice' || a.focus === 'contract_escalation') && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
+    // The three contract focuses, plus anything anchored to a contract rather than a lease —
+    // which is how a signature alert on a contract envelope (0093) finds its way to the
+    // Contracts tab instead of falling through to a lease page it doesn't have.
+    else if ((a.focus === 'contract' || a.focus === 'contract_notice' || a.focus === 'contract_escalation'
+              || (a.contract_id && !a.lease_id)) && a.property_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/contracts`);
     else if (a.lease_id) navigate(`/leases/${a.corporation_id}/${a.property_id}/${a.lease_id}?focus=${a.focus || ''}`);
     else navigate(`/leases/${a.corporation_id}`);
   }

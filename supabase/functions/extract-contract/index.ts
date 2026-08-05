@@ -56,20 +56,27 @@ const field = (valueTypes: string[]) => ({
   },
 });
 
-// ⚠ UNION-TYPED-PARAMETER BUDGET: 14 of Anthropic's 16.
-//   12 scalars × field()                                            = 12
+// ⚠ UNION-TYPED-PARAMETER BUDGET: 15 of Anthropic's 16. ONE LEFT.
+//   13 scalars × field()                                            = 13
 //   fee_schedule items: effective_date + months_from_start nullable =  2
 // Everything else — confidence/source_quote/page, and every other fee_schedule item field —
-// is single-typed and REQUIRED, so it costs zero (the expense_estimates precedent). Adding a
-// 3rd nullable to a fee_schedule row, or a 13th scalar, takes it to 15; a 15th union takes
-// it to the ceiling and a 17th 400s EVERY extraction. Count before you add.
+// is single-typed and REQUIRED, so it costs zero (the expense_estimates precedent).
+//
+// ⚠ THE NEXT FIELD IS THE LAST ONE. 16 is the ceiling; a 17th union 400s EVERY extraction,
+// for every contract, silently until someone reads the logs. Whoever needs a 15th scalar
+// should SPLIT THIS INTO TWO CALLS the way extract-lease already does (a second supplement
+// call over the same content, merged by key) rather than spend the last slot — the split is
+// the cheap change to make while the schema still works, and the impossible one to make in
+// a hurry after it stops. `additional_insured` (0094) took the 15th slot: it is a stored,
+// hand-editable column that drafts a letter to the vendor, so it needs the same source
+// quote and confidence as every other term rather than living only in the analyst's prose.
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [
     'service_type', 'vendor', 'vendor_email', 'amount', 'frequency', 'escalation_pct',
     'start_date', 'end_date', 'auto_renew', 'cancellation_notice_days', 'notice_by_date',
-    'renewal_term_months', 'fee_schedule',
+    'renewal_term_months', 'additional_insured', 'fee_schedule',
   ],
   properties: {
     service_type: field(['string']),   // one of: landscaping | snow_removal | security | other
@@ -85,6 +92,10 @@ const SCHEMA = {
     cancellation_notice_days: field(['number']),
     notice_by_date: field(['string']),      // ONLY a calendar date the contract actually prints
     renewal_term_months: field(['number']),
+    // Does the contract require the OWNER to be named as an additional insured on the
+    // vendor's liability policy? Tri-state and null is load-bearing: null means the document
+    // does not say, which is NOT the same as "no" and must not accuse anyone.
+    additional_insured: field(['boolean']),
     // A printed fee TABLE — "Year 1 $7,000, Year 2 $7,500" or a dated schedule. Read RAW:
     // the model never multiplies or annualizes (buildContractFeeSteps does, in JS).
     fee_schedule: {
@@ -131,6 +142,15 @@ const SYSTEM_FIELDS =
   'calendar date the contract PRINTS as the notice deadline. If the deadline is only stated ' +
   'relative to the term ("30 days prior to expiration") you CANNOT compute a real date — ' +
   'return null and let cancellation_notice_days carry it. Never put words in a date field.\n\n' +
+  'INSURANCE. additional_insured = true ONLY when the contract expressly requires the OWNER / ' +
+  'landlord (or its affiliates, agents or property manager) to be named as an ADDITIONAL ' +
+  'INSURED on the vendor\'s liability policy — "shall name Owner as an additional insured", ' +
+  '"Owner shall be endorsed as additional insured", or the same requirement inside an ' +
+  'insurance exhibit or certificate-of-insurance schedule. false when the contract DOES ' +
+  'discuss the vendor\'s insurance but never requires the owner to be named on it. null when ' +
+  'the contract says nothing about insurance at all — null means "not stated" and is not the ' +
+  'same as false, so do not use false for a document you could not find an insurance clause ' +
+  'in. Quote the clause you read it from either way.\n\n' +
   'FEE SCHEDULE — READ THE NUMBERS, DON\'T DO MATH. When the contract prints a TABLE of ' +
   'different fees over time (per season, per contract year, per period), add ONE fee_schedule ' +
   'entry per row, earliest first: effective_date = the ISO date that fee starts IF the document ' +
@@ -182,7 +202,7 @@ const ANALYST_SYSTEM =
   flagInstructionFor(CONTRACT_FLAG_DEFS, contractFlagQuestion, 'contract') + '\n\n' +
   'FINAL LINES — MACHINE-READABLE. After all the bullets, end your brief with TWO final lines — ' +
   'the VERDICTS line then the FLAGS line — in EXACTLY these formats (nothing after them):\n' +
-  'VERDICTS: escalation=<yes|no|unclear>; escalation_pct=<number|none>; fee_schedule=<yes|no|unclear>; auto_renew=<yes|no|unclear>; cancellation_notice_days=<number|none>; notice_date=<stated|not_stated>; start_date=<stated|not_stated>; recurring=<yes|no|unclear>\n' +
+  'VERDICTS: escalation=<yes|no|unclear>; escalation_pct=<number|none>; fee_schedule=<yes|no|unclear>; auto_renew=<yes|no|unclear>; cancellation_notice_days=<number|none>; notice_date=<stated|not_stated>; start_date=<stated|not_stated>; recurring=<yes|no|unclear>; additional_insured=<yes|no|unclear>\n' +
   flagLineSpecFor(CONTRACT_FLAG_DEFS) + '\n' +
   'On the FLAGS line, remember: yes = the concern APPLIES. ' +
   'Set escalation=yes only if the fee actually increases over the term (a table with different ' +
@@ -192,6 +212,9 @@ const ANALYST_SYSTEM =
   'cancellation. cancellation_notice_days = the number of days notice required to cancel or ' +
   'non-renew, else none. notice_date=stated only if a specific calendar deadline is printed. ' +
   'start_date=stated only if a real commencement date is printed. ' +
+  'additional_insured=yes only if the contract expressly requires the OWNER to be named as an ' +
+  'additional insured on the vendor\'s policy; no if it discusses the vendor\'s insurance but ' +
+  'never requires that; unclear if the contract does not address insurance at all. ' +
   'recurring=no ONLY when this is a ONE-OFF job — a single repair, replacement or installation ' +
   'that does not repeat (this is load-bearing: a recurring fee is carried into EVERY later ' +
   'year\'s common-area costs, so a one-off booked as recurring overstates the property\'s costs ' +
@@ -379,6 +402,18 @@ Deno.serve(async (req) => {
         }
       }
 
+      // And the insurance answer (0094). Same fallback shape, and it matters more than the
+      // others: this one is READ ONCE and then drafts a letter to a real vendor. A null the
+      // analyst could have filled would leave a genuinely exposed owner looking merely
+      // "not stated", which raises nothing at all.
+      const ai = String((verdicts as any).additional_insured || '');
+      if (ai === 'yes' || ai === 'no') {
+        const cur = (parsed as any).additional_insured;
+        if (!cur || cur.value == null) {
+          (parsed as any).additional_insured = { value: ai === 'yes', confidence: null, source_quote: '', page: null };
+        }
+      }
+
       // Disagreement alarm: the analyst affirmed a term the form came up empty on.
       const mismatches = contractMismatches({
         verdicts,
@@ -386,6 +421,7 @@ Deno.serve(async (req) => {
         escalationPct: (parsed as any)?.escalation_pct?.value,
         autoRenew: (parsed as any)?.auto_renew?.value,
         noticeDays: (parsed as any)?.cancellation_notice_days?.value,
+        additionalInsured: (parsed as any)?.additional_insured?.value,
       });
       if (mismatches.length) (parsed as any).extraction_mismatch = mismatches;
 

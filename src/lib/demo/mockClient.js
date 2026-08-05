@@ -512,7 +512,13 @@ const functions = {
       }
       const id = `env-${Math.random().toString(36).slice(2, 10)}`;
       (db.signature_envelopes ||= []).push({
-        id, owner_id: DEMO_USER.id, lease_id: body?.lease_id, property_id: body?.property_id,
+        // 0093 — exactly one of these is set. The mock enforces no CHECK constraints, so
+        // both are normalised to null here rather than left undefined: a `contract_id:
+        // undefined` reads as "no contract" to a filter but is NOT equal to null, and
+        // listContractEnvelopes filters on .eq('contract_id', id).
+        id, owner_id: DEMO_USER.id,
+        lease_id: body?.lease_id ?? null, contract_id: body?.contract_id ?? null,
+        property_id: body?.property_id,
         renewal_option_id: body?.renewal_option_id ?? null, purpose: body?.purpose || 'other',
         title: body?.title || 'Document', storage_path: body?.storage_path || 'demo/doc.pdf',
         filename: body?.filename ?? null, doc_sha256: 'demo0000000000000000000000000000000000000000000000000000000000',
@@ -830,6 +836,10 @@ function demoExtractContract(body) {
       // screen says so. That is the commonest real shape and the one worth demoing.
       notice_by_date: fld(null, 0, ''),
       renewal_term_months: fld(12, 0.85, 'Auto-renews annually'),
+      // 0094 — FALSE, and false is the interesting answer: the contract requires the vendor
+      // to insure but never names the owner on the policy, which is what raises the warning
+      // and offers the endorsement letter. Null would mean "the document doesn't say".
+      additional_insured: fld(false, 0.9, 'Contractor shall maintain commercial general liability insurance of not less than $1,000,000 per occurrence.'),
       fee_schedule: [
         { effective_date: `${y}-01-01`, months_from_start: null, amount, period: 'per_year', quote: `$${amount.toLocaleString('en-US')} per year for the first year` },
         { effective_date: `${y + 1}-01-01`, months_from_start: null, amount: amount + 500, period: 'per_year', quote: `increasing to $${(amount + 500).toLocaleString('en-US')} per year effective January 1, ${y + 1}` },
@@ -848,9 +858,9 @@ function demoExtractContract(body) {
         '• SCOPE OF SERVICE — ' + services + '. Materials, storm cleanup and after-hours call-outs are excluded and billed separately.',
         `• FEE & ESCALATION — $${amount.toLocaleString('en-US')} per year, rising to $${(amount + 500).toLocaleString('en-US')} on January 1, ${y + 1}. Additional salt applications at $250 per visit.`,
         `• TERM, RENEWAL & NOTICE — January 1, ${y} to December 31, ${y + 1}; renews automatically for successive twelve-month terms unless cancelled on thirty (30) days written notice. No calendar deadline is printed.`,
-        '• TERMINATION, LIABILITY & INSURANCE — the contract is silent on termination for convenience.',
-        '• RED FLAGS — the renewal is automatic on a short notice window, and the headline fee excludes several items.',
-        `VERDICTS: escalation=yes; escalation_pct=none; fee_schedule=yes; auto_renew=yes; cancellation_notice_days=30; notice_date=not_stated; start_date=stated; recurring=yes`,
+        '• TERMINATION, LIABILITY & INSURANCE — the contract is silent on termination for convenience. The contractor must carry $1,000,000 general liability, but nothing in the agreement requires the Owner to be named as an additional insured on it.',
+        '• RED FLAGS — the renewal is automatic on a short notice window, the headline fee excludes several items, and the Owner is not an additional insured on the contractor’s policy.',
+        `VERDICTS: escalation=yes; escalation_pct=none; fee_schedule=yes; auto_renew=yes; cancellation_notice_days=30; notice_date=not_stated; start_date=stated; recurring=yes; additional_insured=no`,
         'FLAGS: ' + CONTRACT_FLAG_DEFS.map((d) => `${d.key}=${flagKeys.includes(d.key) ? 'yes' : 'no'}`).join('; '),
       ].join('\n'),
     },

@@ -45,7 +45,26 @@ export const PURPOSE = [
   },
 ];
 
-export const purposeLabel = (key) => PURPOSE.find((p) => p.key === key)?.label || 'Document';
+// The contracts tab's purpose (0093). Deliberately NOT in PURPOSE above: that array is the
+// lease dialog's dropdown, and a service contract is not one of the answers to "what is this
+// lease document?". The contract dialog asks nothing — an executed service contract IS the
+// contract, so there is no filing decision left to make.
+export const CONTRACT_PURPOSE = 'service_contract';
+
+export const purposeLabel = (key) =>
+  (key === CONTRACT_PURPOSE ? 'Service contract' : PURPOSE.find((p) => p.key === key)?.label) || 'Document';
+
+// WHO IS ON THE OTHER SIDE — derived from the envelope itself rather than passed in, so no
+// caller can get it wrong and a row can never say "waiting on the tenant" about a snow
+// contractor. The database says it plainly: exactly one of lease_id / contract_id is set
+// (ck_env_one_owner, 0093).
+//
+// ⚠ envelope_signers.role is STILL 'tenant' on a contract envelope — 0085's check constraint
+// allows exactly ('tenant','landlord') and widening it would touch the one unauthenticated
+// path in this project. The role names the SIDE (the one holding the link), not the kind of
+// person; this function is what turns that into words a landlord would use.
+export const counterparty = (env) => (env?.contract_id ? 'vendor' : 'tenant');
+export const isContractEnvelope = (env) => !!env?.contract_id;
 
 // An ISO timestamp N days from `now`, for the expiry picker. Kept here so the modal and the
 // tests price a "30 day" link the same way.
@@ -73,21 +92,27 @@ export const isOpen = (env, now) => ['sent', 'signed'].includes(envelopeStatus(e
 // only one worth an alert that says "do this".
 export const needsCountersign = (env, now) => envelopeStatus(env, now) === 'signed';
 
-// Executed and not yet pushed into the lease. `applied_at` is written by the Phase 2 apply
-// step; until then an executed envelope is a signed document sitting in a drawer.
+// Executed and not yet pushed into the record it belongs to. `applied_at` is written by the
+// apply step; until then an executed envelope is a signed document sitting in a drawer.
+//
+// On a CONTRACT this is the state George named directly (2026-08-05: *"only when its
+// countersigned the user should be prompted with extract info with AI then it should
+// upload"*) — it is what offers "Read the signed contract", and applying its terms is what
+// clears it.
 export const needsApply = (env, now) =>
   envelopeStatus(env, now) === 'executed' && !env?.applied_at;
 
 // Badge tone + label, matching the vocabulary the renewal-options table already uses
 // (good / warn / danger / info) so the two tables read as one system.
 export function statusBadge(env, now) {
+  const who = counterparty(env);
   switch (envelopeStatus(env, now)) {
     case 'signed':
-      return { cls: 'warn', label: 'Signed — countersign', title: 'The tenant has signed. Add your signature to execute it.' };
+      return { cls: 'warn', label: 'Signed — countersign', title: `The ${who} has signed. Add your signature to execute it.` };
     case 'executed':
       return { cls: 'good', label: 'Executed', title: 'Signed by both parties.' };
     case 'declined':
-      return { cls: 'danger', label: 'Declined', title: 'The tenant declined to sign.' };
+      return { cls: 'danger', label: 'Declined', title: `The ${who} declined to sign.` };
     case 'voided':
       return { cls: 'info', label: 'Voided', title: 'Cancelled — the link no longer works.' };
     case 'expired':
@@ -96,7 +121,7 @@ export function statusBadge(env, now) {
       // NOT "Out for signature" — that is the strip's own heading, and a badge repeating it
       // told the landlord nothing he couldn't already see. Naming who it is waiting on is
       // the useful half, and it reads as the counterpart to "Signed — countersign".
-      return { cls: 'warn', label: 'Awaiting tenant', title: 'Sent and waiting on the tenant.' };
+      return { cls: 'warn', label: `Awaiting ${who}`, title: `Sent and waiting on the ${who}.` };
   }
 }
 
@@ -112,7 +137,7 @@ export function daysToExpiry(env, now = Date.now()) {
 // still live — how long the link has. "Expires in 2 days" is the part that actually
 // prompts a chase; a bare date does not.
 export function envelopeLine(env, now = Date.now()) {
-  const who = env?.signer_name || 'the tenant';
+  const who = env?.signer_name || `the ${counterparty(env)}`;
   const state = envelopeStatus(env, now);
   if (state === 'sent') {
     const left = daysToExpiry(env, now);

@@ -316,6 +316,10 @@ export function seed() {
         start_date: iso(Y - 2, 11, 1), end_date: iso(Y + 1, 10, 31),
         auto_renew: true, notice_days: 30, notice_by_date: soon, renewal_term_months: 12,
         cancel_notice_bucket: null, end_notice_bucket: null,
+        // 0094 — the vendor carries insurance but the agreement never names the Owner on it.
+        // FALSE, not null: the contract has been read and it genuinely does not require the
+        // endorsement, which is what raises the warning and offers the letter.
+        additional_insured: false,
         contract_text: [
           'SNOW REMOVAL SERVICE AGREEMENT',
           'By and between Acme Holdings LLC (the "Owner") and Arctic Snow Services (the "Contractor").',
@@ -324,6 +328,7 @@ export function seed() {
           `Fee: $7,000.00 per season for the ${Y - 2}–${Y - 1} season, increasing to $8,000.00 per season effective November 1, ${Y}.`,
           `Term: Commencing ${fmtDate(iso(Y - 2, 11, 1))} and expiring ${fmtDate(iso(Y + 1, 10, 31))}.`,
           'Renewal: This Agreement renews automatically for successive twelve (12) month terms unless either party gives thirty (30) days written notice of cancellation prior to the expiration of the then-current term.',
+          'Insurance: Contractor shall maintain commercial general liability insurance of not less than $1,000,000 per occurrence. No provision of this Agreement requires the Owner to be named as an additional insured.',
           'Excluded: hauling of accumulated snow off site, ice-melt applied at Owner’s request beyond two applications per event, and storm cleanup, each billed separately at the Contractor’s published rates.',
         ].join('\n'),
         storage_path: `${DEMO_USER.id}/arctic-snow-agreement.pdf`,
@@ -337,11 +342,14 @@ export function seed() {
         start_date: iso(Y - 1, 1, 1), end_date: null,
         auto_renew: null, notice_days: null, notice_by_date: null, renewal_term_months: null,
         cancel_notice_bucket: null, end_notice_bucket: null,
+        // The compliant half of the pair, so the demo shows both answers side by side.
+        additional_insured: true,
         contract_text: [
           'GROUNDS MAINTENANCE AGREEMENT',
           'By and between Acme Holdings LLC (the "Owner") and GreenScape Inc. (the "Contractor").',
           'Services: weekly mowing, seasonal planting, and leaf removal at Oak Center.',
           'Fee: $1,000.00 per month, increasing three percent (3%) on each anniversary of the commencement date.',
+          'Insurance: Contractor shall name the Owner as an additional insured on its commercial general liability policy and furnish a certificate evidencing the same.',
           `Term: Commencing ${fmtDate(iso(Y - 1, 1, 1))} and continuing until cancelled by either party.`,
         ].join('\n'),
         storage_path: null,
@@ -508,12 +516,20 @@ export function seed() {
     //   env-1  SIGNED    — waiting on the landlord's countersignature.
     //   env-2  EXECUTED  — signed by both and never applied.
     //
+    // …plus two on the CONTRACTS side (0093), because until this round an envelope could
+    // only ever belong to a lease and the contracts tab had no way to send anything:
+    //   env-4  SENT      — the snow renewal, out with the VENDOR rather than a tenant.
+    //   env-5  EXECUTED  — the grounds renewal, signed by both and not yet read. This is the
+    //                      one that shows the prompt George asked for: *"only when its
+    //                      countersigned the user should be prompted with extract info with
+    //                      AI then it should upload."*
+    //
     // ⚠ token_hash HOLDS THE ENVELOPE ID HERE. The demo has no crypto and no security
     // boundary; live stores ONLY sha256 of a 32-byte CSPRNG token (0085). Anyone reading
     // this as a template for the real thing has it exactly backwards.
     signature_envelopes: [
       {
-        id: 'env-3', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1',
+        id: 'env-3', owner_id: DEMO_USER.id, lease_id: 'lease-1', contract_id: null, property_id: 'prop-1',
         renewal_option_id: null, purpose: 'extension', title: 'Third Amendment to Lease',
         storage_path: 'demo/third-amendment.pdf', filename: 'Third Amendment to Lease.pdf',
         doc_sha256: 'c4d9e2b70a15368fbe2c04a97d31856ef0b4a2c68d5e9137fa2b06c4d8e15937',
@@ -527,7 +543,7 @@ export function seed() {
         updated_at: new Date(Date.now() - 2 * 86400000).toISOString(),
       },
       {
-        id: 'env-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1',
+        id: 'env-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', contract_id: null, property_id: 'prop-1',
         renewal_option_id: null, purpose: 'extension', title: 'Second Amendment to Lease',
         storage_path: 'demo/second-amendment.pdf', filename: 'Second Amendment to Lease.pdf',
         doc_sha256: 'a3f1c0de5b7290114e6d8c2f9a4b1d3e7c05f8a2b6d4e9c1370f5a8b2c4d6e80',
@@ -539,7 +555,7 @@ export function seed() {
         created_at: iso(Y, 6, 2), updated_at: iso(Y, 6, 4),
       },
       {
-        id: 'env-2', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1',
+        id: 'env-2', owner_id: DEMO_USER.id, lease_id: 'lease-1', contract_id: null, property_id: 'prop-1',
         renewal_option_id: null, purpose: 'other', title: 'Estoppel Certificate',
         storage_path: 'demo/estoppel.pdf', filename: 'Estoppel Certificate.pdf',
         doc_sha256: 'b7c2e91d40a83f5628d1097cba4e6f38025d7a9c1e4b8036f2a5c7d9e1b30462',
@@ -548,6 +564,37 @@ export function seed() {
         countersigned_at: iso(Y, 4, 15), executed_at: iso(Y, 4, 15), applied_at: null,
         executed_path: 'demo/estoppel-signed.pdf', certificate_path: 'demo/estoppel-signed.pdf',
         created_at: iso(Y, 4, 12), updated_at: iso(Y, 4, 15),
+      },
+      // ── The contracts side (0093). lease_id is NULL and contract_id carries it; exactly
+      // one of the two is set, which ck_env_one_owner enforces live and this seed obeys.
+      {
+        id: 'env-4', owner_id: DEMO_USER.id, lease_id: null, contract_id: 'svc-1', property_id: 'prop-2',
+        renewal_option_id: null, purpose: 'service_contract',
+        title: `Snow Removal Agreement — ${Y + 1}/${Y + 2} Renewal`,
+        storage_path: 'demo/arctic-renewal.pdf', filename: 'Arctic Snow renewal.pdf',
+        doc_sha256: 'd18b6f0a2c47e9315bd82f60a1c94e73f5028ab6cd31e947f0a2b58c6d13e4f9',
+        message: 'Here’s the renewal for next season — same scope, the fee steps as we discussed.',
+        status: 'sent', expires_at: new Date(Date.now() + 21 * 86400000).toISOString(),
+        sent_at: new Date(Date.now() - 3 * 86400000).toISOString(),
+        signed_at: null, countersigned_at: null, executed_at: null, applied_at: null,
+        executed_path: null, certificate_path: null,
+        created_at: new Date(Date.now() - 3 * 86400000).toISOString(),
+        updated_at: new Date(Date.now() - 3 * 86400000).toISOString(),
+      },
+      {
+        id: 'env-5', owner_id: DEMO_USER.id, lease_id: null, contract_id: 'svc-2', property_id: 'prop-2',
+        renewal_option_id: null, purpose: 'service_contract',
+        title: 'Grounds Maintenance Agreement — Renewal',
+        storage_path: 'demo/greenscape-renewal.pdf', filename: 'GreenScape renewal.pdf',
+        doc_sha256: 'e5309a71cd8462fb03e7a15d9c48b620f7a3d05e1b96c4827fa0d63b5e19c847',
+        message: null, status: 'executed', expires_at: iso(Y, 12, 31),
+        sent_at: iso(Y, 5, 6), signed_at: iso(Y, 5, 8),
+        countersigned_at: iso(Y, 5, 9), executed_at: iso(Y, 5, 9),
+        // NOT applied — which is exactly the state that offers "Read the signed contract".
+        applied_at: null,
+        executed_path: 'demo/greenscape-renewal-signed.pdf',
+        certificate_path: 'demo/greenscape-renewal-signed.pdf',
+        created_at: iso(Y, 5, 6), updated_at: iso(Y, 5, 9),
       },
     ],
     envelope_signers: [
@@ -579,6 +626,28 @@ export function seed() {
         name: 'Acme Holdings', email: 'leasing@acmeholdings.example', token_hash: null,
         typed_name: 'Acme Holdings', signed_at: iso(Y, 4, 15), consent_at: iso(Y, 4, 15),
         created_at: iso(Y, 4, 12) },
+      // ⚠ THE COUNTERPARTY ROW IS STILL role='tenant' ON A CONTRACT ENVELOPE. 0085's check
+      // constraint allows exactly ('tenant','landlord'), and widening it would touch the
+      // unauthenticated sign-envelope path — the one place in this project where a schema
+      // change is genuinely expensive. The role names the SIDE, not the kind of person: the
+      // row that holds the link, and the row that countersigns. The UI says "vendor".
+      { id: 'sgn-4t', owner_id: DEMO_USER.id, envelope_id: 'env-4', role: 'tenant',
+        name: 'Arctic Snow Services', email: 'billing@arcticsnow.example', token_hash: 'env-4',
+        consent_at: null, signed_at: null, typed_name: null, signature_path: null,
+        place_page: null, place_x: null, place_y: null, place_w: null,
+        ip: null, user_agent: null, created_at: new Date(Date.now() - 3 * 86400000).toISOString() },
+      { id: 'sgn-4l', owner_id: DEMO_USER.id, envelope_id: 'env-4', role: 'landlord',
+        name: 'Acme Holdings', email: 'leasing@acmeholdings.example', token_hash: null,
+        created_at: new Date(Date.now() - 3 * 86400000).toISOString() },
+      { id: 'sgn-5t', owner_id: DEMO_USER.id, envelope_id: 'env-5', role: 'tenant',
+        name: 'GreenScape Inc.', email: 'ar@greenscape.example', token_hash: 'env-5',
+        consent_at: iso(Y, 5, 8), signed_at: iso(Y, 5, 8), typed_name: 'Dana Ruiz',
+        signature_path: 'signatures/env-5/tenant-demo.png', ip: '198.51.100.24',
+        user_agent: 'Mozilla/5.0 (Windows NT 10.0)', created_at: iso(Y, 5, 6) },
+      { id: 'sgn-5l', owner_id: DEMO_USER.id, envelope_id: 'env-5', role: 'landlord',
+        name: 'Acme Holdings', email: 'leasing@acmeholdings.example', token_hash: null,
+        typed_name: 'Acme Holdings', signed_at: iso(Y, 5, 9), consent_at: iso(Y, 5, 9),
+        created_at: iso(Y, 5, 6) },
     ],
     envelope_events: [
       { id: 'evt-3a', owner_id: DEMO_USER.id, envelope_id: 'env-3', kind: 'created', actor: 'landlord', at: new Date(Date.now() - 2 * 86400000).toISOString() },
@@ -588,6 +657,13 @@ export function seed() {
       { id: 'evt-1c', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'viewed', actor: 'tenant', at: iso(Y, 6, 3), ip: '203.0.113.10' },
       { id: 'evt-1d', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'consented', actor: 'tenant', at: iso(Y, 6, 4), ip: '203.0.113.10' },
       { id: 'evt-1e', owner_id: DEMO_USER.id, envelope_id: 'env-1', kind: 'signed', actor: 'tenant', at: iso(Y, 6, 4), ip: '203.0.113.10' },
+      { id: 'evt-4a', owner_id: DEMO_USER.id, envelope_id: 'env-4', kind: 'created', actor: 'landlord', at: new Date(Date.now() - 3 * 86400000).toISOString() },
+      { id: 'evt-4b', owner_id: DEMO_USER.id, envelope_id: 'env-4', kind: 'sent', actor: 'landlord', at: new Date(Date.now() - 3 * 86400000).toISOString() },
+      { id: 'evt-5a', owner_id: DEMO_USER.id, envelope_id: 'env-5', kind: 'created', actor: 'landlord', at: iso(Y, 5, 6) },
+      { id: 'evt-5b', owner_id: DEMO_USER.id, envelope_id: 'env-5', kind: 'sent', actor: 'landlord', at: iso(Y, 5, 6) },
+      { id: 'evt-5c', owner_id: DEMO_USER.id, envelope_id: 'env-5', kind: 'signed', actor: 'tenant', at: iso(Y, 5, 8), ip: '198.51.100.24' },
+      { id: 'evt-5d', owner_id: DEMO_USER.id, envelope_id: 'env-5', kind: 'countersigned', actor: 'landlord', at: iso(Y, 5, 9) },
+      { id: 'evt-5e', owner_id: DEMO_USER.id, envelope_id: 'env-5', kind: 'executed', actor: 'system', at: iso(Y, 5, 9) },
     ],
   };
 }

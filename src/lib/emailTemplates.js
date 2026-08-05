@@ -314,6 +314,40 @@ export function buildContractNonRenewalEmail({ business, vendorName, vendorEmail
   return { subject, body, to: vendorEmail || '' };
 }
 
+// The vendor-side twin of buildAdditionalInsuredRequestEmail (0094). George, 2026-08-05:
+// *"the contracts should also be read to see if the user is listed as additional insured and
+// if they are not the same email as the insurance template should be added as a button."*
+//
+// Same ask, different counterparty — and it is a bigger exposure than the tenant one. A
+// vendor is on the property WORKING: a plough operator who clips a car, a contractor whose
+// employee falls off a roof. Their policy answers for them, not for the owner, unless the
+// owner is endorsed onto it — and the endorsement is normally free, which is why this is one
+// email rather than a renegotiation.
+//
+// ⚠ It DRAFTS. Nothing here sends: the ✉ opens the send modal and the landlord sends it.
+export function buildVendorAdditionalInsuredEmail({ business, vendorName, vendorEmail, contractName, propertyName, serviceLabel }) {
+  const company = business?.company_name || 'the owner';
+  const what = contractName || 'our service agreement';
+  const work = serviceLabel ? `${serviceLabel.toLowerCase()} services` : 'the services';
+  const subject = `Additional Insured Endorsement Requested — ${contractName || 'service agreement'}`;
+  const body = letter({
+    business,
+    toBlock: [
+      vendorName || contractName || 'Service Provider',
+      propertyName ? `Service provider at ${propertyName}` : null,
+      vendorEmail || null,
+    ],
+    reLine: `RE: Additional insured endorsement — ${what}${propertyName ? ` at ${propertyName}` : ''}`,
+    paragraphs: [
+      `Dear ${vendorName || 'Service Provider'},`,
+      `We are reviewing our files for ${what}${propertyName ? ` at ${propertyName}` : ''}. The agreement does not name ${company} as an additional insured on your liability policy, and as your crews perform ${work} at the property we would ask that it does.`,
+      `Please have your insurance agent issue a certificate of insurance naming ${company} as an additional insured on your commercial general liability policy, together with the corresponding endorsement, and send us the copy for our records. This does not change your coverage or your premium dates — it is the additional-insured designation only, and most carriers issue it at no charge.`,
+      `Please also let us know the certificate holder details you need from us. Thank you for your prompt attention — please let us know if you have any questions.`,
+    ],
+  });
+  return { subject, body, to: vendorEmail || '' };
+}
+
 // Sent when a rent payment came in SHORT of what the ledger projects for a month —
 // most often because a scheduled rent adjustment (escalation) took effect and the
 // tenant is still remitting the old amount. Names the month, what was received, the

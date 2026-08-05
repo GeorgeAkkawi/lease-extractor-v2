@@ -4,7 +4,7 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths, optionLapsed, renewalFirstYearRent, optionScheduleSteps } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildContractNonRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildContractNonRenewalEmail, buildVendorAdditionalInsuredEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents, monthlyEstimates } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import {
@@ -225,8 +225,24 @@ export async function logAnnouncementSent({ propertyId, propertyName, subject, s
 // same cost and works identically in both. (Same class of trap as the `not()` incident —
 // see the comment at mockClient.js:155.)
 export async function listEnvelopes(leaseId) {
+  return envelopesWhere('lease_id', leaseId);
+}
+
+// The contracts-tab twin (0093). Same stitch, different anchor column — an envelope belongs
+// to a lease OR to a service contract, and exactly one of the two is set.
+//
+// ⚠ The signer row it reads is still role='tenant': 0085's constraint allows exactly
+// ('tenant','landlord'), and the role names the SIDE that holds the signing link, not the
+// kind of person. src/lib/envelopes.js `counterparty()` is what turns it into "vendor" on
+// screen — one function, so no surface can get it wrong on its own.
+export async function listContractEnvelopes(contractId) {
+  return envelopesWhere('contract_id', contractId);
+}
+
+async function envelopesWhere(column, value) {
+  if (!value) return [];
   const envs = await rows(
-    supabase.from('signature_envelopes').select('*').eq('lease_id', leaseId).order('sent_at', { ascending: false })
+    supabase.from('signature_envelopes').select('*').eq(column, value).order('sent_at', { ascending: false })
   );
   if (!envs?.length) return [];
   const signers = await rows(
@@ -255,11 +271,15 @@ export const listEnvelopeEvents = (envelopeId) =>
 // ONLY time it is ever visible: nothing stores it, and no endpoint can recover it. Show it
 // as a copyable fallback, never persist it.
 export function sendForSignature({
-  leaseId, propertyId, renewalOptionId, purpose, title, storagePath, filename,
+  leaseId, contractId, propertyId, renewalOptionId, purpose, title, storagePath, filename,
   message, signerName, signerEmail, expiresAt, replyTo, landlordName,
 }) {
   return invokeFunction('send-for-signature', {
-    lease_id: leaseId,
+    // 0093 — a lease document or a service contract, never both. The edge function refuses
+    // the pair and ck_env_one_owner refuses it again; nulling the unused one here is what
+    // keeps a `contract_id: undefined` from reaching the mock as "not equal to null".
+    lease_id: leaseId || null,
+    contract_id: contractId || null,
     property_id: propertyId,
     renewal_option_id: renewalOptionId || null,
     purpose: purpose || 'other',
@@ -2285,6 +2305,66 @@ export async function uploadNewContractDocument({ contractId, file, oldDocId = n
   return { storage_path: path, extraction: fields || null, length: fresh.length };
 }
 
+// ---- Reading a contract that came back SIGNED -------------------------------
+/**
+ * The countersigned copy, read by the AI. George, 2026-08-05: *"only when its countersigned
+ * the user should be prompted with extract info with AI then it should upload."*
+ *
+ * The twin of uploadNewContractDocument, and it stops at exactly the same place: it reads,
+ * it replaces the cached text, and it moves NOT ONE FIGURE. applyNewContractTerms commits
+ * the terms, after the landlord has seen the diff.
+ *
+ * ⚠ IT READS `executed_path`, NOT `storage_path`. The executed PDF is the document plus both
+ * signatures plus the certificate — the version that is actually in force. Reading the
+ * unsigned draft would risk transcribing terms that were struck out before signing.
+ *
+ * ⚠ AND IT DOES NOT POINT THE CONTRACT AT THAT FILE. The executed PDF belongs to the
+ * envelope: deleteEnvelope sweeps the storage object along with the row, so a
+ * service_contracts.storage_path aimed at it would offer "Open" on a file that is gone. The
+ * signed copy is SHOWN on the contract row, sourced from the envelope — the identical
+ * decision the lease side made in 0092, and for the identical reason. What lands on the
+ * contract is the TEXT (so the assistant answers from the signed version) and, once
+ * confirmed, the terms.
+ */
+export async function readSignedContractEnvelope({ envelopeId, contractId }) {
+  const env = await one(
+    supabase.from('signature_envelopes')
+      .select('id, contract_id, status, executed_path').eq('id', envelopeId).maybeSingle()
+  );
+  if (!env) throw new Error('That signed document no longer exists.');
+  if (env.status !== 'executed') throw new Error('That document isn’t signed by both parties yet.');
+  if (!env.executed_path) throw new Error('The signed copy isn’t on file yet — try again in a moment.');
+
+  const id = contractId || env.contract_id;
+  if (!id) throw new Error('That document isn’t attached to a contract.');
+  const contract = await getServiceContract(id);
+  if (!contract) throw new Error('That contract no longer exists.');
+
+  // `name` routes the DEMO mock's canned answer to the right kind of contract; the live
+  // edge function ignores it. Same reason uploadNewContractDocument passes it.
+  const { fields, contract_text } = await extractContract({
+    storagePath: env.executed_path, name: contract.name || '',
+  });
+  const fresh = (contract_text || '').trim();
+  if (fresh) await rows(supabase.from('service_contracts').update({ contract_text: fresh }).eq('id', id));
+
+  return { contract, extraction: fields || null, length: fresh.length };
+}
+
+/**
+ * Mark an executed envelope as acted on.
+ *
+ * `applied_at` is deliberately separate from `status` (0085): "signed by both parties" and
+ * "acted on" are different facts, and collapsing them would make an unread contract look
+ * finished. It is what clears the "Read the signed contract" prompt and the dashboard's
+ * signature_apply alert — so it is written both when the terms are applied AND when the
+ * landlord reads it and decides nothing changes. Both are deliberate acts; only doing the
+ * first would leave a correctly-read contract nagging forever.
+ */
+export const markEnvelopeApplied = (envelopeId) =>
+  rows(supabase.from('signature_envelopes')
+    .update({ applied_at: new Date().toISOString() }).eq('id', envelopeId));
+
 /**
  * Create a contract FROM a document the landlord has just reviewed — the Add path's commit.
  *
@@ -2321,6 +2401,7 @@ export async function createServiceContractFromDocument({
     notice_days: fields.notice_days ?? null,
     notice_by_date: fields.notice_by_date ?? null,
     renewal_term_months: fields.renewal_term_months ?? null,
+    additional_insured: fields.additional_insured ?? null,
     contract_text: contractText || null,
     storage_path: storagePath || null,
     extraction_raw: extraction || null,
@@ -2356,7 +2437,9 @@ export async function createServiceContractFromDocument({
  * ⚠ NOTHING HERE WRITES AN ESTIMATE — see carryContractChange for why that is what makes
  * George's "ACTUAL CAM and Tax, not estimated" constraint hold automatically.
  */
-export async function applyNewContractTerms({ contractId, changes, plan = null, extraction = null, today = new Date() }) {
+export async function applyNewContractTerms({
+  contractId, changes, plan = null, extraction = null, envelopeId = null, today = new Date(),
+}) {
   const contract = await getServiceContract(contractId);
   if (!contract) throw new Error('That contract no longer exists.');
 
@@ -2389,14 +2472,21 @@ export async function applyNewContractTerms({ contractId, changes, plan = null, 
   const steps = built.steps || [];
   const stepCount = steps.length ? await replaceContractEscalations(contractId, steps) : 0;
 
+  // When the document came back through e-signature, this is the act that clears the
+  // "read the signed contract" prompt and the dashboard's signature_apply alert. Before the
+  // history entry, so a failure here can't leave the log claiming an apply that then
+  // silently kept nagging.
+  if (envelopeId) await markEnvelopeApplied(envelopeId);
+
   const moved = (changes?.fields || []).map((f) => f.label).join(', ');
   await logHistoryEvent({
     property_id: contract.property_id || null, lease_id: null, type: 'contract_replaced',
     tenant_name: null,
-    description: `New contract document applied — ${contract.name || contract.vendor || 'service contract'}${moved ? ` (updated ${moved})` : ''}`,
+    description: `${envelopeId ? 'Signed contract applied' : 'New contract document applied'} — ${contract.name || contract.vendor || 'service contract'}${moved ? ` (updated ${moved})` : ''}`,
     event_date: localDateIso(today),
     meta: {
       contract_id: contractId,
+      envelope_id: envelopeId || null,
       fields: (changes?.fields || []).map((f) => ({ key: f.key, from: f.from ?? null, to: f.to })),
       fee_steps: stepCount, undated_steps: built.undated || 0, unusable_steps: built.unusable || 0,
     },
@@ -4381,7 +4471,10 @@ async function fetchOpenEnvelopes() {
   try {
     const envs = await rows(
       supabase.from('signature_envelopes')
-        .select('id,lease_id,property_id,title,status,signed_at,executed_at,applied_at,purpose')
+        // contract_id (0093) is what lets the alert say "vendor" instead of "tenant", anchor
+        // its dismissal key to the contract, and land on the Contracts tab instead of a
+        // lease page that does not exist for it.
+        .select('id,lease_id,contract_id,property_id,title,status,signed_at,executed_at,applied_at,purpose')
         .in('status', ['signed', 'executed'])
     );
     if (!envs?.length) return [];
@@ -5123,6 +5216,49 @@ export async function declineRenewalForLease(leaseId) {
   return null;
 }
 
+/**
+ * The "please name us as additional insured" letter to a VENDOR, as a ready-to-send draft.
+ *
+ * The contracts-tab sibling of the insurance vault's own additional-insured request, which
+ * is what George asked for (2026-08-05: *"the same email as the insurance template should be
+ * added as a button"*). Drafted here rather than in the component for the same reason every
+ * other letter is: the send modal takes one shape, and a component composing its own would
+ * be a second place the business name and reply-to could be wrong.
+ *
+ * ⚠ IT DRAFTS. Nothing sends until the landlord presses send in the modal — the standing
+ * rule for anything reaching an outside recipient.
+ */
+export async function draftContractAdditionalInsuredEmail(contractId) {
+  const c = await getServiceContract(contractId);
+  if (!c) return null;
+  const prop = c.property_id ? await getProperty(c.property_id) : null;
+  const business = businessFromCorp(prop?.corporation_id ? await getCorporation(prop.corporation_id) : null);
+  const email = buildVendorAdditionalInsuredEmail({
+    business,
+    vendorName: c.vendor || null,
+    vendorEmail: c.vendor_email || '',
+    contractName: c.name || null,
+    propertyName: prop?.name,
+    serviceLabel: SERVICE_TYPE_LABEL[c.service_type] || null,
+  });
+  return {
+    kind: 'contract_additional_insured',
+    email_heading: 'Email to vendor',
+    property_id: c.property_id || null,
+    email_to: c.vendor_email || '',
+    email_from: business?.contact_email || '',
+    email_subject: email.subject,
+    email_body: email.body,
+  };
+}
+
+// Read by the letter above so it can say "landscaping services" rather than "the services".
+// Deliberately a bare map, not an import from the Contracts component: api.js is imported by
+// the component, never the other way round.
+const SERVICE_TYPE_LABEL = {
+  landscaping: 'Landscaping', snow_removal: 'Snow removal', security: 'Security', other: '',
+};
+
 // Build the "renewal approaching" tenant email for a pending option as a ready-to-send
 // draft (no notification created). Lets the lease page offer an "Email tenant" button so
 // the landlord can send the heads-up ANY time — not only when the bell decision is due.
@@ -5179,7 +5315,7 @@ export async function draftAlertEmail(alert) {
       propertyName: prop?.name,
       endDate: contract.end_date,
     });
-    return { kind: 'contract_renewal', email_to: contract.vendor_email || '', email_to_2: '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body };
+    return { kind: 'contract_renewal', email_heading: 'Email to vendor', email_to: contract.vendor_email || '', email_to_2: '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body };
   }
 
   // Cancellation notice due → the NON-renewal letter. The opposite decision to the one
@@ -5201,7 +5337,7 @@ export async function draftAlertEmail(alert) {
       noticeDays: contract.notice_days,
       noticeByDate: contract.notice_by_date,
     });
-    return { kind: 'contract_renewal', email_to: contract.vendor_email || '', email_to_2: '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body };
+    return { kind: 'contract_renewal', email_heading: 'Email to vendor', email_to: contract.vendor_email || '', email_to_2: '', email_from: business?.contact_email || '', email_subject: email.subject, email_body: email.body };
   }
 
   // A renewal-notice alert reuses the "approaching" draft (the alert carries the option id).

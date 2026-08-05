@@ -98,7 +98,7 @@ export function riderMismatches({
 // fee that grows, a fee schedule printed as a table, an agreement that renews itself, and
 // the notice window that is the only way out of it. Same discipline: only an affirmative
 // verdict against an empty form flags.
-export function contractMismatches({ verdicts, feeSchedule, escalationPct, autoRenew, noticeDays }) {
+export function contractMismatches({ verdicts, feeSchedule, escalationPct, autoRenew, noticeDays, additionalInsured }) {
   const v = verdicts || {};
   const out = [];
 
@@ -116,6 +116,12 @@ export function contractMismatches({ verdicts, feeSchedule, escalationPct, autoR
   // the deadline that costs money if nobody records it.
   const analystDays = Number(v.cancellation_notice_days);
   if (isFinite(analystDays) && analystDays > 0 && !(Number(noticeDays) > 0)) out.push('cancellation_notice');
+
+  // 0094 — the analyst read an additional-insured requirement the form didn't record. Only
+  // this direction is a "carries X that didn't land": the opposite case (form says the
+  // requirement IS there, analyst says it isn't) is handled upstream, where a null form
+  // answer simply takes the analyst's, so the two can only differ when both are definite.
+  if (v.additional_insured === 'yes' && additionalInsured !== true) out.push('additional_insured');
 
   return out;
 }
@@ -137,4 +143,5 @@ export const MISMATCH_LABELS = {
   fee_schedule: 'a printed fee schedule',
   auto_renew: 'an automatic renewal',
   cancellation_notice: 'a cancellation-notice period',
+  additional_insured: 'a requirement to name you as additional insured',
 };
