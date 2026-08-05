@@ -12,6 +12,7 @@ import { settleBillingChange, settleContractChange } from '../lib/invalidate';
 import { needsApply } from '../lib/envelopes';
 import { useFeatures } from '../lib/features';
 import ContractDocs, { ContractReview, SignedContractModal } from './ContractDocs';
+import FileDrop, { FilePickerZone } from './FileDrop';
 import { ContractEnvelopeRows } from './AddendumEnvelopeRows';
 import SendForSignatureModal from './SendForSignatureModal';
 import NotificationEmailModal from './NotificationEmailModal';
@@ -126,6 +127,9 @@ function ContractItem({ c, steps, property, corp, esignOn, onChange }) {
   // The additional-insured letter, drafted into the shared send modal (0094).
   const [emailNotif, setEmailNotif] = useState(null);
   const [emailBusy, setEmailBusy] = useState(false);
+  // A document dragged onto the card, handed to ContractDocs so it opens the same review
+  // dialog its own button does.
+  const [dropped, setDropped] = useState(null);
   const remove = useMutation({ mutationFn: () => deleteServiceContract(c.id), onSuccess: onChange });
   const saveFacts = useMutation({
     // Through updateServiceContract (the notice-date derivation and both bucket re-arms live
@@ -152,7 +156,15 @@ function ContractItem({ c, steps, property, corp, esignOn, onChange }) {
   ].filter(Boolean).join(' · ');
 
   return (
-    <div className="svc-item">
+    // The whole contract card takes a dropped document, and it goes down the SAME review
+    // path as the button beside it — read, diff, confirm — never a silent write.
+    <FileDrop
+      className="svc-item"
+      accept=".pdf,.docx,image/*"
+      onFile={setDropped}
+      title={`Drop to upload ${c.storage_path ? 'a new ' : 'the '}contract`}
+      hint={`${c.name || c.vendor || 'This contract'} — you see every figure that changes before anything moves.`}
+    >
       <MutationError of={[remove, saveFacts]} />
       <div className="svc-row">
         <span className="badge info">{typeLabel(c.service_type)}</span>
@@ -161,7 +173,10 @@ function ContractItem({ c, steps, property, corp, esignOn, onChange }) {
           {sub && <span className="muted">{sub}</span>}
         </div>
         <button type="button" className="ghost" onClick={() => setEditing((e) => !e)}>Edit</button>
-        <ContractDocs contract={c} onChanged={onChange} />
+        <ContractDocs
+          contract={c} onChanged={onChange}
+          droppedFile={dropped} onDroppedTaken={() => setDropped(null)}
+        />
         <button type="button" className="ghost" onClick={() => setOpen((o) => !o)}>{open ? 'Close' : 'Open & ask'}</button>
         <button type="button" className="icon-btn danger-btn" title="Delete contract" onClick={async () => {
           if (await askConfirm({
@@ -283,7 +298,7 @@ function ContractItem({ c, steps, property, corp, esignOn, onChange }) {
           />
         </div>
       )}
-    </div>
+    </FileDrop>
   );
 }
 
@@ -384,16 +399,14 @@ function AddContract({ propId, onClose, onAdded }) {
     } catch (e) { setErr(e.message || String(e)); setPhase('form'); }
   }
 
-  const onFile = (e) => {
-    const file = e.target.files?.[0];
+  const onFile = (file) => {
     if (!file) return;
-    if (!name.trim()) { setErr('Give the contract a name first.'); e.target.value = ''; return; }
+    if (!name.trim()) { setErr('Give the contract a name first.'); return; }
     readIt(async () => {
       const storagePath = await uploadDoc(file, { entityType: 'service_contract' });
       const res = await extractContract({ storagePath, name });
       return { ...res, storagePath };
     });
-    e.target.value = '';
   };
 
   const busy = phase === 'reading' || phase === 'saving';
@@ -435,10 +448,15 @@ function AddContract({ propId, onClose, onAdded }) {
         renewal and cancellation notice, and shows you everything before anything is saved. You
         can also add it without a document and fill the terms yourself.
       </div>
-      <div className="dropzone">
-        <input type="file" accept=".pdf,.docx,image/*" className="file-native" onChange={onFile} disabled={busy} aria-label="Upload contract file" />
-        <div className="dropzone-hint muted">{busy ? 'Reading the contract…' : 'Choose the contract file to read the terms'}</div>
-      </div>
+      <FilePickerZone
+        onFile={onFile}
+        accept=".pdf,.docx,image/*"
+        busy={busy}
+        ariaLabel="Upload contract file"
+        hint="Choose the contract file — or drag it straight in here"
+        dropHint="Drop the contract here"
+        busyHint="Reading the contract…"
+      />
 
       <div className="row" style={{ marginTop: 12, gap: 12, alignItems: 'center' }}>
         <button type="button" className="ghost" onClick={() => setPaste((p) => !p)}>{paste ? 'Hide paste' : 'Paste text instead'}</button>

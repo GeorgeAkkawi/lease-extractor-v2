@@ -226,8 +226,30 @@ export default function PdfSignCanvas({
 
   if (phase === 'failed') return null; // the caller shows its own fallback
 
+  // ── SAYING WHAT TO DO, WHERE IT IS LOOKED AT ────────────────────────────────────────────
+  // George, 2026-08-05: *"make the prompt for the signature signing and placing way more
+  // obvious right now its hidden theres needs to be clear instructions."* It WAS said — in a
+  // 12.5px grey line under a 150px signature pad, below a document box up to 70vh tall. By
+  // the time a signer has drawn their mark, the instruction telling them what to do with it
+  // is off the bottom of the screen and the document it refers to is off the top.
+  //
+  // So the instruction now lives ABOVE the scroll box, outside it, and changes with the
+  // state: it cannot be scrolled away from, and it always names the next action rather than
+  // describing the feature. The floating pill inside the page is the second half of the same
+  // sentence, sitting where the tap has to land.
+  const step = !signature ? 'sign' : !placement ? 'place' : 'done';
+  const stepText = {
+    sign: 'Read the document, then add your signature below — you will drop it on the page here.',
+    place: 'Tap the signature line — anywhere on the page — and your signature lands there.',
+    done: `Your signature is on page ${placement?.page}. Drag it to move it, or tap somewhere else.`,
+  }[step];
+
   return (
     <div className="pdfsign">
+      <div className={`pdfsign-step ${step}`} role="status">
+        <span className="pdfsign-step-n" aria-hidden="true">{step === 'done' ? '✓' : step === 'place' ? '2' : '1'}</span>
+        <span>{stepText}</span>
+      </div>
       <div className="pdfsign-bar">
         <button type="button" className="ghost btn-sm" disabled={pageNum <= 1}
           onClick={() => setPageNum((n) => Math.max(1, n - 1))}>‹ Back</button>
@@ -247,7 +269,7 @@ export default function PdfSignCanvas({
 
       <div className="pdfsign-wrap" ref={wrapRef}>
         <div
-          className={`pdfsign-stage${signature && !disabled ? ' placing' : ''}${dragging ? ' dragging' : ''}`}
+          className={`pdfsign-stage${signature && !disabled ? ' placing' : ''}${dragging ? ' dragging' : ''}${step === 'place' && !disabled ? ' awaiting' : ''}`}
           style={geom ? { width: geom.boxW, height: geom.boxH } : undefined}
           onClick={place}
           onPointerDown={onPointerDown}
@@ -289,10 +311,14 @@ export default function PdfSignCanvas({
               style={{ width: mine?.width || sigBox?.w || 0, height: mine?.height || sigBox?.h || 0 }} />
           )}
 
-          {/* The prompt, only while there is a signature to place and nowhere to put it yet. */}
+          {/* The prompt, only while there is a signature to place and nowhere to put it yet.
+              ⚠ Pinned to the TOP of the page, not its middle. The scroll box opens at the top
+              of the page, so a hint centred on a full sheet of A4 starts below the fold — it
+              was, quite literally, hidden. */}
           {signature && !placement && !disabled && !dragging && (
             <div className="pdfsign-hint">
-              Drag your signature onto the signature line — or just tap where it goes
+              <strong>👆 Tap where your signature goes</strong>
+              <span>Look for the signature line. You can drag it afterwards to line it up.</span>
             </div>
           )}
         </div>

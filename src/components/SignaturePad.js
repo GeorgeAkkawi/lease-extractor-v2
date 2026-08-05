@@ -105,6 +105,11 @@ export default function SignaturePad({ value, onChange, typedName = '', disabled
 
   return (
     <div className="sigpad">
+      {/* George, 2026-08-05: *"make the prompt for the signature signing and placing way more
+          obvious right now its hidden."* The label above this box was 9.5px uppercase grey —
+          the same weight as a column header, on the one control the whole page exists for.
+          It is now a heading, and the box itself carries the ✗ and the rule people already
+          know from paper. */}
       <div className="sigpad-head">
         <span className="sigpad-label">Sign here</span>
         <div className="seg">
@@ -114,18 +119,31 @@ export default function SignaturePad({ value, onChange, typedName = '', disabled
             onClick={() => setMode('type')} disabled={disabled}>⌨ Type</button>
         </div>
       </div>
-      <canvas
-        ref={canvasRef}
-        className={`sigpad-canvas${mode === 'type' ? ' typed' : ''}`}
-        width={W * SCALE}
-        height={H * SCALE}
-        style={{ width: '100%', maxWidth: W, height: H }}
-        onPointerDown={start}
-        onPointerMove={move}
-        onPointerUp={end}
-        onPointerLeave={end}
-        aria-label="Signature"
-      />
+      <div className="sigpad-box" style={{ maxWidth: W }}>
+        <canvas
+          ref={canvasRef}
+          className={`sigpad-canvas${mode === 'type' ? ' typed' : ''}`}
+          width={W * SCALE}
+          height={H * SCALE}
+          style={{ width: '100%', maxWidth: W, height: H }}
+          onPointerDown={start}
+          onPointerMove={move}
+          onPointerUp={end}
+          onPointerLeave={end}
+          aria-label="Signature"
+        />
+        {/* The paper cue, and it says which mode you're in. Gone the moment there is a mark,
+            so it can never be mistaken for part of the signature. */}
+        {!value && (
+          <div className="sigpad-guide" aria-hidden="true">
+            <span className="sigpad-x">✗</span>
+            <span className="sigpad-rule" />
+            <span className="sigpad-guide-text">
+              {mode === 'draw' ? 'Draw your signature here' : 'Type your name above'}
+            </span>
+          </div>
+        )}
+      </div>
       <div className="sigpad-foot">
         <span className="muted">
           {mode === 'draw'

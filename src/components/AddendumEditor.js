@@ -9,6 +9,7 @@ import { useFeatures } from '../lib/features';
 import { useConfirm } from './ConfirmDialog';
 import AddendumEnvelopeRows from './AddendumEnvelopeRows';
 import SendForSignatureModal from './SendForSignatureModal';
+import { FilePickerZone } from './FileDrop';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
 // into the lease via applyAddendum. The AI reads the document and LEADS: it pre-fills
@@ -324,8 +325,7 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
 
   const [pasteText, setPasteText] = useState('');
   const [showPaste, setShowPaste] = useState(false);
-  const onFile = (e) => {
-    const file = e.target.files?.[0];
+  const onFile = (file) => {
     // Return the storage path alongside the extraction so `intake` can carry it into the
     // form — until now it was uploaded and then thrown away, so every saved rider had
     // storage_path null and the document itself was unreachable from its record. Threaded
@@ -338,7 +338,6 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
       const res = await extractAddendum({ storagePath, squareFootage, currentTermEnd });
       return { ...res, storagePath };
     });
-    e.target.value = '';
   };
   const onPaste = () => { if (pasteText.trim()) intake(() => extractAddendum({ text: pasteText.trim(), squareFootage, currentTermEnd })); };
 
@@ -437,10 +436,15 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
                 Upload the rider (PDF, scan, photo, or Word .docx). The AI reads it and pre-fills every change it finds —
                 you just confirm or correct.
               </div>
-              <div className="dropzone">
-                <input type="file" accept=".pdf,.docx,image/*" className="file-native" onChange={onFile} disabled={busy} aria-label="Upload addendum file" />
-                <div className="dropzone-hint muted">{busy ? 'Reading the rider…' : 'Choose the rider file to auto-fill the change'}</div>
-              </div>
+              <FilePickerZone
+                onFile={onFile}
+                accept=".pdf,.docx,image/*"
+                busy={busy}
+                ariaLabel="Upload addendum file"
+                hint="Choose the rider file — or drag it straight in here"
+                dropHint="Drop the rider here"
+                busyHint="Reading the rider…"
+              />
               <div className="row" style={{ marginTop: 12 }}>
                 <button type="button" className="ghost" onClick={() => setShowPaste((p) => !p)}>{showPaste ? 'Hide paste' : 'Paste text instead'}</button>
                 <button type="button" className="ghost" onClick={() => resetAdd({ discard: true })}>Cancel</button>

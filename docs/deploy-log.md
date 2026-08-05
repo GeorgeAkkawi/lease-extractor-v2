@@ -12,6 +12,118 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **Every file picker takes a dragged file, and the signing page says what
+  to do** (George: *"make a drag and drop feature for uploading all places you have to choose
+  a file. make the prompt for the signature signing and placing way more obvious right now its
+  hidden theres needs to be clear instructions same thing for the contract signer after they
+  input their signature. it has to be way more clear and straightforward for both users that
+  they sign and tap where they place the signature."*). Deployed: frontend Cloudflare
+  **`d7b02886`**, demo worker **`df6ba3eb`**. **No migration, no edge function** — this is
+  entirely presentation and one new shared component. Tests **1873/1873** across 179 files
+  (was 1855/178).
+
+  ### Part 1 — drag & drop, everywhere
+
+  **There were two drop targets and eleven pickers that only opened the OS dialog.** The lease
+  intake box (`LeaseUpload`) and the bank-statement panel (`StatementDropZone`) each had their
+  own hand-rolled implementation; everything else — a policy, a rider, a contract, a document
+  list, a closing statement, an annual report, a send-for-signature — took a click and nothing
+  else. Someone who learned to drag a file onto the ledger then discovered it did not work
+  anywhere they tried it next.
+
+  **`src/components/FileDrop.js`** is now the single implementation. Three exports:
+  - `useFileDrop({ onFile, accept, disabled, busy, manyMessage })` → `{ over, err, dropProps }`
+    — the enter/leave **depth count** (a boolean flickers off the moment the cursor crosses a
+    child row), the file-drag test, and the accept match.
+  - **`<FilePickerZone>`** — the visible dashed box, for screens whose whole job is "give me a
+    file": lease intake, a policy, a rider upload, a new contract, send-for-signature.
+  - **`<FileDrop>`** — an invisible wrapper with a veil that appears only while a file is over
+    it, for a card or list that already has its own button: the lease panel, each rider row,
+    each contract card, `DocumentsList`, the closing-statement and annual-report modals, the
+    insurance attach-a-document row.
+
+  **⚠ THE ACCEPT FILTER IS THE PART WITH NO VISIBLE FAILURE.** The native picker enforces
+  `accept`; a **drop does not** — the browser hands over whatever was dragged, including a
+  **folder**, which arrives as a `File` with an empty type and no extension. Without the check
+  a dropped `.zip` would upload and spend an AI read on binary. Every drop is matched against
+  the same accept string the picker uses, and a mismatch names the file and says what was
+  wanted (`acceptWords`), rather than failing three layers down.
+
+  **`useStrayFileDropGuard()` in `App.js` — declared ABOVE the `/sign/:token` early return**,
+  because hooks cannot be conditional and the public signing page needs it too. A file dropped
+  an inch outside a target is the browser's cue to **navigate away and open that file**, which
+  silently discards a half-typed form or an unreviewed extraction. The guard preventDefaults
+  only when nothing else already did (`e.defaultPrevented` on the bubble at window level), and
+  sets `dropEffect='none'` so the cursor says "not here".
+
+  **Two decisions that are not cosmetic:**
+  - **A file dropped on the lease panel goes down the REVIEW path** (`NewLeaseModal`), not the
+    quiet "Add a file" one. Dropping a lease is a statement about the lease, and the review
+    dialog is the only route that reads it, diffs it and asks before a figure moves. A drag
+    must never be able to do *less* than the button beside it. Same for a contract card →
+    `ContractDocs`' review dialog, threaded through `droppedFile` / `onDroppedTaken`.
+  - **A rider row refuses a drop when it already has a file**, by name, because its own button
+    offers "Add a file" only where there is none — a drop must not swap the document a rider
+    points at without the ✕ that names what is lost.
+
+  **`StatementDropZone` migrated onto the shared hook** (CLAUDE.md §3: two implementations of
+  one rule drift). Its `accept` is deliberately **empty** — `readStatementFile` is the gate the
+  *button* uses and it refuses a non-statement by name; a generic extension check upstream
+  would answer the same question worse and differently from the other door. `manyMessage`
+  exists so it can keep saying "one **statement** at a time".
+
+  ### Part 2 — the signing prompt was not missing, it was unreadable
+
+  **What was actually wrong.** The instruction to place the mark was a `12.5px` grey line
+  under a `150px` signature pad, below a document box up to `70vh` tall. By the time a signer
+  had drawn their name, the sentence telling them what to do was near the bottom of the page
+  and **the document it referred to was off the top**. The in-page pill was worse: absolutely
+  positioned at `top:50%` of the *page*, while the scroll box opens at the top of the sheet —
+  on A4 it started below the fold. It was, literally, hidden.
+
+  - **`SignSteps` (new, shared)** — four steps above the document: read · sign · **tap where
+    your signature goes** · send it back, with the current one highlighted. One component on
+    **both** sides (`SignPage` and `CountersignModal`), because the two screens are the same
+    act seen from opposite ends and the moment they explain it differently one of them becomes
+    the screen people get stuck on. The placing step is **conditional** on the document
+    actually rendering — promising a step that cannot happen is worse than not mentioning it.
+  - **`.sign-cta`** replaces the grey line: a bordered block with a headline, the instruction,
+    a **"Take me to the document"** button, and the way past it ("you can still sign — it goes
+    on a page at the end"). Once placed it becomes a green confirmation with **Move it**.
+  - **The page carries them back exactly once.** When a signature first exists and nothing is
+    placed, `scrollIntoView` puts the document under their eyes. Once — a second automatic
+    scroll would fight anyone deliberately reading on. `?.()` throughout: jsdom and some older
+    mobile browsers have no `scrollIntoView`, and this is the one page that must never break.
+  - **`PdfSignCanvas`** gained a **`.pdfsign-step` line OUTSIDE the scroll box** — the only
+    instruction that cannot be scrolled away from — naming the next action and turning green
+    with the page number once placed. The in-page pill moved to `top:14px`, gained a headline
+    and a pulse, and the page itself outlines while a mark is waiting to be placed.
+  - **`SignaturePad`**: the "Sign here" label was `9.5px` uppercase grey — the same weight as a
+    table column header, on the one control the whole page exists for. It is a heading now,
+    and the pad carries the **✗ and the rule** everyone knows from paper (a DOM overlay,
+    `pointer-events:none`, gone the moment there is a mark — it can never reach the PNG).
+
+  **Placement is still never a gate**, unchanged and re-pinned: consent + name + signature is
+  the whole requirement, and a document that will not render skips every placement affordance
+  silently. The contract signer is the same public page, so *"same thing for the contract
+  signer"* is covered by construction; the countersigner gets the identical block.
+
+  **Verified.** 1873 tests, +18. New `fileDropUpload.test.js` (12): the accept matcher by
+  extension / mime wildcard / exact mime, a refused `.zip`, **a refused folder**, empty accept,
+  `acceptWords` phrasing; then through real hosts — a dropped PDF files itself on a
+  `DocumentsList` and the **list** is the target, the veil appears only while a file is over
+  it, a wrong type is refused by name with nothing uploaded, three at once is refused, a
+  non-file drag is ignored, a rider row attaches to the row it landed on, and a rider that
+  already has a file refuses. `signDragDrop.test.js` +6: the steps render **above** the
+  document (asserted by document position), the CTA and its button appear on first signature,
+  it becomes the confirmation once placed, the scroll fires, and the countersign dialog gets
+  the identical pair. `pdfSignCanvas.test.js` rewritten for the new prompt plus a new test
+  that the step line is **outside** `.pdfsign-wrap`.
+
+  **Not bundled in:** the veil colour is the hard-coded light value `.stmt-drop-veil` has used
+  since 7/30 (`rgba(232,235,217,.93)`) — fine today because the app ships one theme, and wrong
+  the day it ships two.
+
 - **2026-08-05** — **A renewed insurance policy no longer erases the one it replaces**
   (George: *"add a place to add a new policy for the insurance i want a history but able to
   upload new ones so once a new one is uploaded (not replaced) it is moved to history within

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listDocuments, deleteDocument, uploadDoc, signDocUrl, markDocumentSigned, unmarkDocumentSigned } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
+import FileDrop from './FileDrop';
 
 // Every copy kept for one record — the version history George asked for
 // (2026-07-30: "keep every version but allow deletes").
@@ -67,9 +68,7 @@ export default function DocumentsList({
     onError: (e) => setErr(e.message || String(e)),
   });
 
-  async function onFile(e) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+  async function onFile(file) {
     if (!file) return;
     setBusy(true); setErr('');
     try {
@@ -77,6 +76,7 @@ export default function DocumentsList({
       refresh();
     } catch (ex) { setErr(ex.message || String(ex)); } finally { setBusy(false); }
   }
+  const onPicked = (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onFile(f); };
 
   // The bucket is private, so opening a document means minting a short-lived signed
   // URL first (signDocUrl, 120s). Opened in a new tab so the app keeps its state.
@@ -96,16 +96,26 @@ export default function DocumentsList({
   if (!entityId) return null;
 
   return (
-    <div className="doc-list">
+    // The whole list is the drop target — dropping a file onto a list of copies is the
+    // most natural way to say "here is another one", and it costs no height at rest.
+    <FileDrop
+      onFile={onFile}
+      accept={accept}
+      busy={busy}
+      className="doc-list"
+      title={`Drop to ${addLabel.toLowerCase()}`}
+      hint="It is filed with the copies already here — nothing is replaced."
+    >
       <div className="doc-list-head">
         <strong>{title}</strong>
         <span className="doc-actions">
-          <button type="button" className="ghost btn-sm" disabled={busy} onClick={() => fileRef.current?.click()}>
+          <button type="button" className="ghost btn-sm" disabled={busy} onClick={() => fileRef.current?.click()}
+            title="Choose a file — or drag one anywhere onto this list">
             {busy ? 'Saving…' : `⬆ ${addLabel}`}
           </button>
           <span className="doc-act2" />
         </span>
-        <input ref={fileRef} type="file" accept={accept} style={{ display: 'none' }} onChange={onFile} aria-label={`Add a document to this ${entityType.replace(/_/g, ' ')}`} />
+        <input ref={fileRef} type="file" accept={accept} style={{ display: 'none' }} onChange={onPicked} aria-label={`Add a document to this ${entityType.replace(/_/g, ' ')}`} />
       </div>
 
       {err && <p className="note-msg danger" style={{ margin: '6px 0 0' }}>{err}</p>}
@@ -158,6 +168,6 @@ export default function DocumentsList({
           </span>
         </div>
       ))}
-    </div>
+    </FileDrop>
   );
 }

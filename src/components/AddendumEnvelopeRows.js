@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   listEnvelopes, listContractEnvelopes, signDocUrl, voidEnvelope, resendEnvelope,
@@ -11,6 +11,7 @@ import {
 } from '../lib/envelopes';
 import SignaturePad from './SignaturePad';
 import PdfSignCanvas from './PdfSignCanvas';
+import SignSteps from './SignSteps';
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
 
@@ -409,6 +410,19 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
     return () => { live = false; };
   }, [tenantSigner?.signature_path]);
 
+  // The document box inside the dialog, so his own mark can carry him back to it — the
+  // dialog scrolls, and by the time he has typed or drawn a signature the page he has to
+  // tap is above the fold. Same fix as the tenant's page, same reason.
+  const docRef = useRef(null);
+  const sentToDoc = useRef(false);
+  const toDocument = () => docRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  const canPlace = !!docUrl && !noRender;
+  useEffect(() => {
+    if (!signature || placement || sentToDoc.current || !canPlace) return;
+    sentToDoc.current = true;
+    toDocument();
+  }, [signature, placement, canPlace]);
+
   const sign = useMutation({
     mutationFn: async () => {
       const res = await countersignEnvelope({
@@ -450,9 +464,17 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
               : 'you decide separately whether to apply it.'}
           </p>
 
+          <SignSteps steps={[
+            { label: `Read what the ${other} signed`, done: !!signature || !!name.trim() },
+            { label: 'Sign your name', done: !!signature && !!name.trim() },
+            ...(canPlace ? [{ label: 'Tap where your signature goes', done: !!placement }] : []),
+            { label: 'Sign and send it back', done: false },
+          ]} />
+
           {/* Their signature is already on the page. He is looking at exactly what he is
               about to countersign, which is the entire reason the other side signs first. */}
           {docUrl && !noRender && (
+            <div ref={docRef}>
             <PdfSignCanvas
               url={docUrl}
               signature={signature}
@@ -469,6 +491,7 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
                 label: `${tenantSigner.typed_name || tenantSigner.name} (${other})`,
               }] : []}
             />
+            </div>
           )}
           {noRender && (
             <p className="note-msg info">
@@ -485,13 +508,27 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
 
           <SignaturePad value={signature} onChange={setSignature} typedName={name} disabled={sign.isPending} />
 
-          {signature && !noRender && docUrl && (
-            <p className={`note-msg ${placement ? 'good' : 'info'}`}>
-              {placement
-                ? `✓ Your signature is placed on page ${placement.page}. Drag it if you want to move it.`
-                : 'Drag your signature onto the signature line above — or just tap where it goes. You can complete it without placing it: it will go on a page at the end instead.'}
+          {/* The same block the tenant gets, for the same reason: the instruction used to be
+              a 12.5px grey line under a 150px pad, in a dialog tall enough that the document
+              it referred to was already off-screen. */}
+          {signature && canPlace && (placement ? (
+            <p className="note-msg good">
+              ✓ Your signature is placed on page {placement.page}.{' '}
+              <button type="button" className="ghost btn-sm" onClick={toDocument}>Move it</button>
             </p>
-          )}
+          ) : (
+            <div className="sign-cta">
+              <strong>👆 Now tap where your signature goes</strong>
+              <span>
+                Go up to the document and tap the signature line — your signature lands right
+                there. You can also drag your signature onto the signature line to line it up.
+              </span>
+              <button type="button" onClick={toDocument}>Take me to the document</button>
+              <span className="sign-cta-alt">
+                Rather not? You can still complete it — it goes on a signature page at the end.
+              </span>
+            </div>
+          ))}
 
           {err && <p className="note-msg danger">{err}</p>}
 

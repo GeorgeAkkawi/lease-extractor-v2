@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { uploadAndExtract, extractFromText } from '../lib/api';
+import { FilePickerZone } from './FileDrop';
 
 const SAMPLE = `COMMERCIAL LEASE AGREEMENT
 Tenant: Sunrise Bakery LLC. Premises: Suite 140, approximately 2,400 rentable square feet.
@@ -14,19 +15,12 @@ export default function LeaseUpload({ onExtracted }) {
   const [mode, setMode] = useState('file'); // 'file' | 'text'
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
   const [err, setErr] = useState('');
 
-  async function handleFile(e) {
-    const file = e.target.files?.[0];
+  // Both doors — the picker and a drag — arrive here as a plain File (see FileDrop.js).
+  function handleFile(file) {
     if (!file) return;
-    run(() => uploadAndExtract(file), () => { e.target.value = ''; });
-  }
-  function handleDrop(e) {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && !busy) run(() => uploadAndExtract(file));
+    run(() => uploadAndExtract(file));
   }
   async function handleText() {
     if (!text.trim()) return;
@@ -63,26 +57,17 @@ export default function LeaseUpload({ onExtracted }) {
           <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
             Tip: Word docs and PDFs give the fastest, most accurate read — scans and photos work great too.
           </div>
-          {/* Native file input (the browser's own picker) inside a drop zone so a
-              file can be chosen by click OR dragged straight in. */}
-          <div
-            className={`dropzone${dragOver ? ' over' : ''}`}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={handleDrop}
-          >
-            <input
-              type="file"
-              accept=".pdf,.docx,image/*"
-              onChange={handleFile}
-              disabled={busy}
-              className="file-native"
-              aria-label="Choose a lease file from your computer"
-            />
-            <div className="dropzone-hint muted">
-              {busy ? 'Reading document…' : '…or drag & drop a PDF, Word doc, scan, or photo here'}
-            </div>
-          </div>
+          {/* The browser's own picker and a drop target in one box, so a file can be
+              chosen by click OR dragged straight in. */}
+          <FilePickerZone
+            onFile={handleFile}
+            accept=".pdf,.docx,image/*"
+            busy={busy}
+            ariaLabel="Choose a lease file from your computer"
+            hint="…or drag & drop a PDF, Word doc, scan, or photo here"
+            dropHint="Drop the lease here"
+            busyHint="Reading document…"
+          />
         </>
       ) : (
         <>

@@ -4,6 +4,7 @@ import { uploadDoc, sendForSignature, logSignatureEvent, discardDocument, addSer
 import { PURPOSE, EXPIRY_CHOICES, DEFAULT_EXPIRY_DAYS, expiryFromNow, CONTRACT_PURPOSE } from '../lib/envelopes';
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
+import { FilePickerZone } from './FileDrop';
 
 // Drop a document in and send it out for signature. George, 2026-08-04: *"theres no need for
 // the software to create a doc — just make there a place for the user to drop it in so they
@@ -77,9 +78,7 @@ export default function SendForSignatureModal({
     }
   }
 
-  async function onFile(e) {
-    const f = e.target.files?.[0];
-    e.target.value = '';
+  async function onFile(f) {
     if (!f) return;
     setErr(''); setBusy(true);
     try {
@@ -224,13 +223,15 @@ export default function SendForSignatureModal({
                 to it — no account, no software. You sign after they do.</>}
           </p>
 
-          <div className="dropzone">
-            <input type="file" accept=".pdf,.docx,image/*" className="file-native"
-              onChange={onFile} disabled={busy} aria-label="Choose the document to send" />
-            <div className="dropzone-hint muted">
-              {busy ? 'Uploading…' : file ? `✓ ${file.name}` : 'Choose the document (PDF, Word .docx, or a scan)'}
-            </div>
-          </div>
+          <FilePickerZone
+            onFile={onFile}
+            accept=".pdf,.docx,image/*"
+            busy={busy}
+            ariaLabel="Choose the document to send"
+            hint={file ? `✓ ${file.name}` : 'Choose the document (PDF, Word .docx, or a scan) — or drag it in here'}
+            dropHint="Drop the document here"
+            busyHint="Uploading…"
+          />
           {file && !/\.pdf$/i.test(file.name) && (
             <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
               Word documents and scans can’t be stamped, so the signed copy will be your original plus

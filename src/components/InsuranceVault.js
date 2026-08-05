@@ -8,6 +8,7 @@ import {
 } from '../lib/api';
 import DocAssistant from './DocAssistant';
 import DocumentsList from './DocumentsList';
+import FileDrop, { FilePickerZone } from './FileDrop';
 import { money, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
 import { missingAdditionalInsured, additionalInsuredAlertKey } from '../lib/insuranceNotices';
@@ -105,8 +106,7 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
     } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   }
   const onPaste = () => { if (text.trim()) intake(() => extractInsurance({ text: text.trim() })); };
-  const onFile = (e) => {
-    const f = e.target.files?.[0];
+  const onFile = (f) => {
     // The path rides back on the return value so a failed read can't strand it: the
     // registry row exists either way, and attachDocument only runs once a policy
     // row is there to own it.
@@ -115,7 +115,6 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
       const res = await extractInsurance({ storagePath });
       return { ...res, storagePath };
     });
-    e.target.value = '';
   };
 
   // Additional-insured notice (tenant scope): a cert on file that doesn't name the
@@ -237,10 +236,15 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
           <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
             Upload the policy or certificate of insurance (PDF, scan, or photo). It reads the document once to fill in the key facts, then lets you ask questions about it.
           </div>
-          <div className="dropzone">
-            <input type="file" accept=".pdf,.docx,image/*" className="file-native" onChange={onFile} disabled={busy} aria-label="Upload insurance policy file" />
-            <div className="dropzone-hint muted">{busy ? 'Reading the policy…' : 'Choose the policy file to auto-fill the key facts'}</div>
-          </div>
+          <FilePickerZone
+            onFile={onFile}
+            accept=".pdf,.docx,image/*"
+            busy={busy}
+            ariaLabel="Upload insurance policy file"
+            hint="Choose the policy file — or drag it straight in here"
+            dropHint="Drop the policy here"
+            busyHint="Reading the policy…"
+          />
           <div className="row" style={{ marginTop: 12 }}>
             <button type="button" className="ghost" onClick={() => setPaste((p) => !p)}>{paste ? 'Hide paste' : 'Paste text instead'}</button>
           </div>
@@ -416,16 +420,25 @@ function DocumentsSection({ policyId }) {
         </div>
       )}
       {adding ? (
-        <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input className="text-input" style={{ flex: '1 1 200px' }} placeholder="Label (e.g. 2026 Renewal, Premium notice)" value={label} onChange={(e) => setLabel(e.target.value)} />
-          <input className="text-input" style={{ flex: '1 1 160px' }} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-          <label className="ghost" style={{ cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
-            {file ? `📎 ${file.name.slice(0, 20)}` : '📎 Attach file'}
-            <input type="file" accept=".pdf,.docx,image/*" style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          </label>
-          <button type="button" onClick={() => add.mutate()} disabled={!label.trim() || add.isPending}>{add.isPending ? 'Adding…' : 'Add document'}</button>
-          <button type="button" className="ghost" onClick={() => { setAdding(false); setLabel(''); setNote(''); setFile(null); setErr(''); }}>Cancel</button>
-        </div>
+        // The whole add-a-document row is the target, so a file can be dragged in before or
+        // after the label is typed — it only sets `file`, it never submits.
+        <FileDrop
+          onFile={setFile}
+          accept=".pdf,.docx,image/*"
+          title="Drop it here"
+          hint="It attaches to this document — you still choose the label and press Add."
+        >
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input className="text-input" style={{ flex: '1 1 200px' }} placeholder="Label (e.g. 2026 Renewal, Premium notice)" value={label} onChange={(e) => setLabel(e.target.value)} />
+            <input className="text-input" style={{ flex: '1 1 160px' }} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+            <label className="ghost" style={{ cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
+              {file ? `📎 ${file.name.slice(0, 20)}` : '📎 Attach file — or drag one in'}
+              <input type="file" accept=".pdf,.docx,image/*" style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </label>
+            <button type="button" onClick={() => add.mutate()} disabled={!label.trim() || add.isPending}>{add.isPending ? 'Adding…' : 'Add document'}</button>
+            <button type="button" className="ghost" onClick={() => { setAdding(false); setLabel(''); setNote(''); setFile(null); setErr(''); }}>Cancel</button>
+          </div>
+        </FileDrop>
       ) : (
         <button type="button" className="ghost" onClick={() => setAdding(true)}>+ Add document</button>
       )}

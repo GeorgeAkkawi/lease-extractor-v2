@@ -4,6 +4,7 @@ import { parseBankStatementCsv, normalizeStatementRows, applyBalanceCheck } from
 import { DEMO_MODE } from '../lib/supabaseClient';
 import { money } from '../lib/format';
 import { completenessSentence } from '../lib/dispositions';
+import { useFileDrop } from './FileDrop';
 
 // The two forms a bank hands you a statement in. Enforced here rather than left to
 // the file input's `accept` (which browsers treat as a filter, not a rule) so the
@@ -129,54 +130,16 @@ export default function ImportStatementButton({ onReady }) {
 // actually over the page. The target announces itself at the only moment it matters.
 // The button stays exactly as it was: dragging is a second door, not a replacement.
 export function StatementDropZone({ onReady, className = '', children }) {
-  // dragenter/dragleave fire again for every child the cursor crosses, so a boolean
-  // flickers off the moment you move over a table row. Counting enters and leaves is
-  // what makes the veil hold steady across a panel full of elements.
-  const depth = useRef(0);
-  const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState('');
   const [err, setErr] = useState('');
 
-  // Only react to a FILE drag. Dragging selected text, a link, or one of the app's
-  // own draggable rows must leave the panel alone.
-  const isFileDrag = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
-
-  function onDragEnter(e) {
-    if (!isFileDrag(e)) return;
-    depth.current += 1;
-    setOver(true);
-  }
-  function onDragLeave(e) {
-    if (!isFileDrag(e)) return;
-    depth.current = Math.max(0, depth.current - 1);
-    if (depth.current === 0) setOver(false);
-  }
-  function onDragOver(e) {
-    // Without this the browser opens the dropped file instead of handing it over.
-    if (!isFileDrag(e)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-  }
-  async function onDrop(e) {
-    if (!isFileDrag(e)) return;
-    e.preventDefault();
-    depth.current = 0;
-    setOver(false);
-    if (busy) return;
-    const files = Array.from(e.dataTransfer.files || []);
-    if (!files.length) return;
-    // One statement at a time — each is reviewed and posted on its own, and silently
-    // reading the first of five would look like the other four had been imported too.
-    if (files.length > 1) {
-      setErr(`${files.length} files were dropped — import one statement at a time.`);
-      return;
-    }
+  async function take(f) {
     setErr('');
-    setName(files[0].name);
+    setName(f.name);
     setBusy(true);
     try {
-      const ready = await readStatementFile(files[0]);
+      const ready = await readStatementFile(f);
       if (ready.saveWarning) setErr(ready.saveWarning);
       onReady(ready);
     } catch (ex) {
@@ -186,10 +149,26 @@ export function StatementDropZone({ onReady, className = '', children }) {
     }
   }
 
+  // The drag state itself is the shared one (FileDrop.js) — the enter/leave depth count
+  // that stops the veil flickering as the cursor crosses table rows was written here first
+  // and lived in two files for a day. One implementation, per CLAUDE.md §3.
+  //
+  // ⚠ `accept` IS DELIBERATELY EMPTY. readStatementFile is the gate the BUTTON uses, and it
+  // refuses a non-statement by name and explains what a statement is; a generic extension
+  // check upstream of it would answer the same question worse, and differently from the
+  // other door into the same feature.
+  const { over, err: dropErr, dropProps } = useFileDrop({
+    onFile: take,
+    busy,
+    // One statement at a time — each is reviewed and posted on its own, and silently
+    // reading the first of five would look like the other four had been imported too.
+    manyMessage: (n) => `${n} files were dropped — import one statement at a time.`,
+  });
+
   return (
     // Takes the host's own class (the panel) rather than nesting inside it — one
     // element, so the veil covers exactly the panel it belongs to.
-    <div className={`stmt-drop ${className}`.trim()} onDragEnter={onDragEnter} onDragLeave={onDragLeave} onDragOver={onDragOver} onDrop={onDrop}>
+    <div className={`stmt-drop ${className}`.trim()} {...dropProps}>
       {children}
       {(over || busy) && (
         // pointer-events:none in the CSS — the veil must never become the drag target
@@ -199,7 +178,7 @@ export function StatementDropZone({ onReady, className = '', children }) {
           <span>{busy ? 'One moment.' : 'CSV or PDF — it opens for you to review before anything is recorded.'}</span>
         </div>
       )}
-      {err && <p className="note-msg danger" style={{ marginTop: 10 }}>{err}</p>}
+      {(err || dropErr) && <p className="note-msg danger" style={{ marginTop: 10 }}>{err || dropErr}</p>}
     </div>
   );
 }

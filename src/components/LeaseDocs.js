@@ -11,6 +11,7 @@ import { newLeaseChanges, newLeaseTargets, hasNoChanges } from '../lib/newLeaseT
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { settleBillingChange, settleLeaseScheduleChange } from '../lib/invalidate';
 import { useConfirm } from './ConfirmDialog';
+import FileDrop from './FileDrop';
 
 // The lease's own document, in exactly the shape a rider has — George, 2026-08-04:
 // *"now follow the same format as the riders. Lease - read text - add/open file whichever
@@ -94,8 +95,14 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
   function onReplacePicked(e) {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (file) { setErr(''); setPending(file); }
+    if (file) takeLease(file);
   }
+
+  // ⚠ A FILE DROPPED ON THIS PANEL GOES DOWN THE **REVIEW** PATH, not the quiet
+  // "Add a file" one. Dropping a lease is a statement about the lease, and the review
+  // dialog is the only route that reads it, diffs it and asks before a figure moves —
+  // a drag must never be able to do less than the button beside it.
+  function takeLease(file) { if (file) { setErr(''); setPending(file); } }
 
   // The lease's CURRENT file. George, 2026-08-04: *"there should be a remove button which
   // pops up and says delete file (deleting this file will also cause the saved text to
@@ -179,7 +186,13 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
     /* .rider-group is the shape — same heading, same rows, same two action columns as the
        riders below. .lease-group only names which block this is, for tests and for anyone
        reading the DOM; it carries no style of its own. */
-    <div className="rider-group lease-group">
+    <FileDrop
+      onFile={takeLease}
+      accept=".pdf,.docx,image/*"
+      className="rider-group lease-group"
+      title="Drop to upload a new lease"
+      hint="Amlak reads it and shows you every figure that changes before anything moves."
+    >
       <div className="rider-head">Lease</div>
       <div className="rider-rows">
         <div className="rider-row">
@@ -319,7 +332,7 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
       {/* The same .lease-doc scroll box a rider opens into — the lease reads like its
           riders because it is the same kind of thing. */}
       {open && hasText && <div className="lease-doc">{leaseText}</div>}
-    </div>
+    </FileDrop>
   );
 }
 

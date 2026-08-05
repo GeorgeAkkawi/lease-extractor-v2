@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { signDocUrl, uploadDoc, updateAddendum, deleteAddendumFile } from '../lib/api';
 import { coversLabel, riderTitle, sortRiders, riderHasText } from '../lib/riders';
 import { useConfirm } from './ConfirmDialog';
+import FileDrop from './FileDrop';
 
 // One row per rider, directly under the lease's own row, offering the SAME two actions in
 // the same order as every other document on this panel:
@@ -49,12 +50,26 @@ export default function RiderDocs({ riders = [], leaseId }) {
     } catch (e) { setErr(e.message || String(e)); }
   }
 
-  async function onFile(e) {
+  function onPicked(e) {
     const file = e.target.files?.[0];
     e.target.value = '';
     const rider = forRider.current;
     forRider.current = null;
+    if (file && rider) attach(rider, file);
+  }
+
+  // A drop names its rider by which ROW it landed on, which is the whole reason each row is
+  // its own target rather than the panel being one: "add a file" is meaningless here without
+  // saying to which rider.
+  async function attach(rider, file) {
     if (!file || !rider) return;
+    // Mirrors the row's own button, which offers "Add a file" only where there is none.
+    // A drop must not be able to swap the document a rider points at without the ✕ that
+    // names what is being destroyed — the pointer moves, the old object does not.
+    if (rider.storage_path) {
+      setErr(`“${riderTitle(rider)}” already has a file. Delete it with ✕ first, then add the new one.`);
+      return;
+    }
     setErr(''); setBusyId(rider.id);
     try {
       // Registered against the rider (so it joins the document registry like every other
@@ -131,7 +146,15 @@ export default function RiderDocs({ riders = [], leaseId }) {
           const isOpen = r.id === openId;
           const busy = busyId === r.id;
           return (
-            <div className="rider-row" key={r.id}>
+            <FileDrop
+              key={r.id}
+              className="rider-row"
+              accept=".pdf,.docx,image/*"
+              busy={busy}
+              onFile={(f) => attach(r, f)}
+              title={r.storage_path ? 'This rider already has a file' : 'Drop to add this rider’s file'}
+              hint={r.storage_path ? `Delete the one on “${riderTitle(r)}” first.` : riderTitle(r)}
+            >
               <span className="rider-row-name">
                 {riderTitle(r)} <span className="rider-row-dates">· {coversLabel(r)}</span>
               </span>
@@ -174,13 +197,13 @@ export default function RiderDocs({ riders = [], leaseId }) {
                   ) : null}
                 </span>
               </span>
-            </div>
+            </FileDrop>
           );
         })}
       </div>
       <input
         ref={fileRef} type="file" accept=".pdf,.docx,image/*" style={{ display: 'none' }}
-        onChange={onFile} aria-label="Add a document to this rider"
+        onChange={onPicked} aria-label="Add a document to this rider"
       />
       {err && <p className="note-msg danger" style={{ marginTop: -6, marginBottom: 12 }}>{err}</p>}
       {/* The SAME .lease-doc scroll box the lease itself opens into — a rider reads

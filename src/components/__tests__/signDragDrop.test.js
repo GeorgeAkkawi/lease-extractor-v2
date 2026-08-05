@@ -155,6 +155,81 @@ describe('the tenant places their own signature on the document', () => {
   });
 });
 
+// George, 2026-08-05: *"make the prompt for the signature signing and placing way more
+// obvious right now its hidden theres needs to be clear instructions same thing for the
+// contract signer after they input their signature. it has to be way more clear and
+// straightforward for both users that they sign and tap where they place the signature."*
+//
+// Nothing about the MECHANISM changed — the tests above still pass unedited, and placement
+// is still never a gate. What changed is that the instruction is now stated before the
+// document, restated as a block the size of a paragraph once there is a mark to place, and
+// carries a button back to the page. Both sides of a signature get the identical treatment,
+// which is what the second describe below is for.
+describe('the signer is told what to do, before they have to do it', () => {
+  const openLive = async () => {
+    await reopen();
+    await supabase.from('envelope_signers').update({ signed_at: null, consent_at: null }).eq('id', 'sgn-1t');
+    render(<SignPage token="env-1" />);
+    await screen.findByText('Second Amendment to Lease');
+  };
+
+  it('lists the steps — including the placing one — above the document', async () => {
+    await openLive();
+    const steps = document.querySelector('.sign-steps');
+    expect(steps).toBeTruthy();
+    expect(steps.textContent).toContain('Read the document');
+    expect(steps.textContent).toContain('Sign your name');
+    expect(steps.textContent).toContain('Tap where your signature goes');
+    expect(steps.textContent).toContain('Send it back');
+    // ⚠ ABOVE the document, not below it — the whole complaint was that the instruction
+    // lived under a box tall enough to push it off the screen.
+    const doc = document.querySelector('.sign-doc');
+    expect(steps.compareDocumentPosition(doc) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('turns into a block with a way back to the document the moment a signature exists', async () => {
+    await openLive();
+    expect(document.querySelector('.sign-cta')).toBe(null);
+
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByText('⌨ Type'));
+    const cta = await waitFor(() => {
+      const el = document.querySelector('.sign-cta');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    expect(cta.textContent).toMatch(/Now tap where your signature goes/);
+    // Placing is offered, never required — the way past it is stated in the same block.
+    expect(cta.textContent).toMatch(/You can still sign/);
+    expect(screen.getByRole('button', { name: 'Take me to the document' })).toBeTruthy();
+    // …and the step line moves on with them.
+    expect(document.querySelector('.sign-steps').textContent).toContain('Tap where your signature goes');
+  });
+
+  it('replaces the ask with a confirmation once the mark is on the page', async () => {
+    await openLive();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByText('⌨ Type'));
+    await waitFor(() => expect(screen.getByText('drop-signature').disabled).toBe(false));
+    fireEvent.click(screen.getByText('drop-signature'));
+
+    await waitFor(() => expect(document.querySelector('.sign-cta')).toBe(null));
+    expect(screen.getByText(/Your signature is placed on page 1/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Move it' })).toBeTruthy();
+  });
+
+  // ⚠ THE ACTUAL FAULT. On a phone the document is a full screen above the pad, so drawing
+  // a signature leaves the person looking at a instruction about something they can't see.
+  it('carries them back to the document as soon as they have a mark', async () => {
+    const scrollIntoView = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    await openLive();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('⌨ Type'));
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+  });
+});
+
 describe('the landlord countersigns on the same document', () => {
   it('places his own mark and completes the envelope', async () => {
     mountCard();
@@ -174,6 +249,26 @@ describe('the landlord countersigns on the same document', () => {
     const { data: landlord } = await supabase.from('envelope_signers').select('*').eq('id', 'sgn-1l').maybeSingle();
     expect(landlord.place_page).toBe(1);
     expect(Number(landlord.place_x)).toBeCloseTo(320);
+  });
+
+  // The same instructions, on the other side of the same signature. Two screens explaining
+  // one act differently is how one of them becomes the screen people get stuck on.
+  it('gets the identical steps and the identical call to action', async () => {
+    mountCard();
+    fireEvent.click(await screen.findByRole('button', { name: '✎ Countersign' }));
+    const dialog = await screen.findByRole('dialog');
+    const steps = dialog.querySelector('.sign-steps');
+    expect(steps.textContent).toContain('Read what the tenant signed');
+    expect(steps.textContent).toContain('Tap where your signature goes');
+
+    fireEvent.click(screen.getByText('⌨ Type'));
+    const cta = await waitFor(() => {
+      const el = dialog.querySelector('.sign-cta');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    expect(cta.textContent).toMatch(/Now tap where your signature goes/);
+    expect(screen.getByRole('button', { name: 'Take me to the document' })).toBeTruthy();
   });
 
   it('says where the tenant put theirs, before he commits his own', async () => {

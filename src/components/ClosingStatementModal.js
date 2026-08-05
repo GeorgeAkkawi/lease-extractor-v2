@@ -10,6 +10,7 @@ import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { extractClosingStatement, saveClosingStatement, uploadDoc, discardDocument } from '../lib/api';
 import { proposedAssets, notCapitalized, readSummary } from '../lib/closingStatement';
+import FileDrop from './FileDrop';
 import { assetKindInfo } from '../lib/depreciation';
 import { money } from '../lib/format';
 import { useModalA11y } from './modalA11y';
@@ -44,19 +45,17 @@ export default function ClosingStatementModal({ propId, propertyName, onClose })
 
   const onPaste = () => { if (text.trim()) intake(() => extractClosingStatement({ text: text.trim() })); };
 
-  const onFile = async (e) => {
-    const f = e.target.files?.[0];
-    if (f) {
-      setBusy(true); setErr('');
-      try {
-        // Registered against the property up front, so a read that is never confirmed
-        // is still findable rather than a nameless object in the bucket.
-        const path = await uploadDoc(f, { entityType: 'property', entityId: propId, label: 'Closing statement' });
-        await intake(() => extractClosingStatement({ storagePath: path }), path);
-      } catch (e2) { setErr(e2.message || String(e2)); setBusy(false); }
-    }
-    e.target.value = '';
+  const onFile = async (f) => {
+    if (!f) return;
+    setBusy(true); setErr('');
+    try {
+      // Registered against the property up front, so a read that is never confirmed
+      // is still findable rather than a nameless object in the bucket.
+      const path = await uploadDoc(f, { entityType: 'property', entityId: propId, label: 'Closing statement' });
+      await intake(() => extractClosingStatement({ storagePath: path }), path);
+    } catch (e2) { setErr(e2.message || String(e2)); setBusy(false); }
   };
+  const onPicked = (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onFile(f); };
 
   // Cancelling after a read throws the upload away — file AND registry row. An explicit
   // cancel is the only thing that deletes it.
@@ -107,15 +106,22 @@ export default function ClosingStatementModal({ propId, propertyName, onClose })
           </p>
 
           {!read && (
-            <>
+            <FileDrop
+              onFile={onFile}
+              accept=".pdf,.png,.jpg,.jpeg,.webp"
+              busy={busy}
+              title="Drop the closing statement here"
+              hint="It is read once and shown to you before anything is saved."
+            >
               <div className="row" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                 <label className="secondary" style={{ cursor: 'pointer', margin: 0 }}>
                   {busy ? 'Reading…' : '⬆ Upload closing statement'}
-                  <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" style={{ display: 'none' }} onChange={onFile} disabled={busy} />
+                  <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" style={{ display: 'none' }} onChange={onPicked} disabled={busy} />
                 </label>
                 <button type="button" className="secondary" onClick={() => setPaste((p) => !p)} disabled={busy}>
                   {paste ? 'Cancel paste' : 'Paste text'}
                 </button>
+                <span className="muted" style={{ fontSize: 12 }}>…or drag the file anywhere onto this window</span>
               </div>
               {paste && (
                 <div style={{ marginBottom: 12 }}>
@@ -127,7 +133,7 @@ export default function ClosingStatementModal({ propId, propertyName, onClose })
                   </div>
                 </div>
               )}
-            </>
+            </FileDrop>
           )}
 
           {read && (

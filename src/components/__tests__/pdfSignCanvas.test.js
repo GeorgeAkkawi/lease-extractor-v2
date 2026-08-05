@@ -161,14 +161,32 @@ describe('the tap that still has to work', () => {
   });
 });
 
+// George, 2026-08-05: *"make the prompt for the signature signing and placing way more
+// obvious right now its hidden."* Two prompts now, and the distinction is the whole fix:
+// the pill sits ON the page where the tap has to land, and the step line sits ABOVE the
+// scroll box where it cannot be scrolled away from.
 describe('the prompt', () => {
-  it('asks for a drag first and a tap second, and goes once placed', async () => {
+  it('asks for the tap, and goes once placed', async () => {
     const { stage } = await mount();
-    expect(screen.getByText(/Drag your signature onto the signature line/)).toBeTruthy();
+    expect(screen.getByText(/Tap where your signature goes/)).toBeTruthy();
     fireEvent.click(stage, { clientX: 300, clientY: 500 });
-    await waitFor(() => expect(screen.queryByText(/Drag your signature onto the signature line/)).toBe(null));
+    await waitFor(() => expect(screen.queryByText(/Tap where your signature goes/)).toBe(null));
     // …and the way back off the page is named for what it does, not for "move", which is
     // now the drag's job.
     expect(screen.getByRole('button', { name: 'Take it off' })).toBeTruthy();
+  });
+
+  // ⚠ THE ONE THAT WAS ACTUALLY BROKEN. The pill lives inside a box that scrolls up to 70vh;
+  // the step line does not, so it is the instruction that survives being scrolled past.
+  it('keeps a step instruction outside the scroll box, and it names the next action', async () => {
+    const { stage } = await mount();
+    const step = document.querySelector('.pdfsign-step');
+    expect(step).toBeTruthy();
+    expect(document.querySelector('.pdfsign-wrap')?.contains(step)).toBe(false);
+    expect(step.textContent).toMatch(/Tap the signature line/);
+
+    fireEvent.click(stage, { clientX: 300, clientY: 500 });
+    await waitFor(() => expect(document.querySelector('.pdfsign-step').textContent)
+      .toMatch(/Your signature is on page 1/));
   });
 });

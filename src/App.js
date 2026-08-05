@@ -22,11 +22,17 @@ import PropertyFinancialsPage from './pages/PropertyFinancialsPage';
 import LedgerPage from './pages/LedgerPage';
 import HistoryPage from './pages/HistoryPage';
 import { ConfirmProvider } from './components/ConfirmDialog';
+import { useStrayFileDropGuard } from './components/FileDrop';
 import './App.css';
 
 export default function App() {
   const { session, loading, securityLoading, needsTwoFactor, passwordRecovery } = useAuth();
   const signing = useMatch('/sign/:token');
+  // Files can now be dragged onto a dozen places in the app. A drop that MISSES one must do
+  // nothing at all — the browser's default is to navigate away and open the file, which
+  // silently discards whatever was on screen. Declared above the early return below so it is
+  // never skipped: hooks cannot be conditional, and the signing page needs it too.
+  useStrayFileDropGuard();
 
   // ⚠ THE ONE PUBLIC ROUTE, AND IT MUST STAY ABOVE EVERY GATE BELOW.
   // A tenant signing a lease has no account, so this page cannot wait on `loading`, cannot

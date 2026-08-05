@@ -1177,6 +1177,22 @@ tbody tr:last-child td{border-bottom:none}
 @keyframes veilIn{from{opacity:0}to{opacity:1}}
 @media (prefers-reduced-motion:reduce){.stmt-drop-veil{animation:none}}
 
+/* The same idea, generalised to every file picker in the app (src/components/FileDrop.js).
+   `.filedrop` costs nothing at rest — a card only announces itself as a target while a file
+   is actually over it, so no screen gives up height for an affordance nobody is using. */
+.filedrop{position:relative}
+.filedrop-veil{position:absolute;inset:-1px;z-index:6;pointer-events:none;
+  display:flex;flex-direction:column;gap:7px;align-items:center;justify-content:center;
+  text-align:center;padding:20px;border:2px dashed var(--accent);border-radius:var(--radius);
+  background:rgba(232,235,217,.93);backdrop-filter:blur(1px);animation:veilIn .12s ease-out}
+.filedrop-veil strong{font-family:var(--display);font-size:19px;font-weight:600;color:var(--accent)}
+.filedrop-veil span{font-size:12.5px;color:var(--ink);max-width:44ch;line-height:1.5}
+.filedrop-zone.over .dropzone-hint strong{color:var(--accent);font-size:13px}
+/* a host can be a flex row (a rider row, a contract card) — the message must take its own
+   line rather than squeezing in beside the controls */
+.filedrop>.note-msg{flex-basis:100%;width:100%}
+@media (prefers-reduced-motion:reduce){.filedrop-veil{animation:none}}
+
 /* native file input — styled so the browser's own picker button fits the theme */
 .file-native{font-family:var(--ui);font-size:13px;color:var(--ink)}
 .file-native::file-selector-button{background:var(--accent);color:#FBF8F1;border:none;border-radius:var(--radius);padding:10px 18px;font-weight:600;cursor:pointer;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;margin-right:12px;transition:filter .14s}
@@ -1525,7 +1541,33 @@ textarea.text-input{resize:vertical;min-height:90px}
    which is exactly the lag this replaced. Only the fade in/out is animated. */
 .pdfsign-ghost{position:absolute;left:0;top:0;pointer-events:none;object-fit:contain;opacity:0;visibility:hidden;will-change:transform;outline:1.5px dashed var(--accent);outline-offset:2px;filter:drop-shadow(0 4px 8px rgba(0,0,0,.3));transition:opacity .1s ease}
 .pdfsign-ghost.on{opacity:.97;visibility:visible}
-.pdfsign-hint{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:var(--accent);color:#fff;font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:var(--radius);pointer-events:none;box-shadow:0 2px 10px rgba(0,0,0,.2);text-align:center;max-width:80%}
+/* ⚠ TOP of the page, not its middle. The scroll box opens at the top of the sheet, so a hint
+   centred on a full page of A4 starts below the fold — which is exactly why nobody saw it. */
+.pdfsign-hint{position:absolute;left:50%;top:14px;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:12.5px;padding:10px 18px;border-radius:var(--radius);pointer-events:none;box-shadow:0 3px 14px rgba(0,0,0,.28);text-align:center;max-width:86%;
+  display:flex;flex-direction:column;gap:3px;line-height:1.35;animation:hintPulse 1.9s ease-in-out infinite}
+.pdfsign-hint strong{font-size:14.5px;font-weight:700;letter-spacing:.01em}
+.pdfsign-hint span{font-size:11.5px;opacity:.92}
+@keyframes hintPulse{0%,100%{transform:translateX(-50%) scale(1)}50%{transform:translateX(-50%) scale(1.035)}}
+
+/* THE INSTRUCTION THAT CANNOT BE SCROLLED AWAY FROM. Outside the scroll box, above the
+   document, and it names the next action rather than describing the feature. */
+.pdfsign-step{display:flex;align-items:center;gap:10px;font-size:13px;line-height:1.4;
+  padding:10px 14px;border-radius:var(--radius);margin-bottom:8px;
+  border:1px solid var(--border);background:var(--panel-2);color:var(--ink)}
+.pdfsign-step-n{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;border-radius:999px;font-size:12px;font-weight:700;
+  background:var(--muted);color:#FBF8F1}
+.pdfsign-step.place{border-color:var(--accent);background:var(--accent-soft);font-weight:600}
+.pdfsign-step.place .pdfsign-step-n{background:var(--accent)}
+.pdfsign-step.done{border-color:var(--good)}
+.pdfsign-step.done .pdfsign-step-n{background:var(--good)}
+/* While a mark is waiting to be placed the page itself reads as the target. */
+.pdfsign-stage.awaiting .pdfsign-canvas{outline:3px solid var(--accent);outline-offset:-1px;animation:stageWait 1.9s ease-in-out infinite}
+@keyframes stageWait{0%,100%{outline-color:var(--accent)}50%{outline-color:transparent}}
+@media (prefers-reduced-motion:reduce){
+  .pdfsign-hint{animation:none}
+  .pdfsign-stage.awaiting .pdfsign-canvas{animation:none}
+}
 
 /* The signature record — what Amlak actually stores, readable without opening a PDF. */
 .env-record{flex:1 0 100%;margin-top:10px;padding:12px 14px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);font-size:12.5px}
@@ -1544,8 +1586,18 @@ textarea.text-input{resize:vertical;min-height:90px}
    so a signature looks identical wherever it was made. */
 .sigpad{margin-bottom:14px}
 .sigpad-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap}
-.sigpad-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700}
-.sigpad-canvas{border:1.5px dashed var(--line);border-radius:var(--radius);background:var(--panel);touch-action:none;cursor:crosshair;display:block}
+/* Was 9.5px uppercase grey — the same weight as a table column header, on the one control
+   the whole page exists for. It is the instruction; it now reads like one. */
+.sigpad-label{font-family:var(--display);font-size:15px;color:var(--accent);font-weight:700;letter-spacing:.01em}
+.sigpad-box{position:relative;line-height:0}
+.sigpad-canvas{border:1.5px dashed var(--line);border-radius:var(--radius);background:var(--panel);touch-action:none;cursor:crosshair;display:block;position:relative;z-index:1}
+/* The ✗ and the rule everyone knows from paper. A DOM overlay, never canvas content — so it
+   is drawn OVER the pad but cannot end up in the PNG, and pointer-events:none means it can
+   never swallow the first stroke. */
+.sigpad-guide{position:absolute;inset:0;z-index:2;pointer-events:none;display:flex;align-items:flex-end;gap:8px;padding:0 16px 26px;line-height:1}
+.sigpad-x{font-size:19px;color:var(--faint);flex:0 0 auto;line-height:1}
+.sigpad-rule{flex:1;border-bottom:1px solid var(--line);margin-bottom:4px}
+.sigpad-guide-text{position:absolute;left:16px;bottom:6px;font-size:11.5px;color:var(--faint);line-height:1.2}
 .sigpad-canvas.typed{cursor:default}
 .sigpad-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;font-size:12px;flex-wrap:wrap}
 
@@ -1566,6 +1618,27 @@ body.sign-body{background:var(--paper)}
 .sign-consent input{margin-top:3px;flex:0 0 auto}
 .sign-done{font-size:40px;color:var(--forest);line-height:1}
 .sign-legal{display:block;border-top:1px solid var(--hair);margin-top:24px;padding-top:14px;font-size:11.5px;line-height:1.6}
+
+/* THE FOUR STEPS, before the document. Shared by the public signing page and the landlord's
+   countersign dialog, so a signature is explained the same way on both sides of it. */
+.sign-steps{list-style:none;display:flex;flex-wrap:wrap;gap:8px 18px;margin:14px 0 4px;padding:0}
+.sign-steps li{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);line-height:1.35}
+.sign-step-n{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  width:21px;height:21px;border-radius:999px;font-size:11.5px;font-weight:700;
+  background:var(--panel-2);border:1px solid var(--border);color:var(--muted)}
+.sign-steps li.now{color:var(--ink);font-weight:700}
+.sign-steps li.now .sign-step-n{background:var(--accent);border-color:var(--accent);color:#FBF8F1}
+.sign-steps li.done{color:var(--good)}
+.sign-steps li.done .sign-step-n{background:var(--good);border-color:var(--good);color:#FBF8F1}
+
+/* The call to action that replaced a 12.5px grey line. It is a block, it names the action,
+   and it carries a button back to the document — because on a phone the thing it is telling
+   you to tap is a full screen away by the time you have drawn your name. */
+.sign-cta{border:1.5px solid var(--accent);background:var(--accent-soft);border-radius:var(--radius);
+  padding:14px 16px;margin:14px 0 0;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.sign-cta strong{font-family:var(--display);font-size:17px;color:var(--accent);line-height:1.25}
+.sign-cta span{font-size:12.5px;line-height:1.55;color:var(--ink)}
+.sign-cta-alt{font-size:11.5px !important;color:var(--muted) !important}
 
 /* Completes the note-msg tone set (warn / danger / info already exist) — a send that
    actually worked had no voice of its own until now. */

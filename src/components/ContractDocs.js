@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   uploadNewContractDocument, applyNewContractTerms, getServiceContract,
@@ -33,7 +33,7 @@ const TYPE_LABEL = { landscaping: 'Landscaping', snow_removal: 'Snow removal', s
 // ⚠ NOT gated on whether a document exists. The button reads "Upload contract" when there
 // is none and "Upload new contract" when there is — the same fix the lease side needed,
 // because a contract entered by hand is exactly the one whose figures were never AI-checked.
-export default function ContractDocs({ contract, onChanged }) {
+export default function ContractDocs({ contract, onChanged, droppedFile = null, onDroppedTaken }) {
   const pickRef = useRef(null);
   const [pending, setPending] = useState(null);
 
@@ -43,11 +43,19 @@ export default function ContractDocs({ contract, onChanged }) {
     if (file) setPending(file);
   }
 
+  // A file dragged onto the contract card (ServiceContractsSection) arrives here, so a drop
+  // and the button below open the SAME review dialog. The parent's copy is released as soon
+  // as this one holds it — the File is the state, and two owners would reopen the dialog.
+  useEffect(() => {
+    if (droppedFile) { setPending(droppedFile); onDroppedTaken?.(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [droppedFile]);
+
   return (
     <>
       <button
         type="button" className="ghost btn-sm"
-        title="Upload the contract document. Amlak reads it, shows you what changes, and updates the contract's terms once you confirm."
+        title="Upload the contract document — or drag it anywhere onto this contract. Amlak reads it, shows you what changes, and updates the contract's terms once you confirm."
         onClick={() => pickRef.current?.click()}
       >Upload {contract?.storage_path ? 'new ' : ''}contract</button>
       <input

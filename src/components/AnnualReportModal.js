@@ -6,6 +6,7 @@ import {
 } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
+import FileDrop from './FileDrop';
 
 // Per-corporation annual state filing. The landlord uploads (or pastes) the report;
 // the AI reads only the date it must be filed each year; the app then reminds him a
@@ -62,19 +63,17 @@ export default function AnnualReportModal({ corp, onClose }) {
     } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   }
   const onPaste = () => { if (text.trim()) intake(() => extractAnnualReport({ text: text.trim() })); };
-  const onFile = async (e) => {
-    const f = e.target.files?.[0];
-    if (f) {
-      setBusy(true); setErr('');
-      try {
-        // Registered against the corporation, so a report that never gets saved is
-        // still findable rather than a nameless object in the bucket.
-        const path = await uploadDoc(f, { entityType: 'annual_report', entityId: corp.id });
-        await intake(() => extractAnnualReport({ storagePath: path }), path);
-      } catch (e2) { setErr(e2.message || String(e2)); setBusy(false); }
-    }
-    e.target.value = '';
+  const onFile = async (f) => {
+    if (!f) return;
+    setBusy(true); setErr('');
+    try {
+      // Registered against the corporation, so a report that never gets saved is
+      // still findable rather than a nameless object in the bucket.
+      const path = await uploadDoc(f, { entityType: 'annual_report', entityId: corp.id });
+      await intake(() => extractAnnualReport({ storagePath: path }), path);
+    } catch (e2) { setErr(e2.message || String(e2)); setBusy(false); }
   };
+  const onPicked = (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onFile(f); };
 
   async function open(path) {
     try { const url = await signDocUrl(path); if (url) window.open(url, '_blank', 'noopener'); }
@@ -102,16 +101,26 @@ export default function AnnualReportModal({ corp, onClose }) {
                   : 'No filing date on file yet.'}
               </div>
 
-              {/* Upload / paste — AI reads the filing deadline */}
-              <div className="row" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-                <label className="secondary" style={{ cursor: 'pointer', margin: 0 }}>
-                  {busy ? 'Reading…' : '⬆ Upload report'}
-                  <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" style={{ display: 'none' }} onChange={onFile} disabled={busy} />
-                </label>
-                <button type="button" className="secondary" onClick={() => setPaste((p) => !p)} disabled={busy}>
-                  {paste ? 'Cancel paste' : 'Paste text'}
-                </button>
-              </div>
+              {/* Upload / paste — AI reads the filing deadline. The whole row is also a
+                  drop target, so the report can be dragged straight out of the mail. */}
+              <FileDrop
+                onFile={onFile}
+                accept=".pdf,.png,.jpg,.jpeg,.webp"
+                busy={busy}
+                title="Drop the annual report here"
+                hint="The AI reads the filing deadline from it — nothing is saved until you press Save."
+              >
+                <div className="row" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <label className="secondary" style={{ cursor: 'pointer', margin: 0 }}>
+                    {busy ? 'Reading…' : '⬆ Upload report'}
+                    <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" style={{ display: 'none' }} onChange={onPicked} disabled={busy} />
+                  </label>
+                  <button type="button" className="secondary" onClick={() => setPaste((p) => !p)} disabled={busy}>
+                    {paste ? 'Cancel paste' : 'Paste text'}
+                  </button>
+                  <span className="muted" style={{ fontSize: 12 }}>…or drag the file in</span>
+                </div>
+              </FileDrop>
               {paste && (
                 <div style={{ marginBottom: 12 }}>
                   <textarea className="text-input" rows={5} style={{ width: '100%' }} placeholder="Paste the annual-report text here…" value={text} onChange={(e) => setText(e.target.value)} />

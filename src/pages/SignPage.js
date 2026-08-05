@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import SignaturePad from '../components/SignaturePad';
 import PdfSignCanvas from '../components/PdfSignCanvas';
+import SignSteps from '../components/SignSteps';
 import { callSignEndpoint } from '../lib/signPublic';
 import { fmtDate } from '../lib/format';
 
@@ -43,6 +44,9 @@ export default function SignPage({ token }) {
   // still work — it falls back to the appended signature page, exactly as before this
   // feature existed. A tenant who can't see the document must still be able to sign it.
   const [noRender, setNoRender] = useState(false);
+  // The document box, so the page can take them back to it the moment their mark exists.
+  const docRef = useRef(null);
+  const sentToDoc = useRef(false);
 
   // The page has its own <title> and its own background — a tenant landing here should not
   // be able to tell it apart from a purpose-built signing service, because that is what it
@@ -69,6 +73,23 @@ export default function SignPage({ token }) {
   }, [token]);
 
   useEffect(() => { load(); }, [load]);
+
+  const toDocument = useCallback(() => {
+    // jsdom has no scrollIntoView, and neither do some older mobile browsers — the optional
+    // call is what keeps a missing scroll from throwing on the one page that must never break.
+    docRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  // ⚠ THE MOMENT A SIGNATURE EXISTS, THE DOCUMENT IS WHERE THEY NEED TO BE LOOKING.
+  // The signature pad sits below a document box up to 70vh tall, so drawing a mark leaves
+  // the page scrolled well past the thing they now have to tap. This carries them back
+  // exactly once — a second automatic scroll would fight anyone deliberately reading on.
+  useEffect(() => {
+    if (!signature || placement || sentToDoc.current) return;
+    if (!state.document_url || noRender) return;
+    sentToDoc.current = true;
+    toDocument();
+  }, [signature, placement, state.document_url, noRender, toDocument]);
 
   async function sign() {
     setBusy(true); setErr('');
@@ -155,6 +176,21 @@ export default function SignPage({ token }) {
   }
 
   const canSign = consent && name.trim().length > 0 && !!signature && !busy;
+  // Whether there is a page to put a mark ON. Everything about placement — the step, the
+  // call to action, the automatic scroll — is silent when the document can't be rendered,
+  // because there is nothing to tap and saying so would only confuse.
+  const canPlace = !!state.document_url && !noRender;
+
+  // George, 2026-08-05: *"it has to be way more clear and straightforward for both users
+  // that they sign and tap where they place the signature."* Four short steps, up front,
+  // before the document — so the placing step is known about BEFORE it is reached, rather
+  // than discovered in a grey line under the signature pad.
+  const steps = [
+    { label: 'Read the document', done: consent },
+    { label: 'Sign your name', done: !!signature && !!name.trim() },
+    ...(canPlace ? [{ label: 'Tap where your signature goes', done: !!placement }] : []),
+    { label: 'Send it back', done: false },
+  ];
 
   return (
     <Shell business={state.business_name}>
@@ -167,10 +203,12 @@ export default function SignPage({ token }) {
         Please review the document below and sign. This link expires {fmtDate(state.expires_at)}.
       </p>
 
+      <SignSteps steps={steps} />
+
       {/* The document, and the thing they sign ON. Once they've drawn a signature it becomes
           a mark they place on the page themselves — which is both what George asked for and
           the better demonstration of intent to sign that ESIGN/UETA ask about. */}
-      <div className="sign-doc">
+      <div className="sign-doc" ref={docRef}>
         {state.document_url && !noRender ? (
           <PdfSignCanvas
             url={state.document_url}
@@ -226,14 +264,28 @@ export default function SignPage({ token }) {
           {/* A nudge, never a gate. Placing the mark on the line is the better outcome — it
               is what makes the signed PDF look signed — but refusing to accept a signature
               because someone didn't drag it would be a far worse failure than an appended
-              signature page. So this only ever informs. */}
-          {signature && !noRender && state.document_url && (
-            <p className={`note-msg ${placement ? 'good' : 'info'}`}>
-              {placement
-                ? `✓ Your signature is placed on page ${placement.page}. Drag it if you want to move it.`
-                : 'Now drag your signature onto the signature line in the document above — or just tap where it goes. If you’d rather not, you can still sign: it will be added on a page at the end.'}
+              signature page. So this only ever informs.
+              ⚠ It is now a BLOCK, not a 12.5px line, and it carries a button back to the
+              document. The instruction was never missing; it was unreadable at the size and
+              position it was given, half a screen away from the thing it referred to. */}
+          {signature && canPlace && (placement ? (
+            <p className="note-msg good">
+              ✓ Your signature is placed on page {placement.page}.{' '}
+              <button type="button" className="ghost btn-sm" onClick={toDocument}>Move it</button>
             </p>
-          )}
+          ) : (
+            <div className="sign-cta">
+              <strong>👆 Now tap where your signature goes</strong>
+              <span>
+                Go up to the document and tap the signature line — your signature lands right
+                there. You can also drag your signature onto the signature line to line it up.
+              </span>
+              <button type="button" onClick={toDocument}>Take me to the document</button>
+              <span className="sign-cta-alt">
+                Rather not? You can still sign — it goes on a signature page at the end.
+              </span>
+            </div>
+          ))}
 
           {err && <p className="note-msg danger">{err}</p>}
 
