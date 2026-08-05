@@ -7,6 +7,7 @@ import {
 import { fmtDate, money } from '../lib/format';
 import { initialFromExtraction } from '../pages/LeaseNewPage';
 import { newLeaseChanges, newLeaseTargets, hasNoChanges } from '../lib/newLeaseTerms';
+import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { settleBillingChange, settleLeaseScheduleChange } from '../lib/invalidate';
 import { useConfirm } from './ConfirmDialog';
 
@@ -191,12 +192,18 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
                 change based on the new lease thats the point so it should say 'upload new
                 lease'"* — because "Replace" sounded like swapping a file, and this updates
                 the lease's terms. */}
-            {newest && (
+            {/* ⚠ NOT gated on `newest` any more. A lease entered by hand has no document, and
+                uploading its first one used to go through the plain "Add a file" path — stored,
+                never read, no diff, no figures. That is the one lease whose figures were never
+                AI-checked at all. uploadNewLeaseDocument already handles a lease with no
+                lease_files row (it inserts one), so the only thing that was missing was the
+                way in. */}
+            {!isLoading && (
               <button
                 type="button" className="ghost btn-sm" disabled={busy}
                 title="Upload a new lease for this tenant. Amlak reads it, shows you what changes, and updates the lease's terms once you confirm."
                 onClick={() => replaceRef.current?.click()}
-              >Upload new lease</button>
+              >Upload {newest ? 'new ' : ''}lease</button>
             )}
             <span className="doc-act2">
               {newest ? (
@@ -361,6 +368,11 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
   }
 
   const busyPhase = phase === 'reading' || phase === 'applying';
+  // What the extractor said about the DOCUMENT, as opposed to about the figures. Read off the
+  // same extraction the apply stores, so the dialog can't show one thing and save another.
+  const aiFlags = Array.isArray(read?.extraction?.ai_review?.flags) ? read.extraction.ai_review.flags : [];
+  const mismatches = Array.isArray(read?.extraction?.extraction_mismatch) ? read.extraction.extraction_mismatch : [];
+  const brief = typeof read?.extraction?.analysis_brief === 'string' ? read.extraction.analysis_brief : '';
   const show = (f, v) => {
     if (v === null || v === undefined || v === '') return '—';
     // "net" / "gross" is the whole difference between billing CAM & tax on top of the rent
@@ -448,6 +460,52 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
                 ✓ Read <strong>{Number(read?.length || 0).toLocaleString()} characters</strong> from{' '}
                 {file.name}. The saved text now comes from this document.
               </p>
+
+              {/* ── WHAT THE AI ITSELF FLAGGED ───────────────────────────────────────────
+                  All four of these are emitted by extract-lease and rendered on the
+                  new-tenant intake screen; none of them reached this dialog, which is the
+                  one where the figures are about to move on a lease that already exists.
+                  The red flags mattered most: applying WRITES ai_review onto the lease, so
+                  the landlord met them only after committing. George: *"the lease extractor
+                  needs to be as good as the original one we made for the new tenants."* */}
+              {aiFlags.length > 0 && (
+                <div className="note-msg warn">
+                  <strong>⚑ The AI flagged {aiFlags.length} thing{aiFlags.length === 1 ? '' : 's'} in this document</strong>
+                  <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                    {aiFlags.map((fl, i) => (
+                      <li key={fl.key || i}>{fl.title}{fl.note ? <span className="muted"> — {fl.note}</span> : null}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {mismatches.length > 0 && (
+                <p className="note-msg warn">
+                  ⚠ The AI’s notes say this lease carries <strong>{mismatchPhrase(mismatches)}</strong> that
+                  didn’t land on the figures below. Check {mismatches.length === 1 ? 'it' : 'those'} against
+                  the document before applying.
+                </p>
+              )}
+              {read?.extraction?.rent_schedule_flag && (
+                <p className="note-msg warn">⚠ {String(read.extraction.rent_schedule_flag)}</p>
+              )}
+
+              {/* A guessed date is not a stated one, and this dialog has no fields to correct
+                  it in — so it is dropped rather than applied. George, 2026-08-05. */}
+              {(changes?.guessedDates || []).map((g) => (
+                <p className="note-msg warn" key={`g-${g.key}`}>
+                  ⚠ The document prints no <strong>{g.label.toLowerCase()}</strong>. The nearest thing
+                  on it is {g.from} ({fmtDate(g.value)}), which is a guess — so the lease keeps its own{' '}
+                  {g.label.toLowerCase()} and nothing is changed. Set it by hand on the lease page if the
+                  document is clear about it elsewhere.
+                </p>
+              ))}
+              {(changes?.unusableDates || []).map((u) => (
+                <p className="note-msg warn" key={`u-${u.key}`}>
+                  ⚠ The <strong>{u.label.toLowerCase()}</strong> reads <strong>{u.printed}</strong>, which
+                  isn’t a real date on the calendar. It is left unchanged — everything else in this
+                  document still applies.
+                </p>
+              ))}
 
               {hasNoChanges(changes) ? (
                 <p className="note-msg info">
@@ -570,6 +628,19 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
                 </>
               )}
 
+              {brief && (
+                <details style={{ marginTop: 10 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12.5 }}>Read the AI analyst’s notes</summary>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    What the AI understood from reading the whole document — check it against the table
+                    above before applying.
+                  </div>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 6, fontFamily: 'inherit' }}>
+                    {stripVerdicts(brief)}
+                  </pre>
+                </details>
+              )}
+
               <div className="row" style={{ marginTop: 16 }}>
                 {!hasNoChanges(changes) && (
                   <button type="button" onClick={applyIt}>Apply the new lease</button>
@@ -630,12 +701,21 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
 
           {phase === 'failed' && (
             <>
+              {/* ⚠ THIS USED TO PROMISE "nothing was half-changed". It isn't true and it
+                  isn't ours to promise: applying is a sequence of separate writes (the lease
+                  row, then the rent steps, the estimate ledger, the options, the abatements),
+                  and a failure part way through leaves the earlier ones committed. The
+                  new-tenant path IS atomic — create_lease_tx, migration 0053 — but there is no
+                  equivalent transaction for applying over an existing lease. Telling the
+                  landlord to check is honest and actionable; telling him it's fine is neither. */}
               <p className="note-msg warn" style={{ marginTop: 0 }}>
                 {read
                   ? <>
-                      The new lease was read, but its terms could not be applied.{' '}
-                      <strong>The lease still holds its previous figures</strong> — nothing was
-                      half-changed.
+                      The new lease was read, but applying its terms stopped part way through.{' '}
+                      <strong>Some figures may already have changed and others not</strong> — check
+                      the lease page against the document, then try again. Applying the same
+                      document twice is safe: the rent steps and renewal options are replaced
+                      rather than added to.
                     </>
                   : <>
                       <strong>{file.name}</strong> was saved and is now this lease’s document, but it
@@ -645,6 +725,7 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
               </p>
               <p className="note-msg danger">{err}</p>
               <div className="row" style={{ marginTop: 14 }}>
+                {read && <button type="button" onClick={applyIt}>Try applying again</button>}
                 <button type="button" className="ghost" onClick={onClose}>Close</button>
               </div>
             </>

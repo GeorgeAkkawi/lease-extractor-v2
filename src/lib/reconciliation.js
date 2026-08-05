@@ -103,16 +103,27 @@ export function monthlyEstimates(estimates, share, year) {
   // (billedComponents above) — so a dated estimate ledger has nothing to say about it.
   if (live.gross) return { camTax: flat(live.camTax), roof: flat(live.roof) };
 
-  const rowsFor = (key) => (Array.isArray(estimates) ? estimates : [])
-    .filter((e) => e && e[key] != null && e.effective_date)
-    .map((e) => ({ t: estDate(e.effective_date), v: round2(Number(e[key]) || 0) }))
+  // A row counts for a component when it carries a figure for it — OR, for CAM & tax only,
+  // when it declares there WASN'T one (cam_tax_none, 0090). The second kind maps to v: null,
+  // which `series` reads as "bill the actual for this era". Null on the column itself keeps
+  // its original meaning: this row says nothing about that component (0089).
+  const rowsFor = (key, noneKey = null) => (Array.isArray(estimates) ? estimates : [])
+    .filter((e) => e && e.effective_date && (e[key] != null || (noneKey && e[noneKey] === true)))
+    .map((e) => ({
+      t: estDate(e.effective_date),
+      v: e[key] != null ? round2(Number(e[key]) || 0) : null,
+    }))
     .filter((e) => Number.isFinite(e.t))
     .sort((a, b) => a.t - b.t);
 
-  const series = (key, liveValue) => {
-    const rows = rowsFor(key);
+  // `actualValue` is what an era with NO estimate is billed at — the tenant's plain actual
+  // share, which is precisely what billedComponents falls back to when the lease carries no
+  // estimate. Passing it explicitly keeps the two answers the same figure by construction.
+  const series = (key, liveValue, actualValue, noneKey = null) => {
+    const rows = rowsFor(key, noneKey);
     if (!rows.length) return flat(liveValue);
     const maxT = rows[rows.length - 1].t;
+    const at = (r) => (r.v == null ? round2(actualValue) : r.v);
     const out = [];
     for (let m = 1; m <= 12; m++) {
       const ref = new Date(year, m - 1, 1, 12).getTime(); // first of the month, local noon
@@ -121,15 +132,18 @@ export function monthlyEstimates(estimates, share, year) {
       const latest = prior[prior.length - 1];
       // Latest applicable row IS the globally-latest → the current era → the live scalar wins.
       // Otherwise a later row supersedes it → historical segment → read the ledger.
-      out.push(latest.t === maxT ? round2(liveValue) : latest.v);
+      out.push(latest.t === maxT ? round2(liveValue) : at(latest));
     }
     return out;
   };
 
+  const actual = actualComponents(share);
   return {
-    camTax: series('cam_tax_annual', live.camTax),
-    // A tenant who isn't roof-responsible is billed no roof, whatever any row says.
-    roof: share.roof_responsible ? series('roof_annual', live.roof) : flat(0),
+    camTax: series('cam_tax_annual', live.camTax, actual.cam + actual.tax, 'cam_tax_none'),
+    // A tenant who isn't roof-responsible is billed no roof, whatever any row says. Roof needs
+    // no `none` flag: est_roof_annual is not a field a new lease applies, so a lease without
+    // one writes no roof rows at all and falls back to live.roof — which IS its actual share.
+    roof: share.roof_responsible ? series('roof_annual', live.roof, actual.roof) : flat(0),
   };
 }
 

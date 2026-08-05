@@ -42,7 +42,18 @@ const PROPOSED = {
   lease_termination_date: NEW.end,
   lease_terms: 'NNN; renewed on new terms.',
 };
-const EXTRACTION = { escalations: [], renewal_options: [], abatements: [] };
+// ⚠ THE EXTRACTION MUST STATE THE DATES THE PROPOSED CLAIMS. In the app these are one object
+// (`proposed` is initialFromExtraction(extraction)), so they cannot disagree — and
+// newLeaseChanges now drops a date the document didn't actually print, because
+// initialFromExtraction falls back to the SIGNING date and this dialog has no field to correct
+// a guess in (George, 2026-08-05: don't apply a guessed date at all). A fixture that states a
+// start on one side and not the other is the shape of a lease with no printed commencement
+// date, which is not what these cases are about.
+const EXTRACTION = {
+  escalations: [], renewal_options: [], abatements: [],
+  lease_start: { value: NEW.start, confidence: 0.9, source_quote: '', page: 1 },
+  lease_termination_date: { value: NEW.end, confidence: 0.9, source_quote: '', page: 1 },
+};
 
 async function applyMidYearLease() {
   const lease = await getLease(LEASE);
@@ -162,6 +173,104 @@ describe('a new lease that starts mid-year', () => {
     } finally {
       await supabase.from('lease_estimates').delete().eq('lease_id', LEASE);
       await updateLease(LEASE, { est_cam_annual: null, est_tax_annual: null });
+      await restore();
+    }
+  });
+
+  // ── §4 ────────────────────────────────────────────────────────────────────────────────
+  // The closing row's SECOND job is pulling occupancyStart back to the real move-in, and that
+  // is needed whenever the start moves forward — whatever the rent did. Gated on a rent
+  // change (as it first was), a renewal at the SAME rent commencing later wrote nothing at
+  // all: every earlier month fell out of term, owed 0, and the year's invoice was rebuilt
+  // covering only July onward.
+  it('keeps the earlier months in term when the start moves but the rent does NOT', async () => {
+    try {
+      const sameRent = { ...PROPOSED, base_rent: OLD.rent };
+      const lease = await getLease(LEASE);
+      const changes = newLeaseChanges({ lease, proposed: sameRent, extraction: EXTRACTION });
+      // The rent really is unchanged — if this ever starts failing, the case has evaporated.
+      expect(changes.fields.some((f) => f.key === 'base_rent')).toBe(false);
+      const plan = buildScheduleFromExtraction(EXTRACTION, newLeaseTargets(lease, changes));
+      await applyNewLeaseTerms({ leaseId: LEASE, changes, plan, extraction: EXTRACTION });
+
+      // A closing row at the OLD start, carrying the (unchanged) rent, applied.
+      const closing = (await listEscalations(LEASE)).find((e) => e.effective_date === OLD.start);
+      expect(closing).toBeTruthy();
+      expect(closing.status).toBe('applied');
+      expect(Number(closing.new_base_rent)).toBe(OLD.rent);
+      // …and no second row saying the same figure again at the boundary.
+      expect((await listEscalations(LEASE)).filter((e) => e.effective_date === NEW.start)).toHaveLength(0);
+
+      // The point of all of it: January is still in term and still owes.
+      const mr = await getMonthlyRent(LEASE, Y);
+      expect(mr.schedule[1].outsideTerm).toBeFalsy();
+      expect(Number(mr.schedule[1].owed)).toBeGreaterThan(0);
+      expect(mr.byMonth[1]).toBeTruthy();
+    } finally { await restore(); }
+  });
+
+  // ── §2 ────────────────────────────────────────────────────────────────────────────────
+  // The commonest shape of the change — a lease going from NO estimate to one — used to get
+  // no closing row (there was no prior figure to put on it), so monthlyEstimates fell back to
+  // the live scalar and re-billed January at the new estimate. Those months were billed at
+  // the tenant's ACTUAL share, and that is what they must keep being billed at.
+  it('leaves the months before it on the ACTUAL share when there was no estimate before', async () => {
+    try {
+      await updateLease(LEASE, { est_cam_annual: null, est_tax_annual: null });
+      const lease = await getLease(LEASE);
+      const withEst = { ...EXTRACTION, est_cam_annual: { value: 24000 } };
+      const changes = newLeaseChanges({ lease, proposed: PROPOSED, extraction: withEst });
+      const plan = buildScheduleFromExtraction(withEst, newLeaseTargets(lease, changes));
+      await applyNewLeaseTerms({ leaseId: LEASE, changes, plan, extraction: withEst });
+
+      const { data: est } = await supabase.from('lease_estimates').select('*').eq('lease_id', LEASE);
+      const closing = est.find((e) => e.effective_date === OLD.start);
+      // The closing row exists, carries NO figure, and says so explicitly (0090).
+      expect(closing).toBeTruthy();
+      expect(closing.cam_tax_annual).toBeNull();
+      expect(closing.cam_tax_none).toBe(true);
+
+      const share = await getTenantShare(LEASE, Y);
+      const actualCamTax = Number(share.cam_amount || 0) + Number(share.tax_amount || 0);
+      const months = monthlyEstimates(est, share, Y);
+      expect(months.camTax[0]).toBe(actualCamTax);  // January — no estimate, so the actual
+      expect(months.camTax[11]).toBe(24000);        // December — the new lease's estimate
+      // Not the $24,000 that reading today's scalar across all twelve months produces.
+      expect(reconcileFigures({ share, estimates: est, year: Y }).est.cam)
+        .toBeCloseTo((actualCamTax * 6 + 24000 * 6) / 12, 2);
+    } finally {
+      await supabase.from('lease_estimates').delete().eq('lease_id', LEASE);
+      await updateLease(LEASE, { est_cam_annual: null, est_tax_annual: null });
+      await restore();
+    }
+  });
+
+  // ── §3 ────────────────────────────────────────────────────────────────────────────────
+  // Number(null) is 0 and Number.isFinite(0) is true, so a lease with no roof estimate had an
+  // invented roof_annual: 0 written onto both rows — building a roof series where none should
+  // exist and pricing every pre-boundary month at NO roof for a roof-responsible tenant.
+  it('writes no roof figure at all when the lease carries no roof estimate', async () => {
+    try {
+      await updateLease(LEASE, { est_cam_annual: 12000, est_tax_annual: 0, est_roof_annual: null, roof_responsible: true });
+      const lease = await getLease(LEASE);
+      const withEst = { ...EXTRACTION, est_cam_annual: { value: 24000 } };
+      const changes = newLeaseChanges({ lease, proposed: PROPOSED, extraction: withEst });
+      const plan = buildScheduleFromExtraction(withEst, newLeaseTargets(lease, changes));
+      await applyNewLeaseTerms({ leaseId: LEASE, changes, plan, extraction: withEst });
+
+      const { data: est } = await supabase.from('lease_estimates').select('*').eq('lease_id', LEASE);
+      expect(est.length).toBeGreaterThan(0);
+      for (const r of est) expect(r.roof_annual).toBeNull();
+
+      // With no roof rows, every month falls back to the live figure — which, with no roof
+      // estimate on the lease, IS the tenant's actual roof share. Never 0.
+      const share = await getTenantShare(LEASE, Y);
+      const months = monthlyEstimates(est, share, Y);
+      expect(months.roof[0]).toBe(Number(share.roof_amt || 0));
+      expect(months.roof[0]).not.toBe(0);
+    } finally {
+      await supabase.from('lease_estimates').delete().eq('lease_id', LEASE);
+      await updateLease(LEASE, { est_cam_annual: null, est_tax_annual: 0, est_roof_annual: null, roof_responsible: false });
       await restore();
     }
   });

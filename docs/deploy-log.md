@@ -12,6 +12,159 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **Thirteen bugs in the new-lease upload path, audited and fixed** (George,
+  after the money-trail round: *"can you find any more bugs in the system we just implemented
+  when it comes to uploading a new lease?"* — then, having read the findings, *"go ahead"*).
+  Deployed: migration **`0090`**, edge fn **`draft-invoice`**, frontend Cloudflare
+  **`8bb57b30`**, demo worker **`ef9d9856`**. Tests **1733/1733** across 170 files (was
+  1711/168). The audit lives at `~/.claude/plans/announcements-these-were-part-temporal-candy.md`;
+  the fixes are numbered to it.
+
+  - **§1 — A CRASH THIS ROUND'S OWN REFACTOR SHIPPED.** `SchedulePreview` referenced an
+    undeclared `rentStart`: commit `6312194` deleted the local when the panel was switched to
+    `buildScheduleFromExtraction` and left the JSX that read it. Behind `freeMo > 0 && start &&`,
+    so it threw ONLY for a lease with leading free rent — precisely the case that same commit
+    newly made reachable (an undated free-rent window now anchors to the lease start instead of
+    being dropped). Upload a lease with three months free → `ReferenceError`, blank review
+    screen. **Nothing mounted this component**, so a pure-function suite passed over it all
+    round; `src/pages/__tests__/schedulePreview.test.js` now does, and was confirmed to fail
+    with the fix reverted before being kept.
+
+  - **§2 — MONEY: going from NO estimate to one re-priced the whole year (migration 0090).**
+    The closing estimate row was written only when there was a prior figure to put on it, and
+    `monthlyEstimates` falls back to the live scalar for months before the first row. So a
+    lease whose months were billed at the **actual** share had every month back to January
+    re-billed at the new estimate — the commonest shape of the change, and the one this
+    feature's own demo drive-through shows (`CAM & tax estimate — → $14,700.00`). It could not
+    be expressed before: `rowsFor` filters `cam_tax_annual != null`, and null already MEANS
+    "this row says nothing about CAM & tax" (0089). Hence **one boolean, `cam_tax_none`** —
+    "this era had no estimate, bill the actual". Scoped to CAM & tax deliberately: roof needs
+    no equivalent (see §3) and a shared flag would have wiped a roof estimate a CAM-only change
+    has no business touching. Default false is byte-for-byte 0089's behaviour, so no back-fill.
+    The **rider path had the identical fault** and got the identical fix.
+
+  - **§3 — MONEY: `roof_annual` was written as `0` where it meant "none".** `Number(null)` is
+    0 and `Number.isFinite(0)` is true, so a lease with no roof estimate had an invented zero
+    dated onto both rows. `monthlyEstimates` keeps a 0, so it built a roof series where none
+    should exist and priced every pre-boundary month at **no roof** for a roof-responsible
+    tenant. Because base is a remainder in `componentizeSchedule`, the shortfall surfaced as a
+    rent difference rather than a roof one. Both paths now test `!= null`.
+
+  - **§4 — MONEY: a renewal at the SAME rent commencing later lost its earlier months.** The
+    closing row's second job is pulling `occupancyStart` back, and that is needed whenever
+    `lease_start` moves forward — whatever the rent did. Gated on a rent change, nothing was
+    written: occupancy jumped, `monthlyScheduleForYear` marked the earlier months
+    `{ owed: 0, outsideTerm: true }`, and the resync rebuilt the year's invoice covering only
+    the months from the new start. The payments survived (the zero-owed skip) but read as an
+    unexplained credit — the opposite of *"so that when statements come in the payments match."*
+    The closing row is now written on `rentChanged || startMovedForward`; the boundary row still
+    only on a rent change, since it exists to record a new **rate**. Also: the closing row is
+    deduped against **applied** rows only — a scheduled row near the old start says nothing
+    about occupancy, and letting one suppress it re-opened the same hole.
+
+  - **§5 — DATA LOSS: a re-upload dropped two renewal columns.** Pending options are deleted
+    and re-inserted from `buildRenewals`, which emitted neither `rent_schedule` (0071 — the
+    comment justifying its absence, *"no schedule column → no migration"*, predates the column)
+    nor `notice_lead_n`/`notice_lead_unit` (0072). The first is what `optionScheduleSteps`
+    materialises when a renewal is later confirmed; the second is a **landlord setting no
+    document states**, so nothing could re-derive it — carried across by position now, the same
+    order `cmpRenewal` and `apply_due_renewals` use.
+
+  - **§6 — The `payments.source` fix had a second door.** The Ledger's "✓ all"
+    (`markMonthsPaidAllTenants`) bypasses `recordPayment` and inserted with no `source`,
+    leaving it to 0088's column default. **Live Postgres filled `'system'`; the demo mock,
+    which applies no defaults, left it `undefined`** — and `every(p => p.source === 'system')`
+    reads undefined as NOT system. The two behaved oppositely, so every test of the 0088 rule
+    ran only against the demo side. Stated explicitly now. `'system'` is the correct
+    classification (the amount is priced off the schedule, like `markMonthPaid`'s tick) — the
+    bug was the silence, not the value.
+
+  - **§7 — The failure dialog promised atomicity it does not have.** It said *"nothing was
+    half-changed"*; applying is ~10 separate writes and a throw part way leaves the earlier ones
+    committed. The new-tenant path IS atomic (`create_lease_tx`, 0053); there is no equivalent
+    here. The copy now says what actually happened, offers **Try applying again**, and states
+    why a retry is safe — which required making it safe: abatements are still never cleared (an
+    issued invoice may already carry the credit) but an **identical window is no longer added
+    twice**. Live constraint risks that make this reachable and that the demo cannot see:
+    `escalation_value` and `annual_escalation_pct` are inserted unvalidated against CHECKs
+    (`>= 0`, `0..100`), so a lease stating a rent **decrease** is a live 23514.
+
+  - **§8 — The `lease_estimates` insert swallowed every error** (`.catch(() => null)`). With
+    §7 that meant the rent could get its dated rows while the estimate silently did not —
+    January reading the old rent and the new CAM, a half-applied version of the rule the last
+    round shipped, with nothing on screen. Now it throws and the dialog names it.
+
+  - **§9 — Four query keys nothing invalidated.** `['leaseEstimates']` went into
+    **`settleBillingChange`** — it has been missing since 0089 shipped, so *every* estimate
+    writer left the Financials breakdown pricing from the ledger as it stood before the change.
+    `escalationsByProperty`, `extractionRaw` and `leaseStatedEstimate` went into
+    `settleLeaseScheduleChange`; the last two matter specifically for a replaced document,
+    whose `lease_files` row is updated **in place** — same key, different lease's read behind it.
+
+  - **§10 — A guessed commencement date is no longer applied.** George, asked directly:
+    *"don't apply a guessed date at all."* `initialFromExtraction` falls back to the **signing
+    date** when a lease prints no commencement date, and derives the end from start + term —
+    labelled in its own comment as "SUGGESTED, editable", which is true on the intake form and
+    false in a read-only diff. That value became `boundaryIso`: the date the whole rent-era and
+    CAM-era split hangs off, and the one §4 shows takes months out of term. Dropped now, and
+    named on screen so the absence isn't read as agreement.
+
+  - **§11 — An impossible date killed the apply with no way out.** Date fields went into the
+    patch verbatim, so "April 31, 2033" (which models return, and which V8 parses by rolling to
+    May 1) failed the entire apply with `date/time field value out of range`. With no fields in
+    this dialog to correct it in, the lease simply could not be applied. `isoDateOrNull` now
+    guards the diff itself. **It moved to `src/lib/isoDate.js`** — a dependency-free module — so
+    the pure diff lib could use it without an import cycle back into `api.js`, which re-exports
+    it so every existing importer is unchanged. That is the alternative to a third copy of the
+    rule (the edge functions' `realIsoDate` is the second, and unavoidable).
+
+  - **§12 — The four extractor warnings the upload dialog never showed.** `ai_review.flags`,
+    `extraction_mismatch`, `rent_schedule_flag` and `analysis_brief` are all rendered on the
+    new-tenant intake screen. The red flags mattered most: applying **stores** `ai_review`, so
+    the landlord met them only after committing. George's standard for this feature was *"as
+    good as the original one we made for the new tenants"* — all four now render before the
+    button. The demo mock gained an `analysis_brief` (with a `VERDICTS:` line, so the stripping
+    is exercised) because it had none, leaving that panel undemonstrable on both screens.
+
+  - **§13 — smaller, confirmed.** `hasNoChanges` now counts `undated`, so a document whose only
+    content is unplaceable lease-year steps stops reading as "nothing to update" and the warning
+    naming them actually renders · **"Upload lease" is no longer gated on a document already
+    existing** — a lease entered by hand was the one lease whose figures were never AI-checked
+    at all, its first document stored through the plain "Add a file" path and never read ·
+    `statedCamTaxAnnual`'s docstring corrected to match its code: a stated **$0** is treated as
+    silence deliberately, because the AI returns `value: null` for "not found", so a literal 0
+    is likelier a misread than a real free-CAM clause, and applying it would zero a tenant's
+    whole CAM billing.
+
+  - **Deliberately NOT changed.** `est_roof_annual` still does not move with a new lease (it is
+    absent from `FIELDS`). Adding it would open a second instance of §2 for roof — a lease
+    gaining a roof estimate would re-price the earlier months — and roof responsibility is a
+    landlord flag here, not a document-read figure. That is also *why* §2's flag is scoped to
+    CAM & tax: with roof unable to change on this path, a lease with no roof estimate writes no
+    roof rows and correctly falls back to its actual share.
+
+  - **Files.** `src/lib/api.js` (the estimate block in `applyNewLeaseTerms` **and** its twin in
+    `applyAddendum`; the era-row gate; `buildRenewals`; the renewal carry-over; the abatement
+    dedupe; `markMonthsPaidAllTenants`; `isoDateOrNull` moved out) · new `src/lib/isoDate.js` ·
+    `src/lib/reconciliation.js` (`monthlyEstimates`) · `src/lib/newLeaseTerms.js` (the date
+    guards, `hasNoChanges`) · `src/lib/invalidate.js` · `src/components/LeaseDocs.js` ·
+    `src/pages/LeaseNewPage.js` · `src/lib/demo/mockClient.js` ·
+    `supabase/functions/draft-invoice/index.ts` · `supabase/migrations/0090_lease_estimate_none.sql` ·
+    tests: new `src/lib/__tests__/newLeaseDates.test.js` (11) and
+    `src/pages/__tests__/schedulePreview.test.js` (3); `midYearLeaseChange.test.js` (6 → 9),
+    `leaseReplaceDoc.test.js` (17 → 24), `estimateResync.test.js` (17 → 18).
+
+  - **⚠ A FIXTURE THAT WAS LYING, exposed by §10.** `midYearLeaseChange.test.js` hand-built its
+    `proposed` object with dates its `EXTRACTION` didn't state. In the app those are one object
+    (`proposed` IS `initialFromExtraction(extraction)`) so they cannot disagree — the fixture was
+    describing a lease with no printed commencement date while asserting things about one that
+    has one. Four tests failed the moment the guard landed. Fixed by making the fixture state
+    what it claims, not by weakening the guard.
+
+  - **Still open, and named rather than quietly carried:** there is no `apply_new_lease_tx`.
+    §7 makes the failure honest and the retry safe, but a partial apply is still possible. The
+    transaction is the real fix and is its own round.
+
 ---
 
 - **2026-08-04** — **The CAM & tax estimate gets dates too, the reconcile settles against what was

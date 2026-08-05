@@ -118,6 +118,20 @@ Both need a **closing** row (the old figure, at the start of its era) as well as
 one alone still leaves January reading the live scalar. An empty `lease_estimates` reproduces
 pre-0089 behaviour exactly, which is why there is no back-fill.
 
+**The closing row must be written even when there IS no old figure** (`cam_tax_none`, `0090`).
+A lease going from **no** estimate to one is the commonest shape of the change, and its earlier
+months were billed at the tenant's *actual* share — so "no closing row" meant re-pricing them at
+the new estimate, the exact fault 0089 exists to prevent. Null `cam_tax_annual` could not express
+it: null already means "this row says nothing about CAM & tax". The flag is scoped to CAM & tax
+because `est_roof_annual` is deliberately **not** among the fields a new lease applies
+(`newLeaseTerms.js` `FIELDS`) — add roof there and you must give roof the same flag.
+
+**And the closing row is not only about the rent.** Its second job is pulling `occupancyStart`
+back to the real move-in, which is needed whenever `lease_start` moves **forward** — whatever the
+rent did. Gate it on a rent change and a renewal at the same rent commencing later takes every
+earlier month out of term. Dedupe it against **applied** rows only; a scheduled row says nothing
+about occupancy.
+
 **The invoice can still fall behind**, because the rent-step sweep also runs nightly in SQL
 (`apply_due_escalations()`) where no JS carry-through can fire. `invoiceDrift` (`api.js`) measures
 schedule-vs-invoice and the Ledger row offers **Rebuild** — the backstop for every writer,
@@ -150,7 +164,15 @@ Two implementations of one rule always drift unless changed in the same commit.
 - **`payments.source`** (`0088`) is the only thing separating a real cheque from a figure the app
   priced itself. It is stored, never inferred: a null note is NOT a proxy for "the app made this
   up", because neither way of recording a real payment writes one. Only `'system'` rows may be
-  re-stamped by `resyncYearBillingToEstimate`.
+  re-stamped by `resyncYearBillingToEstimate`. **Every writer must STATE it — never leave it to
+  the column default.** The mock applies no defaults, so a row written without it is `'system'`
+  live and `undefined` in demo, and the guard reads undefined as *not* system: the two behave
+  oppositely and the tests only ever see the demo side (`markMonthsPaidAllTenants`, 2026-08-05).
+- **`isoDateOrNull` lives in `src/lib/isoDate.js`** — dependency-free on purpose, so pure libs can
+  guard a date without an import cycle into `api.js` (which re-exports it). Its twin is
+  `realIsoDate` in `_shared/rentSchedule.js`; that copy is unavoidable (the app build can't import
+  into `supabase/`), a third is not. It rejects dates that *parse but don't exist* — V8 rolls
+  `2033-04-31` to May 1, and Postgres does not.
 - **The demo mock hand-implements the views.** `mockClient.js` reimplements `v_property_totals`
   (:37), `v_tenant_shares` (:73), `v_invoice_balances` (:111), `draft-invoice` (:369) and
   `create_lease_tx` (:774). **A view change without a matching mock change means the suite passes

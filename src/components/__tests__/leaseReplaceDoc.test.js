@@ -13,13 +13,15 @@
 //   ④ applying it moves the billed figures, replaces the not-yet-applied rent steps, and
 //      leaves what already happened alone
 //   ⑤ keep-or-delete of the old document is his choice, and "keep" really keeps
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import LeaseDocs from '../LeaseDocs';
 import { ConfirmProvider } from '../ConfirmDialog';
 import { supabase } from '../../lib/supabaseClient';
 import { getLease, listDocuments } from '../../lib/api';
+import * as api from '../../lib/api';
+import { optionScheduleSteps } from '../../lib/renewals';
 
 // lease-2 (City Dental) is the seeded lease with both a lease_files row and documents —
 // i.e. the only one where uploading a replacement is a real situation. The demo's canned
@@ -138,10 +140,18 @@ describe('the control', () => {
     expect(btn.closest('.rider-row').textContent).toContain('Open file');
   });
 
-  it('is not offered when there is no lease on file to replace', async () => {
+  // ⚠ This used to assert the OPPOSITE — that the AI lane is hidden for a lease with no
+  // document. That made a lease entered by hand the one lease whose figures were never
+  // AI-checked at all: its first document went through the plain "Add a file" path, stored
+  // and never read. uploadNewLeaseDocument already handles a lease with no lease_files row,
+  // so the only thing missing was the way in. The label drops "new" when there is nothing to
+  // replace, because there isn't.
+  it('is offered even when the lease has no document yet, reading “Upload lease”', async () => {
     for (const id of SEED_DOCS) await supabase.from('documents').delete().eq('id', id);
     mount();
-    expect(await screen.findByRole('button', { name: 'Add a file' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Upload lease' })).toBeTruthy();
+    // "Add a file" is still there for storing a document without reading it.
+    expect(screen.getByRole('button', { name: 'Add a file' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Upload new lease' })).toBe(null);
   });
 
@@ -331,6 +341,109 @@ describe('applying it', () => {
     // …and the option row itself is on file with the rent it opens at.
     const { data: rens } = await supabase.from('renewal_options').select('*').eq('lease_id', LEASE);
     expect(rens.some((r) => r.status === 'pending' && Number(r.new_rent) === 111300)).toBe(true);
+  });
+
+  // ── §12 ───────────────────────────────────────────────────────────────────────────────
+  // Four things extract-lease emits are rendered on the new-tenant intake screen and reached
+  // nowhere near this dialog — the one where figures move on a lease that already exists. The
+  // red flags were the sharpest: applying WRITES ai_review onto the lease, so the landlord met
+  // them only after committing. George: *"the lease extractor needs to be as good as the
+  // original one we made for the new tenants."*
+  it('shows the AI’s red flags, its disagreements and its notes BEFORE applying', async () => {
+    await toReview();
+    const dialog = screen.getByRole('dialog');
+    // The canned extraction carries red flags; they are named, not just stored.
+    expect(dialog.textContent).toMatch(/The AI flagged/i);
+    // The analyst's brief is offered, with the machine-readable VERDICTS line stripped.
+    const notes = screen.getByText(/Read the AI analyst’s notes/i);
+    expect(notes).toBeTruthy();
+    expect(notes.closest('details').textContent).not.toMatch(/VERDICTS:/);
+  });
+
+  // ── §10 ───────────────────────────────────────────────────────────────────────────────
+  // initialFromExtraction falls back to the SIGNING date when a lease prints no commencement
+  // date. On the intake FORM that is an editable suggestion; here the review is a read-only
+  // table, and the value would become boundaryIso — the date the whole rent-era and CAM-era
+  // split hangs off. George, 2026-08-05: don't apply a guessed date at all.
+  it('will not apply a lease start the document never printed, and says why', async () => {
+    const before = await getLease(LEASE);
+    // The same canned read with NO printed commencement date — only a signing date, which is
+    // what initialFromExtraction would otherwise stand in for the start.
+    const real = api.uploadNewLeaseDocument;
+    const spy = vi.spyOn(api, 'uploadNewLeaseDocument').mockImplementation(async (args) => {
+      const res = await real(args);
+      return {
+        ...res,
+        extraction: {
+          ...res.extraction,
+          lease_start: { value: null, confidence: 0, source_quote: '', page: 1 },
+          execution_date: { value: '2025-01-15', confidence: 0.9, source_quote: 'entered into as of January 15, 2025', page: 1 },
+        },
+      };
+    });
+    try {
+      await toReview();
+      expect(screen.getByRole('dialog').textContent).toMatch(/prints no lease start/i);
+      // …and it is NOT in the table of what changes, because it isn't going to change.
+      expect(diffRows().some((r) => /Lease start/.test(r))).toBe(false);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+      await waitFor(async () => expect(Number((await getLease(LEASE)).base_rent)).not.toBe(Number(before.base_rent)));
+      // The rest of the document applied; the start is untouched — not set to the signing date.
+      expect((await getLease(LEASE)).lease_start).toBe(before.lease_start);
+    } finally { spy.mockRestore(); }
+  });
+
+  // ── §5 ────────────────────────────────────────────────────────────────────────────────
+  // Applying DELETES the pending options and re-inserts them from buildRenewals, which used
+  // to emit neither of these — so a re-upload silently dropped both. rent_schedule (0071) is
+  // what optionScheduleSteps materialises when the landlord later confirms the renewal;
+  // notice_lead_n / notice_lead_unit (0072) are a LANDLORD setting no document states, so
+  // nothing could have re-derived them.
+  it('carries the option’s rent schedule and the landlord’s notice lead across the replacement', async () => {
+    const { data: before } = await supabase.from('renewal_options').select('*').eq('lease_id', LEASE);
+    const pending = before.filter((r) => r.status === 'pending');
+    // Set a lead by hand, the way the Renewal Options editor does.
+    await supabase.from('renewal_options').update({ notice_lead_n: 9, notice_lead_unit: 'months' })
+      .eq('id', pending[0].id);
+
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await waitFor(async () => {
+      const { data } = await supabase.from('renewal_options').select('*').eq('lease_id', LEASE);
+      expect(data.some((r) => r.status === 'pending' && r.id !== pending[0].id)).toBe(true);
+    });
+
+    const { data: after } = await supabase.from('renewal_options').select('*').eq('lease_id', LEASE);
+    const now = after.filter((r) => r.status === 'pending');
+    expect(now.length).toBeGreaterThan(0);
+    // The document's own year-by-year table is on the row, as an array the reader speaks.
+    expect(Array.isArray(now[0].rent_schedule)).toBe(true);
+    expect(now[0].rent_schedule.length).toBeGreaterThan(0);
+    expect(optionScheduleSteps(now[0].rent_schedule).length).toBeGreaterThan(0);
+    // …and the lead the landlord chose is still his, matched by position.
+    expect(Number(now[0].notice_lead_n)).toBe(9);
+    expect(now[0].notice_lead_unit).toBe('months');
+  });
+
+  // ── §13 ───────────────────────────────────────────────────────────────────────────────
+  // Abatements are added and never cleared (an issued invoice may already carry the credit),
+  // but "never cleared" was also "never deduped" — so applying the same document twice, which
+  // is exactly what a landlord does after a failure part way through, listed the same free
+  // period twice on the lease.
+  it('does not add the same free-rent window twice when the document is applied again', async () => {
+    await supabase.from('rent_abatements')
+      .insert({ lease_id: LEASE, owner_id: 'demo-user', start_date: '2025-03-01', end_date: '2025-05-31', kind: 'free', value: null });
+    const { data: before } = await supabase.from('rent_abatements').select('*').eq('lease_id', LEASE);
+
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await waitFor(async () => expect(Number((await getLease(LEASE)).square_footage)).toBe(NEW.square_footage));
+
+    const { data: after } = await supabase.from('rent_abatements').select('*').eq('lease_id', LEASE);
+    const key = (a) => `${a.start_date}|${a.end_date}|${a.kind}`;
+    expect(new Set(after.map(key)).size).toBe(after.length); // no duplicate windows
+    expect(after.length).toBeGreaterThanOrEqual(before.length);
   });
 
   // A badge saying "91% confident" beside a square footage read out of a file that is no

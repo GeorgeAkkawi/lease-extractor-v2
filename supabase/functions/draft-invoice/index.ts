@@ -151,12 +151,19 @@ Deno.serve(async (req) => {
     // that maintains it — the drafted one re-pricing months the resync deliberately left alone.
     const { data: estRows } = await supabase
       .from('lease_estimates')
-      .select('effective_date, cam_tax_annual, roof_annual')
+      .select('effective_date, cam_tax_annual, roof_annual, cam_tax_none')
       .eq('lease_id', lease_id);
-    const estSeries = (key: string, live: number) => {
+    // `actual` is what an era with NO estimate is billed at (0090) — the tenant's plain
+    // pro-rata share, which is exactly what the `cam`/`roof` fallbacks above resolve to when
+    // the lease carries no estimate. A row with cam_tax_none = true carries no figure and
+    // means precisely that era.
+    const estSeries = (key: string, live: number, actual: number, noneKey?: string) => {
       const dated = ((estRows ?? []) as any[])
-        .filter((e) => e && e[key] != null && e.effective_date)
-        .map((e) => ({ t: parseNoon(e.effective_date).getTime(), v: round(Number(e[key]) || 0) }))
+        .filter((e) => e && e.effective_date && (e[key] != null || (noneKey && e[noneKey] === true)))
+        .map((e) => ({
+          t: parseNoon(e.effective_date).getTime(),
+          v: e[key] != null ? round(Number(e[key]) || 0) : null,
+        }))
         .sort((a, b) => a.t - b.t);
       if (!dated.length) return () => live;
       const last = dated[dated.length - 1].t;
@@ -165,13 +172,18 @@ Deno.serve(async (req) => {
         const prior = dated.filter((r) => r.t <= ref);
         if (!prior.length) return live;
         const latest = prior[prior.length - 1];
-        return latest.t === last ? live : latest.v;
+        if (latest.t === last) return live;
+        return latest.v == null ? round(actual) : latest.v;
       };
     };
     // Gross leases read no estimate at all (the carve above is the answer), so the ledger has
     // nothing to say about them and the live carve stands for every month.
-    const camTaxForMonth = isGross ? () => round(cam + tax) : estSeries('cam_tax_annual', round(cam + tax));
-    const roofForMonth = isGross ? () => roof : estSeries('roof_annual', roof);
+    const actualCamTax = round(Number(cur.cam_amount || 0) + Number(cur.tax_amount || 0));
+    const actualRoof = cur.roof_responsible ? round(Number(cur.roof_amt || 0)) : 0;
+    const camTaxForMonth = isGross
+      ? () => round(cam + tax)
+      : estSeries('cam_tax_annual', round(cam + tax), actualCamTax, 'cam_tax_none');
+    const roofForMonth = isGross ? () => roof : estSeries('roof_annual', roof, actualRoof);
 
     // Per-month base abatement credit (mirrors abatement.js — strongest window wins).
     const { data: abs } = await supabase

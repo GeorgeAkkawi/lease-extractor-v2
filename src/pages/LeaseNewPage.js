@@ -199,7 +199,10 @@ export function initialFromExtraction(ex) {
 // TODAY (computed by the same back-fill resolver). Makes the step-ups visible on the
 // review screen so the "starting rent" in the form isn't mistaken for today's rent —
 // and surfaces when the document's schedule wasn't captured as dated steps.
-function SchedulePreview({ ex }) {
+// Exported for the render test. It is the one screen in the AI intake lane that computes
+// rather than displays, and it had an undeclared identifier in it for a full round because
+// nothing ever mounted it — see schedulePreview.test.js.
+export function SchedulePreview({ ex }) {
   const base = Number(val(ex.base_rent)) || 0;
   // Mirror the save path: fall the start back to the signing date, the end back to
   // start + term, and date the steps from rent commencement (after any leading free period).
@@ -214,6 +217,11 @@ function SchedulePreview({ ex }) {
   // save wouldn't write (buildScheduleFromExtraction, api.js).
   const plan = buildScheduleFromExtraction(ex, { baseRent: base, leaseStart: start, termEnd: end });
   const freeMo = plan.freeMonths;
+  // ⚠ Read off the plan, and keep the local. The free-rent note below refers to it, and
+  // when this preview was switched to the shared builder the old local was deleted while
+  // that reference survived — an undeclared identifier that throws only for a lease with a
+  // leading free-rent period, i.e. exactly the lease the note exists to explain.
+  const rentStart = plan.rentStart;
   const escs = plan.escalations.map((e) => ({ ...e, status: 'scheduled' }));
   // Lease-year steps with no printed date (they get real dates from the Lease start above,
   // at save). Only surfaced here when we couldn't date them yet (no extracted start).

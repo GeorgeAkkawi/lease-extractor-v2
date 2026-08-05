@@ -32,6 +32,11 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
     // Per-month charges and credits (0082) — the Ledger cells, the month panel and the
     // lease's tenant statement all read them.
     ['adjustments'],
+    // The dated estimate ledger (0089). It is READ by every screen that prices a month —
+    // the Financials breakdown, the Ledger grid, the reconcile — so a figure that writes a
+    // row here and doesn't invalidate it leaves those screens pricing from the ledger as it
+    // stood BEFORE the change. Missing since 0089 shipped.
+    ['leaseEstimates'],
     // The statement importer's match context carries each tenant's per-month owed, so a
     // charge must reach it or a deposit covering it reads as "over" (and can trip the
     // already-recorded collision guard).
@@ -59,6 +64,16 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
 export function settleLeaseScheduleChange(qc, leaseId) {
   for (const name of ['escalations', 'abatements', 'renewals']) {
     qc.invalidateQueries({ queryKey: leaseId ? [name, leaseId] : [name] });
+  }
+  // Three more that are keyed by something the caller doesn't hold, so they go by PREFIX:
+  //   escalationsByProperty — prefetch.js seeds the property-level step cache
+  //   extractionRaw         — keyed by lease_file_id; the lease page reads the document's
+  //                           own AI read from it (rent_renegotiation_months and friends)
+  //   leaseStatedEstimate   — same source, read by the Financials "stated on the lease" chip
+  // The last two matter specifically for a REPLACED document: the row is updated in place, so
+  // the key is unchanged while the content behind it is now a different lease's read.
+  for (const name of ['escalationsByProperty', 'extractionRaw', 'leaseStatedEstimate']) {
+    qc.invalidateQueries({ queryKey: [name] });
   }
 }
 

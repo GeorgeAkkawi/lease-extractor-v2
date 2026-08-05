@@ -20,6 +20,7 @@ import {
   isYearClosed, resyncLeaseBilling, resyncPropertyBilling,
   upsertExpenseRecord, createEscalation, deleteEscalation, listEscalations,
   applyEscalation, applyAddendum, createAddendum, deleteAddendum, getLease, getPropertyMonthlyRoll,
+  markMonthsPaidAllTenants,
 } from '../api';
 import { supabase } from '../supabaseClient';
 import { currentYear } from '../format';
@@ -118,6 +119,32 @@ describe('resyncYearBillingToEstimate', () => {
     const added = (await getMonthlyRent('lease-2', Y)).payments.filter((p) => !before.includes(p.id));
     expect(added.find((p) => p.period_month === 6).source).toBe('system');
     expect(added.find((p) => p.period_month === 7).source).toBe('manual');
+  });
+
+  // ── §6 ────────────────────────────────────────────────────────────────────────────────
+  // The Ledger's "✓ all" bypasses recordPayment and inserted its rows with NO source at all,
+  // leaving the column to 0088's default. Live Postgres filled 'system'; the demo mock, which
+  // applies no column defaults, left it undefined — and `every(p => p.source === 'system')`
+  // reads undefined as NOT system. So the two behaved oppositely and every test of the 0088
+  // rule ran only against the demo side. Stated explicitly now, so this assertion means the
+  // same thing in both places.
+  it('marking every tenant paid records SYSTEM marks, and they still follow the schedule', async () => {
+    const before = (await getMonthlyRent('lease-2', Y)).payments.map((p) => p.id);
+    await markMonthsPaidAllTenants('prop-1', Y, [9]);
+
+    const added = (await getMonthlyRent('lease-2', Y)).payments.filter((p) => !before.includes(p.id));
+    expect(added.length).toBeGreaterThan(0);
+    // The amount came off the schedule, not from a human — so it is a system mark, spelled out
+    // rather than inherited from a database default the mock doesn't apply.
+    for (const p of added) expect(p.source).toBe('system');
+
+    // …and being a system mark, it re-prices when the billed figure moves. That is the whole
+    // reason the classification matters.
+    await updateLease('lease-2', { est_cam_annual: 60000, est_tax_annual: 0 });
+    await resyncYearBillingToEstimate('lease-2', 'prop-1', Y);
+    const after = (await getMonthlyRent('lease-2', Y)).payments.filter((p) => p.period_month === 9);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((p) => p.source === 'system')).toBe(true);
   });
 
   it('prorates a mid-year lease: invoice total equals the sum of the (unequal) months', async () => {

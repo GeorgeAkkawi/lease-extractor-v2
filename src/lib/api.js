@@ -23,6 +23,7 @@ import { isValidCategory, bucketKey, defaultCategoryFor, isCapitalProne } from '
 import { lineCompleteness } from './dispositions';
 import { amortizationFor, canAmortize, assetKindInfo } from './depreciation';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
+import { isoDateOrNull } from './isoDate';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -837,19 +838,12 @@ export async function anchorLeaseSchedule(leaseId, startDate) {
 // is not NaN — V8 quietly rolls it to May 1 — so the shape regex plus an isNaN check let
 // an impossible date straight through to Postgres, which fails the save with `date/time
 // field value out of range`. Riders really do print those (Denny's Third Addendum says
-// "April 31, 2033"), so round-trip the parse and reject anything that comes back as a
-// different day. Same rule as realIsoDate() in _shared/rentSchedule.js, which guards the
-// edge functions; duplicated because the app build can't import across into supabase/.
-export function isoDateOrNull(v) {
-  if (typeof v !== 'string') return null;
-  const s = v.trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-  const d = new Date(`${s}T12:00:00`);
-  if (isNaN(d.getTime())) return null;
-  const [yy, mm, dd] = s.split('-').map(Number);
-  if (d.getFullYear() !== yy || d.getMonth() + 1 !== mm || d.getDate() !== dd) return null;
-  return s;
-}
+// "April 31, 2033").
+//
+// ⚠ The implementation MOVED to src/lib/isoDate.js — a module with no dependencies, so the
+// pure diff lib (newLeaseTerms.js) can guard its date fields without an import cycle back
+// into this file. Re-exported here so every existing importer keeps working unchanged.
+export { isoDateOrNull };
 
 // Shape AI-extracted escalation rows into rent_escalations inserts, computing the
 // new_base_rent for each step from the prior rent (shared by lease intake +
@@ -900,6 +894,13 @@ export function buildRenewals(renewals) {
       term_months: r.term_months ?? null,
       new_rent: r.new_rent ?? null,
       annual_escalation_pct: r.annual_escalation_pct ?? null,
+      // The option's year-by-year rent table (0071). This used to be dropped — the comment
+      // that justified it ("no schedule column → no migration") predates the column, and
+      // 0071 added exactly that. Without it a re-uploaded lease leaves the option with no
+      // schedule, so optionScheduleSteps has nothing to materialise when the landlord later
+      // confirms the renewal. Stored as the array the reader already speaks; the CHECK on the
+      // column requires an array, so an unusable read stores null rather than a bare object.
+      rent_schedule: Array.isArray(r.rent_schedule) && r.rent_schedule.length ? r.rent_schedule : null,
       notes,
     };
   });
@@ -1738,29 +1739,47 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
   // would "apply" it on the next load and write the OLD rent back over base_rent. The boundary
   // row is applied only once its date has arrived — a lease signed in August but commencing in
   // October keeps today's rent until October, and backfillLeaseToToday releases it on the day.
+  // ⚠ THE CLOSING ROW IS NOT ABOUT THE RENT ALONE. Its second job — pulling occupancyStart
+  // back — is needed whenever `lease_start` moves FORWARD, whatever the rent did. Gated on a
+  // rent change (as it first was), a renewal at the SAME rent commencing later wrote nothing:
+  // occupancyStart jumped to the new start, monthlyScheduleForYear marked every earlier month
+  // { owed: 0, outsideTerm: true }, and the resync rebuilt the year's invoice covering only
+  // the months from the new start. The payments survived (the zero-owed skip below), but they
+  // then read as an unexplained credit against a year the tenant no longer appeared to owe —
+  // the opposite of *"so that when statements come in the payments match"*.
   const boundaryIso = isoDateOrNull(patch.lease_start ?? lease.lease_start);
+  const oldStartIso = isoDateOrNull(lease.lease_start);
   const oldRent = Number(lease.base_rent) || 0;
   const newRent = Number(patch.base_rent ?? lease.base_rent) || 0;
+  const rentChanged = oldRent > 0 && newRent > 0 && Math.abs(newRent - oldRent) >= 0.005;
+  const startMovedForward = !!(oldStartIso && boundaryIso && boundaryIso > oldStartIso);
   let eraRows = [];
-  if (boundaryIso && oldRent > 0 && newRent > 0 && Math.abs(newRent - oldRent) >= 0.005) {
+  if (boundaryIso && oldRent > 0 && (rentChanged || startMovedForward)) {
     const existing = await listEscalations(leaseId);
     const lastApplied = existing
       .filter((e) => e.status === 'applied' && e.effective_date)
       .map((e) => String(e.effective_date)).sort().pop() || null;
     // The old rent's era began at the later of the old term start and its last step.
-    const closingIso = [isoDateOrNull(lease.lease_start), lastApplied].filter(Boolean).sort().pop() || null;
+    const closingIso = [oldStartIso, lastApplied].filter(Boolean).sort().pop() || null;
     // Same ±45-day rule buildRenewalScheduleSteps uses, so a boundary can't double-book a
     // step the new lease already prints on (or near) the same date.
     const dated = [...existing, ...escRows, ...optRows].filter((e) => e?.effective_date);
-    const near = (iso) => dated.some((e) => Math.abs(
+    const within45 = (list, iso) => list.some((e) => Math.abs(
       new Date(String(e.effective_date) + 'T12:00:00') - new Date(iso + 'T12:00:00')
     ) <= 45 * 86400000);
+    const near = (iso) => within45(dated, iso);
+    // ⚠ The CLOSING row is deduped only against APPLIED rows. A scheduled row near the old
+    // start says nothing about occupancy (occupancyStart reads applied rows only), so letting
+    // one suppress the closing row would re-open the hole this block exists to close.
+    const nearApplied = (iso) => within45(existing.filter((e) => e.status === 'applied' && e.effective_date), iso);
     const step = (date, rent) => ({ effective_date: date, escalation_type: 'manual', escalation_value: null, new_base_rent: rent });
 
     // Skipped when the new lease starts EARLIER than the old one — then there is no prior
     // era in the first place, and the new lease's own terms cover the whole span.
-    if (closingIso && closingIso < boundaryIso && !near(closingIso)) eraRows.push(step(closingIso, oldRent));
-    if (!near(boundaryIso)) eraRows.push(step(boundaryIso, newRent));
+    if (closingIso && closingIso < boundaryIso && !nearApplied(closingIso)) eraRows.push(step(closingIso, oldRent));
+    // The boundary row only exists to record a NEW RATE. A start that moved with the rent
+    // unchanged needs no second row saying the same figure twice.
+    if (rentChanged && !near(boundaryIso)) eraRows.push(step(boundaryIso, newRent));
 
     if (eraRows.length) {
       const todayIso = localDateIso(today);
@@ -1782,33 +1801,63 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
   // estimate is one scalar and raising it here re-prices January retroactively.
   if (boundaryIso && patch.est_cam_annual != null) {
     const priorEst = leaseCamTaxAnnual(lease);
-    const priorRoof = Number(lease.est_roof_annual);
+    // ⚠ `!= null`, NOT Number.isFinite(Number(...)). Number(null) is 0 and Number.isFinite(0)
+    // is true, so the old test wrote roof_annual: 0 for a lease that simply had no roof
+    // estimate. monthlyEstimates keeps a 0 (its filter is `!= null`), so that invented zero
+    // built a roof series where none should exist and priced every month before the boundary
+    // at NO roof — for a roof-responsible tenant, money missing from the Ledger and from the
+    // year-end true-up, showing up as a rent difference because base is a remainder.
+    const priorRoof = lease.est_roof_annual != null ? Number(lease.est_roof_annual) : null;
+    const roofVal = Number.isFinite(priorRoof) ? priorRoof : null;
     const existingEst = await listLeaseEstimates(leaseId);
     const closingEstIso = [isoDateOrNull(lease.lease_start), ...existingEst.map((e) => String(e.effective_date))]
       .filter(Boolean).sort().pop() || null;
     const rowsToAdd = [];
-    if (closingEstIso && closingEstIso < boundaryIso && priorEst != null) {
-      rowsToAdd.push({
-        effective_date: closingEstIso,
-        cam_tax_annual: priorEst,
-        roof_annual: Number.isFinite(priorRoof) ? priorRoof : null,
-        source: 'new_lease', note: 'Estimate under the previous lease',
-      });
+    // THE CLOSING ROW IS WRITTEN EVEN WHEN THERE WAS NO PRIOR ESTIMATE (0090). That is the
+    // commonest shape of this change — a lease going from "—" to a figure — and it used to be
+    // the one case that got no closing row at all, so every month back to January was
+    // re-billed at the new estimate. Those months were billed at the tenant's ACTUAL share
+    // (billedComponents falls back to cam_amount when no estimate is set), and that is what
+    // cam_tax_none tells monthlyEstimates to keep billing them at.
+    if (closingEstIso && closingEstIso < boundaryIso) {
+      rowsToAdd.push(priorEst != null
+        ? {
+          effective_date: closingEstIso,
+          cam_tax_annual: priorEst, cam_tax_none: false, roof_annual: roofVal,
+          source: 'new_lease', note: 'Estimate under the previous lease',
+        }
+        : {
+          effective_date: closingEstIso,
+          cam_tax_annual: null, cam_tax_none: true, roof_annual: roofVal,
+          source: 'new_lease', note: 'No CAM & tax estimate under the previous lease',
+        });
     }
     rowsToAdd.push({
       effective_date: boundaryIso,
-      cam_tax_annual: Number(patch.est_cam_annual),
-      roof_annual: Number.isFinite(Number(lease.est_roof_annual)) ? Number(lease.est_roof_annual) : null,
+      cam_tax_annual: Number(patch.est_cam_annual), cam_tax_none: false, roof_annual: roofVal,
       source: 'new_lease', note: null,
     });
+    // NOT swallowed. This write is half of the rule the era rows above implement: if it fails
+    // and the rent rows don't, January reads the old rent and the new CAM — a half-applied
+    // version of the very thing this round shipped, with nothing on screen to say so. The
+    // caller reports the failure and the dialog names it.
     await rows(
       supabase.from('lease_estimates').insert(rowsToAdd.map((r) => ({ ...r, lease_id: leaseId, owner_id: uid })))
-    ).catch(() => null);
+    );
   }
 
   // Same rule one level along: a PENDING option is a right under the old lease and the new
   // one restates it; an exercised or lapsed one is a thing that happened.
   const renRows = built.renewals;
+  // ⚠ CARRY THE NOTICE LEAD ACROSS THE REPLACEMENT (0072). notice_lead_n / notice_lead_unit
+  // are a LANDLORD setting — how far ahead he wants warning — not a figure any document
+  // states, so buildRenewals cannot produce them and a delete-then-insert simply lost them.
+  // Matched by position: options are ordered the same way the document lists them, so option
+  // 1's lead follows option 1. A new lease granting more options leaves the extras unset,
+  // which is the honest answer for an option that didn't exist before.
+  const priorPending = (await listRenewals(leaseId))
+    .filter((r) => r.status === 'pending')
+    .sort(cmpRenewal);
   await rows(
     supabase.from('renewal_options').delete()
       .eq('lease_id', leaseId).eq('status', 'pending')
@@ -1816,7 +1865,12 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
   if (renRows.length) {
     await rows(
       supabase.from('renewal_options').insert(
-        renRows.map((r) => ({ ...r, lease_id: leaseId, owner_id: uid, status: 'pending' }))
+        [...renRows].sort(cmpRenewal).map((r, i) => ({
+          ...r,
+          notice_lead_n: priorPending[i]?.notice_lead_n ?? null,
+          notice_lead_unit: priorPending[i]?.notice_lead_unit ?? null,
+          lease_id: leaseId, owner_id: uid, status: 'pending',
+        }))
       )
     );
   }
@@ -1824,7 +1878,15 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
   // Abatements are ADDED, never cleared — unlike a scheduled step, an abatement window may
   // already have credited an issued invoice, and deleting it would leave that credit
   // unexplained. A stale window is visible on the lease; an orphaned credit is not.
-  const abRows = built.abatements;
+  // …but an identical window is not added twice. Applying the same document again — after a
+  // failure part way through, or a corrected copy of the same lease — used to append a second
+  // copy of every free-rent window. Harmless to the money (abatementForMonth takes the
+  // strongest overlapping window and leadingFreeMonths takes the max, never the sum) but it
+  // leaves the lease page listing the same free period twice, which reads as a mistake.
+  const existingAb = await listAbatements(leaseId);
+  const abKey = (a) => `${a.start_date}|${a.end_date}|${a.kind}|${a.value ?? ''}`;
+  const haveAb = new Set(existingAb.map(abKey));
+  const abRows = built.abatements.filter((a) => !haveAb.has(abKey(a)));
   if (abRows.length) {
     await rows(
       supabase.from('rent_abatements').insert(
@@ -2530,28 +2592,39 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
     const estFrom = isoDateOrNull(est.effectiveDate) || isoDateOrNull(addendum.amendment_date);
     if (estFrom) {
       const priorEst = leaseCamTaxAnnual(lease);
-      const priorRoof = Number(lease?.est_roof_annual);
+      // `!= null`, not Number.isFinite(Number(...)) — see applyNewLeaseTerms for why the old
+      // test wrote an invented roof_annual: 0 for a lease that carried no roof estimate.
+      const priorRoofRaw = lease?.est_roof_annual != null ? Number(lease.est_roof_annual) : null;
+      const priorRoof = Number.isFinite(priorRoofRaw) ? priorRoofRaw : null;
       const existingEst = await listLeaseEstimates(leaseId);
       const closeAt = [isoDateOrNull(lease?.lease_start), ...existingEst.map((e) => String(e.effective_date))]
         .filter(Boolean).sort().pop() || null;
       const estRows = [];
-      if (closeAt && closeAt < estFrom && priorEst != null) {
-        estRows.push({
-          effective_date: closeAt, cam_tax_annual: priorEst,
-          roof_annual: Number.isFinite(priorRoof) ? priorRoof : null,
-          source: 'addendum', addendum_id: addendum.id, note: 'Estimate before this rider',
-        });
+      // Written even with no prior figure (0090): a rider that PRICES an estimate onto a lease
+      // that had none must not re-bill the earlier months, which were billed at the actual.
+      if (closeAt && closeAt < estFrom) {
+        estRows.push(priorEst != null
+          ? {
+            effective_date: closeAt, cam_tax_annual: priorEst, cam_tax_none: false,
+            roof_annual: priorRoof,
+            source: 'addendum', addendum_id: addendum.id, note: 'Estimate before this rider',
+          }
+          : {
+            effective_date: closeAt, cam_tax_annual: null, cam_tax_none: true,
+            roof_annual: priorRoof,
+            source: 'addendum', addendum_id: addendum.id, note: 'No CAM & tax estimate before this rider',
+          });
       }
       estRows.push({
         effective_date: estFrom,
         cam_tax_annual: patch.est_cam_annual != null ? Number(patch.est_cam_annual) : priorEst,
-        roof_annual: patch.est_roof_annual != null ? Number(patch.est_roof_annual)
-          : (Number.isFinite(priorRoof) ? priorRoof : null),
+        cam_tax_none: patch.est_cam_annual == null && priorEst == null,
+        roof_annual: patch.est_roof_annual != null ? Number(patch.est_roof_annual) : priorRoof,
         source: 'addendum', addendum_id: addendum.id, note: addendum.label || null,
       });
       await rows(
         supabase.from('lease_estimates').insert(estRows.map((r) => ({ ...r, lease_id: leaseId, owner_id: uid })))
-      ).catch(() => null);
+      );
     }
     await updateLease(leaseId, patch);
     // ⚠ The resync used to fire HERE, before the schedule was rolled forward. It now runs
@@ -3619,6 +3692,16 @@ export async function markMonthsPaidAllTenants(propertyId, year, months, opts = 
     note: opts.note || null,
     period_month: m,
     owner_id: owner,
+    // ⚠ STATED, never left to the column default (0088). The amount above is `gap` — the
+    // app pricing the month off the schedule — so it is a 'system' mark, exactly like
+    // markMonthPaid's tick, and it must follow a billed figure that later moves.
+    //
+    // This insert bypasses recordPayment, so it used to write no source at all. Postgres
+    // filled 'system' from the default while the demo mock (which applies no defaults) left
+    // it undefined — and `group.every(p => p.source === 'system')` reads undefined as NOT
+    // system. The two behaved oppositely, and every test asserting the 0088 rule ran only
+    // against the demo side.
+    source: opts.source || 'system',
   }));
   await rows(supabase.from('payments').insert(payRows));
   return { paid: payRows.length, tenants: leasesTouched.size, total: roll.length };

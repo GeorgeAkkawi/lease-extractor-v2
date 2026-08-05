@@ -419,6 +419,20 @@ const functions = {
             reviewed_at: new Date().toISOString(),
             source: 'extract_lease',
           },
+          // The analyst's plain-English read of the whole document. The live extractor has
+          // always returned one; the mock didn't, so the "Read the AI analyst's notes" panel
+          // was undemonstrable in demo on both intake screens. The trailing VERDICTS line is
+          // machine-readable and stripped before display (stripVerdicts, analystBrief.js) —
+          // it is here precisely so that stripping is exercised.
+          analysis_brief:
+            'WHAT THIS DOCUMENT CHANGES\n'
+            + 'A new five-year triple-net lease for the same premises, commencing 1 March 2025 at '
+            + '$96,000 per annum with 3% annual escalations. The tenant takes 4,200 sq ft, up from '
+            + 'the 3,000 sq ft under the previous lease.\n\n'
+            + 'WHAT TO CHECK\n'
+            + 'Estimated CAM is quoted per square foot ($3.50/SF), so the annual figure moves with '
+            + 'the premises size. One five-year renewal option is priced year by year in Exhibit D.\n'
+            + 'VERDICTS: lease_type=net',
         },
         // One-time plain-text copy cached on the lease for the AI assistant.
         full_text: [

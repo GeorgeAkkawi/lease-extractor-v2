@@ -16,6 +16,8 @@
 // Pure on purpose — no supabase, no React. The apply step (applyNewLeaseTerms, api.js) does
 // the writing and the billing carry-through; this only decides what is different.
 
+import { isoDateOrNull } from './isoDate';
+
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
@@ -79,8 +81,12 @@ function same(kind, a, b) {
  * reports CAM and tax separately (a lease usually prints them separately), so they are
  * added here, in the one place, rather than at each reader.
  *
- * Returns null when the document prices neither, which is how "the document is silent"
- * stays distinguishable from "the document says zero".
+ * Returns null when the document prices neither — and ALSO when it prices both at zero.
+ * That second case is deliberate, not an oversight the docstring used to paper over: the AI
+ * returns `value: null` for a figure it couldn't find, so a literal 0 is far likelier to be a
+ * misread than a lease genuinely stating no CAM at all — and treating it as real would zero a
+ * tenant's whole CAM & tax billing off one bad read. A lease that truly carries none is
+ * entered by hand, deliberately, on the lease page.
  */
 export function statedCamTaxAnnual(extraction) {
   const read = (k) => num(val(extraction?.[k]));
@@ -138,6 +144,41 @@ export function newLeaseChanges({ lease, proposed, extraction = null, plan = nul
     // lease column is annual dollars, so compare annuals.
     est_cam_annual: statedCamTaxAnnual(extraction),
   };
+  // ── DATES THE DOCUMENT DIDN'T PRINT ───────────────────────────────────────────────────
+  // `proposed` comes from initialFromExtraction, which is written for the new-tenant INTAKE
+  // FORM: when a lease prints no commencement date (common — it's often a formula, "120 days
+  // after delivery"), it falls back to the SIGNING date, and derives the end from start +
+  // term. Its own comment calls those "SUGGESTED, editable" — true on a form the landlord
+  // then edits, false here, where the review is a read-only table with no fields.
+  //
+  // George, 2026-08-05, asked what this dialog should do: **don't apply a guessed date at
+  // all.** So they are dropped, and reported so the dialog can say which and why. This is
+  // not fussiness — lease_start becomes boundaryIso in applyNewLeaseTerms, the date the whole
+  // rent-era and estimate-era split hangs off, and moving it forward is what takes the
+  // earlier months out of term.
+  const guessedDates = [];
+  if (text(stated.lease_start) !== '' && text(val(extraction?.lease_start)) === '') {
+    guessedDates.push({ key: 'lease_start', label: 'Lease start', from: 'the signing date', value: stated.lease_start });
+    delete stated.lease_start;
+  }
+  if (text(stated.lease_termination_date) !== '' && text(val(extraction?.lease_termination_date)) === '') {
+    guessedDates.push({ key: 'lease_termination_date', label: 'Lease end', from: 'the stated term length', value: stated.lease_termination_date });
+    delete stated.lease_termination_date;
+  }
+  // ── DATES THAT AREN'T REAL DAYS ───────────────────────────────────────────────────────
+  // A date field goes into the patch verbatim and straight into a Postgres `date` column, so
+  // "2033-04-31" — which models really do return, and which V8 parses happily by rolling to
+  // May 1 — fails the ENTIRE apply with `date/time field value out of range`. There are no
+  // fields in this dialog to correct it in, so the lease simply could not be applied at all.
+  // Drop the unusable value, keep the rest of the document, and name what was printed.
+  const unusableDates = [];
+  for (const f of FIELDS) {
+    if (f.kind !== 'date') continue;
+    const raw = stated[f.key];
+    if (text(raw) === '' || isoDateOrNull(String(raw).trim())) continue;
+    unusableDates.push({ key: f.key, label: f.label, printed: String(raw) });
+    delete stated[f.key];
+  }
   const fields = [];
   for (const f of FIELDS) {
     const to = stated[f.key];
@@ -154,6 +195,11 @@ export function newLeaseChanges({ lease, proposed, extraction = null, plan = nul
   }
   return {
     fields,
+    // Dates the document didn't print, and dates it printed that aren't real days. Both are
+    // things the landlord must be TOLD about — a figure silently absent from the table would
+    // read as "the new lease agrees with what's on file", which is the opposite of the truth.
+    guessedDates,
+    unusableDates,
     // Whether the stored invoice has to be rebuilt afterwards — the asymmetry in §1: the
     // ledger and the breakdown rebuild from live data on their own, the invoice does not.
     touchesBilling: fields.some((f) => f.billed),
@@ -190,7 +236,11 @@ export function newLeaseTargets(lease, changes) {
 
 // Nothing to apply at all — worth its own answer so the dialog can say "this document says
 // the same as what's already on the lease" rather than showing an empty table.
+// ⚠ `undated` counts. A document whose only content is a rent table printed by lease year
+// with no date the lease start can place used to read as "nothing to update" — so the dialog
+// offered Done and the warning naming those dropped steps never rendered at all.
 export const hasNoChanges = (changes) =>
   !changes
   || (changes.fields.length === 0 && !changes.escalations && !changes.renewals
-      && !changes.abatements && !changes.optionSteps);
+      && !changes.abatements && !changes.optionSteps && !changes.undated
+      && !(changes.guessedDates || []).length && !(changes.unusableDates || []).length);
