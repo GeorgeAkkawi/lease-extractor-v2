@@ -14,6 +14,68 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **"Upload new lease" now moves the figures too — read, show the diff, then apply,
+  with the bill rebuilt behind it** (George, correcting the round below: *"well if i replace a lease
+  with a new one id want the figures to change based on the new lease thats the point so it should say
+  'upload new lease'."*). Deployed: frontend Cloudflare **`6a015dcc`**, demo worker **`567286c1`**.
+  **No migration, no edge-function change.** Tests **1679/1679** (was 1674).
+  - **The earlier cut was wrong and he was right.** It swapped the document, re-read the text and
+    deliberately left every figure alone — which leaves the app showing one rent while the document
+    beside it says another. A new lease IS new terms. The button now says what it does, and the flow
+    has two stages that must not be collapsed into one:
+    - **READ** — the file is stored, the lease is pointed at it, `extract-lease` returns the terms AND
+      the text in ONE paid call (the second `cache-lease-text` pass is now only a fallback for when a
+      big scan returns terms with no text). Nothing on the lease's figures moves.
+    - **APPLY** — only after a line-by-line table of what changes, **old beside new**, with the four
+      billed rows (rent, size, both term dates) marked as the ones that rebuild an invoice. Base rent
+      and square footage feed the invoice, the ledger and every tenant's share of CAM (§1): *"the
+      figures change"* must never mean *"the figures changed and nobody said which"*.
+    - **The object he approves IS the object written.** `applyNewLeaseTerms` applies `changes.fields`
+      from `newLeaseChanges` — the very array the table rendered — rather than re-deriving from the
+      extraction, so the two cannot drift.
+  - **What applying does, and the reasoning for each:**
+    - Scalar fields from the diff. **`tenant_name` is deliberately NOT among them** — a new lease for
+      the same tenant is the case George named, and a document printing the trading name differently
+      ("Rose's Salon" vs "Roses Hair Salon LLC") would silently rename the tenant across every screen,
+      invoice and email. Renaming stays a deliberate act.
+    - **Scheduled** rent steps are replaced by the new lease's; **applied** ones are untouched —
+      rewriting a step that already happened is how a past invoice stops matching the ledger that
+      explains it. Same rule for **pending** renewal options vs exercised/lapsed ones.
+    - Abatements are **added, never cleared**: unlike a scheduled step, an abatement window may already
+      have credited an issued invoice, and deleting it would leave that credit unexplained.
+    - Then the §1 carry-through — `resyncLeaseBilling`, or `resyncPropertyBilling` when the size moved
+      and the property has no `building_sf` (the denominator is Σ leased SF, so re-sizing one tenant
+      re-splits every tenant) — followed by `settleBillingChange` so the screens repaint. Both skip a
+      closed year, and the dialog says so before he commits.
+    - A `lease_replaced` history event carrying every field's **from → to**. That is a new event type,
+      so all three registries were filled in the same commit: `EVENT_LABEL`, `EVENT_BADGE`
+      (`HistoryPage.js`) and `STORY_EVENTS` (`tenantStory.js`) — §4.
+  - **The escape hatch:** *"Keep the current figures"* takes the new document and its text and leaves
+    every number alone. And the **middle state is named**: if the read fails, the dialog says the file
+    is now the lease's document while the text and every figure are still the previous lease's.
+  - **A thing worth knowing before it looks like a bug.** After applying, City Dental's rent reads
+    **$98,880, not the $96,000 printed on the new lease** — the new lease prices its own 3% step from
+    2026-03-01, which is in the past, so `backfillLeaseToToday` applies it on the way out exactly as it
+    does for a rider. The committed rent is the schedule brought up to today, not the figure on page 1.
+    A test asserts the $98,880 with that reasoning written beside it.
+  - **Files:** new `src/lib/newLeaseTerms.js` (the pure diff) · `api.js`
+    (`uploadNewLeaseDocument` + `applyNewLeaseTerms`, replacing `replaceLeaseFile`) · `LeaseDocs.js`
+    (two-stage `NewLeaseModal`) · `HistoryPage.js` · `tenantStory.js` · `App.css` (`.terms-diff`) ·
+    `leaseReplaceDoc.test.js` rewritten (14).
+  - **Verified on the deployed demo:** the diff read `Base rent $84,000 → $96,000 [BILLED]`,
+    `Square footage 3,000 → 4,200 [BILLED]`, both dates and Terms; applying reported *"5 figures
+    updated, 1 rent step-up and 1 renewal option on file"* and *"this tenant's bill for the current
+    year has been rebuilt"*. **Zero console errors.** One grammar slip caught in the drive-through
+    ("1 rent step-up **replace**") and fixed.
+  - **⚠ The stale-bundle trap bit again, harder.** A cache-busting query string was NOT enough this
+    time — the browser served the old HTML for a URL it had never seen. Confirm what the SERVER has
+    (`curl … | grep assets/index-`) before suspecting the deploy, and drive with
+    `Network.setCacheDisabled` via CDP rather than query strings.
+  - **Not bundled in / follow-up:** `LeaseDocs.js` imports `initialFromExtraction` from
+    `pages/LeaseNewPage` — honest reuse of an exported, tested function and there is no import cycle
+    (LeaseNewPage pulls LeaseForm/LeaseUpload, never LeaseDocs), but a component importing a page is a
+    smell. Moving it into `lib/` is a tidy-up for whoever is next in that file.
+
 - **2026-08-04** — **Replace a lease's document and re-read it in one action, and a tenant with no
   email finally looks like one on the announcements list** (George: *"double check that when a lease is
   reuploaded (i dont see the reupload button that we talked about because sometimes new leases are made

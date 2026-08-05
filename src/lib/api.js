@@ -1404,22 +1404,28 @@ export async function deleteLeaseFile(docId, leaseId) {
   if (leaseId) await updateLease(leaseId, { lease_text: null });
 }
 
-// Swap the document a lease is built on, and re-read it in the same breath. George,
-// 2026-08-04: *"when a lease is reuploaded … it is recached and lets the user know what
-// will be happening and give them an option to remove the old lease or keep it on file,
-// but you should automatically recache with the new lease and let them know."*
+// Upload a NEW lease over the one on file, read it, and hand back what it would change.
+// George, 2026-08-04: *"when a lease is reuploaded … it is recached and lets the user know
+// what will be happening and give them an option to remove the old lease or keep it on
+// file, but you should automatically recache with the new lease and let them know"* — then,
+// correcting the first cut: *"well if i replace a lease with a new one id want the figures
+// to change based on the new lease thats the point so it should say 'upload new lease'."*
+//
+// He is right, and the first version was wrong: it swapped the document and re-read the
+// text but left every figure alone, so the app would show one rent and the document beside
+// it would say another. A new lease IS new terms.
+//
+// This function stops at READING. It writes the file, the wiring and the text — never a
+// figure. What it changes is returned for the caller to show, and applyNewLeaseTerms below
+// is what commits it, after the landlord has seen the list. That split is deliberate:
+// base rent and square footage are billed figures (CLAUDE.md §1), and "the figures change"
+// must never mean "the figures changed and nobody said which".
 //
 // Before this there was no way to do it at all: the panel offered "Add a file" ONLY when
 // the lease had none, and a file added that way was invisible to cache-lease-text, which
 // reads leases.lease_file_id → lease_files.storage_path and never looks at the documents
 // registry. So a second upload changed the list and nothing else — the assistant kept
 // answering out of the old document with no sign anything had happened.
-//
-// ⚠ IT DOES NOT RE-EXTRACT THE LEASE'S TERMS, and that is deliberate. Rent, dates, square
-// footage, escalations and renewal options stay exactly as they are. Re-running extraction
-// here would move billed figures off the back of a file drop — no review screen, no
-// confirmation — and the money spine (CLAUDE.md §1) must never move that way. The dialog
-// says so in as many words, and a genuinely new lease is entered as a new lease.
 //
 // ⚠ THE lease_files ROW IS UPDATED IN PLACE rather than replaced, and that is the whole
 // trick. `extraction_raw` on that row still feeds getLeaseStatedEstimate (the CAM / tax
@@ -1430,7 +1436,7 @@ export async function deleteLeaseFile(docId, leaseId) {
 // Order matters: the new file is stored, wired up and registered BEFORE anything is
 // deleted, so a failure halfway through leaves the landlord with more than he started
 // with rather than less.
-export async function replaceLeaseFile({ leaseId, file, oldDocId = null, keepOld = true }) {
+export async function uploadNewLeaseDocument({ leaseId, file, oldDocId = null, keepOld = true }) {
   if (!leaseId) throw new Error('A lease is required.');
   validateUploadFile(file);
   const uid = await ownerId();
@@ -1473,10 +1479,141 @@ export async function replaceLeaseFile({ leaseId, file, oldDocId = null, keepOld
   // The old copy goes only if he said so, and only once the new one is safely in place.
   if (!keepOld && oldDocId) await deleteDocument(oldDocId);
 
-  // force, because the lease still holds the PREVIOUS document's transcript and the
-  // "don't overwrite a usable copy" guard would otherwise skip the whole point of this.
-  const result = await cacheLeaseText(leaseId, { force: true });
-  return { storage_path: path, lease_file_id: leaseFileId, ...(result || {}) };
+  // ONE read does both jobs — the same call the import screen makes. extract-lease returns
+  // the terms AND the plain text, so re-reading the document a second time through
+  // cache-lease-text would be a second paid pass over the identical file.
+  const { extraction, full_text } = await invokeFunction('extract-lease', { lease_file_id: leaseFileId });
+
+  let length = 0;
+  const fresh = (full_text || '').trim();
+  if (fresh) {
+    await updateLease(leaseId, { lease_text: fresh });
+    length = fresh.length;
+  } else {
+    // No text came back with the terms (it happens on a big scan). Fall back to the
+    // dedicated transcriber, forced — the lease still holds the PREVIOUS document's
+    // transcript, and its "don't overwrite a usable copy" guard would otherwise skip the
+    // one thing that has to happen here.
+    const cached = await cacheLeaseText(leaseId, { force: true }).catch(() => null);
+    length = Number(cached?.length) || 0;
+  }
+
+  return { storage_path: path, lease_file_id: leaseFileId, extraction: extraction || null, length };
+}
+
+// Commit the new lease's terms — the half that moves money, kept separate from the read so
+// nothing is written until the landlord has seen the list of what changes.
+//
+// `changes.fields` comes straight from newLeaseChanges (src/lib/newLeaseTerms.js), which is
+// what the dialog rendered. Applying THAT rather than re-deriving from the extraction is
+// deliberate: what he approved and what gets written are the same object, so the two can't
+// drift apart.
+//
+// ── The carry-through (CLAUDE.md §1) ─────────────────────────────────────────────────────
+// The Ledger and the Financials breakdown build UP from live data, so they follow a rent or
+// size change on their own. THE STORED INVOICE DOES NOT — it is a frozen copy. So a change
+// to base rent, square footage or either term date ends in a resync, and which resync
+// depends on whether the property has a building size:
+//
+//   building_sf set   → the denominator is fixed; only this tenant's share moved.
+//   building_sf null  → the denominator is Σ leased SF; re-sizing one tenant re-splits
+//                       EVERY tenant on the property.
+//
+// Both skip a closed year, so a bill already sent can't move under the landlord.
+export async function applyNewLeaseTerms({ leaseId, changes, extraction, today = new Date() }) {
+  const uid = await ownerId();
+  const lease = await getLease(leaseId);
+  if (!lease) throw new Error('That lease no longer exists.');
+
+  const NUMERIC = new Set(['base_rent', 'square_footage', 'security_deposit']);
+  const patch = {};
+  for (const f of changes?.fields || []) {
+    patch[f.key] = NUMERIC.has(f.key) ? Number(f.to) : (f.to === '' ? null : f.to);
+  }
+  if (Object.keys(patch).length) await updateLease(leaseId, patch);
+
+  const baseRent = patch.base_rent ?? lease.base_rent;
+  const rentStart = patch.lease_start ?? lease.lease_start;
+
+  // A new lease's rent schedule supersedes the old one's. Only SCHEDULED steps go — a step
+  // already applied is history, and rewriting history is how a past invoice stops matching
+  // the ledger that explains it.
+  const escRows = buildEscalations(baseRent, extraction?.escalations, rentStart);
+  await rows(
+    supabase.from('rent_escalations').delete()
+      .eq('lease_id', leaseId).eq('status', 'scheduled')
+  );
+  if (escRows.length) {
+    await rows(
+      supabase.from('rent_escalations').insert(
+        escRows.map((e) => ({ ...e, lease_id: leaseId, owner_id: uid, status: 'scheduled' }))
+      )
+    );
+  }
+
+  // Same rule one level along: a PENDING option is a right under the old lease and the new
+  // one restates it; an exercised or lapsed one is a thing that happened.
+  const renRows = buildRenewals(extraction?.renewal_options);
+  await rows(
+    supabase.from('renewal_options').delete()
+      .eq('lease_id', leaseId).eq('status', 'pending')
+  );
+  if (renRows.length) {
+    await rows(
+      supabase.from('renewal_options').insert(
+        renRows.map((r) => ({ ...r, lease_id: leaseId, owner_id: uid, status: 'pending' }))
+      )
+    );
+  }
+
+  // Abatements are ADDED, never cleared — unlike a scheduled step, an abatement window may
+  // already have credited an issued invoice, and deleting it would leave that credit
+  // unexplained. A stale window is visible on the lease; an orphaned credit is not.
+  const abRows = buildAbatements(extraction?.abatements);
+  if (abRows.length) {
+    await rows(
+      supabase.from('rent_abatements').insert(
+        abRows.map((a) => ({ ...a, lease_id: leaseId, owner_id: uid }))
+      )
+    );
+  }
+
+  const moved = (changes?.fields || []).map((f) => f.label).join(', ');
+  await logHistoryEvent({
+    property_id: lease.property_id || null, lease_id: leaseId, type: 'lease_replaced',
+    tenant_name: lease.tenant_name || null,
+    description: `New lease document applied${moved ? ` — updated ${moved}` : ''}`,
+    event_date: localDateIso(today),
+    meta: {
+      fields: (changes?.fields || []).map((f) => ({ key: f.key, from: f.from ?? null, to: f.to })),
+      escalations: escRows.length, renewals: renRows.length, abatements: abRows.length,
+    },
+  });
+
+  // The invoice does not rebuild itself. Last, so one settle covers a rent change, a resize
+  // and a new term together rather than firing once per effect.
+  let resynced = false;
+  const sizeChanged = (changes?.fields || []).some((f) => f.key === 'square_footage');
+  if (changes?.touchesBilling && lease.property_id) {
+    const year = Number(localDateIso(today).slice(0, 4));
+    const property = await getProperty(lease.property_id).catch(() => null);
+    if (sizeChanged && !(Number(property?.building_sf) > 0)) {
+      await resyncPropertyBilling(lease.property_id, year);
+    } else {
+      await resyncLeaseBilling(leaseId, lease.property_id, year);
+    }
+    resynced = true;
+  }
+
+  await backfillLeaseToToday(leaseId, today);
+  return {
+    fields: (changes?.fields || []).length,
+    escalations: escRows.length,
+    renewals: renRows.length,
+    abatements: abRows.length,
+    resynced,
+    propertyId: lease.property_id || null,
+  };
 }
 
 // The same rule one level down: a rider's file and its cached transcription are one

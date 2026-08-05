@@ -1411,6 +1411,18 @@ textarea.text-input{resize:vertical;min-height:90px}
 .doc-choice:hover{background:var(--panel-2)}
 .doc-choice span{display:flex;flex-direction:column;font-size:13px;line-height:1.35}
 .doc-choice small{font-size:11.5px;margin-top:2px}
+/* What a newly-uploaded lease would change, old beside new. The BILLED rows are marked,
+   because "the rent moved" and "the contact name moved" are not the same size of event —
+   one of them rebuilds an invoice. */
+.terms-diff{width:100%;border-collapse:collapse;font-size:13px}
+.terms-diff th,.terms-diff td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.terms-diff thead th{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border)}
+.terms-diff tbody th{font-weight:600;width:34%}
+.terms-diff .was{color:var(--muted);text-decoration:line-through}
+.terms-diff .now{font-weight:700}
+.terms-diff tr.billed .now{color:var(--accent)}
+.terms-extra{margin:12px 0 0;padding-left:17px}
+.terms-extra li{font-size:12.5px;line-height:1.5;margin:4px 0}
 
 .doc-list{border-top:1px solid var(--hair);margin-top:14px;padding-top:12px}
 /* The lease panel stacks two blocks of the SAME shape — LEASE then RIDERS (George,

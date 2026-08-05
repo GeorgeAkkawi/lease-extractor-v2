@@ -23,7 +23,8 @@
 // Events that belong in a tenant's story — things that happened TO the tenancy.
 export const STORY_EVENTS = [
   'tenant_assigned', 'term_extended', 'premises_resized', 'renewal_confirmed', 'renewal_declined',
-  'renewal_reopened', 'rent_abated', 'rent_stepped', 'lease_created', 'insurance_requested',
+  'renewal_reopened', 'rent_abated', 'rent_stepped', 'lease_created', 'lease_replaced',
+  'insurance_requested',
 ];
 
 // Bookkeeping — things that happened to the BOOKS. Real records worth keeping, but they

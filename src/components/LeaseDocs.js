@@ -1,7 +1,13 @@
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { listDocuments, deleteDocument, deleteLeaseFile, updateLease, uploadDoc, signDocUrl, replaceLeaseFile } from '../lib/api';
-import { fmtDate } from '../lib/format';
+import {
+  listDocuments, deleteDocument, deleteLeaseFile, updateLease, uploadDoc, signDocUrl,
+  uploadNewLeaseDocument, applyNewLeaseTerms, getLease,
+} from '../lib/api';
+import { fmtDate, money } from '../lib/format';
+import { initialFromExtraction } from '../pages/LeaseNewPage';
+import { newLeaseChanges, hasNoChanges } from '../lib/newLeaseTerms';
+import { settleBillingChange } from '../lib/invalidate';
 import { useConfirm } from './ConfirmDialog';
 
 // The lease's own document, in exactly the shape a rider has — George, 2026-08-04:
@@ -180,13 +186,17 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
               </button>
             )}
             {/* The control George couldn't find, because it did not exist: the row offered
-                "Add a file" only while the lease had NONE. */}
+                "Add a file" only while the lease had NONE. Named for what it is — George,
+                2026-08-04: *"if i replace a lease with a new one id want the figures to
+                change based on the new lease thats the point so it should say 'upload new
+                lease'"* — because "Replace" sounded like swapping a file, and this updates
+                the lease's terms. */}
             {newest && (
               <button
                 type="button" className="ghost btn-sm" disabled={busy}
-                title="Upload a newer copy of this lease. Amlak re-reads it and replaces the saved text; the lease’s own figures don’t change."
+                title="Upload a new lease for this tenant. Amlak reads it, shows you what changes, and updates the lease's terms once you confirm."
                 onClick={() => replaceRef.current?.click()}
-              >Replace</button>
+              >Upload new lease</button>
             )}
             <span className="doc-act2">
               {newest ? (
@@ -242,10 +252,10 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
       />
       <input
         ref={replaceRef} type="file" accept=".pdf,.docx,image/*" style={{ display: 'none' }}
-        onChange={onReplacePicked} aria-label="Replace this lease's document"
+        onChange={onReplacePicked} aria-label="Upload a new lease for this tenant"
       />
       {pending && (
-        <ReplaceLeaseModal
+        <NewLeaseModal
           leaseId={leaseId}
           file={pending}
           current={newest}
@@ -269,52 +279,96 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
   );
 }
 
-// Replacing the document a lease is read from, with the two things George asked for around
-// it: it says what is about to happen BEFORE it happens, and it asks what to do with the
-// old file rather than deciding for him.
+// Uploading a NEW lease for a tenant who already has one — the thing George actually wanted
+// when he asked for a re-upload button: *"if i replace a lease with a new one id want the
+// figures to change based on the new lease thats the point."*
 //
-// It also reports the outcome in the only terms that mean anything here — how much text
-// came back and whether it cost anything — because "done" alone would not tell him whether
-// the assistant can now answer from the new document.
+// It runs in two stages on purpose, and the split is the whole design:
 //
-// ⚠ THE FAILURE STATE IS THE ONE THAT MATTERS. If the new file lands but can't be read (a
-// photo of a photo, a scan too faint to transcribe), the lease is now pointing at the new
-// document while the SAVED TEXT is still the old one's. That is a genuinely confusing state
-// and the dialog names it exactly rather than showing a generic error.
-function ReplaceLeaseModal({ leaseId, file, current, onClose, onDone }) {
+//   READ   — the file is stored, the lease is pointed at it, the text is re-read and the
+//            document's terms are extracted. Nothing on the lease's figures moves.
+//   APPLY  — only after he has seen a line-by-line list of what changes, from → to.
+//
+// Base rent and square footage are billed figures: they feed the invoice, the ledger and
+// every tenant's share of CAM (CLAUDE.md §1). "The figures change" must never mean "the
+// figures changed and nobody said which" — so the list he approves IS the object that gets
+// written, and the stored invoice is resynced afterwards because it does not rebuild itself.
+//
+// ⚠ THE MIDDLE STATE IS REAL AND IS NAMED. Between the two stages the new document is
+// already the lease's document while the terms are still the old ones. Every path out of
+// here says which of those two things is true rather than showing a bare error.
+function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
+  const qc = useQueryClient();
   const [keepOld, setKeepOld] = useState(true);
-  const [phase, setPhase] = useState('ask'); // ask | working | done | failed
-  const [result, setResult] = useState(null);
+  const [phase, setPhase] = useState('ask'); // ask | reading | review | applying | done | failed
+  const [read, setRead] = useState(null);    // { extraction, length }
+  const [changes, setChanges] = useState(null);
+  const [applied, setApplied] = useState(null);
   const [err, setErr] = useState('');
 
-  async function go() {
-    setPhase('working'); setErr('');
+  async function readIt() {
+    setPhase('reading'); setErr('');
     try {
-      const res = await replaceLeaseFile({
+      const res = await uploadNewLeaseDocument({
         leaseId, file, oldDocId: current?.id || null, keepOld,
       });
-      setResult(res);
-      setPhase('done');
+      setRead(res);
+      // The document is the lease's document from this moment, whatever happens next.
       onDone?.();
+      const lease = await getLease(leaseId);
+      const ex = res.extraction || {};
+      const proposed = initialFromExtraction(ex);
+      setChanges(newLeaseChanges(lease, proposed, {
+        escalations: (ex.escalations || []).length,
+        renewals: (ex.renewal_options || []).length,
+        abatements: (ex.abatements || []).length,
+      }));
+      setPhase('review');
     } catch (e) {
       setErr(e?.message || String(e));
       setPhase('failed');
-      // The file IS swapped by the time a read can fail, so the panel has to refresh even
-      // on this path or it would keep showing the previous document as current.
       onDone?.();
     }
   }
 
-  const done = phase === 'done';
-  const chars = Number(result?.length || 0);
+  async function applyIt() {
+    setPhase('applying'); setErr('');
+    try {
+      const res = await applyNewLeaseTerms({ leaseId, changes, extraction: read?.extraction });
+      setApplied(res);
+      qc.invalidateQueries({ queryKey: ['lease', leaseId] });
+      // The billed figures moved, so every screen that reads them has to repaint. One
+      // shared set rather than a hand-rolled list — hand-rolled lists drift by omission.
+      settleBillingChange(qc, {
+        propertyId: res.propertyId, leaseId, year: new Date().getFullYear(),
+      });
+      setPhase('done');
+    } catch (e) {
+      setErr(e?.message || String(e));
+      setPhase('failed');
+    }
+  }
+
+  const busyPhase = phase === 'reading' || phase === 'applying';
+  const show = (f, v) => {
+    if (v === null || v === undefined || v === '') return '—';
+    if (f.kind === 'money') return money(v);
+    if (f.kind === 'date') return fmtDate(v);
+    if (f.kind === 'number') return Number(v).toLocaleString();
+    return String(v);
+  };
 
   return (
-    <div className="modal-scrim" onClick={phase === 'working' ? undefined : onClose}>
-      <div className="modal" role="dialog" aria-modal="true" style={{ width: 560 }}
+    <div className="modal-scrim" onClick={busyPhase ? undefined : onClose}>
+      <div className="modal" role="dialog" aria-modal="true" style={{ width: 620 }}
         onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <strong>{done ? 'Lease document replaced' : 'Replace the lease document?'}</strong>
-          {phase !== 'working' && <button className="icon-btn" onClick={onClose}>✕</button>}
+          <strong>
+            {phase === 'done' ? 'New lease applied'
+              : phase === 'review' ? 'Apply the new lease?'
+                : 'Upload a new lease'}
+          </strong>
+          {!busyPhase && <button className="icon-btn" onClick={onClose}>✕</button>}
         </div>
         <div className="modal-body">
           {phase === 'ask' && (
@@ -323,29 +377,26 @@ function ReplaceLeaseModal({ leaseId, file, current, onClose, onDone }) {
                 <strong>{file.name}</strong> becomes this lease’s document
                 {current?.filename ? <>, in place of <strong>{current.filename}</strong></> : null}.
               </p>
-              {/* Same block the delete dialogs use, in its informational tone — this is a
-                  change worth explaining, not a destruction worth alarming about. */}
               <div className="confirm-imp info">
                 <p className="confirm-imp-title">What this does</p>
                 <ul>
                   <li>
-                    Amlak <strong>re-reads the new document straight away</strong> and replaces the
-                    saved text. The lease assistant, the lease search and the AI review all start
-                    answering from it.
+                    Amlak <strong>reads the new lease</strong> — its rent, dates, size, rent
+                    step-ups and renewal options — and replaces the saved text so the assistant,
+                    the lease search and the AI review all answer from it.
                   </li>
                   <li>
-                    <strong>The lease’s own figures do not change.</strong> Rent, dates, square
-                    footage, escalations and renewal options stay exactly as they are — a new
-                    document never moves a billed figure on its own.
+                    Then it shows you <strong>exactly which figures change</strong>, old and new,
+                    and nothing is updated until you say so.
                   </li>
                   <li>
-                    If this is a genuinely new lease rather than a better copy of this one, add it
-                    as a <strong>new lease</strong> instead, so the old term stays in the history.
+                    Applying it <strong>updates this tenant’s bill</strong> for the current year.
+                    A year you have already closed is left alone.
                   </li>
                 </ul>
               </div>
 
-              <p className="doc-choice-head">The old file</p>
+              <p className="doc-choice-head">The old lease document</p>
               <label className="doc-choice">
                 <input type="radio" name="oldfile" checked={keepOld} onChange={() => setKeepOld(true)} />
                 <span>
@@ -362,31 +413,118 @@ function ReplaceLeaseModal({ leaseId, file, current, onClose, onDone }) {
               </label>
 
               <div className="row" style={{ marginTop: 16 }}>
-                <button type="button" onClick={go}>Replace and re-read</button>
+                <button type="button" onClick={readIt}>Read the new lease</button>
                 <button type="button" className="ghost" onClick={onClose}>Cancel</button>
               </div>
             </>
           )}
 
-          {phase === 'working' && (
+          {phase === 'reading' && (
             <p className="note-msg info" style={{ marginTop: 0 }}>
               Uploading <strong>{file.name}</strong> and reading it… A scanned lease can take a
               minute or two.
             </p>
           )}
 
-          {done && (
+          {phase === 'review' && (
             <>
               <p className="note-msg good" style={{ marginTop: 0 }}>
-                ✓ Read <strong>{chars.toLocaleString()} characters</strong> from {file.name}. The
-                saved text now comes from this document.
+                ✓ Read <strong>{Number(read?.length || 0).toLocaleString()} characters</strong> from{' '}
+                {file.name}. The saved text now comes from this document.
+              </p>
+
+              {hasNoChanges(changes) ? (
+                <p className="note-msg info">
+                  It states the same terms already on the lease, so there is nothing to update.
+                </p>
+              ) : (
+                <>
+                  <p className="doc-choice-head">What changes on the lease</p>
+                  <table className="terms-diff">
+                    <thead>
+                      <tr><th>&nbsp;</th><th>Now</th><th>New lease</th></tr>
+                    </thead>
+                    <tbody>
+                      {changes.fields.map((f) => (
+                        <tr key={f.key} className={f.billed ? 'billed' : undefined}>
+                          <th scope="row">{f.label}</th>
+                          <td className="was">{show(f, f.from)}</td>
+                          <td className="now">{show(f, f.to)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {!changes.fields.length && (
+                    <p className="muted" style={{ fontSize: 12.5 }}>
+                      No stored figure changes — only the schedule below.
+                    </p>
+                  )}
+                  <ul className="terms-extra">
+                    <li>
+                      <strong>{changes.escalations || 'No'}</strong> rent step-up
+                      {changes.escalations === 1 ? '' : 's'} in the new lease
+                      {changes.escalations === 1 ? ' replaces' : ' replace'} any not-yet-applied
+                      steps on this one. Steps already applied stay in the history.
+                    </li>
+                    <li>
+                      <strong>{changes.renewals || 'No'}</strong> renewal option
+                      {changes.renewals === 1 ? '' : 's'}
+                      {changes.renewals === 1 ? ' replaces' : ' replace'} any still pending. An
+                      option already exercised or lapsed stays as it is.
+                    </li>
+                    {changes.abatements > 0 && (
+                      <li>
+                        <strong>{changes.abatements}</strong> rent abatement
+                        {changes.abatements === 1 ? '' : 's'} are added. Existing ones are left
+                        alone — one may already have credited an invoice.
+                      </li>
+                    )}
+                    {changes.touchesBilling && (
+                      <li>
+                        This tenant’s <strong>invoice for {new Date().getFullYear()} is rebuilt</strong>{' '}
+                        from the new figures. A closed year is skipped.
+                      </li>
+                    )}
+                  </ul>
+                </>
+              )}
+
+              <div className="row" style={{ marginTop: 16 }}>
+                {!hasNoChanges(changes) && (
+                  <button type="button" onClick={applyIt}>Apply the new lease</button>
+                )}
+                <button type="button" className="ghost" onClick={onClose}>
+                  {hasNoChanges(changes) ? 'Done' : 'Keep the current figures'}
+                </button>
+              </div>
+              {!hasNoChanges(changes) && (
+                <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                  Keeping the current figures leaves the lease exactly as it is — the new document
+                  and its text stay either way.
+                </p>
+              )}
+            </>
+          )}
+
+          {phase === 'applying' && (
+            <p className="note-msg info" style={{ marginTop: 0 }}>
+              Updating the lease and rebuilding this tenant’s bill…
+            </p>
+          )}
+
+          {phase === 'done' && (
+            <>
+              <p className="note-msg good" style={{ marginTop: 0 }}>
+                ✓ The lease now reads from <strong>{file.name}</strong>.
+                {' '}{applied?.fields || 0} figure{applied?.fields === 1 ? '' : 's'} updated,
+                {' '}{applied?.escalations || 0} rent step-up{applied?.escalations === 1 ? '' : 's'} and
+                {' '}{applied?.renewals || 0} renewal option{applied?.renewals === 1 ? '' : 's'} on file.
               </p>
               <p className="muted" style={{ fontSize: 12.5 }}>
-                {result?.source === 'transcription'
-                  ? 'It was a scan, so it was transcribed by AI.'
-                  : 'It carried its own text layer, so it was read for free — no AI call.'}
-                {' '}The lease’s rent, dates, square footage and terms were not touched;
-                {' '}{keepOld ? 'the previous file is still on record below.' : 'the previous file was deleted.'}
+                {applied?.resynced
+                  ? 'This tenant’s bill for the current year has been rebuilt from the new figures; a closed year was skipped. '
+                  : 'No billed figure moved, so no invoice needed rebuilding. '}
+                It is recorded in the property’s history, with every figure’s old and new value.
               </p>
               <div className="row" style={{ marginTop: 14 }}>
                 <button type="button" onClick={onClose}>Done</button>
@@ -397,10 +535,17 @@ function ReplaceLeaseModal({ leaseId, file, current, onClose, onDone }) {
           {phase === 'failed' && (
             <>
               <p className="note-msg warn" style={{ marginTop: 0 }}>
-                <strong>{file.name}</strong> was saved and is now this lease’s document, but it
-                couldn’t be read. <strong>The saved text is still the previous document’s</strong> —
-                nothing was lost, but the assistant is answering from the older copy until this is
-                fixed.
+                {read
+                  ? <>
+                      The new lease was read, but its terms could not be applied.{' '}
+                      <strong>The lease still holds its previous figures</strong> — nothing was
+                      half-changed.
+                    </>
+                  : <>
+                      <strong>{file.name}</strong> was saved and is now this lease’s document, but it
+                      couldn’t be read. <strong>The saved text and every figure are still the
+                      previous lease’s</strong> — nothing was lost.
+                    </>}
               </p>
               <p className="note-msg danger">{err}</p>
               <div className="row" style={{ marginTop: 14 }}>

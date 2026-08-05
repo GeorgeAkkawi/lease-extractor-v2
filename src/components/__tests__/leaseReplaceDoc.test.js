@@ -1,17 +1,18 @@
-// Replacing the document a lease is read from. George, 2026-08-04: *"double check that when
-// a lease is reuploaded (i dont see the reupload button that we talked about because
-// sometimes new leases are made entirely for the same tenant) it is recached and lets the
-// user know what will be happening and give them an option to remove the old lease or keep
-// it on file, but you should automatically recache with the new lease and let them know."*
+// Uploading a NEW lease over the one on file. George asked for a re-upload button, then
+// corrected what it should do: *"well if i replace a lease with a new one id want the
+// figures to change based on the new lease thats the point so it should say 'upload new
+// lease'."*
 //
-// He was right that it wasn't there: the panel offered "Add a file" ONLY while a lease had
-// none, and a file added that way never reached cache-lease-text at all. Four things have to
-// hold, and each one is a way this quietly goes wrong:
+// So the guarantee moved. It is no longer "the figures never move" — it is "the figures
+// move, and never before you have seen which":
 //
-//   ① the control exists once there IS a file — that was the whole complaint
-//   ② the text is genuinely re-read, over the top of the previous transcript
-//   ③ the lease's FIGURES do not move — a dropped file must never touch a billed number
-//   ④ keep-or-delete is HIS choice, and "keep" really keeps
+//   ① the control exists once there IS a lease on file, and says what it does
+//   ② READING is not APPLYING — after the read the document and text are new and every
+//      figure is still the old one's, until he confirms
+//   ③ the diff he approves is exactly what gets written, old → new
+//   ④ applying it moves the billed figures, replaces the not-yet-applied rent steps, and
+//      leaves what already happened alone
+//   ⑤ keep-or-delete of the old document is his choice, and "keep" really keeps
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -20,9 +21,11 @@ import { ConfirmProvider } from '../ConfirmDialog';
 import { supabase } from '../../lib/supabaseClient';
 import { getLease, listDocuments } from '../../lib/api';
 
-// lease-2 (City Dental) is the seeded lease that has both a lease_files row and two
-// documents — i.e. the only one where "replace" is a real situation.
+// lease-2 (City Dental) is the seeded lease with both a lease_files row and documents —
+// i.e. the only one where uploading a replacement is a real situation. The demo's canned
+// extract-lease answers with the Summit Fitness lease, so the diff is large and obvious.
 const LEASE = 'lease-2';
+const NEW = { base_rent: 96000, square_footage: 4200, start: '2025-03-01', end: '2030-02-28' };
 
 function mount(leaseText = 'x'.repeat(900)) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -35,48 +38,54 @@ function mount(leaseText = 'x'.repeat(900)) {
   );
 }
 
-// The success note is deliberately built from several elements (a tick, a bolded count, the
-// filename), so a plain text matcher can't see it as one string — read the note itself.
-const doneNote = async () => {
-  await waitFor(() => expect(document.querySelector('.note-msg.good')).toBeTruthy());
-  return document.querySelector('.note-msg.good');
+// The notes are built from several elements (a tick, a bolded count, a filename), so a
+// plain text matcher can't see them as one string — read the note itself.
+const note = async (cls = '.note-msg.good') => {
+  await waitFor(() => expect(document.querySelector(cls)).toBeTruthy());
+  return document.querySelector(cls);
 };
 
 const pick = (name = 'city-dental-2027.pdf') => {
-  const input = document.querySelector('input[aria-label="Replace this lease\'s document"]');
-  const file = new File(['%PDF-1.4 a newer copy'], name, { type: 'application/pdf' });
+  const input = document.querySelector('input[aria-label="Upload a new lease for this tenant"]');
+  const file = new File(['%PDF-1.4 a new lease'], name, { type: 'application/pdf' });
   fireEvent.change(input, { target: { files: [file] } });
-  return file;
 };
 
-// The demo store is module-level: put the lease, its file row and its documents back.
-const SEED_DOCS = [
-  { id: 'doc-1', storage_path: 'demo-user/city-dental-lease.pdf', filename: 'city-dental-lease.pdf' },
-  { id: 'doc-2', storage_path: 'demo-user/city-dental-lease-scan.pdf', filename: 'city-dental-lease.pdf' },
-];
+// Walk from the picker to the review screen, which is where most of this lives.
+async function toReview(name) {
+  mount();
+  await screen.findByRole('button', { name: 'Upload new lease' });
+  pick(name);
+  fireEvent.click(await screen.findByRole('button', { name: 'Read the new lease' }));
+  await screen.findByRole('button', { name: 'Apply the new lease' });
+}
+
+const SEED_DOCS = ['doc-1', 'doc-2'];
 let snapshot = null;
 
 beforeEach(async () => {
   cleanup();
   const { data: docs } = await supabase.from('documents').select('*');
   const { data: files } = await supabase.from('lease_files').select('*');
+  const { data: escs } = await supabase.from('rent_escalations').select('*');
+  const { data: rens } = await supabase.from('renewal_options').select('*');
   const lease = await getLease(LEASE);
   snapshot = {
     docs: JSON.parse(JSON.stringify(docs || [])),
     files: JSON.parse(JSON.stringify(files || [])),
+    escs: JSON.parse(JSON.stringify(escs || [])),
+    rens: JSON.parse(JSON.stringify(rens || [])),
     lease: JSON.parse(JSON.stringify(lease)),
   };
 });
 
 afterEach(async () => {
-  // Restore by hand — the mock has no transactions, and every suite after this one reads
-  // the same seeded rows.
+  // Restore by hand — the mock has no transactions and every suite after this one reads the
+  // same seeded rows.
   const { data: docs } = await supabase.from('documents').select('*');
   for (const d of docs || []) {
     if (!snapshot.docs.some((s) => s.id === d.id)) await supabase.from('documents').delete().eq('id', d.id);
   }
-  // …and put back any the test deleted. Without this the "nothing to replace" case strips
-  // the seed for every test after it, and they all fail for a reason that isn't theirs.
   for (const d of snapshot.docs) {
     if (!(docs || []).some((x) => x.id === d.id)) await supabase.from('documents').insert(d);
   }
@@ -85,171 +94,240 @@ afterEach(async () => {
       storage_path: f.storage_path ?? null, original_filename: f.original_filename ?? null,
     }).eq('id', f.id);
   }
+  for (const table of ['rent_escalations', 'renewal_options']) {
+    const seed = table === 'rent_escalations' ? snapshot.escs : snapshot.rens;
+    const { data: now } = await supabase.from(table).select('*');
+    for (const r of now || []) {
+      if (!seed.some((s) => s.id === r.id)) await supabase.from(table).delete().eq('id', r.id);
+    }
+    for (const r of seed) {
+      if (!(now || []).some((x) => x.id === r.id)) await supabase.from(table).insert(r);
+    }
+  }
   await supabase.from('leases').update({
-    lease_text: snapshot.lease.lease_text, lease_file_id: snapshot.lease.lease_file_id,
+    lease_text: snapshot.lease.lease_text,
+    lease_file_id: snapshot.lease.lease_file_id,
+    base_rent: snapshot.lease.base_rent,
+    square_footage: snapshot.lease.square_footage,
+    lease_start: snapshot.lease.lease_start,
+    lease_termination_date: snapshot.lease.lease_termination_date,
+    lease_terms: snapshot.lease.lease_terms,
   }).eq('id', LEASE);
 });
 
-describe('the Replace control', () => {
-  // ① The complaint itself.
-  it('is offered once the lease has a file, beside Open file', async () => {
+describe('the control', () => {
+  // ① The original complaint, now named for what it actually does.
+  it('is offered once the lease has a document, and says “Upload new lease”', async () => {
     mount();
-    // Scoped to the LEASE's own row: the earlier-copy rows below carry an Open file of
-    // their own, and an unscoped query would match those too.
-    const replace = await screen.findByRole('button', { name: 'Replace' });
-    const row = replace.closest('.rider-row');
-    expect(row.querySelector('button[title*="Replace"], .doc-act2 button')).toBeTruthy();
-    expect(row.textContent).toContain('Open file');
+    const btn = await screen.findByRole('button', { name: 'Upload new lease' });
+    expect(btn.closest('.rider-row').textContent).toContain('Open file');
   });
 
-  it('is not offered when there is nothing to replace', async () => {
-    // Clear the lease's documents: with no file the row offers "Add a file" instead, and a
-    // Replace button would be naming an action with no object.
-    for (const d of SEED_DOCS) await supabase.from('documents').delete().eq('id', d.id);
+  it('is not offered when there is no lease on file to replace', async () => {
+    for (const id of SEED_DOCS) await supabase.from('documents').delete().eq('id', id);
     mount();
     expect(await screen.findByRole('button', { name: 'Add a file' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Replace' })).toBe(null);
+    expect(screen.queryByRole('button', { name: 'Upload new lease' })).toBe(null);
   });
 
-  // Choosing a file must not BE the action — swapping what the assistant reads is not a
-  // thing to happen the instant a picker closes.
-  it('explains what will happen before anything is uploaded', async () => {
+  it('says the figures will change, and that a closed year is left alone', async () => {
     mount();
-    await screen.findByRole('button', { name: 'Replace' });
+    await screen.findByRole('button', { name: 'Upload new lease' });
     pick();
-
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toContain('city-dental-2027.pdf');
-    expect(dialog.textContent).toContain('re-reads the new document straight away');
-    // ③ stated up front, because this is the guarantee that keeps a file drop off the
-    // money spine.
-    expect(dialog.textContent).toContain('The lease’s own figures do not change');
-    // …and the steer for the case George named: an entirely new lease for the same tenant.
-    expect(dialog.textContent).toContain('add it as a new lease');
-    expect(screen.getByRole('button', { name: 'Replace and re-read' })).toBeTruthy();
+    expect(dialog.textContent).toContain('reads the new lease');
+    expect(dialog.textContent).toContain('exactly which figures change');
+    expect(dialog.textContent).toContain('updates this tenant’s bill');
+    expect(dialog.textContent).toContain('already closed is left alone');
   });
 });
 
-describe('replacing it', () => {
-  // ② The point of the whole thing.
-  it('re-reads the document and replaces the saved text, then says how much it read', async () => {
-    // The STRING, not the row: the demo mock hands back the live object out of its store,
-    // so holding the row would alias the very mutation this is trying to observe.
-    const beforeText = (await getLease(LEASE)).lease_text;
-    mount();
-    await screen.findByRole('button', { name: 'Replace' });
-    pick();
-    fireEvent.click(await screen.findByRole('button', { name: 'Replace and re-read' }));
-
-    // It reports the outcome in the only terms that mean anything: how much text came back.
-    const note = await doneNote();
-    expect(note.textContent).toMatch(/Read [\d,]+ characters from city-dental-2027\.pdf/);
-    const after = await getLease(LEASE);
-    expect(after.lease_text).not.toBe(beforeText);
-    expect(after.lease_text).toContain('city-dental-2027.pdf');
-
-    // The lease now points at the new file — this is what makes the NEXT re-read read the
-    // right document rather than the one that was just replaced.
-    const { data: fileRow } = await supabase.from('lease_files')
-      .select('*').eq('id', after.lease_file_id).maybeSingle();
-    expect(fileRow.original_filename).toBe('city-dental-2027.pdf');
-  });
-
-  // ③ The guarantee, checked rather than asserted in prose.
-  it('touches no figure on the lease', async () => {
-    // Copied field by field, for the reason above: comparing an aliased row against itself
-    // would pass even if every figure had moved, which would make this test worse than none.
+describe('reading it', () => {
+  // ② The most important test in the file. The read is paid for and irreversible; the
+  // APPLY is the part that moves money, and between them every figure must still be the
+  // old one's.
+  it('re-reads the text but moves no figure until it is applied', async () => {
     const b = await getLease(LEASE);
-    const before = {
-      base_rent: b.base_rent, square_footage: b.square_footage, lease_start: b.lease_start,
-      lease_termination_date: b.lease_termination_date, lease_terms: b.lease_terms,
-    };
-    mount();
-    await screen.findByRole('button', { name: 'Replace' });
-    pick();
-    fireEvent.click(await screen.findByRole('button', { name: 'Replace and re-read' }));
-    await doneNote();
+    const before = { base_rent: b.base_rent, square_footage: b.square_footage, lease_start: b.lease_start };
+    const beforeText = b.lease_text;
+
+    await toReview();
 
     const after = await getLease(LEASE);
-    expect(after.base_rent).toBe(before.base_rent);
+    expect(after.lease_text).not.toBe(beforeText);        // the document IS new
+    expect(after.base_rent).toBe(before.base_rent);        // the figures are NOT
     expect(after.square_footage).toBe(before.square_footage);
     expect(after.lease_start).toBe(before.lease_start);
-    expect(after.lease_termination_date).toBe(before.lease_termination_date);
-    expect(after.lease_terms).toBe(before.lease_terms);
   });
 
-  // The lease_files row is updated IN PLACE precisely so this survives: extraction_raw on
-  // it feeds the CAM/tax estimate pre-fill and the renewal reconcile. A fresh row would
-  // blank both without a word.
-  it('keeps the AI reading that the estimate pre-fill depends on', async () => {
-    const { data: was } = await supabase.from('lease_files').select('*').eq('id', 'lf-1').maybeSingle();
-    expect(was.extraction_raw?.est_cam_annual?.value).toBe(12000);
+  // ③ Old beside new, so nothing has to be taken on trust.
+  it('shows every figure that would change, old beside new', async () => {
+    await toReview();
+    const rows = [...document.querySelectorAll('.terms-diff tbody tr')]
+      .map((r) => r.textContent.replace(/\s+/g, ' ').trim());
 
-    mount();
-    await screen.findByRole('button', { name: 'Replace' });
-    pick();
-    fireEvent.click(await screen.findByRole('button', { name: 'Replace and re-read' }));
-    await doneNote();
-
-    const { data: now } = await supabase.from('lease_files').select('*').eq('id', 'lf-1').maybeSingle();
-    expect(now.extraction_raw?.est_cam_annual?.value).toBe(12000);
+    expect(rows.some((r) => /Base rent.*84,000.*96,000/.test(r))).toBe(true);
+    expect(rows.some((r) => /Square footage.*3,000.*4,200/.test(r))).toBe(true);
+    // Rent and size rebuild an invoice; they are marked as the ones that do.
+    expect(document.querySelectorAll('.terms-diff tr.billed').length).toBeGreaterThanOrEqual(2);
+    // The schedule is described in words rather than left as a surprise.
+    const extra = document.querySelector('.terms-extra').textContent;
+    expect(extra).toContain('rent step-up');
+    expect(extra).toContain('renewal option');
+    expect(extra).toContain('is rebuilt');
   });
 
-  // ④ His choice, and it has to mean what it says.
-  it('keeps the old file on record by default', async () => {
+  // A document that restates the figures already on file must not present them as changes.
+  it('shows no figure rows when the new lease states what is already on the lease', async () => {
+    await supabase.from('leases').update({
+      base_rent: NEW.base_rent, square_footage: NEW.square_footage,
+      lease_start: NEW.start, lease_termination_date: NEW.end,
+      lease_terms: 'NNN; 3% annual escalations.',
+    }).eq('id', LEASE);
+
+    await toReview();
+    // Not one row, and the dialog says why rather than showing an empty table.
+    expect(document.querySelectorAll('.terms-diff tbody tr').length).toBe(0);
+    expect(screen.getByText(/No stored figure changes/)).toBeTruthy();
+    // The schedule is still worth applying — the new lease's steps and options replace
+    // the old ones even when every stored figure happens to match.
+    expect(document.querySelector('.terms-extra').textContent).toContain('rent step-up');
+  });
+});
+
+describe('applying it', () => {
+  // ④ The point of the whole change.
+  it('writes the new figures onto the lease', async () => {
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await waitFor(async () => {
+      expect(Number((await getLease(LEASE)).square_footage)).toBe(NEW.square_footage);
+    });
+    const after = await getLease(LEASE);
+    expect(after.lease_start).toBe(NEW.start);
+    expect(after.lease_termination_date).toBe(NEW.end);
+
+    // ⚠ NOT 96,000 — and that is correct. The new lease prices its own 3% step from
+    // 2026-03-01, which is in the past, so backfillLeaseToToday applies it on the way out
+    // exactly as it does for a rider. The lease's committed rent is the schedule brought
+    // up to today, not the figure printed on page 1.
+    expect(Number(after.base_rent)).toBe(Math.round(NEW.base_rent * 1.03));
+  });
+
+  it('replaces the rent steps that had not happened yet, and keeps the ones that had', async () => {
+    const { data: applied } = await supabase.from('rent_escalations')
+      .insert({
+        lease_id: LEASE, owner_id: 'demo-user', effective_date: '2024-06-01',
+        escalation_type: 'manual', new_base_rent: 84000, status: 'applied',
+      }).select();
+    const keptId = applied?.[0]?.id;
+
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    // The new lease's own step, on file. Its status is 'applied' rather than 'scheduled'
+    // because its date has already passed — backfillLeaseToToday runs at the end of the
+    // apply, the same way it does for a rider.
+    await waitFor(async () => {
+      const { data } = await supabase.from('rent_escalations').select('*').eq('lease_id', LEASE);
+      expect(data.some((e) => e.effective_date === '2026-03-01')).toBe(true);
+    });
+
+    // An applied step is a thing that happened — rewriting it is how a past invoice stops
+    // matching the ledger that explains it.
+    const { data: now } = await supabase.from('rent_escalations').select('*').eq('lease_id', LEASE);
+    expect(now.some((e) => e.id === keptId)).toBe(true);
+  });
+
+  it('records it in the history with every figure’s old and new value', async () => {
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await waitFor(async () => {
+      const { data } = await supabase.from('history_events').select('*').eq('lease_id', LEASE);
+      expect((data || []).some((e) => e.type === 'lease_replaced')).toBe(true);
+    });
+
+    const { data: events } = await supabase.from('history_events').select('*').eq('lease_id', LEASE);
+    const ev = events.find((e) => e.type === 'lease_replaced');
+    const rent = (ev.meta?.fields || []).find((f) => f.key === 'base_rent');
+    expect(Number(rent.from)).toBe(Number(snapshot.lease.base_rent));
+    expect(Number(rent.to)).toBe(NEW.base_rent);
+  });
+
+  // The escape hatch: he can take the new document and keep his own numbers.
+  it('leaves every figure alone if he keeps the current ones', async () => {
+    const before = Number((await getLease(LEASE)).base_rent);
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the current figures' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBe(null));
+    const after = await getLease(LEASE);
+    expect(Number(after.base_rent)).toBe(before);
+    // …but the new document and its text stay, because that part already happened.
+    expect(after.lease_text).not.toBe(snapshot.lease.lease_text);
+  });
+});
+
+describe('the old document', () => {
+  // ⑤ His choice, pre-set to the one that loses nothing.
+  it('is kept by default', async () => {
     const before = (await listDocuments('lease', LEASE)).length;
     mount();
-    await screen.findByRole('button', { name: 'Replace' });
+    await screen.findByRole('button', { name: 'Upload new lease' });
     pick();
-    // "Keep it on record" is pre-selected — the destructive option is never the default.
     const keep = screen.getByRole('radio', { checked: true });
     expect(keep.closest('label').textContent).toContain('Keep it on record');
-    fireEvent.click(screen.getByRole('button', { name: 'Replace and re-read' }));
-    await doneNote();
-
-    // One more document than before: the new one, with the old still openable.
+    fireEvent.click(screen.getByRole('button', { name: 'Read the new lease' }));
+    await screen.findByRole('button', { name: 'Apply the new lease' });
     expect((await listDocuments('lease', LEASE)).length).toBe(before + 1);
   });
 
-  it('deletes the old file when he asks it to, and says which happened', async () => {
+  it('is deleted when he asks for that instead', async () => {
     mount();
-    await screen.findByRole('button', { name: 'Replace' });
+    await screen.findByRole('button', { name: 'Upload new lease' });
     pick();
     fireEvent.click(screen.getByLabelText(/Delete it/));
-    fireEvent.click(screen.getByRole('button', { name: 'Replace and re-read' }));
-    await doneNote();
+    fireEvent.click(screen.getByRole('button', { name: 'Read the new lease' }));
+    await screen.findByRole('button', { name: 'Apply the new lease' });
 
     const docs = await listDocuments('lease', LEASE);
     expect(docs.some((d) => d.id === 'doc-1')).toBe(false);
     expect(docs.some((d) => d.filename === 'city-dental-2027.pdf')).toBe(true);
-    expect(screen.getByText(/the previous file was deleted/)).toBeTruthy();
+  });
+
+  // The AI reading on the lease_files row feeds the CAM/tax estimate pre-fill and the
+  // renewal reconcile. The row is updated IN PLACE precisely so a new document can't blank
+  // them without a word.
+  it('keeps the AI reading the estimate pre-fill depends on', async () => {
+    await toReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply the new lease' }));
+    await note();
+    const { data: row } = await supabase.from('lease_files').select('*').eq('id', 'lf-1').maybeSingle();
+    expect(row.extraction_raw?.est_cam_annual?.value).toBe(12000);
   });
 });
 
-describe('when the new document cannot be read', () => {
-  // The confusing state: the lease points at the new file while the SAVED TEXT is still the
-  // old one's. Saying "something went wrong" here would leave the assistant quietly
-  // answering from a document that is no longer on the lease.
-  it('names exactly what happened rather than showing a bare error', async () => {
-    // Fail the read the way a faint scan does — at the function, after the upload has
-    // already succeeded. That ordering IS the state being tested.
+describe('when the new lease cannot be read', () => {
+  // The middle state, named exactly: the document is already the lease's document while
+  // every figure is still the old one's. A bare error would leave that unsaid.
+  it('says the document changed and the figures did not', async () => {
     const { functions } = supabase;
     const original = functions.invoke.bind(functions);
     functions.invoke = async (name, opts) => (
-      name === 'cache-lease-text'
+      name === 'extract-lease' || name === 'cache-lease-text'
         ? { data: null, error: { message: 'The document could not be read for search.' } }
         : original(name, opts)
     );
 
     try {
       mount();
-      await screen.findByRole('button', { name: 'Replace' });
+      await screen.findByRole('button', { name: 'Upload new lease' });
       pick('too-faint.pdf');
-      fireEvent.click(await screen.findByRole('button', { name: 'Replace and re-read' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Read the new lease' }));
 
-      const warn = await screen.findByText(/couldn’t be read/);
-      expect(warn.textContent).toContain('was saved and is now this lease’s document');
-      expect(warn.textContent).toContain('The saved text is still the previous document’s');
+      const warn = await note('.note-msg.warn');
+      expect(warn.textContent).toContain('is now this lease’s document');
+      expect(warn.textContent).toContain('every figure are still the');
     } finally {
       functions.invoke = original;
     }

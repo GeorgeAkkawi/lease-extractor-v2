@@ -26,6 +26,10 @@ const EVENT_LABEL = {
   rent_abated: 'Rent abatement',
   estimate_set: 'CAM & tax estimate set',
   lease_created: 'Lease created',
+  // A new lease document uploaded over the old one, with its terms applied. Its meta
+  // carries every field that moved, from → to, which is the record of a billed figure
+  // changing off the back of a document.
+  lease_replaced: 'New lease applied',
   insurance_requested: 'Insurance requested',
   // Building-wide, so it carries a property_id and no lease_id — deliberately absent from
   // the tenantStory.js allowlist so it doesn't repeat on every tenant's story.
@@ -48,6 +52,7 @@ const EVENT_BADGE = {
   tenant_assigned: 'info',
   term_extended: 'good',
   premises_resized: 'info',
+  lease_replaced: 'info',
   renewal_confirmed: 'good',
   renewal_declined: 'danger',
   renewal_reopened: 'warn',
