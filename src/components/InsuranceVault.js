@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  getPropertyInsurance, getTenantInsurance, saveInsurance, extractInsurance, uploadDoc, askDoc,
-  listInsuranceDocuments, addInsuranceDocument, removeInsuranceDocument, signDocUrl,
-  listArchivedInsurance, archiveInsurance, deleteInsurance, listAlertStates, upsertAlertState,
-  attachDocument,
+  getPropertyInsurance, getTenantInsurance, saveInsurance, supersedeInsurance, extractInsurance,
+  uploadDoc, askDoc, listInsuranceDocuments, addInsuranceDocument, removeInsuranceDocument,
+  signDocUrl, listArchivedInsurance, archiveInsurance, deleteInsurance, listAlertStates,
+  upsertAlertState, attachDocument, listDocuments,
 } from '../lib/api';
 import DocAssistant from './DocAssistant';
 import DocumentsList from './DocumentsList';
@@ -64,6 +64,17 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
     onSuccess: () => { setRemoving(false); invalidate(); qc.invalidateQueries({ queryKey: archivedKey }); },
   });
 
+  // Read a policy document and file it.
+  //
+  // ⚠ A POLICY ON FILE IS NEVER OVERWRITTEN. George, 2026-08-05: *"once a new one is uploaded
+  // (not replaced) it is moved to history within that and then the new one is uploaded and
+  // read and saved."* Until now this called saveInsurance, which UPDATEs the active row — so
+  // renewing a certificate destroyed the insurer, coverage, premium and expiry of the year
+  // before it, keeping only the file. Now the old row is archived (it keeps its own
+  // certificate and its own extra documents) and the read becomes a NEW row.
+  //
+  // The very first policy for a scope has nothing to supersede, and supersedeInsurance
+  // handles that case itself — so there is one write path here, not two that could disagree.
   async function intake(getExtract) {
     setBusy(true); setErr('');
     try {
@@ -71,7 +82,7 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
       // The certificate itself is kept. Until now the file was uploaded and its path
       // thrown on the floor — all 7 live policies had storage_path null, so not one
       // certificate could be opened from the record it belonged to.
-      const saved = await saveInsurance({
+      const { policy: saved } = await supersedeInsurance({
         party, propertyId, leaseId,
         insurer: fields.insurer ?? null,
         coverage_amount: fields.coverage_amount ?? null,
@@ -80,10 +91,17 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
         policy_text,
         ...(storagePath ? { storage_path: storagePath } : {}),
       });
+      // ⚠ Against the NEW policy's id, which is what keeps each year's certificate with the
+      // year it belongs to instead of piling every copy onto one record.
       if (storagePath && saved?.id) {
         await attachDocument(storagePath, { entityType: 'insurance_policy', entityId: saved.id });
       }
-      setText(''); setReplacing(false); invalidate();
+      setText(''); setReplacing(false);
+      invalidate();
+      qc.invalidateQueries({ queryKey: archivedKey });
+      // The superseded policy stops raising its expiry alert the moment it is archived —
+      // every reader filters archived_at is null — but the dashboard has to be told to look.
+      qc.invalidateQueries({ queryKey: ['alerts'] });
     } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   }
   const onPaste = () => { if (text.trim()) intake(() => extractInsurance({ text: text.trim() })); };
@@ -177,7 +195,10 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
           {!editFacts && (
             <div className="row" style={{ marginBottom: 14, gap: 14 }}>
               <button type="button" className="ghost" onClick={() => setEditFacts(true)}>Edit facts</button>
-              <button type="button" className="ghost" onClick={() => setReplacing(true)}>Replace policy</button>
+              {/* ⚠ NOT "Replace policy" any more, because it no longer replaces one. The old
+                  label described what the code did — overwrite the row — and that was the
+                  bug. The word is now the thing that actually happens. */}
+              <button type="button" className="ghost" onClick={() => setReplacing(true)}>+ Add a new policy</button>
               <button type="button" className="ghost danger-btn" onClick={() => setRemoving(true)}>Remove policy</button>
             </div>
           )}
@@ -201,6 +222,16 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
           {replacing && (
             <div className="row" style={{ marginBottom: 8 }}>
               <button type="button" className="ghost" onClick={() => { setReplacing(false); setErr(''); }}>Cancel</button>
+            </div>
+          )}
+          {/* Say what happens to the one already on file, BEFORE the file picker — this is
+              the difference between "my last policy is gone" and "my last policy is filed". */}
+          {replacing && policy && (
+            <div className="note-msg info" style={{ marginTop: 0, marginBottom: 10 }}>
+              The policy on file{policy.insurer ? <> from <strong>{policy.insurer}</strong></> : null}
+              {policy.expiry_date ? <> (expiring {fmtDate(policy.expiry_date)})</> : null} moves into{' '}
+              <strong>Policy history</strong> below, with its certificate and any documents kept
+              alongside it. Nothing is overwritten, and it stops sending you expiry reminders.
             </div>
           )}
           <div className="muted" style={{ fontSize: 12.5, marginBottom: 8 }}>
@@ -403,11 +434,23 @@ function DocumentsSection({ policyId }) {
   );
 }
 
-// "Expired & archived" — policies removed via Remove policy → Save to history.
-// Read-only, collapsed by default; each can be permanently deleted from history.
+// POLICY HISTORY — every policy this property or tenant has had, newest first.
+//
+// Two things put a row here: uploading a new policy over one already on file (the renewal
+// path — supersedeInsurance archives the old one), and Remove policy → Save to history.
+//
+// ⚠ IT HAS TO OFFER THE CERTIFICATE, or it is a list of dates rather than a record. Each
+// archived policy keeps its OWN saved copies, because attachDocument files them against the
+// policy id that was active when they were uploaded — which is exactly what makes "what were
+// we covered for in 2024, and where is the paper" answerable.
 function ArchivedSection({ party, propertyId, leaseId, archivedKey }) {
   const qc = useQueryClient();
+  // ⚠ Its own useConfirm. This read the parent component's `askConfirm` binding, which is
+  // not in scope here — clicking the delete button threw a ReferenceError and the dialog
+  // never opened, so nothing could be removed from history at all.
+  const askConfirm = useConfirm();
   const [open, setOpen] = useState(false);
+  const [err, setErr] = useState('');
   const { data: archived = [] } = useQuery({
     queryKey: archivedKey,
     queryFn: () => listArchivedInsurance({ party, propertyId, leaseId }),
@@ -421,38 +464,81 @@ function ArchivedSection({ party, propertyId, leaseId, archivedKey }) {
   return (
     <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
       <button type="button" className="ghost" onClick={() => setOpen((o) => !o)}>
-        {open ? '▾' : '▸'} Expired & archived ({archived.length})
+        {open ? '▾' : '▸'} Policy history ({archived.length})
       </button>
       {open && (
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {archived.map((p) => (
-            <div key={p.id} className="ins-card" style={{ opacity: 0.9 }}>
+            <div key={p.id} className="ins-card" style={{ opacity: 0.9, flexWrap: 'wrap' }}>
               <div><span className="ins-k">Insurer</span><span className="ins-v">{p.insurer || '—'}</span></div>
               <div><span className="ins-k">Coverage</span><span className="ins-v">{p.coverage_amount != null ? money(p.coverage_amount) : '—'}</span></div>
+              <div><span className="ins-k">Premium</span><span className="ins-v">{p.premium_amount != null ? money(p.premium_amount) : '—'}</span></div>
               <div><span className="ins-k">Expired</span><span className="ins-v">{p.expiry_date ? fmtDate(p.expiry_date) : '—'}</span></div>
-              <div><span className="ins-k">Archived</span><span className="ins-v">{p.archived_at ? fmtDate(String(p.archived_at).slice(0, 10)) : '—'}</span></div>
-              <button
-                type="button"
-                className="icon-btn danger-btn"
-                title="Delete permanently from history"
-                style={{ alignSelf: 'center', marginLeft: 'auto' }}
-                onClick={async () => {
-                  if (await askConfirm({
-                    title: 'Delete archived policy?',
-                    message: 'Permanently delete this archived policy?',
-                    implications: [
-                      'The policy record and its uploaded documents are permanently deleted.',
-                      'This can’t be undone.',
-                    ],
-                    confirmLabel: 'Delete permanently',
-                  })) del.mutate(p.id);
-                }}
-              >🗑</button>
+              <div><span className="ins-k">Replaced</span><span className="ins-v">{p.archived_at ? fmtDate(String(p.archived_at).slice(0, 10)) : '—'}</span></div>
+              {party === 'tenant' && (
+                <div>
+                  <span className="ins-k">Additional insured</span>
+                  <span className={`badge ${p.additional_insured ? 'good' : 'danger'}`} style={{ alignSelf: 'flex-start', marginTop: 4 }}>
+                    {p.additional_insured ? 'Yes' : 'No'}
+                  </span>
+                </div>
+              )}
+              <div className="row" style={{ marginLeft: 'auto', alignSelf: 'center', gap: 6 }}>
+                <ArchivedCertificates policy={p} onError={setErr} />
+                <button
+                  type="button"
+                  className="icon-btn danger-btn"
+                  title="Delete permanently from history"
+                  // The button's only content is an emoji, so `title` alone leaves a screen
+                  // reader announcing "🗑" — and leaves the action unnameable in a test.
+                  aria-label="Delete permanently from history"
+                  onClick={async () => {
+                    if (await askConfirm({
+                      title: 'Delete archived policy?',
+                      message: `Permanently delete the ${p.insurer || 'archived'} policy${p.expiry_date ? ` that expired ${fmtDate(p.expiry_date)}` : ''}?`,
+                      implications: [
+                        'The policy record and every certificate stored with it are permanently deleted.',
+                        'The policy currently on file is not affected.',
+                        'This can’t be undone.',
+                      ],
+                      confirmLabel: 'Delete permanently',
+                      tone: 'danger',
+                    })) del.mutate(p.id);
+                  }}
+                >🗑</button>
+              </div>
             </div>
           ))}
+          {err && <p className="note-msg danger">{err}</p>}
         </div>
       )}
     </div>
+  );
+}
+
+// The certificate(s) filed against ONE archived policy. `storage_path` on the policy row is
+// the copy read at intake; the documents registry holds any other copies added while it was
+// the active one. Deduped by path so the intake copy isn't offered twice.
+function ArchivedCertificates({ policy, onError }) {
+  const { data: docs = [] } = useQuery({
+    queryKey: ['documents', 'insurance_policy', policy.id],
+    queryFn: () => listDocuments('insurance_policy', policy.id),
+    enabled: !!policy.id,
+  });
+  const paths = [...new Set([policy.storage_path, ...docs.map((d) => d.storage_path)].filter(Boolean))];
+  if (!paths.length) return <span className="muted" style={{ fontSize: 12 }}>No file kept</span>;
+
+  const open = async (path) => {
+    try {
+      const url = await signDocUrl(path);
+      if (url) window.open(url, '_blank', 'noopener');
+      else onError?.('That file is no longer in storage.');
+    } catch (e) { onError?.(e.message || String(e)); }
+  };
+  return (
+    <button type="button" className="ghost btn-sm" onClick={() => open(paths[0])}>
+      Open certificate{paths.length > 1 ? ` (1 of ${paths.length})` : ''}
+    </button>
   );
 }
 

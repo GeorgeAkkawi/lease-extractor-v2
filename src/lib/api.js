@@ -2071,6 +2071,54 @@ export async function saveInsurance({ party, propertyId, leaseId, ...fields }) {
   return one(supabase.from('insurance_policies').insert({ ...payload, owner_id: uid }).select().single());
 }
 
+/**
+ * A RENEWAL: the policy on file moves to history and a new one takes its place.
+ *
+ * George, 2026-08-05: *"i want a history but able to upload new ones so once a new one is
+ * uploaded (not replaced) it is moved to history within that and then the new one is
+ * uploaded and read and saved."*
+ *
+ * ⚠ THIS IS WHAT "REPLACE POLICY" USED TO DESTROY. It called saveInsurance, which UPDATEs
+ * the active row in place — so renewing a certificate overwrote the insurer, the coverage
+ * limit, the premium, the expiry and the cached text of the year before it. The uploaded
+ * FILE survived (it registers under the policy id), but nothing recorded what it said, which
+ * is exactly the wrong half to keep: "what were we covered for in 2024" is the question
+ * history exists to answer, and the answer was being erased once a year.
+ *
+ * ⚠ THE ORDER IS FORCED — archive, THEN insert. getPropertyInsurance / getTenantInsurance
+ * find the active policy with `.maybeSingle()` on `archived_at is null`, and maybeSingle
+ * ERRORS on more than one row. Insert first and there are momentarily two active policies
+ * for the scope, so every reader in the app — the card, the alerts, the Ask snapshot —
+ * throws until the archive lands. Archive first and the worst case is a scope with no
+ * active policy and an intact history row, which the next upload fixes.
+ *
+ * ⚠ saveInsurance IS STILL THE RIGHT CALL FOR "Edit facts". Correcting a typo in an insurer's
+ * name is not a new policy year, and giving it a history entry would bury the real ones.
+ *
+ * Everything downstream follows on its own, because every reader already filters on
+ * `archived_at is null`: the superseded policy stops raising expiry alerts (`fetchAlertData`),
+ * stops emailing (`send-reminders`), and drops out of the Ask snapshot — while its row, its
+ * certificate and its extra documents stay exactly where they are. The NEW row starts with a
+ * null `expiry_notice_bucket`, so the reminders re-arm for the new date.
+ */
+export async function supersedeInsurance({ party, propertyId, leaseId, ...fields }) {
+  const uid = await ownerId();
+  const current = party === 'landlord'
+    ? await getPropertyInsurance(propertyId)
+    : await getTenantInsurance(leaseId);
+  if (current?.id) await archiveInsurance(current.id);
+  const created = await one(
+    supabase.from('insurance_policies').insert({
+      owner_id: uid,
+      party,
+      property_id: propertyId ?? null,
+      lease_id: leaseId ?? null,
+      ...fields,
+    }).select().single()
+  );
+  return { policy: created, supersededId: current?.id || null };
+}
+
 // History: archived (removed-but-kept) policies for one scope, newest first.
 export const listArchivedInsurance = ({ party, propertyId, leaseId }) => {
   let q = supabase.from('insurance_policies').select('*').eq('party', party).not('archived_at', 'is', null);

@@ -12,6 +12,73 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **A renewed insurance policy no longer erases the one it replaces**
+  (George: *"add a place to add a new policy for the insurance i want a history but able to
+  upload new ones so once a new one is uploaded (not replaced) it is moved to history within
+  that and then the new one is uploaded and read and saved."*). Deployed: frontend Cloudflare
+  **`b37665d3`**, demo worker **`45ddf587`**. **No migration and no edge function** — the
+  storage was already right. Tests **1855/1855** across 178 files (was 1844/177).
+
+  **What was wrong was the WRITE, not the storage.** `archived_at`, `listArchivedInsurance`
+  and the archive-or-delete choice have existed since **0032**, and every reader already
+  filters `archived_at is null` — the expiry alerts (`fetchAlertData`), the nightly email
+  sweep (`send-reminders`) and the Ask snapshot. But the button said **"Replace policy"** and
+  it meant it: `saveInsurance` does an `UPDATE` on the active row, so uploading this year's
+  certificate **overwrote last year's insurer, coverage limit, premium, expiry and cached
+  text**. The uploaded FILE survived (it registers against the policy id) — but nothing
+  recorded what it said, which is precisely the wrong half to keep. "What were we covered for
+  in 2024" is the only question a history exists to answer, and it was being erased annually.
+
+  **`supersedeInsurance`** — archive the row on file, insert a NEW one, file the new
+  certificate against the NEW id. **The order is forced**: `getPropertyInsurance` /
+  `getTenantInsurance` find the active policy with `.maybeSingle()` on `archived_at is null`,
+  and maybeSingle ERRORS on more than one row — insert-then-archive would leave two active
+  policies for a scope and every reader in the app throwing until the archive landed.
+  Archive-first's worst case is a scope with no active policy and an intact history row, which
+  the next upload fixes. Pinned by a test that renews twice and asserts exactly one active row.
+
+  **`saveInsurance` stays the Edit-facts path**, deliberately. Correcting a typo in an
+  insurer's name is not a new policy year, and giving it a history entry would bury the real
+  ones. Also pinned.
+
+  **Everything downstream follows on its own** because of that pre-existing filter: the
+  superseded policy stops raising its expiry alert, stops emailing, and drops out of the Ask
+  snapshot the moment it is archived — while its row, its certificate and its extra documents
+  stay where they are. The new row starts with a null `expiry_notice_bucket`, so the
+  reminders re-arm for the new date with nobody clearing anything. And
+  `additionalInsuredAlertKey` is keyed on policy id + expiry, so a renewed certificate that
+  STILL doesn't name the landlord re-arms the pop-up — which is the behaviour you want.
+
+  **The UI.** "Replace policy" → **"+ Add a new policy"** (the old label described the bug),
+  with a note above the file picker naming the outgoing insurer and saying where it goes
+  before anything is uploaded. "Expired & archived" → **"Policy history"**, now showing the
+  premium, the additional-insured answer on a tenant policy, "Replaced <date>", and — the
+  point — **Open certificate**, sourced from that policy's own `storage_path` plus its own
+  documents rows. Without it the history was a list of dates rather than a record.
+
+  **Fixed in passing:** `ArchivedSection` called `askConfirm`, a binding that lives in the
+  PARENT component and is not in its scope — clicking 🗑 threw a `ReferenceError` and the
+  dialog never opened, so **nothing could be removed from policy history at all**. It now
+  calls `useConfirm()` itself. The same button carried its label only in `title`, so its
+  accessible name was "🗑"; it has an `aria-label` now.
+
+  **Demo.** Two archived policies seeded on prop-1 — a prior building policy from a different
+  insurer at a lower limit (with a stored certificate, so Open certificate is demonstrable)
+  and City Dental's prior certificate at $500k that did not name the landlord.
+
+  **Verified.** 1855 tests across 178 files, +11. New `insuranceHistory.test.js` drives the
+  real vault against the demo mock: the seed ships history on both scopes, an archived policy
+  raises no expiry alert, superseding keeps every figure of the old row (asserting the old
+  coverage is still $2m, not the new $3m), never leaves two active rows, re-arms the notice
+  bucket, works on a scope with no policy yet, Edit-facts adds no history entry, the upload
+  path files the certificate against the NEW id and none against the old, and the
+  delete-from-history dialog opens.
+
+  **Not bundled in:** a policy's *extra* documents (`insurance_documents` — premium notices,
+  endorsements) stay with the policy they were added to, so they leave the active card when
+  it is superseded. That is arguably correct (they belonged to that policy year) and the
+  history row can be opened to reach them, but nothing says so on screen.
+
 - **2026-08-05** — **You can now send a CONTRACT out for signature, and the copy that comes
   back signed reads itself in** (George: *"i dont see how it actually works to send a document
   to someone. on the contracts tab next to add contract it should say send one for signature

@@ -296,6 +296,14 @@ export function seed() {
       // City Dental's certificate has already lapsed — drives the red "Expired" badge and
       // the "Request renewed certificate" flow in demo.
       { id: 'ins-3', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-2', insurer: 'Summit Indemnity Group', coverage_amount: 1000000, expiry_date: lapsed, additional_insured: true, policy_text: policyText['lease-2'], storage_path: null, created_at: iso(Y - 1, 6, 1) },
+      // ── Policy history. Uploading a new policy over one already on file ARCHIVES the old
+      // one rather than overwriting it (George, 2026-08-05), so a scope accumulates a row
+      // per policy year. These two are what the year before looked like — a different
+      // insurer and a lower limit on the building, and a certificate that did NOT name the
+      // landlord on City Dental's. Archived rows are invisible to every alert, the email
+      // sweep and the Ask snapshot: all of them filter `archived_at is null`.
+      { id: 'ins-4', owner_id: DEMO_USER.id, party: 'landlord', property_id: 'prop-1', lease_id: null, insurer: 'Keystone Property & Casualty', coverage_amount: 1500000, premium_amount: 14200, expiry_date: iso(Y - 1, 5, 1), additional_insured: null, policy_text: policyText['prop-1'], storage_path: `${DEMO_USER.id}/keystone-${Y - 2}-certificate.pdf`, archived_at: iso(Y - 1, 4, 2), created_at: iso(Y - 2, 4, 1) },
+      { id: 'ins-5', owner_id: DEMO_USER.id, party: 'tenant', property_id: 'prop-1', lease_id: 'lease-2', insurer: 'Summit Indemnity Group', coverage_amount: 500000, expiry_date: iso(Y - 1, 6, 1), additional_insured: false, policy_text: policyText['lease-2'], storage_path: null, archived_at: iso(Y - 1, 5, 20), created_at: iso(Y - 2, 6, 1) },
     ],
     // Two contracts on OAK CENTER (prop-2), never Maple Plaza (prop-1) — prop-1's CAM is
     // already itemized to exactly its cam_total and is the property every money test
