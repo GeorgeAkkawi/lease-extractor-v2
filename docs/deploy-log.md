@@ -12,6 +12,71 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **Sending is gated on placing the signature, and the executed PDF says what
+  it contains** (George: *"can you make it so that the send button doesnt work unless the
+  person signing has tapped their signature on the lease? and if they try that a hover on the
+  send button says please tap where your signature should be to be able to send? also i want
+  to make sure that the copy that is saved after countersign is fully equipped as a pdf with
+  both signatures permanent."*). Deployed: edge function **`countersign-envelope`**, frontend
+  Cloudflare **`56e76966`**, demo worker **`fe7ffb16`**. No migration. Tests **1875/1875**
+  across 179 files (+2).
+
+  **⚠ THIS REVERSES A DELIBERATE DECISION FROM 0087**, and the reversal is scoped. Placement
+  was a nicety and signing was the product: an unplaced mark went on an appended signature
+  page, and refusing a signature over a missed drag was judged the worse failure. It still is
+  — **so the gate fires only when `canPlace`**, i.e. when the document actually rendered and
+  there is a page to tap. A .docx, a scan pdf.js refuses, an old browser: unchanged, signs
+  with `placement` null, appended page. Gating those would leave a signer at a dead button
+  with no way on earth to satisfy it. Both branches are pinned by tests that sit next to each
+  other on purpose.
+
+  **The reason is on the button, and on a wrapper `<span>` around it.** A disabled control does
+  not reliably fire the hover that shows its own `title`, and the one moment the sentence is
+  wanted is the moment the button won't respond — so it is on both, plus a visible
+  `note-msg warn` under the row, plus a line in the call-to-action block saying the send
+  button is waiting on exactly this. A greyed-out button is never a mystery.
+
+  **The same gate on the countersign side**, because his half is what decides whether the
+  executed PDF carries BOTH marks in place or falls back to a signature page.
+
+  ### The executed PDF — what was already true, and what was missing
+
+  **The signatures were already permanent.** `buildExecutedPdf` draws each mark with
+  `target.drawImage` into the page's **content stream** — not an annotation, not an AcroForm
+  field — so no PDF reader can move or delete them, and the caption under each is drawn the
+  same way. With both marks placed (which the gate now makes the normal case) the separate
+  SIGNATURES page is skipped entirely and the file is: **the document itself carrying both
+  signatures, then the Certificate of Completion**.
+
+  **What was missing was any way to KNOW that.** The function has always returned
+  `on_document: { tenant, landlord }` and the app threw it away and closed the dialog, so
+  three genuinely different documents — a stamped lease, a lease plus a signature page, and a
+  certificate with no document behind it — all looked identical from the outside. Now:
+  - `countersign-envelope` also returns **`source_included`**: false only when the source
+    could not be parsed as a PDF at all. Expected for a .docx; **a real problem for anything
+    else, and previously indistinguishable from success**. It is also written into the
+    `executed` audit event so it is findable after the fact.
+  - The countersign dialog no longer closes on success — it shows **`ExecutedResult`**, which
+    names which of the three it built, and says the signatures are *"part of the file, not
+    attachments"*. Then **Done**.
+  - The file's own metadata (`setTitle` / `setSubject` / `setProducer` / `setCreator` /
+    `setModificationDate`) names it, so a copy opened from an email or a lender's folder
+    identifies itself without anyone reading page one. Wrapped in try/catch — metadata is
+    never worth failing an executed document over.
+
+  **Demo mock updated in the same commit** (CLAUDE.md §3): `countersign-envelope` in
+  `mockClient.js` now returns `on_document` computed from the stored signer rows and
+  `source_included: true`. Without it the demo would have shown the "this isn't a PDF" wording
+  forever, and the suite would have passed over it.
+
+  **Verified.** +2 tests. The tenant's send is blocked with `title` on both button and wrapper
+  and the visible sentence, then goes through the instant the mark is placed; the
+  non-rendering document still signs with `place_page` null; the countersigner is blocked the
+  same way; and the finished-PDF panel names both signatures on the document and the
+  not-attachments phrasing. `pdfSignCanvas`, `esignCard`, `signPage`, `contractSignature` and
+  `signedCopy` all pass unedited — `esignCard` in particular never mocks the canvas, so it
+  exercises the ungated path.
+
 - **2026-08-05** — **Every file picker takes a dragged file, and the signing page says what
   to do** (George: *"make a drag and drop feature for uploading all places you have to choose
   a file. make the prompt for the signature signing and placing way more obvious right now its

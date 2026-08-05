@@ -570,8 +570,19 @@ const functions = {
         { id: evtId(), owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'executed', actor: 'system', at: nowIso },
       );
       // No PDF is built in the sandbox — pdf-lib is a Deno-side dependency of the edge
-      // function and never ships in the browser bundle.
-      return ok({ ok: true, executed_path: path, stamped: true });
+      // function and never ships in the browser bundle. But the SHAPE of the answer has to
+      // match, because the countersign dialog now reads it to tell the landlord what he is
+      // holding: which marks went on the document, and whether the original is inside the
+      // file. A mock that omitted them would show the demo the "not a PDF" wording forever.
+      const tenantRow = (db.envelope_signers || []).find((s) => s.envelope_id === env.id && s.role === 'tenant');
+      return ok({
+        ok: true, executed_path: path, stamped: true,
+        on_document: {
+          tenant: !!tenantRow?.place_page,
+          landlord: !!(landlord?.place_page),
+        },
+        source_included: true,
+      });
     }
     if (name === 'review-lease') {
       return ok(demoReviewLease(body));

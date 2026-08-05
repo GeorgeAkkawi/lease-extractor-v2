@@ -122,23 +122,44 @@ describe('the tenant places their own signature on the document', () => {
     expect(await screen.findByText(/Your signature is placed on page 1/)).toBeTruthy();
   });
 
-  // ⚠ THE ONE THAT MATTERS MOST. Placement is a nicety; signing is the product.
-  it('still signs when they never place it — placement stays null', async () => {
+  // ⚠ THE RULE CHANGED HERE, DELIBERATELY. Until 2026-08-05 placement was a nicety and
+  // signing was the product: an unplaced signature went on an appended page. George:
+  // *"make it so that the send button doesnt work unless the person signing has tapped their
+  // signature on the lease… a hover on the send button says please tap where your signature
+  // should be to be able to send."* So while there IS a page to tap, the send is gated — and
+  // the reason is on the button itself, because a disabled control explains nothing.
+  //
+  // The escape hatch is the NEXT test, and it is what keeps this from being a trap.
+  it('refuses to send until the mark is on the page, and says why on the button', async () => {
     await reopen();
     await supabase.from('envelope_signers').update({ signed_at: null }).eq('id', 'sgn-1t');
     render(<SignPage token="env-1" />);
     await screen.findByText('Second Amendment to Lease');
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByText('⌨ Type'));
+
+    const btn = await screen.findByRole('button', { name: 'Sign document' });
+    await waitFor(() => expect(screen.getByText('drop-signature').disabled).toBe(false));
+    expect(btn.disabled).toBe(true);
+    const why = 'Please tap where your signature should be to be able to send.';
+    expect(btn.title).toBe(why);
+    // …and on a wrapper too, because a disabled button does not reliably fire the hover
+    // that shows its own tooltip.
+    expect(btn.parentElement.getAttribute('title')).toBe(why);
+    expect(screen.getByText(why)).toBeTruthy();
+
+    // Placing it is the only thing that was missing.
+    fireEvent.click(screen.getByText('drop-signature'));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Sign document' }).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Sign document' }));
-
     await screen.findByText('Signed');
     const { data } = await supabase.from('envelope_signers').select('*').eq('id', 'sgn-1t').maybeSingle();
-    expect(data.signed_at).toBeTruthy();
-    expect(data.place_page).toBe(null);   // → the executed PDF appends a signature page
+    expect(data.place_page).toBe(1);
   });
 
+  // ⚠ AND THE GATE MUST NOT FIRE WHERE THERE IS NOTHING TO TAP. A .docx, a scan pdf.js
+  // refuses, an old browser: the signature goes on the appended page exactly as it always
+  // did. Gating these would leave a signer at a dead button with no way to satisfy it.
   it('still signs when the document refuses to render at all', async () => {
     await reopen();
     await supabase.from('envelope_signers').update({ signed_at: null }).eq('id', 'sgn-1t');
@@ -152,6 +173,14 @@ describe('the tenant places their own signature on the document', () => {
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByText('⌨ Type'));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Sign document' }).disabled).toBe(false));
+
+    // …and it goes through with no placement at all, which is what the appended signature
+    // page in the executed PDF exists for.
+    fireEvent.click(screen.getByRole('button', { name: 'Sign document' }));
+    await screen.findByText('Signed');
+    const { data } = await supabase.from('envelope_signers').select('*').eq('id', 'sgn-1t').maybeSingle();
+    expect(data.signed_at).toBeTruthy();
+    expect(data.place_page).toBe(null);
   });
 });
 
@@ -199,8 +228,9 @@ describe('the signer is told what to do, before they have to do it', () => {
       return el;
     });
     expect(cta.textContent).toMatch(/Now tap where your signature goes/);
-    // Placing is offered, never required — the way past it is stated in the same block.
-    expect(cta.textContent).toMatch(/You can still sign/);
+    // …and it says, in the same block, that the send button is waiting on exactly this —
+    // so a greyed-out button is never a mystery.
+    expect(cta.textContent).toMatch(/stays greyed out until/);
     expect(screen.getByRole('button', { name: 'Take me to the document' })).toBeTruthy();
     // …and the step line moves on with them.
     expect(document.querySelector('.sign-steps').textContent).toContain('Tap where your signature goes');
@@ -269,6 +299,45 @@ describe('the landlord countersigns on the same document', () => {
     });
     expect(cta.textContent).toMatch(/Now tap where your signature goes/);
     expect(screen.getByRole('button', { name: 'Take me to the document' })).toBeTruthy();
+  });
+
+  // The same gate, for the same reason — and it is his half of it that decides whether the
+  // executed PDF carries BOTH marks in place or falls back to a signature page.
+  it('refuses to complete until his own mark is on the page, and says why', async () => {
+    mountCard();
+    fireEvent.click(await screen.findByRole('button', { name: '✎ Countersign' }));
+    fireEvent.click(screen.getByText('⌨ Type'));
+    const btn = await screen.findByRole('button', { name: 'Sign and complete' });
+    await waitFor(() => expect(screen.getByText('drop-signature').disabled).toBe(false));
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe('Please tap where your signature should be to be able to send.');
+
+    fireEvent.click(screen.getByText('drop-signature'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sign and complete' }).disabled).toBe(false));
+  });
+
+  // George, 2026-08-05: *"i want to make sure that the copy that is saved after countersign is
+  // fully equipped as a pdf with both signatures permanent."* The function has always reported
+  // it; the app used to throw the answer away and close the dialog.
+  it('says what the finished PDF actually contains, instead of just closing', async () => {
+    // The tenant placed theirs (the gate on their side guarantees this whenever the document
+    // renders), so with his own placed too the answer is the good one.
+    await supabase.from('envelope_signers')
+      .update({ place_page: 1, place_x: 56, place_y: 402, place_w: 170 }).eq('id', 'sgn-1t');
+    mountCard();
+    fireEvent.click(await screen.findByRole('button', { name: '✎ Countersign' }));
+    fireEvent.click(screen.getByText('⌨ Type'));
+    await waitFor(() => expect(screen.getByText('drop-signature').disabled).toBe(false));
+    fireEvent.click(screen.getByText('drop-signature'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign and complete' }));
+
+    const done = await screen.findByText(/Signed and sent/);
+    const body = done.closest('.modal-body');
+    expect(body.textContent).toMatch(/the document itself with both signatures on it/);
+    // The word that answers "permanent": drawn into the page, not attached to it.
+    expect(body.textContent).toMatch(/part of the file, not attachments/);
+    expect(body.textContent).toMatch(/can’t be moved\s*or removed/);
+    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy();
   });
 
   it('says where the tenant put theirs, before he commits his own', async () => {

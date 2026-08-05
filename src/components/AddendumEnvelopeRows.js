@@ -373,6 +373,8 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
   const [err, setErr] = useState('');
   const [docUrl, setDocUrl] = useState(null);
   const [noRender, setNoRender] = useState(false);
+  // What countersign-envelope reports about the file it just built.
+  const [result, setResult] = useState(null);
 
   // The signers, so the tenant's mark can be drawn exactly where they put it. This is the
   // point of "tenant signs, then you countersign": he sees their placement before his own.
@@ -434,20 +436,35 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
       });
       return res;
     },
-    onSuccess: onDone,
+    // ⚠ NOT `onDone` any more. The function reports what the executed PDF actually CONTAINS
+    // — whether each mark landed on the document and whether the original is inside the file
+    // — and that was being thrown away, so a landlord had no way to know whether he was
+    // holding a stamped lease or a certificate stapled to nothing. It is shown, then closed.
+    onSuccess: setResult,
     onError: (e) => setErr(e.message || String(e)),
   });
 
-  const ready = !!name.trim() && !!signature && !sign.isPending;
+  // The same gate as the tenant's, for the same reason and with the same exception: a
+  // document that cannot be rendered has nowhere to tap, so it is never gated.
+  const needsPlacement = canPlace && !placement;
+  const ready = !!name.trim() && !!signature && !sign.isPending && !needsPlacement;
+  const blockedWhy = !name.trim() ? 'Type your name to sign.'
+    : !signature ? 'Draw or type your signature first.'
+    : needsPlacement ? 'Please tap where your signature should be to be able to send.'
+      : '';
+
 
   return (
     <div className="modal-scrim" onClick={onClose}>
       <div className="modal" ref={modalRef} role="dialog" aria-modal="true" tabIndex={-1}
         style={{ width: 820 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <strong>Countersign — {envelope.title}</strong>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <strong>{result ? 'Signed' : 'Countersign'} — {envelope.title}</strong>
+          <button className="icon-btn" onClick={result ? onDone : onClose}>✕</button>
         </div>
+        {result ? (
+          <ExecutedResult result={result} other={other} onClose={onDone} />
+        ) : (
         <div className="modal-body">
           <p className="note-msg info" style={{ marginTop: 0 }}>
             <strong>{envelope.signer_typed_name || envelope.signer_name}</strong> signed this
@@ -525,7 +542,8 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
               </span>
               <button type="button" onClick={toDocument}>Take me to the document</button>
               <span className="sign-cta-alt">
-                Rather not? You can still complete it — it goes on a signature page at the end.
+                This is the last step — <strong>Sign and complete</strong> stays greyed out until
+                your signature is on the page, so the signed PDF carries both marks in place.
               </span>
             </div>
           ))}
@@ -544,13 +562,79 @@ function CountersignModal({ envelope, lease, property, corp, onClose, onDone }) 
             copy to you. There is no separate send step, and it can’t be recalled.
           </p>
 
+          {/* The reason rides on a WRAPPER as well as the button: a disabled control does not
+              reliably fire the hover that shows its own tooltip, and the one moment this
+              sentence is wanted is the moment the button won't respond. */}
           <div className="row" style={{ marginTop: 14 }}>
-            <button type="button" onClick={() => sign.mutate()} disabled={!ready}>
-              {sign.isPending ? 'Completing…' : 'Sign and complete'}
-            </button>
+            <span title={ready ? undefined : blockedWhy}>
+              <button type="button" onClick={() => sign.mutate()} disabled={!ready}
+                title={ready ? undefined : blockedWhy}>
+                {sign.isPending ? 'Completing…' : 'Sign and complete'}
+              </button>
+            </span>
             <button type="button" className="ghost" onClick={onClose} disabled={sign.isPending}>Cancel</button>
           </div>
+          {!ready && !sign.isPending && needsPlacement && (
+            <p className="note-msg warn" style={{ marginBottom: 0 }}>{blockedWhy}</p>
+          )}
         </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// WHAT THE LANDLORD IS ACTUALLY HOLDING, said once, at the only moment he can act on it.
+//
+// George, 2026-08-05: *"i want to make sure that the copy that is saved after countersign is
+// fully equipped as a pdf with both signatures permanent."* It IS — both marks are drawn into
+// the page content stream by countersign-envelope, not attached as annotations or form
+// fields, so they cannot be moved or deleted by a PDF viewer. But the function has always
+// reported exactly which of those things happened (`on_document`, `source_included`) and the
+// app threw the answer away, so there was no way to tell a stamped lease from a certificate
+// with nothing behind it.
+//
+// The three states are genuinely different documents and are named as such rather than
+// averaged into "Done".
+function ExecutedResult({ result, other, onClose }) {
+  const on = result?.on_document || {};
+  const both = !!on.tenant && !!on.landlord;
+  // `source_included` is false only when the source could not be parsed as a PDF at all — a
+  // .docx (expected, and said so at send time) or a file too damaged to open.
+  const merged = result?.source_included !== false;
+  return (
+    <div className="modal-body">
+      <p className="note-msg good" style={{ marginTop: 0 }}>
+        ✓ <strong>Signed and sent.</strong> The completed PDF has gone to the {other} and to you.
+      </p>
+      {both && merged ? (
+        <p style={{ fontSize: 13, lineHeight: 1.6 }}>
+          The saved copy is <strong>the document itself with both signatures on it</strong>, each
+          one where it was placed, followed by the Certificate of Completion. The signatures are
+          drawn into the page — they are part of the file, not attachments, and can’t be moved
+          or removed by a PDF reader.
+        </p>
+      ) : merged ? (
+        <p style={{ fontSize: 13, lineHeight: 1.6 }}>
+          The saved copy is the document, followed by a <strong>signature page</strong> carrying
+          {on.tenant ? ` your signature` : on.landlord ? ` the ${other}'s signature` : ' both signatures'} and
+          the Certificate of Completion.{' '}
+          {on.tenant || on.landlord
+            ? 'The other signature is on the page where it was placed.'
+            : 'Neither mark was placed on a page, so both are on the signature page.'}
+        </p>
+      ) : (
+        <p className="note-msg warn">
+          This document isn’t a PDF, so it can’t be stamped. The saved copy is the
+          <strong> signature page and Certificate of Completion</strong> — your original file is
+          unchanged and still on the record beside it.
+        </p>
+      )}
+      <p className="muted" style={{ fontSize: 12 }}>
+        Find it any time on this card as <strong>Open signed copy</strong>.
+      </p>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button type="button" onClick={onClose}>Done</button>
       </div>
     </div>
   );

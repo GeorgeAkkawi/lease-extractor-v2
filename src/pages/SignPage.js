@@ -175,11 +175,29 @@ export default function SignPage({ token }) {
     );
   }
 
-  const canSign = consent && name.trim().length > 0 && !!signature && !busy;
   // Whether there is a page to put a mark ON. Everything about placement — the step, the
-  // call to action, the automatic scroll — is silent when the document can't be rendered,
-  // because there is nothing to tap and saying so would only confuse.
+  // call to action, the automatic scroll, and the gate below — is silent when the document
+  // can't be rendered, because there is nothing to tap and saying so would only confuse.
   const canPlace = !!state.document_url && !noRender;
+
+  // ⚠ PLACEMENT IS NOW A GATE, AND THE CONDITION IS THE WHOLE OF IT.
+  // George, 2026-08-05: *"make it so that the send button doesnt work unless the person
+  // signing has tapped their signature on the lease."* It is gated ONLY when there is a page
+  // to tap — `canPlace`. A .docx, a scan pdf.js refuses, an old browser: all still sign, and
+  // their signature goes on the appended page exactly as it always did. Gating those would
+  // leave a signer staring at a dead button with no way to satisfy it, which is a far worse
+  // failure than an unstamped signature page.
+  //
+  // The point of the gate is the executed PDF: with both marks placed, the signed copy is the
+  // document itself carrying both signatures, and the separate SIGNATURES page is skipped.
+  const needsPlacement = canPlace && !placement;
+  const canSign = consent && name.trim().length > 0 && !!signature && !busy && !needsPlacement;
+  const blockedWhy = consent
+    ? (!name.trim() ? 'Enter your name.'
+      : !signature ? 'Add your signature above.'
+      : needsPlacement ? 'Please tap where your signature should be to be able to send.'
+        : '')
+    : 'Tick the box above to continue.';
 
   // George, 2026-08-05: *"it has to be way more clear and straightforward for both users
   // that they sign and tap where they place the signature."* Four short steps, up front,
@@ -282,7 +300,8 @@ export default function SignPage({ token }) {
               </span>
               <button type="button" onClick={toDocument}>Take me to the document</button>
               <span className="sign-cta-alt">
-                Rather not? You can still sign — it goes on a signature page at the end.
+                This is the last step — <strong>Sign document</strong> stays greyed out until
+                your signature is on the page, so the signed copy shows it exactly where you put it.
               </span>
             </div>
           ))}
@@ -290,16 +309,20 @@ export default function SignPage({ token }) {
           {err && <p className="note-msg danger">{err}</p>}
 
           <div className="row" style={{ marginTop: 14 }}>
-            <button type="button" onClick={sign} disabled={!canSign}>
-              {busy ? 'Signing…' : 'Sign document'}
-            </button>
+            {/* The reason lives on a WRAPPER as well as the button: a disabled control does
+                not reliably fire the hover that shows its own tooltip, and the one moment
+                this sentence is needed is the moment the button won't respond. */}
+            <span title={canSign ? undefined : blockedWhy}>
+              <button type="button" onClick={sign} disabled={!canSign} title={canSign ? undefined : blockedWhy}>
+                {busy ? 'Signing…' : 'Sign document'}
+              </button>
+            </span>
             <button type="button" className="ghost" onClick={() => setDeclining(true)} disabled={busy}>Decline</button>
           </div>
-          {!canSign && !busy && (
-            <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-              {!consent ? 'Tick the box above to continue.'
-                : !name.trim() ? 'Enter your name.'
-                : 'Add your signature above.'}
+          {!canSign && !busy && blockedWhy && (
+            <p className={`${needsPlacement ? 'note-msg warn' : 'muted'}`}
+              style={needsPlacement ? { marginTop: 10 } : { fontSize: 12, marginTop: 8 }}>
+              {blockedWhy}
             </p>
           )}
         </div>

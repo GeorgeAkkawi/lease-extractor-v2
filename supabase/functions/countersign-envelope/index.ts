@@ -197,8 +197,10 @@ Deno.serve(async (req) => {
     const isPdf = (env.filename ?? '').toLowerCase().endsWith('.pdf')
       || (!!srcBytes && srcBytes.length > 4 && srcBytes[0] === 0x25 && srcBytes[1] === 0x50);
 
-    const { bytes: built, tenantStamped: tenantOnDoc, landlordStamped: landlordOnDoc } =
-      await buildExecutedPdf({
+    const {
+      bytes: built, tenantStamped: tenantOnDoc, landlordStamped: landlordOnDoc,
+      sourceIncluded,
+    } = await buildExecutedPdf({
         env, tenant, landlordName: name, events: events ?? [],
         srcBytes: isPdf ? srcBytes : null, tenantSig, landlordSig,
         landlordPlace,
@@ -235,7 +237,12 @@ Deno.serve(async (req) => {
 
     await supabase.from('envelope_events').insert({
       owner_id: user.id, envelope_id: env.id, kind: 'executed', actor: 'system',
-      detail: { stamped: isPdf, bytes: built.byteLength },
+      // `source_included` is on the audit trail as well as in the response: a PDF that failed
+      // to parse is the one case nobody expects, and it must be findable after the fact.
+      detail: {
+        stamped: isPdf, bytes: built.byteLength, source_included: sourceIncluded,
+        on_document: { tenant: tenantOnDoc, landlord: landlordOnDoc },
+      },
     });
 
     // ---- Send both parties their copy --------------------------------------
@@ -249,6 +256,10 @@ Deno.serve(async (req) => {
       // tells the landlord, because "signed" and "signed in the right place" are different
       // facts and he is the one who will hand this to a lender.
       on_document: { tenant: tenantOnDoc, landlord: landlordOnDoc },
+      // …and whether the original document is inside the file at all. False means the source
+      // could not be parsed as a PDF: expected for a .docx or a scan, a real problem for
+      // anything else, and indistinguishable from success until it was reported.
+      source_included: sourceIncluded,
     });
   } catch (e) {
     return serverError(e, 'countersign-envelope');
@@ -266,13 +277,21 @@ async function buildExecutedPdf(
     tenantSig: Uint8Array | null; landlordSig: Uint8Array;
     landlordPlace: Record<string, number | null>;
   },
-): Promise<{ bytes: Uint8Array; tenantStamped: boolean; landlordStamped: boolean }> {
+): Promise<{ bytes: Uint8Array; tenantStamped: boolean; landlordStamped: boolean; sourceIncluded: boolean }> {
   const { PDFDocument, StandardFonts, rgb, degrees } = await import('npm:pdf-lib');
 
+  // ⚠ WHETHER THE ORIGINAL IS INSIDE THE EXECUTED FILE IS A FACT THE LANDLORD NEEDS.
+  // Three outcomes hide behind this block: a PDF that loaded (the executed copy IS the
+  // document), a Word/scan source (expected — the certificate stands alone and the original
+  // stays beside it), and a PDF too damaged to parse (the same shape, but NOT expected). All
+  // three used to return the identical response, so "signed" could mean a stamped lease or a
+  // certificate with nothing behind it and nobody could tell which. It is reported now.
   let pdf: any;
+  let sourceIncluded = false;
   if (srcBytes) {
     try {
       pdf = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
+      sourceIncluded = true;
     } catch {
       pdf = await PDFDocument.create(); // unreadable PDF → certificate stands alone
     }
@@ -444,7 +463,17 @@ async function buildExecutedPdf(
     { size: 7.5, gap: 11, colour: rgb(0.5, 0.5, 0.5) },
   );
 
-  return { bytes: await pdf.save(), tenantStamped, landlordStamped };
+  // The file's own properties name it for what it is, so a copy opened out of an email or a
+  // lender's folder identifies itself without anyone reading page one.
+  try {
+    pdf.setTitle(safe(`${env.title} (signed)`));
+    pdf.setSubject(safe(`Executed ${stamp(new Date().toISOString())} - envelope ${env.id}`));
+    pdf.setProducer('Amlak');
+    pdf.setCreator('Amlak');
+    pdf.setModificationDate(new Date());
+  } catch { /* metadata is never worth failing an executed document over */ }
+
+  return { bytes: await pdf.save(), tenantStamped, landlordStamped, sourceIncluded };
 }
 
 // Both parties get the finished copy. The tenant email is the one exception to "Amlak never
