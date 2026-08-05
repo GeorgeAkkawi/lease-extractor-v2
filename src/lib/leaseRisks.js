@@ -218,6 +218,10 @@ export function reviewSummary(lease) {
     total: flags.length,
     high: flags.filter((f) => f?.severity === 'high').length,
     reviewedAt: review.reviewed_at || null,
+    // Set once the landlord has read the findings on the lease page. The findings are still
+    // there — this only stops the tenant list flagging a lease he has already dealt with.
+    // A re-review writes a fresh object without the key, so the flag returns.
+    dismissedAt: review.dismissed_at || null,
     titles: flags.map((f) => f?.title).filter(Boolean),
   };
 }

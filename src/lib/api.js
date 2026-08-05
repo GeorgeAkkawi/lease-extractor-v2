@@ -570,6 +570,25 @@ export async function reviewLease(leaseId) {
   return ai_review;
 }
 
+// Mark a saved lease review as read, so its findings stop occupying the lease page and its
+// flag leaves the tenant list (George, 2026-08-05: "needs to be a way to dismiss the lease
+// review output in the lease page or else they just sit there").
+//
+// A STAMP, NOT A DELETE. The findings stay exactly where they are — dismissing says "I have
+// read this", not "this was wrong", and re-opening the lease can still show it. Clearing the
+// flags instead would mean paying for the review again to see what it said.
+//
+// `dismissed_at` rides INSIDE the existing ai_review jsonb, so there is no migration and no
+// second source of truth: a re-review writes a fresh object with no such key, which is what
+// makes the flag come back when the document is read again.
+export async function setLeaseReviewDismissed(leaseId, review, dismissed = true) {
+  const next = { ...(review || {}) };
+  if (dismissed) next.dismissed_at = new Date().toISOString();
+  else delete next.dismissed_at;
+  await updateLease(leaseId, { ai_review: next });
+  return next;
+}
+
 // Below this a lease's stored transcript isn't a real document — it's a stub or
 // nothing. Mirrors MIN_USABLE_TEXT in the cache-lease-text edge function; the two are
 // the same judgement and must agree, or the sweep would send a lease for caching that

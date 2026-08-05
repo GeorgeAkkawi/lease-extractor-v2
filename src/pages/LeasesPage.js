@@ -27,6 +27,7 @@ export default function LeasesPage() {
   // head. Rendered from inside .head-actions it squeezed between the buttons and stretched
   // them out of shape.
   const [reviewResults, setReviewResults] = useState(null);
+  const [reviewProgress, setReviewProgress] = useState(null);
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: leases = [], isLoading } = useQuery({ queryKey: ['leases', propId], queryFn: () => listLeases(propId) });
@@ -58,7 +59,14 @@ export default function LeasesPage() {
   const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   const reviewsOn = !hiddenWidgets.includes('lease_review');
   const reviewByLease = {};
-  if (reviewsOn) for (const r of leaseReviews) reviewByLease[r.id] = reviewSummary(r);
+  if (reviewsOn) {
+    for (const r of leaseReviews) {
+      const sum = reviewSummary(r);
+      // A dismissed review keeps its findings on the lease page but stops flagging the row —
+      // the landlord has read it. Re-reviewing brings the flag back.
+      if (sum && !sum.dismissedAt) reviewByLease[r.id] = sum;
+    }
+  }
   usePageChrome([
     { label: 'Portfolio', to: '/leases' },
     { label: corp?.name || '…', to: `/leases/${corpId}` },
@@ -151,7 +159,7 @@ export default function LeasesPage() {
         </div>
         <div className="head-actions">
           <button className="secondary" onClick={() => downloadRentRollXlsx({ leases, properties: [prop], fileLabel: prop?.name })} disabled={!leases.length || !prop}>⬇ Download rent roll</button>
-          <ReviewLeasesButton leases={leases} onResults={setReviewResults} />
+          <ReviewLeasesButton leases={leases} onResults={setReviewResults} onProgress={setReviewProgress} />
           <button className="secondary" onClick={() => setShowBldg((s) => !s)}>⛶ Building size</button>
           <button onClick={newLease}>+ Add tenant</button>
         </div>
@@ -159,8 +167,7 @@ export default function LeasesPage() {
 
       <ReviewResults
         results={reviewResults}
-        corpId={corpId}
-        propId={propId}
+        progress={reviewProgress}
         onDismiss={() => setReviewResults(null)}
       />
 

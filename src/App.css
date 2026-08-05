@@ -459,6 +459,12 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
    at", which must not read the same as "looked at, nothing found". */
 .review-badge{align-self:flex-start;margin-top:4px}
 
+/* An inline "undo" that reads as part of the sentence it sits in, not as another button
+   competing with the panel's real actions. */
+.linkish{background:transparent;border:none;padding:0;color:var(--accent);font:inherit;
+  font-weight:600;text-transform:none;letter-spacing:0;text-decoration:underline;cursor:pointer}
+.linkish:hover{filter:none;color:var(--ink)}
+
 /* ---- the sweep's result list ---- */
 .review-results{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
 .review-results-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}

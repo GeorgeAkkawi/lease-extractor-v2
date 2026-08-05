@@ -157,11 +157,12 @@ describe('LeaseReviewStrip — the AI half', () => {
 
     fireEvent.click(await waitFor(() => screen.getByRole('button', { name: /Review this lease/i })));
     const dialog = await screen.findByRole('alertdialog');
-    // It states the three facts the sweep states — scope, price, and what it won't touch.
+    // It states what the action does and what it won't touch — and NO price (George:
+    // "take out how much it costs, the user doesn't care about that").
     expect(within(dialog).getByText(/Only this tenant’s lease is read/i)).toBeTruthy();
-    expect(within(dialog).getByText(/About 2–5¢/i)).toBeTruthy();
     expect(within(dialog).getByText(/Nothing is written to the lease’s terms/i)).toBeTruthy();
-    // A paid read is not a delete — the confirm button must not be the red one.
+    expect(dialog.textContent).not.toMatch(/¢|\$\s?\d|\d+\s*cents/i);
+    // A read is not a delete — the confirm button must not be the red one.
     expect(dialog.querySelector('.danger-solid')).toBeNull();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
@@ -182,6 +183,56 @@ describe('LeaseReviewStrip — the AI half', () => {
     fireEvent.click(await waitFor(() => screen.getByRole('button', { name: /Re-review/i })));
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText(/replaced by the new read/i)).toBeTruthy();
+  });
+});
+
+describe('LeaseReviewStrip — marking the findings read', () => {
+  const reviewed = (extra = {}) => ({
+    flags: [
+      { key: 'no_personal_guarantee', severity: 'high', title: 'No personal guarantee', note: 'n', quote: null },
+      { key: 'no_late_fee', severity: 'medium', title: 'No late fee', note: 'n', quote: null },
+    ],
+    model: 'x', reviewed_at: `${TODAY}T00:00:00.000Z`, source: 'review_button', ...extra,
+  });
+
+  // "Needs to be a way to dismiss the lease review output in the lease page or else they
+  // just sit there" (George, 2026-08-05). Folded away, NOT deleted — the landlord must not
+  // have to pay for the review again to find out what it said.
+  it('folds the findings away and stamps the lease, without losing them', async () => {
+    renderStrip({ lease: { ...original, lease_text: 'text', ai_review: reviewed() }, insurance: undefined });
+
+    await waitFor(() => expect(screen.getByText('No personal guarantee')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /Mark as read/i }));
+
+    await waitFor(() => expect(screen.queryByText('No personal guarantee')).toBeNull());
+    expect(screen.getByText(/2 points from the document marked read/i)).toBeTruthy();
+
+    const saved = await getLease('lease-1');
+    expect(saved.ai_review.dismissed_at).toBeTruthy();
+    expect(saved.ai_review.flags).toHaveLength(2);   // still there, still free to re-read
+  });
+
+  it('gives them straight back', async () => {
+    renderStrip({
+      lease: { ...original, lease_text: 'text', ai_review: reviewed({ dismissed_at: `${TODAY}T09:00:00.000Z` }) },
+      insurance: undefined,
+    });
+
+    await waitFor(() => expect(screen.getByText(/marked read/i)).toBeTruthy());
+    expect(screen.queryByText('No personal guarantee')).toBeNull();
+    // …and it must not claim the AI found nothing while saying it folded something away.
+    expect(screen.queryByText(/found no missing protections/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Show them again/i }));
+    await waitFor(() => expect(screen.getByText('No personal guarantee')).toBeTruthy());
+    const saved = await getLease('lease-1');
+    expect(saved.ai_review.dismissed_at).toBeUndefined();
+  });
+
+  it('offers nothing to dismiss when there is nothing saved to read', async () => {
+    renderStrip({ lease: { ...original, lease_text: 'text', ai_review: null }, insurance: undefined });
+    await waitFor(() => expect(screen.getByText('Lease review')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /Mark as read/i })).toBeNull();
   });
 });
 

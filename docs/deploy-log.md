@@ -12,6 +12,70 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **No prices, a dismiss on both halves, and the button row stops
+  stretching** (George: *"take out how much it costs the user doesnt care about that. needs
+  to be a way to dismiss the lease review output in the lease page or else they just sit
+  there … it creates a weird affect where it streches the boxs of the download rent rolls,
+  review leases, and building size buttons … just say leases reviewed found this then have a
+  dismiss button"*). Deployed: frontend Cloudflare **`09e48c4a`**. No migration. Tests
+  **1890/1890** across 180 files (+4). Follows the round below, same day.
+
+  **THE PRICE IS GONE FROM BOTH DIALOGS.** They still ask — the confirmation was never about
+  the money, it is about saying what the action does and what it will not touch — but no
+  figure is quoted anywhere, and `REVIEW_CENTS` / `READ_CENTS` / the `money()` helper are
+  deleted with it. The transcription step is still *described* ("transcribed first, so
+  nothing is judged on a blank page") because that is a fact about what gets read, not a
+  bill. **The regression test survives the copy change**: it no longer asserts a figure, it
+  asserts the dialog's implications box is byte-identical with and without `lease_text` on
+  the row — the invariant that outlives any particular wording, since the bug was ever
+  *deriving* dialog text from a column `LEASE_LIST_COLS` doesn't fetch.
+
+  **The sweep's report is one line again, plus a dismiss.** The per-lease roll-call shipped
+  hours earlier is **withdrawn**: the durable per-lease signal is the flag badge on each
+  tenant row, and saying it twice made the report a wall of names to re-read after every
+  sweep. ⚠ **A FAILURE IS STILL NAMED** — "Reviewed 8 of 9" without saying which one didn't
+  is the one shape of this panel that leaves the landlord unable to act, so failed rows stay.
+
+  **⚠ THE BUTTON-ROW STRETCH WAS THE PROGRESS LINE, NOT THE REPORT.** Moving the report under
+  the page head (previous entry) fixed only half of it: the "which tenant are we on" line was
+  still rendered inside `.head-actions` with `width:100%`, so **while the sweep ran** it
+  stretched "Download rent roll", "Review leases" and "Building size" to its own height.
+  `ReviewLeasesButton` now renders **nothing but a button, ever** — progress goes up through
+  `onProgress` and is drawn by `ReviewResults` under the head, in the same slot the report
+  lands in. Measured in the running app: button heights 41px before, during and after a
+  sweep. **The rule this leaves behind: `.head-actions` is a plain flex row — put anything
+  full-width in it and every button beside it distorts.**
+
+  **Dismissing a review is a STAMP, NOT A DELETE**, and it is the answer to George's other
+  question ("when I click in to review the flags does the flag on the tenant tab go away" —
+  no, and it should not: an accidental click into a lease must not wipe the only durable
+  signal that it has problems). "✓ Mark as read" writes `dismissed_at` **inside the existing
+  `ai_review` jsonb** — no migration, no second source of truth — and three things follow:
+  the findings fold behind a one-line summary on the lease page, "Show them again" puts them
+  straight back, and the tenant row's flag badge disappears. **A re-review writes a fresh
+  object with no such key, so the flag returns** — which is exactly the desired behaviour when
+  a document is read again. Clearing the flags instead would have meant paying for the review
+  again to find out what it had said.
+
+  Two smaller things the dismissed state forced: the panel's empty line ("the AI found no
+  missing protections it could name") is **suppressed** when the AI half is folded away — it
+  flatly contradicted the note above it — and the free record checks are deliberately
+  **untouched** by dismissal, because they are recomputed live and disappear on their own
+  when the underlying thing is fixed.
+
+  **Files:** `src/components/ReviewLeasesButton.js` (no price, button-only render,
+  `onProgress`, one-line report) · `src/components/LeaseReviewStrip.js` (no price, "Mark as
+  read" / "Show them again", suppressed empty line) · `src/lib/api.js`
+  (`setLeaseReviewDismissed`) · `src/lib/leaseRisks.js` (`reviewSummary.dismissedAt`) ·
+  `src/pages/LeasesPage.js` (progress state; a dismissed review draws no badge) ·
+  `src/App.css` (`.linkish`) · tests in `reviewLeasesButton.test.js`,
+  `leaseReviewStrip.test.js`, `leaseRisks.test.js`.
+
+  **Verified in the running app:** button heights unchanged through a live sweep; the report
+  reads "Reviewed 2 of 2 leases · 10 found in the documents" with a working ✕; neither dialog
+  contains a currency figure; marking City Dental read folded its six findings away, and
+  returning to the tenant list showed **only** Bright Coffee still flagged.
+
 - **2026-08-05** — **A review you can act on: the lease sweep names the leases, the leases wear
   the flag, and the price it quotes is the true one** (George: *"there should be a popup
   explaining what review lease does when its clicked, shouldnt fire immediately … on the demo

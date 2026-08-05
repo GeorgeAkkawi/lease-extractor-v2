@@ -201,7 +201,22 @@ describe('reviewSummary', () => {
   it('separates never-reviewed from reviewed-and-clean', () => {
     expect(reviewSummary({ id: 'l1', ai_review: null })).toBeNull();
     expect(reviewSummary({ id: 'l1' })).toBeNull();
-    expect(reviewSummary(review([]))).toEqual({ total: 0, high: 0, reviewedAt: '2026-08-01T00:00:00.000Z', titles: [] });
+    expect(reviewSummary(review([]))).toEqual({
+      total: 0, high: 0, reviewedAt: '2026-08-01T00:00:00.000Z', dismissedAt: null, titles: [],
+    });
+  });
+
+  // Marking a review read is what takes the flag off the tenant row — the findings stay.
+  it('carries the dismissal stamp through, without dropping the findings', () => {
+    const out = reviewSummary({
+      ai_review: {
+        flags: [{ key: 'no_late_fee', severity: 'medium', title: 'No late fee' }],
+        reviewed_at: '2026-08-01T00:00:00.000Z',
+        dismissed_at: '2026-08-05T00:00:00.000Z',
+      },
+    });
+    expect(out.dismissedAt).toBe('2026-08-05T00:00:00.000Z');
+    expect(out.total).toBe(1);
   });
 
   it('survives a review row with no flags array at all', () => {

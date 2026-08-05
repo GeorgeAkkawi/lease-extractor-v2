@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { reviewLease, MIN_USABLE_TEXT } from '../lib/api';
+import { reviewLease, setLeaseReviewDismissed, MIN_USABLE_TEXT } from '../lib/api';
 import { computeLeaseRisks, transcriptGaps } from '../lib/leaseRisks';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
@@ -33,7 +33,11 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
   // list for a beat after the landlord asked for a new one.
   const [justRun, setJustRun] = useState(null);
   const review = justRun || lease?.ai_review || null;
-  const aiFlags = Array.isArray(review?.flags) ? review.flags : [];
+  // Dismissed = "I have read this". The findings are NOT deleted — they fold away behind a
+  // one-line summary and the tenant list stops flagging the lease, because a review that
+  // stays open forever is one the landlord learns to scroll past (George, 2026-08-05).
+  const dismissedAt = review?.dismissed_at || null;
+  const aiFlags = !dismissedAt && Array.isArray(review?.flags) ? review.flags : [];
   const codeFlags = computeLeaseRisks({ lease, escalations, renewals, insurance });
   const flags = [...aiFlags.map((f) => ({ ...f, source: 'ai' })), ...codeFlags]
     .sort((a, b) => (RANK[a.severity] ?? 3) - (RANK[b.severity] ?? 3));
@@ -49,11 +53,22 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
     },
   });
 
-  // Ask before spending. This used to fire the instant the button was clicked — the only
-  // paid action in the app with no confirmation, which made the CHEAP button the one with
-  // no guard rail (George, 2026-08-05). Same dialog and the same three facts as the
-  // property-wide sweep, so the two read as one feature at two scales rather than two
-  // different things.
+  // Reading it, and un-reading it. Both go through the same helper so `dismissed_at` only
+  // ever lives inside the saved review object.
+  const dismiss = useMutation({
+    mutationFn: (yes) => setLeaseReviewDismissed(lease.id, review, yes),
+    onSuccess: (next) => {
+      setJustRun(next);
+      qc.invalidateQueries({ queryKey: ['lease', lease.id] });
+      qc.invalidateQueries({ queryKey: ['leaseReviews'] });
+    },
+  });
+
+  // Ask before running. This used to fire the instant the button was clicked — the only AI
+  // action in the app with no confirmation, which made the quiet button the one with no
+  // guard rail (George, 2026-08-05). Same dialog and the same facts as the property-wide
+  // sweep, so the two read as one feature at two scales rather than two different things.
+  // ⚠ It states no price: "take out how much it costs, the user doesn't care about that".
   const askThenRun = async () => {
     const again = !!review;
     const ok = await askConfirm({
@@ -61,12 +76,12 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
       message: 'This lease is read for terms that commonly cost a landlord money — no personal guarantee, no late fee, an uncapped CAM, and seven more.',
       implications: [
         'Only this tenant’s lease is read — use “⚑ Review leases” on the property to do all of them at once.',
-        'About 2–5¢, one time. The result is saved, so re-opening this page costs nothing.',
+        'The result is saved, so re-opening this page shows it again without re-reading.',
         'Nothing is written to the lease’s terms — this only fills the red-flag panel below.',
         ...(again ? ['The findings currently shown are replaced by the new read.'] : []),
       ],
       confirmLabel: again ? 'Re-review lease' : 'Review lease',
-      // A paid read, not a delete — see the same note on ReviewLeasesButton.
+      // A read, not a delete — see the same note on ReviewLeasesButton.
       tone: 'default',
     });
     if (ok) run.mutate();
@@ -101,6 +116,19 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
               {flags.length} {flags.length === 1 ? 'point' : 'points'} to look at
             </span>
           )}
+          {/* Dismiss is offered only while there ARE saved findings on screen: nothing to
+              read means nothing to mark read. It stamps the review rather than clearing it,
+              so "Show again" is a free undo and the findings are never lost. */}
+          {!dismissedAt && aiFlags.length > 0 && (
+            <button
+              className="secondary"
+              disabled={dismiss.isPending}
+              title="Mark these findings read — they fold away here and the flag leaves this tenant on the property list"
+              onClick={() => dismiss.mutate(true)}
+            >
+              {dismiss.isPending ? 'Dismissing…' : '✓ Mark as read'}
+            </button>
+          )}
           <button
             className="secondary"
             disabled={run.isPending || !hasText}
@@ -111,6 +139,22 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
           </button>
         </div>
       </div>
+
+      {/* The dismissed state. It says WHAT was folded away and offers it straight back —
+          a dismissal that hid the count would just be a review the landlord can no longer
+          find. The free record checks below are unaffected: they are recomputed live and
+          disappear on their own when the underlying thing is fixed. */}
+      {dismissedAt && (
+        <p className="muted review-note">
+          {Array.isArray(review?.flags) && review.flags.length > 0
+            ? `${review.flags.length} ${review.flags.length === 1 ? 'point' : 'points'} from the document marked read on ${fmtDate(String(dismissedAt).slice(0, 10))}.`
+            : `Document review marked read on ${fmtDate(String(dismissedAt).slice(0, 10))}.`}
+          {' '}
+          <button className="linkish" onClick={() => dismiss.mutate(false)} disabled={dismiss.isPending}>
+            Show them again
+          </button>
+        </p>
+      )}
 
       {!hasText && (
         <p className="muted review-note">
@@ -142,11 +186,16 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
       )}
 
       {flags.length === 0 ? (
-        <p className="empty-line muted">
-          {review || codeFlags.length === 0
-            ? 'Nothing flagged. The records are complete and the AI found no missing protections it could name.'
-            : 'Nothing flagged from your records yet. Run the review to have the lease itself read.'}
-        </p>
+        /* Silent when the AI half was marked read: the note above already says what was
+           folded away, and "the AI found no missing protections" would flatly contradict
+           it. */
+        dismissedAt ? null : (
+          <p className="empty-line muted">
+            {review || codeFlags.length === 0
+              ? 'Nothing flagged. The records are complete and the AI found no missing protections it could name.'
+              : 'Nothing flagged from your records yet. Run the review to have the lease itself read.'}
+          </p>
+        )
       ) : (
         <>
           <div className="review-list">
