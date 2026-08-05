@@ -67,7 +67,11 @@ describe('AddendumEditor — the AI review screen', () => {
     expect(screen.getByText(/computed from the rent in effect just before it/i)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /Save & apply/i }));
-    await waitFor(async () => expect((await listAddendums(lease.id)).length).toBe(1));
+    // ⚠ WAIT FOR THE THING BEING ASSERTED, not for a proxy. createAddendum writes the rider
+    // row and applyAddendum writes the escalations AFTER it, so waiting on the addendum said
+    // nothing about whether the steps had landed — a latent race that only started failing
+    // when applyAddendum grew a back-fill and a billing carry-through and got slower.
+    await waitFor(async () => expect((await listEscalations(lease.id)).length).toBe(2));
 
     const escs = (await listEscalations(lease.id)).sort((a, b) => a.effective_date.localeCompare(b.effective_date));
     expect(escs).toHaveLength(2);
@@ -149,8 +153,9 @@ describe('AddendumEditor — the AI review screen', () => {
       fireEvent.change(date, { target: { value: '2033-04-30' } });
       await waitFor(() => expect(screen.getByRole('button', { name: /Save & apply/i }).disabled).toBe(false));
       fireEvent.click(screen.getByRole('button', { name: /Save & apply/i }));
-      await waitFor(async () => expect((await listAddendums(lease.id)).length).toBe(1));
-      expect((await api.getLease(lease.id)).lease_termination_date).toBe('2033-04-30');
+      // Same rule: the term is moved by applyAddendum, after the rider row exists.
+      await waitFor(async () => expect((await api.getLease(lease.id)).lease_termination_date).toBe('2033-04-30'));
+      expect((await listAddendums(lease.id)).length).toBe(1);
     } finally {
       spy.mockRestore();
     }

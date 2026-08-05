@@ -74,6 +74,77 @@ export function billedComponents(share) {
   };
 }
 
+// ---- The estimate, month by month (0089) ------------------------------------------------
+// The exact twin of monthlyBases (escalations.js), for CAM & tax and roof instead of rent.
+//
+// George, 2026-08-04: *"the previous months aren't affected and shouldn't be reconciled at the
+// new figures because they would be part of the old lease."* A rent change had somewhere to
+// live — rent_escalations is a ledger of dated facts. The estimate did not: it is one scalar
+// on the lease, so raising it in August silently re-priced January.
+//
+// THE ERA RULE, identical to monthlyBases so the two can't drift: the LIVE scalar is
+// authoritative for the current era (the segment at or after the latest dated row), and the
+// ledger answers for any earlier segment. A month before every row falls back to the live
+// figure — the same bounded degradation monthlyBases documents, and it is why a change writes
+// a CLOSING row carrying the old figure rather than only a boundary row.
+//
+//   estimates — lease_estimates rows for this lease: { effective_date, cam_tax_annual, roof_annual }
+//   share     — the v_tenant_shares row (billedComponents supplies the live era)
+// Returns { camTax: number[12], roof: number[12] } — ANNUAL rates in effect that month, the
+// same convention monthlyBases uses, so callers divide by 12 exactly as they already do.
+//
+// ⚠ An EMPTY ledger returns the live figure for all twelve months, which is byte-for-byte the
+// behaviour that existed before 0089. That is what makes the table shippable without a
+// migration of every existing lease.
+export function monthlyEstimates(estimates, share, year) {
+  const live = billedComponents(share);
+  const flat = (v) => Array(12).fill(round2(v));
+  // A GROSS lease bills no estimate at all — the components are carved out of the flat rent
+  // (billedComponents above) — so a dated estimate ledger has nothing to say about it.
+  if (live.gross) return { camTax: flat(live.camTax), roof: flat(live.roof) };
+
+  const rowsFor = (key) => (Array.isArray(estimates) ? estimates : [])
+    .filter((e) => e && e[key] != null && e.effective_date)
+    .map((e) => ({ t: estDate(e.effective_date), v: round2(Number(e[key]) || 0) }))
+    .filter((e) => Number.isFinite(e.t))
+    .sort((a, b) => a.t - b.t);
+
+  const series = (key, liveValue) => {
+    const rows = rowsFor(key);
+    if (!rows.length) return flat(liveValue);
+    const maxT = rows[rows.length - 1].t;
+    const out = [];
+    for (let m = 1; m <= 12; m++) {
+      const ref = new Date(year, m - 1, 1, 12).getTime(); // first of the month, local noon
+      const prior = rows.filter((r) => r.t <= ref);
+      if (!prior.length) { out.push(round2(liveValue)); continue; }
+      const latest = prior[prior.length - 1];
+      // Latest applicable row IS the globally-latest → the current era → the live scalar wins.
+      // Otherwise a later row supersedes it → historical segment → read the ledger.
+      out.push(latest.t === maxT ? round2(liveValue) : latest.v);
+    }
+    return out;
+  };
+
+  return {
+    camTax: series('cam_tax_annual', live.camTax),
+    // A tenant who isn't roof-responsible is billed no roof, whatever any row says.
+    roof: share.roof_responsible ? series('roof_annual', live.roof) : flat(0),
+  };
+}
+
+// The whole year's estimate as ONE annual figure, summing the twelve monthly rates. This is
+// what a mid-year change actually means for the year: eight months at the old figure and four
+// at the new is not "the new figure", and billing it as such is what re-priced settled months.
+export const annualFromMonthly = (byMonth) =>
+  round2((byMonth || []).reduce((s, v) => s + (Number(v) || 0) / 12, 0));
+
+function estDate(d) {
+  if (!d) return NaN;
+  const s = typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T12:00:00` : d;
+  return new Date(s).getTime();
+}
+
 // The tenant's ACTUAL share of the year's expenses (what reconciliation trues up to).
 export function actualComponents(share) {
   return {
@@ -99,11 +170,35 @@ export function actualComponents(share) {
 // Returns { est, actual, estTotal, actualTotal, diff, direction, lines, camTaxAdjust }
 // where diff = actual − estimate (> 0 ⇒ the tenant owes the shortfall; < 0 ⇒ the
 // landlord owes the tenant a refund; within ±5¢ ⇒ even).
-export function reconcileFigures({ share, adjustments = null }) {
+// ⚠ `estimates` + `year` (0089) — the lease_estimates ledger. Without them the estimate side
+// is today's scalar applied to all twelve months, which is what silently mis-settled a year
+// whose estimate moved part way through: eight months billed at $54,000/yr and four at
+// $60,000/yr is not "$60,000 billed", and truing up as though it were is wrong by the whole
+// difference, in the direction of refunding money that was never collected. Omitting them is
+// still safe — an absent or empty ledger produces exactly the old figures.
+// `monthly` is the already-computed { camTax, roof } pair for callers that hold it (the Ledger
+// roll builds it per lease anyway) — passing it rather than the raw rows guarantees the
+// reconcile settles against the very same months the ledger priced, not a second derivation.
+export function reconcileFigures({ share, adjustments = null, estimates = null, monthly = null, year = null }) {
   const { cam, tax, roof } = billedComponents(share);
-  const est = { cam, tax, roof };
   const actual = actualComponents(share);
   const camTaxAdjust = camTaxAdjustmentTotal(adjustments);
+
+  // What was actually billed across the year, month by month, collapsed back to one annual
+  // figure. Identical to `cam + tax` whenever nothing was dated, so the common path is
+  // unchanged to the cent.
+  const y = Number(year) || new Date().getFullYear();
+  const byMonth = (monthly?.camTax && monthly?.roof) ? monthly : monthlyEstimates(estimates, share, y);
+  const segCamTax = annualFromMonthly(byMonth.camTax);
+  const segRoof = annualFromMonthly(byMonth.roof);
+  // Keep the stored cam/tax split untouched unless the ledger genuinely moved the figure —
+  // a legacy lease with the two entered separately keeps reporting them separately. When it
+  // DID move, the combined figure goes on `cam` with `tax` zeroed, which is the convention
+  // every other writer and reader of these columns already follows.
+  const moved = Math.abs(segCamTax - round2(cam + tax)) > RECON_DUST;
+  const est = moved
+    ? { cam: segCamTax, tax: 0, roof: segRoof }
+    : { cam, tax, roof: Math.abs(segRoof - roof) > RECON_DUST ? segRoof : roof };
 
   // CAM and property tax reconcile together as ONE combined "CAM & tax" line — the
   // landlord bills a single combined estimate, so they true up as a single figure.

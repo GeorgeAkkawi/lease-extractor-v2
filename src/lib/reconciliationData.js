@@ -42,7 +42,14 @@ function termMonths(start, end) {
 export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTotal = 0, buildingSf = 0, roll = null, renewals = [], adjustments = [], property = {}, year }) {
   const sqft = Number(share.square_footage) || 0;
   const sharePct = Number(share.share_pct) || (buildingSf > 0 ? sqft / buildingSf : 0);
-  const fig = reconcileFigures({ share, adjustments });
+  // Settle against the months the LEDGER priced, not against today's scalar spread over the
+  // whole year (0089) — the roll already carries them, so the two can't disagree.
+  const fig = reconcileFigures({
+    share, adjustments, year,
+    monthly: roll?.camTaxByMonth && roll?.roofByMonth
+      ? { camTax: roll.camTaxByMonth, roof: roll.roofByMonth }
+      : null,
+  });
   const est = billedComponents(share);
   const actual = actualComponents(share);
   // The rent as BILLED: the lease's base for a net tenant; on a gross lease the flat
@@ -53,7 +60,7 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
   // Monthly base — escalation-aware from the ledger's own schedule when we have it.
   let monthlyBase = Array(12).fill(round2(baseAnnual / 12));
   if (roll?.schedule) {
-    const comp = componentizeSchedule({ schedule: roll.schedule, factor: roll.factor, camTaxAnnual: roll.camTaxAnnual, roofAnnual: roll.roofAnnual, adjustments: roll.adjustments });
+    const comp = componentizeSchedule({ schedule: roll.schedule, factor: roll.factor, camTaxAnnual: roll.camTaxAnnual, roofAnnual: roll.roofAnnual, camTaxByMonth: roll.camTaxByMonth, roofByMonth: roll.roofByMonth, adjustments: roll.adjustments });
     monthlyBase = Array.from({ length: 12 }, (_, i) => round2(Number(comp[i + 1]?.base) || 0));
   }
 

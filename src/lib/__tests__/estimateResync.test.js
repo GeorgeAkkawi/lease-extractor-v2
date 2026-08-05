@@ -19,7 +19,7 @@ import {
   recordPayment, ensureInvoice, markMonthPaid,
   isYearClosed, resyncLeaseBilling, resyncPropertyBilling,
   upsertExpenseRecord, createEscalation, deleteEscalation, listEscalations,
-  applyEscalation, applyAddendum, createAddendum, deleteAddendum, getLease,
+  applyEscalation, applyAddendum, createAddendum, deleteAddendum, getLease, getPropertyMonthlyRoll,
 } from '../api';
 import { supabase } from '../supabaseClient';
 import { currentYear } from '../format';
@@ -291,6 +291,37 @@ describe('automatic follow-through — the invoice can no longer drift', () => {
     } finally {
       await supabase.from('rent_escalations').delete().eq('addendum_id', add.id);
       await deleteAddendum(add.id);
+      await updateLease('lease-4', { base_rent: 36000 });
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+    }
+  });
+
+  // The backstop for everything the JS carry-throughs can't reach — above all the NIGHTLY SQL
+  // sweep (apply_due_escalations, 0024/0047), which moves base_rent server-side where no JS
+  // runs at all. Rather than a second implementation of the billing math in Postgres, the
+  // Ledger measures the gap between what the lease says and what the bill was built at.
+  it('the Ledger reports an invoice that has fallen behind the lease, and Rebuild closes it', async () => {
+    await ensureInvoice('lease-4', 'prop-2', Y);
+    const clean = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-4');
+    expect(clean.drift).toBe(0); // in step to begin with
+
+    // Exactly the state the nightly job leaves behind: an applied step and a moved base
+    // rent, with nothing having touched the invoice.
+    const esc = await createEscalation({
+      lease_id: 'lease-4', effective_date: `${Y}-07-01`, escalation_type: 'manual',
+      escalation_value: null, new_base_rent: 48000, status: 'applied',
+    });
+    await updateLease('lease-4', { base_rent: 48000 });
+    try {
+      const behind = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-4');
+      expect(behind.drift).toBe(6000); // 6 months × (48,000 − 36,000)/12
+      expect(behind.invoiceTotal).toBeLessThan(behind.drift + behind.invoiceTotal);
+
+      await resyncLeaseBilling('lease-4', 'prop-2', Y); // what the Rebuild button calls
+      const fixed = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-4');
+      expect(fixed.drift).toBe(0);
+    } finally {
+      await deleteEscalation(esc.id);
       await updateLease('lease-4', { base_rent: 36000 });
       await resyncLeaseBilling('lease-4', 'prop-2', Y);
     }

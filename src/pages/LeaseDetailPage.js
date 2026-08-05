@@ -273,15 +273,14 @@ export default function LeaseDetailPage() {
     let value = raw;
     if (field === 'square_footage' || field === 'base_rent') value = raw == null ? null : Number(raw);
     if (field === 'share_override_pct') value = raw == null || raw === '' ? null : Number(raw) / 100;
-    // Estimated additional rent — typed as $/SF of the leased space when the SF is
-    // known (stored annualized); blank clears the estimate (billing falls back to actuals).
-    if (field === 'est_cam_annual' || field === 'est_tax_annual' || field === 'est_roof_annual') {
-      const n = raw == null || raw === '' ? null : Number(raw);
-      const sqft = Number(lease.square_footage) || 0;
-      // Blank OR zero/negative → clear the estimate (bill actuals) — never store a 0,
-      // which billed base-only rent and produced the phantom-✓ ledger.
-      value = !(n > 0) ? null : sqft > 0 ? Math.round(n * sqft * 100) / 100 : n;
-    }
+    // ⚠ THE ESTIMATE COLUMNS DELIBERATELY DO NOT COME THROUGH HERE. There used to be a branch
+    // for est_cam_annual / est_tax_annual / est_roof_annual, and nothing called it — but it
+    // routed to saveField, which writes ONE column raw: it did not zero the sibling (so a
+    // combined figure written to est_cam beside a stale est_tax double-counts, since every
+    // reader sums the two), did not stamp est_confirmed_year, and is excluded from
+    // BILLING_FIELDS so it never resynced the invoice either. A loaded gun with no trigger,
+    // removed rather than left for whoever next adds an estimate input to this page.
+    // The one real path is commitEstCamTax → saveEstCamTax below, which does all three.
     saveField.mutate({ field, value });
   };
   const brPsf = lease.square_footage > 0 && lease.base_rent ? psf(lease.base_rent / lease.square_footage) : null;

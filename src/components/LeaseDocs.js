@@ -543,6 +543,16 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
                       <li>
                         This tenant’s <strong>invoice for {new Date().getFullYear()} is rebuilt</strong>{' '}
                         from the new figures. A closed year is skipped.
+                        {/* Square footage is the numerator of the CAM / tax split, and when the
+                            property has no building size on file it is also part of the
+                            DENOMINATOR (Σ leased SF) — so resizing one tenant re-splits them
+                            all. This used to say "this tenant" while the code rebuilt the whole
+                            property; the done screen below now reports which actually happened. */}
+                        {changes.fields.some((f) => f.key === 'square_footage') && (
+                          <> If this property has no building size on file, square footage is the
+                          share denominator — so <strong>every tenant’s invoice</strong> here is
+                          rebuilt, not just this one.</>
+                        )}
                       </li>
                     )}
                     {/* A lease whose first step is already in the past is the ordinary case,
@@ -602,9 +612,14 @@ function NewLeaseModal({ leaseId, file, current, onClose, onDone }) {
                 </p>
               )}
               <p className="muted" style={{ fontSize: 12.5 }}>
-                {applied?.resynced
-                  ? 'This tenant’s bill for the current year has been rebuilt from the new figures; a closed year was skipped. '
-                  : 'No billed figure moved, so no invoice needed rebuilding. '}
+                {!applied?.resynced && 'No billed figure moved, so no invoice needed rebuilding. '}
+                {applied?.resyncScope === 'property' && (
+                  <>Because this property has no building size on file, square footage is the share
+                  denominator — so <strong>{applied.leasesResynced} tenant
+                  {applied.leasesResynced === 1 ? '’s bill' : 's’ bills'}</strong> on it were rebuilt,
+                  not just this one; a closed year was skipped. </>
+                )}
+                {applied?.resyncScope === 'lease' && 'This tenant’s bill for the current year has been rebuilt from the new figures; a closed year was skipped. '}
                 It is recorded in the property’s history, with every figure’s old and new value.
               </p>
               <div className="row" style={{ marginTop: 14 }}>

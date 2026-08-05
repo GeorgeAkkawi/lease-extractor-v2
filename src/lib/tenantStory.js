@@ -32,7 +32,7 @@ export const STORY_EVENTS = [
 // The two statement events carry neither lease_id nor tenant_name, so they could never
 // have belonged to a tenant's story in the first place.
 export const LEDGER_EVENTS = [
-  'estimate_set', 'cam_reconciled', 'cam_refunded', 'cam_reconcile_undone',
+  'estimate_set', 'billing_rebuilt', 'cam_reconciled', 'cam_refunded', 'cam_reconcile_undone',
   'cam_refund_reopened', 'statement_imported', 'statement_import_undone',
 ];
 

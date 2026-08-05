@@ -44,10 +44,18 @@ function adjArray(adjustments) {
 // occupancyStartIso, factor } — factor is the invoice-scaling ratio applied to the owed
 // months (1 when no scaling ran), so the ledger's component split can scale CAM&tax the
 // same way the whole month was scaled.
-export function buildLeaseSchedule({ year, grossBase, otherAnnual, abatements, escalations, leaseStart, invoiceTotal, adjustments }) {
+//
+// `otherByMonth` (0089) is the CAM & tax + roof twin of the escalation ledger's monthlyBases:
+// a length-12 array of the annual estimate in effect each month, from monthlyEstimates
+// (reconciliation.js). Omit it and every month uses otherAnnual/12, exactly as before — which
+// is what silently re-priced January when the estimate moved in August.
+export function buildLeaseSchedule({ year, grossBase, otherAnnual, otherByMonth = null, abatements, escalations, leaseStart, invoiceTotal, adjustments }) {
   const occ = occupancyStart({ lease_start: leaseStart }, escalations);
   const bases = monthlyBases(escalations, grossBase, year);
-  const schedule = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual, abatements, occupancyStartIso: occ, monthlyBases: bases });
+  const schedule = monthlyScheduleForYear({
+    year, annualBaseRent: grossBase, otherAnnual, abatements,
+    occupancyStartIso: occ, monthlyBases: bases, monthlyOther: otherByMonth,
+  });
   const shareAnnual = round2(Object.values(schedule).reduce((s, c) => s + c.owed, 0));
   // ⚠ Per-month charges and credits (0082). They are added LAST, after any scaling and
   // after both penny-folds, so an adjustment is the exact dollar figure the landlord

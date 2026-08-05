@@ -4,7 +4,7 @@
 import { seed, DEMO_USER, DEMO_PDF_B64 } from './store';
 import { effectiveRent, occupancyStart, monthlyBases } from '../escalations';
 import { monthlyScheduleForYear } from '../abatement';
-import { billedComponents } from '../reconciliation';
+import { billedComponents, monthlyEstimates } from '../reconciliation';
 import { fmtDate } from '../format';
 // The same flag definitions the live edge functions use, so the demo's canned review
 // carries the real titles/notes/severities rather than a second set that could drift.
@@ -56,8 +56,15 @@ function sortRows(rows, field, ascending = true) {
 
 // --- computed views ---------------------------------------------------------
 function propertyTotals(propertyId, year) {
-  const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year);
-  if (!exp) return null; // SQL view inner-joins expense_records
+  // Same correction as tenantShares below: v_property_totals (0049) unions the expense years
+  // with a generated range for every property that has a lease, then LEFT JOINs — so a year
+  // with no expense record still yields a row with zeroed totals. The old early return was
+  // commented "SQL view inner-joins expense_records", which was simply not true of 0049.
+  const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year)
+    || (db.leases.some((l) => l.property_id === propertyId)
+      ? { taxes_total: 0, cam_total: 0, roof_total: 0 }
+      : null);
+  if (!exp) return null;
   const prop = db.properties.find((p) => p.id === propertyId);
   // Physical occupancy counts EVERY lease — an outdated (is_active === false) tenant
   // still occupies its space (and still owes rent) until the landlord removes it, so
@@ -92,8 +99,15 @@ function propertyTotals(propertyId, year) {
 }
 
 function tenantShares(propertyId, year) {
-  const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year);
-  if (!exp) return [];
+  // ⚠ THE SQL VIEW DOES NOT INNER-JOIN. v_tenant_shares (0073) builds a `periods` CTE from
+  // expense_records UNION a generated year range, then LEFT JOINs expense_records with
+  // `coalesce(er.taxes_total, 0)` — so a lease in a year with NO expense record still gets a
+  // row, with zeroed actuals and its estimate fields intact. This used to return [], which
+  // meant resyncYearBillingToEstimate silently no-op'd in the demo for the single most common
+  // real state: an estimate exists precisely BECAUSE the actuals aren't known yet. The suite
+  // passed over behaviour that was broken live — the exact failure CLAUDE.md §3 names.
+  const exp = db.expense_records.find((e) => e.property_id === propertyId && e.year === year)
+    || { taxes_total: 0, cam_total: 0, roof_total: 0 };
   const prop = db.properties.find((p) => p.id === propertyId);
   // Include ALL leases (incl. outdated/holdover, is_active === false) so a held-over
   // tenant still appears on the rent roll and keeps billing — mirrors v_tenant_shares
@@ -669,19 +683,37 @@ function demoInvoiceFacts(body) {
   const grossBase = share ? share.base_rent : (lease?.base_rent || 0);
   const occ = occupancyStart({ lease_start: share?.lease_start ?? lease?.lease_start }, escs);
   const bases = monthlyBases(escs, grossBase, year);
-  const sched = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: billed.gross ? 0 : cam + tax + roof, abatements, occupancyStartIso: occ, monthlyBases: bases });
+  // The dated CAM & tax estimate (0089) — the mirror of the edge function's estSeries. Without
+  // it the mock would prorate a mid-year estimate change flat and the suite would pass over an
+  // invoice the live function drafts differently.
+  const estRows = (db.lease_estimates || []).filter((e) => e.lease_id === body?.lease_id);
+  const estMonths = share ? monthlyEstimates(estRows, share, year) : null;
+  const otherByMonth = billed.gross || !estMonths
+    ? null
+    : estMonths.camTax.map((c, i) => c + (Number(estMonths.roof[i]) || 0));
+  const sched = monthlyScheduleForYear({ year, annualBaseRent: grossBase, otherAnnual: billed.gross ? 0 : cam + tax + roof, abatements, occupancyStartIso: occ, monthlyBases: bases, monthlyOther: otherByMonth });
   const months = Object.values(sched);
   const inTerm = months.filter((c) => !c.outsideTerm).length;
   const ratio = inTerm / 12;
   // Prorated gross base over in-term months (sum of that month's base rate ÷ 12).
   let proratedBaseGross = 0;
   let proratedAbatement = 0;
+  let proratedCamTax = 0;
+  let proratedRoof = 0;
   for (let m = 1; m <= 12; m++) {
     if (sched[m].outsideTerm) continue;
     proratedBaseGross += (bases[m - 1] != null ? Number(bases[m - 1]) : grossBase) / 12;
     proratedAbatement += Number(sched[m].credit) || 0;
+    proratedCamTax += (estMonths ? Number(estMonths.camTax[m - 1]) || 0 : cam + tax) / 12;
+    proratedRoof += (estMonths ? Number(estMonths.roof[m - 1]) || 0 : roof) / 12;
   }
   const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+  // Same rule as the edge function and the resync: the cam/tax split is preserved unless the
+  // ledger actually moved the figure, in which case the combined amount rides on cam.
+  const segmented = !!estMonths && Math.abs(r2(proratedCamTax) - r2((cam + tax) * ratio)) > 0.005;
+  const camA = segmented ? r2(proratedCamTax) : r2(cam * ratio);
+  const taxA = segmented ? 0 : r2(tax * ratio);
+  const roofA = estMonths ? r2(proratedRoof) : r2(roof * ratio);
   return {
     business,
     tenant: share?.tenant_name || lease?.tenant_name || 'Tenant',
@@ -695,11 +727,11 @@ function demoInvoiceFacts(body) {
     // Gross: the components come OUT of the prorated flat rent, so they still sum to
     // the flat figure the tenant pays.
     base_rent_annual: billed.gross
-      ? r2(proratedBaseGross - r2(cam * ratio) - r2(tax * ratio) - r2(roof * ratio))
+      ? r2(proratedBaseGross - camA - taxA - roofA)
       : r2(proratedBaseGross),
-    cam_annual: r2(cam * ratio),
-    tax_annual: r2(tax * ratio),
-    roof_annual: r2(roof * ratio),
+    cam_annual: camA,
+    tax_annual: taxA,
+    roof_annual: roofA,
     abatement_annual: r2(proratedAbatement),
     occupancy_start: occ,
     months_billed: inTerm,

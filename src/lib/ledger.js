@@ -145,14 +145,26 @@ export function allocatePayments({ owedByMonth, payments = [], adjustments = nul
 // printed CAM & tax via the `min` below rather than showing as its own line. The
 // `kind === 'free'` branch reads scheduled too, or a charge on a free month would print
 // as an invented CAM & tax expense.
-export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, roofAnnual = 0, adjustments = null } = {}) {
+// ⚠ 0089 — `camTaxByMonth` / `roofByMonth` are the dated-estimate twins of camTaxAnnual /
+// roofAnnual: length-12 arrays of the ANNUAL rate in effect each month (monthlyEstimates,
+// reconciliation.js). They MUST be threaded wherever buildLeaseSchedule got `otherByMonth`,
+// or the split silently misreports: the month's owed already carries the segmented CAM, but
+// a flat camTaxAnnual/12 would be subtracted from it — and since base is the REMAINDER, the
+// whole difference would print as a change in BASE RENT (ledger.js's oldest trap, above),
+// making an estimate change look like a rent step-up. Omitted → the flat annual, as before.
+export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, roofAnnual = 0, camTaxByMonth = null, roofByMonth = null, adjustments = null } = {}) {
   const f = Number(factor) > 0 ? Number(factor) : 1;
-  const camTaxMonthly = round2(((Number(camTaxAnnual) || 0) / 12) * f);
-  const roofMonthly = round2(((Number(roofAnnual) || 0) / 12) * f);
+  const flatCamTax = round2(((Number(camTaxAnnual) || 0) / 12) * f);
+  const flatRoof = round2(((Number(roofAnnual) || 0) / 12) * f);
+  const perMonth = (arr, m, fallback) => (arr && arr[m - 1] != null
+    ? round2(((Number(arr[m - 1]) || 0) / 12) * f)
+    : fallback);
   const adj = Array.isArray(adjustments) ? adjustments : null;
   const out = {};
   for (let m = 1; m <= 12; m++) {
     const c = schedule?.[m] || {};
+    const camTaxMonthly = perMonth(camTaxByMonth, m, flatCamTax);
+    const roofMonthly = perMonth(roofByMonth, m, flatRoof);
     const owedM = round2(Number(c.owed) || 0);
     const adjM = round2(Number(adj?.[m - 1]) || 0);
     const sOwed = round2(owedM - adjM); // what the SCHEDULE alone says for this month

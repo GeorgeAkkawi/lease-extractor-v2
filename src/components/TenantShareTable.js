@@ -17,6 +17,7 @@ import {
   getLeaseSort,
   isAnnualInvoice,
   listAdjustments,
+  listLeaseEstimatesByLeases,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
 import { sortTenantRows } from '../lib/leaseSort';
@@ -119,6 +120,16 @@ export default function TenantShareTable({ propertyId, year }) {
   const { data: adjustments = [] } = useQuery({
     queryKey: ['adjustments', propertyId, year],
     queryFn: () => listAdjustments({ propertyId, year }),
+  });
+  // Dated CAM & tax estimates (0089). An estimate that changed part way through the year was
+  // billed at the old figure for the months before it, so the live Difference — and the
+  // ⚖ Reconcile that settles against it — have to weigh the year month by month rather than
+  // spreading today's figure over all twelve. Empty for almost every lease, and an empty
+  // ledger produces exactly the figures this column showed before.
+  const { data: estByLease = {} } = useQuery({
+    queryKey: ['leaseEstimates', propertyId, shares.map((s) => s.lease_id).join(',')],
+    queryFn: () => listLeaseEstimatesByLeases(shares.map((s) => s.lease_id)),
+    enabled: shares.length > 0,
   });
 
   const [editingId, setEditingId] = useState(null); // lease being estimate-edited
@@ -243,7 +254,7 @@ export default function TenantShareTable({ propertyId, year }) {
   for (const a of adjustments || []) (adjByLease[a.lease_id] ||= []).push(a);
   const rowsData = shares.map((s) => {
     const adj = adjByLease[s.lease_id] || [];
-    const fig = reconcileFigures({ share: s, adjustments: adj });
+    const fig = reconcileFigures({ share: s, adjustments: adj, estimates: estByLease[s.lease_id] || [], year });
     const billed = billedComponents(s);
     return { share: s, fig, billed, adj, recon: reconByLease[s.lease_id] || null };
   });

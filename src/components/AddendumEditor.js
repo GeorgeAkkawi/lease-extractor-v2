@@ -4,6 +4,7 @@ import { listAddendums, createAddendum, deleteAddendum, applyAddendum, extractAd
 import { fmtDate, money } from '../lib/format';
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { coversLabel } from '../lib/riders';
+import { settleBillingChange, settleLeaseScheduleChange } from '../lib/invalidate';
 import { useFeatures } from '../lib/features';
 import { useConfirm } from './ConfirmDialog';
 import AddendumEnvelopeRows from './AddendumEnvelopeRows';
@@ -101,12 +102,21 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
   const addStep = () => setForm((f) => ({ ...f, rentSteps: [...f.rentSteps, { effective_date: '', new_base_rent: '', escalation_type: 'manual', escalation_value: '' }] }));
   const removeStep = (i) => setForm((f) => ({ ...f, rentSteps: f.rentSteps.filter((_, j) => j !== i) }));
 
+  const propId = property?.id || lease?.property_id || null;
   const refresh = () => {
-    // A rider can move the term, the rent AND the CAM & tax estimate — and an estimate
-    // change resyncs the year invoice + the recorded paid months, so the Ledger boxes,
-    // the monthly tracker and the invoices/payments panels must repaint too.
-    ['addendums', 'lease', 'leases', 'escalations', 'renewals', 'propertyTotals', 'tenantShares', 'alerts',
-      'expiredLeases', 'searchIndex', 'notifications', 'propertyRentRoll', 'monthlyRent', 'invoices', 'payments', 'historyEvents']
+    // A rider can move the term, the rent AND the CAM & tax estimate — and any of those
+    // resyncs the year invoice + the recorded paid months, so the Ledger boxes, the monthly
+    // tracker and the invoices/payments panels must repaint too.
+    //
+    // The two SHARED sets do the money and the schedule (CLAUDE.md §6). This used to be a
+    // third hand-rolled list, and it had already drifted by omission — no `abatements` (a
+    // rider can grant one), no `adjustments`, no `statementContext`, no `corpRollups`, no
+    // `portfolioCollected`. Hand-rolled lists always drift; that is why the sets exist.
+    settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
+    settleLeaseScheduleChange(qc, leaseId);
+    // What is genuinely local to this screen: the rider list itself and the surfaces a rider
+    // moves that a billed figure does not.
+    ['addendums', 'expiredLeases', 'searchIndex', 'notifications', 'historyEvents']
       .forEach((key) => qc.invalidateQueries({ queryKey: [key] }));
   };
 

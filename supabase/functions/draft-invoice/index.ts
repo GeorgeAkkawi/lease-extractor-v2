@@ -140,6 +140,39 @@ Deno.serve(async (req) => {
       return latest.t === maxT ? grossBase : latest.rent;
     };
 
+    // The CAM & tax / roof estimate in effect each month (0089) — the exact twin of
+    // baseForMonth above, and of monthlyEstimates() in src/lib/reconciliation.js. Same era
+    // rule: the live scalar is authoritative for the current era, the dated ledger answers
+    // for any earlier segment. An EMPTY ledger returns the live figure for all twelve months,
+    // which is byte-for-byte what this function did before 0089.
+    //
+    // ⚠ This and reconciliation.js are the JS↔TS mirror pair for the estimate (CLAUDE.md §3).
+    // Change one without the other and a freshly drafted invoice disagrees with the resync
+    // that maintains it — the drafted one re-pricing months the resync deliberately left alone.
+    const { data: estRows } = await supabase
+      .from('lease_estimates')
+      .select('effective_date, cam_tax_annual, roof_annual')
+      .eq('lease_id', lease_id);
+    const estSeries = (key: string, live: number) => {
+      const dated = ((estRows ?? []) as any[])
+        .filter((e) => e && e[key] != null && e.effective_date)
+        .map((e) => ({ t: parseNoon(e.effective_date).getTime(), v: round(Number(e[key]) || 0) }))
+        .sort((a, b) => a.t - b.t);
+      if (!dated.length) return () => live;
+      const last = dated[dated.length - 1].t;
+      return (m: number) => {
+        const ref = monthStartD(m).getTime();
+        const prior = dated.filter((r) => r.t <= ref);
+        if (!prior.length) return live;
+        const latest = prior[prior.length - 1];
+        return latest.t === last ? live : latest.v;
+      };
+    };
+    // Gross leases read no estimate at all (the carve above is the answer), so the ledger has
+    // nothing to say about them and the live carve stands for every month.
+    const camTaxForMonth = isGross ? () => round(cam + tax) : estSeries('cam_tax_annual', round(cam + tax));
+    const roofForMonth = isGross ? () => roof : estSeries('roof_annual', roof);
+
     // Per-month base abatement credit (mirrors abatement.js — strongest window wins).
     const { data: abs } = await supabase
       .from('rent_abatements')
@@ -173,21 +206,33 @@ Deno.serve(async (req) => {
     let inTerm = 0;
     let proratedBaseGross = 0;
     let proratedAbatement = 0;
+    // Σ of the in-term months' estimate. With no dated ledger every month carries the same
+    // rate and these land on exactly `cam * ratio` — the old arithmetic, to the cent.
+    let proratedCamTax = 0;
+    let proratedRoof = 0;
     for (let m = 1; m <= 12; m++) {
       if (occ && monthEndD(m) < occ) continue; // before the tenancy began — not billed
       inTerm++;
       const fullMonthly = baseForMonth(m) / 12;
       proratedBaseGross += fullMonthly;
       proratedAbatement += monthCredit(m, fullMonthly);
+      proratedCamTax += camTaxForMonth(m) / 12;
+      proratedRoof += roofForMonth(m) / 12;
     }
     const ratio = inTerm / 12;
 
     // Gross: the components come OUT of the prorated flat rent, so base + cam + tax +
     // roof still sums to the flat figure the tenant actually pays. Net: base is the
     // rent and the components ride on top, exactly as before.
-    const camA = round(cam * ratio);
-    const taxA = round(tax * ratio);
-    const roofA = round(roof * ratio);
+    //
+    // The cam/tax split stays as read whenever nothing was dated (a legacy lease with the two
+    // entered separately keeps them separate); once the ledger has moved the figure the
+    // combined amount rides on cam with tax zeroed — the storage convention every reader of
+    // these columns already assumes, and the same rule resyncYearBillingToEstimate follows.
+    const segmented = Math.abs(round(proratedCamTax) - round((cam + tax) * ratio)) > 0.005;
+    const camA = segmented ? round(proratedCamTax) : round(cam * ratio);
+    const taxA = segmented ? 0 : round(tax * ratio);
+    const roofA = round(proratedRoof);
     const baseA = isGross
       ? round(proratedBaseGross - camA - taxA - roofA)
       : round(proratedBaseGross);

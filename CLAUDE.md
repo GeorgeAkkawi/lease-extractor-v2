@@ -104,9 +104,24 @@ So anything that moves a billed figure must call the carry-through:
   screens repaint
 
 Both skip a **closed** year (one with a `financial_snapshots` row) — a bill already sent must not
-move under the landlord because they edited something else. The four **explicit** estimate saves
-call `resyncYearBillingToEstimate` directly and deliberately do not skip: there the landlord typed
-a billed figure on that year's screen and meant it.
+move under the landlord because they edited something else. **Six** explicit estimate saves call
+`resyncYearBillingToEstimate` directly and deliberately do not skip: `TenantShareTable.js` (the
+save and its undo), `LeaseDetailPage.js`, `applyAddendum`, and `applyStatementImport` + its undo.
+The first four fit the rule — the landlord typed a billed figure on that year's screen and meant
+it. **The two statement-import ones do not** (the figure is inferred from a bank deposit) and are
+worth revisiting.
+
+**A change to a billed figure has a DATE**, and the months before it belong to the old lease
+(George, 2026-08-04). Rent carries this in `rent_escalations` → `monthlyBases`; the CAM & tax
+estimate carries it in **`lease_estimates` (0089) → `monthlyEstimates`** (`reconciliation.js`).
+Both need a **closing** row (the old figure, at the start of its era) as well as a boundary row —
+one alone still leaves January reading the live scalar. An empty `lease_estimates` reproduces
+pre-0089 behaviour exactly, which is why there is no back-fill.
+
+**The invoice can still fall behind**, because the rent-step sweep also runs nightly in SQL
+(`apply_due_escalations()`) where no JS carry-through can fire. `invoiceDrift` (`api.js`) measures
+schedule-vs-invoice and the Ledger row offers **Rebuild** — the backstop for every writer,
+including ones nobody has thought of.
 
 ### 2. The three choke points
 
@@ -126,8 +141,16 @@ Two implementations of one rule always drift unless changed in the same commit.
   `abatement_credit` (`0041`) ↔ `abatement.js` · `app_today()` (`0051`) ↔ `localDateIso` (`api.js:36`) ·
   the renewal-option lapse rule in `apply_due_renewals()` (`0068`) ↔ `optionLapseReason`
   (`renewals.js`).
-- **The estimate-preferred billing math exists in four copies:** `reconciliation.js:30`,
-  `draft-invoice/index.ts:78`, `resyncYearBillingToEstimate` in `api.js`, and `mockClient.js:464`.
+- **The estimate-preferred billing math is now TWO copies, not four:** `billedComponents`
+  (`reconciliation.js`) ↔ `draft-invoice/index.ts`. `api.js` and `mockClient.js` both delegate to
+  `billedComponents` and are no longer separate implementations. The **dated** estimate is the
+  same pair: `monthlyEstimates` (`reconciliation.js`) ↔ the `estSeries` block in
+  `draft-invoice/index.ts` — change one and a freshly drafted invoice disagrees with the resync
+  that maintains it.
+- **`payments.source`** (`0088`) is the only thing separating a real cheque from a figure the app
+  priced itself. It is stored, never inferred: a null note is NOT a proxy for "the app made this
+  up", because neither way of recording a real payment writes one. Only `'system'` rows may be
+  re-stamped by `resyncYearBillingToEstimate`.
 - **The demo mock hand-implements the views.** `mockClient.js` reimplements `v_property_totals`
   (:37), `v_tenant_shares` (:73), `v_invoice_balances` (:111), `draft-invoice` (:369) and
   `create_lease_tx` (:774). **A view change without a matching mock change means the suite passes
@@ -152,6 +175,10 @@ Two implementations of one rule always drift unless changed in the same commit.
   seeds no `user_preferences` row, so it runs the `null` path and shows the module happily while
   production hides it (that is exactly how `announcements` shipped invisible, 2026-08-04). Copy
   `0084_backfill_announcements_feature.sql` and change the key.
+- **A new `history_events` type** touches three registries or it renders as a bare slug in one of
+  them: `EVENT_LABEL` and `EVENT_BADGE` (`HistoryPage.js`) plus **either** `STORY_EVENTS` or
+  `LEDGER_EVENTS` (`tenantStory.js`) — an unknown type falls to the ledger log rather than
+  vanishing, so a missing entry is quiet rather than loud.
 - **A new Ask Amlak fact** must bump the `snapshotFingerprint` version prefix (`portfolio.js:61`,
   now `v5`) — otherwise every previously cached answer keeps serving the thinner summary.
 

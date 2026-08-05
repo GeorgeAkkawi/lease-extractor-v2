@@ -103,9 +103,13 @@ export function annualAbatementCredit(abatements, year, annualBaseRent) {
 //     month (from the escalation ledger), so a mid-year rent step bills the old rate
 //     before it and the new rate after, instead of the new rate all year. When omitted,
 //     every month uses annualBaseRent/12.
-export function monthlyScheduleForYear({ year, annualBaseRent, otherAnnual = 0, abatements = [], occupancyStartIso = null, monthlyBases = null }) {
+//   • monthlyOther — the exact same idea for CAM & tax + roof (from the lease_estimates
+//     ledger, 0089): a length-12 array of the annual estimate in effect that month, so an
+//     estimate raised in August doesn't retroactively re-price January. When omitted, every
+//     month uses otherAnnual/12 — which is what every caller did before 0089.
+export function monthlyScheduleForYear({ year, annualBaseRent, otherAnnual = 0, abatements = [], occupancyStartIso = null, monthlyBases = null, monthlyOther = null }) {
   const flatMonthlyBase = (Number(annualBaseRent) || 0) / 12;
-  const otherMonthly = (Number(otherAnnual) || 0) / 12;
+  const flatMonthlyOther = (Number(otherAnnual) || 0) / 12;
   const occ = occupancyStartIso ? noon(occupancyStartIso) : null;
   const out = {};
   let grossInTerm = 0;   // full charges for the months the lease covers (unrounded)
@@ -119,6 +123,9 @@ export function monthlyScheduleForYear({ year, annualBaseRent, otherAnnual = 0, 
     const fullMonthlyBase = (monthlyBases && monthlyBases[m - 1] != null)
       ? (Number(monthlyBases[m - 1]) || 0) / 12
       : flatMonthlyBase;
+    const otherMonthly = (monthlyOther && monthlyOther[m - 1] != null)
+      ? (Number(monthlyOther[m - 1]) || 0) / 12
+      : flatMonthlyOther;
     const ab = abatementForMonth(abatements, year, m, fullMonthlyBase);
     const reducedBase = ab ? reducedMonthlyBase(fullMonthlyBase, ab) : fullMonthlyBase;
     const credit = ab ? monthlyCredit(fullMonthlyBase, ab) : 0;

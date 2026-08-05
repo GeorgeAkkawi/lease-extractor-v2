@@ -1420,6 +1420,13 @@ textarea.text-input{resize:vertical;min-height:90px}
 .terms-diff tbody th{font-weight:600;width:34%}
 .terms-diff .was{color:var(--muted);text-decoration:line-through}
 .terms-diff .now{font-weight:700}
+/* "The stored bill no longer matches the lease." Sits under the Collected figure on a Ledger
+   row, only when the two have actually drifted (api.js invoiceDrift). Warm rather than red:
+   it is a thing to do, not a thing that went wrong. */
+.rr-drift{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:5px;font-size:11.5px;color:var(--gold)}
+.rr-drift strong{font-weight:700}
+.rr-drift button{padding:1px 8px;font-size:11px;line-height:1.6}
+
 .terms-diff tr.billed .now{color:var(--accent)}
 /* Same table, two columns: the new lease's dated rent steps (date → rent). It has no
    thead — there is no "before" to compare a step against, only the schedule itself. */

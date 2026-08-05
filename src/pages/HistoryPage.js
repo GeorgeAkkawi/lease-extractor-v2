@@ -37,6 +37,7 @@ const EVENT_LABEL = {
   signature_sent: 'Sent for signature',
   signature_executed: 'Signed by both parties',
   cam_reconciled: 'CAM & tax reconciled',
+  billing_rebuilt: 'Bill rebuilt',
   cam_refunded: 'CAM & tax refund paid',
   cam_reconcile_undone: 'CAM & tax reconcile undone',
   cam_refund_reopened: 'CAM & tax refund reopened',
@@ -65,6 +66,7 @@ const EVENT_BADGE = {
   // renewal is. It does NOT mean the lease changed — that is a separate, later click.
   signature_executed: 'good',
   cam_reconciled: 'info',
+  billing_rebuilt: 'info',
   cam_refunded: 'good',
   cam_reconcile_undone: 'warn',
   cam_refund_reopened: 'warn',

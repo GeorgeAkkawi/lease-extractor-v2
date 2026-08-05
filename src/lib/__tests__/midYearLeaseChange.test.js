@@ -22,9 +22,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   applyNewLeaseTerms, buildScheduleFromExtraction, getLease, updateLease,
-  listEscalations, getMonthlyRent, getYearInvoice,
+  listEscalations, getMonthlyRent, getYearInvoice, getTenantShare,
 } from '../api';
 import { newLeaseChanges, newLeaseTargets } from '../newLeaseTerms';
+import { monthlyEstimates, reconcileFigures } from '../reconciliation';
 import { monthlyBases } from '../escalations';
 import { supabase } from '../supabaseClient';
 import { currentYear } from '../format';
@@ -131,6 +132,38 @@ describe('a new lease that starts mid-year', () => {
       const onBoundary = (await listEscalations(LEASE)).filter((e) => e.effective_date === NEW.start);
       expect(onBoundary.length).toBe(1); // the ±45-day guard, not two rows saying the same thing
     } finally { await restore(); }
+  });
+
+  // The CAM half of George's rule: *"the CAM is recalculated. the previous months aren't
+  // affected."* The estimate is a scalar on the lease, so before 0089 raising it here
+  // re-priced January retroactively — and the year-end reconcile settled all twelve months
+  // at the new figure.
+  it('dates the CAM & tax estimate too, so the earlier months keep the old one', async () => {
+    try {
+      await updateLease(LEASE, { est_cam_annual: 12000, est_tax_annual: 0 });
+      const lease = await getLease(LEASE);
+      const proposed = { ...PROPOSED };
+      const withEst = { ...EXTRACTION, est_cam_annual: { value: 24000 } };
+      const changes = newLeaseChanges({ lease, proposed, extraction: withEst });
+      const plan = buildScheduleFromExtraction(withEst, newLeaseTargets(lease, changes));
+      await applyNewLeaseTerms({ leaseId: LEASE, changes, plan, extraction: withEst });
+
+      const { data: est } = await supabase.from('lease_estimates').select('*').eq('lease_id', LEASE);
+      expect(Number(est.find((e) => e.effective_date === OLD.start)?.cam_tax_annual)).toBe(12000);
+      expect(Number(est.find((e) => e.effective_date === NEW.start)?.cam_tax_annual)).toBe(24000);
+
+      // Six months at $12,000/yr + six at $24,000/yr = $18,000 for the year — not the
+      // $24,000 that reading today's scalar across all twelve months produces.
+      const share = await getTenantShare(LEASE, Y);
+      const months = monthlyEstimates(est, share, Y);
+      expect(months.camTax[0]).toBe(12000);
+      expect(months.camTax[11]).toBe(24000);
+      expect(reconcileFigures({ share, estimates: est, year: Y }).est.cam).toBe(18000);
+    } finally {
+      await supabase.from('lease_estimates').delete().eq('lease_id', LEASE);
+      await updateLease(LEASE, { est_cam_annual: null, est_tax_annual: null });
+      await restore();
+    }
   });
 
   it('adds no boundary when the new lease starts EARLIER — there is no prior era to close', async () => {

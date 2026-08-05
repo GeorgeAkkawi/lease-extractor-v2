@@ -14,6 +14,108 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **The CAM & tax estimate gets dates too, the reconcile settles against what was
+  BILLED, and the Ledger says when a bill has fallen behind the lease** (the second half of the
+  money-trail round; the first half is the entry below). George: *"…but the CAM is recalculated.
+  the previous months aren't affected and shouldn't be reconciled at the new figures because they
+  would be part of the old lease."* Deployed: migration **`0089`**, edge function **`draft-invoice`**,
+  frontend Cloudflare **`cf3609ad`**, demo worker **`ab2e52f5`**. Tests **1711/1711** across 168
+  files (was 1699/167), and **five consecutive full runs** to confirm a flake was actually fixed.
+  - **`0089_lease_estimates.sql`** — a dated ledger for the CAM & tax / roof estimate, the exact
+    twin of `rent_escalations`. Rent already had one; the estimate was a bare scalar on the lease,
+    so *"the previous months aren't affected"* was **unrepresentable for CAM**: raising it in
+    August re-priced January retroactively, including months the tenant had already paid.
+    - `monthlyEstimates(estimates, share, year)` in `reconciliation.js` mirrors `monthlyBases`
+      exactly — era-aware, live scalar for the current era, ledger for earlier segments.
+    - **An empty table reproduces pre-0089 figures byte-for-byte**, which is why there is no
+      back-fill and why this shipped without touching a single existing lease.
+    - **Two rows per change, not one** — the same trap as the rent boundary: `monthlyEstimates`
+      answers the live scalar for any month with no EARLIER row, so a closing row carrying the old
+      figure is what gives the old era a rate. Written by `applyNewLeaseTerms` and `applyAddendum`;
+      **never** by the deliberate estimate editors, where the landlord typed this year's figure on
+      this year's screen and meant all of it.
+  - **⚠ THE RECONCILE WAS SETTLING THE WRONG NUMBER.** `reconcileFigures` read today's annual
+    estimate and applied it to all twelve months, so a mid-year change made the year-end true-up
+    wrong by (Δestimate × the months billed at the old figure) — **in the direction of refunding
+    money that was never collected**. Worked example now pinned in `datedEstimates.test.js`: six
+    months at $6,000/yr + six at $12,000/yr against a $14,000 actual is a $5,000 shortfall, not the
+    $2,000 the old reading produced. It now sums the twelve monthly rates, and accepts the Ledger
+    roll's own arrays so the two surfaces cannot disagree.
+  - **Two designs were tried and rejected before this one**, and the reasons are worth keeping:
+    threading an "effective month" through the resync is **not idempotent** (the split would live
+    in a derived annual that a dozen legitimate callers overwrite, so the next unrelated resync
+    erases it) and it breaks `componentizeSchedule`'s base-as-remainder invariant, printing a CAM
+    change as a rent change. Reconciling against the **invoice** instead of the estimate
+    **overcharges every mid-year-start tenant** — the invoice's `cam_annual` is already prorated by
+    in-term/12 while the actual share is a full-year figure, so a July-start tenant's true-up
+    roughly quadruples.
+  - **Threaded through the choke points** (CLAUDE.md §2), all optional and all defaulting to the
+    old flat behaviour: `monthlyScheduleForYear({ monthlyOther })` · `buildLeaseSchedule({
+    otherByMonth })` · `componentizeSchedule({ camTaxByMonth, roofByMonth })` — the last is
+    load-bearing, because base is a **remainder** there and splitting a segmented month with a flat
+    annual would print the difference as changed base rent.
+  - **All the mirrors moved in the same commit** (§3): `reconciliation.js` ↔
+    `draft-invoice/index.ts` (a new `estSeries` block plus its proration loop) ↔ `mockClient.js`'s
+    `demoInvoiceFacts`.
+  - **The drift indicator — the backstop for the nightly SQL job.** `apply_due_escalations()` runs
+    in Postgres at 06:00 where no JS carry-through can fire, so the JS fixes below are a half-fix by
+    construction. Rather than port ~140 lines of billing math into SQL (a second implementation of
+    the money to keep in step — the §3 failure by name), `invoiceDrift` measures schedule-vs-invoice
+    and the Ledger row shows **"bill behind by $X"** with a **Rebuild** button. It catches every
+    writer at once, including ones nobody has thought of — and it SHOWS rather than silently
+    rewrites, which is what George actually asked for: *"the user will have to recalculate."*
+  - **A resync finally leaves a trace.** New `billing_rebuilt` history event carrying before→after
+    and how many recorded months were re-stamped. It could move a bill already sent AND rewrite the
+    months marked against it while writing nothing to History — every other money action logs one.
+    Registered in all three registries (`EVENT_LABEL`, `EVENT_BADGE`, `LEDGER_EVENTS`).
+  - **⚠ THE MOCK COULD NOT REPRODUCE THE COMMONEST LIVE STATE.** `mockClient.tenantShares` returned
+    `[]` when a year had no `expense_records` row, commented *"SQL view inner-joins
+    expense_records"* — **which is not true of `v_tenant_shares` (0073) or `v_property_totals`
+    (0049)**; both build a `periods` CTE and LEFT JOIN with `coalesce(…, 0)`. So in the demo,
+    saving an estimate for a year with no expenses entered was a silent no-op on the invoice, while
+    live it resynced — and an estimate exists *precisely because* the actuals aren't known yet.
+    The suite was passing over behaviour that was broken live. Fixed in both functions.
+  - **Smaller faults, same round.** The new-lease dialog said *"this tenant's invoice"* while a
+    size change on a property with no `building_sf` rebuilds **every** tenant's — it now says so
+    beforehand and reports the real scope and count afterwards (`resyncScope` / `leasesResynced`) ·
+    `AddendumEditor.refresh()` was a hand-rolled third invalidation list missing `abatements`,
+    `adjustments`, `statementContext`, `corpRollups`, `portfolioCollected` → now the two shared
+    sets · a **roof-only rider** stamped `est_confirmed_year` while leaving a legacy split in
+    place, clearing the very prompt that would have driven a merge → it merges instead · a dead
+    branch in `LeaseDetailPage.commit()` that would have written one estimate column raw, without
+    zeroing its sibling, without stamping the year and without resyncing → deleted.
+  - **A test flake, found and actually fixed rather than shrugged at.** `addendumReview.test.js`
+    failed twice in different tests. Root cause: it waited on the **addendum row** and then
+    asserted on **escalations**, which `applyAddendum` writes afterwards — a latent race that only
+    started failing once `applyAddendum` grew a back-fill and a carry-through and got slower. Both
+    waits now poll the thing being asserted. Five consecutive full-suite runs clean.
+  - **CLAUDE.md corrected** on two counts it had wrong: the estimate-preferred math is **two**
+    copies, not four (`api.js` and `mockClient.js` both delegate to `billedComponents` now), and
+    there are **six** non-skipping estimate saves, not four — two of which (the statement-import
+    pair) do **not** fit the stated "typed it on that year's screen" rationale and are flagged for
+    revisiting. Added the dated-figure rule, `payments.source`, the drift backstop and a new
+    "a new history_events type" registry entry.
+  - **Files.** `supabase/migrations/0089_lease_estimates.sql` (new) · `src/lib/reconciliation.js`
+    (`monthlyEstimates`, `annualFromMonthly`, segmented `reconcileFigures`) · `src/lib/api.js` ·
+    `src/lib/abatement.js` · `src/lib/leaseSchedule.js` · `src/lib/ledger.js` ·
+    `src/lib/reconciliationData.js` · `src/lib/demo/mockClient.js` ·
+    `supabase/functions/draft-invoice/index.ts` · `src/pages/LedgerPage.js` ·
+    `src/pages/LeaseDetailPage.js` · `src/pages/HistoryPage.js` · `src/lib/tenantStory.js` ·
+    `src/components/{TenantShareTable,AddendumEditor,LeaseDocs}.js` · `src/App.css` · `CLAUDE.md` ·
+    tests `datedEstimates.test.js` (new, 10) + `midYearLeaseChange.test.js` (5 → 6) +
+    `estimateResync.test.js` (16 → 17) + the two `addendumReview.test.js` waits.
+  - **Verified:** 1711/1711 five times over · `0089` applied and `draft-invoice` deployed · the
+    deployed demo's Ledger and Financials render with **zero app console errors** (the only
+    entries are Google-Fonts CORS failures caused by the CDP cache-disable header itself). The
+    drift chip is absent on the demo because its seed is in step — which is the correct reading,
+    and the drift path itself is pinned by a test that creates the exact state the nightly job
+    leaves behind.
+  - **Not bundled in, deliberately:** porting the billing math into SQL (the drift indicator covers
+    the cron without a second implementation) · capturing an "as sent" copy of an invoice — the app
+    has no record that an invoice was ever sent (no stored PDF, no send event, `onSent` unwired at
+    `InvoiceButton.js:142`), so there is nothing to diverge from; worth its own round ·
+    `invoices.overdue_notice_bucket` (0057) is dead, nothing reads or writes it.
+
 - **2026-08-04** — **A change to a billed figure now has a DATE — and stops deleting recorded
   payments** (George: *"look for any other bugs or lines of logic unfollowed when following the
   money trail — CAM and tax is an interesting one because it will change the base rent so the user

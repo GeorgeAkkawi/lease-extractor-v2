@@ -12,6 +12,7 @@ import {
   markMonthsPaidAllTenants,
   listStatementImports,
   listUnplacedLines,
+  resyncLeaseBilling,
   setLineDisposition,
   placeUnplacedLine,
   undoStatementImport,
@@ -218,6 +219,22 @@ export default function LedgerPage() {
   });
   const bulkBusy = allMut.isPending || catchUpAll.isPending;
 
+  // Rebuild ONE tenant's stored invoice from the lease as it now stands. The button only
+  // appears when the two have actually drifted apart (r.drift, api.js) — which is how the
+  // NIGHTLY SQL rent-step sweep gets caught: it moves base_rent server-side where no JS runs,
+  // so nothing here can carry the change through at the moment it happens. Showing the gap and
+  // letting the landlord close it is also what he asked for — *"the user will have to
+  // recalculate when they get their next months statement"* — rather than a silent rewrite of
+  // a bill he has already sent.
+  const rebuild = useMutation({
+    mutationFn: (leaseId) => resyncLeaseBilling(leaseId, propId, year),
+    onSuccess: (res) => setNote(res?.skipped === 'closed'
+      ? 'That year is closed, so its bill was left exactly as it was sent.'
+      : 'Rebuilt this tenant’s bill from the lease as it stands now.'),
+    onError: () => setNote('Could not rebuild that bill — please try again.'),
+    onSettled: settle,
+  });
+
   // Module switched off → back to the property's Financials page.
   if (!featuresLoading && !isOn('ledger')) {
     return <Navigate to={`/financials/${corpId}/${propId}`} replace />;
@@ -239,7 +256,7 @@ export default function LedgerPage() {
   const derived = sortTenantRows(
     rows.map((r) => {
       const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments, adjustments: r.adjustments });
-      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual, adjustments: r.adjustments });
+      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual, camTaxByMonth: r.camTaxByMonth, roofByMonth: r.roofByMonth, adjustments: r.adjustments });
       const summary = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc, today });
       const steps = escalationStepMonths({ schedule: r.schedule, comp });
       return { r, alloc, comp, summary, steps };
@@ -529,6 +546,18 @@ export default function LedgerPage() {
                         {summary.credit > 0.05 && <span className="rr-credit" title="Collected more than projected — owed back to the tenant">credit {money(summary.credit)}</span>}
                         {summary.monthsBehind > 0 && <span className="rr-behind" title="Due months with nothing collected yet">{summary.monthsBehind} mo behind</span>}
                       </div>
+                      {/* The stored bill and the lease no longer agree. Nothing here guesses
+                          why — a rent step that came due overnight, an expense figure that
+                          moved — it just says so and offers to close the gap. */}
+                      {!!r.drift && (
+                        <div className="rr-drift">
+                          <span title={`This bill was built at ${money(r.invoiceTotal)}. The lease now says ${money(summary.billed)} for ${year}.`}>
+                            bill {r.drift > 0 ? 'behind' : 'ahead'} by <strong>{money(Math.abs(r.drift))}</strong>
+                          </span>
+                          <button type="button" className="ghost btn-sm" disabled={rebuild.isPending}
+                            onClick={() => rebuild.mutate(r.lease_id)}>Rebuild</button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

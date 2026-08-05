@@ -5,7 +5,7 @@ import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths, optionLapsed, renewalFirstYearRent, optionScheduleSteps } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
-import { reconcileFigures, billedComponents } from './reconciliation';
+import { reconcileFigures, billedComponents, monthlyEstimates } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
 import {
   allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths,
@@ -14,7 +14,7 @@ import {
 import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
 import { abatementEnd, leadingFreeMonths } from './abatement';
-import { newLeaseTargets, buildAiConfidence } from './newLeaseTerms';
+import { newLeaseTargets, buildAiConfidence, leaseCamTaxAnnual } from './newLeaseTerms';
 import { contractCoversYear, contractAnnualCost } from './contracts';
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
@@ -1007,6 +1007,73 @@ export function buildAbatements(abatements) {
     .filter(Boolean);
 }
 
+// ---- Dated CAM & tax estimates (0089) ---------------------------------------
+// The estimate's answer to rent_escalations. A rent change has always had a dated ledger;
+// the estimate was one scalar on the lease, so raising it in August retroactively re-priced
+// January — including months the tenant had already paid. George, 2026-08-04: *"the previous
+// months aren't affected and shouldn't be reconciled at the new figures because they would be
+// part of the old lease."*
+//
+// ⚠ An EMPTY ledger is the norm and is not a gap: monthlyEstimates falls back to the lease's
+// scalar for every month, which is byte-for-byte the behaviour that existed before 0089.
+// Rows are written only by a change that CARRIES a date — a new lease, a rider — never by the
+// deliberate estimate editors, where the landlord typed this year's figure meaning all of it.
+export const listLeaseEstimates = (leaseId) =>
+  rows(supabase.from('lease_estimates').select('*').eq('lease_id', leaseId).order('effective_date'));
+
+// Bulk for a whole property in ONE query, mirroring listAbatementsForLeases — the Ledger roll
+// prices every tenant at once and must not fan out per lease.
+export async function listLeaseEstimatesByLeases(leaseIds) {
+  const ids = [...new Set((leaseIds || []).filter(Boolean))];
+  const byLease = Object.fromEntries(ids.map((id) => [id, []]));
+  if (ids.length === 0) return byLease;
+  const all = await rows(supabase.from('lease_estimates').select('*').in('lease_id', ids).order('effective_date'));
+  for (const e of all || []) (byLease[e.lease_id] ||= []).push(e);
+  return byLease;
+}
+
+export const createLeaseEstimate = async (e) =>
+  one(supabase.from('lease_estimates').insert({ ...e, owner_id: await ownerId() }).select().single());
+
+// ---- Has the stored invoice fallen behind the lease? ------------------------
+// THE INVOICE IS A FROZEN COPY AND DOES NOT REBUILD ITSELF (CLAUDE.md §1). Every JS path that
+// moves a billed figure now calls the carry-through — but the rent-step sweep also runs
+// **server-side, nightly, in SQL** (`apply_due_escalations()`, 0024/0047), where no JS runs at
+// all. Porting ~140 lines of billing math into Postgres to fix that would create a second
+// implementation of the money to keep in step, which is the failure CLAUDE.md §3 is about.
+//
+// So instead of chasing every writer, MEASURE THE RESULT: the schedule built up from live data
+// says what the year should be, the stored invoice says what it was billed at, and any gap
+// between them is drift — whatever caused it, including causes nobody has thought of. Positive
+// = the lease says MORE than the invoice (a step applied and the bill never followed).
+//
+// George's own framing, and the reason this SHOWS rather than silently rewrites: *"the user
+// will have to recalculate when they get their next months statement."*
+//
+// ±$1 of dust is ignored — the schedule penny-folds and the invoice rounds independently.
+export const INVOICE_DRIFT_DUST = 1;
+function invoiceDrift(invoice, scheduleAnnual) {
+  if (!invoice || invoice.total_amount == null) return 0;
+  const gap = round2(Number(scheduleAnnual || 0) - Number(invoice.total_amount || 0));
+  return Math.abs(gap) > INVOICE_DRIFT_DUST ? gap : 0;
+}
+
+// The monthly arrays buildLeaseSchedule / componentizeSchedule want, or null when there is no
+// share to price against (the invoice-fallback branches, whose stored figures were already
+// segmented when the invoice was written and must not be re-segmented on top).
+const estimateMonths = (estimates, share, year) =>
+  (share ? monthlyEstimates(estimates, share, year) : null);
+
+// The single array buildLeaseSchedule wants for `otherByMonth`: CAM & tax + roof combined,
+// as an annual rate per month. Null for a gross lease (its expenses are inside the flat rent,
+// so nothing rides on top) and null with no share to price against — both cases in which the
+// caller's existing flat `otherAnnual` is already the right answer.
+function otherMonthsFor(estimates, share, year, billed) {
+  if (!share || billed?.gross) return null;
+  const m = estimateMonths(estimates, share, year);
+  return m ? m.camTax.map((c, i) => round2(c + (Number(m.roof[i]) || 0))) : null;
+}
+
 // ---- One rent schedule, built one way --------------------------------------
 // Everything a lease document says about MONEY OVER TIME, turned into the rows that get
 // written: the free-rent windows, the dated rent steps, the renewal options, and the
@@ -1709,6 +1776,36 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
     }
   }
 
+  // The CAM & tax estimate gets the SAME treatment (0089): a closing row carrying the old
+  // figure and a boundary row carrying the new one, so the months before the change keep
+  // being billed — and reconciled — at what the old lease said. Without these two rows the
+  // estimate is one scalar and raising it here re-prices January retroactively.
+  if (boundaryIso && patch.est_cam_annual != null) {
+    const priorEst = leaseCamTaxAnnual(lease);
+    const priorRoof = Number(lease.est_roof_annual);
+    const existingEst = await listLeaseEstimates(leaseId);
+    const closingEstIso = [isoDateOrNull(lease.lease_start), ...existingEst.map((e) => String(e.effective_date))]
+      .filter(Boolean).sort().pop() || null;
+    const rowsToAdd = [];
+    if (closingEstIso && closingEstIso < boundaryIso && priorEst != null) {
+      rowsToAdd.push({
+        effective_date: closingEstIso,
+        cam_tax_annual: priorEst,
+        roof_annual: Number.isFinite(priorRoof) ? priorRoof : null,
+        source: 'new_lease', note: 'Estimate under the previous lease',
+      });
+    }
+    rowsToAdd.push({
+      effective_date: boundaryIso,
+      cam_tax_annual: Number(patch.est_cam_annual),
+      roof_annual: Number.isFinite(Number(lease.est_roof_annual)) ? Number(lease.est_roof_annual) : null,
+      source: 'new_lease', note: null,
+    });
+    await rows(
+      supabase.from('lease_estimates').insert(rowsToAdd.map((r) => ({ ...r, lease_id: leaseId, owner_id: uid })))
+    ).catch(() => null);
+  }
+
   // Same rule one level along: a PENDING option is a right under the old lease and the new
   // one restates it; an exercised or lapsed one is a thing that happened.
   const renRows = built.renewals;
@@ -1761,14 +1858,20 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
   // The invoice does not rebuild itself (CLAUDE.md §1). Last, so one settle covers a rent
   // change, a resize, a new estimate and a new term together rather than firing per effect.
   let resynced = false;
+  let resyncScope = null;   // 'lease' | 'property' — the dialog says which, truthfully
+  let leasesResynced = 0;
   const sizeChanged = (changes?.fields || []).some((f) => f.key === 'square_footage');
   if (changes?.touchesBilling && lease.property_id) {
     const year = Number(localDateIso(today).slice(0, 4));
     const property = await getProperty(lease.property_id).catch(() => null);
     if (sizeChanged && !(Number(property?.building_sf) > 0)) {
-      await resyncPropertyBilling(lease.property_id, year);
+      const res = await resyncPropertyBilling(lease.property_id, year);
+      resyncScope = 'property';
+      leasesResynced = Number(res?.leases) || 0;
     } else {
-      await resyncLeaseBilling(leaseId, lease.property_id, year);
+      const res = await resyncLeaseBilling(leaseId, lease.property_id, year);
+      resyncScope = 'lease';
+      leasesResynced = res?.invoice ? 1 : 0;
     }
     resynced = true;
   }
@@ -1785,6 +1888,8 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
     // landlord to wonder why it isn't the figure printed on page one of the document.
     currentRent: rolled?.currentRent ?? null,
     resynced,
+    resyncScope,
+    leasesResynced,
     propertyId: lease.property_id || null,
   };
 }
@@ -2401,13 +2506,53 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
   // actual only settles it at year-end ⚖ Reconcile.
   const est = changes.estimates;
   if (est && (est.camTaxAnnual != null || est.roofAnnual != null)) {
-    const fy = today.getFullYear();
+    // Read the year through localDateIso like every other date in this file — the house
+    // idiom, and the one place a timezone rule would land if the app ever grows one.
+    // (It is the same calendar `today.getFullYear()` read; this is consistency, not a fix.)
+    const fy = Number(localDateIso(today).slice(0, 4));
     const patch = { est_confirmed_year: fy };
     if (est.camTaxAnnual != null) {
       patch.est_cam_annual = Number(est.camTaxAnnual);
       patch.est_tax_annual = 0; // the combined convention — cam + tax reads back as the figure entered
+    } else if (Number(lease?.est_tax_annual) > 0) {
+      // ⚠ A ROOF-ONLY rider used to stamp est_confirmed_year while leaving a LEGACY SPLIT
+      // (est_cam 9,000 + est_tax 4,000) in place — clearing the very "carried over" prompt
+      // that would have driven the landlord back through the merging editor, and leaving two
+      // columns that every reader sums. Merge it here instead of hiding it.
+      patch.est_cam_annual = leaseCamTaxAnnual(lease);
+      patch.est_tax_annual = 0;
     }
     if (est.roofAnnual != null) patch.est_roof_annual = Number(est.roofAnnual);
+    // A rider states its figure FROM A DATE (0089), so the months before it keep being billed
+    // — and reconciled — at the estimate the lease carried until then. Closing row first,
+    // same pair as the rent boundary; without it monthlyEstimates answers the live scalar for
+    // every month and the rider re-prices the year backwards.
+    const estFrom = isoDateOrNull(est.effectiveDate) || isoDateOrNull(addendum.amendment_date);
+    if (estFrom) {
+      const priorEst = leaseCamTaxAnnual(lease);
+      const priorRoof = Number(lease?.est_roof_annual);
+      const existingEst = await listLeaseEstimates(leaseId);
+      const closeAt = [isoDateOrNull(lease?.lease_start), ...existingEst.map((e) => String(e.effective_date))]
+        .filter(Boolean).sort().pop() || null;
+      const estRows = [];
+      if (closeAt && closeAt < estFrom && priorEst != null) {
+        estRows.push({
+          effective_date: closeAt, cam_tax_annual: priorEst,
+          roof_annual: Number.isFinite(priorRoof) ? priorRoof : null,
+          source: 'addendum', addendum_id: addendum.id, note: 'Estimate before this rider',
+        });
+      }
+      estRows.push({
+        effective_date: estFrom,
+        cam_tax_annual: patch.est_cam_annual != null ? Number(patch.est_cam_annual) : priorEst,
+        roof_annual: patch.est_roof_annual != null ? Number(patch.est_roof_annual)
+          : (Number.isFinite(priorRoof) ? priorRoof : null),
+        source: 'addendum', addendum_id: addendum.id, note: addendum.label || null,
+      });
+      await rows(
+        supabase.from('lease_estimates').insert(estRows.map((r) => ({ ...r, lease_id: leaseId, owner_id: uid })))
+      ).catch(() => null);
+    }
     await updateLease(leaseId, patch);
     // ⚠ The resync used to fire HERE, before the schedule was rolled forward. It now runs
     // with the others at the bottom, after backfillLeaseToToday — see there for why.
@@ -2953,11 +3098,12 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
   const existing = await getYearInvoice(leaseId, year);
   if (!existing) return { invoice: null, monthsResynced: 0 };
 
-  const [share, abatements, escalations, adjustments] = await Promise.all([
+  const [share, abatements, escalations, adjustments, estimates] = await Promise.all([
     getTenantShare(leaseId, year),
     listAbatements(leaseId),
     listEscalations(leaseId),
     listAdjustments({ leaseId, year }),
+    listLeaseEstimates(leaseId),
   ]);
   if (!share) return { invoice: existing, monthsResynced: 0 };
 
@@ -2973,9 +3119,13 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
   // asserting money that never arrived, and pushing Collected up by the charge. An
   // estimate re-prices money the tenant was always going to pay; a charge is new money
   // that hasn't. Σ adjustments reaches the invoice TOTAL below and nowhere else.
+  // The estimate month by month (0089), so a figure that changed part way through the year
+  // prices the earlier months at what they were actually billed rather than re-pricing them.
+  const estMonths = estimateMonths(estimates, share, year);
+  const otherByMonth = otherMonthsFor(estimates, share, year, billed);
   const { schedule } = buildLeaseSchedule({
     year, grossBase, otherAnnual: billed.gross ? 0 : billed.cam + billed.tax + billed.roof,
-    abatements, escalations, leaseStart: share.lease_start,
+    otherByMonth, abatements, escalations, leaseStart: share.lease_start,
   });
   const adjTotal = round2((adjustments || []).reduce((s, a) => s + (Number(a.amount) || 0), 0));
 
@@ -2988,16 +3138,29 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
   let inTerm = 0;
   let proratedBaseGross = 0;
   let proratedAbatement = 0;
+  // Σ of the in-term months' CAM & tax / roof. With no dated ledger every month carries the
+  // same annual rate and these land on exactly `billed.cam * ratio` — the old arithmetic, to
+  // the cent. With one, the invoice's stored annual becomes what was ACTUALLY billed across
+  // the year instead of today's figure applied backwards over months already collected.
+  let proratedCamTax = 0;
+  let proratedRoof = 0;
   for (let m = 1; m <= 12; m++) {
     if (schedule[m]?.outsideTerm) continue;
     inTerm += 1;
     proratedBaseGross += (bases[m - 1] != null ? Number(bases[m - 1]) : grossBase) / 12;
     proratedAbatement += Number(schedule[m]?.credit) || 0;
+    proratedCamTax += (estMonths ? Number(estMonths.camTax[m - 1]) || 0 : billed.cam + billed.tax) / 12;
+    proratedRoof += (estMonths ? Number(estMonths.roof[m - 1]) || 0 : billed.roof) / 12;
   }
   const ratio = inTerm / 12;
-  const invCam = round2(billed.cam * ratio);
-  const invTax = round2(billed.tax * ratio);
-  const invRoof = round2(billed.roof * ratio);
+  // The cam/tax split stays as billedComponents reports it whenever nothing was dated (a
+  // legacy lease with the two entered separately keeps them separate); once the ledger has
+  // moved the figure, the combined amount rides on cam with tax zeroed — the storage
+  // convention every reader of these columns already assumes.
+  const segmented = estMonths && Math.abs(round2(proratedCamTax) - round2((billed.cam + billed.tax) * ratio)) > 0.005;
+  const invCam = segmented ? round2(proratedCamTax) : round2(billed.cam * ratio);
+  const invTax = segmented ? 0 : round2(billed.tax * ratio);
+  const invRoof = estMonths ? round2(proratedRoof) : round2(billed.roof * ratio);
   // Gross: the components come OUT of the prorated flat rent, so the stored figures
   // still sum to the same total the schedule owes (the ledger reads them back to split
   // each month). Net: base is the rent and the components ride on top, as before.
@@ -3075,6 +3238,25 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
       });
     }
     monthsResynced += 1;
+  }
+
+  // Leave a trace. Every other money action writes a history_events row — estimate_set,
+  // cam_reconciled, lease_adjusted, statement_imported — and this one, which can move a bill
+  // the tenant has already been sent AND rewrite the months marked paid against it, wrote
+  // nothing at all. Reading the property History, a rewritten invoice was indistinguishable
+  // from one nobody had touched. Only logged when a figure actually moved, so the routine
+  // no-op resyncs (which fire on almost every save) don't bury the log.
+  const priorTotal = round2(Number(existing.total_amount) || 0);
+  if (Math.abs(round2(total - priorTotal)) > 0.005 || monthsResynced > 0) {
+    await logHistoryEvent({
+      property_id: propertyId || null, lease_id: leaseId, type: 'billing_rebuilt',
+      tenant_name: share.tenant_name || null,
+      description:
+        `Bill for ${year} rebuilt: ${money(priorTotal)} → ${money(total)}` +
+        (monthsResynced ? ` · ${monthsResynced} recorded month${monthsResynced === 1 ? '' : 's'} re-stamped` : ''),
+      event_date: localDateIso(),
+      meta: { year: Number(year), from: priorTotal, to: total, months_resynced: monthsResynced },
+    });
   }
   return { invoice, monthsResynced };
 }
@@ -3170,15 +3352,17 @@ export async function listAdjustmentsByLeases(leaseIds, year) {
 // The scheduled (pre-adjustment) owed for one lease-year — what a new adjustment is
 // validated against, and what the month panel shows beside it.
 async function scheduledOwedFor(leaseId, year) {
-  const [abatements, share, escalations] = await Promise.all([
+  const [abatements, share, escalations, estimates] = await Promise.all([
     listAbatements(leaseId),
     getTenantShare(leaseId, year),
     listEscalations(leaseId),
+    listLeaseEstimates(leaseId),
   ]);
   const grossBase = share ? Number(share.base_rent || 0) : 0;
   const billed = share ? billedComponents(share) : { cam: 0, tax: 0, roof: 0, gross: false };
   const { schedule } = buildLeaseSchedule({
     year, grossBase, otherAnnual: billed.gross ? 0 : billed.cam + billed.tax + billed.roof,
+    otherByMonth: otherMonthsFor(estimates, share, year, billed),
     abatements, escalations, leaseStart: share?.lease_start,
   });
   return { schedule, share, billed };
@@ -3265,12 +3449,13 @@ export async function deleteAdjustment(id) {
 // (period_month -> { amount, ids, paid_date, method }), and the raw payments so
 // the coverage allocator can pool untagged (lump/partial) money too.
 export async function getMonthlyRent(leaseId, year) {
-  const [invoice, abatements, share, escalations, adjustments] = await Promise.all([
+  const [invoice, abatements, share, escalations, adjustments, estimates] = await Promise.all([
     getYearInvoice(leaseId, year),
     listAbatements(leaseId),
     getTenantShare(leaseId, year),
     listEscalations(leaseId),
     listAdjustments({ leaseId, year }),
+    listLeaseEstimates(leaseId),
   ]);
   // The schedule builds UP from the data (George, 2026-07-21): base rent straight from the
   // lease (constant, escalation-aware) + estimated-else-actual CAM/tax/roof. We deliberately do
@@ -3291,8 +3476,12 @@ export async function getMonthlyRent(leaseId, year) {
   // (The invoice-fallback branch above needs no such test: its stored figures were
   // already carved when the invoice was written, so they still sum to the flat total.)
   const other = billed.gross ? 0 : billed.cam + billed.tax + billed.roof;
+  // Null on the invoice-fallback branch above (no share): those stored figures were already
+  // segmented when the invoice was written, and segmenting them again would double-apply it.
+  const estMonths = estimateMonths(estimates, share, year);
   const { schedule, annual, owedMonths, occupancyStartIso: occ, factor, adjustments: adjArr } = buildLeaseSchedule({
-    year, grossBase, otherAnnual: other, abatements, escalations, leaseStart: share?.lease_start, adjustments,
+    year, grossBase, otherAnnual: other, otherByMonth: otherMonthsFor(estimates, share, year, billed),
+    abatements, escalations, leaseStart: share?.lease_start, adjustments,
   });
 
   const payments = invoice ? await listPayments(invoice.id) : [];
@@ -3319,7 +3508,7 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
     ensureInvoice(leaseId, propertyId, year),
     hasAmount
       ? Promise.resolve(null)
-      : Promise.all([listAbatements(leaseId), getTenantShare(leaseId, year), listEscalations(leaseId), listAdjustments({ leaseId, year })]),
+      : Promise.all([listAbatements(leaseId), getTenantShare(leaseId, year), listEscalations(leaseId), listAdjustments({ leaseId, year }), listLeaseEstimates(leaseId)]),
   ]);
   const m1 = m;
   // Already marked — from this screen, the property ledger, or another device.
@@ -3337,7 +3526,7 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
     // the gross lease base (prorated for a mid-year start + blended for mid-year steps + net of any
     // base-rent abatement) + estimated-else-actual CAM/tax/roof — NOT scaled to the invoice, and
     // NOT a flat total/12 (which over-bills free months and mis-bills a partial-year lease).
-    const [abatements, share, escalations, adjustments] = schedInputs;
+    const [abatements, share, escalations, adjustments, estimates] = schedInputs;
     const grossBase = share ? Number(share.base_rent || 0) : Number(invoice.base_rent_annual || 0);
     const billed = share ? billedComponents(share) : { cam: Number(invoice.cam_annual || 0), tax: Number(invoice.tax_annual || 0), roof: Number(invoice.roof_annual || 0) };
     const { schedule: sched } = buildLeaseSchedule({
@@ -3345,8 +3534,9 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
       // fallback is already carved, hence no test on that branch). Adjustments DO count
       // here — marking a month paid with no amount means "record what this month owes",
       // and a charge posted on it is part of what it owes.
-      year, grossBase, otherAnnual: billed.gross ? 0 : billed.cam + billed.tax + billed.roof, abatements, escalations,
-      leaseStart: share?.lease_start, adjustments,
+      year, grossBase, otherAnnual: billed.gross ? 0 : billed.cam + billed.tax + billed.roof,
+      otherByMonth: otherMonthsFor(estimates, share, year, billed),
+      abatements, escalations, leaseStart: share?.lease_start, adjustments,
     });
     amount = sched[m]?.owed ?? (Number(invoice.total_amount || 0) / 12);
   }
@@ -3451,10 +3641,11 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
     listInvoicesForProperty(propertyId),
   ]);
   const leaseIds = shares.map((s) => s.lease_id);
-  const [abByLease, escByLease, adjByLease] = await Promise.all([
+  const [abByLease, escByLease, adjByLease, estByLease] = await Promise.all([
     listAbatementsForLeases(leaseIds),
     listEscalationsByLeases(leaseIds),
     listAdjustmentsByLeases(leaseIds, year),
+    listLeaseEstimatesByLeases(leaseIds),
   ]);
   const invByLease = {};
   for (const inv of invoices) {
@@ -3482,8 +3673,14 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
     const abatements = abByLease[s.lease_id] || [];
     const escalations = escByLease[s.lease_id] || [];
     const adjustmentRows = adjByLease[s.lease_id] || [];
+    // The estimate month by month (0089). It reaches componentizeSchedule via camTaxByMonth /
+    // roofByMonth on the returned row — and it MUST, because base is a remainder there: split
+    // a segmented month with a flat annual and the difference prints as changed BASE RENT.
+    const estMonths = estimateMonths(estByLease[s.lease_id] || [], s, year);
     const { schedule, annual, owedMonths, occupancyStartIso: occ, factor, adjustments: adjArr } = buildLeaseSchedule({
-      year, grossBase, otherAnnual: other, abatements, escalations, leaseStart: s.lease_start, adjustments: adjustmentRows,
+      year, grossBase, otherAnnual: other,
+      otherByMonth: otherMonthsFor(estByLease[s.lease_id] || [], s, year, billed),
+      abatements, escalations, leaseStart: s.lease_start, adjustments: adjustmentRows,
     });
     const payments = inv ? (paymentsByInvoice[inv.id] || []) : [];
     const byMonth = {};
@@ -3492,7 +3689,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
       if (!m) continue;
       (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
     }
-    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, adjustments: adjArr, adjustmentRows, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage, base_rent: Number(s.base_rent || 0), premises_address: s.premises_address || null, anyEstimate: billed.anyEstimate, gross: billed.gross };
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, adjustments: adjArr, adjustmentRows, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, camTaxByMonth: estMonths?.camTax || null, roofByMonth: estMonths?.roof || null, invoiceTotal: inv ? Number(inv.total_amount) : null, drift: invoiceDrift(inv, annual), occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage, base_rent: Number(s.base_rent || 0), premises_address: s.premises_address || null, anyEstimate: billed.anyEstimate, gross: billed.gross };
   });
 }
 
@@ -3527,13 +3724,23 @@ export async function reconcileCamTax(leaseId, propertyId, year) {
     throw new Error('Gross lease — CAM & taxes are included in the rent; there is nothing to reconcile.');
   }
 
-  // Settle against the tenant's current estimate — the same figure the Finances
-  // "Estimated" column and live Difference show — so the reconciliation the landlord
-  // confirms is exactly the one on screen. Any CAM & tax CORRECTIONS posted on the
-  // Ledger (0082) are part of what was billed, so they ride on the estimate side —
-  // otherwise this would true up as though they hadn't been, charging them twice.
-  const adjustments = await listAdjustments({ leaseId, year });
-  const fig = reconcileFigures({ share, adjustments });
+  // Settle against WHAT WAS BILLED — the same figure the Finances "Estimated" column and
+  // live Difference show — so the reconciliation the landlord confirms is exactly the one on
+  // screen. Any CAM & tax CORRECTIONS posted on the Ledger (0082) are part of what was
+  // billed, so they ride on the estimate side — otherwise this would true up as though they
+  // hadn't been, charging them twice.
+  //
+  // ⚠ 0089 — "what was billed" is now month by month. It used to be today's annual estimate
+  // applied to all twelve months, so an estimate raised in August settled the whole year at
+  // the new figure and the true-up was wrong by (Δestimate × the months billed at the old
+  // one) — refunding money that was never collected. George: *"the previous months aren't
+  // affected and shouldn't be reconciled at the new figures because they would be part of
+  // the old lease."*
+  const [adjustments, estimates] = await Promise.all([
+    listAdjustments({ leaseId, year }),
+    listLeaseEstimates(leaseId),
+  ]);
+  const fig = reconcileFigures({ share, adjustments, estimates, year });
 
   // Shortfall → its own reconciliation invoice. Per-component diffs can be negative
   // individually (CAM under, tax over) and the invoice check constraints require
@@ -5489,7 +5696,7 @@ export async function getStatementMatchContext(propertyId, year) {
       // boxes paint — so a deposit at the pre-raise rate for a post-step month reads
       // as explained by the escalation, never as "short" (and the import screen can
       // never disagree with the boxes).
-      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual, adjustments: r.adjustments });
+      const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual, camTaxByMonth: r.camTaxByMonth, roofByMonth: r.roofByMonth, adjustments: r.adjustments });
       const steps = escalationStepMonths({ schedule: r.schedule, comp });
       // Per-month base + roof (the exact figures the Ledger boxes paint) so an imported
       // deposit can back out its CAM & tax estimate: CAM&tax = deposit − base − roof.
