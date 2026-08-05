@@ -195,30 +195,31 @@ describe('LeaseReviewStrip — marking the findings read', () => {
     model: 'x', reviewed_at: `${TODAY}T00:00:00.000Z`, source: 'review_button', ...extra,
   });
 
-  // "Needs to be a way to dismiss the lease review output in the lease page or else they
-  // just sit there" (George, 2026-08-05). Folded away, NOT deleted — the landlord must not
-  // have to pay for the review again to find out what it said.
-  it('folds the findings away and stamps the lease, without losing them', async () => {
+  // "I want to be able to dismiss notifications one at a time within the tenants"
+  // (George, 2026-08-05). Folded away, NOT deleted — the landlord must not have to re-run
+  // the review to find out what it said.
+  it('dismisses ONE finding, leaving the others exactly where they were', async () => {
     renderStrip({ lease: { ...original, lease_text: 'text', ai_review: reviewed() }, insurance: undefined });
 
     await waitFor(() => expect(screen.getByText('No personal guarantee')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /Mark as read/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark read: No late fee' }));
 
-    await waitFor(() => expect(screen.queryByText('No personal guarantee')).toBeNull());
-    expect(screen.getByText(/2 points from the document marked read/i)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('No late fee')).toBeNull());
+    expect(screen.getByText('No personal guarantee')).toBeTruthy();   // untouched
+    expect(screen.getByText(/1 finding from the document marked read/i)).toBeTruthy();
 
     const saved = await getLease('lease-1');
-    expect(saved.ai_review.dismissed_at).toBeTruthy();
+    expect(saved.ai_review.dismissed_keys).toEqual(['no_late_fee']);
     expect(saved.ai_review.flags).toHaveLength(2);   // still there, still free to re-read
   });
 
-  it('gives them straight back', async () => {
-    renderStrip({
-      lease: { ...original, lease_text: 'text', ai_review: reviewed({ dismissed_at: `${TODAY}T09:00:00.000Z` }) },
-      insurance: undefined,
-    });
+  it('marks them all read in one click, and gives them straight back', async () => {
+    renderStrip({ lease: { ...original, lease_text: 'text', ai_review: reviewed() }, insurance: undefined });
 
-    await waitFor(() => expect(screen.getByText(/marked read/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('No personal guarantee')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /Mark all read/i }));
+
+    await waitFor(() => expect(screen.getByText(/2 findings from the document marked read/i)).toBeTruthy());
     expect(screen.queryByText('No personal guarantee')).toBeNull();
     // …and it must not claim the AI found nothing while saying it folded something away.
     expect(screen.queryByText(/found no missing protections/i)).toBeNull();
@@ -226,13 +227,21 @@ describe('LeaseReviewStrip — marking the findings read', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show them again/i }));
     await waitFor(() => expect(screen.getByText('No personal guarantee')).toBeTruthy());
     const saved = await getLease('lease-1');
-    expect(saved.ai_review.dismissed_at).toBeUndefined();
+    expect(saved.ai_review.dismissed_keys).toEqual([]);
+  });
+
+  // Silencing an expired certificate would keep it silent while it went on being expired.
+  it('offers no dismiss on a finding read from the records', async () => {
+    renderStrip({ lease: { ...original, lease_text: 'text', ai_review: reviewed() }, insurance: null });
+    await waitFor(() => expect(screen.getByText('No certificate of insurance on file')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /Mark read: No certificate/i })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Mark read: No personal guarantee' })).toBeTruthy();
   });
 
   it('offers nothing to dismiss when there is nothing saved to read', async () => {
     renderStrip({ lease: { ...original, lease_text: 'text', ai_review: null }, insurance: undefined });
     await waitFor(() => expect(screen.getByText('Lease review')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: /Mark as read/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Mark all read/i })).toBeNull();
   });
 });
 

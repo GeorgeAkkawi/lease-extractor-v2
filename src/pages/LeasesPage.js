@@ -62,9 +62,10 @@ export default function LeasesPage() {
   if (reviewsOn) {
     for (const r of leaseReviews) {
       const sum = reviewSummary(r);
-      // A dismissed review keeps its findings on the lease page but stops flagging the row —
-      // the landlord has read it. Re-reviewing brings the flag back.
-      if (sum && !sum.dismissedAt) reviewByLease[r.id] = sum;
+      // Its counts are of what is still OUTSTANDING, so marking one finding read takes the
+      // badge from 6 to 5 — and marking the high one read takes "· 2 high" down with it.
+      // Everything read and the row goes quiet; a re-review brings the flag back.
+      if (sum && !(sum.total === 0 && sum.dismissed > 0)) reviewByLease[r.id] = sum;
     }
   }
   usePageChrome([

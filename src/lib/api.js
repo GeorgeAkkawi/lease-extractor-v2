@@ -570,21 +570,27 @@ export async function reviewLease(leaseId) {
   return ai_review;
 }
 
-// Mark a saved lease review as read, so its findings stop occupying the lease page and its
-// flag leaves the tenant list (George, 2026-08-05: "needs to be a way to dismiss the lease
-// review output in the lease page or else they just sit there").
+// Mark findings from a saved lease review as read, ONE AT A TIME (George, 2026-08-05: "i
+// want to be able to dismiss notifications one at a time within the tenants … make sure the
+// badges on the tenant cards respond accordingly").
 //
-// A STAMP, NOT A DELETE. The findings stay exactly where they are — dismissing says "I have
-// read this", not "this was wrong", and re-opening the lease can still show it. Clearing the
-// flags instead would mean paying for the review again to see what it said.
+// A STAMP, NOT A DELETE. The flags stay exactly where they are — dismissing says "I have
+// read this", not "this was wrong". Deleting them instead would mean re-running the review
+// to find out what it had said.
 //
-// `dismissed_at` rides INSIDE the existing ai_review jsonb, so there is no migration and no
-// second source of truth: a re-review writes a fresh object with no such key, which is what
-// makes the flag come back when the document is read again.
-export async function setLeaseReviewDismissed(leaseId, review, dismissed = true) {
-  const next = { ...(review || {}) };
-  if (dismissed) next.dismissed_at = new Date().toISOString();
-  else delete next.dismissed_at;
+// `dismissed_keys` rides INSIDE the existing ai_review jsonb, so there is no migration and
+// no second source of truth. A re-review writes a fresh object with no such key, which is
+// what makes every flag come back when the document is read again — right, because a new
+// read may reach a different conclusion about the very thing that was waved off.
+//
+// ⚠ AI FLAGS ONLY. The panel's other half (computeLeaseRisks) is recomputed live from the
+// records and is deliberately NOT dismissible: an expired certificate silenced here would
+// stay silenced while it went on being expired.
+export async function setLeaseReviewDismissedKeys(leaseId, review, keys) {
+  const next = { ...(review || {}), dismissed_keys: [...new Set(keys)] };
+  // The whole-review stamp this replaced (shipped earlier the same day). Dropped on the
+  // first write so a row can never carry both stories about what has been read.
+  delete next.dismissed_at;
   await updateLease(leaseId, { ai_review: next });
   return next;
 }

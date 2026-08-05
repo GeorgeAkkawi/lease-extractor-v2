@@ -1030,6 +1030,11 @@ tbody tr:last-child td{border-bottom:none}
 .review-item.info{border-left-color:var(--forest)}
 .review-item-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:5px}
 .review-item-head strong{font-family:var(--display);font-size:17px;font-weight:600}
+/* Per-finding dismiss. Pushed to the right of its own row and faint until that row is
+   hovered — it has to be reachable on every finding without turning the list into a
+   column of ✕. Only the document findings get one; see the note in LeaseReviewStrip. */
+.review-item-x{margin-left:auto;flex:none;opacity:.35;font-size:12px;line-height:1;padding:2px 4px}
+.review-item:hover .review-item-x,.review-item-x:focus-visible{opacity:1}
 .review-item-note{font-size:12.5px;line-height:1.5}
 .review-quote{margin-top:8px;font-size:12px}
 .review-quote summary{cursor:pointer;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:9.5px;font-weight:700}

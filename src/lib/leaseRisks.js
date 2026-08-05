@@ -214,14 +214,21 @@ export function reviewSummary(lease) {
   const review = lease?.ai_review;
   if (!review || typeof review !== 'object') return null;
   const flags = Array.isArray(review.flags) ? review.flags : [];
+  // Findings the landlord has marked read on the lease page. `dismissed_at` is the earlier
+  // whole-review stamp, kept readable so rows written before per-finding dismissal shipped
+  // still count as fully read rather than springing back to a full badge.
+  const keys = Array.isArray(review.dismissed_keys) ? review.dismissed_keys : [];
+  const allRead = !!review.dismissed_at;
+  const live = allRead ? [] : flags.filter((f) => !keys.includes(f?.key));
   return {
-    total: flags.length,
-    high: flags.filter((f) => f?.severity === 'high').length,
+    // ⚠ EVERY COUNT HERE IS OF WHAT IS STILL OUTSTANDING, not of what the review found.
+    // That is the whole point: the tenant-row badge has to fall as findings are read, and
+    // dropping the one high finding has to take `high` down with it.
+    total: live.length,
+    high: live.filter((f) => f?.severity === 'high').length,
+    dismissed: flags.length - live.length,
+    found: flags.length,
     reviewedAt: review.reviewed_at || null,
-    // Set once the landlord has read the findings on the lease page. The findings are still
-    // there — this only stops the tenant list flagging a lease he has already dealt with.
-    // A re-review writes a fresh object without the key, so the flag returns.
-    dismissedAt: review.dismissed_at || null,
-    titles: flags.map((f) => f?.title).filter(Boolean),
+    titles: live.map((f) => f?.title).filter(Boolean),
   };
 }

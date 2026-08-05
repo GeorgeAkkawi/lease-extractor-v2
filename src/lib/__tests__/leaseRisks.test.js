@@ -202,12 +202,33 @@ describe('reviewSummary', () => {
     expect(reviewSummary({ id: 'l1', ai_review: null })).toBeNull();
     expect(reviewSummary({ id: 'l1' })).toBeNull();
     expect(reviewSummary(review([]))).toEqual({
-      total: 0, high: 0, reviewedAt: '2026-08-01T00:00:00.000Z', dismissedAt: null, titles: [],
+      total: 0, high: 0, dismissed: 0, found: 0, reviewedAt: '2026-08-01T00:00:00.000Z', titles: [],
     });
   });
 
-  // Marking a review read is what takes the flag off the tenant row — the findings stay.
-  it('carries the dismissal stamp through, without dropping the findings', () => {
+  // THE BADGE MATH. Its counts are of what is still OUTSTANDING, not of what the review
+  // found — so reading one finding takes the tenant row from 3 to 2, and reading the high
+  // one takes `high` down with it (George, 2026-08-05).
+  it('counts only what is still outstanding, severity included', () => {
+    const flags = [
+      { key: 'no_personal_guarantee', severity: 'high', title: 'No personal guarantee' },
+      { key: 'no_security_deposit', severity: 'high', title: 'No security deposit' },
+      { key: 'no_late_fee', severity: 'medium', title: 'No late fee' },
+    ];
+    const at = (keys) => reviewSummary({ ai_review: { flags, dismissed_keys: keys } });
+
+    expect(at([])).toMatchObject({ total: 3, high: 2, dismissed: 0, found: 3 });
+    // one medium read → the total falls, the high count does not
+    expect(at(['no_late_fee'])).toMatchObject({ total: 2, high: 2, dismissed: 1 });
+    // one HIGH read → both fall
+    expect(at(['no_personal_guarantee'])).toMatchObject({ total: 2, high: 1, dismissed: 1 });
+    // everything read → nothing outstanding, but the review still knows what it found
+    expect(at(flags.map((f) => f.key))).toMatchObject({ total: 0, high: 0, dismissed: 3, found: 3 });
+  });
+
+  // Rows written before per-finding dismissal shipped carry the whole-review stamp. They
+  // must stay read, not spring back to a full badge.
+  it('reads the older whole-review stamp as everything dismissed', () => {
     const out = reviewSummary({
       ai_review: {
         flags: [{ key: 'no_late_fee', severity: 'medium', title: 'No late fee' }],
@@ -215,8 +236,7 @@ describe('reviewSummary', () => {
         dismissed_at: '2026-08-05T00:00:00.000Z',
       },
     });
-    expect(out.dismissedAt).toBe('2026-08-05T00:00:00.000Z');
-    expect(out.total).toBe(1);
+    expect(out).toMatchObject({ total: 0, high: 0, dismissed: 1, found: 1 });
   });
 
   it('survives a review row with no flags array at all', () => {

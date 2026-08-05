@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { reviewLease, setLeaseReviewDismissed, MIN_USABLE_TEXT } from '../lib/api';
+import { reviewLease, setLeaseReviewDismissedKeys, MIN_USABLE_TEXT } from '../lib/api';
 import { computeLeaseRisks, transcriptGaps } from '../lib/leaseRisks';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
@@ -33,11 +33,17 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
   // list for a beat after the landlord asked for a new one.
   const [justRun, setJustRun] = useState(null);
   const review = justRun || lease?.ai_review || null;
-  // Dismissed = "I have read this". The findings are NOT deleted — they fold away behind a
-  // one-line summary and the tenant list stops flagging the lease, because a review that
-  // stays open forever is one the landlord learns to scroll past (George, 2026-08-05).
-  const dismissedAt = review?.dismissed_at || null;
-  const aiFlags = !dismissedAt && Array.isArray(review?.flags) ? review.flags : [];
+  // Dismissed = "I have read this", ONE FINDING AT A TIME. Nothing is deleted: the flag
+  // stays on the lease and "Show all again" puts it back, because a review that can only be
+  // cleared by re-running it is one the landlord learns to scroll past instead.
+  // `dismissed_at` is the earlier whole-review stamp — read, never written, so a lease
+  // dismissed before this shipped stays dismissed.
+  const savedFlags = Array.isArray(review?.flags) ? review.flags : [];
+  const dismissedKeys = review?.dismissed_at
+    ? savedFlags.map((f) => f.key)
+    : (Array.isArray(review?.dismissed_keys) ? review.dismissed_keys : []);
+  const aiFlags = savedFlags.filter((f) => !dismissedKeys.includes(f.key));
+  const dismissedCount = savedFlags.length - aiFlags.length;
   const codeFlags = computeLeaseRisks({ lease, escalations, renewals, insurance });
   const flags = [...aiFlags.map((f) => ({ ...f, source: 'ai' })), ...codeFlags]
     .sort((a, b) => (RANK[a.severity] ?? 3) - (RANK[b.severity] ?? 3));
@@ -56,7 +62,7 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
   // Reading it, and un-reading it. Both go through the same helper so `dismissed_at` only
   // ever lives inside the saved review object.
   const dismiss = useMutation({
-    mutationFn: (yes) => setLeaseReviewDismissed(lease.id, review, yes),
+    mutationFn: (keys) => setLeaseReviewDismissedKeys(lease.id, review, keys),
     onSuccess: (next) => {
       setJustRun(next);
       qc.invalidateQueries({ queryKey: ['lease', lease.id] });
@@ -119,14 +125,14 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
           {/* Dismiss is offered only while there ARE saved findings on screen: nothing to
               read means nothing to mark read. It stamps the review rather than clearing it,
               so "Show again" is a free undo and the findings are never lost. */}
-          {!dismissedAt && aiFlags.length > 0 && (
+          {aiFlags.length > 0 && (
             <button
               className="secondary"
               disabled={dismiss.isPending}
-              title="Mark these findings read — they fold away here and the flag leaves this tenant on the property list"
-              onClick={() => dismiss.mutate(true)}
+              title="Mark every document finding read — they fold away here and the flag leaves this tenant on the property list"
+              onClick={() => dismiss.mutate(savedFlags.map((f) => f.key))}
             >
-              {dismiss.isPending ? 'Dismissing…' : '✓ Mark as read'}
+              {dismiss.isPending ? 'Dismissing…' : '✓ Mark all read'}
             </button>
           )}
           <button
@@ -144,14 +150,11 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
           a dismissal that hid the count would just be a review the landlord can no longer
           find. The free record checks below are unaffected: they are recomputed live and
           disappear on their own when the underlying thing is fixed. */}
-      {dismissedAt && (
+      {dismissedCount > 0 && (
         <p className="muted review-note">
-          {Array.isArray(review?.flags) && review.flags.length > 0
-            ? `${review.flags.length} ${review.flags.length === 1 ? 'point' : 'points'} from the document marked read on ${fmtDate(String(dismissedAt).slice(0, 10))}.`
-            : `Document review marked read on ${fmtDate(String(dismissedAt).slice(0, 10))}.`}
-          {' '}
-          <button className="linkish" onClick={() => dismiss.mutate(false)} disabled={dismiss.isPending}>
-            Show them again
+          {dismissedCount} {dismissedCount === 1 ? 'finding' : 'findings'} from the document marked read.{' '}
+          <button className="linkish" onClick={() => dismiss.mutate([])} disabled={dismiss.isPending}>
+            Show {dismissedCount === 1 ? 'it' : 'them'} again
           </button>
         </p>
       )}
@@ -189,7 +192,7 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
         /* Silent when the AI half was marked read: the note above already says what was
            folded away, and "the AI found no missing protections" would flatly contradict
            it. */
-        dismissedAt ? null : (
+        dismissedCount > 0 ? null : (
           <p className="empty-line muted">
             {review || codeFlags.length === 0
               ? 'Nothing flagged. The records are complete and the AI found no missing protections it could name.'
@@ -204,6 +207,23 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
                 <div className="review-item-head">
                   <span className={`badge ${TONE[f.severity] || 'info'}`}>{f.severity === 'high' ? 'Look at this' : f.severity === 'medium' ? 'Worth checking' : 'For your information'}</span>
                   <strong>{f.title}</strong>
+                  {/* ⚠ ONLY THE DOCUMENT FINDINGS CARRY A DISMISS. The record checks below
+                      them are recomputed from live data on every render — silencing an
+                      expired certificate here would keep it silent while it went on being
+                      expired. They clear themselves the moment the record is fixed, which
+                      is the same promise a dismiss makes, kept properly. */}
+                  {f.source === 'ai' && (
+                    <button
+                      type="button"
+                      className="icon-btn review-item-x"
+                      disabled={dismiss.isPending}
+                      title="Mark this one read — it folds away and comes off this tenant's flag"
+                      aria-label={`Mark read: ${f.title}`}
+                      onClick={() => dismiss.mutate([...dismissedKeys, f.key])}
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
                 <div className="muted review-item-note">{f.note}</div>
                 {f.quote && (

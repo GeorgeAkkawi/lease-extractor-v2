@@ -12,6 +12,65 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **Findings are dismissed one at a time, and the tenant badge counts what
+  is left** (George: *"i want to be able to dismiss notifications one at a time within the
+  tenants … make sure that the badges that are on the tenant cards respond accordingly. So if
+  I take out one or if I take out the high one, that should move and reduce those numbers"*).
+  Deployed: frontend Cloudflare **`48d0e767`**. No migration. Tests **1892/1892** across 180
+  files (+2). Third round on this feature today.
+
+  **`dismissed_keys` REPLACES the whole-review `dismissed_at`** shipped hours earlier — same
+  jsonb column, no migration, and `setLeaseReviewDismissedKeys` deletes the old key on its
+  first write so a row can never carry two stories about what has been read. `reviewSummary`
+  still *reads* `dismissed_at` (a lease dismissed before this shipped must stay dismissed
+  rather than spring back to a full badge); nothing writes it any more.
+
+  **⚠ EVERY COUNT `reviewSummary` RETURNS IS NOW OF WHAT IS OUTSTANDING**, not of what the
+  review found — that is the entire point, and `found` is carried separately for anything
+  that needs the original number. Reading one medium finding takes the tenant badge from
+  "⚑ 6 in the lease · 2 high" to "⚑ 5 · 2 high"; reading a HIGH one takes the high count down
+  with it. Verified in the running app: City Dental went **6 · 2 high → 4 · 1 high** after one
+  medium and one high were dismissed, with Bright Coffee untouched beside it. Everything read
+  and the row goes quiet; a re-review writes a fresh object with no dismissals, so every flag
+  returns — right, because a new read may reach a different conclusion about the very thing
+  that was waved off.
+
+  **⚠ ONLY THE DOCUMENT (AI) FINDINGS CARRY A DISMISS, AND THAT ASYMMETRY IS DELIBERATE.**
+  The panel merges two halves: the saved AI read and `computeLeaseRisks`, which is recomputed
+  from the records on every render. A dismiss on the second half would be a lie — an expired
+  certificate silenced here would stay silent while it went on being expired, and there is
+  nowhere to store the dismissal that wouldn't outlive the condition. The record checks clear
+  themselves the moment the record is fixed, which is the same promise a dismiss makes, kept
+  properly. Pinned by a test asserting the COI finding has no ✕ while the AI findings beside
+  it do.
+
+  **Both dialogs now state no price at all** (previous entry) and the per-finding ✕ sits
+  right-aligned in each finding's head at 35% opacity until its row is hovered — reachable on
+  every finding without turning the list into a column of ✕.
+
+  **⚠ THE FINANCIALS SCROLL IS STILL OPEN — the 28px gutter fix was real and was not George's
+  bug.** Confirmed live this round: `curl https://amlakre.com/assets/index-*.css` returns
+  `.content{flex:1;overflow:auto;padding:34px 40px 28px}`, and index.html is served
+  `max-age=0, must-revalidate`, so no stale bundle is involved. George still reports scrolling
+  well past the per-tenant breakdown. What has now been ruled out, with evidence: the app
+  shell (`.app` is `height:100vh;overflow:hidden`, `.content` the only scroller — no double
+  height); any absolutely-positioned or `visibility:hidden` descendant (a sweep of every
+  element under `.content` for a bottom edge below the page root returns **zero** on all six
+  fiscal years); every financials child component (`TenantShareTable`, `CamSection`,
+  `TaxSection`, `RoofSection`, `RecoverabilityTable`, `OtherIncomeSection`,
+  `EntityLedgerSection`, `AssetRegisterSection`, `StatementDropZone`, `WhatStayedStrip`) —
+  **none sets a height, renders an SVG, or is feature-gated**; and `position:sticky`, which
+  appears nowhere in `src/App.css`. **The one hypothesis the demo cannot test is that the
+  excess is INSIDE the page rather than below it** — a section that renders tall and empty on
+  George's data would be counted as content by every measurement taken so far. Next step is a
+  screenshot of the bottom of his page, or the console snippet in the session plan.
+
+  **Files:** `src/lib/api.js` (`setLeaseReviewDismissedKeys`) · `src/lib/leaseRisks.js`
+  (`reviewSummary` counts outstanding) · `src/components/LeaseReviewStrip.js` (per-finding ✕,
+  "Mark all read", the dismissed-count line) · `src/pages/LeasesPage.js` (a fully-read review
+  draws no badge) · `src/App.css` (`.review-item-x`) · tests in `leaseRisks.test.js`,
+  `leaseReviewStrip.test.js`.
+
 - **2026-08-05** — **No prices, a dismiss on both halves, and the button row stops
   stretching** (George: *"take out how much it costs the user doesnt care about that. needs
   to be a way to dismiss the lease review output in the lease page or else they just sit
