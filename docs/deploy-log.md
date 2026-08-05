@@ -14,6 +14,99 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
 ---
 
+- **2026-08-04** — **A change to a billed figure now has a DATE — and stops deleting recorded
+  payments** (George: *"look for any other bugs or lines of logic unfollowed when following the
+  money trail — CAM and tax is an interesting one because it will change the base rent so the user
+  will have to recalculate when they get their next months statement."* Then, on what should happen
+  to months already billed: *"the rent might change mid way through the year due to a new lease. if
+  that happens it should be recorded as it needs to be in the ledger so that when statements come in
+  the payments match, but the CAM is recalculated. the previous months aren't affected and shouldn't
+  be reconciled at the new figures because they would be part of the old lease."*). Deployed:
+  migration **`0088`** (`supabase db push`), frontend Cloudflare **`d3e6b4bd`**, demo worker
+  **`effb18e2`**. Tests **1699/1699** across 167 files (was 1690/166).
+  **This is parts 1–3 of a larger round; the dated CAM & tax estimate (`0089 lease_estimates`) and
+  the drift indicator are still to come.**
+  - **⚠ TWO LIVE FAULTS WERE DESTROYING DATA. Both are fixed here.**
+    - **Applying a new lease DELETED the year's recorded payments.** Chain:
+      `applyNewLeaseTerms` writes the new `lease_start` → `resyncYearBillingToEstimate` feeds it to
+      `buildLeaseSchedule` → `occupancyStart` → `monthlyScheduleForYear` marks every earlier month
+      `{ owed: 0, outsideTerm: true }` → the re-stamp loop deletes those months' payment rows and,
+      because it only re-records `if (owed > 0)`, **writes nothing back**. A lease replaced effective
+      July wiped January–June's recorded rent from the ledger and from Collected. Masked only when
+      the lease happened to carry applied escalations dated earlier (`occupancyStart` takes the min),
+      so a flat-rent lease — the common case — was the one that broke.
+    - **A hand-recorded cheque was treated as something the app made up.** The re-stamp guard was
+      `p.import_id == null && (p.note == null || p.note === '')` — "no evidence anyone touched it".
+      But **both** ways a landlord records a real amount leave the note null (the Ledger cell click
+      and the month panel's *"Record $X received"*), because `markMonthPaid` only sets a note if a
+      caller passes one and **no caller does**. So a real cheque was deleted and replaced with money
+      that never arrived, after which no bank statement could reconcile against that month again —
+      which is exactly what George's *"so that when statements come in the payments match"* is about.
+  - **`0088_payment_source.sql`** — `payments.source` (`system` | `manual` | `import`), not null,
+    default `system`, checked. A note is something the landlord may or may not feel like typing; it
+    cannot carry a rule about whether money is real. Back-fill reproduces the old guard's beliefs
+    exactly (import_id → `import`, a note → `manual`) so nothing that was protected became
+    re-writable, **plus** one recoverable case: on any (invoice, month) with more than one untagged
+    payment, everything after the earliest is the month panel's top-up — real money — so it is
+    marked `manual`. Live result: **9 import · 2 manual · 71 system.** `recordPayment`'s default
+    fails safe (an `import_id`-bearing row defaults to `import` whatever the caller passed); only
+    `manual` must be stated, because it is the one thing that genuinely cannot be inferred.
+    **Second thing this quietly fixes:** `import_id` is `on delete set null` (0063), so deleting an
+    import used to strip its payments back to the re-writable shape. `source` survives.
+  - **Belt and braces on the same loop:** a month that now owes **nothing** is skipped entirely. The
+    old code deleted first and re-recorded only `if (owed > 0)`, so an out-of-term month lost its
+    record outright. A month reading "paid, nothing owed" is visible and reversible; a deleted
+    payment is neither.
+  - **The change has a date — TWO escalation rows, not one.** `applyNewLeaseTerms` used to move
+    `base_rent` and record nothing about *when*, so `monthlyBases` (which reads the escalation
+    ledger) had no boundary and priced all twelve months at the new rent. A year already
+    half-collected was silently re-priced. Now:
+    - a **closing** row at the old lease's start (or its last applied step, whichever is later)
+      carrying the OLD rent, read from the pre-patch lease;
+    - a **boundary** row at the new lease's start carrying the NEW rent.
+    One row is not enough: `monthlyBases` returns the live `base_rent` for any month with no
+    *earlier* applied step, so the closing row is what gives the old era a rate of its own. It also
+    pulls `occupancyStart` back to the real move-in, which is what actually fixes the deletion above.
+    **Both `applied`, never `scheduled`** — a scheduled closing row carrying the old rent would be
+    picked up by `applyDueEscalations` on the next load and **written back over `base_rent`**,
+    silently reverting the lease to the one it just replaced. The boundary row is applied only once
+    its date has arrived, so a lease signed in August but commencing in October keeps today's rent
+    until October. Skipped when the new lease starts EARLIER (no prior era to close), and deduped
+    with the existing ±45-day `hasStepNear` rule so it can't double-book the new lease's own step.
+    **Free win:** `effective_rent` (0054 / `escalations.js`) returns `leases.base_rent` for any year
+    with no *later* applied step — so applying a new lease used to re-price **every prior year's**
+    rent roll and financials. The closing row fixes that too.
+  - **Three carry-throughs that were never wired** (CLAUDE.md §1 — the invoice does not rebuild
+    itself):
+    - **`applyEscalation`** — the most routine money event in the app, and it moved `base_rent` and
+      stopped. Runs on app load (`Layout.js:36`) **and nightly via pg_cron** `apply_due_escalations()`
+      (0024/0047). Every lease with an annual step drifted from its own invoice for the rest of the
+      year, every year. Now resyncs the step's year and the current year, best-effort so a failed
+      resync can never leave the escalation half-applied.
+    - **`applyAddendum`** resynced on a SIZE change only — a rider that changes the **rent**, the
+      commonest rider there is, left the invoice, Outstanding and receivables on the old figure.
+    - **`confirmRenewal`** books a first-year rent and extends the term and never resynced.
+  - **Ordering, same bug as the new-lease path yesterday:** `applyAddendum` resynced and *then*
+    back-filled. A rider's rent is routinely effective on a date already past (an extension's opening
+    rent sits at the prior term end), so the invoice was rebuilt from the rent the rider superseded.
+    `backfillLeaseToToday` now runs first and every resync follows it. The rider's stated **estimate**
+    still gets the non-skipping `resyncYearBillingToEstimate` even on a closed year — the landlord
+    signed a document naming that year's figure — but it now runs at the bottom with the others.
+  - **Files.** `supabase/migrations/0088_payment_source.sql` (new) · `src/lib/api.js`
+    (`recordPayment`, the re-stamp guard + zero-owed skip, `applyNewLeaseTerms` era rows,
+    `applyEscalation`, `applyAddendum`, `confirmRenewal`) · `src/components/MonthDetailPanel.js` ·
+    `src/components/InvoicesPanel.js` · `src/lib/demo/store.js` (seeded `source`) · tests
+    `src/lib/__tests__/midYearLeaseChange.test.js` (new, 5) and
+    `src/lib/__tests__/estimateResync.test.js` (12 → 16).
+  - **Verified:** full suite green; `supabase migration list` shows 0088 applied and the back-fill
+    counts above read back from the live DB.
+  - **⚠ STILL TO COME in this round** (planned, not shipped): `0089 lease_estimates` so the CAM & tax
+    estimate is dated the same way the rent now is — today the estimate is a bare scalar, so *"the
+    previous months aren't affected"* has nowhere to live for CAM, and the year-end ⚖ Reconcile still
+    settles against **today's** annual estimate × the whole year rather than against what was billed
+    month by month. Plus a drift indicator + "Rebuild this invoice", which is the only thing that can
+    cover the **nightly SQL** escalation job (it moves `base_rent` server-side where no JS runs).
+
 - **2026-08-04** — **One rent-schedule builder, shared by all four import paths — the new-lease
   upload now captures free rent, option-priced rent and the CAM & tax estimate like the original
   extractor does** (George: *"usually that stuff goes by months so the rent escalations wont be hard

@@ -345,15 +345,20 @@ export function seed() {
       { id: 'inv-1', owner_id: DEMO_USER.id, lease_id: 'lease-1', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 60000, cam_annual: 6500, tax_annual: 10000, roof_annual: 1500, total_amount: 78000, notes: null, created_at: iso(Y, 1, 1) },
       { id: 'inv-2', owner_id: DEMO_USER.id, lease_id: 'lease-2', property_id: 'prop-1', year: Y, issue_date: iso(Y, 1, 1), due_date: iso(Y, 1, 31), status: 'sent', base_rent_annual: 84000, cam_annual: 10800, tax_annual: 15000, roof_annual: 0, total_amount: 109800, notes: null, created_at: iso(Y, 1, 1) },
     ],
+    // `source` is load-bearing, not decoration (0088): only a 'system' row — one the app
+    // priced off the schedule — may be re-stamped when a billed figure moves. 'manual' and
+    // 'import' rows are real money and are never re-priced.
     payments: [
       // Bright Coffee: one untagged lump that settles the whole 78,000 year exactly — the
       // Ledger's FIFO showcase (fills Jan→Dec, all ✓, no phantom credit).
-      { id: 'pay-1', owner_id: DEMO_USER.id, invoice_id: 'inv-1', lease_id: 'lease-1', amount: 78000, paid_date: iso(Y, 2, 1), method: 'check', note: 'Paid in full', created_at: iso(Y, 2, 1) },
+      { id: 'pay-1', owner_id: DEMO_USER.id, invoice_id: 'inv-1', lease_id: 'lease-1', amount: 78000, paid_date: iso(Y, 2, 1), method: 'check', note: 'Paid in full', source: 'manual', created_at: iso(Y, 2, 1) },
       // City Dental: two full month-tagged checks (9,150 = the real monthly) + an untagged
       // partial, so the grid shows mixed states (Jan ✓ · Feb ✓ · Mar ◐ · rest open).
-      { id: 'pay-2', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 9150, paid_date: iso(Y, 1, 5), method: 'check', note: null, period_month: 1, created_at: iso(Y, 1, 5) },
-      { id: 'pay-3', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 9150, paid_date: iso(Y, 2, 4), method: 'ach', note: null, period_month: 2, created_at: iso(Y, 2, 4) },
-      { id: 'pay-4', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 4000, paid_date: iso(Y, 3, 10), method: 'check', note: 'Partial', created_at: iso(Y, 3, 10) },
+      // The two tagged ones are SYSTEM marks — the "mark paid" click — which is what makes
+      // them the fixture for the re-stamp path in estimateResync.test.js.
+      { id: 'pay-2', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 9150, paid_date: iso(Y, 1, 5), method: 'check', note: null, period_month: 1, source: 'system', created_at: iso(Y, 1, 5) },
+      { id: 'pay-3', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 9150, paid_date: iso(Y, 2, 4), method: 'ach', note: null, period_month: 2, source: 'system', created_at: iso(Y, 2, 4) },
+      { id: 'pay-4', owner_id: DEMO_USER.id, invoice_id: 'inv-2', lease_id: 'lease-2', amount: 4000, paid_date: iso(Y, 3, 10), method: 'check', note: 'Partial', source: 'manual', created_at: iso(Y, 3, 10) },
     ],
     lease_files: [
       // City Dental's cached AI read: the lease STATES an estimated CAM & tax figure

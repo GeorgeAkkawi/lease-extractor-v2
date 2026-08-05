@@ -1641,6 +1641,74 @@ export async function applyNewLeaseTerms({ leaseId, changes, extraction, plan = 
     );
   }
 
+  // ── THE CHANGE HAS A DATE ────────────────────────────────────────────────────────────
+  // George, 2026-08-04: *"the rent might change mid way through the year due to a new lease.
+  // if that happens it should be recorded as it needs to be in the ledger so that when
+  // statements come in the payments match… the previous months aren't affected and shouldn't
+  // be reconciled at the new figures because they would be part of the old lease."*
+  //
+  // Until now this function moved `base_rent` and nothing else, so nothing in the app knew
+  // WHEN the rent changed. `monthlyBases` reads the escalation ledger; with no row at the
+  // boundary it priced all twelve months at the new rent, and a year already half-billed was
+  // silently re-priced under the tenant.
+  //
+  // TWO rows are needed, not one, and this is the part that is easy to get wrong.
+  // monthlyBases returns the LIVE base_rent for any month with no EARLIER applied step
+  // (escalations.js — "its true prior rate isn't recoverable once base_rent moved"), so a
+  // boundary row alone still leaves January on the new rent. The closing row is what gives
+  // the old era a rate of its own:
+  //
+  //   closing   at the old lease's start (or its last applied step, whichever is later),
+  //             carrying the OLD rent — read from the pre-patch lease above.
+  //   boundary  at the new lease's start, carrying the NEW rent.
+  //
+  // The closing row does a second, larger job: occupancyStart is min(lease_start, earliest
+  // APPLIED step), so it pulls occupancy back to the real move-in. Without it, moving
+  // lease_start forward puts every earlier month OUT of term — which is how the re-stamp
+  // loop above came to delete their payments.
+  //
+  // ⚠ STATUS MATTERS. The closing row is always `applied`: left scheduled, applyDueEscalations
+  // would "apply" it on the next load and write the OLD rent back over base_rent. The boundary
+  // row is applied only once its date has arrived — a lease signed in August but commencing in
+  // October keeps today's rent until October, and backfillLeaseToToday releases it on the day.
+  const boundaryIso = isoDateOrNull(patch.lease_start ?? lease.lease_start);
+  const oldRent = Number(lease.base_rent) || 0;
+  const newRent = Number(patch.base_rent ?? lease.base_rent) || 0;
+  let eraRows = [];
+  if (boundaryIso && oldRent > 0 && newRent > 0 && Math.abs(newRent - oldRent) >= 0.005) {
+    const existing = await listEscalations(leaseId);
+    const lastApplied = existing
+      .filter((e) => e.status === 'applied' && e.effective_date)
+      .map((e) => String(e.effective_date)).sort().pop() || null;
+    // The old rent's era began at the later of the old term start and its last step.
+    const closingIso = [isoDateOrNull(lease.lease_start), lastApplied].filter(Boolean).sort().pop() || null;
+    // Same ±45-day rule buildRenewalScheduleSteps uses, so a boundary can't double-book a
+    // step the new lease already prints on (or near) the same date.
+    const dated = [...existing, ...escRows, ...optRows].filter((e) => e?.effective_date);
+    const near = (iso) => dated.some((e) => Math.abs(
+      new Date(String(e.effective_date) + 'T12:00:00') - new Date(iso + 'T12:00:00')
+    ) <= 45 * 86400000);
+    const step = (date, rent) => ({ effective_date: date, escalation_type: 'manual', escalation_value: null, new_base_rent: rent });
+
+    // Skipped when the new lease starts EARLIER than the old one — then there is no prior
+    // era in the first place, and the new lease's own terms cover the whole span.
+    if (closingIso && closingIso < boundaryIso && !near(closingIso)) eraRows.push(step(closingIso, oldRent));
+    if (!near(boundaryIso)) eraRows.push(step(boundaryIso, newRent));
+
+    if (eraRows.length) {
+      const todayIso = localDateIso(today);
+      await rows(
+        supabase.from('rent_escalations').insert(
+          eraRows.map((e) => ({
+            ...e, lease_id: leaseId, owner_id: uid,
+            status: e.effective_date <= todayIso ? 'applied' : 'scheduled',
+            applied_at: e.effective_date <= todayIso ? new Date().toISOString() : null,
+          }))
+        )
+      );
+    }
+  }
+
   // Same rule one level along: a PENDING option is a right under the old lease and the new
   // one restates it; an exercised or lapsed one is a thing that happened.
   const renRows = built.renewals;
@@ -1952,6 +2020,26 @@ export async function applyEscalation(escalation) {
         .single()
     );
   }
+
+  // ⚠ THE INVOICE DOES NOT REBUILD ITSELF (CLAUDE.md §1) — and a rent step coming due is the
+  // most routine money event this app has. Until now it moved base_rent and stopped there:
+  // the Ledger and the Financials breakdown followed (they build UP from live data) while the
+  // stored invoice, Outstanding and every receivable figure stayed on the pre-step rent for
+  // the rest of the year. Every lease with an annual escalation hit this, every year.
+  //
+  // Both years are covered because a step is not always applied in the year it belongs to: a
+  // historical lease entered today applies steps dated years back. resyncLeaseBilling skips a
+  // closed year and no-ops when there is no invoice, so the extra call costs nothing.
+  //
+  // Best-effort by design — a failed resync must never leave the escalation half-applied,
+  // which is the state applyDueEscalations would then skip forever.
+  if (lease?.property_id) {
+    const stepYear = Number(String(escalation.effective_date).slice(0, 4));
+    const thisYear = Number(localDateIso().slice(0, 4));
+    for (const y of [...new Set([stepYear, thisYear])]) {
+      if (y > 1900) await resyncLeaseBilling(escalation.lease_id, lease.property_id, y).catch(() => null);
+    }
+  }
   return updated;
 }
 
@@ -2195,6 +2283,10 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
   // date, the same trap extract-lease already warns about.
   const datedStart = escInputs.find((e) => e && e.effective_date)?.effective_date || null;
   const anchor = datedStart || (extensionEnd ? fromEnd : null);
+  // Set when the rider states a CAM & tax / roof estimate, so the resync for it can run at
+  // the bottom with the others — after the schedule has been rolled forward — instead of
+  // firing mid-function against a rent the rider has already superseded.
+  let estimateResyncYear = null;
   const escRows = buildEscalations(lease?.base_rent, escInputs, anchor);
   if (escRows.length) {
     await rows(
@@ -2317,7 +2409,9 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
     }
     if (est.roofAnnual != null) patch.est_roof_annual = Number(est.roofAnnual);
     await updateLease(leaseId, patch);
-    await resyncYearBillingToEstimate(leaseId, lease?.property_id, fy);
+    // ⚠ The resync used to fire HERE, before the schedule was rolled forward. It now runs
+    // with the others at the bottom, after backfillLeaseToToday — see there for why.
+    estimateResyncYear = fy;
     await logHistoryEvent({
       property_id: lease?.property_id || null, lease_id: leaseId, type: 'estimate_set', tenant_name: lease?.tenant_name || null,
       description:
@@ -2329,24 +2423,45 @@ export async function applyAddendum(addendum, changes = {}, today = new Date()) 
     });
   }
 
-  // Carry a size change through to the stored invoice. WHICH call is the load-bearing
-  // part, and it turns on whether the property has a building size entered:
+  // ⚠ ROLL THE SCHEDULE FORWARD FIRST. A rider routinely prices a rent effective on a date
+  // that has already passed — an extension's opening rent sits at the PRIOR term end, which
+  // is usually behind us by the time the paperwork is filed. backfillLeaseToToday is what
+  // applies those steps and moves base_rent to the real current rent. Every resync below
+  // therefore has to run after it, or the invoice is rebuilt from the rent the rider
+  // superseded and the lease ends up reading a figure its own bill was never built from.
+  const rolled = await backfillLeaseToToday(leaseId, today);
+
+  // Carry the change through to the stored invoice — it is a frozen copy and does not
+  // rebuild itself (CLAUDE.md §1). WHICH call is the load-bearing part, and it turns on
+  // whether the property has a building size entered:
   //
   //   building_sf set   → the denominator is fixed, so only THIS tenant's share moved.
   //   building_sf null  → the denominator is Σ leased SF, so re-sizing one tenant
   //                       re-splits EVERY tenant on the property.
   //
-  // Both skip a closed year. Deliberately last, so it runs once against the finished
-  // lease rather than once per effect — an extension, a new rent and a resize in one
-  // rider settle together.
-  if (sizeChanged && lease?.property_id) {
-    const year = localDateIso(today).slice(0, 4);
+  // Both skip a closed year. Deliberately last, so one settle covers an extension, a new
+  // rent and a resize together rather than firing once per effect.
+  //
+  // ⚠ `escRows.length` is in this condition and used not to be. A rider that changes the
+  // RENT — the commonest rider there is — laid its new figure into the schedule and never
+  // rebuilt the bill, so the Ledger and the Financials breakdown (which build up from live
+  // data) moved while the invoice, Outstanding and the receivables did not.
+  const rentChanged = escRows.length > 0;
+  if ((sizeChanged || rentChanged) && lease?.property_id) {
+    const year = Number(localDateIso(today).slice(0, 4));
     const property = await getProperty(lease.property_id).catch(() => null);
-    if (Number(property?.building_sf) > 0) await resyncLeaseBilling(leaseId, lease.property_id, Number(year));
-    else await resyncPropertyBilling(lease.property_id, Number(year));
+    if (sizeChanged && !(Number(property?.building_sf) > 0)) await resyncPropertyBilling(lease.property_id, year);
+    else await resyncLeaseBilling(leaseId, lease.property_id, year);
+  }
+  // An estimate the rider states gets the NON-skipping call even on a closed year, because
+  // the landlord signed a document naming that year's figure and meant it — the same
+  // exception the explicit estimate saves make. Idempotent against the resync above when
+  // both ran, so the pair is safe rather than merely tolerable.
+  if (estimateResyncYear != null && lease?.property_id) {
+    await resyncYearBillingToEstimate(leaseId, lease.property_id, estimateResyncYear);
   }
 
-  return backfillLeaseToToday(leaseId, today);
+  return rolled;
 }
 
 // ---- Expense records (Page 2, per year) ------------------------------------
@@ -2723,8 +2838,19 @@ export const deleteInvoice = (id) => rows(supabase.from('invoices').delete().eq(
 export const listPayments = (invoiceId) =>
   rows(supabase.from('payments').select('*').eq('invoice_id', invoiceId).order('paid_date'));
 
+// `source` says where the FIGURE came from, and it is the only thing standing between a real
+// cheque and the re-stamp loop below (migration 0088).
+//
+// The default FAILS SAFE rather than merely being convenient: a row carrying an import_id is
+// bank money whatever the caller remembered to pass, so it defaults to 'import'. Only
+// 'manual' has to be stated, because it is the one thing that genuinely cannot be inferred —
+// a human typing a figure leaves no trace distinguishable from the app writing one.
 export const recordPayment = async (pay) =>
-  one(supabase.from('payments').insert({ ...pay, owner_id: await ownerId() }).select().single());
+  one(supabase.from('payments').insert({
+    source: pay?.import_id ? 'import' : 'system',
+    ...pay,
+    owner_id: await ownerId(),
+  }).select().single());
 
 export const deletePayment = (id) => rows(supabase.from('payments').delete().eq('id', id));
 
@@ -2914,11 +3040,26 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
   let monthsResynced = 0;
   for (const m of Object.keys(byMonth).map(Number)) {
     const group = byMonth[m];
-    const allSystem = group.every((p) => p.import_id == null && (p.note == null || p.note === ''));
+    // ⚠ ONLY a row the APP wrote off the schedule may be re-priced. This used to be inferred
+    // from `import_id == null && !note` — "no evidence anyone touched it" — which classified
+    // every hand-recorded cheque as something the app made up, because neither the Ledger
+    // click nor the month panel's "Record $X received" writes a note. The row was deleted and
+    // replaced with money that never arrived, and no bank statement could ever reconcile
+    // against it again. Provenance is now stored (0088), and anything that is not explicitly
+    // 'system' is left alone — an unknown value fails SAFE, toward protecting the money.
+    const allSystem = group.every((p) => p.source === 'system');
     if (!allSystem) continue;
     const owed = round2(Number(schedule[m]?.owed) || 0);
     const recorded = round2(group.reduce((s, p) => s + (Number(p.amount) || 0), 0));
     if (Math.abs(recorded - owed) <= 0.01) continue; // already at the estimate-based owed
+    // ⚠ A month that now owes NOTHING must not have its record deleted. The rewrite below
+    // deletes first and re-records only `if (owed > 0)`, so a month that fell out of term —
+    // which is what happens the instant a replacement lease moves lease_start forward, via
+    // occupancyStart → monthlyScheduleForYear's outsideTerm — used to lose its payment rows
+    // outright, with nothing written back. Money the landlord had recorded as received
+    // simply vanished from the ledger and from Collected. A month reading "paid, nothing
+    // owed" is visible and reversible; a deleted payment is neither.
+    if (!(owed > 0)) continue;
     const paidDate = group.map((p) => p.paid_date).filter(Boolean).sort()[0] || paymentIsoToday();
     await Promise.all(group.map((p) => deletePayment(p.id)));
     if (owed > 0) {
@@ -2930,6 +3071,7 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
         method: 'check',
         note: null,
         period_month: m,
+        source: 'system', // it replaces a system mark and stays one — re-pricable next time
       });
     }
     monthsResynced += 1;
@@ -3220,6 +3362,11 @@ export async function markMonthPaid(leaseId, propertyId, year, month, opts = {})
     method: opts.method || 'check',
     note: opts.note || null,
     period_month: m,
+    // Ticking a month's box is the app pricing it off the schedule — a 'system' mark, and it
+    // follows the schedule if a billed figure later moves. A caller that is recording money
+    // a HUMAN says actually arrived (the month panel's "Record $X received") passes
+    // source: 'manual', and that figure is then never re-priced by anything (0088).
+    source: opts.source || 'system',
   });
   return invoice;
 }
@@ -4207,6 +4354,14 @@ export async function confirmRenewal(renewalId, today = new Date(), opts = {}) {
       .single()
   );
   await backfillLeaseToToday(lease.id, today);
+  // Confirming a renewal books its first-year rent and extends the term — two billed figures
+  // (CLAUDE.md §1) — so the stored invoice has to follow. After the back-fill, so it is built
+  // from the rent the renewal actually leaves in place. A renewal that begins next year finds
+  // no invoice for this one and no-ops; a closed year is skipped.
+  if (lease.property_id) {
+    await resyncLeaseBilling(lease.id, lease.property_id, Number(localDateIso(today).slice(0, 4)))
+      .catch(() => null);
+  }
   return notif;
 }
 
@@ -5497,6 +5652,11 @@ export async function applyStatementImport({ propertyId, year, fileName, account
         period_month: e.period_month || null,
         import_id: imp.id,
         import_hash: e.hash,
+        // Real money off a bank statement. Stored rather than inferred from import_id,
+        // because import_id is `on delete set null` (0063) — removing the import used to
+        // strip these back to the "looks like the app made it up" shape and make a real
+        // deposit re-pricable (0088).
+        source: 'import',
       });
       applied.push({ kind: 'payment', payment_id: pay.id, invoice_id: invoiceId, lease_id: e.lease_id, property_id: e.property_id, year: e.year, amount: Number(e.amount), hash: e.hash });
       paymentsCount++; paymentsTotal += Number(e.amount);

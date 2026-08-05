@@ -81,8 +81,15 @@ export default function MonthDetailPanel({
   // Record the money the tenant still owes on this month. `additional: true` is the
   // deliberate top-up path (api.js) — a second same-month payment the allocation sums
   // with the first, which is how a month that settled short gets completed.
+  //
+  // source: 'manual' because this is the landlord saying money ARRIVED, not the app pricing
+  // the month off the schedule. Without it the figure is re-pricable, and a later change to
+  // a billed figure would delete this row and write an amount nobody received — after which
+  // no bank statement can reconcile against the month again (0088).
   const recordGap = useMutation({
-    mutationFn: () => markMonthPaid(row.lease_id, propertyId, year, m, { amount: shortfall, additional: monthPayments.length > 0 }),
+    mutationFn: () => markMonthPaid(row.lease_id, propertyId, year, m, {
+      amount: shortfall, additional: monthPayments.length > 0, source: 'manual',
+    }),
     onSuccess: settle,
   });
   const undoMonth = useMutation({

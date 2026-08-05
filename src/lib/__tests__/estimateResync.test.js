@@ -16,10 +16,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   resyncYearBillingToEstimate, updateLease, getYearInvoice, getMonthlyRent,
-  recordPayment, ensureInvoice,
+  recordPayment, ensureInvoice, markMonthPaid,
   isYearClosed, resyncLeaseBilling, resyncPropertyBilling,
   upsertExpenseRecord, createEscalation, deleteEscalation, listEscalations,
+  applyEscalation, applyAddendum, createAddendum, deleteAddendum, getLease,
 } from '../api';
+import { supabase } from '../supabaseClient';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -60,13 +62,18 @@ describe('resyncYearBillingToEstimate', () => {
     expect(amt(byMonth, 1)).toBe(9500);
   });
 
-  it('leaves a bank-imported or manually-noted month untouched — only re-stamps system marks', async () => {
+  it('leaves a bank-imported or hand-recorded month untouched — only re-stamps system marks', async () => {
     const invId = (await getYearInvoice('lease-2', Y)).id;
-    // A real deposit tagged to March (bank import) and a noted wire in April — both at
+    // A real deposit tagged to March (bank import) and a hand-recorded wire in April — both at
     // amounts that are NOT the estimate-based owed. These must survive a resync so a
     // genuine short/over payment still trues up at reconcile.
+    //
+    // The import needs no `source`: recordPayment defaults an import_id-bearing row to
+    // 'import' precisely so this can't be forgotten. 'manual' IS stated, because a human
+    // typing a figure leaves nothing to infer it from — which is the bug 0088 fixed, where a
+    // blank note was read as "the app made this up" and the cheque was overwritten.
     await recordPayment({ invoice_id: invId, lease_id: 'lease-2', amount: 8000, paid_date: `${Y}-03-04`, method: 'check', note: null, period_month: 3, import_id: 'imp-1' });
-    await recordPayment({ invoice_id: invId, lease_id: 'lease-2', amount: 8100, paid_date: `${Y}-04-04`, method: 'ach', note: 'wire ref 55', period_month: 4 });
+    await recordPayment({ invoice_id: invId, lease_id: 'lease-2', amount: 8100, paid_date: `${Y}-04-04`, method: 'ach', note: 'wire ref 55', period_month: 4, source: 'manual' });
 
     // Raise the estimate again → new monthly owed = (84,000 + 36,000)/12 = 10,000.
     await updateLease('lease-2', { est_cam_annual: 36000, est_tax_annual: 0 });
@@ -78,6 +85,39 @@ describe('resyncYearBillingToEstimate', () => {
     expect(amt(byMonth, 2)).toBe(10000);
     expect(amt(byMonth, 3)).toBe(8000); // bank import — untouched
     expect(amt(byMonth, 4)).toBe(8100); // manually noted — untouched
+  });
+
+  // The regression 0088 exists for. Before it, provenance was inferred as "no import_id and
+  // no note" — and the two ways a landlord records a REAL amount (the Ledger cell click and
+  // the month panel's "Record $X received") both leave the note null. So a cheque he typed
+  // was deleted and replaced with money that never arrived, after which no bank statement
+  // could ever reconcile against that month again.
+  it('never rewrites a payment the landlord typed, even with no note on it', async () => {
+    const invId = (await getYearInvoice('lease-2', Y)).id;
+    // Exactly the shape MonthDetailPanel's "Record $X received" writes: an amount, no note,
+    // no import. Deliberately NOT the estimate-based owed, so the old guard would have moved it.
+    await recordPayment({
+      invoice_id: invId, lease_id: 'lease-2', amount: 7777.77, paid_date: `${Y}-05-06`,
+      method: 'check', note: null, period_month: 5, source: 'manual',
+    });
+    await updateLease('lease-2', { est_cam_annual: 48000, est_tax_annual: 0 });
+    await resyncYearBillingToEstimate('lease-2', 'prop-1', Y);
+
+    const { byMonth } = await getMonthlyRent('lease-2', Y);
+    expect(amt(byMonth, 5)).toBe(7777.77); // the figure he entered, to the cent
+    expect(amt(byMonth, 1)).toBe(11000);   // …while the system marks still follow (132,000/12)
+  });
+
+  it('markMonthPaid records a click as system and a stated receipt as manual', async () => {
+    const before = (await getMonthlyRent('lease-2', Y)).payments.map((p) => p.id);
+    // The Ledger grid's click — the app pricing the month off the schedule.
+    await markMonthPaid('lease-2', 'prop-1', Y, 6, { amount: 500 });
+    // The month panel's "Record $X received" — the landlord saying money arrived.
+    await markMonthPaid('lease-2', 'prop-1', Y, 7, { amount: 500, source: 'manual' });
+
+    const added = (await getMonthlyRent('lease-2', Y)).payments.filter((p) => !before.includes(p.id));
+    expect(added.find((p) => p.period_month === 6).source).toBe('system');
+    expect(added.find((p) => p.period_month === 7).source).toBe('manual');
   });
 
   it('prorates a mid-year lease: invoice total equals the sum of the (unequal) months', async () => {
@@ -211,6 +251,51 @@ describe('automatic follow-through — the invoice can no longer drift', () => {
     expect((await getYearInvoice('lease-4', Y)).base_rent_annual).toBe(18000);
   });
 
+  // ⚠ The one above proves the resync WORKS when something calls it. This proves the most
+  // routine money event in the app actually does. applyEscalation — the nightly sweep and the
+  // on-load catch-up — moved base_rent and stopped, so every lease with an annual step drifted
+  // from its own invoice for the rest of the year, every year.
+  it('a step coming due rebuilds the invoice on its own, with nobody calling the resync', async () => {
+    await ensureInvoice('lease-4', 'prop-2', Y);
+    const before = (await getYearInvoice('lease-4', Y)).base_rent_annual;
+    const esc = await createEscalation({
+      lease_id: 'lease-4', effective_date: `${Y}-07-01`, escalation_type: 'manual',
+      escalation_value: null, new_base_rent: 48000, status: 'scheduled',
+    });
+    try {
+      await applyEscalation({ ...esc, lease_id: 'lease-4' }); // exactly what the sweep does
+      expect(Number((await getLease('lease-4')).base_rent)).toBe(48000);
+      // 6 in-term months at $48,000/yr → $24,000. Nothing here called a resync.
+      expect((await getYearInvoice('lease-4', Y)).base_rent_annual).toBe(24000);
+      expect((await getYearInvoice('lease-4', Y)).base_rent_annual).not.toBe(before);
+    } finally {
+      await deleteEscalation(esc.id);
+      await updateLease('lease-4', { base_rent: 36000 });
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+    }
+  });
+
+  it('a rider that changes the RENT rebuilds the invoice, not only one that changes the size', async () => {
+    await ensureInvoice('lease-4', 'prop-2', Y);
+    const add = await createAddendum({
+      lease_id: 'lease-4', label: 'Rent Amendment', amendment_date: `${Y}-06-15`,
+      kind: 'rent', summary: null,
+    });
+    try {
+      // A rider stating a new rent from 1 July — no size change, which is all the old
+      // condition looked at.
+      await applyAddendum(add, {
+        escalations: [{ effective_date: `${Y}-07-01`, escalation_type: 'manual', new_base_rent: 60000 }],
+      }, new Date(`${Y}-08-04T12:00:00`));
+      expect((await getYearInvoice('lease-4', Y)).base_rent_annual).toBe(30000); // 6 mo @ 60,000
+    } finally {
+      await supabase.from('rent_escalations').delete().eq('addendum_id', add.id);
+      await deleteAddendum(add.id);
+      await updateLease('lease-4', { base_rent: 36000 });
+      await resyncLeaseBilling('lease-4', 'prop-2', Y);
+    }
+  });
+
   it('a PROPERTY figure moves EVERY tenant’s invoice, not just the one being edited', async () => {
     const b3 = await getYearInvoice('lease-3', Y);
     const b4 = await getYearInvoice('lease-4', Y);
@@ -233,10 +318,10 @@ describe('automatic follow-through — the invoice can no longer drift', () => {
     expect((await getYearInvoice('lease-4', Y)).cam_annual).toBe(b4.cam_annual);
   });
 
-  it('still never rewrites a bank-imported or manually-noted payment', async () => {
+  it('still never rewrites a bank-imported or hand-recorded payment', async () => {
     const invId = (await getYearInvoice('lease-4', Y)).id;
     await recordPayment({ invoice_id: invId, lease_id: 'lease-4', amount: 1234.56, paid_date: `${Y}-10-04`, method: 'ach', note: null, period_month: 10, import_id: 'imp-auto' });
-    await recordPayment({ invoice_id: invId, lease_id: 'lease-4', amount: 2345.67, paid_date: `${Y}-11-04`, method: 'ach', note: 'wire ref 99', period_month: 11 });
+    await recordPayment({ invoice_id: invId, lease_id: 'lease-4', amount: 2345.67, paid_date: `${Y}-11-04`, method: 'ach', note: 'wire ref 99', period_month: 11, source: 'manual' });
     await setExpenses(CAM * 3);
     try {
       await resyncPropertyBilling('prop-2', Y);

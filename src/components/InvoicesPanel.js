@@ -146,6 +146,9 @@ function PaymentBlock({ inv, onRefresh, onRemove }) {
       amount: Number(form.amount), paid_date: form.paid_date || undefined,
       method: form.method || null, note: form.note || null,
       period_month: monthTaggable && form.period_month !== '' ? Number(form.period_month) : null,
+      // A figure the landlord typed. It is never re-priced when a billed figure moves — that
+      // used to depend on whether he happened to fill the Note box too (0088).
+      source: 'manual',
     }),
     onSuccess: () => { setForm({ amount: '', paid_date: '', method: 'check', note: '', period_month: '' }); refreshAll(); },
   });
