@@ -12,6 +12,96 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-06** — **A checkbox beside Roof: does this building bill it separately?** (George:
+  *"can we add a check mark next to roof that switches it on and off if people want? like some
+  people might just throw it in a cam expense if repairs ever happen to it but others might want
+  it separate."*). Deployed: migration **`0097`**, frontend Cloudflare **`3d9287ca`**, demo worker
+  **`c4dcf522`**. **No edge function.** Tests **1918/1918** across 182 files (was 1916; +18).
+
+  **What the trace changed about the design.** Roof is not a display detail — 9 DB columns across
+  6 tables, both views, the `base + camTax + roof === owed` invariant in `componentizeSchedule`,
+  `draft-invoice`, ~40 UI sites. Two findings ruled out the obvious reading of "switch it off":
+
+  - **Roof and CAM do not split the same way.** `v_tenant_shares.roof_amt` is pro-rata by floor
+    area and deliberately **ignores `share_override_pct`** (`0073:76`), while `cam_amount` honours
+    it (`0073:74`). Actually folding a roof figure into CAM **re-prices every tenant holding an
+    override**.
+  - **`fixed_assets.amortize_into` encodes `'roof'` on purpose** (`0080:28-35`) so a capitalized
+    roof returns to roof and only roof-responsible tenants pay for it.
+
+  So **the flag moves no money at all** — it decides what Amlak OFFERS, never what anyone is
+  charged. Nothing in `v_tenant_shares`, `v_property_totals`, `billedComponents`,
+  `componentizeSchedule`, `draft-invoice` or any stored invoice reads it; **`resyncLeaseBilling` /
+  `resyncPropertyBilling` are never called and there is no `settleBillingChange`**, only
+  `['property', id]`. `roofDisplay.test.js` pins that: shares, `billedComponents` and the property
+  totals must come back byte-identical with the box unticked, and roof must stay its **own**
+  component rather than folding into `cam` (a "total is unchanged" assertion would have passed
+  while overrides silently re-priced).
+
+  **`OFF ONLY HIDES WHAT IS EMPTY`** (George's call over the two alternatives offered). One rule,
+  one home — `src/lib/roofDisplay.js`: `showRoof(property, hasFigures)`. Four surfaces gate on it:
+  the "Roof (billed separately)" stat card, the "Roof — itemized" block, "Charge roof PSF" on a
+  lease, and the Roof column in the per-tenant breakdown. Each supplies its own evidence from data
+  it **already** selects, so no page gained a round trip.
+
+  **⚠ THE TRAP THIS ROUND ACTUALLY HIT, and it was caught by reading the column back rather than
+  by any test.** The property page needs "is any lease here roof-responsible?", and
+  `v_property_totals` looks like it answers: `0049:29` computes `resp_sf`. **It does not exist as a
+  column** — it lives in the `leased` CTE and feeds `roof_recovered`/`roof_unrecovered` (`:72,:74`)
+  without ever being selected out. Live PostgREST answers **42703**. A gate written against
+  `totals.resp_sf` is `undefined > 0` — permanently false, silently, and only in production: the
+  mock builder ignores column lists, so the demo would have looked right. I had already added
+  `resp_sf` to `mockClient`'s hand-written `v_property_totals` "to fix the mirror" — which would
+  have given the demo a column production hasn't got, the same §3 bug pointing the other way. Both
+  reverted; the page reads `roof_responsible` off **`v_tenant_shares`** instead, under the key
+  `['tenantShares', propId, year]` that `TenantShareTable` already fetches on that very page, so
+  React Query serves both from one request. A test now asserts `totals.resp_sf` **is** undefined,
+  so nobody re-adds it.
+
+  **Why that second half is not optional:** roof_total alone leaves a dead end — switch a building
+  off while empty, let an addendum mark a lease roof-responsible, and the landlord has a tenant on
+  the hook for roof and no box to enter the cost in.
+
+  **Per property, not per account** (George's call over my recommendation, and I was wrong on cost:
+  `not null default true` **is** its own backfill, where the `features.js` route needs an
+  0084-style migration per key or ships OFF for every account holding an array). First settings
+  column `properties` has ever carried — a deliberate departure from `0075:70-72`, which scoped
+  expense buckets owner-wide.
+
+  **The interface.** The checkbox sits in the block's `cam-head`, and **the head always renders**:
+  the box that turns roof back on cannot live inside the section it hides. Off + empty collapses
+  the whole block to one row. Clicking opens `useConfirm` with **`tone: 'default'`** (accent, not
+  red — consequential, not destructive) and copy that differs by direction; the "on" version states
+  the thing worth knowing, that roof splits by floor area and ignores a custom share % unlike CAM.
+  Off but still shown, a muted line says why and what to clear.
+
+  The breakdown's Roof column needed a **CSS grid** change, done as a custom property:
+  `.ledger-grid{--lg-cols:6}` / `.ledger-grid.no-roof{--lg-cols:5}`. ⚠ It moves the *variable*,
+  never `grid-template-columns` — the two narrow breakpoints replace that property outright, and a
+  `.ledger-grid.no-roof{grid-template-columns:…}` rule would out-specify them **inside the media
+  query** and strand the table at six columns on a phone.
+
+  - **Files:** `supabase/migrations/0097_property_roof_separate.sql`, `src/lib/roofDisplay.js`
+    (new), `src/lib/api.js` (`setRoofSeparate`), `src/pages/PropertyFinancialsPage.js`,
+    `src/pages/LeaseDetailPage.js`, `src/components/TenantShareTable.js`, `src/App.css`,
+    `src/lib/demo/mockClient.js`, `src/lib/demo/store.js`,
+    `src/lib/__tests__/roofDisplay.test.js` (new),
+    `src/components/__tests__/roofToggleUi.test.js` (new).
+  - **Verified:** unit **1918/1918** (`vitest run`, 182 files) — no existing test broke, including
+    the grid-layout ones; `npm run build` compiles; migration applied clean and **read back live**
+    (`select=id,roof_separate` → 200, a fabricated column → 42703). Both workers deployed.
+  - **⚠ Not verified in a browser.** The four gates and the money-invariance are covered by tests
+    against the real mock, but nobody clicked the checkbox in a live browser — the confirm copy,
+    the collapsed one-row block and the 5-column grid at each breakpoint are unproven visually.
+  - **⚠ Neither demo property can show the collapse as seeded** — prop-1 has a roof total *and* a
+    roof-responsible lease, prop-2 has a roof total. That is the rule working, not a gap, but it
+    means unticking the box in the demo shows the "still shown because…" state, not the collapse.
+    Clear Oak Center's roof total first to see it go.
+  - **Flagged, not bundled:** no fold-into-CAM (it would re-price overrides and break
+    `amortize_into='roof'`); `leases.roof_responsible` untouched; no account-wide default;
+    `RecoverabilityTable` needed no gate — it builds from actual line items, so it already shows
+    nothing when there are none.
+
 - **2026-08-06** — **The app now notices when the tenant answers** (George: *"does the user have
   to hard reload the page to see if the tenant has responded… i want the app to start
   automatically reloading when small things like that happen. not necessarily for updates that i

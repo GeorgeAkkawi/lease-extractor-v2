@@ -2,6 +2,7 @@ import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit } from '../lib/api';
+import { showRoof } from '../lib/roofDisplay';
 import { depositReconciliation } from '../lib/deposits';
 import { settleBillingChange, settleLeaseListChange, settleLeaseScheduleChange } from '../lib/invalidate';
 import { supabase } from '../lib/supabaseClient';
@@ -588,18 +589,24 @@ export default function LeaseDetailPage() {
           </span>
         </div>
 
-        <div className="field" style={{ marginTop: 20 }}>
-          <span className="field-label">Charge roof PSF</span>
-          <div className="seg">
-            <button className={`seg-btn${lease.roof_responsible ? ' on' : ''}`} onClick={() => setRoof.mutate(true)} disabled={setRoof.isPending}>On</button>
-            <button className={`seg-btn${!lease.roof_responsible ? ' on' : ''}`} onClick={() => setRoof.mutate(false)} disabled={setRoof.isPending}>Off</button>
+        {/* Hidden when this building doesn't bill roof separately (0097) AND this lease has
+            nothing riding on it. A tenant already charged for the roof, or carrying a roof
+            estimate, keeps the control however the property's checkbox is set — otherwise the
+            landlord would be billing a roof share with no way to see or stop it. */}
+        {showRoof(prop, lease.roof_responsible === true || lease.est_roof_annual != null) && (
+          <div className="field" style={{ marginTop: 20 }}>
+            <span className="field-label">Charge roof PSF</span>
+            <div className="seg">
+              <button className={`seg-btn${lease.roof_responsible ? ' on' : ''}`} onClick={() => setRoof.mutate(true)} disabled={setRoof.isPending}>On</button>
+              <button className={`seg-btn${!lease.roof_responsible ? ' on' : ''}`} onClick={() => setRoof.mutate(false)} disabled={setRoof.isPending}>Off</button>
+            </div>
+            <span className="field-hint muted">
+              {lease.roof_responsible
+                ? 'Billed its pro-rata share of the roof expense (by SF).'
+                : 'Exempt — the landlord absorbs this tenant’s share of the roof expense.'}
+            </span>
           </div>
-          <span className="field-hint muted">
-            {lease.roof_responsible
-              ? 'Billed its pro-rata share of the roof expense (by SF).'
-              : 'Exempt — the landlord absorbs this tenant’s share of the roof expense.'}
-          </span>
-        </div>
+        )}
       </div>
 
       {/* A long lease carries fifteen or twenty dated steps, and once they're entered

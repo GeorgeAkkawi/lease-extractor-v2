@@ -135,8 +135,13 @@ export function seed() {
       },
     ],
     properties: [
-      { id: 'prop-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', name: 'Maple Plaza', address: '100 Maple St', building_sf: 5000 },
-      { id: 'prop-2', owner_id: DEMO_USER.id, corporation_id: 'corp-2', name: 'Oak Center', address: '250 Oak Ave', building_sf: 6000 },
+      // roof_separate (0097) is stated rather than left undefined, even though roofDisplay's
+      // `!== false` reads a missing column as on: the seed is what the demo's screens are read
+      // off, and a column the real table has NOT NULL should not be absent here.
+      // Maple Plaza genuinely bills roof (roof line items + a roof-responsible lease); Oak
+      // Center has no roof figure at all, which is the property the checkbox actually clears.
+      { id: 'prop-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', name: 'Maple Plaza', address: '100 Maple St', building_sf: 5000, roof_separate: true },
+      { id: 'prop-2', owner_id: DEMO_USER.id, corporation_id: 'corp-2', name: 'Oak Center', address: '250 Oak Ave', building_sf: 6000, roof_separate: true },
     ],
     leases: [
       // Bright Coffee pays typed ESTIMATED CAM/tax/roof (0060). Its year invoice inv-1

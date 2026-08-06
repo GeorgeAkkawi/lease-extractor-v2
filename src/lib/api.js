@@ -496,6 +496,17 @@ export const createProperty = async ({ corporation_id, name, address, building_s
 export const updateProperty = (id, patch) =>
   one(supabase.from('properties').update(patch).eq('id', id).select().single());
 
+// Does this building bill roof as its own expense category (0097)?
+//
+// ⚠ DELIBERATELY NOT A BILLING WRITE. It has its own name rather than being an inline
+// `updateProperty` call so that this comment has somewhere to live: unlike BuildingSizeEditor —
+// which sets `building_sf`, a denominator inside v_tenant_shares, and therefore MUST call
+// resyncPropertyBilling — nothing downstream of this column reaches a share, an invoice or a
+// figure. No resync, no settleBillingChange, no closed-year question. Anyone tempted to add one
+// here has changed what the flag means and should read roofDisplay.js first.
+export const setRoofSeparate = (propertyId, on) =>
+  updateProperty(propertyId, { roof_separate: !!on });
+
 // ---- Leases (a "tenant" = one lease) ---------------------------------------
 // Soonest-expiring lease first (no end date last, ties alphabetical) — the
 // order every per-property tenant list shows, incl. the rent-roll export.

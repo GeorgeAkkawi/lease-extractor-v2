@@ -94,6 +94,13 @@ function propertyTotals(propertyId, year) {
     tax_psf: billingDenom > 0 ? exp.taxes_total / billingDenom : null,
     cam_psf: billingDenom > 0 ? exp.cam_total / billingDenom : null,
     roof_psf_rate: activeSf > 0 ? exp.roof_total / activeSf : null,
+    // ⚠ respSf is deliberately NOT published, and this comment is here so nobody "fixes" that.
+    // In 0049 resp_sf lives inside the `leased` CTE (:29) and feeds roof_recovered /
+    // roof_unrecovered (:72,:74) — it is never selected out, so `v_property_totals.resp_sf`
+    // does not exist. Verified live: PostgREST answers 42703. Emitting it here would give the
+    // demo a column production hasn't got, which is the §3 mirror bug pointing the other way.
+    // 0097 needs "is any lease here roof-responsible?" and gets it from v_tenant_shares, which
+    // really does carry roof_responsible per lease.
     roof_recovered: roofRecovered,
     roof_unrecovered: exp.roof_total - roofRecovered,
   };

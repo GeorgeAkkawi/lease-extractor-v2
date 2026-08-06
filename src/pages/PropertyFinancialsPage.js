@@ -8,7 +8,11 @@ import {
   getExpenseRecord,
   undoStatementImport,
   discardDocument,
+  setRoofSeparate,
+  getTenantShares,
 } from '../lib/api';
+import { showRoof, roofOffered } from '../lib/roofDisplay';
+import { useConfirm } from '../components/ConfirmDialog';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import FinancialsTabs from '../components/FinancialsTabs';
 import TenantShareTable from '../components/TenantShareTable';
@@ -34,6 +38,8 @@ export default function PropertyFinancialsPage() {
   const { corpId, propId } = useParams();
   const { year } = useChrome();
   const qc = useQueryClient();
+
+  const askConfirm = useConfirm();
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
@@ -68,6 +74,59 @@ export default function PropertyFinancialsPage() {
   const margin = revenue > 0 ? Math.round((noi / revenue) * 100) : null;
   const roofRecovered = totals?.roof_recovered ?? 0;
   const roofUnrecovered = totals?.roof_unrecovered ?? roof;
+
+  // ── Does this building bill roof separately (0097)? ────────────────────────────────────
+  // The checkbox says what the landlord WANTS; `roofInUse` says what is actually happening,
+  // and the second one wins whenever they disagree.
+  //
+  // ⚠ THE SECOND HALF IS NOT OPTIONAL, and not available where you'd first look for it. A roof
+  // total alone leaves a dead end: switch a property off while empty, let an addendum mark a
+  // lease roof-responsible, and the landlord has a tenant on the hook for roof and no box to
+  // enter the cost in. v_property_totals looks like it answers this — 0049 computes resp_sf —
+  // but that lives in a CTE and is never selected out (checked live: PostgREST says 42703), so
+  // reading totals.resp_sf would be `undefined > 0`, i.e. permanently false. v_tenant_shares
+  // does carry roof_responsible per lease, and TenantShareTable on this very page already
+  // fetches it under this exact key — so React Query serves both from one request.
+  const { data: shares = [] } = useQuery({
+    queryKey: ['tenantShares', propId, year],
+    queryFn: () => getTenantShares(propId, year),
+  });
+  const roofInUse = roof > 0 || shares.some((s) => s.roof_responsible);
+  const roofVisible = showRoof(prop, roofInUse);
+  const roofOn = roofOffered(prop);
+  const setRoof = useMutation({
+    mutationFn: (on) => setRoofSeparate(propId, on),
+    // ⚠ NO settleBillingChange, and no resync. Unlike building_sf — a denominator inside
+    // v_tenant_shares — nothing downstream of this column reaches a share or an invoice.
+    // Only the property row itself moved, so only the property row is refetched.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['property', propId] }),
+  });
+  // George asked for the description in a popup, and it is the right place for it: this is the
+  // one control on the page whose effect is mostly about what STOPS being shown.
+  async function askRoof(on) {
+    const where = prop?.name ? ` at ${prop.name}` : '';
+    const ok = await askConfirm(on
+      ? {
+        title: `Bill roof separately${where}?`,
+        message: 'Roof work gets its own expense box, and its own line on a tenant’s bill — charged only to the leases whose terms make them responsible for the roof.',
+        implications: [
+          'Nothing moves now. This adds the box; what a tenant pays changes only when you enter a roof cost or mark a lease roof-responsible.',
+          'Roof is split by floor area and ignores a tenant’s custom share % — unlike CAM. That is the real difference between the two.',
+        ],
+        confirmLabel: 'Turn on', tone: 'default',
+      }
+      : {
+        title: `Stop billing roof separately${where}?`,
+        message: 'Roof repairs become an ordinary CAM expense here — you record them as a CAM line and they are shared like any other CAM cost.',
+        implications: [
+          'Nothing moves. No bill changes, no invoice is rebuilt, and no figure already recorded is altered.',
+          'It only stops offering roof on this property. Wherever roof already carries a figure — a year with a roof total, or a lease charged for the roof — it keeps showing, so nothing is ever billed out of sight.',
+          'You can turn it back on here at any time.',
+        ],
+        confirmLabel: 'Turn off', tone: 'default',
+      });
+    if (ok) setRoof.mutate(on);
+  }
 
   if (importDoc) {
     return (
@@ -135,18 +194,23 @@ export default function PropertyFinancialsPage() {
         <div className="metrics">
           <StatCard label="Property taxes" main={money(taxes)} footValue={psf(totals?.tax_psf)} footCap="charged per sq ft" />
           <StatCard label="CAM / maintenance" main={money(cam)} footValue={psf(totals?.cam_psf)} footCap="charged per sq ft" />
-          <StatCard
-            label="Roof (billed separately)"
-            main={money(roof)}
-            footValue={totalSf ? psf(roof / totalSf) : '—'}
-            footCap="rate per sq ft"
-            note={
-              <>
-                <span><strong className="pos">{money0(roofRecovered)}</strong> billed</span>
-                <span><strong>{money0(roofUnrecovered)}</strong> absorbed</span>
-              </>
-            }
-          />
+          {/* Gone entirely when this building doesn't bill roof and has none — a card reading
+              $0 billed / $0 absorbed is the noise the checkbox exists to remove. It comes back
+              on its own the moment roof carries a figure again. */}
+          {roofVisible && (
+            <StatCard
+              label="Roof (billed separately)"
+              main={money(roof)}
+              footValue={totalSf ? psf(roof / totalSf) : '—'}
+              footCap="rate per sq ft"
+              note={
+                <>
+                  <span><strong className="pos">{money0(roofRecovered)}</strong> billed</span>
+                  <span><strong>{money0(roofUnrecovered)}</strong> absorbed</span>
+                </>
+              }
+            />
+          )}
         </div>
       </div>
 
@@ -190,17 +254,41 @@ export default function PropertyFinancialsPage() {
           </div>
           <CamSection propId={propId} year={year} expense={expense} />
         </div>
+        {/* ⚠ THE HEAD ALWAYS RENDERS, the body is what's gated. The checkbox that turns roof
+            back on cannot live inside the section it hides, or the switch is one-way. Off and
+            empty, this whole block is a single row: the box, the words, and one line saying
+            where roof costs go instead. */}
         <div className="cam-block">
           <div className="cam-head">
             <div>
               <strong>Roof — itemized</strong>
               <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                One line per roof payment. The total is billed in full to the tenants whose leases make them responsible for the roof — everything else you absorb.
+                {roofVisible
+                  ? 'One line per roof payment. The total is billed in full to the tenants whose leases make them responsible for the roof — everything else you absorb.'
+                  : 'Roof repairs go in CAM on this building — add them as a CAM line above.'}
               </div>
             </div>
+            <label className="row" style={{ gap: 6, alignItems: 'center', fontSize: 12, whiteSpace: 'nowrap' }}>
+              <input
+                type="checkbox"
+                checked={roofOn}
+                disabled={setRoof.isPending}
+                onChange={(e) => askRoof(e.target.checked)}
+              />
+              <span className="muted">Billed separately</span>
+            </label>
           </div>
-          <RoofSection propId={propId} year={year} expense={expense} />
+          {/* Still rendered while the box is unticked IF roof carries a figure here — a roof
+              total or a roof-responsible lease. Hiding it then would leave the landlord billing
+              tenants for something his own screen no longer mentions. */}
+          {roofVisible && <RoofSection propId={propId} year={year} expense={expense} />}
+          {roofVisible && !roofOn && (
+            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+              Still shown because this building has roof on the books{roof > 0 ? '' : ' — a lease here is charged for the roof'}. Clear it and this section goes away.
+            </div>
+          )}
         </div>
+        <MutationError of={[setRoof]} />
       </StatementDropZone>
 
       <RecoverabilityTable propId={propId} corpId={corpId} year={year} />

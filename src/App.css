@@ -709,7 +709,13 @@ tbody tr:last-child td{border-bottom:none}
    sideways. The header band, every entry, and the totals band share ONE grid
    template, keeping the figures aligned down the page like a ledger; $/SF rides
    each figure's sub-line and the actions sit under the tenant's name. ---- */
-.ledger-grid{display:grid;grid-template-columns:minmax(158px,1.5fr) repeat(6,minmax(74px,1fr));gap:2px 12px;align-items:stretch;padding:15px 20px}
+.ledger-grid{--lg-cols:6;display:grid;grid-template-columns:minmax(158px,1.5fr) repeat(var(--lg-cols),minmax(74px,1fr));gap:2px 12px;align-items:stretch;padding:15px 20px}
+/* One column fewer when this building doesn't bill roof separately (0097) and has none —
+   otherwise the head, every row, the vacant band and the totals all keep a column of dashes.
+   ⚠ It moves the VARIABLE, never grid-template-columns itself: the two narrow breakpoints
+   below replace that property outright, and a `.ledger-grid.no-roof{grid-template-columns:…}`
+   rule would out-specify them and strand the table at 6 columns on a phone. */
+.ledger-grid.no-roof{--lg-cols:5}
 .ledger-head{padding:11px 20px 9px;background:var(--panel-2);border-bottom:1px solid var(--line);color:var(--muted);font-weight:700;font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;align-items:end}
 /* The shared sort control, when it sits INSIDE the breakdown panel, reads as the
    panel's own toolbar: same tint + gutter as the column-header band right below it,

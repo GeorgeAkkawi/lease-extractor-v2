@@ -20,6 +20,7 @@ import {
   listLeaseEstimatesByLeases,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
+import { showRoof } from '../lib/roofDisplay';
 import { sortTenantRows } from '../lib/leaseSort';
 import { money, money0, sf, pct, approx } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
@@ -288,6 +289,13 @@ export default function TenantShareTable({ propertyId, year }) {
     { sf: 0, base: 0, est: 0, tax: 0, cam: 0, roof: 0, total: 0, diff: 0, anyEst: false, anyCarried: false, anyGross: false }
   );
 
+  // Does the Roof column earn its place (0097)? Off it goes only when this building has said
+  // it doesn't bill roof separately AND not one tenant here has a roof share — otherwise the
+  // head, every row, the vacant band and the totals all carry a column of dashes. The evidence
+  // is the shares themselves, which this component already holds, so the column can never
+  // vanish out from under a figure. One boolean drives all five cells and the grid width.
+  const roofCol = showRoof(property, shares.some((s) => s.roof_responsible || Number(s.roof_amt) > 0));
+
   // The vacant space's slice of taxes + CAM. Shares are billed per SF of the WHOLE
   // building (0042), so the unleased SF's share is charged to no one — it stays with
   // the landlord. This makes that missing piece visible so the tenant shares + this
@@ -329,13 +337,13 @@ export default function TenantShareTable({ propertyId, year }) {
           presentation-only; on narrow screens it hides and the per-figure labels show.
           The estimated and actual CAM & tax columns are visually distinguished (tinted
           headers + cells) so the difference between them reads at a glance. */}
-      <div className="ledger-grid ledger-head" aria-hidden="true">
+      <div className={`ledger-grid ledger-head${roofCol ? '' : ' no-roof'}`} aria-hidden="true">
         <div>Tenant</div>
         <div className="lg-num">Base rent</div>
         <div className="lg-num lg-est">CAM &amp; tax<span className="sub-cap">estimated · billed</span></div>
         <div className="lg-num lg-actual">CAM &amp; tax<span className="sub-cap">actual</span></div>
-        <div className="lg-num">Roof<span className="sub-cap">actual</span></div>
-        <div className="lg-num">Total<span className="sub-cap">base + CAM &amp; tax + roof</span></div>
+        {roofCol && <div className="lg-num">Roof<span className="sub-cap">actual</span></div>}
+        <div className="lg-num">Total<span className="sub-cap">{roofCol ? 'base + CAM & tax + roof' : 'base + CAM & tax'}</span></div>
         <div className="lg-num">Difference<span className="sub-cap">actual − estimated</span></div>
       </div>
       {sortedRows.map((row) => {
@@ -349,7 +357,7 @@ export default function TenantShareTable({ propertyId, year }) {
         const rowTotal = row.billed.total;
         const carried = isCarried(s, row.billed.anyEstimate);
         return (
-          <div className="ledger-grid ledger-row" key={s.lease_id}>
+          <div className={`ledger-grid ledger-row${roofCol ? '' : ' no-roof'}`} key={s.lease_id}>
             <div className="ledger-id">
               <div className="ledger-name">{s.tenant_name}</div>
               <div className="ledger-meta">
@@ -406,7 +414,7 @@ export default function TenantShareTable({ propertyId, year }) {
               onToggle={() => setEditingId(editingId === s.lease_id ? null : s.lease_id)}
             />
             <Stat className="lg-actual" label="CAM & tax · actual" main={money(camTaxActual)} sub={hasSf ? <SfRate annual={camTaxActual} area={s.square_footage} /> : ''} />
-            <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? <SfRate annual={s.roof_amt} area={s.square_footage} /> : ''} />
+            {roofCol && <Stat label="Roof · actual" main={roofBilled ? money(s.roof_amt) : <span className="muted">—</span>} sub={roofBilled && hasSf ? <SfRate annual={s.roof_amt} area={s.square_footage} /> : ''} />}
             <Stat
               className="ledger-total"
               label={gross ? 'Total · flat rent, all in' : 'Total · base + CAM & tax + roof'}
@@ -442,7 +450,7 @@ export default function TenantShareTable({ propertyId, year }) {
         );
       })}
       {showVacant && (
-        <div className="ledger-grid ledger-row ledger-vacant">
+        <div className={`ledger-grid ledger-row ledger-vacant${roofCol ? '' : ' no-roof'}`}>
           <div className="ledger-id">
             <div className="ledger-name">Vacant space</div>
             <div className="ledger-meta">{sf(vacantSf)} · {pct(vacantSf / buildingSf)} of the building — billed to no one</div>
@@ -455,12 +463,12 @@ export default function TenantShareTable({ propertyId, year }) {
             main={money(vacantCamTax)}
             sub={<SfRate annual={camTaxEntered} area={buildingSf} />}
           />
-          <Stat label="Roof" main={<span className="muted">—</span>} />
+          {roofCol && <Stat label="Roof" main={<span className="muted">—</span>} />}
           <Stat className="ledger-total" label="Total" main={<span className="muted">—</span>} />
           <Stat label="Difference" main={<span className="muted">—</span>} />
         </div>
       )}
-      <div className="ledger-grid ledger-row ledger-totals">
+      <div className={`ledger-grid ledger-row ledger-totals${roofCol ? '' : ' no-roof'}`}>
         <div className="ledger-id">
           <div className="ledger-name">Totals</div>
           <div className="ledger-meta">{sf(tot.sf)} leased{buildingSf > 0 ? ` of ${sf(buildingSf)} building` : ''}</div>
@@ -476,7 +484,7 @@ export default function TenantShareTable({ propertyId, year }) {
             ? <>+ {money(vacantCamTax)} vacant{vacantReconciles && <><br />= {money(camTaxEntered)} entered</>}</>
             : ''}
         />
-        <Stat label="Roof · actual" main={money(tot.roof)} />
+        {roofCol && <Stat label="Roof · actual" main={money(tot.roof)} />}
         <Stat className="ledger-total" label="Total" main={money(tot.total)} sub={<PerMo annual={tot.total} />} />
         <Stat
           label="Difference · actual − estimated"
@@ -493,8 +501,11 @@ export default function TenantShareTable({ propertyId, year }) {
         it any time (the record is removed and its invoice voided). <strong>CAM &amp; tax</strong>
         are billed and reconciled together as one combined charge, allocated per square foot of the
         {noBuildingSf ? ' leased space' : ' whole building'} (or a per-lease
-        override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}; roof is billed by PSF only
-        to roof-responsible tenants and stays its own separate line, estimate and reconciliation included.
+        override){noBuildingSf ? '' : ', so the vacant share stays with the landlord'}
+        {roofCol
+          ? <>; roof is billed by PSF only to roof-responsible tenants and stays its own separate line,
+            estimate and reconciliation included.</>
+          : <>. This building doesn’t bill roof separately, so roof work sits inside CAM here.</>}
         {tot.anyGross && (
           <> A <strong>gross</strong> tenant pays one flat rent that already includes taxes &amp; CAM, so its share is
           subtracted from that rent rather than added to it: the Base rent column shows what's left after expenses
