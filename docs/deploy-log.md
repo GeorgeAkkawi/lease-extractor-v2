@@ -12,6 +12,77 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-06** — **Name your own tax category** (George: *"create a way for somebody to create
+  a tax category bucket for the expenses page if none of the options match what they want"*).
+  Deployed: migration **`0099`**, frontend Cloudflare **`8144c6f8`**. **No edge function.**
+  Tests **1949/1949** across 182 files (was 1939; +10).
+
+  **⚠ THE CONSTRAINT THAT SHAPED THE WHOLE THING, stated up front because the obvious reading
+  of the request is unbuildable.** `EXPENSE_CATEGORIES` is not a free list — it is the UNION OF
+  FORM 8825 AND SCHEDULE E, and `FORM_LINES` maps every key to a real line on a real form. You
+  cannot invent a line on an IRS form. A free-floating custom category would resolve to
+  `FORM_LINES[key] === undefined` and produce a CPA package the accountant cannot file, which
+  is the exact opposite of what that package is for.
+
+  **So a custom category is a NAMED WRITE-IN UNDER "OTHER".** Both forms end with a write-in
+  line — 8825 line 15 and Sch E line 19, both literally *"Other (list)"* — that asks you to
+  itemize your own descriptions. A custom category files under `other` and supplies that
+  line's text. That makes this an improvement rather than a compromise: today every unmatched
+  cost lands in one lumped "Other", and the form was asking for the list Amlak was discarding.
+
+  **The design decision worth recording: validity is STRUCTURAL, not list-based.** A key is
+  `custom:<slug>`, and `isValidCategory` recognizes it by shape. That matters because that
+  guard sits on `saveExpenseBucket` (`api.js:3309`) and on the import's category resolution
+  (`:6579`) — and a version needing to be *handed* the custom list would have silently
+  discarded the landlord's choice at any call site that forgot, with nothing on screen to
+  explain why. Only DISPLAY needs the list, and even that degrades: `categoryLabel` de-slugs
+  the key (`custom:bank_wire_fees` → "Bank wire fees"), so a caller without the list renders
+  words rather than a blank chip reading "Set a tax category" over a category that IS set.
+  No built-in key contains a colon, which is what makes the prefix collision-proof — and why
+  `expense_buckets.category` / `entity_ledger.category` (plain nullable text, no CHECK, by
+  0075's and 0077's deliberate refusal) needed **no migration and no back-fill**.
+
+  **The one that would have mattered most, caught by tracing forward.** `consolidate`
+  (`cpaPackage.js`) iterated `EXPENSE_CATEGORIES` alone to build its row keys — so a
+  custom-categorized dollar would have dropped out of the summary **and out of `expenseTotal`**:
+  money silently missing from a tax package. It now collects custom keys from the DATA, sorted
+  after the form's own lines because that is where they file. Pinned by a test that asserts the
+  row exists, its label, and that `expenseTotal` still includes it.
+
+  `formLine` reuses the existing **`viaOther`** path rather than inventing a second way to say
+  the same thing — it is the shape already used for Management fees / Supplies / Wages on the
+  form that lacks them. The Excel sheet distinguishes the two in words, because they are
+  different facts: "(no line of its own)" is a *shortfall* (a real line the form omits), while
+  a write-in is *what the line is for*. Custom rows read "— write-in" and get a note listing
+  each name and figure for the accountant to transcribe.
+
+  **One control, not three** (`TaxCategorySelect`): the CAM bucket chip, the statement review's
+  new-bucket row and the entity-ledger cost picker all used to hold their own copy of the same
+  `<select>`. Three copies drift, and here the drift would be silent — one screen offering the
+  landlord's own categories and another not, over the same stored column. Two `<optgroup>`s say
+  which of these the IRS prints and which are the landlord's own words, and creating one
+  **selects it immediately** (naming a category then hunting for it in the list you just
+  changed is how people stop categorizing at all).
+
+  Guards: a name that slugs to nothing (`"---"`) is refused rather than stored unreachable; a
+  duplicate hands back the existing row instead of failing; and a name that IS already a line
+  on the return ("Utilities") is refused — minting it as a write-in would put money on the
+  Other line that belongs on line 12, quietly. Rename changes the **label** only; the key is
+  frozen because it is stored on every bucket and entity-ledger row that chose it.
+
+  Files: `supabase/migrations/0099_custom_expense_categories.sql` ·
+  `src/lib/expenseCategories.js` (`isCustomCategory`, `customCategoryKey`, `allCategories`,
+  `filingCategory`, label fallback) · `src/lib/api.js` (list/create/rename/delete) ·
+  **`src/components/TaxCategorySelect.js`** (new, shared) · `CamSection.js` ·
+  `StatementReview.js` · `EntityLedgerSection.js` (both pickers) · `src/lib/cpaPackage.js`
+  (`formLine`, `consolidate`) · `src/lib/cpaExcel.js` · `src/lib/demo/store.js` (seeds
+  "Security" — the case `expenseCategories.js` already names as the ambiguous one) ·
+  `src/lib/__tests__/expenseCategories.test.js` (+10).
+
+  **Verified:** 1949/1949; `npm run build` compiles; migration applied clean and **read back
+  live** — `expense_categories_custom` has its six columns, RLS on, one owner policy, three
+  indexes (pk + the two unique ones on key and on `lower(btrim(label))`).
+
 - **2026-08-06** — **Who took the draw.** George supplied two real US Bank statements
   (DT NAPERVILLE OFFICE, LLC, Jan and Feb 2026) and asked whether every line has a home for
   reporting. Everything mapped — except the distributions didn't record **who**. Deployed:

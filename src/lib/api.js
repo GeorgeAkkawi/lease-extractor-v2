@@ -20,7 +20,7 @@ import { contractTargets, buildContractFeeSteps, buildContractConfidence, notice
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
 import { advanceDueDate } from './annualReports';
-import { isValidCategory, bucketKey, defaultCategoryFor, isCapitalProne } from './expenseCategories';
+import { isValidCategory, bucketKey, defaultCategoryFor, isCapitalProne, customCategoryKey, EXPENSE_CATEGORIES } from './expenseCategories';
 import { lineCompleteness } from './dispositions';
 import { amortizationFor, canAmortize, assetKindInfo } from './depreciation';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
@@ -3298,6 +3298,57 @@ export const listRoofLineItems = (propertyId, year) => listExpenseLineItems(prop
 // tenant is charged is decided by cam_line_items.billable and the pro-rata share.
 export const listExpenseBuckets = () =>
   rows(supabase.from('expense_buckets').select('*').order('label'));
+
+// ---- Tax categories the landlord names (0099) --------------------------------
+// For when none of the built-in fifteen fit. Each rolls up to the "Other (list)" line of
+// Form 8825 / Schedule E and supplies that line's write-in text — see expenseCategories.js
+// for why it cannot be a line of its own. Owner-scoped: a filing vocabulary belongs to the
+// person filing, not to one building.
+export const listCustomCategories = () =>
+  rows(supabase.from('expense_categories_custom').select('*').order('label'));
+
+export async function createCustomCategory(label) {
+  const clean = String(label || '').trim();
+  if (!clean) throw new Error('A category needs a name.');
+  if (clean.length > 60) throw new Error('That name is too long — 60 characters at most.');
+  const key = customCategoryKey(clean);
+  // A name with no letters or digits ("---") slugs to nothing, which would write a key that
+  // can never be matched back. Refuse it here rather than store an unreachable row.
+  if (!key) throw new Error('Give the category a name with letters or numbers in it.');
+  // Already one of the form's own lines under a different spelling — point at that instead
+  // of minting a write-in that duplicates a real line on the return.
+  const builtIn = EXPENSE_CATEGORIES.find((c) => c.label.toLowerCase() === clean.toLowerCase());
+  if (builtIn) throw new Error(`“${builtIn.label}” is already a line on the return — pick it from the list.`);
+  try {
+    return await one(
+      supabase.from('expense_categories_custom')
+        .insert({ key, label: clean, owner_id: await ownerId() })
+        .select().single()
+    );
+  } catch (e) {
+    // Same name (or same slug) already exists — hand back the one that is there rather than
+    // failing, so a landlord who types it twice just gets their category.
+    if (e?.code === '23505') {
+      const existing = (await listCustomCategories()).find(
+        (c) => c.key === key || String(c.label).trim().toLowerCase() === clean.toLowerCase()
+      );
+      if (existing) return existing;
+    }
+    throw e;
+  }
+}
+
+// The LABEL changes; the key never does. It is stored on every bucket and entity-ledger row
+// that chose this category, so re-slugging on rename would orphan all of them.
+export const renameCustomCategory = (id, label) =>
+  one(supabase.from('expense_categories_custom')
+    .update({ label: String(label || '').trim() })
+    .eq('id', id).select().single());
+
+// Removing the NAME, not the categorisation: rows that chose this key keep it, and
+// categoryLabel de-slugs the key so they still read as words rather than going blank.
+export const deleteCustomCategory = (id) =>
+  rows(supabase.from('expense_categories_custom').delete().eq('id', id));
 
 // Upsert by (owner, label) case-insensitively. The unique index is on
 // lower(btrim(label)), so a plain insert of an existing label raises 23505 and we

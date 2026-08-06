@@ -28,9 +28,9 @@ import {
   getCorporation, listProperties, getExpenseRecord, getPropertyTotals,
   listCamLineItems, listTaxLineItems, listRoofLineItems, listExpenseBuckets,
   getTenantShares, listFixedAssets, listEntityLedger, listOtherIncome,
-  listInvoicesForProperty, listPayments, listUnplacedLines, listLeases,
+  listInvoicesForProperty, listPayments, listUnplacedLines, listLeases, listCustomCategories,
 } from './api';
-import { EXPENSE_CATEGORIES, categoryLabel } from './expenseCategories';
+import { EXPENSE_CATEGORIES, categoryLabel, isCustomCategory } from './expenseCategories';
 import { recoverabilityRows, recoveryFractions } from './recoverability';
 import { summarizeAssets } from './depreciation';
 import { summarizeEntityLedger, absorbedFromItems, partyBreakdown } from './entityLedger';
@@ -85,8 +85,16 @@ export const FORM_REVISION_NOTE =
  * `assetKindInfo` and `entityKindInfo` make.
  */
 export function formLine(key, form = 'f8825') {
-  const entry = FORM_LINES[key];
+  // A category the landlord named (0099) has no line of its own — you cannot invent one on
+  // an IRS form. It is a WRITE-IN on the "Other (list)" line, which is exactly the shape
+  // `viaOther` already describes for Management / Supplies / Wages on the form that lacks
+  // them. So it reuses that path rather than inventing a second way to say the same thing.
+  const entry = isCustomCategory(key) ? FORM_LINES.other : FORM_LINES[key];
   if (!entry) return null;
+  if (isCustomCategory(key)) {
+    const other = entry[form];
+    return other ? { ...other, viaOther: true } : null;
+  }
   const own = entry[form];
   if (own) return { ...own, viaOther: false };
   const other = FORM_LINES.other[form];
@@ -254,13 +262,22 @@ export function shapePropertyReturn({
  * nobody having decided — and collapsing them is precisely what Slice 2 exists to
  * prevent. It also renders the whole package untrustworthy if it happens silently.
  */
-export function consolidate(properties = []) {
+export function consolidate(properties = [], customs = []) {
   const keys = [];
   for (const cat of EXPENSE_CATEGORIES) {
     if (properties.some((p) => p.categories.some((c) => c.key === cat.key)) || cat.key === 'depreciation') {
       keys.push(cat.key);
     }
   }
+  // ⚠ THEN THE LANDLORD'S OWN (0099), read from the DATA rather than from a list. Iterating
+  // only EXPENSE_CATEGORIES would drop every custom-categorized dollar out of the summary
+  // AND out of `expenseTotal` below — money silently missing from a tax package, which is
+  // the one failure this file exists to make impossible. They sort after the form's own
+  // lines because that is where they file: on the Other write-in, underneath.
+  const customKeys = [...new Set(
+    properties.flatMap((p) => p.categories.map((c) => c.key)).filter(isCustomCategory)
+  )].sort((a, b) => categoryLabel(a, customs).localeCompare(categoryLabel(b, customs)));
+  keys.push(...customKeys);
 
   const cell = (p, key) => {
     if (key === 'depreciation') return p.depreciation.amount;
@@ -271,7 +288,8 @@ export function consolidate(properties = []) {
     const byProperty = properties.map((p) => round2(cell(p, key)));
     return {
       key,
-      label: categoryLabel(key),
+      label: categoryLabel(key, customs),
+      custom: isCustomCategory(key),
       byProperty,
       total: round2(byProperty.reduce((s, v) => s + v, 0)),
       f8825: formLine(key, 'f8825'),
@@ -412,12 +430,16 @@ export async function buildCpaPackage({ corporationId, year, basis = 'accrual' }
   };
 
   const entity = summarizeEntityLedger(entityRows);
+  // The landlord's own category NAMES (0099) — only for labelling. A row keeps its key
+  // whether or not the name still exists, and categoryLabel de-slugs the key if it doesn't,
+  // so a deleted name degrades to readable words rather than dropping the money.
+  const customCats = await listCustomCategories().catch(() => []);
   return {
     corporation: corporation || {},
     year: y,
     basis,
     properties: shaped,
-    summary: consolidate(shaped),
+    summary: consolidate(shaped, customCats),
     entity,
     excluded: excludedFromReturn({ entity, deposits, unplaced }),
     deposits,

@@ -235,6 +235,14 @@ export function seed() {
     expense_buckets: [
       { id: 'bkt-1', owner_id: DEMO_USER.id, label: 'Owner legal fees', category: 'legal', billable: false, capital_prone: false, created_at: iso(Y, 1, 5) },
     ],
+    // Slice 0099 — a tax category the landlord named, for when none of the form's own
+    // fifteen fit. Security is the canonical case and expenseCategories.js already names
+    // it: it has no line on either form and lands on Cleaning or Other depending on the
+    // CPA, "exactly the judgement call this file must not make silently". Seeded so the
+    // picker demonstrates its second optgroup and the CPA sheet its write-in note.
+    expense_categories_custom: [
+      { id: 'xcat-1', owner_id: DEMO_USER.id, key: 'custom:security', label: 'Security', created_at: iso(Y, 1, 6), updated_at: iso(Y, 1, 6) },
+    ],
     // Slice 4b — money that crossed prop-1's account and is NOT the building's income
     // or expense. Seeded because the new panels would otherwise render permanently
     // empty in demo and read as a bug. One of each kind, so "What actually stayed"

@@ -10,7 +10,13 @@ import { describe, it, expect } from 'vitest';
 import {
   EXPENSE_CATEGORIES, categoryLabel, isValidCategory, bucketKey,
   defaultCategoryFor, isCapitalProne, categoryFor,
+  isCustomCategory, customCategoryKey, allCategories, filingCategory,
 } from '../expenseCategories';
+import { formLine, consolidate } from '../cpaPackage';
+import {
+  createCustomCategory, listCustomCategories, renameCustomCategory,
+  saveExpenseBucket, listExpenseBuckets,
+} from '../api';
 import { transcriptGaps } from '../leaseRisks';
 
 describe('the category registry', () => {
@@ -140,5 +146,125 @@ describe('a partial transcript is detectable, so a review built on one can say s
   it('handles no text at all without throwing', () => {
     expect(transcriptGaps(null).partial).toBe(false);
     expect(transcriptGaps('').readableLength).toBe(0);
+  });
+});
+
+// ── 0099 — a category the landlord names ─────────────────────────────────────
+//
+// THE CONSTRAINT this is all shaped by: EXPENSE_CATEGORIES is the union of Form 8825 and
+// Schedule E, and FORM_LINES maps every key to a real line. You cannot invent a line on an
+// IRS form. Both forms END with a write-in ("Other (list)"), so a custom category IS that:
+// it files under Other and supplies the description that line asks you to list.
+describe('a tax category the landlord names', () => {
+  const customs = [{ key: 'custom:security', label: 'Security' }];
+
+  it('slugs a name into a key that cannot collide with a form line', () => {
+    expect(customCategoryKey('Security patrol')).toBe('custom:security_patrol');
+    expect(customCategoryKey('  Bank & wire fees!  ')).toBe('custom:bank_wire_fees');
+    // No built-in key contains a colon, which is what makes the prefix collision-proof.
+    expect(EXPENSE_CATEGORIES.every((c) => !c.key.includes(':'))).toBe(true);
+  });
+
+  it('refuses a name that slugs to nothing rather than storing an unreachable key', () => {
+    expect(customCategoryKey('---')).toBe(null);
+    expect(customCategoryKey('')).toBe(null);
+  });
+
+  it('is valid by SHAPE, so no call site has to be handed the list to accept one', () => {
+    // This is the property that keeps saveExpenseBucket and the import's category
+    // resolution from silently discarding a custom choice.
+    expect(isValidCategory('custom:security')).toBe(true);
+    expect(isCustomCategory('custom:security')).toBe(true);
+    expect(isValidCategory('custom:Not Valid')).toBe(false); // not a slug
+    expect(isValidCategory('legal')).toBe(true);
+    expect(isCustomCategory('legal')).toBe(false);
+  });
+
+  it('reads as words even when nobody handed us the list', () => {
+    expect(categoryLabel('custom:security', customs)).toBe('Security');
+    // The degraded path: de-slugged from the key, never a blank chip over a category
+    // that IS set, and never a stale name after the row was renamed away.
+    expect(categoryLabel('custom:bank_wire_fees')).toBe('Bank wire fees');
+    expect(categoryLabel('nonsense')).toBe(null);
+  });
+
+  it('files under Other on BOTH forms — as a write-in, not a missing line', () => {
+    expect(filingCategory('custom:security')).toBe('other');
+    expect(filingCategory('repairs')).toBe('repairs');
+    for (const form of ['f8825', 'schedE']) {
+      const fl = formLine('custom:security', form);
+      expect(fl.label).toBe('Other');
+      expect(fl.viaOther).toBe(true);
+    }
+  });
+
+  it('offers form lines first, then the landlord’s own, flagged as custom', () => {
+    const all = allCategories(customs);
+    expect(all.slice(0, EXPENSE_CATEGORIES.length)).toEqual(EXPENSE_CATEGORIES);
+    expect(all[all.length - 1]).toEqual({ key: 'custom:security', label: 'Security', custom: true });
+    expect(allCategories()).toEqual(EXPENSE_CATEGORIES); // no list → unchanged
+  });
+
+  it('KEEPS ITS MONEY IN THE PACKAGE — the failure that would matter most', () => {
+    // consolidate() used to iterate EXPENSE_CATEGORIES alone. A custom key would have
+    // dropped out of the summary AND out of expenseTotal: money silently missing from a
+    // tax package, which is the one thing that file exists to make impossible.
+    const properties = [{
+      categories: [
+        { key: 'repairs', spent: 1000 },
+        { key: 'custom:security', spent: 400 },
+      ],
+      uncategorized: null,
+      depreciation: { amount: 0 },
+      income: { rent: 0, otherIncome: 0, total: 0, billed: 0, received: 0, receivedPriorYear: 0 },
+      deductible: 1400,
+      recovered: 0,
+      absorbed: { total: 0 },
+      undated: { total: 0 },
+    }];
+    const out = consolidate(properties, customs);
+    const row = out.rows.find((r) => r.key === 'custom:security');
+    expect(row).toBeTruthy();
+    expect(row.label).toBe('Security');
+    expect(row.custom).toBe(true);
+    expect(row.total).toBe(400);
+    // Its dollars are inside the total, and the form's own lines still come first.
+    expect(out.expenseTotal).toBe(1400);
+    expect(out.rows.findIndex((r) => r.key === 'repairs'))
+      .toBeLessThan(out.rows.findIndex((r) => r.key === 'custom:security'));
+  });
+});
+
+// The whole journey against the mock: name it, use it on a bucket, rename it. The load-
+// bearing link is the middle one — saveExpenseBucket validates with isValidCategory, so a
+// version of that guard which needed the custom LIST would refuse the landlord's own
+// category here and there would be nothing on screen to explain why.
+describe('naming a category and putting it to work', () => {
+  it('creates it, the bucket save accepts it, and it reads back by name', async () => {
+    const cat = await createCustomCategory('Security patrol');
+    expect(cat.key).toBe('custom:security_patrol');
+
+    await saveExpenseBucket({ label: 'Night guard', category: cat.key });
+    expect(categoryFor('Night guard', await listExpenseBuckets()))
+      .toEqual({ category: 'custom:security_patrol', source: 'saved' });
+    expect(categoryLabel(cat.key, await listCustomCategories())).toBe('Security patrol');
+
+    // Rename changes the LABEL only — the key is stored on every row that chose it, so
+    // re-slugging would orphan them all.
+    await renameCustomCategory(cat.id, 'Site security');
+    expect((await listCustomCategories()).find((c) => c.key === cat.key).label).toBe('Site security');
+    expect(categoryFor('Night guard', await listExpenseBuckets()).category).toBe('custom:security_patrol');
+  });
+
+  it('hands back the existing one rather than failing when the name is typed twice', async () => {
+    const a = await createCustomCategory('Bank fees');
+    const b = await createCustomCategory('  bank fees ');
+    expect(b.key).toBe(a.key);
+  });
+
+  // Minting "Utilities" as a write-in would put money on the Other line that belongs on
+  // line 12 — a wrong return, quietly.
+  it('refuses a name that is already a line on the return', async () => {
+    await expect(createCustomCategory('Utilities')).rejects.toThrow(/already a line/i);
   });
 });

@@ -9,7 +9,8 @@ import {
   suggestTenantMatches,
   saveExpenseBucket,
 } from '../lib/api';
-import { EXPENSE_CATEGORIES, defaultCategoryFor } from '../lib/expenseCategories';
+import { defaultCategoryFor } from '../lib/expenseCategories';
+import TaxCategorySelect from './TaxCategorySelect';
 import { INCOME_CATEGORIES, incomeCategoryLabel } from '../lib/otherIncome';
 import { partyLabel } from '../lib/entityLedger';
 import { ASSET_KINDS } from '../lib/depreciation';
@@ -1101,15 +1102,13 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             </label>
             {/* Asked once, here, because this is the moment the bucket is born — and a
                 bucket nobody categorizes is money that won't roll up to any tax line. */}
-            <select
+            <TaxCategorySelect
               className="text-input" style={{ maxWidth: 175, fontSize: 12 }}
               value={effectiveCategory}
-              onChange={(e) => setNewCategory(e.target.value)}
+              emptyLabel="Tax category…"
+              onChange={(next) => setNewCategory(next)}
               title="Which line of your tax return this bucket rolls up to. It changes reporting only — never what a tenant is billed."
-            >
-              <option value="">Tax category…</option>
-              {EXPENSE_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-            </select>
+            />
             <button type="button" className="btn-sm" onClick={confirmNewBucket} disabled={!newName.trim()}>Add</button>
             <button type="button" className="ghost btn-sm" onClick={() => { setAddingBucket(false); setNewName(''); }}>Cancel</button>
           </div>

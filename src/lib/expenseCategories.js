@@ -38,8 +38,65 @@ export const EXPENSE_CATEGORIES = [
 
 const BY_KEY = new Map(EXPENSE_CATEGORIES.map((c) => [c.key, c]));
 
-export const categoryLabel = (key) => BY_KEY.get(key)?.label || null;
-export const isValidCategory = (key) => BY_KEY.has(key);
+// ---- Categories the landlord names (0099) -------------------------------------------
+//
+// When none of the fifteen above fit. THE CONSTRAINT: the list above is the union of Form
+// 8825 and Schedule E, and FORM_LINES (cpaPackage.js) maps every key to a real line. You
+// cannot invent a line on an IRS form. So a custom category is a NAMED WRITE-IN under
+// "Other" — both forms end with a write-in line (8825 line 15, Sch E line 19) that asks you
+// to LIST your own descriptions. It rolls up to `other` and supplies that line's text, which
+// is why this makes the report better than it is now: one lumped "Other" becomes the
+// itemization the form was asking for.
+export const CUSTOM_PREFIX = 'custom:';
+
+// ⚠ A custom key is RECOGNIZABLE BY SHAPE, and that is the design, not a shortcut. Validity
+// is structural, so `isValidCategory` needs no list — which matters because it guards the
+// bucket save (api.js) and the import's category resolution, and a version of this that had
+// to be handed the custom list would silently discard the landlord's choice at any call site
+// that forgot. Only DISPLAY needs the list, and even that degrades to a readable label
+// (see below) rather than a blank.
+export const isCustomCategory = (key) => typeof key === 'string' && key.startsWith(CUSTOM_PREFIX);
+
+const CUSTOM_KEY_RE = /^custom:[a-z0-9]+(?:_[a-z0-9]+)*$/;
+
+// 'Security patrol' → 'custom:security_patrol'. Derived from the label ONCE, at creation;
+// the key is then frozen, because it is stored on every bucket and entity-ledger row that
+// chose it and a rename must not orphan them.
+export const customCategoryKey = (label) => {
+  const slug = String(label || '').trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60).replace(/_+$/, '');
+  return slug ? CUSTOM_PREFIX + slug : null;
+};
+
+// The label a custom key carries when nobody handed us the list — de-slugged from the key
+// itself. A caller that forgets `customs` therefore renders "Security patrol", never a blank
+// chip reading "Set a tax category" over a category that IS set.
+const labelFromCustomKey = (key) => {
+  const s = key.slice(CUSTOM_PREFIX.length).replace(/_/g, ' ').trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : null;
+};
+
+export const categoryLabel = (key, customs = []) => {
+  if (isCustomCategory(key)) {
+    return (customs || []).find((c) => c.key === key)?.label || labelFromCustomKey(key);
+  }
+  return BY_KEY.get(key)?.label || null;
+};
+
+export const isValidCategory = (key) => (isCustomCategory(key) ? CUSTOM_KEY_RE.test(key) : BY_KEY.has(key));
+
+// Everything offerable in a picker: the form's own lines first, then the landlord's own.
+// `custom: true` lets the UI group them under their own heading, so nobody mistakes a
+// write-in for a line the IRS prints.
+export const allCategories = (customs = []) => [
+  ...EXPENSE_CATEGORIES,
+  ...(customs || []).filter((c) => c?.key && c?.label).map((c) => ({ key: c.key, label: c.label, custom: true })),
+];
+
+// Which BUILT-IN key a category files under. A custom one is a write-in on the Other line,
+// so it answers `other` — the single place that fact is encoded, so the CPA package, the
+// 1099 sheet and the recoverability roll-up cannot disagree about where it lands.
+export const filingCategory = (key) => (isCustomCategory(key) ? 'other' : key);
 
 // One bucket identity rule, used by the unique index (lower(btrim(label))), the runtime
 // Map and every lookup here — so "Snow removal", "snow removal" and "Snow removal "

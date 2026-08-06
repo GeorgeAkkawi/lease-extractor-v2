@@ -188,9 +188,30 @@ function addSummary(wb, pkg, now) {
   // ── Expenses ──
   p.section('Expenses');
   p.head(['Category', 'Form 8825', 'Schedule E', ...propHeads, 'Total'], alignHead);
-  const formCell = (fl) => (fl ? `Line ${fl.line} — ${fl.label}${fl.viaOther ? ' (no line of its own)' : ''}` : 'No line on this form');
+  // A category the landlord named (0099) files as a WRITE-IN on the Other line, and saying
+  // so is the whole reason it is allowed to exist: "(no line of its own)" is true of
+  // Management fees on 8825 — a real line the form omits — but a write-in is not a
+  // shortfall, it is what the form asks you to list. Different facts, different words.
+  const formCell = (fl, custom) => {
+    if (!fl) return 'No line on this form';
+    const via = custom ? ' — write-in' : (fl.viaOther ? ' (no line of its own)' : '');
+    return `Line ${fl.line} — ${fl.label}${via}`;
+  };
   for (const row of pkg.summary.rows) {
-    p.line([row.label, formCell(row.f8825), formCell(row.schedE), ...row.byProperty, row.total], { moneyFrom: 3 });
+    p.line(
+      [row.custom ? `${row.label}  (your category)` : row.label, formCell(row.f8825, row.custom), formCell(row.schedE, row.custom), ...row.byProperty, row.total],
+      { moneyFrom: 3 }
+    );
+  }
+  const writeIns = pkg.summary.rows.filter((r) => r.custom);
+  if (writeIns.length) {
+    p.note(
+      `${writeIns.length} categor${writeIns.length === 1 ? 'y is one you' : 'ies are ones you'} named yourself: `
+      + `${writeIns.map((r) => `${r.label} (${money(r.total)})`).join(' · ')}. `
+      + 'Neither form has a line for them, so each is a write-in on the “Other” line — which is exactly what that line is for. '
+      + 'They are listed separately here so your accountant can transcribe the description alongside the figure.',
+      { height: 28 }
+    );
   }
 
   // ⚠ Its own row, below the categories, and NEVER folded into "Other". Nobody deciding

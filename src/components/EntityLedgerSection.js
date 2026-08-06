@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listEntityLedger, addEntityLedgerEntry, deleteEntityLedgerEntry, setEntityLedgerCategory, setEntityLedgerParty } from '../lib/api';
-import { ENTITY_KINDS, entityKindInfo, summarizeEntityLedger, entityCostCategories, entityCategoryLabel, partyLabel, knownParties } from '../lib/entityLedger';
+import { ENTITY_KINDS, entityKindInfo, summarizeEntityLedger, entityCategoryLabel, partyLabel, knownParties } from '../lib/entityLedger';
+import TaxCategorySelect from './TaxCategorySelect';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
@@ -87,16 +88,14 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
   const catChip = (row) => {
     if (editCat === row.id) {
       return (
-        <select
+        <TaxCategorySelect
           className="text-input" style={{ maxWidth: 175, fontSize: 12, marginTop: 4 }}
           autoFocus
           value={row.category || ''}
-          onChange={(e) => setCat.mutate({ id: row.id, category: e.target.value })}
+          emptyLabel="No category"
+          onChange={(next) => setCat.mutate({ id: row.id, category: next })}
           onBlur={() => setEditCat(null)}
-        >
-          <option value="">No category</option>
-          {entityCostCategories().map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-        </select>
+        />
       );
     }
     return (
@@ -218,10 +217,12 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
           <input className="text-input" style={{ maxWidth: 130 }} type="number" step="0.01" placeholder="Amount" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
           <input className="text-input" style={{ maxWidth: 150, minWidth: 0 }} type="date" value={form.txn_date} onChange={(e) => setForm({ ...form, txn_date: e.target.value })} />
           {form.kind === 'cost' && (
-            <select className="text-input" style={{ maxWidth: 175 }} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-              <option value="">Tax category…</option>
-              {entityCostCategories().map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-            </select>
+            <TaxCategorySelect
+              className="text-input" style={{ maxWidth: 175 }}
+              value={form.category}
+              emptyLabel="Tax category…"
+              onChange={(next) => setForm({ ...form, category: next })}
+            />
           )}
           <button type="button" className="btn-sm" disabled={!(Number(form.amount) > 0) || !corporationId || add.isPending} onClick={() => add.mutate(form)}>Add</button>
           <span className="muted" style={{ fontSize: 11 }}>{entityKindInfo(form.kind).hint}</span>

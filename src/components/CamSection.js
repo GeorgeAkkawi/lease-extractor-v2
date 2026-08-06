@@ -4,7 +4,8 @@ import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, 
 import { settleBillingChange } from '../lib/invalidate';
 import CapitalizeLineButton, { CAPITALIZE_FLOOR } from './CapitalizeLineButton';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
-import { EXPENSE_CATEGORIES, categoryFor, categoryLabel, bucketKey } from '../lib/expenseCategories';
+import { categoryFor, categoryLabel, bucketKey } from '../lib/expenseCategories';
+import TaxCategorySelect from './TaxCategorySelect';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
@@ -189,15 +190,12 @@ export default function CamSection({ propId, year, expense }) {
     const { category, source } = categoryFor(label, buckets);
     if (editCat === bucketKey(label)) {
       return (
-        <select
+        <TaxCategorySelect
           className="cam-input" autoFocus value={category || ''}
-          onChange={(e) => saveCat.mutate({ label, category: e.target.value })}
+          onChange={(next) => saveCat.mutate({ label, category: next })}
           onBlur={() => setEditCat(null)}
           style={{ fontSize: 11, marginTop: 3, padding: '2px 4px', maxWidth: 200 }}
-        >
-          <option value="">Not categorized</option>
-          {EXPENSE_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-        </select>
+        />
       );
     }
     const title = source === 'saved'
