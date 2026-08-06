@@ -9,6 +9,7 @@ import TaxCategorySelect from './TaxCategorySelect';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // A management fee isn't a figure you look up — it's a percentage of the rent. Typing
 // a label that reads like one offers the percentage entry automatically; the toggle
@@ -118,7 +119,10 @@ export default function CamSection({ propId, year, expense }) {
       });
     },
   });
-  const remove = useMutation({
+  // The row goes the instant it is clicked; the property-wide invoice rebuild below
+  // carries on behind it and repaints the money screens when it lands.
+  const remove = useOptimisticRemove({
+    queryKey: ['camLineItems', propId, year],
     mutationFn: async (it) => {
       const out = await deleteCamLineItem(it.id, propId, year);
       if (it.billable !== false) await carryThrough();

@@ -6,6 +6,7 @@ import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
 import CapitalizeLineButton, { CAPITALIZE_FLOOR } from './CapitalizeLineButton';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Roof costs, itemized the way property taxes are (0074). A roof is replaced once and
 // repaired several times, and one accumulating figure hid which payment was which — the
@@ -55,7 +56,9 @@ export default function RoofSection({ propId, year, expense }) {
       });
     },
   });
-  const remove = useMutation({
+  // The row goes on the click; the property-wide invoice rebuild carries on behind it.
+  const remove = useOptimisticRemove({
+    queryKey: ['roofLineItems', propId, year],
     mutationFn: async (it) => { const out = await deleteRoofLineItem(it.id, propId, year); await carryThrough(); return out; },
     onSuccess: (_data, it) => {
       invalidate();

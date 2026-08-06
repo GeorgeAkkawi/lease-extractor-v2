@@ -5,6 +5,7 @@ import { settleBillingChange } from '../lib/invalidate';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Property taxes, itemized the way CAM is (George: "when taxes are pulled from the
 // statement they shouldnt upload to expenses rather to the property taxes box … a new
@@ -50,7 +51,9 @@ export default function TaxSection({ propId, year, expense }) {
       });
     },
   });
-  const remove = useMutation({
+  // The row goes on the click; the property-wide invoice rebuild carries on behind it.
+  const remove = useOptimisticRemove({
+    queryKey: ['taxLineItems', propId, year],
     mutationFn: async (it) => { const out = await deleteTaxLineItem(it.id, propId, year); await carryThrough(); return out; },
     onSuccess: (_data, it) => {
       invalidate();

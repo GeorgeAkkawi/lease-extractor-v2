@@ -6,6 +6,7 @@ import TaxCategorySelect from './TaxCategorySelect';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Slice 4b — the money that crossed this property's account and is NOT the building's
 // income or expense: what the owner took out, what they put in, and what the LLC
@@ -48,7 +49,12 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
     }),
     onSuccess: () => { setAdding(false); setForm({ kind: 'draw', amount: '', txn_date: '', label: '', category: '', party: '' }); invalidate(); },
   });
-  const remove = useMutation({ mutationFn: (id) => deleteEntityLedgerEntry(id), onSuccess: invalidate });
+  // Takes the ROW, not its id — the optimistic paint needs something to match on.
+  const remove = useOptimisticRemove({
+    queryKey: ['entityLedger', propId, year],
+    mutationFn: (row) => deleteEntityLedgerEntry(row.id),
+    onSuccess: invalidate,
+  });
   const setCat = useMutation({
     mutationFn: ({ id, category }) => setEntityLedgerCategory(id, category),
     onSuccess: () => { setEditCat(null); invalidate(); },
@@ -79,7 +85,7 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
       confirmLabel: 'Remove',
       tone: 'danger',
     });
-    if (ok) remove.mutate(row.id);
+    if (ok) remove.mutate(row);
   }
 
   // The category chip, in the same language as an expense bucket's — solid when

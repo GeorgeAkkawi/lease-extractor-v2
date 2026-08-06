@@ -10,6 +10,7 @@ import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
 import ClosingStatementModal from './ClosingStatementModal';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Slice 5a — the things this property owns, and what they lose in value each year.
 //
@@ -52,7 +53,12 @@ export default function AssetRegisterSection({ propId, year, propertyName }) {
     mutationFn: (f) => addFixedAsset({ ...f, property_id: propId }),
     onSuccess: () => { setAdding(false); setForm(blank); invalidate(); },
   });
-  const remove = useMutation({ mutationFn: (id) => deleteFixedAsset(id), onSuccess: invalidate });
+  // Takes the ROW, not its id — the optimistic paint needs something to match on.
+  const remove = useOptimisticRemove({
+    queryKey: ['fixedAssets', propId],
+    mutationFn: (row) => deleteFixedAsset(row.id),
+    onSuccess: invalidate,
+  });
   const setLand = useMutation({
     mutationFn: ({ id, land_cost }) => setFixedAssetLand(id, land_cost),
     onSuccess: () => { setEditLand(null); setLandDraft(''); invalidate(); },
@@ -137,7 +143,7 @@ export default function AssetRegisterSection({ propId, year, propertyName }) {
       confirmLabel: 'Remove',
       tone: 'danger',
     });
-    if (ok) remove.mutate(row.id);
+    if (ok) remove.mutate(row);
   }
 
   // The forcing function, in the app's own "look here" colour. A building with no land

@@ -6,8 +6,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfirmProvider } from '../ConfirmDialog';
 import RoofSection from '../RoofSection';
+import CamSection from '../CamSection';
 import AssetRegisterSection from '../AssetRegisterSection';
-import { addRoofLineItem, upsertExpenseRecord, getExpenseRecord } from '../../lib/api';
+import { addRoofLineItem, addCamLineItem, upsertExpenseRecord, getExpenseRecord } from '../../lib/api';
 import { currentYear } from '../../lib/format';
 
 const Y = currentYear();
@@ -76,6 +77,40 @@ describe('capitalizing from the expense line it is sitting in', () => {
     });
   });
 
+  // George, 2026-08-06: "explain what capitalizing an expense does". The explanation used
+  // to live only in the confirm — i.e. after choosing a kind, a life and a date — so the
+  // one question a landlord actually has was answered last.
+  it('says what capitalizing does the moment the form opens, before anything is chosen', async () => {
+    const y = await scratch();
+    await addRoofLineItem({ property_id: PROP, year: y, label: 'Roof replacement', amount: 19500, paid_date: `${y}-01-01` });
+
+    withProviders(<RoofSection propId={PROP} year={y} />);
+    await waitFor(() => expect(screen.getByText('⤴ Capitalize')).toBeTruthy());
+    fireEvent.click(screen.getByText('⤴ Capitalize'));
+
+    expect(screen.getByText('What capitalizing does')).toBeTruthy();
+    // The tax consequence — the actual reason to do this — was named nowhere before.
+    // $19,500 over 39 years is $500.00 a year.
+    expect(document.body.textContent).toMatch(/no longer deducted all in/);
+    expect(document.body.textContent).toMatch(/\$500\.00 a year for 39 years/);
+    // The bill, in the direction it cuts…
+    expect(document.body.textContent).toMatch(/roof total drops by \$19,500\.00/);
+    // …and the reassurance that it is a reporting change, not a cash one.
+    expect(document.body.textContent).toMatch(/No money moves either way/);
+  });
+
+  it('follows the life you type rather than restating the default', async () => {
+    const y = await scratch();
+    await addRoofLineItem({ property_id: PROP, year: y, label: 'Roof replacement', amount: 19500, paid_date: `${y}-01-01` });
+
+    withProviders(<RoofSection propId={PROP} year={y} />);
+    await waitFor(() => expect(screen.getByText('⤴ Capitalize')).toBeTruthy());
+    fireEvent.click(screen.getByText('⤴ Capitalize'));
+
+    fireEvent.change(screen.getByPlaceholderText('Life — 39 yr'), { target: { value: '15' } });
+    await waitFor(() => expect(document.body.textContent).toMatch(/\$1,300\.00 a year for 15 years/));
+  });
+
   // ⚠ The refusal, surfaced where the landlord is standing rather than failing silently.
   it('explains itself instead of acting when the year is closed', async () => {
     withProviders(<RoofSection propId={CLOSED_PROP} year={Y} />);
@@ -89,6 +124,40 @@ describe('capitalizing from the expense line it is sitting in', () => {
 
     await waitFor(() => expect(screen.getByText(/fiscal year is closed/)).toBeTruthy());
     expect(Number((await getExpenseRecord(CLOSED_PROP, Y))?.roof_total) || 0).toBe(before);
+  });
+});
+
+// ⚠ syncCamTotal filters on `billable` (api.js), so a "not billed to tenants" line is
+// NOT in cam_total and capitalizing it moves nobody's bill by a cent. The explanation
+// used to assert the opposite on these rows, which was simply untrue.
+describe('capitalizing a cost the tenants were never paying', () => {
+  it('does not claim a bill drops, and does not offer to start billing one', async () => {
+    const y = await scratch();
+    await addCamLineItem({ property_id: PROP, year: y, label: 'Owner’s truck', amount: 32000, billable: false, paid_date: `${y}-03-01` });
+
+    withProviders(<CamSection propId={PROP} year={y} expense={{ taxes_total: 0, cam_total: 0, roof_total: 0 }} />);
+    await waitFor(() => expect(screen.getByText('Owner’s truck')).toBeTruthy());
+    fireEvent.click(screen.getByText('⤴ Capitalize'));
+
+    expect(document.body.textContent).toMatch(/No tenant’s bill changes/);
+    expect(document.body.textContent).not.toMatch(/pro-rata CAM share is billed less/);
+    // The bill-back option is withheld, not offered-and-ignored: an amortization row is
+    // written billable, so ticking it would start charging tenants for a cost the
+    // landlord had explicitly excluded.
+    expect(screen.queryByText(/Bill it back to tenants/)).toBeNull();
+    expect(document.body.textContent).toMatch(/Billing it back isn’t offered here/);
+  });
+
+  it('still says what it does to the return, because that part is the same', async () => {
+    const y = await scratch();
+    await addCamLineItem({ property_id: PROP, year: y, label: 'Owner’s truck', amount: 32000, billable: false, paid_date: `${y}-03-01` });
+
+    withProviders(<CamSection propId={PROP} year={y} expense={{ taxes_total: 0, cam_total: 0, roof_total: 0 }} />);
+    await waitFor(() => expect(screen.getByText('Owner’s truck')).toBeTruthy());
+    fireEvent.click(screen.getByText('⤴ Capitalize'));
+
+    expect(document.body.textContent).toMatch(/no longer deducted all in/);
+    expect(document.body.textContent).toMatch(/\$32,000\.00 stops being a/);
   });
 });
 

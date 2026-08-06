@@ -25,6 +25,7 @@ import { lineCompleteness } from './dispositions';
 import { amortizationFor, canAmortize, assetKindInfo } from './depreciation';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
 import { isoDateOrNull } from './isoDate';
+import { coalesce } from './coalesce';
 
 // An event is "recent" if its date is no more than this many days in the past.
 // Back-dated catch-up only sends a tenant email / notification for recent events;
@@ -3993,7 +3994,19 @@ export async function resyncLeaseBilling(leaseId, propertyId, year) {
 // exist, reusing the per-lease resync so there stays exactly one implementation of the
 // math. Returns { leases, monthsResynced } — how many invoices moved, and how many
 // system-marked months were re-stamped across them.
-export async function resyncPropertyBilling(propertyId, year) {
+// ONE rebuild at a time per property-year, and never more than one queued behind it
+// (2026-08-06). Deleting five expense lines used to fire five of these — five times the
+// wait for the landlord, and five overlapping writers on the same invoice rows, each
+// having read the property's state before the others wrote. The fold is safe because
+// every input below is re-read on each run: a merged run over the final state gives the
+// same answer as five runs over five intermediate ones, and the last request always
+// runs, so the carry-through still fires after the last edit.
+export function resyncPropertyBilling(propertyId, year) {
+  if (!propertyId || !year) return Promise.resolve({ leases: 0, monthsResynced: 0, failed: 0, skipped: 'incomplete' });
+  return coalesce(`billing:${propertyId}:${year}`, () => runPropertyBillingResync(propertyId, year));
+}
+
+async function runPropertyBillingResync(propertyId, year) {
   if (!propertyId || !year) return { leases: 0, monthsResynced: 0, failed: 0, skipped: 'incomplete' };
   const lock = await yearLockState(propertyId, year);
   if (lock !== 'open') return { leases: 0, monthsResynced: 0, failed: 0, skipped: lock };

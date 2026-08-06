@@ -12,6 +12,98 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-06** — **A row goes when you click it, and the app says what capitalizing does**
+  (George: *"deleting things needs to happen faster and explain what capitalizing an expense
+  does"*). Deployed: frontend Cloudflare **`a0ae0c93`**. **No migration, no edge function.**
+  Tests **1965/1965** across 184 files (was 1957; +8, +2 new files).
+
+  ### 1. Deleting
+
+  **What was actually slow, because it was not the database.** Removing one CAM / tax / roof
+  line is a delete, then `syncTotalFor` re-sums the kind, then `resyncPropertyBilling` rebuilds
+  **every invoice on the property** — a billable line is a figure a tenant pays and the stored
+  invoice is a frozen copy (§1). All of that is correct and none of it is optional. The fault
+  was that `remove.mutate` `await`ed the whole chain before `onSuccess` → `invalidate()` ran, so
+  the row sat on screen for ~10-15 sequential round trips with **no spinner and no disabled
+  state**. The click read as ignored, which invites a second click, which is the next paragraph.
+
+  **`useOptimisticRemove` (`src/components/useOptimisticRemove.js`)** — the row leaves the list
+  on `onMutate` and the work carries on behind it. Applied to the six lists that delete a row:
+  `CamSection`, `TaxSection`, `RoofSection`, `EntityLedgerSection`, `OtherIncomeSection`,
+  `AssetRegisterSection`. The last three took an `id` and now take the **row** — the paint needs
+  something to match on.
+
+  **⚠ THE ROLLBACK RE-INSERTS ONE ROW; IT DOES NOT RESTORE THE SNAPSHOT.** The textbook React
+  Query pattern stashes the pre-click list and writes it back on error, and that is wrong the
+  moment two rows go in quick succession: the first mutation's snapshot still contains the
+  second, so one failure **resurrects a cost the landlord had already removed**, in the year's
+  expenses, silently. The context carries `{ removed, index }` and splices it back at its place,
+  skipping if it is already there. Pinned by *"a failure restores its OWN row and not the one
+  deleted after it"*.
+
+  **⚠ AND `onError` INVALIDATES AS WELL AS ROLLING BACK.** These mutation functions delete the
+  row **first** and carry the change through afterwards, so a failure in the carry-through leaves
+  a row that is genuinely gone — a pure rollback would leave a phantom on screen until the
+  landlord navigated away. Roll back for the instant repaint, then let the server settle it.
+
+  **`coalesce` (`src/lib/coalesce.js`) — one rebuild per property-year at a time.** Five ✕
+  clicks used to fire five property-wide rebuilds: five times the wait, and **five overlapping
+  writers on the same invoice rows**, each having read the property's state before the others
+  wrote. `resyncPropertyBilling` is now `coalesce('billing:<prop>:<year>', …)` — the work moved
+  to `runPropertyBillingResync` and every caller (contract path, capitalize, building size,
+  expenses) gets the fold for free.
+
+  The invariant that makes it safe: **any request arriving during a run schedules a fresh run
+  that starts after the current one finishes**, so the carry-through still always happens after
+  the last edit. The fold is legitimate only because every input is **re-read** each run — one
+  merged run over the final state gives the same answer as five over five intermediate ones.
+  ⚠ Never coalesce a job that applies a delta; three "+$100"s folded into one is one +$100.
+  Also: the queued run carries the **newest** job (an older closure would rebuild the year it
+  captured), and a **failed** run does not swallow the request behind it.
+
+  Deliberately **not** debounced. A timer would mean navigating away before it fired left the
+  invoices stale with nothing on any screen saying so — an unfinished chain nobody names.
+
+  ### 2. Capitalizing
+
+  **The explanation used to exist only in the confirm dialog** — i.e. after choosing a kind, a
+  life and an in-service date. The one question a landlord actually has was answered last, once
+  they had already committed to the shape of the answer. Before that, the only prose was a
+  `title=` tooltip: invisible on touch, and it named none of the consequences.
+
+  Now the panel opens with a **"What capitalizing does"** block (`.confirm-imp info`) built from
+  a single `effects` array that the **confirm reads too** — one wording, so the screen cannot
+  promise what the button doesn't do. Every figure is live: change the kind or the life and the
+  depreciation sentence follows. It says the tax consequence (**which nothing in the UI said
+  before**: it stops being a `year` deduction and depreciates at ≈$X/yr for N years), the bill
+  consequence in the direction it cuts, and — the reassurance that was missing — **no money
+  moves either way; this changes how a payment already made is reported.**
+
+  **⚠ A REAL WRONG STATEMENT, FIXED.** `syncCamTotal` filters on `billable` (`api.js:3395`), so
+  a **"not billed to tenants"** CAM line is *not* in `cam_total` and capitalizing it moves
+  nobody's bill by a cent — yet the confirm asserted *"every tenant's pro-rata CAM share is
+  billed less"* on exactly those rows. It now says *"No tenant's bill changes"* and explains why.
+  Roof/tax lines are unaffected: `syncKindTotal` deliberately ignores `billable` (the lease's
+  `roof_responsible` flag has already answered that question), so `notBilled` is scoped to CAM.
+
+  **⚠ AND THE BILL-BACK OPTION IS WITHHELD ON THOSE ROWS.** An amortization row is written
+  through `addExpenseLineItem`, whose `billable` defaults to **true** — so ticking the box on a
+  not-billed line would take a cost the landlord had explicitly excluded and **start charging
+  tenants for it**, a year at a time, with nothing saying it had happened. Withheld with a
+  sentence, not silently ignored.
+
+  **Files:** `src/lib/coalesce.js` (new) · `src/components/useOptimisticRemove.js` (new) ·
+  `src/lib/api.js` (`resyncPropertyBilling` split + coalesced) · `CamSection.js` ·
+  `TaxSection.js` · `RoofSection.js` · `EntityLedgerSection.js` · `OtherIncomeSection.js` ·
+  `AssetRegisterSection.js` · `CapitalizeLineButton.js` · tests
+  `src/lib/__tests__/coalesce.test.js` (new, 8) ·
+  `src/components/__tests__/optimisticRemove.test.js` (new, 4) · `capitalizeUi.test.js` (+4).
+
+  **Not bundled in** (found while tracing, not asked for): `syncCamTotal` still has **no
+  closed-year guard** — it will move `expense_records.cam_total` for a closed year, and it is
+  reached by `CamSection` on every year open, so closing it is George's call rather than a
+  side-effect of a speed change. Still open from the 2026-08-05 audit backlog.
+
 - **2026-08-06** — **Name your own tax category** (George: *"create a way for somebody to create
   a tax category bucket for the expenses page if none of the options match what they want"*).
   Deployed: migration **`0099`**, frontend Cloudflare **`8144c6f8`**. **No edge function.**

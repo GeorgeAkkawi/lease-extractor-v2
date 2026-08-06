@@ -5,6 +5,7 @@ import { INCOME_CATEGORIES, incomeCategoryInfo, incomeCategoryLabel, summarizeOt
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Slice 4c — income the property really received that is not tenant rent.
 //
@@ -47,7 +48,12 @@ export default function OtherIncomeSection({ propId, year }) {
     }),
     onSuccess: () => { setAdding(false); setForm({ category: 'late_fee', amount: '', txn_date: '', label: '', lease_id: '' }); invalidate(); },
   });
-  const remove = useMutation({ mutationFn: (id) => deleteOtherIncomeEntry(id), onSuccess: invalidate });
+  // Takes the ROW, not its id — the optimistic paint needs something to match on.
+  const remove = useOptimisticRemove({
+    queryKey: ['otherIncome', propId, year],
+    mutationFn: (row) => deleteOtherIncomeEntry(row.id),
+    onSuccess: invalidate,
+  });
   const setCat = useMutation({
     mutationFn: ({ id, category }) => setOtherIncomeCategory(id, category),
     onSuccess: () => { setEditCat(null); invalidate(); },
@@ -67,7 +73,7 @@ export default function OtherIncomeSection({ propId, year }) {
       confirmLabel: 'Remove',
       tone: 'danger',
     });
-    if (ok) remove.mutate(row.id);
+    if (ok) remove.mutate(row);
   }
 
   // Every income row carries a category, so unlike an expense bucket there is no
