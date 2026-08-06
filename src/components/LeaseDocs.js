@@ -10,6 +10,7 @@ import { initialFromExtraction } from '../pages/LeaseNewPage';
 import { newLeaseChanges, newLeaseTargets, hasNoChanges } from '../lib/newLeaseTerms';
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { settleBillingChange, settleLeaseScheduleChange } from '../lib/invalidate';
+import { LIVE_QUERY } from '../lib/liveQuery';
 import { useConfirm } from './ConfirmDialog';
 import FileDrop from './FileDrop';
 
@@ -53,11 +54,14 @@ export default function LeaseDocs({ leaseId, leaseText, termLabel = '' }) {
   });
 
   // The same key AddendumEnvelopeRows already uses, so on a lease page that renders both
-  // this is a cache hit rather than a second round trip.
+  // this is a cache hit rather than a second round trip. It therefore takes the SAME
+  // LIVE_QUERY options: two observers on one key with different intervals leave React Query
+  // to pick the lower of the two, which is a refresh rate nobody wrote down.
   const { data: envelopes = [] } = useQuery({
     queryKey: ['envelopes', leaseId],
     queryFn: () => listEnvelopes(leaseId),
     enabled: !!leaseId,
+    ...LIVE_QUERY,
   });
   const executed = envelopes.filter((e) => e.status === 'executed' && e.executed_path);
 

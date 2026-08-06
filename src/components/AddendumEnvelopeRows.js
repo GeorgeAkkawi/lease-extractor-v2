@@ -9,6 +9,7 @@ import {
   envelopeStatus, expiryFromNow, DEFAULT_EXPIRY_DAYS, purposeLabel, deleteSeverity,
   counterparty, isContractEnvelope,
 } from '../lib/envelopes';
+import { LIVE_QUERY } from '../lib/liveQuery';
 import SignaturePad from './SignaturePad';
 import PdfSignCanvas from './PdfSignCanvas';
 import SignSteps from './SignSteps';
@@ -79,10 +80,15 @@ function EnvelopeRows({ anchorId, load, lease, property, corp, extraActions }) {
   // ⚠ ONE KEY FAMILY for both homes — ['envelopes', <lease or contract id>]. settleContractChange
   // and every refresh below invalidate the bare ['envelopes'] prefix, so a contract's strip
   // repaints off the same call that repaints a lease's.
+  //
+  // LIVE_QUERY because this is the one strip whose rows a SOMEONE ELSE moves: every other
+  // refresh here fires off the landlord's own click, but the tenant signing or declining
+  // happens in his browser, and until 2026-08-06 the badge sat on 'Sent' until a hard reload.
   const { data: envelopes = [] } = useQuery({
     queryKey: ['envelopes', anchorId],
     queryFn: load,
     enabled: !!anchorId,
+    ...LIVE_QUERY,
   });
 
   const refresh = () => {

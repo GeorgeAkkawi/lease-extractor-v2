@@ -38,12 +38,14 @@ export const NOTIFY_COLUMNS = [
   },
   {
     key: 'signature',
-    // Both halves of a document that is waiting on the LANDLORD: the tenant has signed and
-    // it needs his countersignature, or it is signed by both and was never applied. An
-    // envelope still out with the tenant raises nothing — he can't act on it — so this
-    // column only ever holds work he can finish.
+    // The whole life of a document once it leaves the landlord's hands. Two of the three are
+    // work waiting on HIM — the tenant has signed and it needs his countersignature, or it is
+    // signed by both and was never applied. The third (0096) is the other side saying no,
+    // which is not work at all but belongs in the same column for the same reason a declined
+    // renewal sits under Renewals: it is the same conversation, ending.
+    // An envelope still OUT with the tenant raises nothing — he can't act on it.
     label: 'Signatures',
-    focuses: ['signature_countersign', 'signature_apply'],
+    focuses: ['signature_countersign', 'signature_apply', 'signature_declined'],
     kinds: [],
   },
   {

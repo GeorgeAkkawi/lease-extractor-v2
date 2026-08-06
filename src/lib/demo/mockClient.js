@@ -1217,7 +1217,10 @@ function demoSignEnvelope(body) {
   }
 
   if (body?.action === 'decline') {
-    Object.assign(env, { status: 'declined', declined_reason: body?.reason || null, updated_at: nowIso });
+    // declined_at mirrors the live function (0096). Without it the demo declines happily and
+    // the dashboard's "Declined" alert prints no date — the half of the pair that would pass
+    // every test while being wrong live.
+    Object.assign(env, { status: 'declined', declined_at: nowIso, declined_reason: body?.reason || null, updated_at: nowIso });
     (db.envelope_events ||= []).push({ id: evtId(), owner_id: DEMO_USER.id, envelope_id: env.id, kind: 'declined', actor: 'tenant', at: nowIso });
     return ok({ ok: true, state: 'declined' });
   }

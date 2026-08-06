@@ -476,17 +476,25 @@ export function buildAlerts(
   }
 
   // ── Documents out for signature ─────────────────────────────────────────────────────
-  // Two states worth raising, and deliberately not a third:
+  // Three states worth raising, and deliberately not a fourth:
   //   • SIGNED — the tenant has done their part and the document is stuck on the landlord.
-  //     This is the only one he can clear in a single click, so it is the one that leads.
+  //     The only one he can clear in a single click.
   //   • EXECUTED but not applied — signed by both and still not pushed into the lease. A
   //     signed extension nobody applied is exactly how a term end goes quietly stale.
-  // Deliberately NOT raised: an envelope merely waiting on the tenant. That is normal for
+  //   • DECLINED (0096) — the other side answered NO. The odd one out: it is not work sitting
+  //     undone, there is nothing here to finish, and that is exactly why it has to be said out
+  //     loud. A refusal used to reach the landlord as one email and a red badge on a page he
+  //     had no reason to open, so the addendum he believed was in flight was dead while the
+  //     dashboard went on saying nothing at all.
+  // Deliberately NOT raised: an envelope merely WAITING on the tenant. That is normal for
   // days at a time, and an alert the landlord can do nothing about is noise. The expiry
-  // shows on the row in the lease card instead.
+  // shows on the row in the lease card instead. A decline is the opposite case — it is the
+  // waiting ending, and ending badly.
   //
-  // Both are standing alerts (no horizonDays) — there is no deadline to count toward, only
-  // work sitting undone, which is exactly what tier 1 is for.
+  // All three are standing alerts (no horizonDays) — there is no deadline to count toward,
+  // only work sitting undone (or a deal that just died), which is exactly what tier 1 is for.
+  // Within that tier alertUrgency sorts by TONE before weight, so danger → warn → info puts
+  // the refusal above the countersign above the unapplied; `days` is only the tie-break.
   //
   // ⚠ AN ENVELOPE NOW HAS TWO KINDS OF HOME (0093): a lease, or a SERVICE CONTRACT sent to a
   // vendor. Both raise the same two alerts, because the landlord owes the same two acts —
@@ -541,6 +549,25 @@ export function buildAlerts(
           action: onContract
             ? 'Open the Contracts tab and read the signed copy — Amlak shows what changes before anything moves.'
             : 'Open the lease to file it against the term, or leave it as a signed record.',
+        });
+      } else if (env.status === 'declined') {
+        // declined_at is null on anything refused before 0096. The date is dropped rather
+        // than guessed off updated_at, exactly as the countersign branch above drops a
+        // missing signed_at — a wrong date on a refusal is worse than no date.
+        const when = env.declined_at ? ` on ${fmtDate(String(env.declined_at).slice(0, 10))}` : '';
+        const why = String(env.declined_reason || '').trim();
+        out.push({
+          ...anchors,
+          focus: 'signature_declined', tone: 'danger', bucketLabel: 'Declined',
+          date: env.declined_at ? String(env.declined_at).slice(0, 10) : null, days: -8,
+          title: `Declined — “${env.title}”`,
+          detail: `${who} declined to sign${when} · ${subject}`,
+          // The reason they typed leads the action line, because it is the thing that decides
+          // what the landlord does next — and it is the one part of this that lives nowhere
+          // else on the dashboard.
+          action: `${why ? `Reason given: “${why}”. ` : 'No reason was given. '}${onContract
+            ? 'Nothing was signed, so the old contract stands — its fee, term and renewal are unchanged and the tenants are still billed off it.'
+            : 'Nothing was signed, so no term on this lease changed. Send a revised copy or take it up with them directly.'}`,
         });
       }
     });

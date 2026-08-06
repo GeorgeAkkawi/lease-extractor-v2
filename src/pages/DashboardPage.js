@@ -6,6 +6,7 @@ import { buildAlerts, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, com
 import { groupFeed, rowSubject } from '../lib/notifyTypes';
 import { resolveLeadDays } from '../lib/notifyPrefs';
 import { useFeatures, isFeatureOn } from '../lib/features';
+import { LIVE_QUERY } from '../lib/liveQuery';
 import { usePageChrome, useChrome } from '../context/ChromeContext';
 import { money, fmtDate } from '../lib/format';
 import NotificationEmailModal from '../components/NotificationEmailModal';
@@ -72,13 +73,18 @@ export default function DashboardPage() {
       const [data, states] = await Promise.all([fetchAlertData({ leadDays, ledgerOn, esignOn }), listAlertStates()]);
       return buildAlerts(data, toAlertStates(states), new Date(), { features: enabledFeatures, hiddenWidgets: hidden, leadDays });
     },
-    refetchInterval: 60_000,
+    // The three feeds below all take LIVE_QUERY — same 60s interval they have always run at,
+    // plus the refetch-on-focus they lacked. A tenant signs, the landlord reads the email and
+    // clicks back to Amlak: without it he waited out the rest of the minute in front of a
+    // feed that already knew better. (staleTime is 5min globally, which is why LIVE_QUERY
+    // says 'always' rather than true — see liveQuery.js.)
+    ...LIVE_QUERY,
   });
-  const { data: notifications = [] } = useQuery({ queryKey: ['notifications'], queryFn: listNotifications, refetchInterval: 60_000 });
+  const { data: notifications = [] } = useQuery({ queryKey: ['notifications'], queryFn: listNotifications, ...LIVE_QUERY });
   // The same server-synced dismiss/snooze store buildAlerts filters against, read here on
   // its own so a STORED notification can be snoozed too — a notification is a row, not a
   // computed alert, so "remind me next week" has nowhere else to live.
-  const { data: stateRows = [] } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates, refetchInterval: 60_000 });
+  const { data: stateRows = [] } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates, ...LIVE_QUERY });
   const notifStates = toAlertStates(stateRows);
 
   // Hold the page until the portfolio data is in, so the metrics/tables appear

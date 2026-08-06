@@ -212,8 +212,14 @@ Deno.serve(async (req) => {
     // DECLINE — a real answer, recorded as one. Nothing is applied.
     // =====================================================================
     if (action === 'decline') {
+      // declined_at (0096) is the sibling of signed_at / executed_at, and the dashboard's
+      // "Declined" alert reads it for the WHEN. Stored, never inferred off updated_at.
       await admin.from('signature_envelopes')
-        .update({ status: 'declined', declined_reason: reason ? String(reason).slice(0, 2000) : null })
+        .update({
+          status: 'declined',
+          declined_at: new Date().toISOString(),
+          declined_reason: reason ? String(reason).slice(0, 2000) : null,
+        })
         .eq('id', env.id);
       await logEvent('declined', reason ? { reason: String(reason).slice(0, 500) } : undefined);
       await notifyLandlord(replyTo, businessName, `${signer.name} declined to sign`,

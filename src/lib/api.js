@@ -4541,10 +4541,16 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true, esignOn
   };
 }
 
-// Envelopes the LANDLORD still owes something on, portfolio-wide, with the tenant signer's
-// name stitched in. Two queries rather than a nested select for the same reason listEnvelopes
-// uses two — postgrest's embedded-resource syntax is not implemented by the demo mock, so a
-// nested select would pass every test and return undefined live.
+// Envelopes the dashboard has something to say about, portfolio-wide, with the tenant
+// signer's name stitched in. Two queries rather than a nested select for the same reason
+// listEnvelopes uses two — postgrest's embedded-resource syntax is not implemented by the
+// demo mock, so a nested select would pass every test and return undefined live.
+//
+// THREE statuses, and the third is not work the landlord owes. `signed` and `executed` are
+// both "finish this"; `declined` (0096) is the opposite — the other side answered NO and
+// there is nothing on the screen to finish. It rides along anyway because it arrives the
+// same way, through the one endpoint a non-landlord can reach, and a refusal nobody notices
+// is a deal the landlord still thinks is in flight.
 async function fetchOpenEnvelopes() {
   try {
     const envs = await rows(
@@ -4552,8 +4558,8 @@ async function fetchOpenEnvelopes() {
         // contract_id (0093) is what lets the alert say "vendor" instead of "tenant", anchor
         // its dismissal key to the contract, and land on the Contracts tab instead of a
         // lease page that does not exist for it.
-        .select('id,lease_id,contract_id,property_id,title,status,signed_at,executed_at,applied_at,purpose')
-        .in('status', ['signed', 'executed'])
+        .select('id,lease_id,contract_id,property_id,title,status,signed_at,executed_at,applied_at,declined_at,declined_reason,purpose')
+        .in('status', ['signed', 'executed', 'declined'])
     );
     if (!envs?.length) return [];
     const signers = await rows(

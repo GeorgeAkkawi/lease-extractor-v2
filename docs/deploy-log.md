@@ -12,6 +12,109 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-06** — **The app now notices when the tenant answers** (George: *"does the user have
+  to hard reload the page to see if the tenant has responded… i want the app to start
+  automatically reloading when small things like that happen. not necessarily for updates that i
+  make but for updates that are important like those email responses"*). Deployed: migration
+  **`0096`** + edge function **`sign-envelope`**, frontend Cloudflare **`9bf52675`**, demo worker
+  **`d00f6be8`**. Tests **1898/1898** across 180 files (was 1892; +6 decline cases).
+
+  **The measurement first, because half the answer was "no".** `sign-envelope` is the only way a
+  non-landlord party writes to this database — the one `verify_jwt = false` endpoint — so `view`,
+  `sign` and `decline` are the entire universe of "a tenant responded". Of the three surfaces
+  that render the result:
+
+  | Surface | Refreshed itself? |
+  |---|---|
+  | Dashboard feed (`['alerts']`, `['notifications']`, `['alertStates']`) | **yes** — `refetchInterval: 60_000` since it was built |
+  | "Out for signature" strip (`['envelopes', anchorId]`, lease **and** contracts tab) | **no** |
+  | Executed-documents list (`LeaseDocs.js`) | **no** |
+
+  So a tenant signing while the landlord sat on the lease page moved nothing until a hard reload:
+  the strip has no interval, there is no realtime anywhere in `src/`, and the client default is
+  `refetchOnWindowFocus: false` with `staleTime` 5min / `gcTime` Infinity — the exact
+  never-refetches shape `invalidate.js:88` already documents for `sidebarLeases`.
+
+  **`src/lib/liveQuery.js` (new) — `LIVE_QUERY`, one named option set, four call sites.** A named
+  export rather than a literal per site, for the same reason `invalidate.js` exists: four
+  hand-rolled `refetchInterval`s drift by omission and the stale one is the one nobody watches.
+  Applied to `['envelopes', anchorId]` (`AddendumEnvelopeRows.js` — **one edit covers both homes**,
+  lease strip and contracts tab), `['envelopes', leaseId]` (`LeaseDocs.js`, same key family), and
+  the three dashboard feeds (`DashboardPage.js`), which keep their 60s and **gain** the focus
+  refetch they lacked.
+
+  **⚠ `refetchOnWindowFocus: 'always'`, NOT `true`** — and this is the whole difference between
+  the feature working and looking like it works. `true` still respects `staleTime`, which is five
+  minutes globally, so reading the tenant's email and clicking straight back to the tab would
+  refetch **nothing** — precisely the flow George described. `'always'` ignores `staleTime`, and
+  only for the queries that opt in: the global default stays `false`, so every other page keeps
+  its warm cache and `prefetch.js` keeps its `staleTime`-based hover dedupe. Second choice:
+  `refetchIntervalInBackground` left at its default `false`, so the timer **pauses** while the
+  window is blurred — nothing polls while he is away, one refetch the moment he returns, then
+  every 60s while he is actually looking.
+
+  **⚠ AND POLLING WOULD NOT HAVE HELPED WITH A DECLINE, AT ANY RATE.** `buildAlerts` raised
+  nothing for a refused envelope: 0085 deliberately skipped one "merely waiting on the tenant"
+  and the refusal fell through the same gap. A tenant saying **no** reached the landlord as one
+  Resend email and a red badge on a page he had no reason to open — so the addendum he believed
+  was in flight was dead while the dashboard went on saying nothing. Now a third branch in the
+  same `esignOn` block:
+
+  - **`0096`** adds `signature_envelopes.declined_at` — the sibling of `signed_at` /
+    `executed_at` / `applied_at` the table never had. `declined_reason` recorded *why* with
+    nothing recording *when*. **Stored, never inferred:** `updated_at` holds the right instant
+    today only because a declined envelope is terminal, which is exactly the accident
+    `payments.source` (0088) exists to refuse. Null on anything declined earlier; the alert drops
+    the date rather than guessing, so **no back-fill**.
+  - `sign-envelope` writes it, and **`mockClient.js:1220` mirrors it in the same commit** — the
+    demo's decline path already existed, and without the mirror the demo would decline happily
+    while printing no date, the half that passes every test and is wrong live.
+  - `fetchOpenEnvelopes` (`api.js`) now selects `declined` alongside `signed`/`executed`, plus
+    `declined_at,declined_reason`. Its name is now half a lie and the comment says so: the third
+    status is **not** work the landlord owes, which is the point.
+  - **`tone: 'danger'`, `days: -8`, no `horizonDays`.** Standing tier — and `alertUrgency` sorts
+    tier 1 by **tone before weight**, so danger → warn → info puts the refusal above the
+    countersign above the unapplied. `days` is only the tie-break. Pinned by a test that asserts
+    the three come back in exactly that order.
+  - The reason they typed leads the **action** line, not the detail: it is the thing that decides
+    what he does next and it lives nowhere else on the dashboard. On a contract the wording is a
+    money statement — nothing was signed, so the old fee, term and renewal stand and the tenants
+    are still billed off them.
+
+  **The registry checklist (CLAUDE.md §4), including the four entries that needed nothing.**
+  `notifyTypes.js` gained `'signature_declined'` in the Signatures column — **not optional**, the
+  suite regex-scans `alerts.js` for every `focus:` and reds on an unmapped one. `alertKey` needed
+  no change (`envelope_id` has led the anchor chain since 0093, so two refusals get two dismissal
+  keys); `goToAlert` needed none (the `contract_id && !lease_id` branch already routes a vendor
+  refusal to the Contracts tab, a tenant's to the lease page); `alertCanEmail` **deliberately**
+  falls through to `false` like its two siblings — a refusal wants a phone call, not a form letter,
+  and `draftAlertEmail` has no template that would be honest; and no `NOTIFY_TYPES` lead, no
+  `send-reminders` sweep, no `*_notice_bucket`, no `features.js` key and **no backfill migration**,
+  because it lives inside the existing `esign` gate rather than adding one (the trap that shipped
+  `announcements` invisible only bites a *new* `FEATURES` key).
+
+  - **Files:** `src/lib/liveQuery.js` (new), `src/components/AddendumEnvelopeRows.js`,
+    `src/components/LeaseDocs.js`, `src/pages/DashboardPage.js`, `src/lib/alerts.js`,
+    `src/lib/notifyTypes.js`, `src/lib/api.js`, `src/lib/demo/mockClient.js`,
+    `src/lib/__tests__/signatureAlerts.test.js`,
+    `supabase/migrations/0096_envelope_declined_at.sql`,
+    `supabase/functions/sign-envelope/index.ts`.
+  - **Verified:** unit **1898/1898** (`vitest run`, 180 files); `npm run build` compiles; migration
+    applied clean and **read back live** — `select=id,declined_at,declined_reason` returns 200
+    against `signature_envelopes` where a fabricated column 400s with `42703`, so the column is
+    really there and not merely in the migrations table. Both workers deployed.
+  - **⚠ Not verified in a browser.** The decline chain is covered end to end through the real mock
+    (`fetchAlertData` → `buildAlerts` → `columnForRow`), but `LIVE_QUERY` is React Query
+    configuration and no test observes a refetch actually firing. The build catches the import;
+    the 60s tick and the focus refetch are unproven outside reasoning about the library's
+    contract. **To see it in the demo:** open `/sign/env-3`, decline it, and the strip and the
+    dashboard should both move without a reload.
+  - **Flagged, not bundled:** an envelope still **waiting** on the tenant still raises nothing
+    (deliberate, unchanged). A tenant merely **viewing** the document writes an `envelope_events`
+    row (throttled to 1/5min) that surfaces nowhere — it is the earliest "they responded" signal
+    available and is one line on the strip's row away from being usable. And the rest of the app
+    keeps `refetchOnWindowFocus: false`; only these four queries opt in.
+
 - **2026-08-05** — **Whole-codebase security review, and the cross-tenant defects it found**
   (George: *"i kind of want to security review everything"*). Deployed: migration **`0095`** +
   edge function **`send-for-signature`**. **No frontend change, so no Cloudflare deploy** —
