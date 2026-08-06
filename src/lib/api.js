@@ -2297,9 +2297,9 @@ export async function deleteServiceContract(id, { today = new Date() } = {}) {
   await deleteDocumentsFor('service_contract', id, [c?.storage_path]);
   await rows(supabase.from('service_contracts').delete().eq('id', id));
   const carried = c?.property_id
-    ? await carryContractChange(c.property_id, Number(localDateIso(today).slice(0, 4)))
+    ? await carryContractChange(c.property_id, await contractCarryYears(c.property_id, today))
     : { synced: false, resynced: false, leasesResynced: 0 };
-  return { propertyId: c?.property_id || null, ...carried };
+  return { propertyId: c?.property_id || null, year: Number(localDateIso(today).slice(0, 4)), ...carried };
 }
 
 /**
@@ -2317,15 +2317,61 @@ export async function deleteServiceContract(id, { today = new Date() } = {}) {
  * paying it (settling at ⚖ Reconcile), while a tenant without one is billed the new actual
  * now. resyncPropertyBilling skips a CLOSED year outright, so a bill already sent never moves.
  */
-async function carryContractChange(propertyId, year) {
-  const sync = await syncContractCamItems(propertyId, year);
-  if (!sync.changed) return { synced: false, resynced: false, leasesResynced: 0 };
-  const res = await resyncPropertyBilling(propertyId, year);
+/**
+ * EVERY fiscal year a contract change can reach — not just the one we happen to be standing in.
+ *
+ * A service contract is a multi-year thing: `contractCoversYear` (contracts.js) is inclusive of
+ * both end years, so one edited in January 2026 routinely also prices FY2025. Carrying only
+ * today's year left that year's cam_total, every tenant's share of it and every stored invoice
+ * on it describing a contract that no longer exists at that figure.
+ *
+ * Bounded by DATA, not by a guessed window: the years the property actually has an
+ * expense_records row for, plus the current one. That is exactly the set where a CAM total
+ * exists to be wrong. syncContractCamItems already asks contractCoversYear per contract per
+ * year, so a year no contract touches costs one no-op read and changes nothing.
+ */
+async function contractCarryYears(propertyId, today = new Date()) {
+  const cur = Number(localDateIso(today).slice(0, 4));
+  const recs = await rows(
+    supabase.from('expense_records').select('year').eq('property_id', propertyId)
+  ).catch(() => []);
+  return [...new Set([cur, ...(recs || []).map((r) => Number(r.year)).filter(Boolean)])].sort((a, b) => a - b);
+}
+
+async function carryContractChange(propertyId, years) {
+  const list = [...new Set((Array.isArray(years) ? years : [years]).map(Number).filter(Boolean))].sort((a, b) => a - b);
+  const syncedYears = [];   // the CAM line item genuinely moved
+  const rebuiltYears = [];  // …and the bills on it were rebuilt too
+  const heldYears = [];     // { year, reason } — CAM moved, bills deliberately left alone
+  let leasesResynced = 0;
+  let failed = 0;
+  for (const y of list) {
+    // ⚠ THE CLOSED-YEAR LINE IS DRAWN AT THE BILL, NOT THE CAM ITEM, and that is deliberate:
+    // the cam_line_items row is a derivation of live contract data and self-heals, while the
+    // stored invoice is a frozen copy of a bill already sent. resyncPropertyBilling makes that
+    // call itself, so this loop must NOT pre-empt it — pinned by contractCarryThrough.test.js.
+    // (That leaves expense_records.cam_total free to move under a closed year's snapshot,
+    // which is a real hole — but it is syncCamTotal's, reached by CamSection on every year
+    // open too, so it is not this function's to close unilaterally.)
+    const sync = await syncContractCamItems(propertyId, y);
+    if (!sync.changed) continue;
+    syncedYears.push(y);
+    const res = await resyncPropertyBilling(propertyId, y);
+    if (res?.skipped) { heldYears.push({ year: y, reason: res.skipped }); continue; }
+    rebuiltYears.push(y);
+    leasesResynced += Number(res?.leases) || 0;
+    failed += Number(res?.failed) || 0;
+  }
   return {
-    synced: true,
-    resynced: !res?.skipped,
-    leasesResynced: Number(res?.leases) || 0,
-    closedYear: res?.skipped === 'closed',
+    synced: syncedYears.length > 0,
+    resynced: rebuiltYears.length > 0,
+    leasesResynced,
+    failed,
+    syncedYears,
+    rebuiltYears,
+    closedYears: heldYears.map((h) => h.year),
+    lockUnknown: heldYears.some((h) => h.reason === 'unknown'),
+    closedYear: heldYears.length > 0,
   };
 }
 
@@ -2504,7 +2550,9 @@ export async function createServiceContractFromDocument({
   const stepCount = steps.length ? await replaceContractEscalations(created.id, steps) : 0;
 
   const year = Number(localDateIso(today).slice(0, 4));
-  const carried = propertyId ? await carryContractChange(propertyId, year) : { synced: false, resynced: false, leasesResynced: 0 };
+  const carried = propertyId
+    ? await carryContractChange(propertyId, await contractCarryYears(propertyId, today))
+    : { synced: false, resynced: false, leasesResynced: 0 };
   return { contract: created, feeSteps: stepCount, propertyId, year, ...carried };
 }
 
@@ -2585,7 +2633,7 @@ export async function applyNewContractTerms({
   // fee change, a term change and a new fee schedule together rather than firing per effect.
   const year = Number(localDateIso(today).slice(0, 4));
   const carried = (changes?.touchesBilling || stepCount || (built.steps || []).length) && contract.property_id
-    ? await carryContractChange(contract.property_id, year)
+    ? await carryContractChange(contract.property_id, await contractCarryYears(contract.property_id, today))
     : { synced: false, resynced: false, leasesResynced: 0 };
 
   return {
@@ -3845,10 +3893,28 @@ export async function resyncYearBillingToEstimate(leaseId, propertyId, year) {
 // A year is "closed" once it has a financial_snapshots row — what closeYear writes
 // and reopenYear removes. The snapshot itself is immutable either way, so this isn't
 // about protecting History; it's about not rewriting a bill that was already sent.
+//
+// THREE states, not two. This used to swallow the read error (`.catch(() => [])`) and
+// answer "not closed", so a transport blip, an RLS hiccup or a timeout read as PERMISSION
+// TO REWRITE — the resync would rebuild a closed year's invoice and re-stamp its
+// system-marked payments. For a lock, "I could not tell" must fail toward locked.
+//
+// It stays a separate state from 'closed' because the two need different words: telling the
+// landlord "FY 2025 is closed" when it is not sends them to reopen a year that was never
+// shut, and the real fault (the read failed) never surfaces.
+export async function yearLockState(propertyId, year) {
+  if (!propertyId || !year) return 'open';
+  try {
+    const snaps = await listSnapshots(propertyId);
+    return (snaps || []).some((s) => Number(s.year) === Number(year)) ? 'closed' : 'open';
+  } catch {
+    return 'unknown';
+  }
+}
+
+// The boolean the simple guards want: anything that is not provably OPEN blocks the write.
 export async function isYearClosed(propertyId, year) {
-  if (!propertyId || !year) return false;
-  const snaps = await listSnapshots(propertyId).catch(() => []);
-  return (snaps || []).some((s) => Number(s.year) === Number(year));
+  return (await yearLockState(propertyId, year)) !== 'open';
 }
 
 // ---- Automatic follow-through -----------------------------------------------
@@ -3865,7 +3931,8 @@ export async function isYearClosed(propertyId, year) {
 // should not move underneath them.
 export async function resyncLeaseBilling(leaseId, propertyId, year) {
   if (!leaseId || !propertyId || !year) return { invoice: null, monthsResynced: 0, skipped: 'incomplete' };
-  if (await isYearClosed(propertyId, year)) return { invoice: null, monthsResynced: 0, skipped: 'closed' };
+  const lock = await yearLockState(propertyId, year);
+  if (lock !== 'open') return { invoice: null, monthsResynced: 0, skipped: lock };
   return resyncYearBillingToEstimate(leaseId, propertyId, year);
 }
 
@@ -3876,8 +3943,9 @@ export async function resyncLeaseBilling(leaseId, propertyId, year) {
 // math. Returns { leases, monthsResynced } — how many invoices moved, and how many
 // system-marked months were re-stamped across them.
 export async function resyncPropertyBilling(propertyId, year) {
-  if (!propertyId || !year) return { leases: 0, monthsResynced: 0, skipped: 'incomplete' };
-  if (await isYearClosed(propertyId, year)) return { leases: 0, monthsResynced: 0, skipped: 'closed' };
+  if (!propertyId || !year) return { leases: 0, monthsResynced: 0, failed: 0, skipped: 'incomplete' };
+  const lock = await yearLockState(propertyId, year);
+  if (lock !== 'open') return { leases: 0, monthsResynced: 0, failed: 0, skipped: lock };
   const invoices = await rows(
     supabase
       .from('invoices')
@@ -3887,12 +3955,43 @@ export async function resyncPropertyBilling(propertyId, year) {
       .neq('status', 'void')
   );
   const leaseIds = [...new Set((invoices || []).filter(isAnnualInvoice).map((i) => i.lease_id).filter(Boolean))];
-  const results = await Promise.all(
-    leaseIds.map((id) => resyncYearBillingToEstimate(id, propertyId, year).catch(() => null))
+  // ⚠ A FAILURE HERE IS NOT NOTHING, AND IT USED TO LOOK LIKE NOTHING. This fanned out with a
+  // bare `.catch(() => null)`, so a lease that threw simply dropped out of the count and the
+  // caller was told it succeeded. That is at its worst on the contract path, where the ORDER
+  // IS FORCED: syncContractCamItems has already moved expense_records.cam_total by the time
+  // this runs. A partial failure therefore leaves the property's CAM total updated, some
+  // invoices rebuilt against the new figure and the rest still carrying the old one — a
+  // silent, permanent split that nothing on any screen would ever mention.
+  const settled = await Promise.all(
+    leaseIds.map((id) =>
+      resyncYearBillingToEstimate(id, propertyId, year)
+        .then((r) => ({ ok: true, r, id }))
+        .catch((e) => ({ ok: false, id, message: e?.message || String(e) }))
+    )
   );
+  const done = settled.filter((s) => s.ok);
+  const failures = settled.filter((s) => !s.ok);
+  // Leave something DURABLE behind. The return value below is honest, but a caller that
+  // ignores it (several do) would bury this again — and a stale invoice is invisible by
+  // nature. The property History is where someone looking for "why is this tenant's bill
+  // wrong" will actually be.
+  if (failures.length) {
+    await logHistoryEvent({
+      property_id: propertyId,
+      type: 'billing_rebuilt',
+      description:
+        `${failures.length} of ${leaseIds.length} bills for ${year} could NOT be rebuilt after a ` +
+        `property figure changed — those tenants are still billed the old amount. Reopen the ` +
+        `year's Expenses and save again, or use Rebuild on the Ledger row.`,
+      event_date: localDateIso(),
+      meta: { year: Number(year), failed: failures.length, lease_ids: failures.map((f) => f.id), errors: failures.map((f) => f.message).slice(0, 5) },
+    });
+  }
   return {
-    leases: results.filter((r) => r?.invoice).length,
-    monthsResynced: results.reduce((s, r) => s + (r?.monthsResynced || 0), 0),
+    leases: done.filter((s) => s.r?.invoice).length,
+    monthsResynced: done.reduce((s, x) => s + (x.r?.monthsResynced || 0), 0),
+    failed: failures.length,
+    failedLeaseIds: failures.map((f) => f.id),
   };
 }
 
@@ -3963,8 +4062,14 @@ export async function addAdjustment({ leaseId, propertyId, year, month, kind, am
     return { refused: true, reason: 'zero', message: 'Enter an amount.' };
   }
   // A closed year is a bill already sent — the same refusal resyncLeaseBilling makes.
-  if (await isYearClosed(propertyId, y)) {
+  const lock = await yearLockState(propertyId, y);
+  if (lock === 'closed') {
     return { refused: true, reason: 'closed', message: `FY ${y} is closed. Reopen it first, or record the correction in an open year.` };
+  }
+  // Not the same thing, and it must not be worded as though it were: sending the landlord to
+  // reopen a year that was never shut hides the real fault, which is that the check failed.
+  if (lock === 'unknown') {
+    return { refused: true, reason: 'lock_unknown', message: `Couldn’t check whether FY ${y} is closed, so nothing was changed. Check your connection and try again.` };
   }
   const { schedule, billed, share } = await scheduledOwedFor(leaseId, y);
   // ⚠ A GROSS lease has no separate CAM to correct: the flat rent already CONTAINS taxes
@@ -6150,7 +6255,8 @@ export async function setAssetAmortization(assetId, into, propertyId, year) {
 // is what stops that re-summing a hand-typed roof total down to the amortized figure.
 export async function syncAmortizationItems(propertyId, year) {
   const y = Number(year);
-  if (await isYearClosed(propertyId, y)) return { changed: false, skipped: 'closed' };
+  const lock = await yearLockState(propertyId, y);
+  if (lock !== 'open') return { changed: false, skipped: lock };
 
   const [assets, derived] = await Promise.all([
     listFixedAssets(propertyId),
@@ -6241,8 +6347,9 @@ export async function capitalizeExpenseLine(itemId, fields = {}) {
 
   const propertyId = item.property_id;
   const year = Number(item.year);
-  if (await isYearClosed(propertyId, year)) {
-    return { skipped: 'closed', asset: null };
+  const lock = await yearLockState(propertyId, year);
+  if (lock !== 'open') {
+    return { skipped: lock, asset: null };
   }
 
   const placed = fields.placed_in_service || item.paid_date || null;

@@ -10,6 +10,46 @@ import { contractAnnualCost } from '../lib/contracts';
 import { stripVerdicts, mismatchPhrase } from '../lib/analystBrief';
 import { settleBillingChange, settleContractChange } from '../lib/invalidate';
 
+// "2025", "2025 and 2026", "2024, 2025 and 2026" — a contract change reaches every fiscal
+// year it covers, not just the one on screen, so these notes have to be able to name several.
+const listYears = (ys) => {
+  const a = (ys || []).map(Number).filter(Boolean).sort((x, y) => x - y);
+  if (!a.length) return '';
+  if (a.length === 1) return String(a[0]);
+  return `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`;
+};
+
+// What the contract carry-through actually did, in the landlord's terms. Written ONCE and
+// rendered by both result panels (the read-the-document flow and the save-terms flow) — they
+// had two identical copies of this paragraph, which is how one of them would have kept saying
+// "for 2026" after the carry-through learned to reach 2025 as well.
+function CarryThroughNote({ applied }) {
+  if (!applied) return null;
+  const closed = applied.closedYears || [];
+  return (
+    <p className="muted" style={{ fontSize: 12.5 }}>
+      {!applied.synced && 'The CAM line item was already at this figure, so nothing needed rebuilding. '}
+      {closed.length > 0 &&
+        `${listYears(closed)} ${closed.length === 1 ? 'is closed, so its bills were' : 'are closed, so their bills were'} left exactly as they were. `}
+      {applied.lockUnknown &&
+        'One year couldn’t be checked for a closed snapshot, so it was left untouched — try again once you’re back online. '}
+      {applied.resynced && (
+        <><strong>{applied.leasesResynced} tenant{applied.leasesResynced === 1 ? '’s bill' : 's’ bills'}</strong>{' '}
+        for {listYears(applied.rebuiltYears)} were rebuilt from the new CAM total. Tenants on a CAM &amp; tax
+        estimate were not touched — they settle the difference at ⚖ Reconcile. </>
+      )}
+      {applied.failed > 0 && (
+        <strong className="note-msg warn" style={{ display: 'inline' }}>
+          {applied.failed} bill{applied.failed === 1 ? '' : 's'} could NOT be rebuilt and{' '}
+          {applied.failed === 1 ? 'is' : 'are'} still billed the old CAM figure — the property’s
+          History names them; use Rebuild on the Ledger row.{' '}
+        </strong>
+      )}
+      It is recorded in the property’s history, with every figure’s old and new value.
+    </p>
+  );
+}
+
 // Uploading a contract document over a contract that already exists — the contracts-tab
 // twin of LeaseDocs' "Upload new lease", and it exists for the same reason. George,
 // 2026-08-05: *"we need to add the same system to the contracts tab."*
@@ -221,16 +261,7 @@ function NewContractModal({ contract, file, onClose, onDone }) {
                 {' '}{applied?.fields || 0} figure{applied?.fields === 1 ? '' : 's'} updated,
                 {' '}{applied?.feeSteps || 0} dated fee step{applied?.feeSteps === 1 ? '' : 's'} on file.
               </p>
-              <p className="muted" style={{ fontSize: 12.5 }}>
-                {!applied?.synced && 'The CAM line item was already at this figure, so nothing needed rebuilding. '}
-                {applied?.closedYear && `${applied.year} is closed, so its bills were left exactly as they were. `}
-                {applied?.resynced && (
-                  <><strong>{applied.leasesResynced} tenant{applied.leasesResynced === 1 ? '’s bill' : 's’ bills'}</strong>{' '}
-                  for {applied.year} were rebuilt from the new CAM total. Tenants on a CAM &amp; tax
-                  estimate were not touched — they settle the difference at ⚖ Reconcile. </>
-                )}
-                It is recorded in the property’s history, with every figure’s old and new value.
-              </p>
+              <CarryThroughNote applied={applied} />
               <div className="row" style={{ marginTop: 14 }}>
                 <button type="button" onClick={onClose}>Done</button>
               </div>
@@ -449,16 +480,7 @@ export function SignedContractModal({ contract, envelope, onClose, onDone }) {
                     {' '}{applied?.feeSteps || 0} dated fee step{applied?.feeSteps === 1 ? '' : 's'} on file.</>}
               </p>
               {!applied?.filedOnly && (
-                <p className="muted" style={{ fontSize: 12.5 }}>
-                  {!applied?.synced && 'The CAM line item was already at this figure, so nothing needed rebuilding. '}
-                  {applied?.closedYear && `${applied.year} is closed, so its bills were left exactly as they were. `}
-                  {applied?.resynced && (
-                    <><strong>{applied.leasesResynced} tenant{applied.leasesResynced === 1 ? '’s bill' : 's’ bills'}</strong>{' '}
-                    for {applied.year} were rebuilt from the new CAM total. Tenants on a CAM &amp; tax
-                    estimate were not touched — they settle the difference at ⚖ Reconcile. </>
-                  )}
-                  It is recorded in the property’s history, with every figure’s old and new value.
-                </p>
+                <CarryThroughNote applied={applied} />
               )}
               <div className="row" style={{ marginTop: 14 }}>
                 <button type="button" onClick={onClose}>Done</button>

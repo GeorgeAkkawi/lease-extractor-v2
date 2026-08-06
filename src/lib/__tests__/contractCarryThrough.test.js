@@ -208,6 +208,40 @@ describe('a closed year is left exactly as it was', () => {
   });
 });
 
+describe('a contract change reaches EVERY fiscal year it covers, not just today’s', () => {
+  it('carries the prior year too — its cam_total and bills are not left describing the old fee', async () => {
+    // Oak Center holds expense_records for Y and Y-1 (store.js exp-3 / exp-4), and svc-2
+    // (monthly, +3%/yr, started Y-1) covers both. Give Y-1 a bill to be wrong.
+    const prior = Y - 1;
+    await ensureInvoice('lease-3', PROP, prior);
+    const camBefore = Number((await getExpenseRecord(PROP, prior))?.cam_total) || 0;
+
+    // A fee step dated in Y-1 moves that year's CAM — and ONLY a multi-year carry sees it.
+    const res = await applyNewContractTerms({
+      contractId: 'svc-2',
+      changes: { fields: [], touchesBilling: false },
+      plan: { steps: [{ effective_date: `${prior}-01-01`, new_amount: 3000, escalation_type: 'manual', escalation_value: null, source: 'contract', note: null }] },
+    });
+
+    expect(res.syncedYears).toContain(prior);
+    expect(res.rebuiltYears).toContain(prior);
+    const camAfter = Number((await getExpenseRecord(PROP, prior))?.cam_total) || 0;
+    expect(camAfter).not.toBeCloseTo(camBefore, 2);
+  });
+
+  it('reports the years it touched, so the screen can name them', async () => {
+    const res = await applyNewContractTerms({
+      contractId: 'svc-2',
+      changes: { fields: [], touchesBilling: false },
+      plan: { steps: [{ effective_date: `${Y - 1}-01-01`, new_amount: 4100, escalation_type: 'manual', escalation_value: null, source: 'contract', note: null }] },
+    });
+    // Every year named is one the property actually holds an expense record for.
+    expect(res.syncedYears.length).toBeGreaterThan(0);
+    expect(res.syncedYears.every((y) => [Y, Y - 1].includes(y))).toBe(true);
+    expect(res.failed).toBe(0);
+  });
+});
+
 describe('deleting a contract carries through too', () => {
   it('re-sums cam_total instead of leaving the fee in the property’s CAM', async () => {
     // A different, un-closed year so the delete has somewhere to land.

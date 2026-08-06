@@ -12,6 +12,88 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-06** — **Four more from the audit: a lock that failed open, a fan-out that swallowed
+  its failures, a carry-through that only saw this year, and a roof line that ignored the flag.**
+  Round two of the accounting audit, the set George picked to act on. Deployed: frontend
+  Cloudflare **`c2968259`**, edge function **`draft-invoice`**. **No migration.** Tests
+  **1931/1931** across 182 files (was 1929; +2).
+
+  **1 · `isYearClosed` failed OPEN.** `listSnapshots(propertyId).catch(() => [])` (`api.js:3850`)
+  turned any transport blip, RLS hiccup or timeout into the answer *"not closed"* — i.e. into
+  **permission to rewrite**, so a resync would rebuild a closed year's invoice and re-stamp its
+  system-marked payments. For a lock, "I could not tell" has to fail toward locked.
+
+  Now **three states**, not two: new `yearLockState()` returns `'open' | 'closed' | 'unknown'`,
+  and `isYearClosed` is `state !== 'open'`. `'unknown'` is kept distinct from `'closed'` on
+  purpose — telling the landlord *"FY 2025 is closed"* when it is not sends them to reopen a
+  year that was never shut, and buries the real fault. All five guards moved over
+  (`resyncLeaseBilling`, `resyncPropertyBilling`, `addAdjustment`, `syncAmortizationItems`,
+  `capitalizeExpenseLine`); the two that speak to the user get their own wording, and
+  `addAdjustment` gains `reason: 'lock_unknown'`.
+
+  **2 · `resyncPropertyBilling` swallowed every per-lease failure.** `.catch(() => null)` in the
+  `Promise.all` fan-out (`:3891`) meant a lease that threw just dropped out of the count and the
+  caller was told it succeeded. Worst on the contract path, where **the order is forced**:
+  `syncContractCamItems` has already moved `cam_total` by then, so a partial failure leaves the
+  property's CAM updated, some invoices rebuilt against the new figure and the rest still on the
+  old — a silent, permanent split.
+
+  It now returns `failed` + `failedLeaseIds`, **and writes a `billing_rebuilt` history event
+  naming them** — because the return value alone would bury it again (several callers ignore it)
+  and a stale invoice is invisible by nature. History is where someone asking "why is this
+  tenant's bill wrong" will actually be. No new registry entries needed: `billing_rebuilt` is
+  already in `EVENT_LABEL`, `EVENT_BADGE` and `STORY_EVENTS` (CLAUDE.md §4).
+
+  **3 · `carryContractChange` only ever carried TODAY's calendar year.** All three call sites
+  passed `Number(localDateIso(today).slice(0, 4))`, but `contractCoversYear` is inclusive of both
+  end years — so a contract edited in January 2026 routinely also prices FY2025, and that year's
+  `cam_total`, every tenant's share of it and every stored invoice on it were left describing a
+  fee that no longer existed. It now takes a **list** of years from `contractCarryYears()`,
+  bounded by **data rather than a guessed window**: the years the property actually holds an
+  `expense_records` row for, plus the current one — exactly the set where a CAM total exists to
+  be wrong. A year no contract touches costs one no-op read.
+
+  ⚠ **One thing deliberately NOT changed, after a test caught me.** The first cut also skipped
+  the CAM sync in a closed year, which broke `contractCarryThrough.test.js` — and that test is
+  pinning a real design: *the closed-year line is drawn at the BILL, not the CAM item*, because
+  `cam_line_items` is a derivation of live contract data that self-heals while the invoice is a
+  frozen copy of a bill already sent. Backed out. That does leave `syncCamTotal` free to move
+  `expense_records.cam_total` under a closed year's snapshot — a genuine hole, still open, and
+  noted again below — but it is **`syncCamTotal`'s hole, reached by `CamSection` on every year
+  open too**, so it is not the contract carry-through's to close unilaterally. It needs its own
+  decision from George.
+
+  **4 · `draft-invoice`'s roof series was not gated on `roof_responsible`.** Its declared mirror
+  `monthlyEstimates` (`reconciliation.js:146`) returns an all-zero roof array for a
+  non-responsible tenant *"whatever any row says"*; `estSeries` had no such gate
+  (`index.ts:186`). A lease that WAS roof-responsible, had a dated roof estimate written, then
+  had the flag turned off would bill roof for the superseded months in a freshly drafted invoice
+  and $0 in the ledger and the resync that maintains it. It only ever showed on a **historical**
+  era — the one branch that reads the ledger row instead of the live scalar, which is already 0.
+
+  **Following it through the user's hands.** `skipped` now carries `'unknown'`, which flows
+  `resyncPropertyBilling` → `carryContractChange` → the two ContractDocs result panels. Those
+  panels held **two byte-identical copies** of the same paragraph — which is exactly how one of
+  them would have kept saying *"for 2026"* after the carry-through learned to reach 2025 — so
+  they were replaced by one `<CarryThroughNote>` that names the real years (`listYears` →
+  "2025 and 2026"), says when a year couldn't be checked, and prints a **warn-styled** line when
+  bills failed to rebuild, pointing at History and the Ledger's Rebuild button.
+
+  Files: `src/lib/api.js` (`yearLockState`, the five guards, `resyncPropertyBilling` failure
+  reporting + history event, `contractCarryYears`, `carryContractChange` multi-year, three call
+  sites) · `src/components/ContractDocs.js` (one `CarryThroughNote`, two panels de-duplicated) ·
+  `supabase/functions/draft-invoice/index.ts` (roof gate) ·
+  `src/lib/__tests__/contractCarryThrough.test.js` (+2).
+
+  **Still open from the audit, not touched:** `Math.max(0, …)` on the invoice total (`:3756`)
+  swallowing a net credit · statement import + undo calling the UNGUARDED resync (`:6658`,
+  `:6847`), so they re-price a closed year · the reconcile settlement creating its invoice before
+  the `cam_reconciliations` row (orphan on failure; the 23505 race abandons an invoice unvoided)
+  · `undoReconciliation` voiding an invoice whose payments then leave every ledger surface ·
+  `applyStatementImport` persisting `applied` only after every money row lands · the 12¢
+  abatement fold gate failing silently · `monthlyBases` missing the `Number.isFinite` guard its
+  twin has · **and `syncCamTotal`'s missing closed-year guard, per the ⚠ above.**
+
 - **2026-08-06** — **A tenant who was only here half the year is trued up for half the year.**
   Out of a full accounting audit George asked for (*"do a full audit of the accounting system we
   created see if you can find any bugs or ill-logic"*). Deployed: frontend Cloudflare

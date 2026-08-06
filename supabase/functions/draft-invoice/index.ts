@@ -183,7 +183,18 @@ Deno.serve(async (req) => {
     const camTaxForMonth = isGross
       ? () => round(cam + tax)
       : estSeries('cam_tax_annual', round(cam + tax), actualCamTax, 'cam_tax_none');
-    const roofForMonth = isGross ? () => roof : estSeries('roof_annual', roof, actualRoof);
+    // ⚠ THE roof_responsible GATE IS PART OF THE MIRROR. monthlyEstimates (reconciliation.js)
+    // returns an all-zero roof series for a tenant who isn't roof-responsible, "whatever any
+    // row says" — this had no such gate, so a lease that WAS roof-responsible, had a dated roof
+    // estimate written, then had the flag turned off would still bill roof for the superseded
+    // months here while the ledger and the resync that maintains the invoice both said $0.
+    // The live `roof` scalar is already 0 in that case, which is exactly why the gap only
+    // showed on a HISTORICAL era — the one branch that reads the row instead of the scalar.
+    const roofForMonth = isGross
+      ? () => roof
+      : cur.roof_responsible
+        ? estSeries('roof_annual', roof, actualRoof)
+        : () => 0;
 
     // Per-month base abatement credit (mirrors abatement.js — strongest window wins).
     const { data: abs } = await supabase
