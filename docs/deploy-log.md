@@ -12,6 +12,124 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-05** — **Whole-codebase security review, and the cross-tenant defects it found**
+  (George: *"i kind of want to security review everything"*). Deployed: migration **`0095`** +
+  edge function **`send-for-signature`**. **No frontend change, so no Cloudflare deploy** —
+  `amlakre.com` is still on `48d0e767`. Tests **1892/1892** across 180 files (unchanged; none
+  of this touches a view, a client-called RPC or a client-visible column, so `mockClient.js`
+  needed no matching edit).
+
+  `/security-review` could not do this: it diffs `origin/HEAD...`, the ref did not exist locally
+  (fixed with `git remote set-head origin -a`), and `main` is level with `origin/main` so the
+  range is empty anyway. The review was done directly across **93 migrations / 7,059 lines**,
+  **29 edge functions / 7,760 lines**, and **170 source files / 44,121 lines** plus build config.
+
+  **What came back clean, so nobody re-audits it:** all 45 live tables have RLS; all 24 `for all`
+  policies carry a `with check`, not just a `using`; all three views have `security_invoker = on`,
+  re-asserted after each of 24 redefinitions including the three `drop`+`create` cycles where it
+  is easiest to lose; no policy uses `true` or `auth.role() = 'authenticated'` as its predicate;
+  no `grant` to `anon` survives (0019's was revoked by 0050); no secret is in the bundle or in
+  git history (`.env.secrets.local` has never been committed); **zero** `dangerouslySetInnerHTML`
+  in 44k lines of React; every AI prompt carries a "treat this as data, never as instructions"
+  boundary and no model output writes a money figure; every `window.open` passes `noopener`;
+  CORS is an allowlist, not `*`; 2FA and the 2-account cap are server-backed, not client flags.
+
+  **⚠ THE ROOT CAUSE OF TWO SEPARATE FINDINGS IS ONE FACT: RLS TESTS A ROW'S OWNER, NEVER ITS
+  PARENT'S.** No table has `force row level security`, so a `security definer` function runs as
+  the table owner with RLS *off*; and a foreign-key check never applies RLS. Together those let a
+  row legally carry another account's `lease_id`. Fixed once, at the source:
+  **`assert_parent_owner()`** — a definer BEFORE INSERT/UPDATE trigger on `notifications` and
+  `invoices` that raises 42501 if `lease_id` / `property_id` / `corporation_id` names a parent
+  belonging to a different `owner_id`. It reads the row via `to_jsonb(new)` so ONE implementation
+  serves any table with those columns; a table lacking one simply yields null and skips it.
+
+  **The indexes were deliberately NOT widened, and this is the trap to remember.** The obvious
+  fix for the alert-blocking attack was `owner_id` as the leading column of
+  `notifications_one_open_renewal_decision`. That would have broken the nightly sweep:
+  `apply_due_renewals()` infers that index by column list at `0068:108` —
+  `on conflict (lease_id) where kind = 'renewal_decision' do nothing` — and a widened index no
+  longer matches the inference spec, so every night would have failed with **42P10** instead of
+  no-opping. Same for `invoices_one_live_per_lease_year` (`0055:45`). The trigger closes the
+  attack at its source, leaves both indexes the shape their callers infer, and additionally
+  closes the 23505/23503 existence oracle that widening would not have.
+
+  The four findings, each proven live against the two real beta accounts before and after:
+  1. **`fill_notification_recipient()` handed one landlord another's tenant emails**
+     (`0033:57-80`). Definer, fires on *every* client `notifications` insert, and its three
+     lookups had no owner filter. `notifications.kind` has no CHECK constraint, so kind was
+     free to claim. Now `and owner_id = new.owner_id` on all three, *plus* the trigger above.
+  2. **Any user could forge audit entries against any other** — `log_security_event`
+     (`0020:204-231`) is definer, granted to `authenticated`, and wrote
+     `coalesce(p_actor, auth.uid())`. **The parameter was kept, not dropped**: dropping it
+     changes the signature, and `_shared/ratelimit.ts` is imported by 26 functions that would
+     all need redeploying in the same round for no security gain. The guard raises only when
+     the caller *has* an identity and claims a different one — so the service role (no user JWT,
+     `auth.uid()` null) still attributes actors, which `send-reminders` and `health-check` rely on.
+  3. **Cross-owner rows could take a global unique slot** — see the trigger note above.
+  4. **`ai_rate_check` was the last definer function not pinned to `search_path = ''`**
+     (`0018:20`, unqualified `ai_rate_limit`, so `pg_temp` shadowing could defeat the limiter).
+     **Severity corrected downward from the audit's claim:** this needs a *direct Postgres
+     connection*; PostgREST offers no way to `create temp table`, so it was never reachable with
+     the anon key. Fixed because it is one line and the rule is worth stating without exception.
+
+  **`send-for-signature` now checks that every id in the body is yours** — `property_id`,
+  `lease_id`, `contract_id`, `renewal_option_id` re-read through the caller's own JWT client, so
+  RLS *is* the ownership check. This was not cosmetic: `sign-envelope` is unauthenticated and
+  resolves `property_id` with the **service role** to print the business name on the tenant's
+  page and address the signed/declined email — so a foreign id showed a stranger's corporation
+  and property name to a tenant and mailed that stranger a subject the sender wrote. The resend
+  branch needed nothing; it already re-reads the envelope through RLS.
+
+  **Proven live** (all inside rolled-back transactions; production ended at notifications 2 /
+  invoices 17, zero strays): account B inserting a notification, a `renewal_decision`, or an
+  invoice against account A's lease → **42501** in all three; B forging an audit row against A
+  under a simulated authenticated JWT → **42501**; and every control still passes — A's own
+  insert still fills the tenant recipient in, the same user logging against themselves still
+  works, a null `p_actor` still works, `ai_rate_check` still denies an unauthenticated caller.
+  One probe row was written to `security_events` before the JWT was simulated and was deleted.
+
+  **⚠ SEPARATE FINDING — COUNTERSIGNING CANNOT WORK IN PRODUCTION, and it is not a security
+  bug but a functional one.** The audit could not tell from the repo whether a broad storage
+  policy existed live; it does not. `pg_policies` on `storage.objects` returns exactly the three
+  from `0003_storage.sql`, all requiring `(storage.foldername(name))[1] = auth.uid()::text`.
+  `countersign-envelope` uploads to `signatures/{envelope_id}/…` (`:163-166`) and
+  `executed/{envelope_id}/…` (`:212-215`) and downloads `tenant.signature_path` (`:193`) with the
+  **caller's JWT** — first folder is the literal `signatures`/`executed`, which can never equal a
+  uuid, so the INSERT policy denies and it throws at `:166`. Confirmed live: one object under
+  `signatures/` (written by `sign-envelope` with the **service role**, which bypasses the policy),
+  **zero** under `executed/`, and the only envelope sits at `status='sent'` — countersigning has
+  never once completed. `sign-envelope` works only because it uses the service role. Not fixed in
+  this round: the fix is a path-scheme change (`{owner_id}/signatures/…`) touching both functions
+  plus the one existing file, which is a change to a feature shipped hours earlier and wanted
+  George's call rather than a silent edit inside a security round.
+
+  **Two accepted risks, both recorded as blockers rather than footnotes:**
+  - **The email endpoints are an authenticated open relay.** `send-tenant-email:60-63` takes `to`
+    from the body with only a format check; `send-announcement:81-103` takes 60 recipients with
+    only format + dedupe. Neither checks the address belongs to a lease the caller owns, so any
+    account can mail anywhere from the DKIM-aligned `letters@amlakre.com` at 10/min and 3×60/min.
+    **George's explicit call: leave it** — he mails vendors and accountants, so a tenant-only
+    allowlist would break real use. Impersonating another *Amlak customer* is already impossible
+    (the display name is looked up under the caller's JWT). **This becomes a hard blocker the day
+    signup opens past the 2-account cap** — it is only account scarcity holding it now.
+  - **No CSP and no security headers at all.** `wrangler.jsonc:20-23` is assets-only with no
+    `main` worker and no `_headers` file: no CSP, no frame-ancestors, no HSTS, no Referrer-Policy.
+    Session access *and* refresh tokens sit in `localStorage` (`supabaseClient.js:17` passes no
+    `auth` options). No XSS sink exists today so the chain is unarmed, but this is the cheapest
+    hardening left and the obvious next round — a `public/_headers` file, which Vite copies into
+    `build/` and Workers static assets honours.
+
+  Also noted, not actioned: no `force row level security` anywhere; the three views carry no
+  `owner_id` predicate so `security_invoker` is the sole boundary; platform default grants to
+  `anon` are never revoked (only `health_reports` does), so one future table missing RLS is
+  instantly world-readable; `_shared/cors.ts:31-32` allowlists any localhost origin in production;
+  the signing certificate's IP comes from client-supplied `x-forwarded-for` yet is printed as
+  ESIGN/UETA attribution evidence; `atob` runs before the 200 KB size check on the unauthenticated
+  endpoint; a double-submit TOCTOU on `signer.signed_at`; `npm audit` 4 high / 2 moderate with
+  none reachable (`react-router`'s is RSC-only, this is a client `BrowserRouter` SPA) and fixes
+  that are breaking downgrades; `send-2fa-code`/`verify-2fa-code`/`email_2fa_codes` are dead
+  surface the client no longer calls; `SECURITY.md:6` still says Create React App.
+
 - **2026-08-05** — **Findings are dismissed one at a time, and the tenant badge counts what
   is left** (George: *"i want to be able to dismiss notifications one at a time within the
   tenants … make sure that the badges that are on the tenant cards respond accordingly. So if

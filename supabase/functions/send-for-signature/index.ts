@@ -142,6 +142,38 @@ Deno.serve(async (req) => {
       if (!title || !String(title).trim()) return json({ error: 'Give the document a title.' }, 400);
       if (purpose && !PURPOSES.includes(String(purpose))) return json({ error: 'Unknown document type.' }, 400);
 
+      // Every id below arrives from the request body, and RLS on signature_envelopes only
+      // ever tests owner_id (0085:178). A foreign-key check does NOT apply RLS, so without
+      // this nothing stops an envelope from pointing at ANOTHER landlord's property — and
+      // that id does not stay put: sign-envelope is unauthenticated and resolves property_id
+      // with the SERVICE ROLE to print the business name on the tenant's page and to address
+      // the signed/declined notification. A mismatched id therefore shows a stranger's
+      // corporation and property name to a tenant, and mails that stranger a subject line
+      // this caller wrote.
+      //
+      // Re-reading each id through the caller's own JWT client makes RLS itself the
+      // ownership check — no row back means it isn't theirs. Same principle as the storage
+      // read below, which already leans on the caller's JWT rather than the service role.
+      // The resend branch above needs none of this: it re-reads the envelope through RLS,
+      // so an envelope belonging to someone else is already invisible to it.
+      const ownsRow = async (table: string, id: unknown) => {
+        if (!id) return true;
+        const { data } = await supabase.from(table).select('id').eq('id', String(id)).maybeSingle();
+        return !!data;
+      };
+      if (!(await ownsRow('properties', property_id))) {
+        return json({ error: 'That property isn’t on your account.' }, 404);
+      }
+      if (!(await ownsRow('leases', lease_id))) {
+        return json({ error: 'That lease isn’t on your account.' }, 404);
+      }
+      if (!(await ownsRow('service_contracts', contract_id))) {
+        return json({ error: 'That contract isn’t on your account.' }, 404);
+      }
+      if (!(await ownsRow('renewal_options', renewal_option_id))) {
+        return json({ error: 'That renewal option isn’t on your account.' }, 404);
+      }
+
       // Hash the real bytes, under the caller's own JWT — see the header.
       const dl = await supabase.storage.from('lease-documents').download(String(storage_path));
       if (dl.error || !dl.data) return json({ error: 'Couldn’t read that document — try uploading it again.' }, 400);
