@@ -101,6 +101,28 @@ export function buildLeaseSchedule({ year, grossBase, otherAnnual, otherByMonth 
   return { schedule, annual, owedMonths, occupancyStartIso: occ, factor, adjustments: adj };
 }
 
+// How many of the year's twelve months this lease was actually in term for — the SAME
+// count the invoice prorates by (resyncYearBillingToEstimate / draft-invoice both walk the
+// schedule and skip `outsideTerm`). Returns 12 for a lease that covers the whole year, and
+// 12 when nothing is known about the start (the safe, unchanged default).
+//
+// ⚠ It builds a bare schedule rather than re-testing the dates itself, so `outsideTerm` keeps
+// exactly ONE definition (monthlyScheduleForYear). A second copy of "is this month in term?"
+// is precisely how the year-end reconciliation drifted away from the invoice that billed it.
+//
+// ⚠ AND IT NEEDS THE ESCALATIONS, not just lease_start. occupancyStart pulls the start back to
+// the earliest APPLIED step, because a catch-up renewal moves lease_start forward — read
+// lease_start alone and a tenant of ten years renewed mid-year looks like it just moved in,
+// and gets its reconciliation prorated to a few months.
+export function inTermMonths({ year, leaseStart = null, escalations = [] }) {
+  const occ = occupancyStart({ lease_start: leaseStart }, escalations);
+  if (!occ) return 12;
+  const schedule = monthlyScheduleForYear({
+    year: Number(year), annualBaseRent: 0, occupancyStartIso: occ,
+  });
+  return Object.values(schedule).filter((c) => !c.outsideTerm).length;
+}
+
 // The per-month rent OWED for an invoice's own year, as a length-12 array [Jan..Dec],
 // scaled to settle exactly at the invoice total. Free months are $0, months before the
 // tenancy began are $0, and a mid-year rate change bills the old rate before it. The

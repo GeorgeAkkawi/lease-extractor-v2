@@ -193,9 +193,32 @@ export function actualComponents(share) {
 // `monthly` is the already-computed { camTax, roof } pair for callers that hold it (the Ledger
 // roll builds it per lease anyway) — passing it rather than the raw rows guarantees the
 // reconcile settles against the very same months the ledger priced, not a second derivation.
-export function reconcileFigures({ share, adjustments = null, estimates = null, monthly = null, year = null }) {
+//
+// ⚠ `inTerm` — HOW MANY OF THE YEAR'S TWELVE MONTHS THE TENANT ACTUALLY OCCUPIED, from
+// inTermMonths (leaseSchedule.js). Both sides scale by inTerm/12, because the INVOICE already
+// does: resyncYearBillingToEstimate and draft-invoice each walk the schedule and skip
+// `outsideTerm`, so a July-start tenant is billed six months of the estimate. This function
+// had no notion of term at all — the estimate side summed all twelve months and the actual
+// side is v_tenant_shares.cam_amount, which carries no occupancy filter either — so the
+// true-up settled the WHOLE year's gap against half a year's billing. A half-year tenancy was
+// trued up at exactly twice the right figure, over-charging when actuals ran over and
+// over-refunding when they ran under. Nothing on screen showed it, because the Financials
+// Estimated/Difference columns read this same function: screen and settlement agreed with
+// each other and both disagreed with the bill.
+//
+// A full-year lease is inTerm = 12 → ratio 1 → every figure unchanged to the cent, which is
+// why the default is 12. But 12 IS THE OLD BUG for a partial year: a new caller that omits it
+// silently reintroduces this. There are three callers (reconcileCamTax, TenantShareTable,
+// shapeTenantReport) and all three pass it.
+//
+// The CAM & tax CORRECTIONS (camTaxAdjust) are deliberately NOT scaled — an adjustment is a
+// dollar figure the landlord posted and the tenant was billed in full, not an annual rate.
+// Only the end of the term is un-prorated, on both sides equally: holdover months keep owing
+// (monthlyScheduleForYear zeroes months before the tenancy, never after), so the invoice and
+// this agree there already.
+export function reconcileFigures({ share, adjustments = null, estimates = null, monthly = null, year = null, inTerm = 12 }) {
   const { cam, tax, roof } = billedComponents(share);
-  const actual = actualComponents(share);
+  const actualFull = actualComponents(share);
   const camTaxAdjust = camTaxAdjustmentTotal(adjustments);
 
   // What was actually billed across the year, month by month, collapsed back to one annual
@@ -209,10 +232,21 @@ export function reconcileFigures({ share, adjustments = null, estimates = null, 
   // a legacy lease with the two entered separately keeps reporting them separately. When it
   // DID move, the combined figure goes on `cam` with `tax` zeroed, which is the convention
   // every other writer and reader of these columns already follows.
+  // Compared at the ANNUAL rate, before proration — the question is "did the ledger move the
+  // figure?", which the term has nothing to say about.
   const moved = Math.abs(segCamTax - round2(cam + tax)) > RECON_DUST;
-  const est = moved
+  const rates = moved
     ? { cam: segCamTax, tax: 0, roof: segRoof }
     : { cam, tax, roof: Math.abs(segRoof - roof) > RECON_DUST ? segRoof : roof };
+
+  const n = Number(inTerm);
+  const months = Number.isFinite(n) ? Math.min(12, Math.max(0, n)) : 12;
+  const ratio = months / 12;
+  const scale = (v) => round2((Number(v) || 0) * ratio);
+  // Both sides prorate, so the tenant settles at (their in-term share of the actual) having
+  // paid (their in-term share of the estimate) — the difference is the in-term gap, once.
+  const est = { cam: scale(rates.cam), tax: scale(rates.tax), roof: scale(rates.roof) };
+  const actual = { cam: scale(actualFull.cam), tax: scale(actualFull.tax), roof: scale(actualFull.roof) };
 
   // CAM and property tax reconcile together as ONE combined "CAM & tax" line — the
   // landlord bills a single combined estimate, so they true up as a single figure.
@@ -232,5 +266,5 @@ export function reconcileFigures({ share, adjustments = null, estimates = null, 
   const diff = round2(actualTotal - estTotal);
   const direction = Math.abs(diff) <= RECON_DUST ? 'even' : diff > 0 ? 'tenant_owes' : 'landlord_owes';
 
-  return { est, actual, estTotal, actualTotal, diff, direction, lines, camTaxAdjust };
+  return { est, actual, estTotal, actualTotal, diff, direction, lines, camTaxAdjust, inTerm: months, termRatio: ratio };
 }

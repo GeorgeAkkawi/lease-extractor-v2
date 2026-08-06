@@ -14,7 +14,7 @@ import {
   getProperty, getTenantShares, listCamLineItems, listTaxLineItems,
   getExpenseRecord, getPropertyMonthlyRoll, listRenewals,
 } from './api';
-import { reconcileFigures, billedComponents, actualComponents } from './reconciliation';
+import { reconcileFigures, billedComponents } from './reconciliation';
 import { componentizeSchedule } from './ledger';
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -44,14 +44,24 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
   const sharePct = Number(share.share_pct) || (buildingSf > 0 ? sqft / buildingSf : 0);
   // Settle against the months the LEDGER priced, not against today's scalar spread over the
   // whole year (0089) — the roll already carries them, so the two can't disagree.
+  // ⚠ And against the months the tenant was actually HERE. The roll's schedule is the very
+  // object the invoice prorated by, so counting its in-term months here needs no second
+  // derivation and no extra query. A report built without a roll keeps the full-year basis.
+  const inTerm = roll?.schedule
+    ? Object.values(roll.schedule).filter((c) => !c.outsideTerm).length
+    : 12;
   const fig = reconcileFigures({
-    share, adjustments, year,
+    share, adjustments, year, inTerm,
     monthly: roll?.camTaxByMonth && roll?.roofByMonth
       ? { camTax: roll.camTaxByMonth, roof: roll.roofByMonth }
       : null,
   });
   const est = billedComponents(share);
-  const actual = actualComponents(share);
+  // ⚠ The PRORATED actuals, straight off the settlement — not a second call to
+  // actualComponents. The itemized lines below scale by actual ÷ property total, so taking
+  // the un-prorated figure here would print lines that don't sum to what was settled, and
+  // `variance = fig.diff` (asserted below) would quietly stop holding for a part-year tenant.
+  const actual = fig.actual;
   // The rent as BILLED: the lease's base for a net tenant; on a gross lease the flat
   // rent LESS the expense share carved out of it, so base + expenses still totals the
   // flat rent the tenant actually pays (est.base is that carve).
@@ -86,9 +96,9 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
 
   // The estimate side carries the year's CAM & tax CORRECTIONS (0082) — the same figure
   // reconcileFigures uses, so this sheet can never disagree with the on-screen Difference.
-  const estCamTax = round2(est.camTax + (Number(fig.camTaxAdjust) || 0));
+  const estCamTax = round2(round2(fig.est.cam + fig.est.tax) + (Number(fig.camTaxAdjust) || 0));
   const actualCamTax = round2(actual.cam + actual.tax);
-  const estRoof = est.roof;
+  const estRoof = fig.est.roof;
   const actualRoof = round2(actual.roof);
   const totalOwedEst = round2(baseAnnual + estCamTax + estRoof);
   const totalOwedActual = round2(baseAnnual + actualCamTax + actualRoof);

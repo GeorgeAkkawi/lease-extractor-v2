@@ -18,8 +18,10 @@ import {
   isAnnualInvoice,
   listAdjustments,
   listLeaseEstimatesByLeases,
+  listEscalationsByLeases,
 } from '../lib/api';
 import { reconcileFigures, billedComponents, RECON_DUST } from '../lib/reconciliation';
+import { inTermMonths } from '../lib/leaseSchedule';
 import { showRoof } from '../lib/roofDisplay';
 import { sortTenantRows } from '../lib/leaseSort';
 import { money, money0, sf, pct, approx } from '../lib/format';
@@ -130,6 +132,16 @@ export default function TenantShareTable({ propertyId, year }) {
   const { data: estByLease = {} } = useQuery({
     queryKey: ['leaseEstimates', propertyId, shares.map((s) => s.lease_id).join(',')],
     queryFn: () => listLeaseEstimatesByLeases(shares.map((s) => s.lease_id)),
+    enabled: shares.length > 0,
+  });
+  // The rent-step ledger — needed ONLY to date each tenancy's real start, so the Difference
+  // column prorates a mid-year lease the way its invoice already does. occupancyStart reads
+  // the earliest APPLIED step, not lease_start alone, because a catch-up renewal moves
+  // lease_start forward and would otherwise make a long-standing tenant look brand new.
+  // One query for the whole property, never one per lease.
+  const { data: escByLease = {} } = useQuery({
+    queryKey: ['escalationsByLeases', propertyId, shares.map((s) => s.lease_id).join(',')],
+    queryFn: () => listEscalationsByLeases(shares.map((s) => s.lease_id)),
     enabled: shares.length > 0,
   });
 
@@ -255,7 +267,10 @@ export default function TenantShareTable({ propertyId, year }) {
   for (const a of adjustments || []) (adjByLease[a.lease_id] ||= []).push(a);
   const rowsData = shares.map((s) => {
     const adj = adjByLease[s.lease_id] || [];
-    const fig = reconcileFigures({ share: s, adjustments: adj, estimates: estByLease[s.lease_id] || [], year });
+    // Prorated to the months in term, exactly as the invoice is — so Estimated, Difference
+    // and what ⚖ Reconcile settles all describe the months the tenant was actually here.
+    const inTerm = inTermMonths({ year, leaseStart: s.lease_start, escalations: escByLease[s.lease_id] || [] });
+    const fig = reconcileFigures({ share: s, adjustments: adj, estimates: estByLease[s.lease_id] || [], year, inTerm });
     const billed = billedComponents(s);
     return { share: s, fig, billed, adj, recon: reconByLease[s.lease_id] || null };
   });

@@ -20,9 +20,11 @@ import {
   listInvoices, updateLease, listHistoryEvents,
 } from '../api';
 import { buildInvoice } from '../invoiceTemplate';
+import { inTermMonths } from '../leaseSchedule';
 import { currentYear } from '../format';
 
 const Y = currentYear();
+const round = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 const brightCoffeeShare = {
   lease_id: 'x', tenant_name: 'Bright Coffee Co.', roof_responsible: true,
@@ -161,6 +163,60 @@ describe('reconcileFigures — estimate vs actual', () => {
     expect(fig.direction).toBe('even');
   });
 
+  // A tenant who moved in mid-year is BILLED only the months it occupied — the invoice
+  // proration loop (resyncYearBillingToEstimate / draft-invoice) skips every outsideTerm
+  // month. This used to settle the WHOLE year's gap against that part-year bill, so a
+  // half-year tenancy was trued up at exactly twice the right figure. Both sides now
+  // prorate by the same in-term count the invoice used.
+  describe('a lease that only ran part of the year settles on the months it was here', () => {
+    // 6 months in term. Estimate $12,000/yr → billed $6,000. Actual share $18,000/yr.
+    const halfYear = { roof_responsible: false, cam_amount: 18000, tax_amount: 0, roof_amt: 0, est_cam_annual: 12000, est_tax_annual: 0 };
+
+    it('charges the IN-TERM gap, not the full-year one', () => {
+      const fig = reconcileFigures({ share: halfYear, inTerm: 6 });
+      expect(fig.estTotal).toBe(6000);   // what was actually billed
+      expect(fig.actualTotal).toBe(9000); // 6 months of an $18,000/yr share
+      expect(fig.diff).toBe(3000);        // NOT 6,000 — that was the bug
+      expect(fig.direction).toBe('tenant_owes');
+      expect(fig.inTerm).toBe(6);
+    });
+
+    it('prorates a refund the same way', () => {
+      const over = { roof_responsible: false, cam_amount: 6000, tax_amount: 0, roof_amt: 0, est_cam_annual: 12000, est_tax_annual: 0 };
+      const fig = reconcileFigures({ share: over, inTerm: 6 });
+      expect(fig.diff).toBe(-3000); // billed 6,000, owed 3,000 → refund 3,000 (not 6,000)
+      expect(fig.direction).toBe('landlord_owes');
+    });
+
+    it('prorates roof on its own line too', () => {
+      const withRoof = { roof_responsible: true, cam_amount: 0, tax_amount: 0, roof_amt: 2400, est_cam_annual: 0, est_tax_annual: 0, est_roof_annual: 1200 };
+      const roofLine = reconcileFigures({ share: withRoof, inTerm: 3 }).lines.find((l) => l.key === 'roof');
+      expect(roofLine.est).toBe(300);    // 1,200 × 3/12
+      expect(roofLine.actual).toBe(600); // 2,400 × 3/12
+      expect(roofLine.diff).toBe(300);
+    });
+
+    it('does NOT prorate a posted CAM & tax correction — it is dollars already billed', () => {
+      // $500 correction charged in full, on top of 6 months of the $12,000 estimate.
+      const fig = reconcileFigures({
+        share: halfYear, inTerm: 6,
+        adjustments: [{ kind: 'camtax', amount: 500 }],
+      });
+      expect(fig.camTaxAdjust).toBe(500);
+      expect(fig.estTotal).toBe(6500); // 6,000 prorated + 500 posted in full
+      expect(fig.diff).toBe(2500);
+    });
+
+    it('a full-year lease is untouched to the cent (inTerm 12 = the old figures)', () => {
+      const full = reconcileFigures({ share: brightCoffeeShare, inTerm: 12 });
+      const dflt = reconcileFigures({ share: brightCoffeeShare });
+      expect(full.diff).toBe(800);
+      expect(full.estTotal).toBe(18000);
+      expect(full.actualTotal).toBe(18800);
+      expect(dflt.diff).toBe(full.diff); // omitting inTerm still means the whole year
+    });
+  });
+
   it('reconciles against the current estimate fields (what the Finances column shows)', () => {
     // The live view + settlement compare the tenant's CURRENT estimate to the
     // actual, so on screen Estimated − Actual always equals the Difference — no
@@ -169,6 +225,55 @@ describe('reconcileFigures — estimate vs actual', () => {
     expect(fig.estTotal).toBe(18000); // 6,500 + 10,000 + 1,500 (the typed estimate)
     expect(fig.diff).toBe(800); // 18,800 actual − 18,000 estimate
     expect(fig.direction).toBe('tenant_owes');
+  });
+});
+
+describe('inTermMonths — the count both the invoice and the reconciliation prorate by', () => {
+  it('is 12 for a lease that covers the whole year', () => {
+    expect(inTermMonths({ year: Y, leaseStart: `${Y - 2}-01-01`, escalations: [] })).toBe(12);
+  });
+
+  it('counts only the months a mid-year tenancy was here', () => {
+    expect(inTermMonths({ year: Y, leaseStart: `${Y}-07-01`, escalations: [] })).toBe(6);
+    expect(inTermMonths({ year: Y, leaseStart: `${Y}-10-15`, escalations: [] })).toBe(3);
+  });
+
+  it('is 12 when the start is unknown — the safe, unchanged default', () => {
+    expect(inTermMonths({ year: Y, leaseStart: null, escalations: [] })).toBe(12);
+  });
+
+  it('reads the earliest APPLIED step, so a catch-up renewal does not look like a new tenancy', () => {
+    // lease_start moved forward to July by a renewal, but the tenant has been paying since
+    // Y-3. Read lease_start alone and its year-end settlement would be halved.
+    const escalations = [{ status: 'applied', effective_date: `${Y - 3}-01-01`, new_base_rent: 50000 }];
+    expect(inTermMonths({ year: Y, leaseStart: `${Y}-07-01`, escalations })).toBe(12);
+    // A SCHEDULED step is not evidence of occupancy — it says nothing about being here yet.
+    const scheduled = [{ status: 'scheduled', effective_date: `${Y - 3}-01-01`, new_base_rent: 50000 }];
+    expect(inTermMonths({ year: Y, leaseStart: `${Y}-07-01`, escalations: scheduled })).toBe(6);
+  });
+});
+
+describe('reconcileCamTax — a mid-year tenancy settles on its own months (Sunrise Yoga)', () => {
+  // Oak Center is 6,000 SF; Sunrise Yoga is 1,000 SF (a 1/6 share) and moved in 1 July, so
+  // its invoice bills SIX months of the estimate. Actual share of FY expenses:
+  // CAM 30,000/6 = 5,000 + tax 40,000/6 = 6,666.67 → 11,666.67 for a full year.
+  it('trues up half a year, not the whole one', async () => {
+    await updateLease('lease-4', { est_cam_annual: 12000, est_tax_annual: 0, est_confirmed_year: Y });
+    const { recon } = await reconcileCamTax('lease-4', 'prop-2', Y);
+    // Billed: 12,000 × 6/12 = 6,000. Owed: 2,500 CAM + 3,333.34 tax = 5,833.34.
+    expect(recon.est_cam).toBe(6000);
+    expect(round(recon.actual_cam + recon.actual_tax)).toBe(5833.34);
+    // The full-year gap is −333.33; half a year of it is −166.66. Charging the whole
+    // difference against a half-year bill is the bug this pins.
+    expect(round(recon.diff)).toBe(-166.66);
+    expect(recon.direction).toBe('landlord_owes');
+  });
+
+  it('records the part-year basis in History so the figure is explicable', async () => {
+    const events = await listHistoryEvents('prop-2');
+    const ev = (events || []).find((e) => e.type === 'cam_reconciled' && e.lease_id === 'lease-4');
+    expect(ev.description).toContain('6 of 12 months in term');
+    expect(ev.meta.in_term_months).toBe(6);
   });
 });
 

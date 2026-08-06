@@ -12,6 +12,96 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-06** — **A tenant who was only here half the year is trued up for half the year.**
+  Out of a full accounting audit George asked for (*"do a full audit of the accounting system we
+  created see if you can find any bugs or ill-logic"*). Deployed: frontend Cloudflare
+  **`95641a1f`**. **No migration, no edge function.** Tests **1929/1929** across 182 files
+  (was 1918; +11).
+
+  **The bug.** The INVOICE prorates: `resyncYearBillingToEstimate` (`api.js:3728-3744`) and
+  `draft-invoice` (`index.ts:225-233`) each walk the schedule and skip `outsideTerm`, so a
+  July-start tenant is billed six months of the CAM & tax estimate. `reconcileFigures`
+  (`reconciliation.js:196`) had **no notion of term at all** — the estimate side summed all
+  twelve months via `annualFromMonthly`, and the actual side is `v_tenant_shares.cam_amount`,
+  which carries **no occupancy filter either** (`0073:73-76` selects `lease_start` as a column
+  and never uses it as a predicate). So the year-end true-up settled the WHOLE year's gap
+  against half a year's billing.
+
+  Worked example, the shape now pinned by a test — estimate $12,000/yr, actual share $18,000/yr,
+  moved in 1 July: billed $6,000; correct settlement $3,000; **what ⚖ Reconcile charged: $6,000**.
+  Out by exactly `1/ratio` — 2× for a half-year tenancy, over-charging when actuals ran over and
+  over-refunding when they ran under.
+
+  **Why nobody saw it.** The Financials Estimated / Difference columns read the *same*
+  `reconcileFigures`, so the screen and the settlement agreed perfectly with each other and both
+  disagreed with the bill. Every existing reconcile test used a full-year lease (Bright Coffee,
+  Northwind), so the suite passed straight over it.
+
+  **The fix — one definition, not a second derivation.** New `inTermMonths({ year, leaseStart,
+  escalations })` in `leaseSchedule.js` builds a bare schedule and counts `!outsideTerm`, so
+  "is this month in term?" keeps exactly ONE implementation (`monthlyScheduleForYear`). A second
+  copy of that test is precisely how these two drifted apart in the first place.
+  `reconcileFigures` takes `inTerm` (default 12) and scales **both** sides by `inTerm/12`.
+
+  Three things the fix had to get right, each a way it could have gone wrong:
+  - **It needs the ESCALATIONS, not just `lease_start`.** `occupancyStart` pulls the start back
+    to the earliest APPLIED step because a catch-up renewal moves `lease_start` forward — read
+    `lease_start` alone and a tenant of ten years renewed mid-year looks brand new and gets its
+    settlement halved. That would have been a worse bug than the one being fixed. Pinned by a
+    test, including that a **scheduled** step is not evidence of occupancy.
+  - **`camTaxAdjust` is deliberately NOT scaled.** A posted CAM & tax correction (0082) is a
+    dollar figure the landlord charged and the tenant was billed in full, not an annual rate.
+  - **Only the START prorates, on both sides equally.** `monthlyScheduleForYear` zeroes months
+    before the tenancy and never after (holdover keeps owing), so the invoice and the reconcile
+    already agreed at the end of term and still do.
+
+  **Following it through the three readers**, all updated in this commit or the screen and the
+  settlement part company again: `reconcileCamTax` (`api.js`) now fetches `listEscalations` in
+  its existing `Promise.all`; `TenantShareTable` adds ONE bulk `listEscalationsByLeases` query
+  for the property (never per-lease); `shapeTenantReport` (`reconciliationData.js`) counts
+  in-term months straight off `roll.schedule` — the very object the invoice prorated by, so no
+  extra query and no second derivation. That file also now reads the PRORATED `fig.actual` /
+  `fig.est` instead of calling `actualComponents` again, because its itemized lines scale by
+  `actual ÷ property total` and its `variance === fig.diff` assertion would otherwise have
+  quietly stopped holding for a part-year tenant.
+
+  **How the landlord knows.** A part-year settlement looks like an arithmetic mistake to anyone
+  checking it against the annual estimate on the lease, so the basis is stated wherever the
+  figure is printed: the reconciliation invoice `notes` and the `cam_reconciled` history event
+  both gain *"(prorated — 6 of 12 months in term)"*, and the event's `meta` carries
+  `in_term_months`. A full-year lease says nothing new.
+
+  **Unchanged to the cent for a full-year lease** — `inTerm` 12 → ratio 1. That is why the
+  default is 12 and why no back-fill or re-settlement is needed. ⚠ But **12 IS the old bug for a
+  partial year**: a fourth caller that omits `inTerm` silently reintroduces this. Noted in the
+  function's own comment.
+
+  ⚠ **Already-settled reconciliations were left exactly as they are** — a `cam_reconciliations`
+  row is a record of what was agreed, and moving one retroactively is George's call, not a side
+  effect of a bug fix. Any mid-year lease reconciled *before* this deploy still holds the
+  full-year figure; the Undo → re-reconcile path re-settles one at the corrected basis.
+
+  **The rest of the audit is NOT in this deploy.** George scoped it to this finding only. Thirteen
+  further findings were verified in source and written up but deliberately not touched, the
+  nearest ones being: `isYearClosed` fails **open** (`api.js:3850` `.catch(() => [])`), so a
+  transient error lets a resync rewrite a closed year; `resyncPropertyBilling` swallows every
+  per-lease failure (`:3891`) after `carryContractChange` has already moved `cam_total`, leaving
+  some invoices on the new CAM and some on the old with the caller told "success";
+  `carryContractChange` only ever carries **today's** calendar year (`:2300, :2506, :2586`), so a
+  multi-year contract edited in January leaves the prior FY stale; `Math.max(0, …)` on the invoice
+  total (`:3756`) swallows a net credit; and `draft-invoice`'s roof series is **not** gated on
+  `roof_responsible` (`index.ts:186`) where its declared mirror `monthlyEstimates` is
+  (`reconciliation.js:146`). Three claims that did NOT survive verification and should not be
+  re-raised: `contract_escalations.new_amount`, `rent_escalations.new_base_rent` and
+  `rent_abatements.kind` are all `NOT NULL` with CHECKs, so the "a null silently zeroes the
+  figure" paths are unreachable.
+
+  Files: `src/lib/leaseSchedule.js` (new `inTermMonths`) · `src/lib/reconciliation.js`
+  (`reconcileFigures` prorates) · `src/lib/api.js` (`reconcileCamTax` + the notes/history basis)
+  · `src/components/TenantShareTable.js` (bulk escalations query, per-row `inTerm`) ·
+  `src/lib/reconciliationData.js` (in-term count off the roll; prorated figures) ·
+  `src/lib/__tests__/reconciliation.test.js` (+11).
+
 - **2026-08-06** — **A checkbox beside Roof: does this building bill it separately?** (George:
   *"can we add a check mark next to roof that switches it on and off if people want? like some
   people might just throw it in a cam expense if repairs ever happen to it but others might want

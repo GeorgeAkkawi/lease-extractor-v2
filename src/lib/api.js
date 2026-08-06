@@ -6,7 +6,7 @@ import { money, fmtDate } from './format';
 import { addMonths, optionLapsed, renewalFirstYearRent, optionScheduleSteps } from './renewals';
 import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildContractNonRenewalEmail, buildVendorAdditionalInsuredEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents, monthlyEstimates } from './reconciliation';
-import { buildLeaseSchedule, owedByMonthForInvoice } from './leaseSchedule';
+import { buildLeaseSchedule, owedByMonthForInvoice, inTermMonths } from './leaseSchedule';
 import {
   allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths,
   unloggedMonths, missingOnImportedMonths,
@@ -4327,11 +4327,22 @@ export async function reconcileCamTax(leaseId, propertyId, year) {
   // one) — refunding money that was never collected. George: *"the previous months aren't
   // affected and shouldn't be reconciled at the new figures because they would be part of
   // the old lease."*
-  const [adjustments, estimates] = await Promise.all([
+  //
+  // ⚠ AND "what was billed" is prorated to the months the tenant actually occupied. The
+  // invoice already is (the proration loop above skips `outsideTerm`), so settling the whole
+  // year's gap against a part-year bill charged a mid-year tenant the full-year difference —
+  // twice the right figure for a half-year tenancy. inTermMonths reads the same schedule the
+  // invoice prorates by, so the two can never disagree.
+  const [adjustments, estimates, escalations] = await Promise.all([
     listAdjustments({ leaseId, year }),
     listLeaseEstimates(leaseId),
+    listEscalations(leaseId),
   ]);
-  const fig = reconcileFigures({ share, adjustments, estimates, year });
+  const inTerm = inTermMonths({ year, leaseStart: share.lease_start, escalations });
+  const fig = reconcileFigures({ share, adjustments, estimates, year, inTerm });
+  // Say so wherever the figure is printed — a part-year settlement looks like an arithmetic
+  // mistake to anyone who checks it against the annual estimate on the lease.
+  const termNote = fig.inTerm < 12 ? ` (prorated — ${fig.inTerm} of 12 months in term)` : '';
 
   // Shortfall → its own reconciliation invoice. Per-component diffs can be negative
   // individually (CAM under, tax over) and the invoice check constraints require
@@ -4350,7 +4361,8 @@ export async function reconcileCamTax(leaseId, propertyId, year) {
       total_amount: fig.diff,
       notes:
         `CAM & tax reconciliation ${year} — ` +
-        fig.lines.map((l) => `${l.label}: est ${money(l.est)} vs actual ${money(l.actual)}`).join('; '),
+        fig.lines.map((l) => `${l.label}: est ${money(l.est)} vs actual ${money(l.actual)}`).join('; ') +
+        termNote,
     });
     invoiceId = inv.id;
   }
@@ -4398,10 +4410,10 @@ export async function reconcileCamTax(leaseId, propertyId, year) {
     property_id: propertyId,
     lease_id: leaseId,
     type: 'cam_reconciled',
-    description: `CAM & tax reconciled for ${year} — ${label}`,
+    description: `CAM & tax reconciled for ${year} — ${label}${termNote}`,
     tenant_name: share.tenant_name || null,
     event_date: paymentIsoToday(),
-    meta: { year: Number(year), diff: fig.diff, direction: fig.direction, invoice_id: invoiceId },
+    meta: { year: Number(year), diff: fig.diff, direction: fig.direction, invoice_id: invoiceId, in_term_months: fig.inTerm },
   });
 
   return { recon, created: true };
