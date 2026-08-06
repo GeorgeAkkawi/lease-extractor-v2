@@ -11,6 +11,7 @@ import {
 } from '../lib/api';
 import { EXPENSE_CATEGORIES, defaultCategoryFor } from '../lib/expenseCategories';
 import { INCOME_CATEGORIES, incomeCategoryLabel } from '../lib/otherIncome';
+import { partyLabel } from '../lib/entityLedger';
 import { ASSET_KINDS } from '../lib/depreciation';
 import {
   matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
@@ -196,6 +197,11 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       return {
         row, i, kind, label, category, assetKind, leaseId, tenant, toRecon, month: finalMonth,
         checked: isChecked,
+        // WHO an entity row went to / came from (0098) — typed on the row when the bank
+        // named a payee. A cheque never does, so this is usually blank here and filled in
+        // later on the Entity ledger; carrying it costs nothing and saves a round trip
+        // when the line IS named (an ACH to a member, say).
+        party: ov.party || '',
         ai: !!ov.ai, picked: ov.pick != null,
         monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
         // Slice 4a — what Save will record about this line in the audit table, whether
@@ -471,6 +477,11 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             type: 'entity', kind: ENTITY_KIND_FOR[r.kind], corporation_id: ctx.corporationId,
             property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date,
             label: payeeLabel(payeeOf(r.row.txn.description), r.kind === 'entity_cost' ? 'Entity cost' : 'Owner draw'),
+            // WHO (0098), when the landlord typed it on the row. Usually blank for a
+            // CHEQUE — a bank publishes the number, date, ref and amount, never the payee
+            // (that is handwriting on the image) — so most draws are named afterwards on
+            // Financials → Owner & entity money instead.
+            party: r.party || null,
             description: r.row.txn.description, hash: r.row.hash,
           });
         }
@@ -1168,11 +1179,25 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
           )
         )}
         {ENTITY_KIND_FOR[r.kind] && (
-          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-            {r.kind === 'entity_cost'
-              ? 'the LLC’s cost, not this building’s — never billed to a tenant'
-              : 'equity, not income or expense — it will not appear in NOI or on any tenant’s bill'}
-          </div>
+          <>
+            {/* WHO (0098) — optional, and usually left blank here on purpose: a bank
+                publishes no payee for a cheque, so most draws get their name afterwards on
+                Financials → Owner & entity money. Offered anyway for the lines that DO
+                name someone (an ACH to a member), so it needn't be a second trip. */}
+            <input
+              className="text-input" style={{ marginTop: 4, fontSize: 12 }}
+              maxLength={120}
+              placeholder={`${partyLabel(ENTITY_KIND_FOR[r.kind])} (optional)`}
+              value={r.party}
+              onChange={(e) => setOv(r.i, { party: e.target.value })}
+              title="Who this money went to or came from. Your accountant needs distributions split by person for the capital accounts. You can also fill this in later on the Entity ledger."
+            />
+            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+              {r.kind === 'entity_cost'
+                ? 'the LLC’s cost, not this building’s — never billed to a tenant'
+                : 'equity, not income or expense — it will not appear in NOI or on any tenant’s bill'}
+            </div>
+          </>
         )}
         {r.alreadyPaid && !dupe && (
           <div className="note-msg warn" style={{ marginTop: 4 }}>

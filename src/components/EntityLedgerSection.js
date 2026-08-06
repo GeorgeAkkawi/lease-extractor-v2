@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listEntityLedger, addEntityLedgerEntry, deleteEntityLedgerEntry, setEntityLedgerCategory } from '../lib/api';
-import { ENTITY_KINDS, entityKindInfo, summarizeEntityLedger, entityCostCategories, entityCategoryLabel } from '../lib/entityLedger';
+import { listEntityLedger, addEntityLedgerEntry, deleteEntityLedgerEntry, setEntityLedgerCategory, setEntityLedgerParty } from '../lib/api';
+import { ENTITY_KINDS, entityKindInfo, summarizeEntityLedger, entityCostCategories, entityCategoryLabel, partyLabel, knownParties } from '../lib/entityLedger';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
@@ -19,8 +19,9 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ kind: 'draw', amount: '', txn_date: '', label: '', category: '' });
+  const [form, setForm] = useState({ kind: 'draw', amount: '', txn_date: '', label: '', category: '', party: '' });
   const [editCat, setEditCat] = useState(null);
+  const [editParty, setEditParty] = useState(null);
 
   const { data: entries = [] } = useQuery({
     queryKey: ['entityLedger', propId, year],
@@ -40,18 +41,29 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
       kind: f.kind,
       category: f.kind === 'cost' ? (f.category || null) : null,
       label: f.label || null,
+      party: f.party || null,
       amount: f.amount,
       txn_date: f.txn_date || null,
     }),
-    onSuccess: () => { setAdding(false); setForm({ kind: 'draw', amount: '', txn_date: '', label: '', category: '' }); invalidate(); },
+    onSuccess: () => { setAdding(false); setForm({ kind: 'draw', amount: '', txn_date: '', label: '', category: '', party: '' }); invalidate(); },
   });
   const remove = useMutation({ mutationFn: (id) => deleteEntityLedgerEntry(id), onSuccess: invalidate });
   const setCat = useMutation({
     mutationFn: ({ id, category }) => setEntityLedgerCategory(id, category),
     onSuccess: () => { setEditCat(null); invalidate(); },
   });
+  // ⚠ In place, never delete-and-re-add: an imported row's import_id / line_hash are what
+  // its statement's ↩ Undo reverses by, and re-adding would strand them.
+  const setParty = useMutation({
+    mutationFn: ({ id, party }) => setEntityLedgerParty(id, party),
+    onSuccess: () => { setEditParty(null); invalidate(); },
+  });
 
   const sum = summarizeEntityLedger(entries);
+  // Names already used here — so the second draw of the month is a pick, not a retype,
+  // and one person doesn't end up as three spellings across the year.
+  const parties = knownParties(entries);
+  const partyListId = `entity-parties-${propId || 'none'}`;
 
   async function confirmRemove(row) {
     const info = entityKindInfo(row.kind);
@@ -99,6 +111,40 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
     );
   };
 
+  // WHO the money went to / came from (0098). Same chip language as the category above —
+  // solid when named, gold when nobody has said — and offered on EVERY kind, because an
+  // imported cheque never carries a payee and this is where it finally gets one.
+  const partyChip = (row) => {
+    const info = entityKindInfo(row.kind);
+    if (editParty === row.id) {
+      return (
+        <input
+          className="text-input" style={{ maxWidth: 175, fontSize: 12, marginTop: 4 }}
+          autoFocus
+          list={partyListId}
+          defaultValue={row.party || ''}
+          placeholder={partyLabel(row.kind)}
+          maxLength={120}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') setParty.mutate({ id: row.id, party: e.target.value });
+            if (e.key === 'Escape') setEditParty(null);
+          }}
+          onBlur={(e) => setParty.mutate({ id: row.id, party: e.target.value })}
+        />
+      );
+    }
+    return (
+      <button
+        type="button"
+        className={`cat-chip party-chip${row.party ? '' : ' none'}`}
+        onClick={() => setEditParty(row.id)}
+        title={`${partyLabel(row.kind)} — your accountant needs a distribution split by person for the capital accounts. Reporting only: it can never change what a tenant is billed.`}
+      >
+        {row.party ? `${info.dir === 'in' ? 'From' : 'To'} ${row.party}` : `Name who${info.dir === 'in' ? ' it came from' : ' it went to'}`}
+      </button>
+    );
+  };
+
   const kindRows = (kind) => {
     const list = entries.filter((e) => e.kind === kind);
     if (!list.length) return null;
@@ -116,7 +162,10 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
                   imported
                 </span>
               )}
-              {kind === 'cost' && <div>{catChip(e)}</div>}
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {partyChip(e)}
+                {kind === 'cost' && catChip(e)}
+              </div>
             </div>
             <div className="num">{money(e.amount)}</div>
             <div className="num muted" style={{ fontSize: 12 }}>{fmtShortDate(e.txn_date)}</div>
@@ -135,6 +184,11 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
 
   return (
     <div className="panel">
+      {/* One shared autocomplete source for the add form and every row's inline rename,
+          built from the names already on these rows — there is no members table (0098). */}
+      <datalist id={partyListId}>
+        {parties.map((p) => <option key={p} value={p} />)}
+      </datalist>
       <div className="panel-head">
         <strong>Owner &amp; entity money · FY {year}</strong>
         <button type="button" className="secondary btn-sm" onClick={() => setAdding((v) => !v)}>
@@ -153,6 +207,14 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
             {ENTITY_KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
           </select>
           <input className="text-input" style={{ maxWidth: 190 }} placeholder="What it was (optional)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
+          <input
+            className="text-input" style={{ maxWidth: 175 }}
+            list={partyListId}
+            maxLength={120}
+            placeholder={`${partyLabel(form.kind)} (optional)`}
+            value={form.party}
+            onChange={(e) => setForm({ ...form, party: e.target.value })}
+          />
           <input className="text-input" style={{ maxWidth: 130 }} type="number" step="0.01" placeholder="Amount" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
           <input className="text-input" style={{ maxWidth: 150, minWidth: 0 }} type="date" value={form.txn_date} onChange={(e) => setForm({ ...form, txn_date: e.target.value })} />
           {form.kind === 'cost' && (
@@ -181,7 +243,7 @@ export default function EntityLedgerSection({ propId, corporationId, year }) {
           None of it appears in this property’s expenses or NOI — see “What actually stayed” above.
         </div>
       )}
-      <MutationError of={[add, remove, setCat]} />
+      <MutationError of={[add, remove, setCat, setParty]} />
     </div>
   );
 }

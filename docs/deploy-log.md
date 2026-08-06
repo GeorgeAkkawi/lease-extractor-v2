@@ -12,6 +12,88 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-06** — **Who took the draw.** George supplied two real US Bank statements
+  (DT NAPERVILLE OFFICE, LLC, Jan and Feb 2026) and asked whether every line has a home for
+  reporting. Everything mapped — except the distributions didn't record **who**. Deployed:
+  migration **`0098`**, frontend Cloudflare **`6260f039`**. **No edge function.** Tests
+  **1939/1939** across 182 files (was 1931; +8).
+
+  **The gap.** Three cheques in two months — Lana Akkawi $20,000 and Yazin Akkawi $10,000
+  (1329/1330, Jan 6), Khaled Akkawi $70,000 (1331, Feb 6). All three land correctly as
+  `kind='draw'`, out of NOI and off the P&L — and all three collapsed into ONE
+  **"Owner draws: $100,000"** line, because `summarizeEntityLedger` sums by kind and nothing
+  else. A multi-member LLC files Form 1065 with a K-1 per member; a distribution allocates per
+  member and drives that member's capital account. One lumped figure sends the accountant back
+  to the cheque images.
+
+  **⚠ AND THE APP CANNOT INFER IT — which is why this is a stored field, not a parse.** The
+  machine-readable cheque line a bank publishes is `1329 | Jan 6 | 8351300884 | 20,000.00`. The
+  payee exists only as *handwriting in the cheque image*. So an imported draw ALWAYS arrives
+  unattributed, and `setEntityLedgerParty` (naming it afterwards, **in place**) is the primary
+  path rather than a correction. In place matters: delete-and-re-add would strand `import_id` /
+  `line_hash`, which is exactly what the statement's ↩ Undo reverses by.
+
+  **What was built.** `party text` on `entity_ledger` — nullable, length-CHECKed at 120, no
+  CHECK on its value (a CHECK on the value would be the members table this deliberately isn't;
+  same reasoning as 0077 refusing to CHECK `kind`). Carried by the ONE insert every writer
+  funnels through, `addEntityLedgerEntry` — the add form, `placeUnplacedLine` and
+  `applyStatementImport` — trimmed to null so a stray space never becomes its own "person".
+  `partyLabel(kind)` is a single implementation ("Paid to" for a draw or cost, "From" for a
+  contribution) with two callers, for the same reason `counterparty()` is one function: two
+  copies would let the form and the review print different words for the identical column.
+  Autocomplete comes from `knownParties()` over the rows themselves — **first spelling wins**
+  (a unit test caught the reverse, where one stray "lana akkawi" would re-case the suggestion
+  the landlord had been picking all year). No members table, no percentages, no capital
+  accounts — George picked the smaller option and those want his accountant's input.
+
+  **The report.** `summarizeEntityLedger` gains `byParty`; `excludedFromReturn` attaches
+  `partyBreakdown` to its Owner-draws and Owner-contributions groups; `cpaExcel`'s "Not on this
+  return" sheet indents the per-person lines beneath each. ⚠ An unnamed row rides along as
+  **"Not attributed"** rather than being dropped, so the per-person lines always **sum to the
+  group total** — pinned by a test. Dropping it would understate a distribution on the one sheet
+  whose stated job is letting a CPA "tell a careful package from one that quietly dropped every
+  distribution".
+
+  **⚠ IT MUST NOT REACH A PROPERTY METRIC, and it doesn't.** George's question behind this round
+  was whether Amlak is merging "tracking a bank account" with "tracking revenue and expenses".
+  It is not, and the separation is structural: no view and no migration wires `entity_ledger`
+  into any property total (re-verified this round). `party` inherits that — it surfaces only on
+  the CPA "Not on this return" sheet and the lender "Not included" sheet.
+
+  **Two things the tests caught, worth recording.** (1) The first cut seeded two EXTRA demo rows
+  to show a multi-person split; that moved the demo's draw total 24,000 → 49,000 and broke six
+  "what actually stayed" assertions. Reverted to naming the existing three (one left blank on
+  purpose — the state every imported row starts in); the unit tests carry the split proof, and
+  demo colour is not worth re-baselining six tests. (2) The new "paid to" chip borrowed
+  `.cat-chip` styling, which broke *"offers a tax category to an entity cost and to nothing
+  else"* by count. The chip gained `.party-chip` and the test now selects
+  `.cat-chip:not(.party-chip)` — the assertion's INTENT preserved rather than its proxy.
+
+  Files: `supabase/migrations/0098_entity_ledger_party.sql` · `src/lib/entityLedger.js`
+  (`partyLabel`, `UNATTRIBUTED`, `byParty`, `partyBreakdown`, `knownParties`) · `src/lib/api.js`
+  (`addEntityLedgerEntry`, new `setEntityLedgerParty`, `placeUnplacedLine`,
+  `applyStatementImport`) · `src/components/EntityLedgerSection.js` (form field, inline rename
+  chip, shared datalist) · `src/components/StatementReview.js` (optional party on an entity row)
+  · `src/lib/cpaPackage.js` + `src/lib/cpaExcel.js` · `src/lib/demo/store.js` ·
+  `src/lib/__tests__/entityLedger.test.js` (+8) · `src/components/__tests__/whatStayedUi.test.js`.
+
+  **Verified:** 1939/1939; `npm run build` compiles; migration applied clean and **read back
+  live** — `entity_ledger.party` is `text`/nullable and `ck_entity_party` reads
+  `CHECK (party IS NULL OR char_length(party) <= 120)`.
+
+  **Flagged to George from the same statements, not built:** the **$10,000 Jan 14 payment to IL
+  DEPT OF REVENUE** is entity income/replacement tax — filed as *Property taxes* it reaches
+  `taxes_total` → `v_tenant_shares.tax_amount` and gets **billed to the tenants**; it belongs in
+  Entity cost. And CITY OF NAPERVILLE appears three times ($843.00 by card, $3,613.50 and
+  $6,705.26 by ACH) while a learned payee rule stores ONE `target_kind` for a pattern — so
+  whichever destination is learned first auto-applies to all three thereafter.
+
+  **Next, agreed with George:** scope the bank-account layer (no code) — there is no `accounts`
+  table, no stored balance, and the statement's own opening/closing balances are parsed by
+  `applyBalanceCheck` and then discarded. The question it has to answer is whether Amlak should
+  become bookkeeping at all, or stay a property tool that reports cash movement without claiming
+  to balance an account.
+
 - **2026-08-06** — **Four more from the audit: a lock that failed open, a fan-out that swallowed
   its failures, a carry-through that only saw this year, and a roof line that ignored the flag.**
   Round two of the accounting audit, the set George picked to act on. Deployed: frontend

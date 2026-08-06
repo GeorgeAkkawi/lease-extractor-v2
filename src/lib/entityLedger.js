@@ -62,6 +62,19 @@ export function entityKindInfo(key) {
 
 export const isEntityKind = (key) => BY_KIND.has(key);
 
+// What to CALL the party on a row of this kind (0098). Money out went TO someone; money
+// in came FROM someone. One implementation with two callers — the add form and the
+// statement review — for the same reason counterparty() is one function (CLAUDE.md §3):
+// two copies would let the form ask "Paid to" while the review printed "From" for the
+// identical column, and the landlord would reasonably read them as different fields.
+export function partyLabel(kind) {
+  return entityKindInfo(kind).dir === 'in' ? 'From' : 'Paid to';
+}
+
+// The label used when nobody said. It appears in the CPA package's per-person breakdown,
+// so it has to read as a deliberate state rather than a blank cell.
+export const UNATTRIBUTED = 'Not attributed';
+
 // The kinds offered for a line of each direction. A transfer is NOT here: it produces
 // no ledger row at all (see below), it is a disposition and nothing more.
 export const entityKindsFor = (dir) => ENTITY_KINDS.filter((k) => k.dir === dir);
@@ -77,18 +90,54 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // Rows of an unknown kind are counted in `unknown` rather than folded into a total —
 // the same refusal the vocabulary above makes, carried into the arithmetic.
 export function summarizeEntityLedger(rows = []) {
-  const out = { draws: 0, contributions: 0, costs: 0, unknown: 0, count: 0, byKind: {} };
+  const out = { draws: 0, contributions: 0, costs: 0, unknown: 0, count: 0, byKind: {}, byParty: {} };
   for (const r of rows || []) {
     const amt = Math.abs(Number(r?.amount) || 0);
     const info = entityKindInfo(r?.kind);
     out.count += 1;
     out.byKind[info.key] = round2((out.byKind[info.key] || 0) + amt);
+    // Per person, within each kind (0098). A row with no party lands under UNATTRIBUTED
+    // rather than being skipped — dropping it would make the per-person lines fail to sum
+    // to the kind's total, on the one sheet whose whole job is proving nothing was missed.
+    const who = String(r?.party || '').trim() || UNATTRIBUTED;
+    const bucket = (out.byParty[info.key] ||= {});
+    bucket[who] = round2((bucket[who] || 0) + amt);
     if (info.key === 'draw') out.draws = round2(out.draws + amt);
     else if (info.key === 'contribution') out.contributions = round2(out.contributions + amt);
     else if (info.key === 'cost') out.costs = round2(out.costs + amt);
     else out.unknown = round2(out.unknown + amt);
   }
   return out;
+}
+
+// The per-person lines for one kind, largest first, with the unattributed remainder last
+// so it reads as a residue rather than a participant. Returns [] when there is nothing to
+// split — a single named party is still worth showing, but zero rows are not.
+export function partyBreakdown(summary, kind) {
+  const bucket = summary?.byParty?.[kind];
+  if (!bucket) return [];
+  const rows = Object.entries(bucket).map(([party, amount]) => ({ party, amount: round2(amount) }));
+  if (!rows.length) return [];
+  rows.sort((a, b) => {
+    if ((a.party === UNATTRIBUTED) !== (b.party === UNATTRIBUTED)) return a.party === UNATTRIBUTED ? 1 : -1;
+    return b.amount - a.amount || a.party.localeCompare(b.party);
+  });
+  return rows;
+}
+
+// Every name already used on these rows — the autocomplete source, so naming the second
+// draw of the month is a pick rather than a retype, and "Lana Akkawi" doesn't become three
+// spellings. Built from the rows themselves; there is no members table by design.
+export function knownParties(rows = []) {
+  const seen = new Map();
+  for (const r of rows || []) {
+    const name = String(r?.party || '').trim();
+    // FIRST spelling wins. Overwriting with the last would let one stray "lana akkawi"
+    // re-case the suggestion the landlord has been picking all year, and the datalist is
+    // the only thing holding the spelling steady.
+    if (name && !seen.has(name.toLowerCase())) seen.set(name.toLowerCase(), name);
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 
 // The costs the landlord entered and deliberately did NOT bill back.

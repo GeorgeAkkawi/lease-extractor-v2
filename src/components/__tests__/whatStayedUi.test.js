@@ -90,9 +90,12 @@ describe('Owner & entity money', () => {
     withProviders(<EntityLedgerSection propId="prop-1" corporationId="corp-1" year={Y} />);
     await waitFor(() => expect(screen.getByText('Illinois franchise tax')).toBeTruthy());
 
-    // Exactly one chip — the entity cost's. A draw files on no line of any return, so
-    // offering it a category would invite a wrong answer.
-    const chips = [...document.querySelectorAll('.cat-chip')];
+    // Exactly one TAX-CATEGORY chip — the entity cost's. A draw files on no line of any
+    // return, so offering it a category would invite a wrong answer.
+    // (0098's "paid to" chip borrows the same styling and is excluded by class, not by
+    // count: every row now carries one, and a bare `.cat-chip` count would stop testing
+    // what this is about.)
+    const chips = [...document.querySelectorAll('.cat-chip:not(.party-chip)')];
     expect(chips).toHaveLength(1);
     expect(chips[0].textContent).toBe('Set a tax category');
     expect(chips[0].closest('.cam-row').textContent).toContain('Illinois franchise tax');

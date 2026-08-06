@@ -9,12 +9,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   ENTITY_KINDS, entityKindInfo, isEntityKind, entityKindsFor,
   summarizeEntityLedger, absorbedFromItems, whatStayed,
+  partyLabel, partyBreakdown, knownParties, UNATTRIBUTED,
 } from '../entityLedger';
 import {
   applyStatementImport, undoStatementImport, listEntityLedger, listEntityLedgerByCorps,
-  addEntityLedgerEntry, deleteEntityLedgerEntry, placeUnplacedLine,
+  addEntityLedgerEntry, deleteEntityLedgerEntry, placeUnplacedLine, setEntityLedgerParty,
   listUnplacedLines, listCamLineItems, getExpenseRecord, getTenantShares, getPropertyTotals,
 } from '../api';
+import { excludedFromReturn } from '../cpaPackage';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -50,6 +52,97 @@ describe('the entity vocabulary', () => {
       { kind: 'contribution', amount: 5000 },
     ]);
     expect(s).toMatchObject({ draws: 25000, costs: 1750, contributions: 5000, count: 4 });
+  });
+});
+
+// A capital account is PER MEMBER. Three cheques to three people is three capital
+// accounts, and "Owner draws: $100,000" answers none of them — the shape that prompted
+// this (real statements: Lana $20,000, Yazin $10,000, Khaled $70,000).
+describe('who the money went to', () => {
+  const rows = [
+    { kind: 'draw', amount: 20000, party: 'Lana Akkawi' },
+    { kind: 'draw', amount: 70000, party: 'Khaled Akkawi' },
+    { kind: 'draw', amount: 10000, party: 'Yazin Akkawi' },
+    { kind: 'draw', amount: 5000, party: null },
+    { kind: 'contribution', amount: 8000, party: 'Lana Akkawi' },
+  ];
+
+  it('names the field for the direction the money moved', () => {
+    expect(partyLabel('draw')).toBe('Paid to');
+    expect(partyLabel('cost')).toBe('Paid to');
+    expect(partyLabel('contribution')).toBe('From');
+  });
+
+  it('splits a kind by person, largest first', () => {
+    const split = partyBreakdown(summarizeEntityLedger(rows), 'draw');
+    expect(split.map((r) => [r.party, r.amount])).toEqual([
+      ['Khaled Akkawi', 70000],
+      ['Lana Akkawi', 20000],
+      ['Yazin Akkawi', 10000],
+      [UNATTRIBUTED, 5000],
+    ]);
+  });
+
+  it('carries an unnamed row instead of dropping it, so the split SUMS to the total', () => {
+    const sum = summarizeEntityLedger(rows);
+    const split = partyBreakdown(sum, 'draw');
+    // The whole point: 105,000 of draws, and the per-person lines account for all of it.
+    expect(sum.draws).toBe(105000);
+    expect(split.reduce((s, r) => s + r.amount, 0)).toBe(sum.draws);
+    expect(split[split.length - 1].party).toBe(UNATTRIBUTED); // and it sorts last
+  });
+
+  it('keeps each kind’s people separate', () => {
+    const sum = summarizeEntityLedger(rows);
+    expect(partyBreakdown(sum, 'contribution')).toEqual([{ party: 'Lana Akkawi', amount: 8000 }]);
+    expect(partyBreakdown(sum, 'cost')).toEqual([]);
+  });
+
+  it('offers the names already used, deduped case-insensitively and sorted', () => {
+    expect(knownParties([...rows, { kind: 'draw', amount: 1, party: 'lana akkawi' }]))
+      .toEqual(['Khaled Akkawi', 'Lana Akkawi', 'Yazin Akkawi']);
+  });
+
+  it('reaches the CPA package’s excluded sheet, still summing to its group', () => {
+    const ex = excludedFromReturn({ entity: summarizeEntityLedger(rows) });
+    const draws = ex.groups.find((g) => g.key === 'draws');
+    expect(draws.amount).toBe(105000);
+    expect(draws.parties.reduce((s, r) => s + r.amount, 0)).toBe(draws.amount);
+    expect(draws.parties[0].party).toBe('Khaled Akkawi');
+  });
+});
+
+describe('naming a draw after it was imported', () => {
+  // The primary path, not a correction: a bank publishes a cheque's number, date, ref and
+  // amount — never the payee, which is handwriting on the image. So every imported draw
+  // arrives blank and is named here.
+  it('renames in place, keeping the provenance its import’s undo reverses by', async () => {
+    await applyStatementImport({
+      propertyId: 'prop-1', year: Y, fileName: 'cheque.csv',
+      entries: [{
+        type: 'entity', kind: 'draw', corporation_id: 'corp-1', property_id: 'prop-1',
+        year: Y, amount: 70000, date: `${Y}-02-06`, label: 'Cheque 1331', hash: 'h-1331',
+      }],
+      lines: [{ hash: 'h-1331', year: Y, date: `${Y}-02-06`, description: 'CHECK 1331', amount: 70000, direction: 'out', disposition: 'owner' }],
+    });
+    const before = (await listEntityLedger({ propertyId: 'prop-1', year: Y })).find((e) => e.line_hash === 'h-1331');
+    expect(before.party ?? null).toBe(null); // the bank named nobody
+
+    const after = await setEntityLedgerParty(before.id, '  Khaled Akkawi  ');
+    expect(after.party).toBe('Khaled Akkawi');          // trimmed, so it groups cleanly
+    expect(after.import_id).toBe(before.import_id);      // ↩ Undo still reverses it
+    expect(after.line_hash).toBe('h-1331');
+    expect(Number(after.amount)).toBe(70000);           // and no figure moved
+  });
+
+  it('clears back to unattributed when the name is emptied', async () => {
+    const row = await addEntityLedgerEntry({
+      corporation_id: 'corp-1', property_id: 'prop-1', year: Y,
+      kind: 'draw', amount: 1200, party: 'Typo Name',
+    });
+    expect(row.party).toBe('Typo Name');
+    expect((await setEntityLedgerParty(row.id, '')).party ?? null).toBe(null);
+    await deleteEntityLedgerEntry(row.id);
   });
 });
 

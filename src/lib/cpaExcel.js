@@ -345,6 +345,13 @@ function addExcluded(wb, pkg) {
   } else {
     for (const g of pkg.excluded.groups) {
       p.line([g.label + (g.count ? ` (${g.count} line${g.count === 1 ? '' : 's'})` : ''), g.amount, g.why], { moneyFrom: 1, aligns: ['left', 'right', 'left'] });
+      // Split by person (0098). A capital account is per member, so a lumped distribution
+      // is not usable — three cheques to three people is three capital accounts. Indented
+      // beneath its group, and it always sums back to the group's own figure because an
+      // unnamed row is carried as "Not attributed" rather than dropped.
+      for (const q of g.parties || []) {
+        p.line([`    ${q.party}`, q.amount, ''], { moneyFrom: 1, aligns: ['left', 'right', 'left'] });
+      }
     }
     p.line(['TOTAL LEFT OFF', pkg.excluded.total, ''], { bg: SUMMARY_BG, bold: true, moneyFrom: 1, aligns: ['left', 'right', 'left'] });
   }

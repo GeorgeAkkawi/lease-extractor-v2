@@ -6052,6 +6052,11 @@ export async function addEntityLedgerEntry(entry) {
         kind: entry.kind,
         category: entry.category || null,
         label: entry.label || null,
+        // WHO (0098). The single insert every writer funnels through — the add form,
+        // placeUnplacedLine and applyStatementImport — so the column is carried in one
+        // place. Trimmed to null so a stray space never becomes its own "person" in the
+        // CPA package's per-party breakdown.
+        party: String(entry.party || '').trim() || null,
         amount: Math.abs(Number(entry.amount) || 0),
         txn_date: entry.txn_date || null,
         note: entry.note || null,
@@ -6069,6 +6074,18 @@ export const deleteEntityLedgerEntry = (id) =>
 // Only an entity COST files on a line of the return, so only a cost has a category.
 export const setEntityLedgerCategory = (id, category) =>
   one(supabase.from('entity_ledger').update({ category: category || null }).eq('id', id).select().single());
+
+// Name (or rename) who the money went to / came from — IN PLACE (0098).
+//
+// ⚠ This is the primary path, not a correction. A bank publishes no payee for a cheque
+// (the machine-readable line is number, date, ref, amount — the name is handwriting on
+// the image), so EVERY imported draw arrives unattributed and is named afterwards.
+// Editing in place rather than delete-and-re-add is what keeps `import_id` and
+// `line_hash` intact, so the import's ↩ Undo still reverses exactly its own delta.
+export const setEntityLedgerParty = (id, party) =>
+  one(supabase.from('entity_ledger')
+    .update({ party: String(party || '').trim() || null })
+    .eq('id', id).select().single());
 
 // ---- Other income (Slice 4c) -------------------------------------------------
 // Income the property really received that is not tenant rent. See
@@ -6391,7 +6408,7 @@ export async function capitalizeExpenseLine(itemId, fields = {}) {
 // re-importing the statement it came from. Writes the ledger row FIRST, then stamps
 // the line — so an interruption leaves a recorded draw with a still-nagging line
 // (visible, fixable) rather than a placed line with no money behind it (invisible).
-export async function placeUnplacedLine(line, { kind, corporationId, category = null, leaseId = null }) {
+export async function placeUnplacedLine(line, { kind, corporationId, category = null, leaseId = null, party = null }) {
   if (kind === 'transfer') {
     // A transfer writes nothing — the disposition IS the record, exactly as an
     // ignore's is. There is no row to create and none to reverse.
@@ -6426,6 +6443,7 @@ export async function placeUnplacedLine(line, { kind, corporationId, category = 
     year: line.year || null,
     kind,
     category,
+    party,
     label: line.description ? String(line.description).slice(0, 200) : null,
     amount: line.amount,
     txn_date: line.txn_date || null,
@@ -6718,6 +6736,9 @@ export async function applyStatementImport({ propertyId, year, fileName, account
         kind: e.kind,
         category: e.category || null,
         label: e.label || (e.description ? String(e.description).slice(0, 200) : null),
+        // Usually blank on a cheque — the bank prints no payee — and named afterwards on
+        // the Entity ledger. Carried anyway for the lines where the review DID ask.
+        party: e.party || null,
         amount: Number(e.amount),
         txn_date: e.date || null,
         import_id: imp.id,

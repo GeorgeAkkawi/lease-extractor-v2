@@ -242,9 +242,15 @@ export function seed() {
     // seeded above, less these. The entity cost carries NO category on purpose — that
     // is the gold "Set a tax category" state, the same refusal 0075 makes.
     entity_ledger: [
-      { id: 'ent-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'draw', category: null, label: 'Owner distribution', amount: 24000, txn_date: iso(Y, 3, 15), note: null, import_id: null, line_hash: null, created_at: iso(Y, 3, 15) },
-      { id: 'ent-2', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'cost', category: null, label: 'Illinois franchise tax', amount: 1750, txn_date: iso(Y, 2, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 2, 1) },
-      { id: 'ent-3', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'contribution', category: null, label: 'Capital call — roof work', amount: 5000, txn_date: iso(Y, 5, 20), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 20) },
+      // `party` (0098) — who took it / who it came from. ent-1 and ent-2 are named; ent-3
+      // deliberately carries NONE, because that is the state every IMPORTED row starts in
+      // (a bank prints no payee on a cheque) and a demo where everything is already named
+      // would hide the one the landlord actually has to act on. No row is added and no
+      // amount moves: the seeded draw / contribution / cost totals are what several
+      // "what actually stayed" tests assert, and colour is not worth re-baselining them.
+      { id: 'ent-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'draw', category: null, label: 'Owner distribution', party: 'Dana Whitfield', amount: 24000, txn_date: iso(Y, 3, 15), note: null, import_id: null, line_hash: null, created_at: iso(Y, 3, 15) },
+      { id: 'ent-2', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'cost', category: null, label: 'Illinois franchise tax', party: 'Illinois Secretary of State', amount: 1750, txn_date: iso(Y, 2, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 2, 1) },
+      { id: 'ent-3', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'contribution', category: null, label: 'Capital call — roof work', party: null, amount: 5000, txn_date: iso(Y, 5, 20), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 20) },
     ],
     // Slice 4c — income the property really received that no invoice knows about.
     // Three categories so the panel demos its grouping, and one row NAMES its tenant

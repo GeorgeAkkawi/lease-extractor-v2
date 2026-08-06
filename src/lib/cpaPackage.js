@@ -33,7 +33,7 @@ import {
 import { EXPENSE_CATEGORIES, categoryLabel } from './expenseCategories';
 import { recoverabilityRows, recoveryFractions } from './recoverability';
 import { summarizeAssets } from './depreciation';
-import { summarizeEntityLedger, absorbedFromItems } from './entityLedger';
+import { summarizeEntityLedger, absorbedFromItems, partyBreakdown } from './entityLedger';
 import { summarizeOtherIncome } from './otherIncome';
 
 const num = (v) => Number(v) || 0;
@@ -333,12 +333,18 @@ export function excludedFromReturn({ entity = {}, deposits = 0, unplaced = { cou
       label: 'Owner draws',
       amount: round2(entity.draws || 0),
       why: 'A distribution reduces equity. It is not an expense and files on no line of either form — your accountant needs it for the capital account, not the P&L.',
+      // WHO took it (0098). A capital account is PER MEMBER, so "Owner draws: $100,000"
+      // is not an answer to the question this line exists to answer — three cheques to
+      // three people is three capital accounts. Unattributed rows ride along under their
+      // own name so these always sum to `amount` (see partyBreakdown).
+      parties: partyBreakdown(entity, 'draw'),
     },
     {
       key: 'contributions',
       label: 'Owner contributions',
       amount: round2(entity.contributions || 0),
       why: 'Money you put in is equity, not rental income.',
+      parties: partyBreakdown(entity, 'contribution'),
     },
     {
       key: 'deposits',
