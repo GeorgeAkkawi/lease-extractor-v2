@@ -56,6 +56,35 @@ describe('the income vocabulary', () => {
     ]);
   });
 
+  // Added 2026-08-12 so income can sit on the workbook's monthly grid beside expenses.
+  // `txn_date` is nullable and the hand-entry form makes it optional, so the undated
+  // figure is real money and must stay visible rather than being spread over months.
+  it('lays each group out by month, keeping undated receipts out of every month', () => {
+    const s = summarizeOtherIncome([
+      { category: 'late_fee', amount: 250, txn_date: '2026-01-10' },
+      { category: 'parking', amount: 150, txn_date: '2026-01-31' },
+      { category: 'parking', amount: 150, txn_date: '2026-02-28' },
+      { category: 'parking', amount: 150 },                          // no date at all
+      { category: 'late_fee', amount: 75, txn_date: '2025-12-31' },  // filed here, dated last year
+    ], 2026);
+    const parking = s.groups.find((g) => g.key === 'parking');
+    expect(parking.byMonth[0]).toBe(150);
+    expect(parking.byMonth[1]).toBe(150);
+    expect(parking.undated).toBe(150);
+    // Across equals down, for the group and for the summary.
+    expect(parking.byMonth.reduce((a, b) => a + b, 0) + parking.undated).toBe(parking.total);
+    expect(s.byMonth.reduce((a, b) => a + b, 0) + s.undated).toBe(s.total);
+    // The out-of-year receipt is undated, not printed as this year's December.
+    expect(s.byMonth[11]).toBe(0);
+    expect(s.undated).toBe(225);
+  });
+
+  it('takes a date at face value when no year is given', () => {
+    const s = summarizeOtherIncome([{ category: 'parking', amount: 150, txn_date: '2025-12-31' }]);
+    expect(s.byMonth[11]).toBe(150);
+    expect(s.undated).toBe(0);
+  });
+
   it('attributes income to the tenant who paid it, without billing anything', () => {
     const by = incomeByLease([
       { lease_id: 'a', amount: 250 }, { lease_id: 'a', amount: 75 }, { lease_id: null, amount: 900 },

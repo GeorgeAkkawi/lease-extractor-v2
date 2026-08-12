@@ -28,10 +28,12 @@
 // NOTHING HERE BILLS ANYTHING. Every figure is derived; no caller writes. A wrong
 // category produces a wrong report and never a wrong invoice.
 
-import { categoryFor, categoryLabel, isOwnerCategory } from './expenseCategories';
+import { bucketKey, categoryFor, categoryLabel, isOwnerCategory } from './expenseCategories';
+import { monthOfYearIndex } from './isoDate';
 
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
+const zero12 = () => Array(12).fill(0);
 
 // The three itemized expense kinds — the cam_line_items.kind CHECK since 0074.
 export const EXPENSE_KINDS = ['tax', 'cam', 'roof'];
@@ -85,22 +87,71 @@ function expenseLines(items, expense) {
     // else — including a row that predates the column — bills as normal.
     billable: it.billable !== false,
     flat: false,
+    // The day the money left the account (0074). NULLABLE and not backfilled, so this is
+    // routinely absent — see `undated` below.
+    paid_date: it.paid_date || null,
   }));
   for (const kind of EXPENSE_KINDS) {
     if (totalFor[kind] > 0 && !lines.some((l) => l.kind === kind)) {
-      lines.push({ kind, label: FLAT_LABEL[kind], amount: totalFor[kind], billable: true, flat: true });
+      // A flat total is a single figure typed by hand for the whole year. It has no day
+      // by definition, so it is undated rather than dated to some month nobody chose.
+      lines.push({ kind, label: FLAT_LABEL[kind], amount: totalFor[kind], billable: true, flat: true, paid_date: null });
     }
   }
   return lines;
 }
 
+// ── The monthly breakdown (2026-08-12) ───────────────────────────────────────────────
+//
+// George: the Income-and-expenses workbook "should be itemized like a reconciliation … all
+// income and expenses monthly with the main buckets and items."
+//
+// ⚠ IT IS GROWN HERE RATHER THAN BESIDE, and that is the whole reason it is in this file.
+// Which category a line rolls up to is decided by exactly one piece of code — the
+// saved-bucket → label-registry → what-the-section-means chain below — and a monthly grid
+// built next to it would be a second copy of that chain, free to disagree about where a
+// dollar belongs (CLAUDE.md §3). So the row gains `byMonth` / `undated` / `items` and every
+// existing field keeps its exact value: the "What it cost you" table reads `spent`,
+// `recovered`, `net` and `buckets`, ignores the rest, and cannot move.
+//
+// ⚠ `undated` IS NOT A ROUNDING BUCKET — it is a real and often large figure. `paid_date` is
+// nullable and never backfilled (0074), a contract's derived CAM line never gets one, and a
+// kind entered as a single flat total has no day at all. On real data that is thousands of
+// dollars, so it gets its own column and its own flag rather than being spread over twelve
+// months it was never in. `byMonth` sums stored 2-dp amounts, so months + undated === spent
+// exactly, pinned by test.
+
+const emptyBreakdown = () => ({ byMonth: zero12(), undated: 0, itemMap: new Map() });
+
+// Add one line's amount to a category's grid and to its bucket's row within that grid.
+function addToBreakdown(e, line, year) {
+  const mi = monthOfYearIndex(line.paid_date, year);
+  if (mi == null) e.undated += line.amount;
+  else e.byMonth[mi] += line.amount;
+
+  const key = bucketKey(line.label);
+  let it = e.itemMap.get(key);
+  if (!it) {
+    it = { label: line.label, total: 0, byMonth: zero12(), undated: 0, flat: false };
+    e.itemMap.set(key, it);
+  }
+  it.total += line.amount;
+  if (line.flat) it.flat = true;
+  if (mi == null) it.undated += line.amount;
+  else it.byMonth[mi] += line.amount;
+}
+
 /**
  * The table: one row per tax category, carrying what you spent, what tenants pay back,
- * and what it cost you.
+ * and what it cost you — plus, since 2026-08-12, the same figures month by month.
  *
  * Ordered by NET COST descending, because that is the question — the roof you absorbed
  * in full outranks a larger tax bill that came back almost whole. Uncategorized is
  * always last and, as in Slice 2, is never folded into the "Other" category.
+ *
+ * `year` is optional and only affects the monthly breakdown: a row stored under this year
+ * whose date falls in another one is counted as undated rather than printed in a month it
+ * did not belong to. Omit it and a date's own month is taken as read.
  *
  * Pure: takes rows, reads no clock and no network.
  */
@@ -111,7 +162,7 @@ function expenseLines(items, expense) {
 // from both `rows` and `totals`, so every caller that renders a subtotal gets the right
 // answer without knowing the rule. The Income-and-expenses workbook prints `owner`
 // beneath the net line for the same reason.
-export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [] } = {}) {
+export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [], year = null } = {}) {
   const fractions = recoveryFractions({ shares, expense });
   const byCat = new Map();
   let uncategorized = null;
@@ -131,12 +182,12 @@ export function recoverabilityRows({ items = [], shares = [], expense = {}, buck
 
     let e;
     if (!category) {
-      uncategorized ||= { key: null, label: 'Not categorized', spent: 0, recovered: 0, net: 0, buckets: [], anyDefault: false, anyFlat: false };
+      uncategorized ||= { key: null, label: 'Not categorized', spent: 0, recovered: 0, net: 0, buckets: [], anyDefault: false, anyFlat: false, ...emptyBreakdown() };
       e = uncategorized;
     } else {
       e = byCat.get(category);
       if (!e) {
-        e = { key: category, label: categoryLabel(category), spent: 0, recovered: 0, net: 0, buckets: [], anyDefault: false, anyFlat: false };
+        e = { key: category, label: categoryLabel(category), spent: 0, recovered: 0, net: 0, buckets: [], anyDefault: false, anyFlat: false, ...emptyBreakdown() };
         byCat.set(category, e);
       }
       if (source === 'default') e.anyDefault = true;
@@ -145,6 +196,7 @@ export function recoverabilityRows({ items = [], shares = [], expense = {}, buck
     e.recovered += recovered;
     if (line.flat) e.anyFlat = true;
     if (!e.buckets.includes(line.label)) e.buckets.push(line.label);
+    addToBreakdown(e, line, year);
   }
 
   const finish = (e) => {
@@ -154,6 +206,14 @@ export function recoverabilityRows({ items = [], shares = [], expense = {}, buck
     e.recovered = round2(e.recovered);
     e.net = round2(e.spent - e.recovered);
     e.buckets.sort((a, b) => a.localeCompare(b));
+    // The grid, rounded the same way and ordered the same way the table is: biggest
+    // first, so the bucket worth asking about is the one at the top of the group.
+    e.byMonth = e.byMonth.map(round2);
+    e.undated = round2(e.undated);
+    e.items = [...e.itemMap.values()]
+      .map((it) => ({ ...it, total: round2(it.total), undated: round2(it.undated), byMonth: it.byMonth.map(round2) }))
+      .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+    delete e.itemMap;
     return e;
   };
 
@@ -167,10 +227,15 @@ export function recoverabilityRows({ items = [], shares = [], expense = {}, buck
   if (uncategorized) rows.push(finish(uncategorized));
 
   // Sum the ROUNDED rows, never the raw figures, so the totals line ties to the column
-  // above it rather than being a hair off it.
+  // above it rather than being a hair off it. The months are summed the same way, from
+  // the same rows, so the workbook's "Total out" line ties across as well as down.
   const totals = rows.reduce(
-    (t, r) => ({ spent: round2(t.spent + r.spent), recovered: round2(t.recovered + r.recovered), net: round2(t.net + r.net) }),
-    { spent: 0, recovered: 0, net: 0 }
+    (t, r) => ({
+      spent: round2(t.spent + r.spent), recovered: round2(t.recovered + r.recovered), net: round2(t.net + r.net),
+      byMonth: t.byMonth.map((n, i) => round2(n + r.byMonth[i])),
+      undated: round2(t.undated + r.undated),
+    }),
+    { spent: 0, recovered: 0, net: 0, byMonth: zero12(), undated: 0 }
   );
   const ownerTotal = owner.reduce((t, r) => round2(t + r.spent), 0);
 

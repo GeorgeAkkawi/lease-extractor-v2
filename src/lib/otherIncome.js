@@ -18,6 +18,7 @@
 // accounting arc, and the export says so rather than implying a separate line.
 // Insurance proceeds are the one genuine exception (a casualty recovery is not rent),
 // which is exactly why it is broken out rather than buried in "Other".
+import { monthOfYearIndex } from './isoDate';
 
 // key is stable and stored; label is what the user reads. Order is the order shown.
 export const INCOME_CATEGORIES = [
@@ -45,26 +46,46 @@ export const incomeCategoryLabel = (key) => incomeCategoryInfo(key).label;
 export const isIncomeCategory = (key) => BY_KEY.has(key);
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const zero12 = () => Array(12).fill(0);
 
-// Total and per-category breakdown, biggest first. Amounts are taken ABSOLUTE for the
-// same reason entity_ledger's are: a sign slip on one row must not silently cancel a
-// real receipt on another, which would under-report in the direction that hides money.
-export function summarizeOtherIncome(rows = []) {
+/**
+ * Total and per-category breakdown, biggest first. Amounts are taken ABSOLUTE for the
+ * same reason entity_ledger's were: a sign slip on one row must not silently cancel a
+ * real receipt on another, which would under-report in the direction that hides money.
+ *
+ * Each group also carries the year month by month (2026-08-12), so the Income-and-expenses
+ * workbook can lay income out beside expenses on one grid. It is grown HERE rather than in
+ * the workbook for the reason `recoverabilityRows` grew its own: which bucket a receipt
+ * belongs to is decided once, and a second copy of that decision beside this one would be
+ * free to disagree (CLAUDE.md §3).
+ *
+ * ⚠ `txn_date` IS NULLABLE and the hand-entry form makes it optional, so `undated` is a
+ * real figure and not a remainder — it must be shown, never spread across months. Passing
+ * `year` also sends a receipt dated in a DIFFERENT year to `undated`: `other_income.year`
+ * and `other_income.txn_date` are separate columns, and a row filed under this year
+ * carrying last December's date must not print as this December.
+ */
+export function summarizeOtherIncome(rows = [], year = null) {
   const byCategory = new Map();
   let total = 0;
+  const byMonth = zero12();
+  let undated = 0;
   for (const r of rows || []) {
     if (!r) continue;
     const amt = Math.abs(Number(r.amount) || 0);
     total = round2(total + amt);
     const key = isIncomeCategory(r.category) ? r.category : 'other';
-    const prev = byCategory.get(key) || { key, label: incomeCategoryLabel(key), total: 0, count: 0, rows: [] };
+    const prev = byCategory.get(key) || { key, label: incomeCategoryLabel(key), total: 0, count: 0, rows: [], byMonth: zero12(), undated: 0 };
     prev.total = round2(prev.total + amt);
     prev.count += 1;
     prev.rows.push(r);
+    const mi = monthOfYearIndex(r.txn_date, year);
+    if (mi == null) { prev.undated = round2(prev.undated + amt); undated = round2(undated + amt); }
+    else { prev.byMonth[mi] = round2(prev.byMonth[mi] + amt); byMonth[mi] = round2(byMonth[mi] + amt); }
     byCategory.set(key, prev);
   }
   const groups = [...byCategory.values()].sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
-  return { total, count: (rows || []).length, groups };
+  return { total, count: (rows || []).length, groups, byMonth, undated };
 }
 
 // Which tenants this income came FROM, for the rows that name one. Attribution without

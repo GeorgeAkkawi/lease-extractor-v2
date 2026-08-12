@@ -18,7 +18,6 @@
 import { describe, it, expect } from 'vitest';
 import { recoverabilityRows, recoveryFractions } from '../recoverability';
 import { getTenantShares, getExpenseRecord, getPropertyTotals, listCamLineItems, listTaxLineItems, listRoofLineItems } from '../api';
-import { cappedLeases } from '../leaseRisks';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -211,37 +210,104 @@ describe('grouping (the invariants Slice 2 established)', () => {
     roll();
     expect(JSON.stringify(items)).toBe(before);
     expect(recoverabilityRows()).toEqual({
-      rows: [], totals: { spent: 0, recovered: 0, net: 0 },
+      rows: [], totals: { spent: 0, recovered: 0, net: 0, byMonth: Array(12).fill(0), undated: 0 },
       owner: [], ownerTotal: 0,
       fractions: { tax: null, cam: null, roof: null },
     });
   });
 });
 
-// ── The CAM-cap caveat ────────────────────────────────────────────────────────
+// (The CAM-cap caveat's suite lived here. The caveat was removed from "What it cost you"
+// on 2026-08-12 and `cappedLeases` with it; the flag itself is still raised and still
+// tested where it renders, in leaseReviewStrip.test.js.)
 
-describe('a capped lease is named rather than silently over-counted', () => {
-  const review = (flags) => ({ ai_review: { flags } });
+// ── The monthly grid ──────────────────────────────────────────────────────────
+//
+// Added 2026-08-12 so the Income-and-expenses workbook can lay a year out like a
+// reconciliation. Two things carry this block: the grid must ADD UP (months + undated ===
+// spent, across and down), and money with no date must stay visibly undated rather than
+// being spread over months it was never in.
 
-  it('finds the flagged lease and carries the clause it came from', () => {
-    const out = cappedLeases([
-      { id: 'l1', tenant_name: 'Tobacco', ...review([{ key: 'no_late_fee' }, { key: 'cam_capped', title: 'CAM is capped', quote: 'Additional Rent is estimated…' }]) },
-      { id: 'l2', tenant_name: 'Michuacana', ...review([{ key: 'no_late_fee' }]) },
-    ]);
-    expect(out).toEqual([{ id: 'l1', tenant_name: 'Tobacco', title: 'CAM is capped', quote: 'Additional Rent is estimated…' }]);
+describe('the monthly breakdown', () => {
+  const Y2 = 2026;
+  const items = [
+    { kind: 'cam', label: 'Landscaping', amount: 400, paid_date: `${Y2}-01-15` },
+    { kind: 'cam', label: 'Landscaping', amount: 400, paid_date: `${Y2}-02-15` },
+    { kind: 'cam', label: 'Snow removal', amount: 900, paid_date: `${Y2}-01-20` },
+    // No paid_date at all — a hand-typed figure. 0074 refuses to invent one.
+    { kind: 'cam', label: 'Security', amount: 6000 },
+    // A date in the WRONG year on a row filed under this one.
+    { kind: 'cam', label: 'Landscaping', amount: 100, paid_date: `${Y2 - 1}-12-31` },
+  ];
+  const expense = { cam_total: 7800 };
+  const buckets = [{ label: 'Landscaping', category: 'cleaning' }, { label: 'Snow removal', category: 'cleaning' }];
+  const roll = () => recoverabilityRows({ items, shares: [], expense, buckets, year: Y2 });
+
+  it('places each dated line in its own month and totals across to spent', () => {
+    const cleaning = roll().rows.find((r) => r.key === 'cleaning');
+    expect(cleaning.byMonth[0]).toBe(1300);  // 400 landscaping + 900 snow
+    expect(cleaning.byMonth[1]).toBe(400);
+    expect(cleaning.byMonth.slice(2)).toEqual(Array(10).fill(0));
+    expect(cleaning.undated).toBe(100);      // the December-of-last-year row
+    // ⚠ The invariant the whole grid rests on: the row reads the same across as down.
+    expect(cleaning.byMonth.reduce((a, b) => a + b, 0) + cleaning.undated).toBe(cleaning.spent);
   });
 
-  // The quote is what makes the warning arguable rather than merely believed — the live
-  // sweep's one cam_capped flag quotes a clause about an ESTIMATE with a true-up, which
-  // is close to the opposite of a cap. A caveat you can check beats one you can't.
-  it('carries a null quote through rather than dropping the lease', () => {
-    const out = cappedLeases([{ id: 'l1', tenant_name: 'Tobacco', ...review([{ key: 'cam_capped' }]) }]);
-    expect(out[0]).toMatchObject({ id: 'l1', quote: null, title: null });
+  it('holds that invariant for every row and for the totals line', () => {
+    const { rows, totals } = roll();
+    for (const r of rows) {
+      expect(r.byMonth.reduce((a, b) => a + b, 0) + r.undated).toBeCloseTo(r.spent, 10);
+      for (const it of r.items) {
+        expect(it.byMonth.reduce((a, b) => a + b, 0) + it.undated).toBeCloseTo(it.total, 10);
+      }
+      expect(r.items.reduce((s, it) => s + it.total, 0)).toBeCloseTo(r.spent, 10);
+    }
+    expect(totals.byMonth.reduce((a, b) => a + b, 0) + totals.undated).toBeCloseTo(totals.spent, 10);
   });
 
-  it('says nothing about an unreviewed lease', () => {
-    expect(cappedLeases([{ id: 'l1', tenant_name: 'X', ai_review: null }, { id: 'l2' }])).toEqual([]);
-    expect(cappedLeases()).toEqual([]);
+  // The point of the undated column: it is not a rounding remainder, it is real money —
+  // and on live data it is large (a flat tax total alone can be six figures).
+  it('keeps undated money out of every month rather than spreading or dropping it', () => {
+    const none = roll().rows.find((r) => r.key === null);
+    expect(none.undated).toBe(6000);
+    expect(none.byMonth).toEqual(Array(12).fill(0));
+  });
+
+  // A kind entered as one flat figure for the year has no day by definition.
+  it('treats an un-itemized flat total as undated, never as a month', () => {
+    const { rows } = recoverabilityRows({ items: [], shares: [], expense: { taxes_total: 127000 }, year: Y2 });
+    const tax = rows.find((r) => r.key === 'taxes');
+    expect(tax.undated).toBe(127000);
+    expect(tax.byMonth).toEqual(Array(12).fill(0));
+    expect(tax.items[0]).toMatchObject({ label: 'Property taxes', flat: true, undated: 127000 });
+  });
+
+  // The bucket rows under a category — "the main buckets and items", biggest first.
+  it('itemizes each category by bucket, merging a bucket entered several times', () => {
+    const cleaning = roll().rows.find((r) => r.key === 'cleaning');
+    expect(cleaning.items.map((i) => i.label)).toEqual(['Landscaping', 'Snow removal']);
+    expect(cleaning.items[0].total).toBe(900);   // 400 + 400 + the undated 100
+    expect(cleaning.items[0].byMonth[0]).toBe(400);
+  });
+
+  // Omitting `year` is the looser read — a date is taken at face value. This is what
+  // makes the function usable on rows that were never year-filtered.
+  it('takes a date at face value when no year is given', () => {
+    const { rows } = recoverabilityRows({ items, shares: [], expense, buckets });
+    const cleaning = rows.find((r) => r.key === 'cleaning');
+    expect(cleaning.byMonth[11]).toBe(100);
+    expect(cleaning.undated).toBe(0);
+  });
+
+  // The owner rows get the same grid — a draw crossed the bank on a day too.
+  it('gives an owner distribution its own months, still outside every total', () => {
+    const { owner, totals } = recoverabilityRows({
+      items: [{ kind: 'cam', label: 'Dana Whitfield', amount: 24000, billable: false, paid_date: `${Y2}-06-01` }],
+      shares: [], expense: {}, buckets: [{ label: 'Dana Whitfield', category: 'distribution' }], year: Y2,
+    });
+    expect(owner[0].byMonth[5]).toBe(24000);
+    expect(totals.byMonth).toEqual(Array(12).fill(0));
+    expect(totals.spent).toBe(0);
   });
 });
 

@@ -289,7 +289,7 @@ export default function PropertyFinancialsPage() {
         <MutationError of={[setRoof]} />
       </StatementDropZone>
 
-      <RecoverabilityTable propId={propId} corpId={corpId} year={year} />
+      <RecoverabilityTable propId={propId} year={year} />
 
       {/* Money IN that isn't rent, below the expense sections it mirrors: what went out
           that no expense total knows about, then what came in that no invoice does.

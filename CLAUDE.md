@@ -197,7 +197,7 @@ Change one of these and you have changed every money screen at once. Read all th
 | Function | Lives in | Read by |
 |---|---|---|
 | `buildLeaseSchedule` | `src/lib/leaseSchedule.js` | `ledger.js`, `api.js` (5 call sites) — and note its **two documented modes**: projection (no `invoiceTotal`) vs reconcile-to-bill (scales + penny-folds to settle an issued invoice exactly) |
-| `allocatePayments` / `componentizeSchedule` | `src/lib/ledger.js` | the Ledger grid, the reminders, `closeYear`. `componentizeSchedule` holds the invariant **base + camTax + roof === owed** per month |
+| `allocatePayments` / `componentizeSchedule` | `src/lib/ledger.js` | the Ledger grid, the reminders, `closeYear`, `reconciliationData.js`, and since 2026-08-12 `incomeExpense.js`. `componentizeSchedule` holds the invariant **base + camTax + roof === owed** per month — which is why the Income-and-expenses rent row reads `base` for a NET lease and `base + camTax + roof` for a **gross** one (`0073`: a gross tenant's share is carved OUT of a flat rent that `total_revenue` counts whole). Get that branch wrong and the sheet either double-counts the reimbursement or under-reports the rent. It also **derives** the sheet's rent where the view used to supply it, so `shapeProperty` carries `rentDrift` and `flags()` prints any gap over $1 — a JS↔SQL twin with a visible tie-out rather than a silent one |
 | `billedComponents` | `src/lib/reconciliation.js` | `TenantShareTable`, `LeasesPage`, `ledger.js`, `reconciliationData.js`, `api.js` |
 | `contractAnnualCost` | `src/lib/contracts.js` | `syncContractCamItems` (`api.js` — → `cam_line_items` → `cam_total` → shares → a stored invoice), `ContractItem` (`ServiceContractsSection.js`), `ContractReview` (`ContractDocs.js`). Signature is `(contract, year, steps)`; **every caller must pass the 0091 steps**, in ONE bulk read, or two screens quote different annual costs for one contract. (It had a fourth caller, `vendorRowsFor` in `form1099.js` — removed 2026-08-12 with the 1099 worksheet.) |
 
@@ -211,6 +211,22 @@ Two implementations of one rule always drift unless changed in the same commit.
   `recoverabilityRows`' `owner` / `ownerTotal`. Neither re-derives it. A second copy would
   let the screen and the sheet disagree about whether a landlord's draw is an expense —
   and only one of them would be wrong in front of an accountant.
+- **THE MONTHLY GRID GROWS ON THE EXISTING GROUPERS, never beside them** (2026-08-12).
+  `recoverabilityRows` rows carry `byMonth` / `undated` / `items` and `summarizeOtherIncome`
+  groups carry `byMonth` / `undated`, because which category or bucket a dollar files under
+  is decided once. The Income-and-expenses workbook reads those; it groups nothing itself.
+  **`undated` is a REAL figure, not a remainder** — `cam_line_items.paid_date` is nullable and
+  never backfilled (`0074`), a contract-derived CAM line never carries one, and a kind entered
+  as a flat total has no day at all (on the demo seed that is $31,000 of $49,950). Every grid
+  therefore prints a **No date** column and `flags()` states the sum; `monthOfYearIndex`
+  (`isoDate.js`) is the one place that decides a row has no usable month, and it answers null
+  for a date outside the row's stored `year` too.
+- **`net === noi + recovered + otherIncome − absorbed`, and the last term is the one that gets
+  dropped.** NOI is `total_revenue − total_expenses` and `total_expenses` comes from `cam_total`,
+  which sums `billable is not false` only — so a cost the landlord entered and chose to eat is in
+  the workbook's `spent` and in none of NOI. The sheet shipped on 2026-08-12 printing this
+  reconciliation without it, wrong by exactly that figure, for an accountant to find. Pinned in
+  `incomeExpense.test.js`.
 - **JS ↔ SQL twins:** `effective_rent` (migration `0054`) ↔ `effectiveRent` (`escalations.js:38`) ·
   `abatement_credit` (`0041`) ↔ `abatement.js` · `app_today()` (`0051`) ↔ `localDateIso` (`api.js:36`) ·
   the renewal-option lapse rule in `apply_due_renewals()` (`0068`) ↔ `optionLapseReason`

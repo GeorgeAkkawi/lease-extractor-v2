@@ -36,7 +36,7 @@ beforeEach(() => cleanup());
 
 describe('What it cost you', () => {
   it('shows spent, recovered and net for every category — and the columns add up', async () => {
-    withProviders(<RecoverabilityTable propId="prop-1" corpId="corp-1" year={Y} />);
+    withProviders(<RecoverabilityTable propId="prop-1" year={Y} />);
     await waitFor(() => expect(screen.getByText(`What it cost you — FY ${Y}`)).toBeTruthy());
 
     // The roof: spent in full, recovered only from the lease that makes the tenant
@@ -68,7 +68,7 @@ describe('What it cost you', () => {
   // would silently become a cost of the building, and the totals band above is where it
   // would show up.
   it('shows a distribution BELOW the total and in none of the figures inside it', async () => {
-    withProviders(<RecoverabilityTable propId="prop-1" corpId="corp-1" year={Y} />);
+    withProviders(<RecoverabilityTable propId="prop-1" year={Y} />);
     await waitFor(() => expect(screen.getByText(`What it cost you — FY ${Y}`)).toBeTruthy());
 
     const owner = document.querySelector('.recov-owner');
@@ -86,7 +86,7 @@ describe('What it cost you', () => {
   });
 
   it('names a kind entered as one flat figure rather than leaving it out', async () => {
-    withProviders(<RecoverabilityTable propId="prop-1" corpId="corp-1" year={Y} />);
+    withProviders(<RecoverabilityTable propId="prop-1" year={Y} />);
     await waitFor(() => expect(screen.getByText('Real estate taxes')).toBeTruthy());
     const taxes = rowFor('Real estate taxes');
     expect(taxes.textContent).toContain('Property taxes');
@@ -98,7 +98,7 @@ describe('What it cost you', () => {
   // and is never folded into the "Other" category. It moved here from CamSection's
   // Slice 2 roll-up, which this table supersedes.
   it('keeps an uncategorized bucket visible and out of "Other"', async () => {
-    withProviders(<RecoverabilityTable propId="prop-1" corpId="corp-1" year={Y} />);
+    withProviders(<RecoverabilityTable propId="prop-1" year={Y} />);
     await waitFor(() => expect(screen.getByText('Not categorized')).toBeTruthy());
     const none = document.querySelector('.recov-row.cat-none');
     expect(none.textContent).toContain('Security');
@@ -115,8 +115,20 @@ describe('What it cost you', () => {
   });
 
   it('says nothing at all on a property with no expenses entered', async () => {
-    withProviders(<RecoverabilityTable propId="prop-2" corpId="corp-1" year={Y} />);
+    withProviders(<RecoverabilityTable propId="prop-2" year={Y} />);
     await waitFor(() => expect(document.querySelectorAll('.recov-row').length).toBe(0));
     expect(screen.queryByText(/What it cost you/)).toBeNull();
+  });
+
+  // The CAM-cap caveat, removed 2026-08-12 (George: "take this feature out entirely").
+  // A tripwire against the copy coming back, not a proof it cannot: the panel no longer
+  // reads lease reviews at all, so there is nothing left to build one from. Where the
+  // finding DOES still belong — the lease's own page, with its quote and a ✕ that
+  // remembers — is covered by leaseReviewStrip.test.js.
+  it('carries no cap caveat', async () => {
+    withProviders(<RecoverabilityTable propId="prop-1" year={Y} />);
+    await waitFor(() => expect(screen.getByText(`What it cost you — FY ${Y}`)).toBeTruthy());
+    expect(document.body.textContent).not.toMatch(/capping|Read the clause|relying on the recovered figure/);
+    expect(document.querySelector('.note-msg.warn')).toBeNull();
   });
 });

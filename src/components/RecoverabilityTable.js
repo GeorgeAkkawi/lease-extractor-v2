@@ -6,13 +6,11 @@
 // one of the three itemized sections and said so in its own footnote. This covers all
 // three, and adds the column that makes it worth reading.
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { getTenantShares, listCamLineItems, listTaxLineItems, listRoofLineItems, listExpenseBuckets, listLeaseReviews, getExpenseRecord } from '../lib/api';
+import { getTenantShares, listCamLineItems, listTaxLineItems, listRoofLineItems, listExpenseBuckets, getExpenseRecord } from '../lib/api';
 import { recoverabilityRows } from '../lib/recoverability';
-import { cappedLeases } from '../lib/leaseRisks';
 import { money } from '../lib/format';
 
-export default function RecoverabilityTable({ propId, corpId, year }) {
+export default function RecoverabilityTable({ propId, year }) {
   const { data: shares = [] } = useQuery({ queryKey: ['tenantShares', propId, year], queryFn: () => getTenantShares(propId, year) });
   const { data: buckets = [] } = useQuery({ queryKey: ['expenseBuckets'], queryFn: listExpenseBuckets });
   // The three itemized sections' OWN keys, so every existing invalidation on this page
@@ -23,11 +21,9 @@ export default function RecoverabilityTable({ propId, corpId, year }) {
   // Same query key the page and the three expense sections use, so this is a cache hit
   // and the table can never read a different total than the sections above it.
   const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year) });
-  const { data: reviews = [] } = useQuery({ queryKey: ['leaseReviews', propId], queryFn: () => listLeaseReviews(propId) });
 
   const items = [...taxItems, ...camItems, ...roofItems];
   const { rows, totals, owner, ownerTotal } = recoverabilityRows({ items, shares, expense: expense || {}, buckets });
-  const capped = cappedLeases(reviews);
 
   // Nothing spent yet — the expense sections above already say so; a table of zeroes
   // would just be noise on a page that is otherwise asking you to fill them in. A year
@@ -113,26 +109,19 @@ export default function RecoverabilityTable({ propId, corpId, year }) {
         The gap is what you carry: vacant space nobody is billed for, any line marked
         <em> not billed to tenants</em>, and roof work on leases that don't make the tenant responsible.
       </div>
-
-      {capped.length > 0 && (
-        <div className="note-msg warn" style={{ marginTop: 12 }}>
-          <strong>Check {capped.length === 1 ? 'this lease' : 'these leases'} before relying on the recovered figure.</strong>{' '}
-          The lease review flagged {capped.length === 1 ? 'it' : 'them'} as possibly capping the
-          tenant's share of operating expenses. Amlak bills — and this table counts — the full
-          pro-rata share, so a real cap would mean you recover less than shown.
-          <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-            {capped.map((c) => (
-              <li key={c.id} style={{ marginBottom: 6 }}>
-                <Link to={`/leases/${corpId}/${propId}/${c.id}`}>{c.tenant_name}</Link>
-                {c.quote && <div className="muted" style={{ fontSize: 11, marginTop: 2, fontStyle: 'italic' }}>“{c.quote}”</div>}
-              </li>
-            ))}
-          </ul>
-          <div style={{ marginTop: 6, fontSize: 11 }}>
-            Read the clause: if it doesn't actually cap anything, the figure above is right as it stands.
-          </div>
-        </div>
-      )}
     </div>
   );
 }
+
+// ⚠ THE CAM-CAP CAVEAT LIVED HERE AND WAS REMOVED (George, 2026-08-12: "take this feature
+// out entirely"). It was a gold box naming every lease the AI review had flagged
+// `cam_capped`, quoting the clause, and warning that a real cap would mean recovering less
+// than this table shows. It cost a third of the panel's height for a caveat that, on the one
+// lease that ever raised it, quoted a clause describing an ESTIMATE with a true-up — the
+// opposite of a cap. It also never honoured `dismissed_keys`, so dismissing the finding on
+// the lease page left the box on screen with no way to answer it.
+//
+// The CHECK ITSELF IS UNTOUCHED. `cam_capped` is still one of the review's flags
+// (_shared/leaseFlags.js) and still shows on the lease's own page in LeaseReviewStrip, where
+// it carries its note, its quote and a ✕ that remembers. What went is the second surface, on
+// a table that could only repeat the warning and never resolve it.

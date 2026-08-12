@@ -51,8 +51,9 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
         </div>
         <div className="modal-body">
           <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
-            A summary sheet for the whole company, then one sheet per property: rent and other income,
-            every expense by category with what tenants paid back, and what the year left.
+            A summary sheet for the whole company, then one sheet per property — laid out month by month,
+            January to December: rent and other income, every expense by category and bucket, what tenants
+            paid back, and what the year left.
           </p>
 
           {isLoading && <p className="muted" style={{ marginTop: 14 }}>Reading your figures…</p>}
@@ -73,6 +74,17 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
                 You spent {money(t.spent)}; tenants reimbursed {money(t.recovered)} of it through their share.
                 The reimbursement is taken off the cost rather than added to the rent, so no dollar is counted twice.
               </div>
+
+              {/* ⚠ SAID BEFORE THE DOWNLOAD, NOT DISCOVERED INSIDE IT. A monthly sheet
+                  invites the reader to scan across the year, so how much of the year is
+                  NOT on the grid is the one thing they have to be told first. */}
+              {(t.outUndated > 0 || t.inUndated > 0) && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                  {money(t.outUndated + t.inUndated)} has no date on it and lands in a <em>No date</em> column
+                  rather than in a month — an expense typed by hand with the date left blank, a figure entered
+                  as one annual total, or a cost carried in from a service contract.
+                </div>
+              )}
 
               {/* Owner money, stated apart — the same rule the screen and the sheet follow. */}
               {t.distributions > 0 && (

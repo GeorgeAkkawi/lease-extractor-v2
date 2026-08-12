@@ -165,34 +165,12 @@ export function transcriptGaps(text) {
   return { partial: markers.length > 0, pages, readableLength };
 }
 
-/**
- * Leases the AI review flagged as CAPPING the tenant's operating-expense share.
- *
- * Slice 3's recovery figure divides each expense by pro-rata share and assumes the whole
- * share is collectable. A cap breaks that assumption — a capped tenant reimburses less
- * than their share, so the recovered column would report money the landlord is not
- * entitled to collect. Making a cap a stored lease term feeding billedComponents is a
- * choke-point change (CLAUDE.md §2) and is deliberately NOT done here; the table names
- * the lease instead, and quotes the clause the flag came from so it can be judged rather
- * than merely believed. A flag whose own quote doesn't describe a cap is a flag to argue
- * with, and the quote is what makes that possible.
- */
-export function cappedLeases(leases = []) {
-  const out = [];
-  for (const l of leases) {
-    const flags = Array.isArray(l?.ai_review?.flags) ? l.ai_review.flags : [];
-    const flag = flags.find((f) => f?.key === 'cam_capped');
-    if (flag) {
-      out.push({
-        id: l.id,
-        tenant_name: String(l.tenant_name || '').trim() || 'This tenant',
-        title: flag.title || null,
-        quote: flag.quote || null,
-      });
-    }
-  }
-  return out.sort((a, b) => a.tenant_name.localeCompare(b.tenant_name));
-}
+// `cappedLeases` lived here until 2026-08-12. It pulled every lease carrying the review's
+// `cam_capped` flag so "What it cost you" could warn that a capped tenant reimburses less
+// than the pro-rata share the table counts. George had the caveat removed outright, and the
+// selector went with it rather than becoming a function nothing calls. Nothing about the
+// flag changed: it is still raised, still stored on `ai_review`, and still rendered — with
+// its quote and a dismiss — by LeaseReviewStrip on the lease's own page.
 
 /**
  * What a saved AI review amounts to, in the two numbers every surface needs: how many

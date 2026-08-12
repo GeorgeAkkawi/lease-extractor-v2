@@ -87,6 +87,34 @@ describe('every downloadable workbook opens without a repair dialog', () => {
     for (const [n, xml] of Object.entries(sheets)) expectSheetOpens(n, xml);
     // No sheet declares a pane at all, which is the shape that opens cleanly.
     expect(Object.values(sheets).every((x) => !/state="frozen"/.test(x))).toBe(true);
+
+    // ⚠ AND THE GRID ADDS UP IN THE BYTES THAT SHIP, not just in the builder. The sheet is
+    // fifteen columns — the line item, its Total, Jan…Dec, and "No date" — and B must
+    // equal C…O on every row that carries numbers. A monthly sheet whose Total disagrees
+    // with its own months is the one error a reader would catch and never trust again.
+    const doc = new DOMParser().parseFromString(Object.values(sheets)[0], 'application/xml');
+    let checked = 0;
+    for (const row of doc.getElementsByTagName('row')) {
+      const cells = {};
+      for (const c of row.getElementsByTagName('c')) {
+        const ref = (c.getAttribute('r') || '').replace(/\d+/g, '');
+        const v = c.getElementsByTagName('v')[0];
+        if (v && c.getAttribute('t') !== 's') cells[ref] = Number(v.textContent);
+      }
+      const across = ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O']
+        .reduce((s, k) => s + (cells[k] || 0), 0);
+      // Rows that are not part of the grid (the two-column "what the year left" block)
+      // carry no month cells at all, and are not what this asserts.
+      if (across === 0) continue;
+      // ⚠ A MISSING Total IS THE FAILURE, not a row to skip. The expense CATEGORY rows
+      // shipped blank in column B in the first draft — `recoverabilityRows` calls the
+      // year's figure `spent` where every other row calls it `total` — and a version of
+      // this check that skipped a null B would have passed straight over it.
+      expect(cells.B, `row ${row.getAttribute('r')} carries months but no Total`).not.toBeUndefined();
+      expect(Math.abs(across - cells.B), `row ${row.getAttribute('r')} totals ${cells.B} but its months add to ${across}`).toBeLessThan(0.02);
+      checked += 1;
+    }
+    expect(checked, 'no grid rows were found to check').toBeGreaterThan(3);
   }, 30000);
 
   // These two use their own writers and were already correct. Covering them is what stops

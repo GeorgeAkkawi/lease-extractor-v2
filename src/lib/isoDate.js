@@ -27,4 +27,29 @@ export function isoDateOrNull(v) {
   return s;
 }
 
+/**
+ * Which month of `year` a stored date falls in — 0-11, or **null** when the money cannot
+ * honestly be placed in one.
+ *
+ * ⚠ NULL IS A REAL ANSWER HERE, not a failure. `cam_line_items.paid_date` and
+ * `other_income.txn_date` are both nullable on purpose (0074: "an expense typed by hand
+ * legitimately has no date, and inventing one — Dec 31, say — would be a lie"), and whole
+ * classes of row never carry one: a contract's derived CAM line, a kind entered as a single
+ * flat total. Every caller that spreads figures across months must therefore keep an
+ * "undated" bucket and SAY what landed in it. Folding those dollars into a month, or
+ * dropping them, are both ways of reporting a year that didn't happen.
+ *
+ * A date outside `year` also answers null rather than its own month number: `year` is a
+ * stored column and the date is a separate one, so a row filed under 2026 carrying a
+ * December-2025 date must not be printed as this year's December. Pass no `year` to take
+ * the month whatever the date's own year.
+ */
+export function monthOfYearIndex(v, year = null) {
+  const iso = isoDateOrNull(typeof v === 'string' ? v.slice(0, 10) : v);
+  if (!iso) return null;
+  const [yy, mm] = iso.split('-').map(Number);
+  if (year != null && yy !== Number(year)) return null;
+  return mm - 1;
+}
+
 export default isoDateOrNull;

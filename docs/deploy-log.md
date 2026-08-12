@@ -12,6 +12,149 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-12** — **The Income-and-expenses sheet becomes a reconciliation — twelve months across, buckets
+  and items down — and the CAM-cap caveat comes off "What it cost you"** (George: *"in the what it cost you
+  saying and whats it for its taking alot of space and cant be dismissed"* → *"take this feature out
+  entirely"*; and *"the income and expenses doc that we just added should be itemized like a reconciliation
+  so it should show all income and expenses monthly with the main buckets and items"*)
+  - **Cloudflare version `0f63ff18-b7fc-45be-9d9d-ea0e6687f0a4`**. **NO migration, NO edge function, NO
+    view, NO feature gate, NO new query key** — nothing in this round writes a figure. Tests **1757 across
+    171 files** (was 1742/170: +18 new, −3 with the caveat's selector).
+  - **George's three answers, taken before any code:** months **across the top** (not one block per month) ·
+    rent is **what the leases oblige**, not what arrived, so the sheet ties to the Revenue card · the cap
+    caveat **removed**, not shrunk.
+
+  ### 1. The cap caveat is gone from the money table, and NOT from the lease
+
+  `cappedLeases` (`leaseRisks.js`) and the gold box it fed (`RecoverabilityTable.js:117-135`) are deleted,
+  along with the panel's `['leaseReviews', propId]` query and its now-unused `corpId` prop. **The
+  `cam_capped` CHECK IS UNTOUCHED** — still raised by the review, still stored on `ai_review`, still
+  rendered with its quote and a ✕ that remembers by `LeaseReviewStrip` on the lease's own page. What went
+  is the SECOND surface, on a table that could only repeat the warning and never resolve it.
+  - Two things worth recording. ① The box cost roughly a third of the panel's height — three lines of
+    bold prose, a 400-char clause quote and a footer — for a caveat that, on the one lease that ever
+    raised it (Tobacco, Pershing), quoted a clause describing an ESTIMATE with a true-up the tenant
+    "unconditionally agrees" to, which is close to the opposite of a cap. ② **It never honoured
+    `dismissed_keys`**: `cappedLeases` read `ai_review.flags` raw, so dismissing the finding on the lease
+    page left the box on screen with nothing that could answer it. George's "can't be dismissed" was
+    literally true and was a bug, not a design choice. Both die with it.
+  - `recoverabilityUi.test.js` gains a tripwire on the copy's absence. Honest about its own strength: the
+    panel no longer reads reviews at all, so there is nothing left to build the box from.
+
+  ### 2. The workbook, month by month
+
+  **Fifteen columns**: the line item · its Total · Jan…Dec · **No date**. Summary (the whole company) plus
+  one sheet per property, categories in bold with their buckets indented beneath.
+
+  ```
+  Category / bucket            Total     Jan     Feb  …   Aug  … No date
+  Legal and professional       2,950       —   2,950         —        —
+      Illinois franchise tax   1,750       —   1,750         —        —
+      Owner legal fees         1,200       —   1,200         —        —
+  Real estate taxes           25,000       —       —         —   25,000
+      Property taxes — entered as one figure, not itemized
+  Total out                   49,950   4,000   2,950     2,500   31,000
+  Money in less money out     96,740   8,000   9,050     9,500  (31,000)
+  ```
+
+  ### ⚠ 3. "NO DATE" IS THE HALF OF THIS NOBODY WOULD PREDICT
+
+  `cam_line_items.paid_date` is nullable and **deliberately not backfilled** (0074: *"an expense typed by
+  hand legitimately has no date, and inventing one — Dec 31, say — would be a lie"*). Three whole classes
+  of row never carry one: a **service contract's** derived CAM line (`api.js:3582` writes no date), a kind
+  entered as a **single flat total** (`'Entered by hand'`, `api.js:3485`), and any hand-typed line where
+  the optional date was skipped. **On the demo seed that is $31,000 of $49,950 — 62% of the year.** On
+  Pershing it will be more: $127,000 of taxes as one figure.
+  - So the column is not a rounding bucket and is never treated as one. Undated money is shown, flagged in
+    dollars, and **said before the download** in the modal — a monthly sheet invites the reader to scan
+    across the year, so how much of the year is NOT on the grid is the first thing they must be told.
+  - `monthOfYearIndex` (`isoDate.js`) is the single place that decides a row has no usable month. It also
+    answers null for a date OUTSIDE the row's stored `year`: `other_income.year` and `other_income.txn_date`
+    are separate columns, and a receipt filed under this year carrying last December's date must not print
+    as this December.
+
+  ### 4. Grown on the existing groupers, never beside them
+
+  `recoverabilityRows` rows now carry `byMonth` / `undated` / `items`, and `summarizeOtherIncome` groups
+  carry `byMonth` / `undated`. **A monthly grid built next to them would be a second copy of the
+  saved-bucket → label-registry → what-the-section-means chain** (CLAUDE.md §3), free to disagree about
+  where a dollar files. Every pre-existing field keeps its exact value — the on-screen table reads `spent`
+  / `recovered` / `net` / `buckets`, ignores the rest, and is provably unmoved (see §7).
+  - The invariant, pinned at three levels: **Jan…Dec + No date === the Total**, for every bucket, every
+    category and the totals line. `byMonth` sums stored 2-dp amounts, so this is exact rather than close.
+
+  ### ⚠ 5. The rent changed SOURCE, so it now carries a tie-out
+
+  Laying rent across months means deriving it from each lease's **schedule** (`getPropertyMonthlyRoll` →
+  `componentizeSchedule`, arg list copied verbatim from `reconciliationData.js:73`), where this sheet used
+  to quote `v_property_totals.total_revenue` — one annual figure from SQL. Those are the two halves of a
+  JS↔SQL twin (`effectiveRent` ↔ `effective_rent`).
+  - **The gross branch is load-bearing:** rent = `base` for a NET lease, `base + camTax + roof` for a
+    **GROSS** one. On a net lease that component is the REIMBURSEMENT, which this workbook takes off the
+    cost side — putting it in rent as well reports the same dollars twice. On a gross lease (0073) it is
+    carved OUT of a flat rent the tenant pays anyway and `total_revenue` counts the whole figure, so
+    leaving it out under-reports by exactly the carve. Same field, opposite meaning. Unit-tested both ways.
+  - `shapeProperty` carries **`rentDrift`** and `flags()` prints any gap over $1, naming both figures. On
+    the demo the two agree to the cent ($144,000 = $144,000, drift 0). **A visible tie-out rather than a
+    silent one** — the alternative was a workbook quietly disagreeing with the Performance card beside it.
+  - Cost accepted, not hidden: `getPropertyMonthlyRoll` fans out one `listPayments` per invoice that this
+    sheet never reads. Re-deriving escalations, abatements, part-year terms and the estimate series outside
+    `buildLeaseSchedule` would be a second implementation of a §2 choke point.
+
+  ### ⚠ 6. Two real bugs caught before they shipped
+
+  1. **The NOI reconciliation printed on every property sheet was WRONG, and had been since 2026-08-12
+     this morning.** It claimed `net = noi + recovered + otherIncome`. It is off by exactly the not-billed
+     costs: NOI is `total_revenue − total_expenses`, `total_expenses` comes from `cam_total`, and
+     `syncCamTotal` sums `billable is not false` only — so a cost the landlord entered and chose to eat is
+     in this sheet's `spent` and in none of NOI. On the demo that is **$2,950**. The sheet now prints the
+     full arithmetic (`$97,000 + $44,600 + $2,690 − $2,950 = $141,340`) and `absorbed` is a returned field.
+     **An accountant checking the note is the person who would have found this.** Pinned.
+  2. **Every expense CATEGORY row shipped with a blank Total column** in the first draft. `recoverabilityRows`
+     calls the year's figure `spent` (it also carries `recovered` and `net`) where a rent row, an income
+     group and a bucket item all call it `total` — so the grid printed twelve months under an empty
+     header figure. Caught by dumping the real workbook rather than by reading the code. `workbookValidity.test.js`
+     now unzips the bytes and asserts **B === C…O on every row that carries months, and that a row with
+     months HAS a Total** — the first version of that check skipped a null B and would have passed straight
+     over it.
+
+  ### 7. Verified by driving the built app, not by reading the code
+  Maple Plaza, FY 2026, every figure read off the rendered page (ui-verifier, zero console errors/warnings):
+  - **"What it cost you" carries no gold box at all** — "capping", "Read the clause" and "relying on the
+    recovered figure" appear nowhere on the page; `[class*=warn]` inside the panel returns 0 elements.
+  - **Spent $49,950.00 · Recovered $44,600.00 · net $5,350.00 — unmoved**, which is the proof that
+    extending `recoverabilityRows` changed nothing the screen reads. Dana Whitfield $24,000.00 still
+    renders BELOW the totals band.
+  - **Revenue $144,000.00 · Total expenses $47,000.00 · NOI $97,000.00**, identical on the property page,
+    the dashboard and the list cards.
+  - The export modal: Rent $144,000.00 · Other income $2,690.00 · Your net cost $5,350.00 · **What the
+    year left $141,340.00** (all four unchanged), the new "month by month, January to December" copy, and
+    **"$31,000.00 has no date on it and lands in a No date column"** stated before the download.
+  - The generated workbook was dumped cell by cell: Summary + Maple Plaza, both grids adding across and
+    down, rent $12,000/month split $7,000 City Dental + $5,000 Bright Coffee, expenses in Jan/Feb/Apr/May/Aug,
+    $31,000 in No date, the distribution alone in March and in no expense month.
+
+  ### Files
+  New: `src/lib/__tests__/incomeExpense.test.js`. Edited: `incomeExpense.js` (rewritten — monthly grids,
+  `rentRowsFromRoll`, `consolidateCategories`, `absorbed`, three new flags) · `incomeExpenseExcel.js`
+  (rewritten — 15-column layout) · `recoverability.js` (`byMonth`/`undated`/`items`, `paid_date` carried
+  through `expenseLines`) · `otherIncome.js` (`summarizeOtherIncome(rows, year)`) · `isoDate.js`
+  (`monthOfYearIndex`) · `leaseRisks.js` (`cappedLeases` deleted) · `RecoverabilityTable.js` ·
+  `PropertyFinancialsPage.js` · `ExportIncomeExpenseModal.js` · `CLAUDE.md` (§2's choke-point row for
+  `componentizeSchedule`; two new §3 mirrors) · four test files.
+
+  ### Not done, and worth naming
+  - **The demo seed was left alone.** The plan said to date a few more lines; on inspection the spread is
+    already Jan/Feb/Feb/Mar/Apr/May/Aug, and the two undated cases (Security $6,000, the flat $25,000 of
+    taxes) are exactly what the seed's own comments say they are there to teach. Dating them would have
+    hidden the column that most needed demonstrating.
+  - **No frozen first column** on a 15-wide grid. `xlsxSheet` freezes rows only, and hand-rolling `xSplit`
+    risks the corrupt-workbook class of bug `{ ySplit: 0 }` already caused once. Scroll right and the
+    labels leave; the sections are short enough that this is liveable.
+  - **No monthly "recovered" figure.** A tenant's actual share is settled at reconciliation for the year as
+    a whole; `annual ÷ 12` would be invented. It sits below the grid with a sentence saying why.
+  - `reconciliationExcel.js` and `rentRollExcel.js` still roll their own writers.
+
 - **2026-08-12** — **The accounting arc loses three exports, a depreciation engine and a whole
   table — and every bank line still has somewhere to go** (George: *"there is no need for the tax
   package, 1099, and lender package … i like the idea of creating buckets for things … i just want
