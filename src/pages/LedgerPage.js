@@ -36,8 +36,8 @@ import LeaseTypeChip from '../components/LeaseTypeChip';
 import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness } from '../lib/dispositions';
-import { entityKindsFor } from '../lib/entityLedger';
 import { INCOME_CATEGORIES } from '../lib/otherIncome';
+import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -115,22 +115,26 @@ export default function LedgerPage() {
     mutationFn: ({ id, reason }) => setLineDisposition(id, 'ignored', reason || null),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] }),
   });
-  // Slice 4b — give the line a real home from here, without re-importing the
-  // statement it came from. Writes to entity_ledger only, so answering the nag can
-  // never move a tenant's bill or this property's expenses.
+  // Give the line a real home from here, without re-importing the statement it came
+  // from. Every destination writes either an `other_income` row or a NOT-BILLED expense
+  // line, and syncCamTotal excludes the latter from cam_total — so answering the nag can
+  // never move a tenant's bill or this property's NOI.
   const place = useMutation({
-    // The pick encodes its own sub-destination: `income:<category>` and
-    // `deposit:<leaseId>` (Slice 4c), everything else is a bare entity kind.
+    // The pick encodes its own sub-destination: `income:<category>`, `deposit:<leaseId>`
+    // and `expense:<category>` (a distribution is `expense:distribution`).
     mutationFn: ({ line, kind }) => placeUnplacedLine(line, {
-      kind: kind.startsWith('income:') ? 'income' : kind.startsWith('deposit:') ? 'deposit' : kind,
-      corporationId: prop?.corporation_id || corpId,
-      category: kind.startsWith('income:') ? kind.slice(7) : null,
+      kind: kind.startsWith('income:') ? 'income' : kind.startsWith('deposit:') ? 'deposit' : kind.startsWith('expense:') ? 'expense' : kind,
+      category: kind.startsWith('income:') ? kind.slice(7) : kind.startsWith('expense:') ? kind.slice(8) : null,
       leaseId: kind.startsWith('deposit:') ? kind.slice(8) : null,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] });
-      qc.invalidateQueries({ queryKey: ['entityLedger'] });
-      qc.invalidateQueries({ queryKey: ['entityLedgerByCorps'] });
+      // A not-billed expense line landed: the CAM list, the bucket records that carry
+      // its category, the corp-card distribution roll-up and the Financials strips all
+      // read it. `camLineItems` is a prefix so every year of this property repaints.
+      qc.invalidateQueries({ queryKey: ['camLineItems'] });
+      qc.invalidateQueries({ queryKey: ['expenseBuckets'] });
+      qc.invalidateQueries({ queryKey: ['corpDistributions'] });
       qc.invalidateQueries({ queryKey: ['otherIncome'] });
       qc.invalidateQueries({ queryKey: ['depositLines'] });
     },
@@ -627,24 +631,30 @@ export default function LedgerPage() {
                     <td style={{ fontSize: 12 }}>{l.description || '—'}</td>
                     <td className="num">{l.direction === 'in' ? '+' : '−'}{money(Math.abs(Number(l.amount) || 0))}</td>
                     <td className="num">
-                      {/* Slice 4b — the nag is now answerable, not just silenceable.
-                          Round 6 could only offer "leave it out"; these are the homes
-                          that make the panel a work-list rather than a complaint. */}
+                      {/* The nag is answerable, not just silenceable — these are the
+                          homes that make the panel a work-list rather than a complaint. */}
                       <select
                         className="text-input" style={{ maxWidth: 210, fontSize: 11, marginBottom: 4 }}
                         value=""
-                        disabled={place.isPending || !corpId}
+                        disabled={place.isPending}
                         onChange={(e) => { if (e.target.value) place.mutate({ line: l, kind: e.target.value }); }}
                         title="Record this line where it belongs. None of these touch a tenant's bill or this property's expenses."
                       >
                         <option value="">Record as…</option>
-                        {entityKindsFor(l.direction === 'in' ? 'in' : 'out').map((k) => (
-                          <option key={k.key} value={k.key}>{k.label}</option>
-                        ))}
-                        {/* Slice 4c — money in that isn't rent. Income carries its
-                            category; a deposit carries the tenant it belongs to,
-                            because reconciling it against the lease is the whole
-                            point of recording it at all. */}
+                        {/* Money OUT lands as a not-billed expense line carrying the
+                            category chosen here — `distribution` marks it as the
+                            landlord's own money and keeps it out of every expense
+                            subtotal. Money IN carries an income category; a deposit
+                            carries the tenant it belongs to, because reconciling it
+                            against the lease is the whole point of recording it. */}
+                        {l.direction !== 'in' && (
+                          <optgroup label="Not billed to tenants">
+                            <option value="expense:distribution">Owner distribution — money you took out</option>
+                            {EXPENSE_CATEGORIES.filter((c) => !c.ownerCapital).map((c) => (
+                              <option key={c.key} value={`expense:${c.key}`}>{c.label}</option>
+                            ))}
+                          </optgroup>
+                        )}
                         {l.direction === 'in' && (
                           <optgroup label="Other income — not rent">
                             {INCOME_CATEGORIES.map((c) => (

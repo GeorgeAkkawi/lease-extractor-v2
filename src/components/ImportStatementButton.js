@@ -207,11 +207,14 @@ export function settleStatementImport(qc) {
   // An import records every line it read, and an undo takes them away with it (0076
   // cascades) — so the "money not yet placed" panel moves in both directions.
   qc.invalidateQueries({ queryKey: ['unplacedLines'] });
-  // Slice 4b — an import can now book a draw, a contribution or an entity cost, and
-  // undo takes them away again. Neither moves a billed figure, which is exactly why
-  // they ride this set rather than settleBillingChange's.
-  qc.invalidateQueries({ queryKey: ['entityLedger'] });
-  qc.invalidateQueries({ queryKey: ['entityLedgerByCorps'] });
+  // An import can book an owner distribution, and undo takes it away again. Since the
+  // entity ledger was retired (2026-08-12) that lands as a NOT-BILLED cam_line_items row
+  // plus the bucket record carrying its `distribution` category — so both of those keys
+  // move, and so does the corp-card roll-up derived from them. It still rides this set
+  // rather than settleBillingChange's for the original reason: `billable = false` keeps
+  // it out of cam_total, so no billed figure moved.
+  qc.invalidateQueries({ queryKey: ['expenseBuckets'] });
+  qc.invalidateQueries({ queryKey: ['corpDistributions'] });
   // Slice 4c — the same for money IN that isn't rent. `depositLines` is the lease
   // page's half of the deposit cross-check, so it has to move when an import records
   // one (and back again on undo).

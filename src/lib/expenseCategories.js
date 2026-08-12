@@ -1,21 +1,30 @@
-// Slice 2 — the tax category an expense bucket rolls up to.
+// The category an expense bucket rolls up to.
 //
-// THE LIST IS THE UNION OF FORM 8825 AND SCHEDULE E, on purpose. George's filing form
-// is unsettled ("my CPA handles it"), and the two forms differ only in a few lines —
-// 8825 carries Wages and folds management fees into Other; Schedule E carries
-// Management fees and Supplies and splits interest two ways. One list serves both, and
-// the export names whichever line the CPA actually wants. Building toward ONE form
-// would mean re-categorizing every bucket the day the entity's filing changes.
+// THE LIST IS THE UNION OF FORM 8825 AND SCHEDULE E, and it stayed that way on purpose
+// when the tax package was removed (George, 2026-08-12: "keep the list as is"). The
+// package is gone, but the shape is still the right one: these are the categories a
+// landlord's accountant already recognises, so a report handed over needs no
+// translation, and nothing has to be re-categorized if one is ever wanted again.
+//
+// What is NO LONGER true: no export maps these to numbered form lines any more, and
+// `depreciation` is gone with capitalizing (2026-08-12). Nothing could produce it and
+// nothing could roll it up, so leaving it selectable would have offered the landlord a
+// category that quietly reported nothing. ⚠ `categoryLabel` returns null for a retired
+// key rather than throwing, and `categoryFor` treats it as unanswered — so a bucket
+// that chose it before the removal shows the gold "Set a category" chip and gets asked
+// again, which is the honest outcome and the one this file already handles.
 //
 // IT LIVES IN JS, NOT IN A CHECK CONSTRAINT OR AN ENUM — matching how this codebase
 // already does registries (FEATURES in features.js, NOTIFY_TYPES in notifyPrefs.js).
 // A CHECK would mean a migration every time the list is refined, and would reject a row
 // the app itself considers valid.
 //
-// NOTHING HERE BILLS ANYTHING. A category is reporting vocabulary: which line of a tax
-// form a dollar rolls up to. What a TENANT is charged is decided entirely by
-// cam_line_items.billable and the pro-rata share — untouched by this file. So a
-// mis-categorized bucket produces a wrong report and never a wrong invoice.
+// NOTHING HERE BILLS ANYTHING. A category is reporting vocabulary: which heading a dollar
+// rolls up to. What a TENANT is charged is decided entirely by cam_line_items.billable and
+// the pro-rata share — untouched by this file. So a mis-categorized bucket produces a wrong
+// report and never a wrong invoice. ⚠ ONE EXCEPTION, since 2026-08-12: `distribution` does
+// not bill anything either, but it decides whether a line is counted as a cost AT ALL. It
+// is the only key here that changes an arithmetic rather than a label.
 
 // key is stable and stored; label is what the user reads. Order is the order shown.
 export const EXPENSE_CATEGORIES = [
@@ -32,21 +41,42 @@ export const EXPENSE_CATEGORIES = [
   { key: 'supplies',      label: 'Supplies' },
   { key: 'utilities',     label: 'Utilities' },
   { key: 'wages',         label: 'Wages' },
-  { key: 'depreciation',  label: 'Depreciation' },
   { key: 'other',         label: 'Other' },
+  // ⚠ NOT AN EXPENSE, and `ownerCapital` is what keeps it out of every expense subtotal.
+  // Retiring the entity ledger (2026-08-12) collapsed owner draws into this list — one
+  // register, one set of buckets, which is what the landlord asked for. What it must NOT
+  // collapse is the arithmetic: a distribution reduces equity and is not a cost of the
+  // building, so it is carried here and reported on its own line beneath the net.
+  //
+  // It is BILLING-INERT by construction and that is not luck. A distribution is written
+  // as a `cam_line_items` row with `billable = false`, and syncCamTotal (api.js) filters
+  // those out of `cam_total` — so it never reaches expense_records, v_property_totals,
+  // a tenant share or an invoice. NOI is identical with or without it.
+  { key: 'distribution',  label: 'Owner distribution', ownerCapital: true },
 ];
 
 const BY_KEY = new Map(EXPENSE_CATEGORIES.map((c) => [c.key, c]));
 
+// ONE predicate decides what an expense subtotal may contain, so the "What it cost you"
+// table and the Income-and-expenses workbook cannot disagree about whether a draw is a
+// cost — the exact class of divergence CLAUDE.md §3 is about. Both read it through
+// `recoverabilityRows`, which returns owner rows in `owner` and never in `totals`;
+// neither re-derives the rule.
+//
+// There is deliberately NO income-side counterpart. Money the owner puts IN has no
+// amount-bearing home — it files as a `transfer`, which records the bank line and counts
+// it nowhere (otherIncome.js states the refusal), so nothing needs to exclude it.
+//
+// A custom category can never be one of these: `filingCategory` files every custom key
+// under `other`, and the landlord names write-ins, not accounting primitives.
+export const isOwnerCategory = (key) => BY_KEY.get(key)?.ownerCapital === true;
+
 // ---- Categories the landlord names (0099) -------------------------------------------
 //
-// When none of the fifteen above fit. THE CONSTRAINT: the list above is the union of Form
-// 8825 and Schedule E, and FORM_LINES (cpaPackage.js) maps every key to a real line. You
-// cannot invent a line on an IRS form. So a custom category is a NAMED WRITE-IN under
-// "Other" — both forms end with a write-in line (8825 line 15, Sch E line 19) that asks you
-// to LIST your own descriptions. It rolls up to `other` and supplies that line's text, which
-// is why this makes the report better than it is now: one lumped "Other" becomes the
-// itemization the form was asking for.
+// When none of the built-ins above fit. It is a NAMED WRITE-IN under "Other": it rolls up
+// to `other` and supplies that line's text, so one lumped "Other" becomes an itemization.
+// (The rule predates the tax package and outlived it — the package is gone as of
+// 2026-08-12, the write-in shape is still the right one for a category nobody planned for.)
 export const CUSTOM_PREFIX = 'custom:';
 
 // ⚠ A custom key is RECOGNIZABLE BY SHAPE, and that is the design, not a shortcut. Validity
@@ -60,8 +90,8 @@ export const isCustomCategory = (key) => typeof key === 'string' && key.startsWi
 const CUSTOM_KEY_RE = /^custom:[a-z0-9]+(?:_[a-z0-9]+)*$/;
 
 // 'Security patrol' → 'custom:security_patrol'. Derived from the label ONCE, at creation;
-// the key is then frozen, because it is stored on every bucket and entity-ledger row that
-// chose it and a rename must not orphan them.
+// the key is then frozen, because it is stored on every bucket that chose it and a rename
+// must not orphan them.
 export const customCategoryKey = (label) => {
   const slug = String(label || '').trim().toLowerCase()
     .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60).replace(/_+$/, '');
@@ -94,8 +124,8 @@ export const allCategories = (customs = []) => [
 ];
 
 // Which BUILT-IN key a category files under. A custom one is a write-in on the Other line,
-// so it answers `other` — the single place that fact is encoded, so the CPA package, the
-// 1099 sheet and the recoverability roll-up cannot disagree about where it lands.
+// so it answers `other` — the single place that fact is encoded, so the recoverability
+// roll-up and the Income-and-expenses workbook cannot disagree about where it lands.
 export const filingCategory = (key) => (isCustomCategory(key) ? 'other' : key);
 
 // One bucket identity rule, used by the unique index (lower(btrim(label))), the runtime
@@ -138,13 +168,7 @@ const DEFAULTS = {
   // call this file must not make silently. It shows as uncategorized and gets asked.
 };
 
-// Buckets where a large spend is plausibly a capital improvement rather than a repair —
-// what Slice 5 reads to decide whether to offer "capitalize as an asset" at review.
-// Advisory only; nothing acts on it yet.
-const CAPITAL_PRONE = new Set(['roof', 'hvac service', 'paving', 'parking lot', 'plumbing', 'elevator service']);
-
 export const defaultCategoryFor = (label) => DEFAULTS[bucketKey(label)] || null;
-export const isCapitalProne = (label) => CAPITAL_PRONE.has(bucketKey(label));
 
 /**
  * The category in force for a bucket, and where it came from.

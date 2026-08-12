@@ -317,7 +317,7 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .corp-fin{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 8px}
 .corp-card.fin .corp-fin{border-top:1px solid var(--border);padding-top:14px;width:100%}
 .corp-row.fin .corp-fin{margin-left:auto}
-/* Slice 4b — owner/entity money under the fixed three-column trio, never inside it.
+/* Owner distributions under the fixed three-column trio, never inside it.
    The trio's grid was pinned deliberately (2026-07-21) so every card formats alike. */
 .corp-card.fin .corp-entity{width:100%;font-size:11px;margin-top:8px}
 .corp-head{display:flex;align-items:center;gap:16px;width:100%;flex-wrap:wrap}
@@ -535,7 +535,7 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
    here mean something different (category | spent | recovered | net) and the expense
    entry's 34px action slot has no counterpart. Same type treatment throughout so the
    two read as one page. */
-/* Slice 4b — "What actually stayed". Reads as a subtraction down the page: one row
+/* "What actually stayed". Reads as a subtraction down the page: one row
    per movement NOI doesn't know about, a rule under the figure it starts from, and
    the answer on its own line. Two columns only, so it survives a phone with no
    breakpoint of its own. */
@@ -559,6 +559,10 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .recov-row.recov-total b{font-family:var(--display);font-size:17px;font-weight:600}
 /* Gold on an uncategorized row, matching the chip that sets it — this app's "look here". */
 .recov-row.cat-none .num{color:var(--gold)}
+/* Money the owner took out, under the totals band rather than in it — set apart so it
+   cannot be misread as another category of cost. */
+.recov-row.recov-owner{border-bottom:none;padding-top:10px;color:var(--muted)}
+.recov-row.recov-owner .recov-net{color:var(--muted);font-weight:400}
 @media (max-width:880px){
   /* Four money columns don't survive a phone. Exactly the ledger grid's reflow: the
      header band hides, the category takes a full-width line, and the three figures wrap
@@ -567,50 +571,6 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
   .recov-row.recov-th{display:none}
   .recov-row > div:first-child{grid-column:1/-1}
   .recov-row .num{text-align:left}
-}
-/* Slice 5a — "What you own". Five columns rather than the recoverability table's four,
-   because an asset carries a stock figure (what it is worth on the books) alongside the
-   flow figures the rest of this page deals in. Same type treatment throughout, so the
-   whole Financials page still reads as one document. */
-.asset-table{display:flex;flex-direction:column}
-.asset-row{display:grid;grid-template-columns:1fr 130px 120px 130px 130px 34px;gap:14px;align-items:center;padding:9px 0;border-bottom:1px solid var(--hair)}
-.asset-row .num{text-align:right;font-variant-numeric:tabular-nums}
-.asset-row > div{min-width:0}
-.asset-row.asset-th{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;padding-bottom:10px;border-bottom:1px solid var(--line)}
-/* Book value is the answer this table exists to give, so it carries the weight — the
-   same treatment the per-tenant breakdown gives its closing Difference figure and the
-   recoverability table gives its net. What has been taken so far stays quiet. */
-.asset-row .asset-book{font-weight:600;color:var(--ink)}
-.asset-row .asset-back{color:var(--muted)}
-/* An asset that cannot depreciate yet: gold, the app's "look here", matching the chip
-   that unblocks it. It reports "—" rather than $0, because a fully-depreciated asset
-   legitimately reads $0 and the two must not look alike. The gold marks the DERIVED
-   figures only — the cost is a fact the landlord typed and is not in question. */
-.asset-row.asset-blocked .asset-year,
-.asset-row.asset-blocked .asset-back,
-.asset-row.asset-blocked .asset-book{color:var(--gold)}
-.asset-row.asset-total{border-bottom:none;border-top:1px solid var(--line);padding-top:12px;margin-top:2px}
-.asset-row.asset-total b{font-family:var(--display);font-size:17px;font-weight:600}
-/* The accountant cross-check is prose, not a figure, so it wraps where .cell-sub won't. */
-.asset-note{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.35;white-space:normal;max-width:52ch}
-/* Slice 5b. The amortization control sits on the row rather than behind a toggle,
-   because it is the only thing on this panel that reaches a tenant's bill. */
-.asset-amort{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:5px;font-size:11px}
-/* Slice 5c — one proposed asset on the closing-statement review. */
-.cs-asset{padding:8px 0;border-bottom:1px solid var(--hair)}
-.cs-asset:last-of-type{border-bottom:0}
-.cs-warn{color:var(--gold)}
-.capitalize-form{margin-top:6px;padding:10px 12px;background:var(--panel-2);border-left:2px solid var(--gold);border-radius:3px}
-.asset-note.warn-sub{color:var(--gold);font-weight:600}
-@media (max-width:880px){
-  /* Four money columns don't survive a phone. The recoverability table's reflow, one
-     column wider: the header band hides, the asset takes a full-width line, and the
-     figures wrap 2-across self-labelled by the shared .stat-label. */
-  .asset-row{grid-template-columns:repeat(2,1fr);gap:10px 14px}
-  .asset-row.asset-th{display:none}
-  .asset-row > div:first-child{grid-column:1/-1}
-  .asset-row .num{text-align:left}
-  .asset-row .icon-btn{justify-self:start}
 }
 .cam-row.cat-none .num{color:var(--gold);font-weight:600}
 .cam-input{font-family:inherit;font-size:14px;padding:9px 11px;border:1px solid transparent;border-radius:var(--radius);background:var(--panel-2);color:var(--ink);width:100%;outline:none}
@@ -1263,42 +1223,16 @@ tbody tr:last-child td{border-bottom:none}
    future second one re-creating that. Do not restore flex-shrink:0. */
 .corp-actions{min-width:0;align-self:center;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 
-/* The tax package's pre-flight: the four figures it will carry, then anything that
-   wants an answer before it leaves. Gold is this app's "look here", never a fault. */
-.cpa-pre{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:10px 12px;background:var(--panel-2);border:1px solid var(--hair);border-radius:var(--radius)}
-.cpa-pre>div{display:flex;flex-direction:column;gap:2px;min-width:0}
-.cpa-pre .muted{font-size:10px;text-transform:uppercase;letter-spacing:.08em}
-.cpa-pre b{font-size:15px;white-space:nowrap}
-/* The 1099 candidates, on screen rather than only in the download — the action this
-   produces is "go and collect a W-9", and it is due earlier than the return. A gold row
-   is the attorney rule: reported even when the vendor IS incorporated. */
-.w9-list{display:flex;flex-direction:column;border:1px solid var(--hair);border-radius:var(--radius);overflow:hidden}
-.w9-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--hair)}
-.w9-row:last-child{border-bottom:none}
-.w9-row.always{background:var(--gold-soft,#FBF3DF)}
-.w9-name{display:flex;flex-direction:column;gap:1px;min-width:0}
-.w9-name strong{font-size:13px}
-.w9-name .muted{font-size:11px}
-.w9-amt{display:flex;flex-direction:column;align-items:flex-end;gap:1px;white-space:nowrap;flex-shrink:0}
-.w9-amt b{font-size:14px}
-.w9-amt .muted{font-size:10px}
+/* An export's pre-flight: the figures it will carry, then anything that wants an
+   answer before it leaves. Gold is this app's "look here", never a fault. */
+.export-pre{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:10px 12px;background:var(--panel-2);border:1px solid var(--hair);border-radius:var(--radius)}
+.export-pre>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.export-pre .muted{font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+.export-pre b{font-size:15px;white-space:nowrap}
 
-/* The lender's own assumptions — debt service, management fee, replacement reserve.
-   Typed on the way out and never stored, because Amlak doesn't hold the loan yet. */
-.lender-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.lender-inputs label{display:flex;flex-direction:column;gap:4px;min-width:0}
-.lender-inputs label>span{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
-.lender-inputs .text-input{width:100%}
-/* The forward read: what the coverage becomes if the near-term rollover walks. The one
-   thing no accounting package can say, so it gets the accent rather than a muted note. */
-.lender-forward{margin-top:12px;padding:10px 12px;background:var(--panel-2);border-left:3px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0}
-.lender-forward strong{display:block;font-size:13px;line-height:1.4}
-.lender-forward .muted{font-size:11.5px;line-height:1.45;margin-top:3px}
-@media (max-width:640px){.lender-inputs{grid-template-columns:1fr}}
-
-.cpa-flags{margin-top:12px;display:flex;flex-direction:column;gap:8px}
-.cpa-flag{font-size:12px;line-height:1.45;color:var(--gold);background:var(--gold-soft,#FBF3DF);border-left:3px solid var(--gold);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
-@media (max-width:560px){.cpa-pre{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.export-flags{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.export-flag{font-size:12px;line-height:1.45;color:var(--gold);background:var(--gold-soft,#FBF3DF);border-left:3px solid var(--gold);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
+@media (max-width:560px){.export-pre{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 /* secondary line of small stats under a metric card (e.g. roof billed/absorbed):
    one tidy line, the two figures pushed to opposite ends */

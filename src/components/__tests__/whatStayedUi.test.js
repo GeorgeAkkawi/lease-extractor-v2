@@ -1,17 +1,25 @@
-// Slice 4b in the DOM — the gap between NOI and what is actually in the account.
+// The gap between NOI and what is actually in the account, in the DOM.
 //
-// The demo seed carries one of every case at once on prop-1: $1,200 of legal fees the
-// landlord entered and chose NOT to bill back (billable:false, seeded in round 4), plus
-// a $24,000 draw, a $5,000 contribution and a $1,750 entity cost (seeded here). So the
-// strip shows every movement NOI has never known about, and the panel shows the two
-// kinds of money that are not expenses at all.
+// The demo seed carries every case at once on prop-1, and since the entity ledger was
+// retired (2026-08-12) they all live in ONE place — the "not billed to tenants" group on
+// cam_line_items:
+//   • $1,200 owner legal fees   — a cost the landlord absorbed        (category: legal)
+//   • $1,750 franchise tax      — a cost of the LLC, also absorbed    (category: legal)
+//   • $24,000 "Dana Whitfield"  — money the OWNER took out            (category: distribution)
+// plus $2,690 of other income that never rode an invoice.
+//
+// ⚠ THE POINT OF THIS FILE. Those three rows are the SAME SHAPE in the database —
+// `billable: false` lines on cam_line_items — and only the bucket's category tells the
+// third apart from the first two. That is what made retiring a whole table safe, and it
+// is also the thing that would break silently: sum them and "money you took out" appears
+// under "costs you absorbed"; bill them and a distribution lands on a tenant's invoice.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfirmProvider } from '../ConfirmDialog';
 import WhatStayedStrip from '../WhatStayedStrip';
-import EntityLedgerSection from '../EntityLedgerSection';
+import CamSection from '../CamSection';
 import { getExpenseRecord, getTenantShares } from '../../lib/api';
 import { currentYear } from '../../lib/format';
 
@@ -28,7 +36,8 @@ const withProviders = (ui) => {
   );
 };
 
-const rowFor = (text) => [...document.querySelectorAll('.stayed-row')].find((r) => r.textContent.includes(text));
+const rowFor = (text) =>
+  [...document.querySelectorAll('.stayed-row')].find((r) => r.textContent.includes(text));
 
 beforeEach(() => cleanup());
 
@@ -41,31 +50,39 @@ describe('What actually stayed', () => {
     // v_property_totals.noi is baked into every chart point and every closed-year
     // snapshot already written.
     expect(within(rowFor('Net operating income')).getByText('$100,000.00')).toBeTruthy();
-    // The $1,200 of legal fees: visible on the Expense entry since round 4 and
-    // reaching NO total until now. This is the round that counts it.
-    expect(within(rowFor('Costs you absorbed')).getByText('$1,200.00')).toBeTruthy();
-    expect(within(rowFor('Owner draws')).getByText('$24,000.00')).toBeTruthy();
-    expect(within(rowFor('Entity costs')).getByText('$1,750.00')).toBeTruthy();
-    expect(within(rowFor('Owner contributions')).getByText('$5,000.00')).toBeTruthy();
-    // Slice 4c filled the `otherIncome` slot this strip was built with and left empty:
-    // $250 late fee + $1,800 parking + $640 utility reimbursement, none of which rode
-    // an invoice, so NOI has never counted a penny of it.
+
+    // The two absorbed costs, summed — and the distribution kept out of them.
+    expect(within(rowFor('Costs you absorbed')).getByText('$2,950.00')).toBeTruthy();
+    expect(within(rowFor('Owner distributions')).getByText('$24,000.00')).toBeTruthy();
+
+    // Money in that never rode an invoice: $250 late fee + $1,800 parking + $640 utility
+    // reimbursement, so NOI has never counted a penny of it.
     expect(within(rowFor('Other income')).getByText('$2,690.00')).toBeTruthy();
 
-    // 100,000 + 2,690 + 5,000 − 1,200 − 1,750 − 24,000 = 80,740
-    expect(within(rowFor('What actually stayed')).getByText('$80,740.00')).toBeTruthy();
-    // Every sign is load-bearing: the two money-IN lines add and the three money-OUT
-    // lines subtract. A sign flip here would be an arithmetically tidy lie.
+    // 100,000 + 2,690 − 2,950 − 24,000 = 75,740
+    expect(within(rowFor('What actually stayed')).getByText('$75,740.00')).toBeTruthy();
+
+    // Every sign is load-bearing: money-IN adds and money-OUT subtracts. A sign flip
+    // here would be an arithmetically tidy lie.
     const signs = [...document.querySelectorAll('.stayed-row')]
       .map((r) => [r.textContent.replace(/\s+/g, ' ').trim(), r.querySelector('.stayed-op')?.textContent])
       .filter(([, op]) => op);
     expect(signs.find(([t]) => t.startsWith('+Other income'))?.[1]).toBe('+');
-    expect(signs.find(([t]) => t.startsWith('+Owner contributions'))?.[1]).toBe('+');
-    expect(signs.find(([t]) => t.startsWith('−Owner draws'))?.[1]).toBe('−');
+    expect(signs.find(([t]) => t.startsWith('−Costs you absorbed'))?.[1]).toBe('−');
+    expect(signs.find(([t]) => t.startsWith('−Owner distributions'))?.[1]).toBe('−');
+  });
+
+  it('names the distribution as equity rather than letting it read as a cost', async () => {
+    withProviders(<WhatStayedStrip propId="prop-1" year={Y} noi={100000} />);
+    await waitFor(() => expect(screen.getByText(`What actually stayed · FY ${Y}`)).toBeTruthy());
+    expect(document.body.textContent).toContain('A distribution is not an expense');
+    // The absorbed line counts the two real costs and NOT the draw — a "3 expense lines"
+    // footnote would be the same conflation one sentence lower down.
+    expect(document.body.textContent).toContain('2 expense lines you entered and chose not to bill back');
   });
 
   it('says nothing at all when there is nothing to reconcile', async () => {
-    // prop-2 has no not-billed costs and no entity money — a strip reading
+    // prop-2 has no not-billed costs and no owner money — a strip reading
     // "NOI $X = what stayed $X" is a row of noise posing as a finding.
     withProviders(<WhatStayedStrip propId="prop-2" year={Y} noi={50000} />);
     await waitFor(() => expect(document.querySelectorAll('.stayed-row').length).toBe(0));
@@ -73,50 +90,24 @@ describe('What actually stayed', () => {
   });
 });
 
-describe('Owner & entity money', () => {
-  it('groups by kind with its own totals, and never claims to be an expense', async () => {
-    withProviders(<EntityLedgerSection propId="prop-1" corporationId="corp-1" year={Y} />);
-    // Wait on the DATA, not the heading — the heading renders before the query
-    // resolves, so waiting on it proves nothing.
-    await waitFor(() => expect(screen.getByText('Owner distribution')).toBeTruthy());
-    expect(screen.getByText(`Owner & entity money · FY ${Y}`)).toBeTruthy();
-    expect(screen.getByText('Illinois franchise tax')).toBeTruthy();
-    expect(screen.getByText('Capital call — roof work')).toBeTruthy();
-    // The claim the whole slice rests on, stated on screen where a landlord can read it.
-    expect(document.body.textContent).toContain('None of it reaches a tenant’s bill');
-  });
-
-  it('offers a tax category to an entity cost and to nothing else', async () => {
-    withProviders(<EntityLedgerSection propId="prop-1" corporationId="corp-1" year={Y} />);
-    await waitFor(() => expect(screen.getByText('Illinois franchise tax')).toBeTruthy());
-
-    // Exactly one TAX-CATEGORY chip — the entity cost's. A draw files on no line of any
-    // return, so offering it a category would invite a wrong answer.
-    // (0098's "paid to" chip borrows the same styling and is excluded by class, not by
-    // count: every row now carries one, and a bare `.cat-chip` count would stop testing
-    // what this is about.)
-    const chips = [...document.querySelectorAll('.cat-chip:not(.party-chip)')];
-    expect(chips).toHaveLength(1);
-    expect(chips[0].textContent).toBe('Set a tax category');
-    expect(chips[0].closest('.cam-row').textContent).toContain('Illinois franchise tax');
-
-    fireEvent.click(chips[0]);
-    const sel = await screen.findByDisplayValue('No category');
-    fireEvent.change(sel, { target: { value: 'taxes' } });
-    await waitFor(() => expect(screen.getByText('Real estate taxes')).toBeTruthy());
-  });
-
-  it('recording a draw by hand moves no expense total and no tenant’s share', async () => {
+describe('recording owner money where it now lives', () => {
+  // The invariant the retirement had to preserve, exercised through the UI a landlord
+  // actually uses. Before 2026-08-12 a draw went into its own table, which could not
+  // move a bill because it touched nothing. Now it is a row on the SAME table CAM bills
+  // from, and only `billable: false` keeps it inert — so this is no longer true by
+  // construction and has to be tested.
+  it('recording a distribution by hand moves no expense total and no tenant’s share', async () => {
     const before = { cam: await getExpenseRecord('prop-1', Y), shares: await getTenantShares('prop-1', Y) };
-    withProviders(<EntityLedgerSection propId="prop-1" corporationId="corp-1" year={Y} />);
-    await waitFor(() => expect(screen.getByText('Owner distribution')).toBeTruthy());
+    withProviders(<CamSection propId="prop-1" year={Y} expense={before.cam} />);
+    await waitFor(() => expect(screen.getByText('Landscaping')).toBeTruthy());
 
-    fireEvent.click(screen.getByText('＋ Record one'));
-    fireEvent.change(screen.getByPlaceholderText('What it was (optional)'), { target: { value: 'March draw' } });
-    fireEvent.change(screen.getByPlaceholderText('Amount'), { target: { value: '3000' } });
-    fireEvent.click(screen.getByText('Add'));
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\./), { target: { value: 'Yazin Akkawi' } });
+    fireEvent.change(screen.getByPlaceholderText('0'), { target: { value: '3000' } });
+    // The tick that makes it the landlord's own money rather than the building's.
+    fireEvent.click(within(screen.getByText('not billed').closest('label')).getByRole('checkbox'));
+    fireEvent.click(screen.getByTitle('Add expense item'));
 
-    await waitFor(() => expect(screen.getByText('March draw')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Yazin Akkawi')).toBeTruthy());
     const after = await getExpenseRecord('prop-1', Y);
     expect(after.cam_total).toBe(before.cam.cam_total);
     expect((await getTenantShares('prop-1', Y)).map((s) => s.total_due))

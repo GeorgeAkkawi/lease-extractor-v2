@@ -76,12 +76,20 @@ describe('What actually stayed, with income in it', () => {
     withProviders(<WhatStayedStrip propId="prop-1" year={Y} noi={100000} />);
     await waitFor(() => expect(screen.getByText(`What actually stayed · FY ${Y}`)).toBeTruthy());
 
-    // The slot round 7 built and left empty is now filled.
     expect(within(rowFor('Other income')).getByText('$2,690.00')).toBeTruthy();
     expect(within(rowFor('Other income')).getByText('+')).toBeTruthy();
-    expect(within(rowFor('Owner draws')).getByText('$24,000.00')).toBeTruthy();
-    // 100,000 + 2,690 + 5,000 − 1,200 − 1,750 − 24,000 = 80,740
-    expect(within(rowFor('What actually stayed')).getByText('$80,740.00')).toBeTruthy();
+
+    // ⚠ THE TWO NOT-BILLED FIGURES ARE SPLIT, NOT SUMMED, and that is the assertion
+    // worth having here. Since the entity ledger was retired (2026-08-12) a draw and an
+    // absorbed cost are the SAME SHAPE in the database — both `billable: false` rows on
+    // cam_line_items — and only the bucket's category tells them apart. Summing them
+    // would put "money you took out" under the label "costs you absorbed", which is the
+    // exact misstatement the entity ledger existed to prevent.
+    expect(within(rowFor('Costs you absorbed')).getByText('$2,950.00')).toBeTruthy(); // 1,200 + 1,750
+    expect(within(rowFor('Owner distributions')).getByText('$24,000.00')).toBeTruthy();
+
+    // 100,000 + 2,690 − 2,950 − 24,000 = 75,740
+    expect(within(rowFor('What actually stayed')).getByText('$75,740.00')).toBeTruthy();
   });
 });
 

@@ -35,13 +35,25 @@ describe('CamSection — buckets + the not-billed group', () => {
   it('splits billable buckets from "not billed to tenants" with separate totals', async () => {
     withProviders(<CamSection propId="prop-1" year={Y} expense={{ taxes_total: 25000, cam_total: 18000, roof_total: 4000 }} />);
     await waitFor(() => expect(screen.getByText('Landscaping')).toBeTruthy());
-    // The not-billed group renders its own header, item, and total…
+    // The not-billed group renders its own header, items, and total…
     expect(screen.getByText('Other expenses — not billed to tenants')).toBeTruthy();
     expect(screen.getByText('Owner legal fees')).toBeTruthy();
+    expect(screen.getByText('$1,200.00')).toBeTruthy();
+    // Since the entity ledger was retired (2026-08-12) this group is also where owner
+    // money and LLC costs live — the distribution named for the person who took it,
+    // and the franchise tax.
+    expect(screen.getByText('Dana Whitfield')).toBeTruthy();
+    expect(screen.getByText('$24,000.00')).toBeTruthy();
+    expect(screen.getByText('Illinois franchise tax')).toBeTruthy();
+    expect(screen.getByText('$1,750.00')).toBeTruthy();
     expect(screen.getByText('Other total')).toBeTruthy();
-    // The 1,200 figure shows twice: the item row and the group's own total.
-    expect(screen.getAllByText('$1,200.00').length).toBe(2);
-    // …while the CAM total sums ONLY the billable items (8,000+4,000+6,000).
+    expect(screen.getByText('$26,950.00')).toBeTruthy(); // 1,200 + 24,000 + 1,750
+
+    // ⚠ …AND THE CAM TOTAL IS UNMOVED BY ALL OF IT. This is the assertion the whole
+    // retirement rests on: $25,750 of owner money now sits on this page, and the figure
+    // that bills tenants still sums only the billable items (8,000+4,000+6,000). If
+    // syncCamTotal ever stopped filtering `billable === false`, a distribution would
+    // start billing back to every tenant on the property, and this is what catches it.
     expect(screen.getByText('CAM total')).toBeTruthy();
     expect(screen.getByText('$18,000.00')).toBeTruthy();
     // The add form offers the not-billed choice + the bucket datalist.

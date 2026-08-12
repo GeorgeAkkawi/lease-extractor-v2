@@ -20,10 +20,8 @@ import CamSection from '../components/CamSection';
 import TaxSection from '../components/TaxSection';
 import RoofSection from '../components/RoofSection';
 import RecoverabilityTable from '../components/RecoverabilityTable';
-import EntityLedgerSection from '../components/EntityLedgerSection';
 import OtherIncomeSection from '../components/OtherIncomeSection';
 import WhatStayedStrip from '../components/WhatStayedStrip';
-import AssetRegisterSection from '../components/AssetRegisterSection';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
@@ -293,19 +291,13 @@ export default function PropertyFinancialsPage() {
 
       <RecoverabilityTable propId={propId} corpId={corpId} year={year} />
 
-      {/* Money IN that isn't rent, directly above its mirror. The two read as a pair:
-          what came in that no invoice knows about, then what went out that no expense
-          total knows about. */}
+      {/* Money IN that isn't rent, below the expense sections it mirrors: what went out
+          that no expense total knows about, then what came in that no invoice does.
+          (Owner money used to have a third panel of its own here. It was retired
+          2026-08-12 — a distribution is now a not-billed expense line carrying the
+          `distribution` category, so it appears in CAM / maintenance above and on its
+          own line in "What it cost you", instead of in a panel of its own.) */}
       <OtherIncomeSection propId={propId} year={year} />
-
-      {/* Below the expense sections, because it is deliberately NOT one of them:
-          nothing here is an expense of this building. */}
-      <EntityLedgerSection propId={propId} corporationId={prop?.corporation_id || corpId} year={year} />
-
-      {/* Last, because it is the only panel on this page that is not about money that
-          moved this year. Everything above answers "what crossed the account"; this one
-          answers "what do I own, and what did it lose". */}
-      <AssetRegisterSection propId={propId} year={year} propertyName={prop?.name} />
 
       <div className="page-head" style={{ marginTop: 8 }}>
         <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>

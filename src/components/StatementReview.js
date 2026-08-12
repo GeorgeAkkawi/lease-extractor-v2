@@ -12,8 +12,6 @@ import {
 import { defaultCategoryFor } from '../lib/expenseCategories';
 import TaxCategorySelect from './TaxCategorySelect';
 import { INCOME_CATEGORIES, incomeCategoryLabel } from '../lib/otherIncome';
-import { partyLabel } from '../lib/entityLedger';
-import { ASSET_KINDS } from '../lib/depreciation';
 import {
   matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
   corroborateAmount, monthOfDate, deriveEstimateFromDeposit, CAM_KEYWORD_LABELS,
@@ -34,14 +32,8 @@ import MutationError from './MutationError';
 // top (deposits self-route to their tenant's own property regardless), with a
 // switch banner when the deposits vote for a different property.
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —', owner_draw: 'Owner draw', owner_contribution: 'Owner contribution', entity_cost: 'Entity cost', transfer: 'Transfer', other_income: 'Other income', deposit_held: 'Security deposit', capital: 'Capital asset' };
+const KIND_LABEL = { tenant: 'Tenant payment', expense_tax: 'Property taxes', expense_cam: 'CAM expense', expense_other: 'Other — not billed', expense_roof: 'Roof expense', ignore: 'Ignore', unmatched: '— pick —', owner_draw: 'Owner distribution', transfer: 'Transfer', other_income: 'Other income', deposit_held: 'Security deposit' };
 
-// Slice 5b — the de-minimis safe harbor. Below it, a repair is a repair: the IRS lets a
-// landlord expense an item under $2,500 rather than capitalize it, and offering the
-// choice on a $180 filter change would be noise on every statement. Above it the option
-// appears; it is never pre-selected, because whether a payment REPLACED something or
-// merely fixed it is a judgement only the landlord can make from the invoice.
-const CAPITALIZE_FLOOR = 2500;
 const CONF_TONE = { rule: 'good', high: 'good', medium: 'warn', low: 'warn', none: 'info', ai: 'info' };
 const CONF_LABEL = { rule: 'rule', high: 'confident', medium: 'likely', low: 'weak', none: '?', ai: 'AI' };
 
@@ -144,9 +136,6 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const tenant = leaseId ? ctx.tenants.find((t) => t.lease_id === leaseId) : null;
       // Slice 4c — the income category, carried through from the pick.
       const category = pick ? pick.category || null : null;
-      // Slice 5b — which kind of asset a capitalized line becomes. The useful life
-      // follows from it, so a roof and a parking lot are not interchangeable.
-      const assetKind = pick ? pick.assetKind || null : null;
       // Recompute recon routing when the user re-picked the tenant by hand. Only ever
       // for RENT: a deposit or a late fee names a tenant without paying an invoice, so
       // routing one to an open reconciliation would settle a bill it never paid.
@@ -168,21 +157,17 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const defaultChecked = row.checked && !row.txn.needsReview;
       const checked = ov.checked !== undefined ? ov.checked : defaultChecked;
       // An ignored/unresolved line writes nothing, whatever the checkbox says.
-      // A row is writable when ticking it would actually record something. A draw,
-      // contribution or entity cost writes an entity_ledger row and needs a
-      // corporation to belong to; a transfer writes nothing at all (its disposition
-      // IS the record), so it is deliberately not writable and needs no tick.
-      // Slice 4c: other income always writes a row; a deposit writes no row but DOES
-      // record which lease it belongs to, so it needs a tenant to be worth ticking.
+      // A row is writable when ticking it would actually record something. A transfer
+      // writes nothing at all (its disposition IS the record), so it is deliberately not
+      // writable and needs no tick. Other income always writes a row; a deposit writes no
+      // row but DOES record which lease it belongs to, so it needs a tenant to be worth
+      // ticking. An owner distribution writes a not-billed expense line, exactly as the
+      // expense kinds do — which is why it sits on the same branch as them now.
       const writable = kind === 'tenant'
         ? !!(leaseId && tenant)
         : kind === 'other_income' ? true
         : kind === 'deposit_held' ? !!(leaseId && tenant)
-        // Slice 5b: capitalizing writes a fixed_assets row, and it needs a DATE to date
-        // the schedule from. The line's own date is that date; a line the extractor
-        // couldn't date can't become an asset here (the asset register takes it by hand).
-        : kind === 'capital' ? !!row.txn.date
-        : kind.startsWith('expense_') || (!!ENTITY_KIND_FOR[kind] && !!ctx.corporationId);
+        : kind === 'owner_draw' || kind.startsWith('expense_');
       // Does the deposit match what the ledger projects for the month it's applied to?
       // Only for a tenant payment tagged to a specific month; true-ups/lumps are excluded
       // by construction. Tolerance is amountMatches, so a "confident" row never flags.
@@ -196,12 +181,12 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         && Number((tenant.coverage || [])[finalMonth - 1]) >= Number(tenant.owed[finalMonth - 1]) - 0.05);
       const isChecked = writable && checked && !(alreadyPaid && ov.checked === undefined);
       return {
-        row, i, kind, label, category, assetKind, leaseId, tenant, toRecon, month: finalMonth,
+        row, i, kind, label, category, leaseId, tenant, toRecon, month: finalMonth,
         checked: isChecked,
-        // WHO an entity row went to / came from (0098) — typed on the row when the bank
-        // named a payee. A cheque never does, so this is usually blank here and filled in
-        // later on the Entity ledger; carrying it costs nothing and saves a round trip
-        // when the line IS named (an ACH to a member, say).
+        // WHO a distribution went to — typed on the row when the bank named a payee. A
+        // cheque never does (the machine-readable line is number, date, ref, amount; the
+        // name is handwriting on the image), so this is usually blank and the BUCKET
+        // ends up named after the payee instead, which is where it is edited afterwards.
         party: ov.party || '',
         ai: !!ov.ai, picked: ov.pick != null,
         monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
@@ -439,11 +424,6 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
           entries.push({ type: 'tax', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: payeeLabel(payeeOf(r.row.txn.description), 'Property tax'), hash: r.row.hash });
         } else if (r.kind === 'expense_roof') {
           entries.push({ type: 'roof', property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date, label: payeeLabel(payeeOf(r.row.txn.description), 'Roof'), hash: r.row.hash });
-        // Slice 4b — a draw, a contribution or an entity cost. Note the entry type is
-        // 'entity', NOT 'cam': it lands in entity_ledger and can never reach
-        // cam_total, so no tenant's bill can move because of it. An entity cost
-        // arrives with no category on purpose (0075's rule — a defaulted 'Other'
-        // would hide exactly what wants surfacing); it is set on the Financials panel.
         } else if (r.kind === 'other_income') {
           entries.push({
             type: 'income', property_id: expenseProp, lease_id: r.leaseId || null,
@@ -451,18 +431,6 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             category: r.category || 'other',
             label: payeeLabel(payeeOf(r.row.txn.description), incomeCategoryLabel(r.category)),
             description: r.row.txn.description, hash: r.row.hash,
-          });
-        // Slice 5b — bought once, used for years. Note the entry type is 'capital', NOT
-        // 'cam': it lands in fixed_assets and reaches no expense total, so capitalizing
-        // at import moves no tenant's bill. Only switching the asset's amortization on
-        // does that, later, on the Financials panel, with the consequence named.
-        } else if (r.kind === 'capital') {
-          entries.push({
-            type: 'capital', property_id: expenseProp, year: r.row.year,
-            amount: r.row.txn.amount, date: r.row.txn.date,
-            asset_kind: r.assetKind || 'improvement',
-            label: payeeLabel(payeeOf(r.row.txn.description), 'Capital improvement'),
-            hash: r.row.hash,
           });
         } else if (r.kind === 'deposit_held') {
           // Records that the deposit ARRIVED. Writes no row and never touches
@@ -473,17 +441,23 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             type: 'deposit', property_id: expenseProp, lease_id: r.leaseId,
             year: r.row.year, amount: r.row.txn.amount, hash: r.row.hash,
           });
-        } else if (ENTITY_KIND_FOR[r.kind]) {
+        // Money the OWNER took out. It is a `cam` entry like any not-billed expense —
+        // the ONE thing that separates it is the `distribution` category riding along,
+        // which api.js writes onto the bucket record and which every expense subtotal
+        // then excludes (expenseCategories.js `isOwnerCategory`). No table of its own,
+        // and still no way for it to reach a tenant's bill: `billable: false` keeps it
+        // out of cam_total exactly as it keeps any absorbed cost out.
+        //
+        // The BUCKET IS THE PERSON. `party` names it when the landlord typed one —
+        // usually blank for a cheque, since a bank publishes number, date, ref and
+        // amount but never the payee — and the bucket is renamed on Financials after.
+        } else if (r.kind === 'owner_draw') {
           entries.push({
-            type: 'entity', kind: ENTITY_KIND_FOR[r.kind], corporation_id: ctx.corporationId,
-            property_id: expenseProp, year: r.row.year, amount: r.row.txn.amount, date: r.row.txn.date,
-            label: payeeLabel(payeeOf(r.row.txn.description), r.kind === 'entity_cost' ? 'Entity cost' : 'Owner draw'),
-            // WHO (0098), when the landlord typed it on the row. Usually blank for a
-            // CHEQUE — a bank publishes the number, date, ref and amount, never the payee
-            // (that is handwriting on the image) — so most draws are named afterwards on
-            // Financials → Owner & entity money instead.
-            party: r.party || null,
-            description: r.row.txn.description, hash: r.row.hash,
+            type: 'cam', property_id: expenseProp, year: r.row.year,
+            amount: r.row.txn.amount, date: r.row.txn.date,
+            label: String(r.party || '').trim() || payeeLabel(payeeOf(r.row.txn.description), 'Owner distribution'),
+            billable: false, category: 'distribution',
+            hash: r.row.hash,
           });
         }
       }
@@ -807,15 +781,11 @@ function targetKeyOf(r) {
   // income line AND a rent line is correctly seen as boilerplate rather than a payee.
   if (r.kind === 'other_income') return `income:${r.category || 'other'}`;
   if (r.kind === 'deposit_held') return `deposit:${r.leaseId || ''}`;
-  // Slice 5b — also deliberately not learned. A vendor who replaces a roof one year
-  // repairs one the next, and the difference is the AMOUNT, not the payee: learning
-  // "ABC Roofing → capitalize" would capitalize every future $400 repair from them.
-  if (r.kind === 'capital') return `capital:${r.assetKind || 'improvement'}`;
-  // A draw, a transfer or an entity cost is as much a "payee" as a vendor is — and
-  // learning it is the whole point, since the same distribution line recurs monthly.
-  // These keys are also what OWN_NAME_TARGETS (statementMatch.js) checks against, so
-  // a pattern naming the landlord's own corporation is allowed to learn HERE while
-  // still being refused as a tenant.
+  // A distribution or a transfer is as much a "payee" as a vendor is — and learning it
+  // is the whole point, since the same distribution line recurs monthly. These keys are
+  // also what OWN_NAME_TARGETS (statementMatch.js) checks against, so a pattern naming
+  // the landlord's own corporation is allowed to learn HERE while still being refused
+  // as a tenant.
   if (ENTITY_PICKS.has(r.kind)) return r.kind;
   return null;
 }
@@ -827,12 +797,11 @@ export function resolvePick(pick) {
   if (pick.startsWith('lease:')) return { kind: 'tenant', lease_id: pick.slice(6) };
   if (pick.startsWith('cam:')) return { kind: 'expense_cam', label: pick.slice(4) };
   if (pick.startsWith('other:')) return { kind: 'expense_other', label: pick.slice(6) };
-  // Slice 5b. The pick carries which KIND of asset, because the useful life follows from
-  // it and a roof (39 yr) and a parking lot (15 yr) are not interchangeable.
-  if (pick.startsWith('capital:')) return { kind: 'capital', assetKind: pick.slice(8) };
   if (pick === 'expense_tax' || pick === 'expense_cam' || pick === 'expense_roof' || pick === 'ignore') return { kind: pick };
-  // Slice 4b — money that crossed the bank but is not this building's income or
-  // expense. These write to entity_ledger, never to expense_records.
+  // Money that crossed the bank but is not this building's income or expense. Since the
+  // entity ledger was retired (2026-08-12) a distribution writes a NOT-BILLED expense
+  // line carrying the `distribution` category, and a transfer still writes nothing at
+  // all — so neither can reach cam_total, and neither can move a tenant's bill.
   if (ENTITY_PICKS.has(pick)) return { kind: pick };
   // Slice 4c — money IN that is not rent. Income carries its category; a deposit
   // carries its LEASE, because "whose deposit is it" is the whole question and a
@@ -842,11 +811,11 @@ export function resolvePick(pick) {
   return null;
 }
 
-// The three destinations round 7 adds, plus the one that records itself.
-const ENTITY_PICKS = new Set(['owner_draw', 'owner_contribution', 'entity_cost', 'transfer']);
-// pick → the entity_ledger `kind` it writes. 'transfer' writes nothing, so it is
-// absent on purpose.
-const ENTITY_KIND_FOR = { owner_draw: 'draw', owner_contribution: 'contribution', entity_cost: 'cost' };
+// The destinations that are money movement rather than the building's income or expense.
+// A distribution writes a NOT-BILLED cam_line_items row carrying the `distribution`
+// category; a transfer writes nothing at all, because its disposition IS the record.
+// Neither can reach cam_total, so neither can move a tenant's bill.
+const ENTITY_PICKS = new Set(['owner_draw', 'transfer']);
 
 // One statement month, collapsible. The header carries live counts — total lines, money
 // in / out, and matched vs need-review — so a scan tells you which months want a look.
@@ -1017,7 +986,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                   ))}
                 </optgroup>
               )}
-              {/* Slice 4b — the deposits that are NOT rent. Booking one of these
+              {/* The deposits that are NOT rent. Booking one of these
                   against a lease would credit that tenant's invoice and make the
                   Ledger read the month over-paid, which is why they need their own
                   home rather than the nearest lease. */}
@@ -1041,9 +1010,12 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                   ))}
                 </optgroup>
               )}
+              {/* Money the owner puts IN files as a transfer: recorded and placed, but
+                  carrying no amount into any figure. It is deliberately NOT an income
+                  category — every member of that list is money the property earned, and
+                  the export prints the lot as revenue (otherIncome.js). */}
               <optgroup label="Not tenant rent">
-                {ctx.corporationId && <option value="owner_contribution">Owner contribution — money you put in</option>}
-                <option value="transfer">Transfer between my own accounts</option>
+                <option value="transfer">Transfer or money you put in</option>
               </optgroup>
               <option value="ignore">Ignore</option>
             </>
@@ -1060,25 +1032,13 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                 {!otherBuckets.some((b) => b.label.toLowerCase() === 'other') && <option value="other:Other">Other — not billed</option>}
               </optgroup>
               <option value="__new">＋ New bucket…</option>
-              {/* Slice 5b — bought once, used for years. Offered only above the
-                  de-minimis floor, because below it a repair is a repair and the choice
-                  would be noise on every statement. Capitalizing here writes an asset
-                  and NO expense line, so it moves no tenant's bill: billing the cost
-                  back over its life is a separate, opt-in decision on the Financials
-                  panel, where the consequence can be named. */}
-              {Math.abs(Number(r.row.txn.amount) || 0) >= CAPITALIZE_FLOOR && (
-                <optgroup label="Bought once, used for years">
-                  {ASSET_KINDS.filter((k) => k.amortizable).map((k) => (
-                    <option key={k.key} value={`capital:${k.key}`}>Capitalize — {k.label}</option>
-                  ))}
-                </optgroup>
-              )}
-              {/* Slice 4b — real money out that is not this building's expense. A draw
-                  filed as an expense understates income by exactly the amount the CPA
-                  taxes, so it gets its own destination rather than the nearest bucket. */}
+              {/* Money the owner took OUT. It writes a not-billed expense line like the
+                  bucket above it, but carries the `distribution` category — which is
+                  what keeps it out of every expense subtotal. A cost of the LLC itself
+                  (registered agent, franchise tax) has no special destination any more:
+                  it is a not-billed bucket like any other. */}
               <optgroup label="Not the building’s money">
-                {ctx.corporationId && <option value="owner_draw">Owner draw — money you took out</option>}
-                {ctx.corporationId && <option value="entity_cost">Entity cost — the LLC’s, not this building’s</option>}
+                <option value="owner_draw">Owner distribution — money you took out</option>
                 <option value="transfer">Transfer between my own accounts</option>
               </optgroup>
               <option value="ignore">Ignore</option>
@@ -1107,7 +1067,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
               value={effectiveCategory}
               emptyLabel="Tax category…"
               onChange={(next) => setNewCategory(next)}
-              title="Which line of your tax return this bucket rolls up to. It changes reporting only — never what a tenant is billed."
+              title="Which category this bucket rolls up to on your reports. It changes reporting only — never what a tenant is billed."
             />
             <button type="button" className="btn-sm" onClick={confirmNewBucket} disabled={!newName.trim()}>Add</button>
             <button type="button" className="ghost btn-sm" onClick={() => { setAddingBucket(false); setNewName(''); }}>Cancel</button>
@@ -1156,7 +1116,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
         {r.kind === 'expense_other' && (
           <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>tracked for your records — not billed to tenants</div>
         )}
-        {/* Slice 4b. A transfer has no tick because it records nothing but itself —
+        {/* A transfer has no tick because it records nothing but itself —
             without this line an unticked row reads as "about to be dropped", which is
             the exact anxiety round 6 exists to remove. */}
         {/* A transfer has no tick — it records nothing but itself, so the PICK is the
@@ -1177,24 +1137,24 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             </button>
           )
         )}
-        {ENTITY_KIND_FOR[r.kind] && (
+        {r.kind === 'owner_draw' && (
           <>
-            {/* WHO (0098) — optional, and usually left blank here on purpose: a bank
-                publishes no payee for a cheque, so most draws get their name afterwards on
-                Financials → Owner & entity money. Offered anyway for the lines that DO
-                name someone (an ACH to a member), so it needn't be a second trip. */}
+            {/* WHO — optional, and usually left blank here on purpose: a bank publishes
+                no payee for a cheque, so most distributions get named afterwards by
+                renaming the bucket on Financials. Offered anyway for the lines that DO
+                name someone (an ACH to a member), so it needn't be a second trip.
+                Whatever is typed BECOMES THE BUCKET NAME, which is how a distribution
+                stays split by person without a table of its own. */}
             <input
               className="text-input" style={{ marginTop: 4, fontSize: 12 }}
               maxLength={120}
-              placeholder={`${partyLabel(ENTITY_KIND_FOR[r.kind])} (optional)`}
+              placeholder="Paid to (optional)"
               value={r.party}
               onChange={(e) => setOv(r.i, { party: e.target.value })}
-              title="Who this money went to or came from. Your accountant needs distributions split by person for the capital accounts. You can also fill this in later on the Entity ledger."
+              title="Who this money went to. It becomes the name of the expense bucket, so distributions stay split by person. You can rename it later on Financials."
             />
             <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-              {r.kind === 'entity_cost'
-                ? 'the LLC’s cost, not this building’s — never billed to a tenant'
-                : 'equity, not income or expense — it will not appear in NOI or on any tenant’s bill'}
+              money you took out — it will not appear in NOI, in any expense total, or on any tenant’s bill
             </div>
           </>
         )}

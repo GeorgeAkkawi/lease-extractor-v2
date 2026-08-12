@@ -103,6 +103,17 @@ So anything that moves a billed figure must call the carry-through:
 - then `settleBillingChange(qc, { propertyId, leaseId, year })` (`src/lib/invalidate.js`) so the
   screens repaint
 
+**`billable = false` IS THE OTHER HALF OF THIS SPINE, and it is now load-bearing in a way it
+was not before.** `syncCamTotal` (`api.js`) sums only `billable is not false` into `cam_total`,
+so a not-billed line reaches no view, no share and no invoice. That was a convenience for
+tracking absorbed costs until 2026-08-12, when `entity_ledger` was retired (`0100`) and **owner
+distributions became not-billed `cam_line_items` rows** — money that is not the building's,
+sitting on the table the building bills from, kept inert by that one predicate. Anything that
+changes how `cam_total` is summed now decides whether a landlord's draw appears on a tenant's
+invoice. A distribution is marked by its bucket's `distribution` category (`isOwnerCategory`,
+`expenseCategories.js`), which is also what keeps it out of every expense subtotal —
+`recoverabilityRows` returns it in `owner`, never in `rows` or `totals`.
+
 Both skip a **closed** year (one with a `financial_snapshots` row) — a bill already sent must not
 move under the landlord because they edited something else. **Six** explicit estimate saves call
 `resyncYearBillingToEstimate` directly and deliberately do not skip: `TenantShareTable.js` (the
@@ -188,12 +199,18 @@ Change one of these and you have changed every money screen at once. Read all th
 | `buildLeaseSchedule` | `src/lib/leaseSchedule.js` | `ledger.js`, `api.js` (5 call sites) — and note its **two documented modes**: projection (no `invoiceTotal`) vs reconcile-to-bill (scales + penny-folds to settle an issued invoice exactly) |
 | `allocatePayments` / `componentizeSchedule` | `src/lib/ledger.js` | the Ledger grid, the reminders, `closeYear`. `componentizeSchedule` holds the invariant **base + camTax + roof === owed** per month |
 | `billedComponents` | `src/lib/reconciliation.js` | `TenantShareTable`, `LeasesPage`, `ledger.js`, `reconciliationData.js`, `api.js` |
-| `contractAnnualCost` | `src/lib/contracts.js` | `syncContractCamItems` (`api.js` — → `cam_line_items` → `cam_total` → shares → a stored invoice), `vendorRowsFor` (`form1099.js` — **a tax form**), `ContractItem` (`ServiceContractsSection.js`), `ContractReview` (`ContractDocs.js`). Signature is `(contract, year, steps)`; **every caller must pass the 0091 steps**, in ONE bulk read, or the CAM the tenant is billed stops matching the 1099 the vendor is issued |
+| `contractAnnualCost` | `src/lib/contracts.js` | `syncContractCamItems` (`api.js` — → `cam_line_items` → `cam_total` → shares → a stored invoice), `ContractItem` (`ServiceContractsSection.js`), `ContractReview` (`ContractDocs.js`). Signature is `(contract, year, steps)`; **every caller must pass the 0091 steps**, in ONE bulk read, or two screens quote different annual costs for one contract. (It had a fourth caller, `vendorRowsFor` in `form1099.js` — removed 2026-08-12 with the 1099 worksheet.) |
 
 ### 3. Mirrors that must move together
 
 Two implementations of one rule always drift unless changed in the same commit.
 
+- **The owner-capital rule is ONE predicate on purpose:** `isOwnerCategory`
+  (`expenseCategories.js`) decides that a `distribution` line is not a cost, and both the
+  on-screen "What it cost you" table and the Income-and-expenses workbook read it through
+  `recoverabilityRows`' `owner` / `ownerTotal`. Neither re-derives it. A second copy would
+  let the screen and the sheet disagree about whether a landlord's draw is an expense —
+  and only one of them would be wrong in front of an accountant.
 - **JS ↔ SQL twins:** `effective_rent` (migration `0054`) ↔ `effectiveRent` (`escalations.js:38`) ·
   `abatement_credit` (`0041`) ↔ `abatement.js` · `app_today()` (`0051`) ↔ `localDateIso` (`api.js:36`) ·
   the renewal-option lapse rule in `apply_due_renewals()` (`0068`) ↔ `optionLapseReason`
@@ -236,6 +253,14 @@ Two implementations of one rule always drift unless changed in the same commit.
   `realIsoDate` in `_shared/rentSchedule.js`; that copy is unavoidable (the app build can't import
   into `supabase/`), a third is not. It rejects dates that *parse but don't exist* — V8 rolls
   `2033-04-31` to May 1, and Postgres does not.
+- **`xlsx.js` is the shared workbook writer** (`XLSX_PALETTE` / `xlsxSheet` / `xlsxPen`).
+  It lived inside `cpaExcel.js` until 2026-08-12, which made the tax package load-bearing
+  for two exports that had nothing to do with a tax return; it moved out when all three
+  were removed. ⚠ `xlsxSheet` must never emit `{ state: 'frozen', ySplit: 0 }` — a pane
+  that splits nothing makes Excel call the file damaged. `workbookValidity.test.js` unzips
+  the real bytes and asserts this structurally, because a corrupt `.xlsx` is still a
+  well-formed zip of the right size and every `blob.size > 4000` check passes over it.
+  `reconciliationExcel.js` and `rentRollExcel.js` still roll their own writers.
 - **The demo mock hand-implements the views.** `mockClient.js` reimplements `v_property_totals`
   (:37), `v_tenant_shares` (:73), `v_invoice_balances` (:111), `draft-invoice` (:369) and
   `create_lease_tx` (:774). **A view change without a matching mock change means the suite passes
@@ -287,9 +312,9 @@ Two implementations of one rule always drift unless changed in the same commit.
 
 ### 5. Deploy fan-out — a shared edge module makes its importers stale
 
-Measured 2026-08-05 (`grep -rl "_shared/<file>" supabase/functions --include=index.ts | wc -l`
+Measured 2026-08-12 (`grep -rl "_shared/<file>" supabase/functions --include=index.ts | wc -l`
 — re-measure rather than trust these; the previous numbers here were three rounds stale):
-`_shared/cors.ts` and `_shared/ratelimit.ts` → **26** functions · `_shared/anthropic.ts` → **18** ·
+`_shared/cors.ts` and `_shared/ratelimit.ts` → **25** functions · `_shared/anthropic.ts` → **17** ·
 `_shared/pdf.ts` and `_shared/docx.ts` → **4** each · `_shared/analystVerdicts.js` and
 `_shared/leaseFlags.js` → **3** each · `_shared/rentSchedule.js` and `_shared/transcribe.ts` →
 **2** each · `_shared/contractFlags.js` → **1**. Redeploy every importer in the same round, or the
@@ -300,7 +325,7 @@ deployed copy silently drifts from source.
 Named sets exist, and they are deliberately different: **`settleBillingChange`**
 (`src/lib/invalidate.js`) for "a billed figure moved", **`settleLeaseScheduleChange`** /
 **`settleLeaseListChange`** for a lease's own page and the three lists that render it,
-**`settleContractChange`** (0091 — the contract, its fee steps, the derived CAM row, the 1099,
+**`settleContractChange`** (0091 — the contract, its fee steps, the derived CAM row,
 the history log, and since 0093 `['envelopes']` — the prefix covers both `['envelopes', leaseId]`
 and `['envelopes', contractId]`, and without it applying a signed contract stamps `applied_at`
 while the prompt and the alert keep asking; called **alongside** `settleBillingChange`, never

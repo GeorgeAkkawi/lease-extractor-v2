@@ -46,22 +46,26 @@ describe('the disposition vocabulary', () => {
     expect(dispositionInfo('debt').short).toBe('Unplaced');
   });
 
-  // Slice 5b — capitalizing is PLACED, and deliberately not 'expense'. A thing bought
-  // once and used for years is accounted for without being a cost of this year.
-  it('counts a capitalized line as placed, and apart from expenses', () => {
-    expect(isPlaced('capital')).toBe(true);
-    expect(dispositionInfo('capital').key).not.toBe('expense');
-    expect(dispositionInfo('capital').dir).toBe('out');
+  // ⚠ A RETIRED KEY MUST READ AS UNKNOWN, NEVER AS SOMETHING ELSE. `capital` and
+  // `entity` were removed on 2026-08-12, but `statement_lines` rows written before then
+  // still carry them. Reporting such a row as placed would claim a decision that no
+  // longer has a home; reporting it as 'expense' would silently reclassify the
+  // landlord's own money as a cost. It reports as unplaced, which is the honest answer
+  // and the one that puts the line back on the work-list where it can be re-answered.
+  it('treats a retired disposition as unplaced rather than reclassifying it', () => {
+    expect(isPlaced('capital')).toBe(false);
+    expect(isPlaced('entity')).toBe(false);
+    expect(dispositionInfo('capital').short).toBe('Unplaced');
+    expect(dispositionInfo('entity').short).toBe('Unplaced');
   });
 
-  // Slice 4b — the three homes round 7 added. All PLACED: a draw recorded is
-  // accounted for even though it appears in no expense total, and a transfer is real
-  // money movement that is neither income nor expense. "Accounted for" means somebody
-  // decided, NOT "counted as a cost".
-  it('counts an owner draw, an entity cost and a transfer as accounted for', () => {
+  // All PLACED: a distribution recorded is accounted for even though it appears in no
+  // expense total, and a transfer is real money movement that is neither income nor
+  // expense. "Accounted for" means somebody decided, NOT "counted as a cost".
+  it('counts an owner distribution and a transfer as accounted for', () => {
     expect(isPlaced('owner')).toBe(true);
-    expect(isPlaced('entity')).toBe(true);
     expect(isPlaced('transfer')).toBe(true);
+    expect(dispositionInfo('owner').dir).toBe('out');
     // Still exactly one unplaced state, however many homes exist.
     expect(DISPOSITIONS.filter((d) => !d.placed).map((d) => d.key)).toEqual(['unclassified']);
   });

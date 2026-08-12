@@ -210,7 +210,11 @@ describe('grouping (the invariants Slice 2 established)', () => {
     const before = JSON.stringify(items);
     roll();
     expect(JSON.stringify(items)).toBe(before);
-    expect(recoverabilityRows()).toEqual({ rows: [], totals: { spent: 0, recovered: 0, net: 0 }, fractions: { tax: null, cam: null, roof: null } });
+    expect(recoverabilityRows()).toEqual({
+      rows: [], totals: { spent: 0, recovered: 0, net: 0 },
+      owner: [], ownerTotal: 0,
+      fractions: { tax: null, cam: null, roof: null },
+    });
   });
 });
 

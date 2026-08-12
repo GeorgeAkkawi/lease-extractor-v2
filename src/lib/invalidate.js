@@ -121,8 +121,6 @@ export function settleContractChange(qc, propertyId) {
     // The derived CAM line item and the total it re-sums into.
     propertyId ? ['camLineItems', propertyId] : ['camLineItems'],
     propertyId ? ['expenseRecord', propertyId] : ['expenseRecord'],
-    // The 1099 vendor report prices its rows off the same contracts.
-    ['vendor1099'],
     // The property's history log, and the contract's own saved copies.
     ['historyEvents'],
     ['documents', 'service_contract'],

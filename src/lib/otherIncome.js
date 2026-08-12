@@ -29,6 +29,14 @@ export const INCOME_CATEGORIES = [
   { key: 'other',      label: 'Other income',           hint: 'Real income that is none of the above.' },
 ];
 
+// ⚠ MONEY THE OWNER PUTS IN IS DELIBERATELY NOT ON THIS LIST. When the entity ledger was
+// retired (2026-08-12) a draw became an expense category, and the symmetric move would
+// have been a `contribution` category here. It was refused: every member of this list is
+// money the PROPERTY EARNED, and the one export that reads it prints the lot as revenue.
+// A contribution inside it would inflate that by exactly the amount the landlord funded
+// himself. It uses the `transfer` disposition instead — recorded, placed, counted
+// nowhere, which is what that disposition has always meant.
+
 const BY_KEY = new Map(INCOME_CATEGORIES.map((c) => [c.key, c]));
 
 export const incomeCategoryInfo = (key) =>

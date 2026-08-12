@@ -3,12 +3,12 @@
 // escalated annual cost for that year. No AI, no DB — mirrored by syncContractCamItems
 // in api.js, which turns these figures into CAM line items automatically each year.
 //
-// ⚠ contractAnnualCost is a CHOKE POINT (CLAUDE.md §2). Four readers price a contract
+// ⚠ contractAnnualCost is a CHOKE POINT (CLAUDE.md §2). Three readers price a contract
 // through it — syncContractCamItems (→ cam_line_items → cam_total → tenant shares →
-// a stored invoice), vendorRowsFor (the 1099 form), the Contracts tab row, and the
-// contract review dialog. Change the rule here and all four move together; give one of
-// them its own arithmetic and the CAM the tenant is billed stops matching the 1099 the
-// vendor is issued.
+// a stored invoice), the Contracts tab row, and the contract review dialog. Change the
+// rule here and all three move together; give one of them its own arithmetic and two
+// screens quote different annual costs for the same contract. (A fourth reader,
+// vendorRowsFor, went with the 1099 worksheet on 2026-08-12.)
 
 const yearOf = (iso) => (iso ? new Date(iso + 'T12:00:00').getFullYear() : null);
 

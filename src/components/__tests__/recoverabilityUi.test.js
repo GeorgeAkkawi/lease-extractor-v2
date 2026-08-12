@@ -5,9 +5,12 @@
 //   • taxes  25,000 — entered as ONE flat figure, never itemized  → recovered in full
 //   • CAM    18,000 across Landscaping / Snow removal / Security  → recovered in full
 //   • roof    4,000 across two dated lines                        → only 40% recovered
-//   • legal   1,200 marked "not billed to tenants"                → recovered NOTHING
+//   • legal   1,200 + 1,750 marked "not billed to tenants"         → recovered NOTHING
+//   • a 24,000 owner distribution — same shape, NOT a cost at all   → excluded entirely
 // So the table shows both ways money is absorbed — a roof the leases don't pass on, and
-// a cost the landlord chose to eat — which is the entire point of the column.
+// a cost the landlord chose to eat — which is the entire point of the column. And it
+// shows the third case that looks identical in the database and is not an expense at
+// all, which is what the owner-capital rule exists to keep straight.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor, cleanup, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -43,17 +46,43 @@ describe('What it cost you', () => {
     expect(within(repairs).getByText('$1,600.00')).toBeTruthy();
     expect(within(repairs).getByText('$2,400.00')).toBeTruthy();
 
-    // A cost the landlord chose to absorb recovers nothing and is carried in full.
+    // Costs the landlord chose to absorb recover nothing and are carried in full —
+    // $1,200 of owner legal fees plus the $1,750 franchise tax that used to live in the
+    // entity ledger and is now an ordinary not-billed bucket.
     const legal = rowFor('Legal and professional');
     expect(within(legal).getByText('—')).toBeTruthy();
-    expect(within(legal).getAllByText('$1,200.00').length).toBe(2); // spent AND net
+    expect(within(legal).getAllByText('$2,950.00').length).toBe(2); // spent AND net
 
-    // The whole property: 25,000 + 19,200 + 4,000 spent, 44,600 back, 3,600 carried.
+    // The whole property: 25,000 + 19,200 + 4,000 + 1,750 spent, 44,600 back, 5,350 carried.
     const total = document.querySelector('.recov-total');
-    expect(within(total).getByText('$48,200.00')).toBeTruthy();
+    expect(within(total).getByText('$49,950.00')).toBeTruthy();
     expect(within(total).getByText('$44,600.00')).toBeTruthy();
-    expect(within(total).getByText('$3,600.00')).toBeTruthy();
-    expect(total.textContent).toContain('Tenants cover 92.5% of what you spend');
+    expect(within(total).getByText('$5,350.00')).toBeTruthy();
+    expect(total.textContent).toContain('Tenants cover 89.3% of what you spend');
+  });
+
+  // ⚠ THE ASSERTION THE RETIREMENT RESTS ON, in the DOM this time. The $24,000
+  // distribution is a `billable: false` cam_line_items row exactly like the two absorbed
+  // costs above it — the ONLY thing separating them is the `distribution` category on
+  // its bucket. If `isOwnerCategory` ever stopped excluding it, the landlord's own money
+  // would silently become a cost of the building, and the totals band above is where it
+  // would show up.
+  it('shows a distribution BELOW the total and in none of the figures inside it', async () => {
+    withProviders(<RecoverabilityTable propId="prop-1" corpId="corp-1" year={Y} />);
+    await waitFor(() => expect(screen.getByText(`What it cost you — FY ${Y}`)).toBeTruthy());
+
+    const owner = document.querySelector('.recov-owner');
+    expect(owner).toBeTruthy();
+    expect(owner.textContent).toContain('Owner distribution');
+    expect(owner.textContent).toContain('Dana Whitfield'); // the bucket IS the person
+    expect(within(owner).getByText('$24,000.00')).toBeTruthy();
+    expect(owner.textContent).toContain('not a cost of the building');
+
+    // It is not a category row, and its dollars are in no total.
+    expect(document.querySelector('.recov-total').textContent).not.toContain('24,000');
+    const rows = [...document.querySelectorAll('.recov-row')];
+    const totalIdx = rows.findIndex((r) => r.className.includes('recov-total'));
+    expect(rows.indexOf(owner)).toBeGreaterThan(totalIdx); // below the band, never above
   });
 
   it('names a kind entered as one flat figure rather than leaving it out', async () => {
@@ -77,9 +106,11 @@ describe('What it cost you', () => {
     // the table must not let the gold nag imply the money was lost. Net is zero.
     expect(within(none).getAllByText('$6,000.00').length).toBe(2);
     expect(within(none).getByText('$0.00')).toBeTruthy();
-    // Nothing was filed AS Other, and the nag is last before the totals line.
+    // Nothing was filed AS Other, and the nag is last before the totals line. (The owner
+    // distribution sits BELOW that line, so it is excluded here rather than counted as a
+    // category that displaced the nag — see the distribution test above.)
     expect(screen.queryByText('Other')).toBeNull();
-    const rows = [...document.querySelectorAll('.recov-row:not(.recov-th):not(.recov-total)')];
+    const rows = [...document.querySelectorAll('.recov-row:not(.recov-th):not(.recov-total):not(.recov-owner)')];
     expect(rows[rows.length - 1]).toBe(none);
   });
 

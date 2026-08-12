@@ -12,6 +12,157 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-12** — **The accounting arc loses three exports, a depreciation engine and a whole
+  table — and every bank line still has somewhere to go** (George: *"there is no need for the tax
+  package, 1099, and lender package … i like the idea of creating buckets for things … i just want
+  a place for everything to go that comes off the bank statements … it got way too in depth and I
+  want to remove some of the clutter"*)
+  - **Cloudflare version `ca73e0ea-c620-4897-9582-b871ef94d665`** · migration `0100_retire_entity_ledger.sql` applied (`supabase db push`)
+  - **Net −8,488 lines of app code** (756 added, 9,244 removed) across 34 tracked files, plus 5 new
+    files totalling ~680 lines. Financials went from **12 stacked panels to 10**; the bank-statement
+    importer's picker from **13 real destinations to 10**.
+
+  ### What went, and what replaced it
+
+  | Removed | Files |
+  |---|---|
+  | Tax package (CPA) | `cpaPackage.js` · `cpaExcel.js` · `ExportCpaModal.js` |
+  | 1099 worksheet | `form1099.js` · `form1099Excel.js` · `Export1099Modal.js` |
+  | Lender package | `lenderPackage.js` · `lenderExcel.js` · `ExportLenderModal.js` |
+  | Capitalizing / "What you own" | `depreciation.js` · `closingStatement.js` · `AssetRegisterSection.js` · `CapitalizeLineButton.js` · `ClosingStatementModal.js` · the `extract-closing-statement` edge function |
+  | Owner & entity money | `entityLedger.js` · `EntityLedgerSection.js` · 5 api functions · the `entity_ledger` table's last reader |
+
+  Replaced by **one** workbook: `incomeExpense.js` + `incomeExpenseExcel.js` +
+  `ExportIncomeExpenseModal.js` — a Summary sheet and one sheet per property. Rent and other
+  income in, every expense by category with what tenants paid back, what the year left.
+
+  ### ⚠ THE ONE FACT THE WHOLE ROUND RESTS ON
+
+  `syncCamTotal` (`api.js:3428`) sums **only** `billable !== false` into `cam_total`. So a
+  not-billed line reaches no view, no share and no invoice. That was a convenience for tracking
+  absorbed costs; it is now **load-bearing**, because an owner draw is a not-billed
+  `cam_line_items` row — the landlord's own money sitting on the table the building bills from,
+  kept inert by one predicate. Anything that changes how `cam_total` is summed now decides
+  whether a distribution appears on a tenant's invoice. Pinned in three places: `bucketUi`
+  (CAM total unmoved by $25,750 of owner money on the same page), `whatStayedUi` (recording one
+  by hand moves no expense total and no tenant's share), `recoverabilityUi` (it renders below
+  the totals band and its dollars are in no total).
+
+  ### The owner-capital rule, and the asymmetry that is deliberate
+
+  A draw is marked by its bucket's `distribution` category. `isOwnerCategory`
+  (`expenseCategories.js`) is the **single** predicate; `recoverabilityRows` returns those rows
+  in `owner` / `ownerTotal` and never in `rows` / `totals`, so the screen and the workbook read
+  the same split and cannot disagree.
+
+  **There is deliberately NO income-side counterpart.** A `contribution` category on
+  `INCOME_CATEGORIES` was written, tested green, and then *reversed* — every member of that list
+  is money the property EARNED and the workbook prints the lot as revenue, so a contribution
+  inside it would inflate revenue by exactly what the landlord funded himself. Money in from the
+  owner files as a **`transfer`**: recorded, placed, counted nowhere. That is what that
+  disposition has always meant, and it honours George's "leave other income as is".
+
+  ### ⚠ The arithmetic rule in the new workbook
+
+  `v_property_totals.total_revenue` is **base rent only** (`sum(effective_rent(...))`, `0049`) —
+  it does not include CAM/tax reimbursements. So the reimbursement is netted off the **cost**
+  side (`spent − recovered`), never added to revenue. Adding it to revenue *and* subtracting the
+  gross expense would report the same dollars twice. Each property sheet quotes the app's own NOI
+  and states how the two reconcile, so a landlord comparing them finds an explanation rather than
+  a discrepancy.
+
+  ### Two real bugs caught on the way
+
+  1. **The new workbook would not have opened.** `downloadIncomeExpenseXlsx` passed the
+     *workbook* to `saveWorkbook`, which takes a *buffer*. `workbookValidity.test.js` — which
+     unzips the real bytes rather than asserting `blob.size > 4000` — caught it. That test was
+     repointed at the new export and matters MORE now, not less: the shared writer moved to
+     `xlsx.js` and every sheet in the new workbook passes `freeze: 0`, the exact configuration
+     that once made Excel call the file damaged.
+  2. **`cpaExcel.js` was load-bearing for two exports that had nothing to do with a tax return** —
+     it exported `XLSX_PALETTE` / `xlsxSheet` / `xlsxPen`. Lifted to `src/lib/xlsx.js` **first**,
+     or deleting the tax package would have taken the survivor down with it.
+
+  ### Migration `0100` — copies, never deletes
+
+  Reviewed and **approved**, and the reviewer ran it **twice against a scratch Postgres 18** loaded
+  with Amlak's real DDL: first run 3 lines + 2 buckets, second run 0 and 0. Idempotency proven
+  rather than asserted.
+  - `draw` → not-billed `cam_line_items` row, bucket named after the person (`party`, 0098),
+    bucket category `distribution`. `cost` → the same, keeping its own category.
+  - `contribution` → **nothing is written**, and the notice says how many were left behind.
+  - Rows with a **null `property_id`** cannot be copied (`cam_line_items.property_id` is NOT
+    NULL). They are LEFT IN PLACE and `RAISE NOTICE`d by count rather than filed against an
+    arbitrary building. **George: read the notice output when this applies.**
+  **On George's live data it moved NOTHING**: `0100: 0 expense line(s) written, 0 bucket
+  record(s) created`, and neither the null-property nor the contribution notice fired (both print
+  only when non-zero). **The entity ledger was never used in production** — every row it was built
+  for is still sitting in `cam_line_items` as a not-billed line, which is exactly where this round
+  puts it. So the retirement carried no live risk at all, and the only thing that actually changed
+  for George is that a panel he never filled in stopped taking up the page. (The two draws named
+  in round 7's entry — "Liana", "Yazin" on 401 S Main — were *not-billed expense lines* all along;
+  that is what made round 7 look urgent, and it is why the collapse is a return to where the money
+  already was rather than a move.)
+  - `entity_ledger` and `fixed_assets` keep every row, their RLS and their indexes. Nothing reads
+    them; they are the rollback. ⚠ **`fixed_assets` rows must NOT be deleted** —
+    `cam_line_items.asset_id` cascades from it (`0080`), so removing an asset would delete a
+    **real, billed** expense line and change what tenants owe. Table comments now say so.
+
+  ### Files
+  New: `src/lib/xlsx.js` · `src/lib/incomeExpense.js` · `src/lib/incomeExpenseExcel.js` ·
+  `src/components/ExportIncomeExpenseModal.js` · `supabase/migrations/0100_retire_entity_ledger.sql`.
+  Edited: `api.js` (−2 blocks, `listCorpDistributions` added, `listRenewalsByLeases` deleted as
+  dead) · `recoverability.js` (owner split + `whatStayed`/`absorbedFromItems` moved in from the
+  retired `entityLedger.js`) · `expenseCategories.js` (`distribution` in, `depreciation` and
+  `CAPITAL_PRONE` out) · `otherIncome.js` · `dispositions.js` (10 → 8) · `invalidate.js` (dead
+  `['vendor1099']` key) · `StatementReview.js` · `CamSection.js` · `RoofSection.js` ·
+  `RecoverabilityTable.js` · `WhatStayedStrip.js` · `DocumentsFilingsModal.js` ·
+  `ImportStatementButton.js` · `CorporationsPage.js` · `LedgerPage.js` ·
+  `PropertyFinancialsPage.js` · `App.css` · `demo/store.js` + `demo/mockClient.js` · `CLAUDE.md`.
+
+  ### What George sees
+  - **Financials → a property:** "Owner & entity money" and "What you own" are gone. A
+    distribution now sits in **CAM / maintenance → Other expenses — not billed to tenants**,
+    under the name of whoever took it, and gets its own line **below the Total** in "What it cost
+    you". "What actually stayed" keeps its rows and its signs — but ⚠ **its total moves on any
+    property that had an owner CONTRIBUTION**, because that line is gone (money in from the owner
+    now files as a transfer and carries no amount). On the demo property it reads **$72,740** where
+    it read $77,740, the difference being exactly the $5,000 contribution. Nothing else moved: the
+    two absorbed costs are still subtracted, now summed into one line, and the draw is still
+    subtracted separately.
+  - **Financials → a company card → Documents & filings:** Business profile · Annual report ·
+    **Income and expenses**. The other three are gone from the panel, not just from the card.
+  - **Importing a statement:** the destination list is 10 instead of 13 — Tenant payment ·
+    Property taxes · CAM expense · Other — not billed · Roof · **Owner distribution** · Other
+    income · Security deposit · Transfer · Ignore. Typing who a distribution went to names the
+    **bucket**, which is how draws stay split by person without a table.
+
+  ### Verified by driving the built app in demo mode (not by reading the code)
+  Maple Plaza, FY 2026, every figure read off the rendered page:
+  - **Performance row: Revenue $144,000.00 · Total expenses $47,000.00 · NOI $97,000.00** — the
+    proof of the whole round. $24,000 of owner money sits on the same page and moved none of them.
+  - **CAM total $18,000.00**, not $44,950 — the not-billed group totals $26,950.00 beside it
+    (Owner legal fees $1,200 · Illinois franchise tax $1,750 · Dana Whitfield $24,000).
+  - **What it cost you:** Spent $49,950.00 / Recovered $44,600.00 / net $5,350.00, with
+    "Dana Whitfield — not a cost of the building, and in none of the figures above · Taken out
+    $24,000.00" rendered BELOW the totals band, recovered and net both "—".
+  - **What actually stayed: $72,740.00** (97,000 + 2,690 − 2,950 − 24,000).
+  - **Documents & filings** lists exactly Business profile · Annual report · Income and expenses.
+    The workbook modal reads Rent $144,000.00 · Other income $2,690.00 · Your net cost $5,350.00 ·
+    **What the year left $141,340.00**, above "Listed separately, in none of the figures above:
+    $24,000.00 you took out", and flags the $6,000 Security bucket that still has no category.
+  - **Zero console errors** across the whole walk-through. 1,735 tests green, 170 files.
+
+  ### Not done, and worth naming
+  - **`depreciation` was removed from the category list**, not kept. Nothing could produce it and
+    nothing could roll it up, so leaving it selectable would have offered a category that
+    silently reported nothing. A bucket that had chosen it now shows the gold "Set a category"
+    chip and gets asked again.
+  - **No feature gate, so no backfill migration** — none of the removed features was ever behind
+    a `features.js` key (verified: the five are `insurance`, `contracts`, `ledger`,
+    `announcements`, `esign`).
+  - **If a CPA ever wants a depreciation schedule, it now comes from outside Amlak.**
+
 - **2026-08-06** — **A row goes when you click it, and the app says what capitalizing does**
   (George: *"deleting things needs to happen faster and explain what capitalizing an expense
   does"*). Deployed: frontend Cloudflare **`a0ae0c93`**. **No migration, no edge function.**

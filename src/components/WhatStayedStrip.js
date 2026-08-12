@@ -1,11 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { listCamLineItems, listEntityLedger, listOtherIncome } from '../lib/api';
-import { summarizeEntityLedger, absorbedFromItems, whatStayed } from '../lib/entityLedger';
+import { listCamLineItems, listOtherIncome, listExpenseBuckets } from '../lib/api';
+import { absorbedFromItems, whatStayed } from '../lib/recoverability';
 import { summarizeOtherIncome } from '../lib/otherIncome';
 import { money } from '../lib/format';
 
-// Slice 4b — the first time the app can show the gap between NOI and what is actually
-// in the account.
+// The gap between NOI and what is actually in the account.
 //
 // ⚠ THE TWO WRONG WAYS TO DO THIS, both refused here. Folding the not-billed costs
 // into `cam_total` would BILL TENANTS for expenses the landlord deliberately absorbed
@@ -15,37 +14,38 @@ import { money } from '../lib/format';
 // quoted unchanged and everything it doesn't know about is carried BESIDE it, derived
 // client-side from data that already exists.
 //
-// Both queries reuse the exact keys their own screens use — `camLineItems` is the
-// same key CamSection and RecoverabilityTable read — so this is normally a cache hit,
-// it repaints on every existing invalidation, and it cannot disagree with the panels
-// below it.
+// Every query reuses the exact key its own screen uses — `camLineItems` is the same key
+// CamSection and RecoverabilityTable read, `expenseBuckets` the same key CamSection's
+// category chips read — so this is normally three cache hits, it repaints on every
+// existing invalidation, and it cannot disagree with the panels below it.
+//
+// The arithmetic is UNCHANGED by the entity ledger's retirement (2026-08-12). A draw
+// used to arrive as an `entity_ledger` row and now arrives as a non-billable expense
+// line carrying the `distribution` category; `absorbedFromItems` splits it back out by
+// category, so the same dollars are subtracted under the same label as before.
 export default function WhatStayedStrip({ propId, year, noi }) {
   const { data: camItems = [] } = useQuery({
     queryKey: ['camLineItems', propId, year],
     queryFn: () => listCamLineItems(propId, year),
   });
-  const { data: entries = [] } = useQuery({
-    queryKey: ['entityLedger', propId, year],
-    queryFn: () => listEntityLedger({ propertyId: propId, year }),
-  });
+  // What resolves a non-billable line's category, and so which side of the strip it
+  // lands on — a cost you ate, or money you took out.
+  const { data: buckets = [] } = useQuery({ queryKey: ['expenseBuckets'], queryFn: listExpenseBuckets });
 
-  // Slice 4c fills the slot round 7 built and left empty: income the property really
-  // received that NOI has never counted, because it never rode an invoice.
+  // Income the property really received that NOI has never counted, because it never
+  // rode an invoice.
   const { data: income = [] } = useQuery({
     queryKey: ['otherIncome', propId, year],
     queryFn: () => listOtherIncome(propId, year),
   });
 
-  const absorbed = absorbedFromItems(camItems);
-  const sum = summarizeEntityLedger(entries);
+  const absorbed = absorbedFromItems(camItems, buckets);
   const inc = summarizeOtherIncome(income);
   const { lines, stayed } = whatStayed({
     noi,
     absorbed: absorbed.total,
     otherIncome: inc.total,
-    draws: sum.draws,
-    contributions: sum.contributions,
-    entityCosts: sum.costs,
+    distributions: absorbed.ownerTotal,
   });
 
   // Nothing to reconcile means nothing to show: a strip that reads "NOI $150,837 =
@@ -74,7 +74,7 @@ export default function WhatStayedStrip({ propId, year, noi }) {
           NOI is unchanged — it is what your tenants were billed, less what the building spent.
           Everything under it is real money that NOI has never known about
           {absorbed.count > 0 && <>, including {absorbed.count} expense line{absorbed.count === 1 ? '' : 's'} you entered and chose not to bill back</>}.
-          {sum.draws > 0 && ' A draw is not an expense — it reduces your equity, so it is subtracted here and nowhere else.'}
+          {absorbed.ownerTotal > 0 && ' A distribution is not an expense — it reduces your equity, so it is subtracted here and left out of every expense total.'}
           {inc.count > 0 && ` Other income is real money in, but it never rode a tenant's invoice — so no Collected figure includes it.`}
         </div>
       </div>

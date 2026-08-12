@@ -28,7 +28,7 @@
 // NOTHING HERE BILLS ANYTHING. Every figure is derived; no caller writes. A wrong
 // category produces a wrong report and never a wrong invoice.
 
-import { categoryFor, categoryLabel } from './expenseCategories';
+import { categoryFor, categoryLabel, isOwnerCategory } from './expenseCategories';
 
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -104,14 +104,15 @@ function expenseLines(items, expense) {
  *
  * Pure: takes rows, reads no clock and no network.
  */
-// `fractions` is an optional override, and it exists for exactly one caller: the CPA
-// package on a CASH basis, which filters `items` down to the lines carrying a payment
-// date and therefore hands in a smaller `expense` than the year really had. Deriving the
-// fractions from that shrunken figure would read as tenants reimbursing several times
-// what was spent. The recovery rate is a property-level truth about the WHOLE year, so
-// the caller passes the year's real one. Omit it and nothing changes.
-export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [], fractions: override = null } = {}) {
-  const fractions = override || recoveryFractions({ shares, expense });
+// ⚠ OWNER CAPITAL IS SPLIT OUT, NOT SUMMED IN. A line whose category answers
+// `isOwnerCategory` — today only `distribution`, the home owner draws moved to when the
+// entity ledger was retired (2026-08-12) — is a real bank line that must appear
+// somewhere, but it is NOT a cost of the building. It leaves in `owner` and is absent
+// from both `rows` and `totals`, so every caller that renders a subtotal gets the right
+// answer without knowing the rule. The Income-and-expenses workbook prints `owner`
+// beneath the net line for the same reason.
+export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [] } = {}) {
+  const fractions = recoveryFractions({ shares, expense });
   const byCat = new Map();
   let uncategorized = null;
 
@@ -156,8 +157,13 @@ export function recoverabilityRows({ items = [], shares = [], expense = {}, buck
     return e;
   };
 
-  const rows = [...byCat.values()].map(finish)
+  const all = [...byCat.values()].map(finish)
     .sort((a, b) => b.net - a.net || b.spent - a.spent || a.label.localeCompare(b.label));
+
+  // The split, before anything is totalled. `uncategorized` can never be an owner row —
+  // it has no category by definition — so it joins the expense side as it always did.
+  const owner = all.filter((r) => isOwnerCategory(r.key));
+  const rows = all.filter((r) => !isOwnerCategory(r.key));
   if (uncategorized) rows.push(finish(uncategorized));
 
   // Sum the ROUNDED rows, never the raw figures, so the totals line ties to the column
@@ -166,6 +172,80 @@ export function recoverabilityRows({ items = [], shares = [], expense = {}, buck
     (t, r) => ({ spent: round2(t.spent + r.spent), recovered: round2(t.recovered + r.recovered), net: round2(t.net + r.net) }),
     { spent: 0, recovered: 0, net: 0 }
   );
+  const ownerTotal = owner.reduce((t, r) => round2(t + r.spent), 0);
 
-  return { rows, totals, fractions };
+  return { rows, totals, owner, ownerTotal, fractions };
+}
+
+// ── What actually stayed ─────────────────────────────────────────────────────────────
+//
+// Moved here from entityLedger.js when that module was retired (2026-08-12). It belongs
+// beside recoverabilityRows because both answer the same question from opposite ends —
+// that one says what each category cost, this one says what the year left in the bank —
+// and both now depend on the same owner-capital rule.
+
+/**
+ * The costs the landlord entered and deliberately did NOT bill, split from the owner's
+ * own withdrawals.
+ *
+ * ⚠ These figures are *visible* on the Expense entry panel and reach NO total. That was
+ * deliberate (2026-07-21: "folding them into NOI = v2"), and the consequence is that NOI
+ * is overstated by exactly the amount the landlord ate. The strip counts it BESIDE NOI,
+ * never inside it — folding it into `cam_total` would bill tenants for costs deliberately
+ * absorbed, which is the exact thing `billable=false` exists to prevent, and redefining
+ * `v_property_totals.noi` would silently re-value every historical chart point and every
+ * `financial_snapshots` row already written.
+ *
+ * ⚠ AND IT MUST SPLIT, not sum. Since the entity ledger was retired, an owner draw is
+ * ALSO a `billable = false` line — same shape, different meaning. Summing them would put
+ * "money you took out" under the label "costs you absorbed", which is the misstatement
+ * the entity ledger existed to prevent in the first place. The total leaving the account
+ * is identical either way; only the two labels are at stake, and they are the point.
+ * `buckets` is what resolves a line's category, so a caller that omits it gets every
+ * non-billable line as absorbed — the pre-2026-08-12 answer, and a safe degradation.
+ */
+export function absorbedFromItems(items = [], buckets = []) {
+  let total = 0, count = 0, ownerTotal = 0, ownerCount = 0;
+  for (const it of items || []) {
+    if (it?.billable !== false) continue;
+    const amt = Math.abs(Number(it.amount) || 0);
+    if (isOwnerCategory(categoryFor(it.label, buckets).category)) {
+      ownerTotal = round2(ownerTotal + amt);
+      ownerCount += 1;
+    } else {
+      total = round2(total + amt);
+      count += 1;
+    }
+  }
+  return { total, count, ownerTotal, ownerCount };
+}
+
+/**
+ * The reconciliation strip: NOI as billed, then every real movement it doesn't know
+ * about, ending at what actually stayed in the account.
+ *
+ * Returns ordered lines so the UI renders a subtraction anyone can follow rather than a
+ * table of unrelated figures. A line whose figure is zero is omitted — a strip full of
+ * "$0.00 distributions" reads as noise and hides the ones that matter. `noi` always
+ * shows, even at zero, because it is what the subtraction starts from.
+ *
+ * Owner CONTRIBUTIONS carried a line here until 2026-08-12. They no longer have a home
+ * that records an amount — money the landlord puts in files as a `transfer`, which is
+ * placed and counted nowhere (otherIncome.js explains the refusal). So this reconciles
+ * NOI to what the PROPERTY's year left in the account, which is the question it was
+ * always really answering.
+ */
+export function whatStayed({ noi = 0, absorbed = 0, otherIncome = 0, distributions = 0 } = {}) {
+  const lines = [
+    { key: 'noi', label: 'Net operating income', sub: 'as billed', amount: round2(noi), sign: 1, always: true },
+    { key: 'otherIncome', label: 'Other income', sub: 'not tenant rent', amount: round2(otherIncome), sign: 1 },
+    { key: 'absorbed', label: 'Costs you absorbed', sub: 'entered, not billed to tenants', amount: round2(absorbed), sign: -1 },
+    { key: 'distributions', label: 'Owner distributions', sub: 'money you took out', amount: round2(distributions), sign: -1 },
+  ];
+  const shown = lines.filter((l) => l.always || Math.abs(l.amount) > 0.005);
+  // Summed from the lines SHOWN, never from the inputs — a strip whose figures don't add
+  // up to its own total is worse than no strip. (Omitted lines are exactly zero, so this
+  // is the same number either way; it stays tied by construction.)
+  const stayed = round2(shown.reduce((n, l) => n + l.sign * l.amount, 0));
+  return { lines: shown, stayed };
 }

@@ -26,12 +26,14 @@ export default function RecoverabilityTable({ propId, corpId, year }) {
   const { data: reviews = [] } = useQuery({ queryKey: ['leaseReviews', propId], queryFn: () => listLeaseReviews(propId) });
 
   const items = [...taxItems, ...camItems, ...roofItems];
-  const { rows, totals } = recoverabilityRows({ items, shares, expense: expense || {}, buckets });
+  const { rows, totals, owner, ownerTotal } = recoverabilityRows({ items, shares, expense: expense || {}, buckets });
   const capped = cappedLeases(reviews);
 
   // Nothing spent yet — the expense sections above already say so; a table of zeroes
-  // would just be noise on a page that is otherwise asking you to fill them in.
-  if (totals.spent <= 0) return null;
+  // would just be noise on a page that is otherwise asking you to fill them in. A year
+  // with ONLY distributions still renders: those lines have to be visible somewhere,
+  // and this is where the landlord comes looking for money that left the account.
+  if (totals.spent <= 0 && ownerTotal <= 0) return null;
 
   const pct = totals.spent > 0 ? (totals.recovered / totals.spent) * 100 : 0;
 
@@ -41,8 +43,8 @@ export default function RecoverabilityTable({ propId, corpId, year }) {
         <h3 className="section-title" style={{ margin: 0 }}>What it cost you — FY {year}</h3>
       </div>
       <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 14 }}>
-        What you spent, what your tenants pay back, and what you carry — by the line of your
-        return each bucket rolls up to.
+        What you spent, what your tenants pay back, and what you carry — by the category each
+        bucket rolls up to.
       </p>
 
       <div className="recov-table">
@@ -83,6 +85,26 @@ export default function RecoverabilityTable({ propId, corpId, year }) {
           <div className="num recov-back"><span className="stat-label">Recovered</span><b>{money(totals.recovered)}</b></div>
           <div className="num recov-net"><span className="stat-label">Your net cost</span><b>{money(totals.net)}</b></div>
         </div>
+
+        {/* ⚠ BELOW THE TOTAL, NEVER INSIDE IT. Money the owner took out is a real bank
+            line and has to be visible, but it is not a cost of the building — so it sits
+            under the totals band rather than as another category above it, and
+            `recoverabilityRows` has already kept it out of every figure there.
+            (Before 2026-08-12 these lived in an "Owner & entity money" panel of their
+            own; the panel went, the distinction did not.) */}
+        {owner.map((r) => (
+          <div className="recov-row recov-owner" key={r.key}>
+            <div>
+              {r.label}
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                {r.buckets.join(' · ')} — not a cost of the building, and in none of the figures above
+              </div>
+            </div>
+            <div className="num"><span className="stat-label">Taken out</span>{money(r.spent)}</div>
+            <div className="num recov-back"><span className="stat-label">Recovered</span>—</div>
+            <div className="num recov-net"><span className="stat-label">Your net cost</span>—</div>
+          </div>
+        ))}
       </div>
 
       <div className="muted" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.6 }}>

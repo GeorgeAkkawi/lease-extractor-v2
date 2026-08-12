@@ -27,6 +27,11 @@ const Y = currentYear();
 describe('the income vocabulary', () => {
   it('names the kinds of income a building actually receives', () => {
     expect(INCOME_CATEGORIES.map((c) => c.key)).toEqual(['late_fee', 'parking', 'laundry', 'utility', 'insurance', 'other']);
+    // ⚠ Every member is money the PROPERTY EARNED, and the Income-and-expenses workbook
+    // prints the lot as revenue. Money the owner PUTS IN is deliberately absent — it
+    // files as a `transfer`, which records no amount — because a contribution sitting in
+    // this list would inflate revenue by exactly what the landlord funded himself.
+    expect(INCOME_CATEGORIES.some((c) => /contribution|owner|capital/i.test(c.key))).toBe(false);
     expect(isIncomeCategory('late_fee')).toBe(true);
     expect(isIncomeCategory('rent')).toBe(false);
     // An unknown category falls back rather than throwing — a row written by a later

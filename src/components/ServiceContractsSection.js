@@ -343,7 +343,7 @@ function SignedCopyRow({ contractId }) {
 // Add flow: name it + attach the document → the AI reads it → the SAME review screen the
 // replace path uses → only then is anything written. Before this, Add spread the extraction
 // straight into an insert: no diff, no confirmation, no history entry, and a vendor the AI
-// missed silently became the landlord's own label (and therefore the 1099 payee name).
+// missed silently became the landlord's own label, and was then reported as the vendor.
 function AddContract({ propId, onClose, onAdded }) {
   const [name, setName] = useState('');
   const [text, setText] = useState('');

@@ -1,22 +1,26 @@
 // Do the workbooks this app hands people actually OPEN?
 //
-// ⚠ EVERY EXISTING WORKBOOK TEST ASSERTS `blob.size > 4000`, AND THAT IS WHY THIS DEFECT
+// ⚠ EVERY EXISTING WORKBOOK TEST ASSERTED `blob.size > 4000`, AND THAT IS WHY THIS DEFECT
 // SHIPPED. A corrupt .xlsx is still a well-formed zip of exactly the right size — Excel
-// only rejects it when it validates the package on open. So all five exports were
-// "verified" by a check that could not fail for the thing that was wrong with them.
-// Size is not validity, the same way round 15's five buttons proved existence is not
-// reachability.
+// only rejects it when it validates the package on open. So the exports were "verified"
+// by a check that could not fail for the thing that was wrong with them. Size is not
+// validity, the same way five buttons proved existence is not reachability.
 //
-// The bug: `sheet()` in cpaExcel.js always emitted `{ state: 'frozen', ySplit: 0 }` for
-// every sheet that opted out of freezing — a frozen pane splitting nothing. Excel calls
-// the package damaged and "repairs" it by discarding the view. 8 sheets across three
+// The bug: the shared `sheet()` always emitted `{ state: 'frozen', ySplit: 0 }` for every
+// sheet that opted out of freezing — a frozen pane splitting nothing. Excel calls the
+// package damaged and "repairs" it by discarding the view. 8 sheets across three
 // workbooks. rentRollExcel.js:120 has carried a comment warning about exactly this since
 // the last time someone hit it.
 //
+// ⚠ AND THE RISK OUTLIVED THE WORKBOOKS. Those three were removed 2026-08-12, but the
+// writer they shared did not go with them — it moved to `xlsx.js` and the Income-and-
+// expenses workbook is built on it, with `freeze: 0` on EVERY sheet. That is precisely
+// the configuration that was broken, so this test matters more now, not less.
+//
 // So this reads the bytes Excel reads: unzip the real buffer, parse each sheet's XML, and
-// assert the frozen-pane rule structurally. All five workbooks are covered, which also
-// pins the two writers that were already correct — a later refactor onto the shared
-// writer cannot silently break them.
+// assert the frozen-pane rule structurally. All three surviving workbooks are covered,
+// including the two with their own writers — a later refactor onto the shared writer
+// cannot silently break them.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import JSZip from 'jszip';
 
@@ -33,9 +37,7 @@ vi.mock('../download', async (importOriginal) => {
   };
 });
 
-const { downloadCpaPackageXlsx } = await import('../cpaExcel');
-const { downloadLenderPackageXlsx } = await import('../lenderExcel');
-const { download1099WorksheetXlsx } = await import('../form1099Excel');
+const { downloadIncomeExpenseXlsx } = await import('../incomeExpenseExcel');
 const { downloadReconciliationXlsx } = await import('../reconciliationExcel');
 const { downloadRentRollXlsx } = await import('../rentRollExcel');
 const { fetchSearchIndex } = await import('../api');
@@ -75,28 +77,16 @@ function expectSheetOpens(name, xml) {
 beforeEach(() => { saved.length = 0; });
 
 describe('every downloadable workbook opens without a repair dialog', () => {
-  it('the tax package — 5 sheets, Summary was the broken one', async () => {
-    await downloadCpaPackageXlsx({ corporationId: 'corp-1', year: Y });
+  // Every sheet here passes { freeze: 0 } — the exact case that was broken — so this is
+  // the live guard on the shared writer rather than a formality.
+  it('income and expenses — Summary plus one sheet per property, none of them frozen', async () => {
+    await downloadIncomeExpenseXlsx({ corporationId: 'corp-1', corporationName: 'Acme', year: Y });
     expect(saved).toHaveLength(1);
     const sheets = await sheetsOf(saved[0]);
-    expect(Object.keys(sheets)).toHaveLength(5);
+    expect(Object.keys(sheets).length).toBeGreaterThan(1); // Summary + at least one property
     for (const [n, xml] of Object.entries(sheets)) expectSheetOpens(n, xml);
-  }, 30000);
-
-  it('the lender package — all 5 sheets were broken', async () => {
-    await downloadLenderPackageXlsx({ corporationId: 'corp-1', year: Y, assumptions: { debtService: 80000 } });
-    expect(saved).toHaveLength(1);
-    const sheets = await sheetsOf(saved[0]);
-    expect(Object.keys(sheets)).toHaveLength(5);
-    for (const [n, xml] of Object.entries(sheets)) expectSheetOpens(n, xml);
-  }, 30000);
-
-  it('the 1099 worksheet — both sheets were broken', async () => {
-    await download1099WorksheetXlsx({ corporationId: 'corp-1', year: Y });
-    expect(saved).toHaveLength(1);
-    const sheets = await sheetsOf(saved[0]);
-    expect(Object.keys(sheets)).toHaveLength(2);
-    for (const [n, xml] of Object.entries(sheets)) expectSheetOpens(n, xml);
+    // No sheet declares a pane at all, which is the shape that opens cleanly.
+    expect(Object.values(sheets).every((x) => !/state="frozen"/.test(x))).toBe(true);
   }, 30000);
 
   // These two use their own writers and were already correct. Covering them is what stops

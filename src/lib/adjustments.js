@@ -18,12 +18,12 @@
 // owed (or a charge posted on an already-paid month would be invisible — George's most
 // common case). With no adjustments both are byte-identical to before.
 //
-// ⚠ SIGNED AMOUNTS, DELIBERATELY. `entity_ledger` stores a magnitude and takes its sign
-// from the kind (entityLedger.js:59), because a draw is always out. Here the sign is
-// genuinely per-row — a CAM correction goes either way — so it lives on the row and the
-// kind is only the category. Positive = a CHARGE (debit the tenant), negative = a CREDIT.
+// ⚠ SIGNED AMOUNTS, DELIBERATELY. An expense line stores a magnitude and takes its sign
+// from what it is, because money out is always out. Here the sign is genuinely per-row —
+// a CAM correction goes either way — so it lives on the row and the kind is only the
+// category. Positive = a CHARGE (debit the tenant), negative = a CREDIT.
 //
-// A JS registry rather than a DB CHECK, for the reason 0075/0076/0077/0079/0080 all give:
+// A JS registry rather than a DB CHECK, for the reason 0075/0076 give:
 // a CHECK means a migration every time the list is refined and would reject a row the app
 // considers valid.
 

@@ -9,10 +9,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   EXPENSE_CATEGORIES, categoryLabel, isValidCategory, bucketKey,
-  defaultCategoryFor, isCapitalProne, categoryFor,
+  defaultCategoryFor, isOwnerCategory, categoryFor,
   isCustomCategory, customCategoryKey, allCategories, filingCategory,
 } from '../expenseCategories';
-import { formLine, consolidate } from '../cpaPackage';
+import { recoverabilityRows } from '../recoverability';
 import {
   createCustomCategory, listCustomCategories, renameCustomCategory,
   saveExpenseBucket, listExpenseBuckets,
@@ -75,10 +75,19 @@ describe('defaults cover what the app proposes, and nothing else', () => {
     expect(defaultCategoryFor('Security')).toBe(null);
   });
 
-  it('marks the buckets where a big spend is plausibly capital', () => {
-    expect(isCapitalProne('Roof')).toBe(true);
-    expect(isCapitalProne('Paving')).toBe(true);
-    expect(isCapitalProne('Landscaping')).toBe(false);
+  // The owner-capital rule, 2026-08-12: a distribution is a category like any other to
+  // every picker, and NOT an expense to any subtotal. One predicate carries that, so the
+  // screen and the workbook cannot disagree about it.
+  it('marks the owner-capital category, and nothing else', () => {
+    expect(isOwnerCategory('distribution')).toBe(true);
+    expect(isOwnerCategory('repairs')).toBe(false);
+    expect(isOwnerCategory('other')).toBe(false);
+    expect(isOwnerCategory(null)).toBe(false);
+    // A landlord's write-in files under Other and can never become owner capital —
+    // otherwise naming a bucket "Distributions" would silently pull it out of expenses.
+    expect(isOwnerCategory('custom:distributions')).toBe(false);
+    // Exactly one, so a second would be a deliberate decision rather than a slip.
+    expect(EXPENSE_CATEGORIES.filter((c) => c.ownerCapital)).toHaveLength(1);
   });
 });
 
@@ -151,11 +160,10 @@ describe('a partial transcript is detectable, so a review built on one can say s
 
 // ── 0099 — a category the landlord names ─────────────────────────────────────
 //
-// THE CONSTRAINT this is all shaped by: EXPENSE_CATEGORIES is the union of Form 8825 and
-// Schedule E, and FORM_LINES maps every key to a real line. You cannot invent a line on an
-// IRS form. Both forms END with a write-in ("Other (list)"), so a custom category IS that:
-// it files under Other and supplies the description that line asks you to list.
-describe('a tax category the landlord names', () => {
+// THE CONSTRAINT this is all shaped by: EXPENSE_CATEGORIES is a fixed vocabulary that the
+// roll-ups iterate, so a name the landlord invents has to file under one of its members or
+// its money leaves the report. It files under "Other" and supplies the description.
+describe('a category the landlord names', () => {
   const customs = [{ key: 'custom:security', label: 'Security' }];
 
   it('slugs a name into a key that cannot collide with a form line', () => {
@@ -188,50 +196,41 @@ describe('a tax category the landlord names', () => {
     expect(categoryLabel('nonsense')).toBe(null);
   });
 
-  it('files under Other on BOTH forms — as a write-in, not a missing line', () => {
+  it('files under Other — as a write-in, not a missing line', () => {
     expect(filingCategory('custom:security')).toBe('other');
     expect(filingCategory('repairs')).toBe('repairs');
-    for (const form of ['f8825', 'schedE']) {
-      const fl = formLine('custom:security', form);
-      expect(fl.label).toBe('Other');
-      expect(fl.viaOther).toBe(true);
-    }
   });
 
-  it('offers form lines first, then the landlord’s own, flagged as custom', () => {
+  it('offers the built-ins first, then the landlord’s own, flagged as custom', () => {
     const all = allCategories(customs);
     expect(all.slice(0, EXPENSE_CATEGORIES.length)).toEqual(EXPENSE_CATEGORIES);
     expect(all[all.length - 1]).toEqual({ key: 'custom:security', label: 'Security', custom: true });
     expect(allCategories()).toEqual(EXPENSE_CATEGORIES); // no list → unchanged
   });
 
-  it('KEEPS ITS MONEY IN THE PACKAGE — the failure that would matter most', () => {
-    // consolidate() used to iterate EXPENSE_CATEGORIES alone. A custom key would have
-    // dropped out of the summary AND out of expenseTotal: money silently missing from a
-    // tax package, which is the one thing that file exists to make impossible.
-    const properties = [{
-      categories: [
-        { key: 'repairs', spent: 1000 },
-        { key: 'custom:security', spent: 400 },
+  it('KEEPS ITS MONEY IN THE ROLL-UP — the failure that would matter most', () => {
+    // A roll-up that iterates EXPENSE_CATEGORIES alone drops a custom key out of both the
+    // rows AND the total: money silently missing from a report the landlord hands someone.
+    // recoverabilityRows groups from the DATA rather than from the list, which is what
+    // makes that impossible; pinned here because the guarantee belongs to the category
+    // file even though the grouping lives next door.
+    const out = recoverabilityRows({
+      items: [
+        { kind: 'cam', label: 'Plumbing', amount: 1000, billable: true },
+        { kind: 'cam', label: 'Guard hut', amount: 400, billable: true },
       ],
-      uncategorized: null,
-      depreciation: { amount: 0 },
-      income: { rent: 0, otherIncome: 0, total: 0, billed: 0, received: 0, receivedPriorYear: 0 },
-      deductible: 1400,
-      recovered: 0,
-      absorbed: { total: 0 },
-      undated: { total: 0 },
-    }];
-    const out = consolidate(properties, customs);
+      shares: [],
+      expense: { cam_total: 1400 },
+      buckets: [
+        { label: 'Plumbing', category: 'repairs' },
+        { label: 'Guard hut', category: 'custom:security' },
+      ],
+    });
     const row = out.rows.find((r) => r.key === 'custom:security');
     expect(row).toBeTruthy();
-    expect(row.label).toBe('Security');
-    expect(row.custom).toBe(true);
-    expect(row.total).toBe(400);
-    // Its dollars are inside the total, and the form's own lines still come first.
-    expect(out.expenseTotal).toBe(1400);
-    expect(out.rows.findIndex((r) => r.key === 'repairs'))
-      .toBeLessThan(out.rows.findIndex((r) => r.key === 'custom:security'));
+    expect(row.label).toBe('Security'); // de-slugged, never a blank
+    expect(row.spent).toBe(400);
+    expect(out.totals.spent).toBe(1400); // its dollars are inside the total
   });
 });
 

@@ -20,9 +20,8 @@ import { contractTargets, buildContractFeeSteps, buildContractConfidence, notice
 import { byTermEnd } from './leaseSearch';
 import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQuestion } from './portfolio';
 import { advanceDueDate } from './annualReports';
-import { isValidCategory, bucketKey, defaultCategoryFor, isCapitalProne, customCategoryKey, EXPENSE_CATEGORIES } from './expenseCategories';
+import { isValidCategory, bucketKey, defaultCategoryFor, isOwnerCategory, categoryFor, customCategoryKey, EXPENSE_CATEGORIES } from './expenseCategories';
 import { lineCompleteness } from './dispositions';
-import { amortizationFor, canAmortize, assetKindInfo } from './depreciation';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
 import { isoDateOrNull } from './isoDate';
 import { coalesce } from './coalesce';
@@ -462,6 +461,41 @@ export async function listCorpRollups(year) {
     }
   }
   return rollups;
+}
+
+// What the OWNER took out, per corporation — kept apart from the roll-up above rather
+// than folded into "Expenses", because a distribution is not a cost of any building.
+//
+// It reads the same place the Financials page does: a non-billable `cam_line_items` row
+// whose bucket carries the `distribution` category (see expenseCategories.js). Before
+// 2026-08-12 this was its own `entity_ledger` table; collapsing it into the expense
+// buckets is what let the app drop a table, a panel and a vocabulary without losing the
+// figure. Returns { [corpId]: { distributed, count } }.
+export async function listCorpDistributions(year) {
+  const [props, buckets] = await Promise.all([
+    rows(supabase.from('properties').select('id,corporation_id')),
+    listExpenseBuckets(),
+  ]);
+  const corpOf = new Map((props || []).map((p) => [p.id, p.corporation_id]));
+  const ids = [...corpOf.keys()];
+  if (!ids.length) return {};
+
+  const items = await rows(
+    supabase.from('cam_line_items').select('property_id,label,amount,year,billable').in('property_id', ids)
+  );
+  const y = Number(year);
+  const out = {};
+  for (const it of items || []) {
+    if (it?.billable !== false) continue;
+    if (isFinite(y) && Number(it.year) !== y) continue;
+    if (!isOwnerCategory(categoryFor(it.label, buckets).category)) continue;
+    const corpId = corpOf.get(it.property_id);
+    if (!corpId) continue;
+    const e = (out[corpId] ||= { distributed: 0, count: 0 });
+    e.distributed = round2(e.distributed + Math.abs(Number(it.amount) || 0));
+    e.count += 1;
+  }
+  return out;
 }
 
 // ---- Properties -------------------------------------------------------------
@@ -2510,7 +2544,7 @@ export const markEnvelopeApplied = (envelopeId) =>
  *
  * ⚠ `vendor` is NOT defaulted to the contract's name. It used to be — `vendor: f.vendor ||
  * name.trim()` — which quietly turned the landlord's own label ("Snow — front lot") into the
- * 1099 PAYEE NAME for a vendor the AI simply hadn't found. Left null, the review says the
+ * VENDOR NAME for a vendor the AI simply hadn't found. Left null, the review says the
  * vendor wasn't found and the Edit form asks for it.
  */
 export async function createServiceContractFromDocument({
@@ -2806,13 +2840,6 @@ export const listScheduledEscalationsForProperty = async (propertyId) => {
 
 export const listRenewals = (leaseId) =>
   rows(supabase.from('renewal_options').select('*').eq('lease_id', leaseId).order('notice_by_date'));
-
-// Batched for a whole property (the lender package's rollover schedule), mirroring
-// listAbatementsForLeases / listEscalationsByLeases — one query instead of one per lease.
-export async function listRenewalsByLeases(leaseIds) {
-  if (!leaseIds || !leaseIds.length) return [];
-  return rows(supabase.from('renewal_options').select('*').in('lease_id', leaseIds).order('notice_by_date'));
-}
 
 export const createRenewal = async (r) =>
   one(supabase.from('renewal_options').insert({ ...r, owner_id: await ownerId(), status: r.status || 'pending' }).select().single());
@@ -3339,8 +3366,8 @@ export async function createCustomCategory(label) {
   }
 }
 
-// The LABEL changes; the key never does. It is stored on every bucket and entity-ledger row
-// that chose this category, so re-slugging on rename would orphan all of them.
+// The LABEL changes; the key never does. It is stored on every bucket that chose this
+// category, so re-slugging on rename would orphan all of them.
 export const renameCustomCategory = (id, label) =>
   one(supabase.from('expense_categories_custom')
     .update({ label: String(label || '').trim() })
@@ -3355,7 +3382,7 @@ export const deleteCustomCategory = (id) =>
 // lower(btrim(label)), so a plain insert of an existing label raises 23505 and we
 // update the row already there — the same shape saveImportRule uses, and what keeps a
 // bucket from holding two different categories.
-export async function saveExpenseBucket({ label, category = null, billable, capital_prone }) {
+export async function saveExpenseBucket({ label, category = null, billable }) {
   const clean = String(label || '').trim();
   if (!clean) throw new Error('A bucket needs a name.');
   if (category != null && !isValidCategory(category)) throw new Error(`Unknown category: ${category}`);
@@ -3363,7 +3390,6 @@ export async function saveExpenseBucket({ label, category = null, billable, capi
   const patch = {
     ...(category !== undefined ? { category } : {}),
     ...(billable !== undefined ? { billable } : {}),
-    ...(capital_prone !== undefined ? { capital_prone } : {}),
   };
   try {
     return await one(
@@ -6072,85 +6098,6 @@ export const setLineDisposition = (id, disposition, ignoreReason = null, ref = n
       .eq('id', id).select().single()
   );
 
-// ---- Entity ledger (Slice 4b) -----------------------------------------------
-// Owner draws, owner contributions, and costs of the LLC itself. See
-// src/lib/entityLedger.js for what each means and why a draw is never an expense.
-//
-// ⚠ Nothing here touches expense_records, cam_line_items, v_tenant_shares or
-// v_property_totals. That is the entire safety property: a distribution recorded
-// through this path cannot move a tenant's bill or the property's NOI, by
-// construction rather than by care.
-
-// Scoped either way: by property (what left this building's account) or by
-// corporation (everything the entity did, including rows with no property).
-export async function listEntityLedger({ propertyId = null, corporationId = null, year = null } = {}) {
-  let q = supabase.from('entity_ledger').select('*');
-  if (propertyId) q = q.eq('property_id', propertyId);
-  else if (corporationId) q = q.eq('corporation_id', corporationId);
-  const list = await rows(q);
-  const y = Number(year);
-  const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
-  return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
-}
-
-// Every corporation's entity ledger for a year, in ONE query — for the corporation
-// cards, which already read a batched roll-up rather than one query per corp.
-export async function listEntityLedgerByCorps(year) {
-  const list = await rows(supabase.from('entity_ledger').select('corporation_id,kind,amount,year'));
-  const y = Number(year);
-  const out = {};
-  for (const r of list || []) {
-    if (y && r.year != null && Number(r.year) !== y) continue;
-    (out[r.corporation_id] ||= []).push(r);
-  }
-  return out;
-}
-
-export async function addEntityLedgerEntry(entry) {
-  return one(
-    supabase.from('entity_ledger')
-      .insert({
-        corporation_id: entry.corporation_id,
-        property_id: entry.property_id || null,
-        year: Number(entry.year) || null,
-        kind: entry.kind,
-        category: entry.category || null,
-        label: entry.label || null,
-        // WHO (0098). The single insert every writer funnels through — the add form,
-        // placeUnplacedLine and applyStatementImport — so the column is carried in one
-        // place. Trimmed to null so a stray space never becomes its own "person" in the
-        // CPA package's per-party breakdown.
-        party: String(entry.party || '').trim() || null,
-        amount: Math.abs(Number(entry.amount) || 0),
-        txn_date: entry.txn_date || null,
-        note: entry.note || null,
-        import_id: entry.import_id || null,
-        line_hash: entry.line_hash || null,
-        owner_id: await ownerId(),
-      })
-      .select().single()
-  );
-}
-
-export const deleteEntityLedgerEntry = (id) =>
-  rows(supabase.from('entity_ledger').delete().eq('id', id));
-
-// Only an entity COST files on a line of the return, so only a cost has a category.
-export const setEntityLedgerCategory = (id, category) =>
-  one(supabase.from('entity_ledger').update({ category: category || null }).eq('id', id).select().single());
-
-// Name (or rename) who the money went to / came from — IN PLACE (0098).
-//
-// ⚠ This is the primary path, not a correction. A bank publishes no payee for a cheque
-// (the machine-readable line is number, date, ref, amount — the name is handwriting on
-// the image), so EVERY imported draw arrives unattributed and is named afterwards.
-// Editing in place rather than delete-and-re-add is what keeps `import_id` and
-// `line_hash` intact, so the import's ↩ Undo still reverses exactly its own delta.
-export const setEntityLedgerParty = (id, party) =>
-  one(supabase.from('entity_ledger')
-    .update({ party: String(party || '').trim() || null })
-    .eq('id', id).select().single());
-
 // ---- Other income (Slice 4c) -------------------------------------------------
 // Income the property really received that is not tenant rent. See
 // src/lib/otherIncome.js for why it needs its own home rather than the nearest lease.
@@ -6216,263 +6163,16 @@ export const setLeaseSecurityDeposit = (leaseId, amount) =>
       .eq('id', leaseId).select().single()
   );
 
-// ---- Fixed assets (Slice 5a) -------------------------------------------------
-// Depreciable things standing at a property. See src/lib/depreciation.js for why the
-// arithmetic lives there and nothing is stored.
-//
-// ⚠ NOTE THE ABSENCE OF A YEAR FILTER, and it is not an oversight. Every other list in
-// this file is scoped to a fiscal year because every other figure belongs to one. An
-// asset belongs to ALL of them: it has a date it entered service and a life spanning
-// decades, and the year's figure is derived from the schedule. Filtering by year here
-// would hide the building from every year but the one it was bought in.
-export const listFixedAssets = (propertyId) =>
-  rows(supabase.from('fixed_assets').select('*').eq('property_id', propertyId));
-
-export async function addFixedAsset(asset) {
-  const numOrNull = (v) => (v === '' || v == null || !isFinite(Number(v)) ? null : Number(v));
-  return one(
-    supabase.from('fixed_assets')
-      .insert({
-        property_id: asset.property_id,
-        kind: asset.kind || null,
-        description: asset.description || null,
-        placed_in_service: asset.placed_in_service || null,
-        cost: Math.abs(Number(asset.cost) || 0),
-        // Preserved as null when unanswered — the whole land refusal turns on it, so
-        // it must never be coerced to 0 on the way in.
-        land_cost: asset.land_cost === '' || asset.land_cost == null ? null : Math.abs(Number(asset.land_cost) || 0),
-        useful_life_years: numOrNull(asset.useful_life_years),
-        prior_accumulated: numOrNull(asset.prior_accumulated),
-        prior_accumulated_year: numOrNull(asset.prior_accumulated_year),
-        note: asset.note || null,
-        // Slice 5b. Both nullable and both default to nothing: an asset bills nothing
-        // back until amortize_into is set, and import_id is present only when the asset
-        // was capitalized straight off a bank line.
-        amortize_into: asset.amortize_into || null,
-        import_id: asset.import_id || null,
-        owner_id: await ownerId(),
-      })
-      .select().single()
-  );
-}
-
-export const deleteFixedAsset = (id) =>
-  rows(supabase.from('fixed_assets').delete().eq('id', id));
-
-// The one edit worth a dedicated call: the land allocation is what unblocks a building's
-// schedule, so it is set from a chip on the row rather than by re-entering the asset.
-export const setFixedAssetLand = (id, landCost) =>
-  one(
-    supabase.from('fixed_assets')
-      .update({ land_cost: landCost === '' || landCost == null ? null : Math.abs(Number(landCost) || 0) })
-      .eq('id', id).select().single()
-  );
-
-// ---- Slice 5c: the closing statement ----------------------------------------
-
-export async function extractClosingStatement({ text, storagePath }) {
-  const { fields } = await invokeFunction('extract-closing-statement', { text, storage_path: storagePath });
-  return { fields: fields || {} };
-}
-
-// Write the assets a confirmed closing-statement read proposes, and keep the document.
-//
-// ⚠ IT WRITES ASSETS AND NOTHING ELSE, which is what makes it safe. `fixed_assets` is
-// read by no view, no invoice and no share calculation — the same structural safety
-// rounds 7-9 have — so reading a closing statement CANNOT move a tenant's bill. The
-// prorated property tax the document also carries is deliberately NOT written into that
-// year's `taxes_total`: that would re-sum the kind, re-split every tenant's share and
-// move bills on a historical year that is very likely closed. Reading a document is not
-// a reason to move somebody's rent. The review screen reports the figure instead.
-export async function saveClosingStatement(propertyId, assets = [], opts = {}) {
-  const created = [];
-  for (const a of assets) {
-    if (!(Number(a?.cost) > 0)) continue;
-    created.push(await addFixedAsset({ ...a, property_id: propertyId }));
-  }
-  // The paper the figures came from stays reachable from the property that owns them.
-  // Best-effort: the assets are the point, and a storage hiccup must not lose them.
-  if (opts.storagePath) {
-    try {
-      await attachDocument(opts.storagePath, { entityType: 'property', entityId: propertyId });
-    } catch (_e) { /* the assets are written; the file is simply unlisted */ }
-  }
-  return created;
-}
-
-// ---- Slice 5b: capitalize, and bill it back ---------------------------------
-
-// Switch an asset's amortization on or off. This is the ONE write in this file that can
-// change a tenant's bill without a figure being typed, so it is deliberately its own
-// call rather than a field on a form: the UI names the consequence before it fires, and
-// the caller carries it through.
-export async function setAssetAmortization(assetId, into, propertyId, year) {
-  const asset = await one(
-    supabase.from('fixed_assets')
-      .update({ amortize_into: into || null })
-      .eq('id', assetId).select().single()
-  );
-  const sync = await syncAmortizationItems(propertyId, year);
-  if (sync.changed) await resyncPropertyBilling(propertyId, Number(year));
-  return { asset, ...sync };
-}
-
-// One derived expense row per amortizing asset, self-healing on year-open exactly as
-// service contracts and rent-percentage fees already are (syncContractCamItems is the
-// shape this is cloned from, down to the `changed` signal).
-//
-// ⚠ THE ROW GOES INTO THE ASSET'S OWN KIND, never into CAM by default. A roof amortizes
-// back into roof_total, so only roof_responsible leases pay it; a parking lot amortizes
-// into CAM, so everyone does. Getting that backwards would bill eight Pershing tenants
-// for a roof their leases exclude.
-//
-// ⚠ AND IT REFUSES A CLOSED YEAR. resyncPropertyBilling already skips one — a bill that
-// has been sent must not move because a screen was opened — so writing the line anyway
-// would leave the expense total and the frozen snapshot disagreeing with nothing able to
-// reconcile them.
-//
-// Written through addExpenseLineItem rather than a raw insert, which is load-bearing: a
-// roof amortization row can be the FIRST roof line a property has, and carryFlatIntoItems
-// is what stops that re-summing a hand-typed roof total down to the amortized figure.
-export async function syncAmortizationItems(propertyId, year) {
-  const y = Number(year);
-  const lock = await yearLockState(propertyId, y);
-  if (lock !== 'open') return { changed: false, skipped: lock };
-
-  const [assets, derived] = await Promise.all([
-    listFixedAssets(propertyId),
-    rows(
-      supabase.from('cam_line_items').select('*')
-        .eq('property_id', propertyId).eq('year', y).not('asset_id', 'is', null)
-    ),
-  ]);
-
-  const byAsset = new Map(derived.map((it) => [it.asset_id, it]));
-  const kindsTouched = new Set();
-  let changed = false;
-
-  for (const a of assets) {
-    const am = amortizationFor(a, y);
-    const existing = byAsset.get(a.id);
-    if (!am) continue;
-    if (!existing) {
-      await addExpenseLineItem({
-        property_id: propertyId, year: y, kind: am.kind,
-        label: am.label, amount: am.amount, asset_id: a.id,
-      });
-      kindsTouched.add(am.kind);
-      changed = true;
-    } else if (
-      Number(existing.amount) !== am.amount
-      || existing.label !== am.label
-      || existing.kind !== am.kind
-    ) {
-      // A kind change means the row has to move buckets, not just re-price — otherwise
-      // the old kind keeps a stale total. Delete and re-add so both kinds re-sum.
-      if (existing.kind !== am.kind) {
-        await rows(supabase.from('cam_line_items').delete().eq('id', existing.id));
-        kindsTouched.add(existing.kind);
-        await addExpenseLineItem({
-          property_id: propertyId, year: y, kind: am.kind,
-          label: am.label, amount: am.amount, asset_id: a.id,
-        });
-      } else {
-        await one(
-          supabase.from('cam_line_items')
-            .update({ amount: am.amount, label: am.label })
-            .eq('id', existing.id).select().single()
-        );
-      }
-      kindsTouched.add(am.kind);
-      changed = true;
-    }
-  }
-
-  // Remove rows whose asset stopped amortizing, was fully depreciated, or is no longer
-  // in service this year — the same cleanup a contract row gets when its term moves.
-  const stillAmortizing = new Set(
-    assets.filter((a) => amortizationFor(a, y)).map((a) => a.id)
-  );
-  for (const [assetId, it] of byAsset) {
-    if (stillAmortizing.has(assetId)) continue;
-    await rows(supabase.from('cam_line_items').delete().eq('id', it.id));
-    kindsTouched.add(it.kind);
-    changed = true;
-  }
-
-  for (const k of kindsTouched) await syncTotalFor(propertyId, y, k);
-  return { changed, skipped: null };
-}
-
-// ⚠ THE ROUND'S HEADLINE, and the one write in this whole accounting arc that
-// deliberately MOVES A TENANT'S BILL.
-//
-// Round 9 could record an $18,000 roof as an asset but could not take it out of the
-// year's roof_total, so a landlord who did both told the app about it twice — named on
-// that panel rather than left to be discovered. This is the other half: the expense line
-// becomes an asset and stops being an expense.
-//
-// That is a real billing change. roof_total feeds v_property_totals, which feeds every
-// roof-responsible lease's roof_amt, which feeds their invoice — so it runs the full §1
-// carry-through and the caller settles the query cache after it.
-//
-// TWO REFUSALS, both about not moving a figure under a bill that has already gone out:
-//   • a CLOSED year is refused outright. Record the asset by hand and leave the expense
-//     where it is — the tenants were billed that roof, and that is the history.
-//   • an asset needs a date it entered service, and an expense line's paid_date is
-//     nullable (0074 deliberately backfilled none). Rather than invent one, the caller
-//     supplies it; the UI defaults to the line's own paid_date when it has one.
-export async function capitalizeExpenseLine(itemId, fields = {}) {
-  const item = await one(supabase.from('cam_line_items').select('*').eq('id', itemId).single());
-  if (!item) throw new Error('That expense line no longer exists.');
-
-  const propertyId = item.property_id;
-  const year = Number(item.year);
-  const lock = await yearLockState(propertyId, year);
-  if (lock !== 'open') {
-    return { skipped: lock, asset: null };
-  }
-
-  const placed = fields.placed_in_service || item.paid_date || null;
-  if (!placed) return { skipped: 'no_date', asset: null };
-
-  const kind = fields.kind || 'improvement';
-  // The asset amortizes back into the kind of expense it came from — the same tenants,
-  // spread over the life. Offered only where a lease could support it, and only when the
-  // caller asked: `amortize` unset means the cost simply leaves the year's expenses.
-  const into = fields.amortize && canAmortize({ kind })
-    ? (item.kind === 'roof' ? 'roof' : 'cam')
-    : null;
-
-  const asset = await addFixedAsset({
-    property_id: propertyId,
-    kind,
-    description: fields.description || item.label,
-    placed_in_service: placed,
-    cost: Number(item.amount) || 0,
-    land_cost: assetKindInfo(kind).landSplit ? (fields.land_cost ?? null) : null,
-    useful_life_years: fields.useful_life_years ?? null,
-    amortize_into: into,
-    // Provenance rides along: an asset capitalized off a bank line stays clickable back
-    // to the stored statement PDF, exactly as the expense line it replaces was.
-    import_id: item.import_id || null,
-  });
-
-  // Asset FIRST, then remove the expense. An interruption between the two leaves the
-  // asset recorded and the expense still standing — visible and fixable — rather than a
-  // deleted cost with nothing to show for it.
-  await deleteExpenseLineItem(item.id, propertyId, year, item.kind);
-  const sync = await syncAmortizationItems(propertyId, year);
-  const billing = await resyncPropertyBilling(propertyId, year);
-
-  return { asset, skipped: null, amortized: sync.changed, billing, fromKind: item.kind };
-}
 
 // Answer the "money not yet placed" nag by giving the line a real home, without
-// re-importing the statement it came from. Writes the ledger row FIRST, then stamps
-// the line — so an interruption leaves a recorded draw with a still-nagging line
-// (visible, fixable) rather than a placed line with no money behind it (invisible).
-export async function placeUnplacedLine(line, { kind, corporationId, category = null, leaseId = null, party = null }) {
+// re-importing the statement it came from. Writes the row FIRST, then stamps the line —
+// so an interruption leaves recorded money with a still-nagging line (visible, fixable)
+// rather than a placed line with no money behind it (invisible).
+// ⚠ No `corporationId` any more. Every destination here is property-scoped now that the
+// entity ledger is retired — an expense line, an income row, or a disposition that writes
+// nothing — so the corporation is no longer part of answering the nag, and the picker is
+// no longer disabled on a property whose corporation the page hasn't resolved.
+export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null }) {
   if (kind === 'transfer') {
     // A transfer writes nothing — the disposition IS the record, exactly as an
     // ignore's is. There is no row to create and none to reverse.
@@ -6501,21 +6201,32 @@ export async function placeUnplacedLine(line, { kind, corporationId, category = 
     const updated = await setLineDisposition(line.id, 'other_income', null, { kind: 'income', id: row.id });
     return { line: updated, entry: row };
   }
-  const entry = await addEntityLedgerEntry({
-    corporation_id: corporationId,
-    property_id: line.property_id || null,
+  // Everything else out is an expense line the tenants are not billed for — an ordinary
+  // one when a category is chosen, the landlord's own money when that category is
+  // `distribution`. `party` names the bucket in the second case, because "who did this
+  // go to" IS the label there: a draw's bucket is the person's name.
+  //
+  // ⚠ `billable: false` is what keeps this billing-inert. syncCamTotal filters those
+  // rows out of `cam_total`, so answering the nag can never move a tenant's bill or the
+  // property's NOI — the same safety property the entity ledger had, obtained from the
+  // column that already existed rather than from a table of its own.
+  const owner = isOwnerCategory(category);
+  const label = (owner && String(party || '').trim())
+    || (line.description ? String(line.description).slice(0, 200) : null)
+    || (owner ? 'Owner distribution' : 'Expense');
+  const entry = await addCamLineItem({
+    property_id: line.property_id,
     year: line.year || null,
-    kind,
-    category,
-    party,
-    label: line.description ? String(line.description).slice(0, 200) : null,
-    amount: line.amount,
-    txn_date: line.txn_date || null,
+    label,
+    amount: Math.abs(Number(line.amount) || 0),
+    billable: false,
+    paid_date: line.txn_date || null,
     import_id: line.import_id || null,
-    line_hash: line.line_hash || null,
   });
-  const disposition = kind === 'cost' ? 'entity' : 'owner';
-  const updated = await setLineDisposition(line.id, disposition, null, { kind: 'entity', id: entry.id });
+  if (category && isValidCategory(category)) {
+    await saveExpenseBucket({ label, category, billable: false });
+  }
+  const updated = await setLineDisposition(line.id, owner ? 'owner' : 'expense', null, { kind: 'cam', id: entry.id });
   return { line: updated, entry };
 }
 
@@ -6649,7 +6360,6 @@ export async function getStatementMatchContext(propertyId, year) {
       // app proposed · null = nobody has said, and the UI must show it as a figure
       // rather than absorb it into "Other".
       categorySource: saved?.category && isValidCategory(saved.category) ? 'saved' : (category ? 'default' : null),
-      capital_prone: saved ? saved.capital_prone === true : isCapitalProne(label),
     };
   };
 
@@ -6702,16 +6412,12 @@ export async function applyStatementImport({ propertyId, year, fileName, account
   await attachDocument(storagePath, { entityType: 'statement_import', entityId: imp.id });
   const applied = [];
   let paymentsCount = 0, paymentsTotal = 0, expensesCount = 0, expensesTotal = 0;
-  // Entity-level money is counted apart from expenses, because it IS apart from them.
-  let entityOutCount = 0, entityOutTotal = 0, entityInCount = 0, entityInTotal = 0;
+  // The owner's own money is counted apart from expenses, because it IS apart from them.
+  let ownerCount = 0, ownerTotal = 0;
   // Money IN that is not rent, likewise counted apart from payments: folding a late
   // fee into paymentsTotal would report rent collection that never happened, which is
   // the exact misstatement this slice exists to prevent — one screen earlier.
   let incomeCount = 0, incomeTotal = 0, depositCount = 0, depositTotal = 0;
-  // Slice 5b — money out that bought something lasting, counted apart from expenses for
-  // the same reason: it is not a cost of this year, and folding it into expensesTotal
-  // would report a year of spending that the arithmetic deliberately spreads over decades.
-  let capitalCount = 0, capitalTotal = 0;
   const crossProperty = {};
   // Auto-learn payee rules ride the import too (a checked tenant deposit is remembered
   // automatically; an expense only when "Always" is ticked). Loaded once, lazily, so an
@@ -6748,9 +6454,24 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       // Each expense line keeps the day the bank printed on it (0074 `paid_date`). The
       // importer has always read that date — it derives the fiscal year FROM it — and
       // until now threw it away, leaving `year` as the only time an expense had.
-      const item = await addCamLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Imported expense', amount: Number(e.amount), import_id: imp.id, billable: e.billable !== false, paid_date: e.date || null });
-      applied.push({ kind: 'cam', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: e.label || 'Imported expense', billable: e.billable !== false, hash: e.hash });
-      expensesCount++; expensesTotal += Number(e.amount);
+      const label = e.label || 'Imported expense';
+      const item = await addCamLineItem({ property_id: e.property_id, year: e.year, label, amount: Number(e.amount), import_id: imp.id, billable: e.billable !== false, paid_date: e.date || null });
+      // A review that already knows the category writes the BUCKET RECORD too, so the
+      // chip on Financials arrives answered instead of asking again. This is what makes
+      // an owner distribution work without a table of its own: the category lives on the
+      // bucket, keyed by label, and `distribution` is what marks the line as the
+      // landlord's own money rather than the building's (expenseCategories.js).
+      if (e.category && isValidCategory(e.category)) {
+        await saveExpenseBucket({ label, category: e.category, billable: e.billable !== false });
+      }
+      applied.push({ kind: 'cam', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label, billable: e.billable !== false, hash: e.hash });
+      // ⚠ A distribution is NOT counted in expensesCount/expensesTotal. It is money that
+      // left the account, but it is not a cost of the building, and folding it into the
+      // import's expense summary would be the same misstatement the strip is there to
+      // avoid — one screen earlier. It gets its own counter, as the entity ledger's rows
+      // did before that table was retired.
+      if (isOwnerCategory(e.category)) { ownerCount++; ownerTotal += Number(e.amount); }
+      else { expensesCount++; expensesTotal += Number(e.amount); }
     } else if (e.type === 'tax') {
       // Every tax payment the statement shows gets its OWN line, the way CAM does —
       // a year's taxes are usually two or three instalments to a county, and one
@@ -6767,50 +6488,6 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       const item = await addRoofLineItem({ property_id: e.property_id, year: e.year, label: e.label || 'Roof', amount: Number(e.amount), import_id: imp.id, paid_date: e.date || null });
       applied.push({ kind: 'roof_item', item_id: item.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: item.label, hash: e.hash });
       expensesCount++; expensesTotal += Number(e.amount);
-    } else if (e.type === 'capital') {
-      // Slice 5b — bought once, used for years.
-      //
-      // ⚠ Deliberately NOT counted in expensesCount/expensesTotal, and deliberately NOT
-      // an expense line. The whole point is that this cost does not belong to one year:
-      // it lands in fixed_assets, which no view, no invoice and no share calculation
-      // reads, so capitalizing at import can move no tenant's bill. Billing it back over
-      // its life is a separate opt-in decision (setAssetAmortization), made where the
-      // consequence can be stated.
-      const asset = await addFixedAsset({
-        property_id: e.property_id,
-        kind: e.asset_kind || 'improvement',
-        description: e.label || 'Capital improvement',
-        placed_in_service: e.date || null,
-        cost: Number(e.amount),
-        import_id: imp.id,
-      });
-      applied.push({ kind: 'capital', asset_id: asset.id, property_id: e.property_id, year: e.year, amount: Number(e.amount), label: asset.description, hash: e.hash });
-      capitalCount++; capitalTotal += Number(e.amount);
-    } else if (e.type === 'entity') {
-      // Slice 4b — a draw, a contribution, or a cost of the LLC itself.
-      //
-      // ⚠ Deliberately NOT counted in expensesCount/expensesTotal. A draw is not an
-      // expense (it reduces equity), and an entity cost is not THIS building's
-      // expense — folding either into the import's expense summary would be the same
-      // misstatement one screen earlier. They get their own counters.
-      const row = await addEntityLedgerEntry({
-        corporation_id: e.corporation_id,
-        property_id: e.property_id || propertyId,
-        year: e.year,
-        kind: e.kind,
-        category: e.category || null,
-        label: e.label || (e.description ? String(e.description).slice(0, 200) : null),
-        // Usually blank on a cheque — the bank prints no payee — and named afterwards on
-        // the Entity ledger. Carried anyway for the lines where the review DID ask.
-        party: e.party || null,
-        amount: Number(e.amount),
-        txn_date: e.date || null,
-        import_id: imp.id,
-        line_hash: e.hash || null,
-      });
-      applied.push({ kind: 'entity', entry_id: row.id, entity_kind: e.kind, corporation_id: e.corporation_id, property_id: e.property_id || propertyId, year: e.year, amount: Number(e.amount), hash: e.hash });
-      if (e.kind === 'contribution') { entityInCount++; entityInTotal += Number(e.amount); }
-      else { entityOutCount++; entityOutTotal += Number(e.amount); }
     } else if (e.type === 'income') {
       // Slice 4c — real income of the property that is not rent.
       //
@@ -6955,9 +6632,8 @@ export async function applyStatementImport({ propertyId, year, fileName, account
     import: updated,
     summary: {
       paymentsCount, paymentsTotal, expensesCount, expensesTotal, crossProperty,
-      entityOutCount, entityOutTotal, entityInCount, entityInTotal,
+      ownerCount, ownerTotal,
       incomeCount, incomeTotal, depositCount, depositTotal,
-      capitalCount, capitalTotal,
       // The proof-of-completeness, returned so the results strip can state it at the
       // one moment it reassures: right after saving. Derived from the same array that
       // was just written, so it cannot claim more than the audit table holds.
@@ -7005,32 +6681,13 @@ export async function undoStatementImport(imp) {
         cam_total: Number(cur?.cam_total) || 0,
         roof_total: a.kind === 'roof' ? next : (Number(cur?.roof_total) || 0),
       });
-    } else if (a.kind === 'entity') {
-      // Delete-if-exists, like a payment: a row George deleted by hand afterwards
-      // must not break the rest of the undo. 0077 cascades on import_id as a
-      // backstop, but this is explicit for the same reason statement_lines' delete
-      // is — the demo mock has no foreign keys (mockClient.js:155).
-      await deleteEntityLedgerEntry(a.entry_id);
     } else if (a.kind === 'income') {
-      // Same reasoning as the entity row above: 0078 cascades, this is explicit
+      // Delete-if-exists, like a payment: a row George deleted by hand afterwards must
+      // not break the rest of the undo. 0078 cascades, this is explicit
       // because the mock has no FKs and a cascade-only design would pass the whole
       // suite while orphaning rows live. (A deposit records no row at all — its
       // evidence is the statement line, which undo deletes wholesale.)
       await deleteOtherIncomeEntry(a.entry_id);
-    } else if (a.kind === 'capital') {
-      // Same explicit delete as the entity and income rows, for the same reason (0080
-      // cascades on import_id; the demo mock has no FKs). Deleting the asset cascades
-      // away any amortization line derived from it — but the kind it was billing into
-      // has to be re-summed afterwards, or that total keeps the removed row's figure.
-      const derived = await rows(
-        supabase.from('cam_line_items').select('id,kind,year').eq('asset_id', a.asset_id)
-      );
-      // Deleted EXPLICITLY rather than left to the cascade — the demo mock has no
-      // foreign keys, so a cascade-only design would pass the whole suite and orphan
-      // amortization rows live, which is precisely the not() incident.
-      for (const d of derived) await rows(supabase.from('cam_line_items').delete().eq('id', d.id));
-      await deleteFixedAsset(a.asset_id);
-      for (const d of derived) await syncTotalFor(a.property_id, d.year, d.kind);
     } else if (a.kind === 'deposit') {
       // Nothing to reverse: a deposit wrote no row, only the audit line's pointer at
       // its lease — and undo deletes every one of this import's lines wholesale. The

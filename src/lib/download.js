@@ -1,6 +1,6 @@
 // One way to hand a generated file to the browser.
 //
-// Every export in this app (the tax package, the lender package, the 1099 worksheet, the
+// Every export in this app (the income-and-expenses workbook, the
 // reconciliation report, the rent roll) ends the same way: build a Blob, then get it onto
 // the user's disk. Five hand-rolled copies of that tail is exactly the drift §3 warns
 // about — so it lives here once.

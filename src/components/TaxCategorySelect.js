@@ -87,7 +87,7 @@ export default function TaxCategorySelect({
       autoFocus={autoFocus}
       onBlur={onBlur}
       value={value || ''}
-      title={title || 'Which line of your tax return this rolls up to. Reporting only — it never changes what a tenant is billed.'}
+      title={title || 'Which category this rolls up to on your reports. Reporting only — it never changes what a tenant is billed.'}
       onChange={(e) => {
         if (e.target.value === '__new__') { setNaming(true); return; }
         onChange(e.target.value);

@@ -208,6 +208,18 @@ export function seed() {
       // A "not billed to tenants" bucket (0064): itemized for the landlord's own
       // records, EXCLUDED from the CAM total — demos the second bucket family.
       { id: 'cam-4', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'cam', label: 'Owner legal fees', amount: 1200, billable: false, paid_date: iso(Y, 2, 9), created_at: iso(Y, 1, 5) },
+      // The two rows the entity ledger used to hold, in the home they moved to on
+      // 2026-08-12. Both are `billable: false`, so syncCamTotal leaves them out of
+      // cam_total and NOI is identical with or without them — which is the whole reason
+      // that table could be retired rather than replaced.
+      //
+      // cam-11's BUCKET IS THE PERSON, which is how distributions stay split by name
+      // without a table: the `distribution` category on bkt-2 is what marks it as the
+      // landlord's own money and keeps it out of every expense subtotal. cam-12 is an
+      // ordinary LLC cost that files under Legal and professional like any other —
+      // proof that retiring the entity ledger cost nothing but a table.
+      { id: 'cam-11', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'cam', label: 'Dana Whitfield', amount: 24000, billable: false, paid_date: iso(Y, 3, 15), created_at: iso(Y, 3, 15) },
+      { id: 'cam-12', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'cam', label: 'Illinois franchise tax', amount: 1750, billable: false, paid_date: iso(Y, 2, 1), created_at: iso(Y, 2, 1) },
       // The roof, itemized (0074) — one repair and one replacement rather than the
       // single flat $4,000 that hid which was which.
       { id: 'roof-1', owner_id: DEMO_USER.id, property_id: 'prop-1', year: Y, kind: 'roof', label: 'Apex Roofing — leak repair', amount: 1500, billable: true, paid_date: iso(Y, 5, 14), created_at: iso(Y, 1, 8) },
@@ -233,7 +245,13 @@ export function seed() {
     // the gold "Set a tax category". All three states on one screen, and the gold one is
     // real money (the demo's $6,000) sitting in a bucket nobody has answered.
     expense_buckets: [
-      { id: 'bkt-1', owner_id: DEMO_USER.id, label: 'Owner legal fees', category: 'legal', billable: false, capital_prone: false, created_at: iso(Y, 1, 5) },
+      { id: 'bkt-1', owner_id: DEMO_USER.id, label: 'Owner legal fees', category: 'legal', billable: false, created_at: iso(Y, 1, 5) },
+      { id: 'bkt-2', owner_id: DEMO_USER.id, label: 'Dana Whitfield', category: 'distribution', billable: false, created_at: iso(Y, 3, 15) },
+      // A cost of the LLC itself. It files under Legal and professional, which is where
+      // an accountant puts a state filing fee — and it is CATEGORIZED on purpose:
+      // 'Security' above is the demo's one unanswered bucket, and a second gold chip
+      // would make the state that wants acting on look like the normal one.
+      { id: 'bkt-3', owner_id: DEMO_USER.id, label: 'Illinois franchise tax', category: 'legal', billable: false, created_at: iso(Y, 2, 1) },
     ],
     // Slice 0099 — a tax category the landlord named, for when none of the form's own
     // fifteen fit. Security is the canonical case and expenseCategories.js already names
@@ -243,23 +261,6 @@ export function seed() {
     expense_categories_custom: [
       { id: 'xcat-1', owner_id: DEMO_USER.id, key: 'custom:security', label: 'Security', created_at: iso(Y, 1, 6), updated_at: iso(Y, 1, 6) },
     ],
-    // Slice 4b — money that crossed prop-1's account and is NOT the building's income
-    // or expense. Seeded because the new panels would otherwise render permanently
-    // empty in demo and read as a bug. One of each kind, so "What actually stayed"
-    // shows a real subtraction: NOI, less the $1,200 of not-billed legal fees already
-    // seeded above, less these. The entity cost carries NO category on purpose — that
-    // is the gold "Set a tax category" state, the same refusal 0075 makes.
-    entity_ledger: [
-      // `party` (0098) — who took it / who it came from. ent-1 and ent-2 are named; ent-3
-      // deliberately carries NONE, because that is the state every IMPORTED row starts in
-      // (a bank prints no payee on a cheque) and a demo where everything is already named
-      // would hide the one the landlord actually has to act on. No row is added and no
-      // amount moves: the seeded draw / contribution / cost totals are what several
-      // "what actually stayed" tests assert, and colour is not worth re-baselining them.
-      { id: 'ent-1', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'draw', category: null, label: 'Owner distribution', party: 'Dana Whitfield', amount: 24000, txn_date: iso(Y, 3, 15), note: null, import_id: null, line_hash: null, created_at: iso(Y, 3, 15) },
-      { id: 'ent-2', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'cost', category: null, label: 'Illinois franchise tax', party: 'Illinois Secretary of State', amount: 1750, txn_date: iso(Y, 2, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 2, 1) },
-      { id: 'ent-3', owner_id: DEMO_USER.id, corporation_id: 'corp-1', property_id: 'prop-1', year: Y, kind: 'contribution', category: null, label: 'Capital call — roof work', party: null, amount: 5000, txn_date: iso(Y, 5, 20), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 20) },
-    ],
     // Slice 4c — income the property really received that no invoice knows about.
     // Three categories so the panel demos its grouping, and one row NAMES its tenant
     // (inc-1, City Dental's late fee) — the case the whole table exists for:
@@ -268,24 +269,6 @@ export function seed() {
       { id: 'inc-1', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: 'lease-2', year: Y, category: 'late_fee', label: 'Late fee — March rent', amount: 250, txn_date: iso(Y, 3, 12), note: null, import_id: null, line_hash: null, created_at: iso(Y, 3, 12) },
       { id: 'inc-2', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: null, year: Y, category: 'parking', label: 'Lot 2 monthly permits', amount: 1800, txn_date: iso(Y, 4, 1), note: null, import_id: null, line_hash: null, created_at: iso(Y, 4, 1) },
       { id: 'inc-3', owner_id: DEMO_USER.id, property_id: 'prop-1', lease_id: null, year: Y, category: 'utility', label: 'Water reimbursement', amount: 640, txn_date: iso(Y, 5, 9), note: null, import_id: null, line_hash: null, created_at: iso(Y, 5, 9) },
-    ],
-    // Slice 5a — things bought once and used for years. Every figure here divides
-    // evenly on purpose, so the demo's yearly depreciation is a clean number a reader
-    // can check by hand: the building's $936,000 basis over 39 years is exactly
-    // $24,000/yr ($2,000/mo), the roof's $19,500 over 39 is $500, the parking lot's
-    // $42,000 over 15 is $2,800. Dates are Y-relative so those figures stay stable as
-    // the calendar moves.
-    //
-    // Three cases at once: a building placed in APRIL (so its first year is prorated to
-    // 9 months and the whole-month convention is visible), a roof placed on January 1
-    // (no proration), and — on prop-2 — a building with NO land allocation, which is
-    // the gold "Set the land value" refusal. asset-1 also carries the accountant's own
-    // accumulated figure through Y-3, which the schedule agrees with to the dollar.
-    fixed_assets: [
-      { id: 'asset-1', owner_id: DEMO_USER.id, property_id: 'prop-1', kind: 'building', description: 'Maple Plaza — structure', placed_in_service: iso(Y - 7, 4, 1), cost: 1190000, land_cost: 254000, useful_life_years: null, prior_accumulated: 114000, prior_accumulated_year: Y - 3, note: null, created_at: iso(Y - 7, 4, 1) },
-      { id: 'asset-2', owner_id: DEMO_USER.id, property_id: 'prop-1', kind: 'improvement', description: 'Roof replacement', placed_in_service: iso(Y - 2, 1, 1), cost: 19500, land_cost: null, useful_life_years: null, prior_accumulated: null, prior_accumulated_year: null, note: null, created_at: iso(Y - 2, 1, 1) },
-      { id: 'asset-3', owner_id: DEMO_USER.id, property_id: 'prop-1', kind: 'land_improvement', description: 'Parking lot resurfacing', placed_in_service: iso(Y - 4, 7, 1), cost: 42000, land_cost: null, useful_life_years: null, prior_accumulated: null, prior_accumulated_year: null, note: null, created_at: iso(Y - 4, 7, 1) },
-      { id: 'asset-4', owner_id: DEMO_USER.id, property_id: 'prop-2', kind: 'building', description: 'Oak Center — structure', placed_in_service: iso(Y - 5, 1, 1), cost: 800000, land_cost: null, useful_life_years: null, prior_accumulated: null, prior_accumulated_year: null, note: null, created_at: iso(Y - 5, 1, 1) },
     ],
     financial_snapshots: [
       // snap-0 predates the Rent Ledger (no collection keys) — History renders "—"

@@ -7,9 +7,11 @@
 // money didn't just go unrecorded, it went untraceable.
 //
 // A JS registry, not a DB enum, matching FEATURES / NOTIFY_TYPES / EXPENSE_CATEGORIES:
-// rounds 7 and 8 add members (owner · entity · transfer · debt · capital ·
-// other_income · deposit_held) and a CHECK constraint would mean a migration per
-// member and would reject a row the app considers valid.
+// the list has both grown and shrunk (2026-08-12 retired `entity` and `capital`), and a
+// CHECK constraint would mean a migration per member and would reject a row the app
+// considers valid. ⚠ RETIRED KEYS ARE NOT DELETED FROM HISTORY — `statement_lines` rows
+// written before that date still carry them, and `dispositionInfo` below reports an
+// unknown key as unknown rather than silently reclassifying it.
 
 // `placed` is the load-bearing bit: a line is accounted for when SOMEBODY decided
 // about it — recorded or deliberately left out. Only 'unclassified' is unplaced, and
@@ -31,25 +33,17 @@ export const DISPOSITIONS = [
     placed: true,
     hint: 'Recorded as a CAM, tax or roof line on this property.',
   },
-  // Slice 4b — the three homes that did not exist before round 7. All PLACED: a draw
-  // recorded is accounted for even though it appears in no expense total, and a
-  // transfer between the owner's own accounts is real money movement that is neither
-  // income nor expense. "Accounted for" means somebody decided, not "counted as a cost".
+  // PLACED, like every home below: a distribution recorded is accounted for even though
+  // it appears in no expense total, and a transfer between the owner's own accounts is
+  // real money movement that is neither income nor expense. "Accounted for" means
+  // somebody decided about it, not "counted as a cost".
   {
     key: 'owner',
-    label: 'Owner draw or contribution',
+    label: 'Owner distribution',
     short: 'Owner',
-    dir: 'both',
-    placed: true,
-    hint: 'Equity — money you took out or put in. Never income, never an expense.',
-  },
-  {
-    key: 'entity',
-    label: 'Entity cost',
-    short: 'Entity',
     dir: 'out',
     placed: true,
-    hint: 'A cost of the LLC itself rather than of this building.',
+    hint: 'Money you took out. Reduces your equity — never an expense, and never billed to a tenant.',
   },
   {
     key: 'transfer',
@@ -80,18 +74,6 @@ export const DISPOSITIONS = [
     dir: 'in',
     placed: true,
     hint: 'The tenant’s money, held. A liability — never income, and never credited against their rent.',
-  },
-  // Slice 5b — money out that buys something lasting. PLACED, and deliberately NOT
-  // 'expense': the whole point is that a thing bought once and used for years is not a
-  // cost of this year. It reaches no expense total and moves no tenant's bill on the way
-  // in; only switching its amortization on does that, later and on purpose.
-  {
-    key: 'capital',
-    label: 'Capitalized as an asset',
-    short: 'Asset',
-    dir: 'out',
-    placed: true,
-    hint: 'Bought once and used for years — recorded in the asset register and depreciated, not expensed in one year.',
   },
   {
     key: 'ignored',
@@ -200,20 +182,18 @@ export function completenessSentence(c) {
 export function dispositionForRow({ checked, kind, picked, duplicate }) {
   if (checked && kind === 'tenant') return 'rent';
   if (checked && String(kind || '').startsWith('expense_')) return 'expense';
-  // Slice 4b. A draw, a contribution and an entity cost each WRITE a row, so they
-  // need the tick exactly as an expense does — money out is never booked without the
-  // landlord's say-so, and a matcher suggestion left untouched stays unplaced and
-  // keeps nagging (the same judgement round 6 made about keyword ignores).
-  if (checked && (kind === 'owner_draw' || kind === 'owner_contribution')) return 'owner';
-  if (checked && kind === 'entity_cost') return 'entity';
+  // A distribution WRITES a row, so it needs the tick exactly as an expense does —
+  // money out is never booked without the landlord's say-so, and a matcher suggestion
+  // left untouched stays unplaced and keeps nagging (the same judgement round 6 made
+  // about keyword ignores). An owner CONTRIBUTION is money in and rides the
+  // other-income branch below; an entity cost is now just a not-billed expense.
+  if (checked && kind === 'owner_draw') return 'owner';
   // Slice 4c. Both WRITE something — other income writes a row, a deposit writes the
   // lease's held figure — so both need the tick, same rule as an expense. A deposit
   // pick carries its lease in the pick itself (`deposit:<leaseId>`), because "whose
   // deposit is it" is the entire question.
   if (checked && kind === 'other_income') return 'other_income';
   if (checked && kind === 'deposit_held') return 'deposit_held';
-  // Slice 5b. Writes a fixed_assets row, so it needs the tick like every other write.
-  if (checked && kind === 'capital') return 'capital';
   // A transfer is the exception, and for the same reason an ignore is: it writes
   // nothing, so the PICK is the entire decision and there is no tick to wait for.
   if (picked && kind === 'transfer') return 'transfer';

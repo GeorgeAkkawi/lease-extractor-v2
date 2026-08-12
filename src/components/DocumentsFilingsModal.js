@@ -12,16 +12,18 @@ import { BuildingIcon, DocIcon } from './icons';
 // and the last three buttons were painted OUTSIDE the card, underneath its neighbour.
 // `elementFromPoint` at their centre returned the NEXT card. So "Tax package" on any card
 // that wasn't last in its row was unclickable, and it read as "the download is broken."
-// One control cannot overflow.
+// One control cannot overflow. ⚠ THAT REASON OUTLIVES THE PILLS: three of the five went
+// away on 2026-08-12 and this must not go back to being buttons on the card, or the next
+// addition reintroduces the same overflow.
 //
-// The second thing it fixes is that five bare nouns say nothing. A landlord looking at
-// "1099s" has no way to know whether it concerns them, so every row states in one plain
+// The second thing it fixes is that bare nouns say nothing. A landlord looking at
+// "1099s" had no way to know whether it concerned them, so every row states in one plain
 // sentence what it is and who it goes to. Grouping does the rest: what the COMPANY needs
 // on file, versus what you HAND to someone.
 //
 // No new state machine — the page already owns one setter per modal, so a row simply
 // calls the one it belongs to and closes itself. Nothing is stored and no figure moves.
-export default function DocumentsFilingsModal({ corp, fin, onEdit, onAnnual, onCpa, on1099, onLender, onClose }) {
+export default function DocumentsFilingsModal({ corp, fin, onEdit, onAnnual, onIncomeExpense, onClose }) {
   const modalRef = useModalA11y(onClose);
 
   // Same query key the annual-report modal uses, so opening it next is a cache hit.
@@ -58,32 +60,18 @@ export default function DocumentsFilingsModal({ corp, fin, onEdit, onAnnual, onC
     },
   ];
 
-  // The three exports only exist on the Financials/History cards, where a fiscal year is
-  // in scope. On the Portfolio tab there is no year to build a package for.
+  // The export only exists on the Financials/History cards, where a fiscal year is in
+  // scope. On the Portfolio tab there is no year to build a workbook for.
   if (fin) {
     groups.push({
       title: 'Things you hand someone',
       items: [
         {
-          key: 'cpa',
+          key: 'income_expense',
           icon: <DocIcon />,
-          label: 'Tax package',
-          what: 'Income and expenses sorted the way a tax return wants them. For your accountant.',
-          go: pick(onCpa),
-        },
-        {
-          key: '1099',
-          icon: <DocIcon />,
-          label: '1099s',
-          what: 'Contractors you paid enough that the IRS wants a form. Due January 31.',
-          go: pick(on1099),
-        },
-        {
-          key: 'lender',
-          icon: <DocIcon />,
-          label: 'Lender package',
-          what: 'What a bank asks for when you apply for a loan or refinance.',
-          go: pick(onLender),
+          label: 'Income and expenses',
+          what: 'What came in, what went out, and what the year left — one sheet per property. For your accountant, your bank, or you.',
+          go: pick(onIncomeExpense),
         },
       ],
     });
