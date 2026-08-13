@@ -330,6 +330,19 @@ Two implementations of one rule always drift unless changed in the same commit.
   seeds no `user_preferences` row, so it runs the `null` path and shows the module happily while
   production hides it (that is exactly how `announcements` shipped invisible, 2026-08-04). Copy
   `0084_backfill_announcements_feature.sql` and change the key.
+- **THE LEDGER RAISES THREE ALERTS, NOT TWO** (2026-08-13). `statement_reminder` and
+  `missing_payment` were joined by **`escalation_short`** — a rent step landed and the money since
+  is still the pre-raise amount. All three are precomputed in **`computeLedgerAlerts`** (`api.js`)
+  from the same `allocatePayments` the Ledger grid paints from, all three sit inside one
+  `ledgerOn` gate, and all three route to the **Ledger**, not the lease page. ⚠ The new one
+  **derives no rent step of its own**: it works from `owedByMonthForInvoice` (scaled to the STORED
+  invoice) while the Ledger works from the live projection, so it takes the step *month* from the
+  applied `rent_escalations` row and every *figure* from `escalationFollowThrough` reading that
+  same owed array. A second step-detection here is the §3 drift that makes two screens quote
+  different dollars for one raise. It also buys the stale-bill case free — no jump in the invoice,
+  no alert, and the Ledger's existing `bill behind by $X · Rebuild` says the true thing instead.
+  Only the **`pre_raise_rate`** verdict is raised; `partial` and `older_gap` are real gaps but
+  read as accusations without the months around them, so they stay on the row.
 - **A new `history_events` type** touches three registries or it renders as a bare slug in one of
   them: `EVENT_LABEL` and `EVENT_BADGE` (`HistoryPage.js`) plus **either** `STORY_EVENTS` or
   `LEDGER_EVENTS` (`tenantStory.js`) — an unknown type falls to the ledger log rather than

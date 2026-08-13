@@ -21,7 +21,7 @@ import {
   localDateIso,
   getLeaseSort, discardDocument,
 } from '../lib/api';
-import { allocatePayments, componentizeSchedule, escalationStepMonths, ledgerRowSummary, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
+import { allocatePayments, componentizeSchedule, escalationFollowThrough, escalationStepMonths, ledgerRowSummary, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
 import { sortTenantRows } from '../lib/leaseSort';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
@@ -51,6 +51,64 @@ function VarianceChip({ variance }) {
   return v < 0
     ? <span className="rr-short" title="Across the months already paid, the deposits came in under what the lease billed. The estimate is what's billed all year; the year-end ⚖ Reconcile settles the difference.">short {money(Math.abs(v))}</span>
     : <span className="rr-over" title="Across the months already paid, the deposits came in over what the lease billed.">over {money(v)}</span>;
+}
+
+// A raise landed — did the money follow? The ↗ note above says the rent stepped up;
+// without this the Ledger says nothing more about it, which was George's question
+// (2026-08-13). Two lines, both derived by escalationFollowThrough from the same
+// allocation the boxes paint from:
+//   1. WHAT THE BILL'S JUMP WAS MADE OF — his "recognize what the payment increase
+//      should have been on the base and see if the estimate cam and tax increased by
+//      that much". The parts always sum to the jump (componentizeSchedule's invariant),
+//      so this can't print a decomposition that doesn't add up.
+//   2. THE VERDICT — bill vs money in, over the settled months since the step.
+// `older_gap` exists because bill-vs-money-in alone misreads a tenant who was ALREADY
+// underpaying: the gap looks exactly like a raise they ignored. Naming the older part
+// is the difference between a true sentence and a wrong accusation.
+function StepFollowUp({ step, follow }) {
+  if (!step) return null;
+  const monthName = MONTHS[step.month - 1];
+  const jump = follow ? round2(follow.billJump) : 0;
+  const parts = [];
+  if (follow?.stepMonthly > 0.005) parts.push(`${money(follow.stepMonthly)} base rent`);
+  if (Math.abs(follow?.camTaxMonthly || 0) > 0.005) parts.push(`${follow.camTaxMonthly < 0 ? '−' : ''}${money(Math.abs(follow.camTaxMonthly))} CAM&tax estimate`);
+  if (Math.abs(follow?.roofMonthly || 0) > 0.005) parts.push(`${follow.roofMonthly < 0 ? '−' : ''}${money(Math.abs(follow.roofMonthly))} roof`);
+  // A step only exists because BASE rose, so parts always leads with base when comp is
+  // present. One part means nothing else moved — which is the answer to "did the CAM &
+  // tax estimate go up too?" and worth saying rather than leaving to inference.
+  const madeOf = parts.length > 1 ? ` — ${parts.join(' + ')}` : (parts.length === 1 ? ' — all of it base rent' : '');
+
+  let verdict = null;
+  if (follow) {
+    const per = money(Math.abs(follow.shortPerMonth));
+    const total = money(Math.abs(follow.shortSince));
+    const n = follow.settledSince;
+    const spread = `${per}/mo since ${monthName}${n > 1 ? ` (${total} over ${n} months)` : ''}`;
+    if (follow.verdict === 'pending') {
+      verdict = <span className="muted">nothing recorded since the raise yet</span>;
+    } else if (follow.verdict === 'honored') {
+      verdict = <span className="rr-step-ok" title="Every month since the raise has settled at the new bill.">✓ picked up — {n > 1 ? `every month since ${monthName}` : `${monthName}`} came in at the new rate</span>;
+    } else if (follow.verdict === 'over') {
+      verdict = <span className="rr-step-ok" title="Paying above the new bill — the credit shows in the Collected column.">✓ picked up — paying {per}/mo over the new bill</span>;
+    } else if (follow.verdict === 'pre_raise_rate') {
+      verdict = <span className="rr-step-bad" title="The gap since the step is the step itself — this tenant is still paying the pre-raise amount.">⚠ still at the pre-raise rate — short {spread}</span>;
+    } else if (follow.verdict === 'older_gap') {
+      verdict = <span className="rr-step-bad" title="This tenant was already paying under the bill before the raise, so the gap is not the escalation alone.">⚠ short {spread} — but {money(Math.abs(follow.shortBeforePerMonth))}/mo of that was already short before the raise</span>;
+    } else {
+      const got = round2(jump - follow.shortPerMonth);
+      verdict = <span className="rr-step-bad" title="The cheque moved, but not by the whole increase.">⚠ picked up {money(got)} of the {money(jump)} increase — short {spread}</span>;
+    }
+  }
+  return (
+    <>
+      {jump > 0.005 && (
+        <div className="rr-step-note" title="What this month's bill went up by, and what that increase is made of. Only the base-rent part is the escalation.">
+          the bill went up {money(jump)} in {monthName}{madeOf}
+        </div>
+      )}
+      {verdict && <div className="rr-step-verdict">{verdict}</div>}
+    </>
+  );
 }
 
 // The Rent Ledger: tenants down the side, the 12 months across, PROJECTED (what the
@@ -263,7 +321,10 @@ export default function LedgerPage() {
       const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual, camTaxByMonth: r.camTaxByMonth, roofByMonth: r.roofByMonth, adjustments: r.adjustments });
       const summary = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc, today });
       const steps = escalationStepMonths({ schedule: r.schedule, comp });
-      return { r, alloc, comp, summary, steps };
+      // Did the money follow the raise? Same allocation the boxes paint from, so the
+      // verdict and the row's own `short $X` chip can never disagree.
+      const followUp = escalationFollowThrough({ year, owedByMonth: r.schedule, allocation: alloc, steps, comp, today });
+      return { r, alloc, comp, summary, steps, followUp };
     }),
     { mode: tenantSort.mode, dir: tenantSort.dir, pick: (d) => d.r }
   );
@@ -391,7 +452,7 @@ export default function LedgerPage() {
               </tr>
             </thead>
             <tbody>
-              {derived.map(({ r, alloc, comp, summary, steps }) => {
+              {derived.map(({ r, alloc, comp, summary, steps, followUp }) => {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
                 const rate = pct(summary.collected, summary.projected);
                 const stepSet = new Set(steps.map((s) => s.month));
@@ -421,9 +482,17 @@ export default function LedgerPage() {
                         {money(repMonthly)}/mo{rep ? ` = ${money(rep.base)} base · ${money(rep.camTax)} CAM&tax${rep.roof > 0 ? ` · ${money(rep.roof)} roof` : ''}` : ''}{r.owedMonths < 12 ? ` · ${r.owedMonths} mo` : ''}
                       </div>
                       {steps.length > 0 && (
-                        <div className="rr-step-note" title="This tenant's base rent stepped up mid-year on a scheduled escalation — the two different monthly amounts are both correct.">
-                          ↗ rent raised to {money(steps[0].owed)}/mo in {MONTHS[steps[0].month - 1]}
-                        </div>
+                        <>
+                          <div className="rr-step-note" title="This tenant's base rent stepped up mid-year on a scheduled escalation — the two different monthly amounts are both correct.">
+                            ↗ rent raised to {money(steps[0].owed)}/mo in {MONTHS[steps[0].month - 1]}
+                          </div>
+                          {/* …and whether the money followed. Judged from the SAME step
+                              the note above names — on the rare twice-stepped lease the
+                              two lines must talk about one month, or the row contradicts
+                              itself. escalationFollowThrough returns every step, so a
+                              later round can refine which one without touching it. */}
+                          <StepFollowUp step={steps[0]} follow={followUp?.[0]} />
+                        </>
                       )}
                     </td>
                     {MONTHS.map((ml, i) => {

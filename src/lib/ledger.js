@@ -211,6 +211,93 @@ export function escalationStepMonths({ schedule, comp } = {}) {
   return out;
 }
 
+// ---- Did the tenant actually pick up the raise? ----------------------------
+// escalationStepMonths above says a raise LANDED. This says whether the money followed.
+// Without it the Ledger announces "↗ rent raised to $X in June" and then goes silent —
+// which was George's question (2026-08-13): "how is the user supposed to know whether or
+// not the tenant followed through on the escalation".
+//
+// THE TEST IS BILL vs MONEY IN (his pick): are the months since the step short, and is
+// the shortfall the step? Deliberately NOT a month-over-month comparison of the cheques
+// themselves — a deposit is stored as ONE lump (applyStatementImport writes a single
+// payments row for the whole bank amount, never split), so the cheque's own composition
+// is not a thing the app can read. The BILL's composition is, because componentizeSchedule
+// enforces base + camTax + roof + adj === owed — which is the other half of his question:
+// "recognize what the payment increase should have been on the base and see if the
+// estimate cam and tax increased by that much". That is `billJump` and its three parts.
+//
+// ⚠ SETTLED-ONLY, identical to ledgerRowSummary.variance (see its note): a month covered
+// by an untagged lump draws exactly its residual need, so it can never carry a variance.
+// Counting it would let this line read "short $54/mo" while the row's own `short $X` chip
+// two columns over says nothing — one derivation, or the row contradicts itself.
+//
+// `comp` is OPTIONAL and only splits billJump. The verdict needs arrays alone, which is
+// what lets the dashboard-alert path (computeLedgerAlerts) run this exact function
+// without loading every lease's estimate ledger.
+//
+// Returns one entry per step, in month order:
+//   { month, billJump, stepMonthly, camTaxMonthly, roofMonthly, settledSince, shortSince,
+//     shortPerMonth, shortBeforePerMonth, verdict }
+export function escalationFollowThrough({
+  year, owedByMonth, allocation, steps, comp = null, today = new Date(), dust = 0.5,
+} = {}) {
+  if (!steps?.length || !allocation) return [];
+  const owed = owedArray(owedByMonth);
+  const received = allocation.received || Array(12).fill(0);
+  const settled = allocation.settled || Array(12).fill(false);
+  const y = Number(year);
+  // A month counts only when it has come due AND its payment is tagged to it AND the
+  // lease actually bills it — the same three conditions `variance` applies.
+  const counts = (m) => settled[m - 1] && owed[m - 1] > 0 && !(monthStart(y, m) > today);
+  const gapAt = (m) => round2(owed[m - 1] - (received[m - 1] || 0));
+  const comps = (m, key) => round2(Number(comp?.[m]?.[key]) || 0);
+
+  return steps.map((s) => {
+    const m = Number(s.month);
+    const billJump = round2(owed[m - 1] - owed[m - 2]);
+    // Both months' components, so the parts always sum to billJump exactly.
+    const stepMonthly = comp ? round2(comps(m, 'base') - comps(m - 1, 'base')) : null;
+    const camTaxMonthly = comp ? round2(comps(m, 'camTax') - comps(m - 1, 'camTax')) : null;
+    const roofMonthly = comp ? round2(comps(m, 'roof') - comps(m - 1, 'roof')) : null;
+
+    let settledSince = 0;
+    let shortSince = 0;
+    for (let k = m; k <= 12; k++) {
+      if (!counts(k)) continue;
+      settledSince += 1;
+      shortSince = round2(shortSince + gapAt(k));
+    }
+    // The months BEFORE the step, on the same terms — the guard on this test. A tenant
+    // already underpaying leaves a gap that looks exactly like a raise they ignored;
+    // without this the app accuses them of the wrong thing.
+    let settledBefore = 0;
+    let shortBefore = 0;
+    for (let k = 1; k < m; k++) {
+      if (!counts(k)) continue;
+      settledBefore += 1;
+      shortBefore = round2(shortBefore + gapAt(k));
+    }
+    const shortPerMonth = settledSince ? round2(shortSince / settledSince) : 0;
+    const shortBeforePerMonth = settledBefore ? round2(shortBefore / settledBefore) : 0;
+
+    let verdict;
+    if (!settledSince) verdict = 'pending';
+    else if (shortPerMonth < -dust) verdict = 'over';
+    else if (shortPerMonth <= dust) verdict = 'honored';
+    else if (shortBeforePerMonth > dust) verdict = 'older_gap';
+    // The gap IS the raise. Measured against the bill's jump, not the base step alone —
+    // billJump is what the cheque was supposed to grow by, and it's the one figure both
+    // this path and the alert path can compute.
+    else if (Math.abs(shortPerMonth - billJump) <= dust) verdict = 'pre_raise_rate';
+    else verdict = 'partial';
+
+    return {
+      month: m, billJump, stepMonthly, camTaxMonthly, roofMonthly,
+      settledSince, shortSince, shortPerMonth, shortBeforePerMonth, verdict,
+    };
+  });
+}
+
 // The month whose figure best represents "what this tenant pays right now" — used for
 // the identity sub-line under the tenant name. On a STEPPED tenant a year-average
 // (annual ÷ months) equals no single box and doesn't even match its own base·CAM&tax

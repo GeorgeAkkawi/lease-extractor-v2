@@ -178,7 +178,7 @@ const featureOn = (enabled, key) => (enabled == null ? true : enabled.includes(k
 //   • hiddenWidgets — the hidden_widgets array (reserved; no widget currently gates an alert).
 // Core lease dates (escalations, term end, renewals) are never gated here.
 export function buildAlerts(
-  { leases, escalations, renewals, properties, insurance, contracts, contractSteps, abatements, insuranceRequests, annualReports, corporations, unloggedMonths, missingPayments, envelopes },
+  { leases, escalations, renewals, properties, insurance, contracts, contractSteps, abatements, insuranceRequests, annualReports, corporations, unloggedMonths, missingPayments, escalationShort, envelopes },
   states = { dismissed: new Set(), snoozedUntil: {} },
   now = new Date(),
   { features = null, hiddenWidgets = [], leadDays = null } = {}, // eslint-disable-line no-unused-vars
@@ -686,6 +686,44 @@ export function buildAlerts(
       months, year: p.year, amount: p.amount,
       title: `No payment recorded — ${p.tenant_name || 'tenant'}`,
       detail: `${listed} ${months.length > 1 ? 'are' : 'is'} imported with no payment from this tenant${p.amount > 0 ? ` — ${money0(p.amount)} outstanding` : ''}.`,
+    });
+  });
+
+  // The raise nobody picked up — the follow-through to the `escalation` alert above.
+  // That one says a step is COMING; this one says a step landed and the money since is
+  // still the pre-raise amount. George, 2026-08-13: "how is the user supposed to know
+  // whether or not the tenant followed through on the escalation".
+  //
+  // Raised only for the `pre_raise_rate` verdict — the shortfall since the step IS the
+  // step. A merely-partial payment or a tenant who was already short reads truthfully on
+  // the Ledger row (where the months give it context) and would be an accusation here.
+  // Precomputed in fetchAlertData from the same allocation the Ledger grid paints from,
+  // and silent when the stored invoice never picked the step up (see computeLedgerAlerts).
+  // Anchored on lease_id + the LATEST short month, so dismissing it re-arms if the tenant
+  // is still at the old rate a month later.
+  (ledgerOn ? escalationShort || [] : []).forEach((e) => {
+    const m = Number(e.month);
+    if (!(m >= 1 && m <= 12)) return;
+    const corpId = propMap[e.property_id]?.corporation_id;
+    const monthName = MONTH_NAMES[m - 1];
+    const n = Number(e.settledSince) || 0;
+    const lastDay = new Date(e.year, m, 0).getDate();
+    out.push({
+      lease_id: e.lease_id, property_id: e.property_id, corporation_id: corpId,
+      focus: 'escalation_short',
+      tone: n >= 3 ? 'danger' : 'warn',
+      bucketLabel: 'Raise not picked up',
+      date: `${e.year}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`,
+      // Below a genuinely missing payment (−10−n), above the statement to-do (−n): the
+      // money IS arriving, just at the old rate.
+      days: -8 - n,
+      month: m, year: e.year, amount: Math.abs(Number(e.shortSince) || 0),
+      stepAmount: Math.abs(Number(e.billJump) || 0),
+      shortPerMonth: Math.abs(Number(e.shortPerMonth) || 0),
+      owedMonthly: Number(e.owedMonthly) || 0,
+      title: `Rent increase not picked up — ${e.tenant_name || 'tenant'}`,
+      detail: `The bill went up ${money0(e.billJump)} in ${monthName} — payments since are still at the old rate, short ${money0(Math.abs(e.shortPerMonth))}/mo${n > 1 ? ` (${money0(Math.abs(e.shortSince))} over ${n} months)` : ''}.`,
+      action: 'Open the Ledger, or draft a letter',
     });
   });
 

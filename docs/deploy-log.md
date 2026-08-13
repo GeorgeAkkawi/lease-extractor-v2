@@ -12,6 +12,150 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-13** — **A rent step now says whether the tenant actually PAID it — the Ledger row
+  states what the bill's increase was made of and whether the money followed, and a dashboard
+  alert says so when it didn't** (George: *"lets say a rent escalation is due and it shows on the
+  ledger, how is the user supposed to know whether or not the tenant followed through on the
+  escalation … there should be a way for the software to recognize what the payment increase
+  should have been on the base and see if the estimate cam and tax increased by that much"*)
+  - **Cloudflare version `fcbdf8f4-2f2f-4a0c-8977-26e02c09374f`**. **NO migration, NO edge
+    function, NO view, NO feature key, NO figure written, NO new query** — every number is
+    derived at read time from data both screens already load. Tests **1797 across 175 files**
+    (was 1793/174: +25 across three new suites, of which one file replaced nothing).
+  - **George's three answers, taken before any code:** the Ledger row **and** a dashboard alert ·
+    judge it **bill vs money in** (he passed on comparing the cheques month over month) ·
+    *"draft the letter but give the option."*
+
+  ### 1. The gap this closes
+
+  The Ledger has announced a raise since 2026-07-23 — `↗ rent raised to $X/mo in June` plus an
+  olive accent on that month's box — and then said nothing more about it. Every piece needed to
+  finish the sentence already existed and none were joined up: `alloc.owed[i]` vs
+  `alloc.received[i]` per month, the row's `short $X` chip (which sums the WHOLE year, so it
+  can't tell "$54 a month since June" from "$54 once in February"), and `componentizeSchedule`'s
+  per-month base/CAM&tax/roof split.
+
+  **And the second half of his question was unanswerable by construction.** A deposit is stored
+  as ONE lump — `applyStatementImport` writes a single `payments` row for the whole bank amount,
+  never split — so when a cheque goes up, nothing can say whether that was the escalation or the
+  CAM & tax estimate. **The BILL's jump can be split**, because `base + camTax + roof + adj ===
+  owed` is enforced. So the app now states what the cheque *should* have grown by and what that
+  was made of, which is the readable version of what he asked for.
+
+  ### 2. `escalationFollowThrough` (`ledger.js`), beside `escalationStepMonths`
+
+  `{ month, billJump, stepMonthly, camTaxMonthly, roofMonthly, settledSince, shortSince,
+  shortPerMonth, shortBeforePerMonth, verdict }` per step. Six verdicts: `pending` · `honored` ·
+  `over` · `older_gap` · `pre_raise_rate` · `partial`.
+  - **⚠ SETTLED-ONLY, identical to `ledgerRowSummary.variance`.** A month covered by an untagged
+    lump draws exactly its residual need and can never carry a variance — counting it would let
+    this line read *"short $54/mo"* while the row's own `short $X` chip two columns over said
+    nothing. Pinned by a test that asserts both read zero on the same lump. `dust = $0.50`, the
+    same threshold `VarianceChip` uses, for the same reason.
+  - **`older_gap` is the guard on the test George chose.** Bill-vs-money-in alone misreads a
+    tenant who was ALREADY underpaying: the gap looks exactly like a raise they ignored. One more
+    loop over the same array turns a wrong accusation into *"$100/mo of that was already short
+    before the raise."*
+  - **`comp` is OPTIONAL** and splits `billJump` only. The verdict needs arrays alone — which is
+    what lets the alert path run the identical function without loading every lease's estimate
+    ledger.
+
+  ### 3. The Ledger row — two lines under the ↗ note
+
+  ```
+  ↗ rent raised to $9,500.00/mo in Jun
+    the bill went up $350.00 — all of it base rent
+    ⚠ still at the pre-raise rate — short $350.00/mo since Jun ($700.00 over 2 months)
+  ```
+  When the estimate moves in the same month it reads `— $584.00 base rent + $120.00 CAM&tax
+  estimate`, and the parts always sum to the jump. Forest for picked-up, gold for short —
+  deliberately **not a third palette**: the same two colours the boxes and the short/over chips
+  already use, so one row never says "short" in two different colours. `.rr-step-verdict` wraps
+  (unlike `.rr-step-note`) because it carries a sentence and a nowrap would push the twelve month
+  columns off screen.
+
+  ### ⚠ 4. The alert derives NO step of its own
+
+  `computeLedgerAlerts` works from `owedByMonthForInvoice` — **scaled to the stored invoice** —
+  while the Ledger works from the live projection. Two independent step-detections is exactly the
+  drift CLAUDE.md §3 exists to stop, and it would surface as the dashboard and the Ledger quoting
+  different dollars for one raise. So the alert takes the step MONTH from the applied
+  `rent_escalations` row already in `fetchAlertData`, applies `escalationStepMonths`' own guard
+  expressed on the owed array (`owed[m] > owed[m−1] + 0.02`, both months billed), and gets every
+  figure from `escalationFollowThrough` reading that same array.
+  - **The stale-bill guard comes free.** If the invoice never picked the step up, its owed array
+    has no jump, nothing fires, and the honest message stays the Ledger's existing `bill behind
+    by $X · Rebuild`. **The app never accuses a tenant of missing a raise it never billed them.**
+  - **Only `pre_raise_rate` is raised.** `partial` and `older_gap` are real gaps but not clean
+    escalation stories — they read truthfully on the row, where the months give them context, and
+    would be an accusation on the dashboard.
+
+  ### 5. Registries (CLAUDE.md §4 — every entry filled, and two deliberately not)
+
+  `buildAlerts` block inside the **existing `ledgerOn` gate** · `NOTIFY_COLUMNS` gains
+  `escalation_short` in the **Rent escalations** column (required — `notifyTypes.test.js`
+  regex-scans `alerts.js` and reds on any unmapped focus; it is the same conversation as the step
+  itself) · `alertCanEmail` + `goToAlert` (routes to the **Ledger**, alongside the two other
+  ledger focuses — the evidence IS the row) · `alertExtras` gains the three figures so the hover
+  panel isn't blank · `fetchAlertData` appends a third `computeLedgerAlerts` output.
+  - **`alertKey` needs NO change** — `lease_id` is already in the anchor chain and `date` is the
+    step month, so two steps on one lease get two keys and a dismissal re-arms as the shortfall
+    continues. Pinned by a test that also proves it can't collide with the `escalation` alert on
+    the same lease.
+  - **No `NOTIFY_TYPES` lead** (a standing alert, like `missing_payment`; `days = −8 − n` sorts it
+    below a genuinely missing payment and above the statement to-do), **no `features.js` key ⇒ no
+    backfill migration**, **no `send-reminders` sweep and no `*_notice_bucket` column** — it
+    drafts, it never sends.
+
+  ### 6. The letter, and the option not to send it
+
+  `draftAlertEmail` gains an `escalation_short` branch reusing **`buildPaymentShortfallEmail`** —
+  the same letter the statement review drafts, so there is one shortfall letter in the app rather
+  than two, and its copy already says the right thing (*"This most often happens when a scheduled
+  rent adjustment has taken effect and the prior amount is still being remitted"*). Quoted for the
+  STEP MONTH alone, not the running total, so received + balance === scheduled inside the letter;
+  the multi-month figure lives on the dashboard, and the letter's job is to get the RATE fixed.
+  *"Give the option"* is read two ways and both hold: the ✉ is a button he may never press, and
+  the alert carries the standard Dismiss / Snooze. **If he meant a durable "I'm holding this rent"
+  state on the escalation itself, that is a column and a migration and was NOT built** — flagged
+  below.
+
+  ### 7. Verified
+  Unit **1797/1797** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+  workers.dev). The UI glue is driven by a real render test rather than asserted from the outside:
+  `ledgerStepFollowUp.test.js` mounts the actual `LedgerPage` against the demo mock, seeds a June
+  step on City Dental, and walks the state — no step → neither line · step, nothing paid → *"nothing
+  recorded since the raise yet"* · two months at the old rate → *"still at the pre-raise rate — short
+  $350.00/mo since Jun ($700.00 over 2 months)"* with `.rr-step-bad` · the difference recorded through
+  the month panel's own "Record $X received" → flips to `✓ picked up` with `.rr-step-ok`, while
+  Bright Coffee beside it still shows neither line.
+  - **Two fixture facts worth keeping**, both written into the test file. **(a)** TWO applied steps
+    are needed to produce a step at all — `monthlyBases` has months before any applied step "fall
+    back to current best", so a lease on its very FIRST raise reads flat all year and shows no
+    verdict until the following year. That is documented existing behaviour, not new, but it is the
+    reason a one-escalation fixture renders nothing. **(b)** Bright Coffee is useless as a fixture:
+    its seeded $78,000 UNTAGGED lump pools forward and covers any shortfall you try to create —
+    correctly, because the money did arrive.
+  - **No demo-seed change**, so nothing on the demo shows a verdict; it is live on George's own data.
+
+  ### Files
+  New: `src/lib/__tests__/escalationFollowThrough.test.js` (13) ·
+  `src/lib/__tests__/escalationShortAlert.test.js` (8) ·
+  `src/components/__tests__/ledgerStepFollowUp.test.js` (4).
+  Edited: `src/lib/ledger.js` · `src/pages/LedgerPage.js` · `src/App.css` · `src/lib/api.js` ·
+  `src/lib/alerts.js` · `src/lib/notifyTypes.js` · `src/pages/DashboardPage.js`.
+
+  ### Flags / not done
+  - **No durable "I'm holding this rent" state.** A raise George decides to forgo is silenced by
+    Dismiss/Snooze, which is per-key and re-arms on a later month. A permanent flag is a column
+    and a migration.
+  - **A deposit is still one lump row.** Everything here reads the split from the BILL, never from
+    the money. Splitting a payment at write time touches the money spine and is a much larger round.
+  - **A lease's FIRST raise shows no verdict** (see 7a). If that turns out to matter, the fix is in
+    `monthlyBases`, not here — and it would move the existing ↗ cue too.
+  - **The verdict is Ledger-only**, not on the tenant's own Rent escalations panel — his answer was
+    Ledger + alert, and a third surface is a third place to keep in step.
+
 - **2026-08-12** — **Every section on Financials and the tenant page folds, it remembers, and the
   scroll that ran off the end of the page gets its third and best diagnosis** (George: *"can you make
   all the tabs on the financials page and individual tenant pages collapsible like we have for rent

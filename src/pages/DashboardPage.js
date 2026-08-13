@@ -157,7 +157,10 @@ export default function DashboardPage() {
     // plain first request. The landlord's OWN building policy has no lease and no outside
     // recipient, so it correctly gets no ✉.
     if (a.focus === 'insurance' || a.focus === 'insurance_chase' || a.focus === 'insurance_missing') return !!a.lease_id;
-    return a.focus === 'termination' || a.focus === 'escalation';
+    // A raise the tenant never picked up has an outside recipient and a letter already
+    // written for it — buildPaymentShortfallEmail, the same one the statement review
+    // drafts. It drafts; the landlord sends it himself from the modal.
+    return a.focus === 'termination' || a.focus === 'escalation' || a.focus === 'escalation_short';
   };
   // Draft the reminder's ready-to-send email and open the send modal. Sending it does NOT
   // dismiss the reminder — the date still matters until it's actually handled.
@@ -174,9 +177,11 @@ export default function DashboardPage() {
   // Where clicking an alert takes the landlord.
   function goToAlert(a) {
     if (a.focus === 'annual_report') navigate('/leases'); // corporations grid → Annual report button
-    // Both ledger reminders land on the Ledger grid — where ⬆ Import statement lives and
-    // where a month's cell can be marked paid — rather than the lease page.
-    else if ((a.focus === 'statement_reminder' || a.focus === 'missing_payment') && a.property_id) navigate(`/financials/${a.corporation_id}/${a.property_id}/ledger`);
+    // All three ledger reminders land on the Ledger grid — where ⬆ Import statement lives
+    // and where a month's cell can be marked paid — rather than the lease page. The raise
+    // one especially: its evidence IS the row (the ↗ note, the month boxes, the short
+    // chip), none of which exists on the lease page.
+    else if ((a.focus === 'statement_reminder' || a.focus === 'missing_payment' || a.focus === 'escalation_short') && a.property_id) navigate(`/financials/${a.corporation_id}/${a.property_id}/ledger`);
     // The three contract focuses, plus anything anchored to a contract rather than a lease —
     // which is how a signature alert on a contract envelope (0093) finds its way to the
     // Contracts tab instead of falling through to a lease page it doesn't have.
@@ -513,6 +518,14 @@ function alertExtras(a) {
       out.push(['Renews itself', a.auto_renew === true ? (a.renewal_term_months ? `Yes — ${a.renewal_term_months} more months` : 'Yes') : a.auto_renew === false ? 'No' : 'Not stated']);
     }
     if (a.focus === 'contract_escalation' && a.new_amount != null) out.push(['New fee', money(a.new_amount)]);
+  }
+  // A raise that went unpaid is three figures or it's an accusation with no evidence:
+  // what the lease now bills a month, how much of that is the increase, and how far under
+  // the money is landing. The same three the Ledger row states, from the same fields.
+  if (a.focus === 'escalation_short') {
+    if (a.owedMonthly) out.push(['Scheduled rent', `${money(a.owedMonthly)}/mo`]);
+    if (a.stepAmount) out.push(['The increase', `${money(a.stepAmount)}/mo`]);
+    if (a.shortPerMonth) out.push(['Coming in short', `${money(a.shortPerMonth)}/mo`]);
   }
   return out;
 }

@@ -4,12 +4,12 @@
 import { supabase, invokeFunction, DEMO_MODE } from './supabaseClient';
 import { money, fmtDate } from './format';
 import { addMonths, optionLapsed, renewalFirstYearRent, optionScheduleSteps } from './renewals';
-import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildContractNonRenewalEmail, buildVendorAdditionalInsuredEmail, buildCamReconciliationEmail, buildAiDraftEmail } from './emailTemplates';
+import { buildRenewalEmail, buildEscalationEmail, buildRenewalApproachingEmail, buildNonRenewalEmail, buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildInsuranceSecondRequestEmail, buildContractRenewalEmail, buildContractNonRenewalEmail, buildVendorAdditionalInsuredEmail, buildCamReconciliationEmail, buildPaymentShortfallEmail, buildAiDraftEmail } from './emailTemplates';
 import { reconcileFigures, billedComponents, monthlyEstimates } from './reconciliation';
 import { buildLeaseSchedule, owedByMonthForInvoice, inTermMonths } from './leaseSchedule';
 import {
   allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths,
-  unloggedMonths, missingOnImportedMonths,
+  escalationFollowThrough, unloggedMonths, missingOnImportedMonths,
 } from './ledger';
 import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
@@ -4749,13 +4749,13 @@ export async function fetchAlertData({ leadDays = null, ledgerOn = true, esignOn
     // history. Fetched only when the module is on, and the signer's name is stitched in so
     // the alert can say who signed. Skipped entirely on error → no alert rather than a wrong one.
     ...(esignOn ? { envelopes: await fetchOpenEnvelopes() } : { envelopes: [] }),
-    // Precomputed inputs for the two Rent Ledger reminders — built from the SAME math the
+    // Precomputed inputs for the three Rent Ledger reminders — built from the SAME math the
     // Ledger grid paints, honoring the configurable grace after month end. Only fetched
     // when the Rent Ledger module is on (else both alerts are hidden anyway). Skipped on
     // any error → no alert rather than a wrong one.
     ...(ledgerOn
       ? await computeLedgerAlerts(leases, escalations, abatements, leadDays)
-      : { unloggedMonths: [], missingPayments: [] }),
+      : { unloggedMonths: [], missingPayments: [], escalationShort: [] }),
   };
 }
 
@@ -4803,6 +4803,9 @@ async function fetchOpenEnvelopes() {
 //   missingPayments — [{ lease_id, property_id, tenant_name, year, months, amount }] ·
 //                     for months the property DID import, the tenants absent from it.
 //                     "The bank is reconciled and this one isn't in it."
+//   escalationShort — [{ lease_id, property_id, tenant_name, year, month, billJump,
+//                     shortPerMonth, shortSince, settledSince }] · a rent step landed and
+//                     the money since is short. "The raise was never picked up."
 //
 // The two are mutually exclusive by construction: an imported month has money on it, so
 // it can never also read as unlogged. Both reuse owedByMonthForInvoice →
@@ -4810,7 +4813,7 @@ async function fetchOpenEnvelopes() {
 // that mis-reads a free month or a mid-year start), and neither ever speaks about a
 // month still running — the statement only lands after the month closes.
 async function computeLedgerAlerts(leases, escalations, abatements, leadDays) {
-  const none = { unloggedMonths: [], missingPayments: [] };
+  const none = { unloggedMonths: [], missingPayments: [], escalationShort: [] };
   try {
     const year = Number(localDateIso().slice(0, 4));
     const graceDays = Number(leadDays?.unpaid_rent) > 0 ? Number(leadDays.unpaid_rent) : 7;
@@ -4856,6 +4859,9 @@ async function computeLedgerAlerts(leases, escalations, abatements, leadDays) {
       (byProperty[inv.property_id] ||= []).push({
         lease_id: inv.lease_id, tenant_name: lease.tenant_name,
         owed: owedByMonth, received: allocation.received,
+        // Carried for the "raise not picked up" pass below — the SAME allocation, so the
+        // alert can never disagree with the Ledger row about which months are settled.
+        allocation, escalations: escByLease[inv.lease_id] || [],
       });
       pays.forEach((p) => {
         if (!p.import_id || !(p.period_month >= 1 && p.period_month <= 12)) return;
@@ -4863,7 +4869,7 @@ async function computeLedgerAlerts(leases, escalations, abatements, leadDays) {
       });
     }
     const today = new Date();
-    const out = { unloggedMonths: [], missingPayments: [] };
+    const out = { unloggedMonths: [], missingPayments: [], escalationShort: [] };
     for (const [property_id, propRows] of Object.entries(byProperty)) {
       const months = unloggedMonths({ year, rows: propRows, today, graceDays });
       if (months.length) out.unloggedMonths.push({ property_id, year, months });
@@ -4872,6 +4878,45 @@ async function computeLedgerAlerts(leases, escalations, abatements, leadDays) {
         importedMonths: [...(importedByProperty[property_id] || [])],
       });
       missing.forEach((m) => out.missingPayments.push({ ...m, property_id, year }));
+      // ---- A rent step landed; did the money follow? -------------------------
+      // ⚠ THIS PATH DERIVES NO STEP OF ITS OWN. The Ledger finds a step from
+      // componentizeSchedule's per-month base (the live projection); this walk works from
+      // owedByMonthForInvoice, which is SCALED TO THE STORED INVOICE. Two independent
+      // step-detections is exactly the drift CLAUDE.md §3 is about — the dashboard and the
+      // Ledger would quote different dollars for one raise. So the step MONTH comes from
+      // the applied rent_escalations row, and every figure comes from escalationFollowThrough
+      // reading the same owed array this guard just checked.
+      //
+      // The guard buys the stale-bill case for free: if the invoice never picked up the
+      // step, its owed array carries no jump, nothing fires, and the honest message stays
+      // the Ledger's own "bill behind by $X · Rebuild". The app never accuses a tenant of
+      // missing a raise it never billed them.
+      for (const row of propRows) {
+        const steps = (row.escalations || [])
+          .filter((e) => e.status === 'applied' && String(e.effective_date || '').slice(0, 4) === String(year))
+          .map((e) => Number(String(e.effective_date).slice(5, 7)))
+          .filter((m) => m >= 2 && m <= 12)
+          .filter((m) => row.owed[m - 1] > 0 && row.owed[m - 2] > 0 && row.owed[m - 1] > row.owed[m - 2] + 0.02)
+          .sort((a, b) => a - b)
+          .map((m) => ({ month: m }));
+        if (!steps.length) continue;
+        const follow = escalationFollowThrough({
+          year, owedByMonth: row.owed, allocation: row.allocation, steps, today,
+        });
+        // Only the two verdicts that mean the raise itself went unpaid. `partial` and
+        // `older_gap` are real gaps but not clean escalation stories — they read
+        // truthfully on the Ledger row and would be an accusation on the dashboard.
+        follow.filter((f) => f.verdict === 'pre_raise_rate').forEach((f) => {
+          out.escalationShort.push({
+            lease_id: row.lease_id, tenant_name: row.tenant_name, property_id, year,
+            month: f.month, billJump: f.billJump, shortPerMonth: f.shortPerMonth,
+            shortSince: f.shortSince, settledSince: f.settledSince,
+            // The step month's own bill — what the shortfall letter quotes as "the
+            // scheduled rent", so the letter and the alert can't name different figures.
+            owedMonthly: round2(row.owed[f.month - 1]),
+          });
+        });
+      }
     }
     return out;
   } catch {
@@ -5687,6 +5732,24 @@ export async function draftAlertEmail(alert) {
     const priorRent = priorRentBefore(lease, escs, alert.date);
     const newRent = esc?.new_base_rent != null ? Number(esc.new_base_rent) : priorRent;
     return wrap(buildEscalationEmail({ ...common, effectiveDate: alert.date, priorRent, newRent, escalationType: esc?.escalation_type, escalationValue: esc?.escalation_value }), 'escalation_notice');
+  }
+  // A raise the tenant never picked up → the SHORTFALL letter, not a second escalation
+  // notice. buildPaymentShortfallEmail is the same letter the statement review drafts
+  // (StatementReview.js) — one shortfall letter in the app, not two — and its copy already
+  // says the right thing: "This most often happens when a scheduled rent adjustment has
+  // taken effect and the prior amount is still being remitted."
+  //
+  // Quoted for the STEP MONTH alone, not the running total, so the three figures in the
+  // letter tie to each other (received + balance === scheduled). The multi-month total
+  // lives on the dashboard; this letter's job is to get the RATE corrected, which is what
+  // its closing paragraph asks for.
+  if (focus === 'escalation_short') {
+    const scheduled = Number(alert.owedMonthly) || 0;
+    const short = Number(alert.shortPerMonth) || 0;
+    const monthLabel = alert.month >= 1 && alert.month <= 12
+      ? `${['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][alert.month - 1]} ${alert.year}`
+      : null;
+    return wrap(buildPaymentShortfallEmail({ ...common, monthLabel, scheduled, received: round2(scheduled - short), shortfall: short }), 'payment_shortfall');
   }
   return null;
 }

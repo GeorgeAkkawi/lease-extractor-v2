@@ -20,8 +20,11 @@
 export const NOTIFY_COLUMNS = [
   {
     key: 'escalation',
+    // The whole life of a rent step: one coming due, and — since 2026-08-13 — one that
+    // landed and the tenant never picked up. Same conversation, so it sits here rather
+    // than under Rent & payments.
     label: 'Rent escalations',
-    focuses: ['escalation'],
+    focuses: ['escalation', 'escalation_short'],
     kinds: ['escalation_applied'],
   },
   {
