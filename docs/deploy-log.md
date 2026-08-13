@@ -107,6 +107,21 @@ rather than reading top to bottom. Each entry is self-contained and dated.
   Folding helps regardless: Financials is the longest page in the app, and folding what he isn't
   using is the shortest route to never reaching the bottom at all.
 
+  ### 7. Follow-up the same round: the breakdown gets a box like the others
+  George, 2026-08-13: *"the per tenant break down doesnt have the same collapose format as the
+  others can you give it a white box like the other ones"*. It was the one section shipped `bare` —
+  a naked fold heading floating above the table's OWN bordered card, which read as a different kind
+  of thing next to the seven panels above it. It is now a real `.panel`, and `.table-wrap` inside it
+  drops its chrome rather than nesting card in card. **The table BLEEDS through the panel's 24px side
+  padding** (`margin:0 -24px -24px`), because `.ledger-head` is a full-width header band and inset
+  24px it reads as a grey strip floating in the middle of a card. `.panel{padding:24px}` has no
+  responsive override, so the negative margin is exact at every width — checked before relying on it.
+  Measured live: panel `left 284 / right 1277` with `.ledger-head` at `285 / 1276` (the 1px border),
+  table bottom 1px above the panel bottom, computed background/border/shadow/radius **identical** to
+  the Other income panel. At 900px the grid scrolls inside the box (695px content in a 570px box)
+  with no page-level horizontal scrollbar; at 500px the rows stack as they already did.
+  **Cloudflare version `5b38ff7f-6e61-4777-a870-fe2753f7c834`.**
+
   ### 6. Verified by driving the built app
   Maple Plaza + Bright Coffee Co., every figure read off the rendered page (ui-verifier, **zero
   console errors or warnings**, 15/15 checks):

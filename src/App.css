@@ -632,8 +632,13 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .panel-head-fold:not(.is-open){margin-bottom:0;padding-bottom:0;border-bottom:0}
 .panel.has-fold-shut{padding-bottom:18px}
 .cam-block.has-fold-shut{padding-bottom:0}
-/* The per-tenant breakdown draws its own card, so its fold head stands alone above it. */
+/* The per-tenant breakdown sits in a panel like every other folding section (George,
+   2026-08-13: "give it a white box like the other ones"). Its table already drew a card of
+   its own — .table-wrap — so that one loses its chrome rather than nesting card in card,
+   and bleeds through the panel's 24px side padding because .ledger-head is a full-width
+   header band and would otherwise read as a grey strip floating in the middle. */
 .breakdown-block{margin-top:8px}
+.breakdown-block .table-wrap{background:none;border:0;border-radius:0;box-shadow:none;margin:0 -24px -24px}
 .field-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
 .field{display:flex;flex-direction:column;gap:6px}
 .field-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;display:flex;align-items:center;gap:8px}

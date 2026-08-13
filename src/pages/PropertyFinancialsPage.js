@@ -320,7 +320,6 @@ export default function PropertyFinancialsPage() {
           the year's CAM & taxes their shares account for. `shares` is already on this page
           for the roof check above — no second query. */}
       <Panel
-        bare
         className="breakdown-block"
         id="fin.breakdown"
         title="Per-tenant breakdown"
