@@ -334,7 +334,8 @@ export function representativeMonth({ owedByMonth = [], schedule = {}, isCurrent
 //   rate         — collected / projected (null when projected 0; unclamped, may exceed 1)
 //   owesToDate   — Σ (owed − coverage) over months that have COME DUE (their 1st is
 //                  on/before today) — settled/free/out-of-term months owe nothing here
-//   monthsBehind — due months with owed > dust and NOTHING received (the red badge)
+//   monthsBehind — ENDED months with owed > dust and NOTHING received (the red badge).
+//                  Ended, not merely due: see the note at the test itself
 //   credit       — the allocation's leftover (overpayment, owed to the tenant)
 // ---- Year-close collection history (Stage 3) --------------------------------
 // closeYear (api.js) freezes each tenant's projected / collected /
@@ -393,9 +394,17 @@ export function ledgerRowSummary({ year, owedByMonth, allocation, today = new Da
     if (settledBill) variance = round2(variance + round2((received[i] || 0) - owed[i]));
     const gap = round2(owed[i] - (alloc.coverage[i] || 0));
     if (gap > dust) owes = round2(owes + gap);
-    // Genuinely behind = a due month with NO payment recorded against it at all
+    // Genuinely behind = a month that has ENDED with NO payment recorded against it at all
     // (a settled-short or pool-partial month has money on it → feeds owes, not the badge).
-    if (owed[i] > dust && !(received[i] > dust)) monthsBehind += 1;
+    //
+    // ⚠ ENDED, not merely due — George, 2026-08-13: "it should only say its one month behind
+    // after the month has passed since bank statements are given at the end of each month."
+    // Rent falls due on the 1st, so the RUNNING month is genuinely owed (and `owes` above
+    // counts it, deliberately unchanged — a balance that hid it would be wrong the other
+    // way). But nothing has yet told the landlord whether it arrived, so calling the tenant
+    // behind is an accusation the app cannot support. Same reasoning, same rule and the same
+    // function as the two dashboard reminders — with graceDays 0, which was his answer.
+    if (owed[i] > dust && !(received[i] > dust) && monthClosedForLogging(Number(year), m, today, 0)) monthsBehind += 1;
   }
   const collected = round2(alloc.totalPaid || 0);
   return {

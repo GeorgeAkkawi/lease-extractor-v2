@@ -105,8 +105,12 @@ describe('the "paid = paid" settled-month model', () => {
     const today = new Date(2026, 5, 15, 12); // Jan–Jun due
     const row = ledgerRowSummary({ year: 2026, owedByMonth: flat(1000), allocation: a, today });
     expect(row.owesToDate).toBe(5000); // Jan,Feb,Apr,May,Jun open (March settled → 0)
-    // March had money → not "behind"; the five zero-received due months are.
-    expect(row.monthsBehind).toBe(5);
+    // March had money → not "behind". Of the five remaining, only FOUR count: June is still
+    // running on the 15th, and since 2026-08-13 a month is only behind once it has ENDED
+    // (George: "it should only say its one month behind after the month has passed since
+    // bank statements are given at the end of each month"). `owesToDate` above deliberately
+    // still counts June — the rent IS owed; what waits is the accusation, not the balance.
+    expect(row.monthsBehind).toBe(4);
   });
 
   it('the untagged pool skips a settled month entirely', () => {
@@ -265,9 +269,13 @@ describe('ledgerRowSummary vs arStatus — the single-derivation rule', () => {
     );
     expect(row.owesToDate).toBe(ar.amountBehind); // 1,500 both ways
     expect(row.owesToDate).toBe(1500);
-    // Only June is genuinely behind (nothing received); May got a $500 partial → it feeds
-    // owesToDate but not the "months behind" badge.
-    expect(row.monthsBehind).toBe(1);
+    // June is the only month with nothing received — but on June 15 June has not ENDED, and
+    // since 2026-08-13 the badge waits for that (the bank statement that would settle it
+    // does not exist yet). May got a $500 partial → it never counted here anyway.
+    // ⚠ The parity above is UNAFFECTED and that is the point: `owesToDate` is a balance and
+    // still counts June, so it still ties to arStatus's `amountBehind` to the cent. Only the
+    // month COUNT waits.
+    expect(row.monthsBehind).toBe(0);
     expect(row.collected).toBe(4500);
   });
 

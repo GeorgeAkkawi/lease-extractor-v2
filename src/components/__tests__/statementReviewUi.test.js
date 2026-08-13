@@ -102,7 +102,9 @@ describe('StatementReview — reading the lines', () => {
     // Both tables share one header row component, so they can't drift apart.
     for (const table of document.querySelectorAll('.stmt-table')) {
       expect(Array.from(table.querySelectorAll('thead th')).map((t) => t.textContent))
-        .toEqual(['Import', 'Date', 'Description', 'Amount', 'Record as', 'For month', 'Match']);
+        // "· editable" was added 2026-08-13: the column always accepted a different month
+        // and nobody found it, which is the same as not having it.
+        .toEqual(['Import', 'Date', 'Description', 'Amount', 'Record as', 'For month · editable', 'Match']);
     }
 
     // One tick per row — include. Deposits and expenses alike remember their payee by

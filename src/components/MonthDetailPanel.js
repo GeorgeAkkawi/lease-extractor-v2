@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { addAdjustment, deleteAdjustment, markMonthPaid, unmarkMonthPaid } from '../lib/api';
+import { addAdjustment, deleteAdjustment, markMonthPaid, unmarkMonthPaid, updatePayment } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
@@ -97,7 +97,52 @@ export default function MonthDetailPanel({
     onSuccess: settle,
   });
 
-  const busy = post.isPending || removeAdj.isPending || recordGap.isPending || undoMonth.isPending;
+  // Re-file a payment (George, 2026-08-13: a tenant who pays the month before, and "if a
+  // tenant is over paying where does that go"). Until now the only correction was Undo the
+  // month and retype, which throws away the paid date, the note and the import provenance a
+  // bank statement needs to reconcile against it later.
+  const movePay = useMutation({
+    mutationFn: ({ id, toMonth }) => updatePayment(id, { period_month: toMonth }),
+    onSuccess: settle,
+  });
+
+  const busy = post.isPending || removeAdj.isPending || recordGap.isPending || undoMonth.isPending || movePay.isPending;
+
+  // Moving money between months changes what the grid says about BOTH of them, so it asks
+  // first — and the dialog states each side rather than saying "are you sure".
+  async function askMove(p, raw) {
+    const amt = money(Number(p.amount) || 0);
+    if (raw === '') {
+      const ok = await askConfirm({
+        title: 'Let this payment spread forward?',
+        message: `${amt} recorded on ${monthName(m)} ${year} stops belonging to ${monthName(m)} alone.`,
+        implications: [
+          `It fills each month's remaining need from January onward, ${monthName(m)} included.`,
+          'Anything still left over after December shows as a credit owed back to the tenant.',
+          'This is how an overpayment reaches the months after it — a payment tagged to one month settles that month and stops there.',
+          'Nothing is deleted; put it back on a month whenever you like.',
+        ],
+        confirmLabel: 'Let it spread',
+        // Money moves, nothing is destroyed — gold, not red.
+        tone: 'warn',
+      });
+      if (ok) movePay.mutate({ id: p.id, toMonth: null });
+      return;
+    }
+    const to = Number(raw);
+    const ok = await askConfirm({
+      title: `Move this payment to ${monthName(to)}?`,
+      message: `${amt} received on ${p.paid_date || 'an unrecorded date'} is currently recorded against ${monthName(m)} ${year}.`,
+      implications: [
+        `${monthName(to)} counts it instead — its box shows the money and settles.`,
+        `${monthName(m)} goes back to owing ${money(owed)}.`,
+        'The payment itself is untouched — same amount, same date, same record.',
+      ],
+      confirmLabel: `Move it to ${monthName(to)}`,
+      tone: 'warn',
+    });
+    if (ok) movePay.mutate({ id: p.id, toMonth: to });
+  }
 
   return (
     <div className="modal-scrim" onClick={onClose}>
@@ -170,9 +215,29 @@ export default function MonthDetailPanel({
                 <p className="muted" style={{ margin: '4px 0' }}>Nothing recorded for {monthName(m)} yet.</p>
               )}
               {monthPayments.map((p) => (
-                <div className="mp-line" key={p.id}>
-                  <span>{p.paid_date || 'recorded'}{p.note ? <em className="muted"> — {p.note}</em> : null}</span>
-                  <b>{money(p.amount)}</b>
+                <div key={p.id}>
+                  <div className="mp-line">
+                    <span>{p.paid_date || 'recorded'}{p.note ? <em className="muted"> — {p.note}</em> : null}</span>
+                    <b>{money(p.amount)}</b>
+                  </div>
+                  {/* Re-file it, rather than delete-and-retype. The select resets to its
+                      placeholder every render because the payment's CURRENT month is the
+                      month this panel is showing — there is nothing for it to display. */}
+                  <div className="mp-move">
+                    <select
+                      className="text-input"
+                      value=""
+                      disabled={busy}
+                      onChange={(e) => { if (e.target.value !== '—') askMove(p, e.target.value); }}
+                      title="Record this payment against a different month, or let it spread forward across the months still owing."
+                    >
+                      <option value="—">Move this payment…</option>
+                      {MONTHS.map((nm, mi) => (
+                        mi + 1 === m ? null : <option key={nm} value={mi + 1}>to {nm}</option>
+                      ))}
+                      <option value="">let it spread forward</option>
+                    </select>
+                  </div>
                 </div>
               ))}
               {round2(received - monthPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)) > 0.005 && (
@@ -183,6 +248,19 @@ export default function MonthDetailPanel({
                 <span>{shortfall > 0.05 ? 'Still owed' : shortfall < -0.05 ? 'Paid over' : 'Settled'}</span>
                 <b>{money(Math.abs(shortfall))}</b>
               </div>
+              {/* George, 2026-08-13: "if a tenant is over paying where does that go and how
+                  does it show". It goes NOWHERE on its own, and that is worth saying: a
+                  payment tagged to a month settles that month at whatever arrived and does
+                  not roll forward (allocatePayments). So the extra sits here until the
+                  landlord moves it. The two honest destinations are both above. */}
+              {shortfall < -0.05 && (
+                <p className="muted mp-note" style={{ marginTop: 6 }}>
+                  This month is settled at what arrived, so the extra <strong>stays on {monthName(m)}</strong> —
+                  it does not move to another month by itself. Use <em>Move this payment</em> above to put it on
+                  the month it was for, or let it spread forward so it fills the months still owing and any true
+                  remainder shows as a credit owed back.
+                </p>
+              )}
               {shortfall > 0.05 && (
                 <button className="secondary" style={{ marginTop: 8 }} disabled={busy} onClick={() => recordGap.mutate()}>
                   Record {money(shortfall)} received

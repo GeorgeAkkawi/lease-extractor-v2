@@ -12,6 +12,8 @@ import {
   markMonthsPaidAllTenants,
   listStatementImports,
   listUnplacedLines,
+  listDecidedLines,
+  listOtherIncome,
   resyncLeaseBilling,
   setLineDisposition,
   placeUnplacedLine,
@@ -21,7 +23,7 @@ import {
   localDateIso,
   getLeaseSort, discardDocument,
 } from '../lib/api';
-import { allocatePayments, componentizeSchedule, escalationFollowThrough, escalationStepMonths, ledgerRowSummary, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
+import { allocatePayments, componentizeSchedule, escalationFollowThrough, escalationStepMonths, ledgerRowSummary, monthClosedForLogging, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
 import { sortTenantRows } from '../lib/leaseSort';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
@@ -35,12 +37,15 @@ import { useConfirm } from '../components/ConfirmDialog';
 import LeaseTypeChip from '../components/LeaseTypeChip';
 import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
-import { IGNORE_REASONS, lineCompleteness } from '../lib/dispositions';
-import { INCOME_CATEGORIES } from '../lib/otherIncome';
+import { IGNORE_REASONS, lineCompleteness, dispositionInfo, ignoreReasonLabel } from '../lib/dispositions';
+import Panel from '../components/Panel';
+import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
 import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+// Sentinel for "name one that isn't on the list yet" — never stored, only ever a UI branch.
+const NEW_INCOME = 'income:__new__';
 
 // The row's payment difference in one chip: across every month that has come due AND
 // been paid, how far the deposits landed from the bill. Silent below 50¢ — that's
@@ -145,6 +150,10 @@ export default function LedgerPage() {
   // The post-save results strip: { summary, import, fileName }.
   const [imported, setImported] = useState(null);
   const [showRegister, setShowRegister] = useState(false);
+  // Naming a new other-income category on an unplaced line — the id of the line being
+  // named, and the text so far.
+  const [namingIncome, setNamingIncome] = useState(null);
+  const [incomeDraft, setIncomeDraft] = useState('');
   // Scoped to the fiscal year the rest of the page follows, so the log resets with the
   // year instead of every statement ever imported piling into one list.
   const { data: register = [] } = useQuery({
@@ -169,9 +178,52 @@ export default function LedgerPage() {
     enabled: isOn('ledger'),
   });
   const unplacedTotals = lineCompleteness(unplaced);
+  // The other half of the same list: what HAS been decided. Until 2026-08-13 a decided line
+  // simply left the screen — 0076 stored the decision and its reason and nothing read them
+  // back (George: "it disappeared … i dont know where that money went").
+  const { data: decided = [] } = useQuery({
+    queryKey: ['decidedLines', propId, year],
+    queryFn: () => listDecidedLines(propId, year),
+    enabled: isOn('ledger'),
+  });
+  // The receipts already recorded, read ONLY to offer back the write-in categories they
+  // carry. A custom income category exists because a row uses it — derived from use, so
+  // there is no list to store and nothing to clean up. Same key the Financials page uses,
+  // so this is a cache hit whenever he has been there.
+  const { data: incomeRows = [] } = useQuery({
+    queryKey: ['otherIncome', propId, year],
+    queryFn: () => listOtherIncome(propId, year),
+    enabled: isOn('ledger'),
+  });
+  // Money in and money out stay APART here for the same reason lineCompleteness keeps them
+  // apart: one netted figure lets a $5,000 deposit and a $5,000 withdrawal report "$0",
+  // which reads as health on a statement where $10,000 was filed.
+  const decidedTotals = (decided || []).reduce(
+    (t, l) => {
+      const amt = Math.abs(Number(l.amount) || 0);
+      if (l.direction === 'in') t.in = round2(t.in + amt); else t.out = round2(t.out + amt);
+      return t;
+    },
+    { in: 0, out: 0 },
+  );
+  // Both panels move together — a line leaves one exactly when it joins the other.
+  const settleLines = () => {
+    qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] });
+    qc.invalidateQueries({ queryKey: ['decidedLines', propId, year] });
+  };
   const leaveOut = useMutation({
     mutationFn: ({ id, reason }) => setLineDisposition(id, 'ignored', reason || null),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] }),
+    onSuccess: settleLines,
+  });
+  // Put a line back where it was. ⚠ Offered for `ignored` and `transfer` ONLY, and the
+  // reason is not tidiness: those two write no money — the disposition IS the record — so
+  // un-deciding them is lossless. Every other disposition wrote a real other_income /
+  // not-billed cam_line_items / deposit row, and setLineDisposition deliberately does NOT
+  // touch money, so "undoing" one would leave that row behind and the line free to be
+  // placed a second time. That is how one $20,154 line gets counted twice.
+  const unplaceLine = useMutation({
+    mutationFn: (id) => setLineDisposition(id, 'unclassified', null),
+    onSuccess: settleLines,
   });
   // Give the line a real home from here, without re-importing the statement it came
   // from. Every destination writes either an `other_income` row or a NOT-BILLED expense
@@ -186,7 +238,7 @@ export default function LedgerPage() {
       leaseId: kind.startsWith('deposit:') ? kind.slice(8) : null,
     }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] });
+      settleLines();
       // A not-billed expense line landed: the CAM list, the bucket records that carry
       // its category, the corp-card distribution roll-up and the Financials strips all
       // read it. `camLineItems` is a prefix so every year of this property repaints.
@@ -197,6 +249,81 @@ export default function LedgerPage() {
       qc.invalidateQueries({ queryKey: ['depositLines'] });
     },
   });
+
+  // ⚠ BOTH dropdowns commit a DB write on a single change event, and until 2026-08-13 they
+  // did it with no confirm and no way back — George picked "transfer between my own
+  // accounts" by accident and the line was gone. So each one asks first, and the dialog's
+  // job is to answer the question he actually asked: not "are you sure" but WHAT HAPPENS TO
+  // THE MONEY. Tone stays neutral — this is filing, not deleting.
+  const lineLabel = (l) =>
+    `${fmtShortDate(l.txn_date) || 'undated'} · ${l.description || 'this line'} · ${l.direction === 'in' ? '+' : '−'}${money(Math.abs(Number(l.amount) || 0))}`;
+
+  async function askLeaveOut(l, reasonKey) {
+    const reason = ignoreReasonLabel(reasonKey) || 'left out';
+    const ok = await askConfirm({
+      title: 'Leave this line out of the ledger?',
+      message: `${lineLabel(l)} — recorded as: ${reason.toLowerCase()}.`,
+      implications: [
+        'It is NOT income and NOT an expense: no tenant’s bill moves, and it appears in no total on any page or export.',
+        'The line stays on record under “Decided” below, with this reason beside it.',
+        'You can put it back at any time — nothing about it is deleted.',
+      ],
+      confirmLabel: 'Leave it out',
+      // Filing, not deleting — red is reserved for permanent deletes.
+      tone: 'default',
+    });
+    if (ok) leaveOut.mutate({ id: l.id, reason: reasonKey });
+  }
+
+  async function askPlace(l, kind, optionText) {
+    // A transfer writes nothing; every other destination writes a real row, and saying which
+    // is the difference between "where did it go" and another vanishing act.
+    const isTransfer = kind === 'transfer';
+    const where = isTransfer
+      ? 'It is neither income nor expense — the record of the move is the whole point, and it lands in no total.'
+      : kind.startsWith('deposit:')
+        ? 'It is recorded as the tenant’s money, held. Never income, and never credited against their rent.'
+        : kind.startsWith('income:')
+          ? 'It lands in Other income on the Financials page and in the Income-and-expenses workbook.'
+          : 'It lands as a NOT-BILLED expense line: it shows in what the year cost you, and reaches no tenant’s CAM.';
+    const ok = await askConfirm({
+      title: `Record this as ${String(optionText || 'this').toLowerCase()}?`,
+      message: lineLabel(l),
+      implications: [
+        where,
+        'No tenant’s bill and no CAM total moves — nothing here can change what a tenant owes.',
+        'It moves to “Decided” below, naming where it went.',
+      ],
+      confirmLabel: 'Record it',
+      tone: 'default',
+    });
+    if (ok) place.mutate({ line: l, kind });
+  }
+
+  // A category the six built-ins don't cover (George, 2026-08-13). `custom:<slug>` is the
+  // same write-in shape CAM buckets and tax categories use, so it needs no table and no
+  // migration — `other_income.category` is free text by design (0078).
+  function commitNewIncome(l) {
+    const key = customCategoryKey(incomeDraft);
+    setNamingIncome(null);
+    setIncomeDraft('');
+    // An unusable name leaves the line unplaced rather than storing a key nothing can label.
+    if (key) askPlace(l, `income:${key}`, incomeCategoryLabel(key));
+  }
+
+  async function askUnplace(l) {
+    const ok = await askConfirm({
+      title: 'Put this line back?',
+      message: `${lineLabel(l)} returns to “Money not yet placed”.`,
+      implications: [
+        'It starts nagging again until you decide about it.',
+        'Nothing was written when it was left out, so nothing is reversed — no figure moves.',
+      ],
+      confirmLabel: 'Put it back',
+      tone: 'default',
+    });
+    if (ok) unplaceLine.mutate(l.id);
+  }
 
   // Scoped invalidation after a write settles — this property's roll + the lease-page
   // invoices/payments panels; deliberately not a blanket sweep.
@@ -420,7 +547,7 @@ export default function LedgerPage() {
           <span className="rr-key-item"><span className="rr-cell paid">✓<span className="rr-amt under">5,025</span></span> paid under the bill</span>
           <span className="rr-key-item"><span className="rr-cell paid pool">✓</span> covered by a lump</span>
           <span className="rr-key-item"><span className="rr-cell partial">◐</span> partly covered</span>
-          <span className="rr-key-item"><span className="rr-cell late">—</span> due, unpaid</span>
+          <span className="rr-key-item"><span className="rr-cell late">—</span> month ended, unpaid</span>
           <span className="rr-key-item"><span className="rr-cell recv">↓</span> received, not billed</span>
           <span className="rr-key-item"><span className="rr-cell rr-step">▌</span> rent stepped up</span>
           <span className="rr-key-note">Click a box to record that month, or undo it. A payment with no month recorded fills the earliest months first.</span>
@@ -601,12 +728,18 @@ export default function LedgerPage() {
                       // month with money on it opens the panel. (Shift/right-click isn't a
                       // discoverable affordance, so the panel is reached from any settled
                       // month and its ◀ ▶ switcher walks to this one.)
-                      const late = started;
+                      // ⚠ OVERDUE needs the month to have ENDED, not merely started (George,
+                      // 2026-08-13). The bank statement that would prove August was paid does
+                      // not exist until August does, so painting the running month gold
+                      // accuses a tenant of something nobody can know yet. Same rule and same
+                      // function as `monthsBehind` and the two dashboard reminders. The cell
+                      // stays clickable and still says the month is due — only the alarm waits.
+                      const late = started && monthClosedForLogging(year, m, today, 0);
                       return (
                         <td key={m}>
                           <button type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
                             onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'mark', amount: round2(owedM) })}
-                            title={`${stepTip}${late ? 'Overdue — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—{adjChip}</button>
+                            title={`${stepTip}${late ? 'Overdue — mark' : started ? 'Due this month — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—{adjChip}</button>
                         </td>
                       );
                     })}
@@ -617,7 +750,7 @@ export default function LedgerPage() {
                         <span className="muted">{rate != null ? `${rate}%` : '—'}</span>
                         <VarianceChip variance={summary.variance} />
                         {summary.credit > 0.05 && <span className="rr-credit" title="Collected more than projected — owed back to the tenant">credit {money(summary.credit)}</span>}
-                        {summary.monthsBehind > 0 && <span className="rr-behind" title="Due months with nothing collected yet">{summary.monthsBehind} mo behind</span>}
+                        {summary.monthsBehind > 0 && <span className="rr-behind" title="Months that have ENDED with nothing collected. The month still running is never counted — its bank statement hasn't arrived yet.">{summary.monthsBehind} mo behind</span>}
                       </div>
                       {/* The stored bill and the lease no longer agree. Nothing here guesses
                           why — a rent step that came due overnight, an expense figure that
@@ -702,11 +835,32 @@ export default function LedgerPage() {
                     <td className="num">
                       {/* The nag is answerable, not just silenceable — these are the
                           homes that make the panel a work-list rather than a complaint. */}
+                      {namingIncome === l.id ? (
+                        /* Naming a category the list doesn't have yet. Inline rather than a
+                           modal: the row's date, description and amount are the context for
+                           what to call it, and a dialog would cover them. */
+                        <div className="row" style={{ gap: 6, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', marginBottom: 4 }}>
+                          <input className="text-input" style={{ maxWidth: 150, fontSize: 11 }} autoFocus
+                            placeholder="Name the category" value={incomeDraft}
+                            onChange={(e) => setIncomeDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') { e.preventDefault(); commitNewIncome(l); }
+                              if (e.key === 'Escape') { setNamingIncome(null); setIncomeDraft(''); }
+                            }} />
+                          <button type="button" className="secondary btn-sm" disabled={!incomeDraft.trim()} onClick={() => commitNewIncome(l)}>Use it</button>
+                          <button type="button" className="ghost btn-sm" onClick={() => { setNamingIncome(null); setIncomeDraft(''); }}>Cancel</button>
+                        </div>
+                      ) : null}
                       <select
                         className="text-input" style={{ maxWidth: 210, fontSize: 11, marginBottom: 4 }}
                         value=""
                         disabled={place.isPending}
-                        onChange={(e) => { if (e.target.value) place.mutate({ line: l, kind: e.target.value }); }}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (!v) return;
+                          if (v === NEW_INCOME) { setNamingIncome(l.id); setIncomeDraft(''); return; }
+                          askPlace(l, v, e.target.selectedOptions[0]?.text);
+                        }}
                         title="Record this line where it belongs. None of these touch a tenant's bill or this property's expenses."
                       >
                         <option value="">Record as…</option>
@@ -726,9 +880,10 @@ export default function LedgerPage() {
                         )}
                         {l.direction === 'in' && (
                           <optgroup label="Other income — not rent">
-                            {INCOME_CATEGORIES.map((c) => (
+                            {incomeCategoriesInUse(incomeRows).map((c) => (
                               <option key={c.key} value={`income:${c.key}`}>{c.label}</option>
                             ))}
+                            <option value={NEW_INCOME}>＋ New category…</option>
                           </optgroup>
                         )}
                         {l.direction === 'in' && derived.length > 0 && (
@@ -744,8 +899,8 @@ export default function LedgerPage() {
                         className="text-input" style={{ maxWidth: 210, fontSize: 11 }}
                         value=""
                         disabled={leaveOut.isPending}
-                        onChange={(e) => { if (e.target.value) leaveOut.mutate({ id: l.id, reason: e.target.value }); }}
-                        title="Leave this line out of the ledger for good, with the reason recorded against it."
+                        onChange={(e) => { if (e.target.value) askLeaveOut(l, e.target.value); }}
+                        title="Leave this line out of the ledger, with the reason recorded against it. It stays on record under Decided below."
                       >
                         <option value="">Leave it out…</option>
                         {IGNORE_REASONS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
@@ -757,6 +912,61 @@ export default function LedgerPage() {
             </table>
             <MutationError of={[leaveOut, place]} />
           </div>
+        )}
+
+        {/* …and where every decided line went. 0076 has stored the decision and its reason
+            since it shipped, and its own comment promised "the UI offers the reasons after
+            the fact" — nothing ever read them back, so a filed line simply left the screen
+            (George, 2026-08-13: "it disappeared … i dont know where that money went"). This
+            is that read path. Shut by default via Panel: it is a record to consult, not a
+            work-list, and its summary states the total while folded. */}
+        {decided.length > 0 && (
+          <Panel
+            id="ledger.decided"
+            defaultOpen={false}
+            title={`Decided — ${decided.length} line${decided.length === 1 ? '' : 's'}`}
+            summary={`${money(decidedTotals.in)} in · ${money(decidedTotals.out)} out`}
+            hint="Every statement line you have already filed, and what you filed it as."
+          >
+            <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
+              A <strong>transfer</strong> or a line <strong>left out</strong> is counted nowhere on purpose —
+              not in a total, not on a statement, not in an export. The record that you decided it is the point,
+              and it lives here. Anything else names the figure it landed in, and is edited there rather than undone here.
+            </p>
+            <table style={{ minWidth: 0 }}>
+              <thead><tr><th>Date</th><th>Description</th><th className="num">Amount</th><th>Recorded as</th><th></th></tr></thead>
+              <tbody>
+                {decided.map((l) => {
+                  const info = dispositionInfo(l.disposition);
+                  const why = l.disposition === 'ignored' ? ignoreReasonLabel(l.ignore_reason) : null;
+                  // ⚠ Undo for the two dispositions that wrote NO money. Everything else
+                  // produced a real row and setLineDisposition never touches money, so
+                  // "undoing" one would orphan that row and free the line to be placed a
+                  // second time — the same dollar, counted twice.
+                  const reversible = l.disposition === 'ignored' || l.disposition === 'transfer';
+                  return (
+                    <tr key={l.id}>
+                      <td>{fmtShortDate(l.txn_date) || '—'}</td>
+                      <td style={{ fontSize: 12 }}>{l.description || '—'}</td>
+                      <td className="num">{l.direction === 'in' ? '+' : '−'}{money(Math.abs(Number(l.amount) || 0))}</td>
+                      <td style={{ fontSize: 12 }} title={info.hint}>
+                        {info.label}{why ? <span className="muted"> — {why.toLowerCase()}</span> : null}
+                      </td>
+                      <td className="num">
+                        {reversible ? (
+                          <button type="button" className="ghost btn-sm" disabled={unplaceLine.isPending}
+                            onClick={() => askUnplace(l)}>↩ Put it back</button>
+                        ) : (
+                          <span className="muted" style={{ fontSize: 11 }} title="This one wrote a real record. Change it where that record lives, so the figure and the line can't disagree.">recorded</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <MutationError of={[unplaceLine]} />
+          </Panel>
         )}
 
         {register.length > 0 && (

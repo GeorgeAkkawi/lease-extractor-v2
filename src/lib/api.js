@@ -3706,6 +3706,30 @@ export const recordPayment = async (pay) =>
 
 export const deletePayment = (id) => rows(supabase.from('payments').delete().eq('id', id));
 
+// Re-file a payment onto a different month — or onto none at all. Until 2026-08-13 the ONLY
+// correction was delete-and-retype, which loses the paid_date, the note and the import
+// provenance that let a bank statement reconcile against it later. Two real cases, and both
+// are George's (2026-08-13: "some tenants may pay in the month before for rent — there should
+// be an option to record a payment for the following or previous month"):
+//
+//   month 1-12 → the cheque was for a different month than the day it cleared. The tag ALWAYS
+//                wins in allocatePayments, so this alone moves the ✓.
+//   month null → untag it. The money stops settling one month and joins the FIFO pool, which
+//                fills each month's residual need first-to-last and leaves any true remainder
+//                as `credit`. That is the honest home for an OVERPAYMENT: a tagged payment
+//                settles its month at whatever arrived with no rollover (see allocatePayments),
+//                so the excess on a tagged month reaches no later month and no credit figure.
+//
+// ⚠ It writes `period_month` ONLY. `source` is deliberately untouched — restating it here
+// would let a re-filing silently re-stamp a real cheque as 'system' and make it re-pricable by
+// resyncYearBillingToEstimate (0088). Moving money is not the same as re-pricing it.
+export const updatePayment = (id, patch = {}) =>
+  one(
+    supabase.from('payments')
+      .update({ period_month: patch.period_month == null ? null : Number(patch.period_month) })
+      .eq('id', id).select().single()
+  );
+
 // ---- Monthly rent tracker ---------------------------------------------------
 // The per-lease 12-box grid and the property rent roll are a friendly MONTHLY
 // layer over the SAME annual invoices/payments. "Month paid" = one payment row
@@ -6138,6 +6162,26 @@ export async function listUnplacedLines(propertyId, year = null) {
     supabase.from('statement_lines').select('*')
       .eq('property_id', propertyId)
       .eq('disposition', 'unclassified')
+  );
+  const y = Number(year);
+  const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
+  return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
+}
+
+// The other half of the same list, and it did not exist until 2026-08-13: every line that
+// HAS been decided. 0076 stored the decision and its reason from the start and its own
+// comment promised "the UI offers the reasons after the fact" — but nothing ever read them
+// back, so a line the landlord filed simply left the screen. George: "i pressed leave it out
+// just now as a transfer between accounts and it disappeared … i dont know where that money
+// went." The data was always there; this is the read path.
+//
+// Same property + fiscal-year scoping as listUnplacedLines, deliberately — the two panels
+// sit on one page and a line must appear in exactly one of them.
+export async function listDecidedLines(propertyId, year = null) {
+  const list = await rows(
+    supabase.from('statement_lines').select('*')
+      .eq('property_id', propertyId)
+      .neq('disposition', 'unclassified')
   );
   const y = Number(year);
   const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);

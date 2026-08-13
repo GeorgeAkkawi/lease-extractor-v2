@@ -13,7 +13,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
 import StatementReview from '../StatementReview';
 import LedgerPage from '../../pages/LedgerPage';
-import { applyStatementImport, undoStatementImport, listUnplacedLines } from '../../lib/api';
+import { ConfirmProvider } from '../ConfirmDialog';
+import { applyStatementImport, undoStatementImport, listUnplacedLines, listDecidedLines } from '../../lib/api';
 import { currentYear } from '../../lib/format';
 
 const Y = currentYear();
@@ -47,19 +48,29 @@ const oneUnknown = () => ({
   warnings: [],
 });
 
+// ConfirmProvider is REQUIRED, not decoration: filing a line asks first since 2026-08-13,
+// and useConfirm's default context resolves false — so without the provider every decision
+// silently does nothing and a test would "pass" by asserting the line never moved.
 const renderLedger = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter initialEntries={[`/financials/corp-1/prop-1/ledger`]}>
       <QueryClientProvider client={qc}>
         <ChromeProvider>
-          <Routes>
-            <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
-          </Routes>
+          <ConfirmProvider>
+            <Routes>
+              <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
+            </Routes>
+          </ConfirmProvider>
         </ChromeProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
+};
+
+const confirmWith = async (label) => {
+  const btn = await screen.findByRole('button', { name: label });
+  fireEvent.click(btn);
 };
 
 const rowFor = (text) => screen.getByText(text).closest('tr');
@@ -167,12 +178,53 @@ describe('LedgerPage — money not yet placed', () => {
     expect(screen.getByText('ONLINE TRANSFER TO CHECKING 8966')).toBeTruthy();
     expect(screen.getByText(/−\$20,154\.11/)).toBeTruthy();
 
-    // Answering the nag from here records the decision without re-importing anything.
-    fireEvent.change(screen.getByTitle(/Leave this line out of the ledger for good/), { target: { value: 'transfer' } });
-    await waitFor(() => expect(screen.queryByText(/Money not yet placed/)).toBeNull());
+    // ⚠ It ASKS FIRST (2026-08-13). George picked "transfer between my own accounts" by
+    // accident on a one-click select and the line was gone with no way back.
+    fireEvent.change(screen.getByTitle(/Leave this line out of the ledger/), { target: { value: 'transfer' } });
+    expect(await screen.findByText(/Leave this line out of the ledger\?/)).toBeTruthy();
+    // The dialog answers the question he actually asked — what happens to the money.
+    expect(screen.getByText(/appears in no total on any page or export/)).toBeTruthy();
+    expect(await listUnplacedLines('prop-1', Y)).toHaveLength(1); // nothing written yet
 
-    const stillThere = await listUnplacedLines('prop-1', Y);
-    expect(stillThere).toHaveLength(0);
+    await confirmWith('Leave it out');
+    await waitFor(() => expect(screen.queryByText(/Money not yet placed/)).toBeNull());
+    expect(await listUnplacedLines('prop-1', Y)).toHaveLength(0);
+
+    // …and it did not vanish. It is on record, named, under Decided — the read path 0076
+    // promised and never built.
+    const decided = await listDecidedLines('prop-1', Y);
+    expect(decided.map((d) => d.disposition).sort()).toEqual(['expense', 'ignored']);
+    expect(decided.find((d) => d.disposition === 'ignored').ignore_reason).toBe('transfer');
+    await waitFor(() => expect(screen.getByText(/Decided — 2 lines/)).toBeTruthy());
+    fireEvent.click(screen.getByText(/Decided — 2 lines/));
+    const row = await waitFor(() => rowFor('ONLINE TRANSFER TO CHECKING 8966'));
+    expect(within(row).getByText(/Deliberately left out/)).toBeTruthy();
+    expect(within(row).getByText(/transfer between my own accounts/i)).toBeTruthy();
+
+    // Put it back: reversible because being left out wrote no money at all.
+    fireEvent.click(within(row).getByRole('button', { name: /Put it back/ }));
+    await confirmWith('Put it back');
+    await waitFor(() => expect(screen.getByText(/Money not yet placed — 1 line/)).toBeTruthy());
+    expect(await listUnplacedLines('prop-1', Y)).toHaveLength(1);
+    await undoStatementImport(res.import);
+  });
+
+  // ⚠ The rule that keeps a dollar from being counted twice: a PLACED line wrote a real
+  // other_income / not-billed expense / deposit row, and setLineDisposition never touches
+  // money — so offering Undo here would orphan that row and free the line to be placed
+  // again. It says "recorded" and points at where the figure lives instead.
+  it('offers no undo on a line that actually wrote something', async () => {
+    const res = await applyStatementImport({
+      propertyId: 'prop-1', year: Y, fileName: 'apr.csv',
+      entries: [{ type: 'cam', property_id: 'prop-1', year: Y, amount: 450, date: `${Y}-04-09`, label: 'Landscaping', billable: true, hash: 'h-cam2' }],
+      lines: [{ hash: 'h-cam2', year: Y, date: `${Y}-04-09`, description: 'GREENLEAF LANDSCAPING INV 91', amount: 450, direction: 'out', disposition: 'expense' }],
+    });
+    renderLedger();
+    await waitFor(() => expect(screen.getByText(/Decided — 1 line/)).toBeTruthy());
+    fireEvent.click(screen.getByText(/Decided — 1 line/));
+    const row = await waitFor(() => rowFor('GREENLEAF LANDSCAPING INV 91'));
+    expect(within(row).queryByRole('button', { name: /Put it back/ })).toBeNull();
+    expect(within(row).getByText('recorded')).toBeTruthy();
     await undoStatementImport(res.import);
   });
 

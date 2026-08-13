@@ -12,6 +12,167 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-13** — **A statement line you file no longer vanishes — it moves to a list that says what
+  you decided; a payment can be moved to the month it was actually for; other income takes a
+  category you name; and "1 mo behind" waits until the month has ended** (George: *"In money not
+  placed yet there should be a confirm button for that. i pressed leave it out just now as a transfer
+  between accounts and it disappeared … i dont know where that money went … also if a tenant is over
+  paying where does that go and how does it show … there should be an option in record as to create a
+  category of other income … some tenants may pay in the month before for rent … also it should only
+  say its one month behind after the month has passed since bank statements are given at the end of
+  each month."*)
+  - **Cloudflare version `548a64c9-5ade-4e7d-9cf1-2e1f8d5f7eb2`**. Five asks, one round. **NO migration, NO edge function, NO
+    view, NO feature key** — `statement_lines.disposition` and `other_income.category` are both
+    deliberately CHECK-free JS-registry columns (0076/0078), so nothing needed SQL. One new writer
+    (`updatePayment`) and no mock change: the demo builder's `update`/`neq` are generic.
+    Tests **1813 across 178 files** (was 1798/175: +15 in three new suites, +2 in an existing one).
+  - **His three answers, taken before any code:** confirm, then the line moves to a **visible list** ·
+    overpayment → **give the user the option, and the same for debits** · a month reads behind **the
+    moment it ends**, no grace.
+
+  ### 1. The vanishing line — and it was worse than "no confirm"
+
+  The panel's two dropdowns committed a DB write on a single `onChange`, with no confirm and no undo.
+  But the real fault was downstream: the decision **was** stored — `statement_lines.disposition` +
+  `ignore_reason`, since 0076 — and **nothing on earth read it back.** `listStatementLines` was
+  imported by zero components and `ignoreReasonLabel` was called from nowhere; 0076's own comment
+  promises *"the UI offers the reasons after the fact"* and that read path was never built. George's
+  $20,154.11 transfer was on record and unreachable from inside the app.
+  - **Confirm** on both dropdowns, `tone: 'default'` — filing, not deleting. The dialog answers the
+    question he actually asked, which is not *are you sure* but **what happens to the money**: *"It is
+    NOT income and NOT an expense: no tenant's bill moves, and it appears in no total on any page or
+    export."*
+  - **A new `Decided` panel** (`listDecidedLines`, the mirror of `listUnplacedLines` with the same FY
+    scoping so a line is in exactly one of the two). Folded by default via `Panel`, stating its
+    money-in / money-out totals while shut — **kept apart, never netted**, for the reason
+    `lineCompleteness` keeps them apart: one figure lets a $5,000 deposit and a $5,000 withdrawal
+    report "$0" on a statement where $10,000 was filed.
+  - **⚠ UNDO IS OFFERED FOR `ignored` AND `transfer` ONLY, and that is not tidiness.** Those two write
+    no money — the disposition IS the record — so un-deciding them is lossless. Every other
+    disposition wrote a real `other_income` / not-billed `cam_line_items` / deposit row, and
+    `setLineDisposition` deliberately *does not touch money*; offering Undo there would orphan that
+    row and free the line to be placed a second time. **That is how one $20,154 line gets counted
+    twice.** Those rows read "recorded" and point at where the figure lives. Pinned both ways.
+  - **And the panel finally answers "does it show on statements or excel sheets?"** — in one sentence
+    at the top, because the honest answer is *no, on purpose*: a transfer and a left-out line are
+    counted nowhere, and the record that you decided it is the point.
+
+  ### 2. Overpayment: where it goes is NOWHERE, and now it says so
+
+  A tagged payment settles its month at whatever arrived, with **no cap and no rollover**
+  (`allocatePayments`) — so $9,000 on a $6,500 month leaves $2,500 that reaches no later month **and
+  no `credit` figure either**. Only an *untagged* lump's excess pools forward. Since the import
+  auto-tags nearly every deposit from its own date, the invisible case is the common one.
+  - `MonthDetailPanel` printed `Paid over $X` and offered nothing to do about it. It now says the
+    thing out loud — the extra **stays on this month** — and gives the two honest destinations.
+  - **`updatePayment(id, {period_month})`** (`api.js`, beside `deletePayment`). `month` re-files the
+    cheque onto the month it was for; `null` untags it, so it joins the FIFO pool. Until now the only
+    correction was delete-and-retype, which throws away the paid date, the note and the import
+    provenance a bank statement needs to reconcile against the month later.
+  - **⚠ It writes `period_month` ONLY.** Restating `source` would let a re-filing silently re-stamp a
+    real cheque as `'system'` and make it re-pricable by `resyncYearBillingToEstimate` (0088). Moving
+    money is not re-pricing it. Test-pinned that source, amount, date and row id all survive.
+  - **⚠ The pool fills from JANUARY, not from the payment's own month** — each month's *remaining*
+    need, first to last. The confirm dialog says exactly that rather than implying the money shuffles
+    forward one month, and a test pins the distinction (my first draft of that test asserted the
+    wrong mechanism and failed, which is the only reason it now says the right thing).
+
+  ### 3. "Same for debits" — and the month picker that already existed
+
+  A short month already had *Record $X received* and the charge/credit form. It now also has the
+  mover, which is the *"tenant paid the month before"* case — and the import review's **month picker
+  has existed all along** (thirteen options, *"your choice always wins"*), simply unfound. So: the
+  column header now reads **"For month · editable"**, and the amber *"already recorded as paid —
+  ticking this records it twice"* warning now names the fix (*"If this cheque was for a different
+  month, change Month →"*) instead of only the problem. A control nobody finds is not a control.
+
+  ### 4. A category you name — borrowed, not re-invented
+
+  `INCOME_CATEGORIES` was six fixed entries and `incomeCategoryInfo` silently coerced anything else to
+  `other` — so a landlord could have typed a name, had it stored faithfully, and watched every screen
+  file it under "Other income" as though he hadn't bothered. The write-in machinery already exists
+  twice over (CAM buckets, tax categories), so it is **imported rather than copied** (CLAUDE.md §3):
+  `custom:<slug>` from `expenseCategories.js`, *recognizable by shape*, which is why it stays valid at
+  every call site that has never heard of this landlord's list.
+  - `isIncomeCategory` accepts it, `incomeCategoryInfo` labels it from its own slug, and
+    `summarizeOtherIncome` therefore groups it on its own — so it reaches the Financials panel and the
+    Income-and-expenses workbook with no change in either.
+  - **The offered list is derived from USE, not stored** (`incomeCategoriesInUse`): a category exists
+    because a receipt carries it. No table, no migration, nothing to keep in sync, nothing to clean up.
+  - One `IncomeCategorySelect` for the two Financials pickers; the review screen and the unplaced panel
+    get the same flow inline (their selects are one control over several optgroups).
+  - **⚠ NOT a back door for owner money.** `otherIncome.js` refuses a `contribution` category because
+    one export prints this whole list as revenue. The naming form says so on the spot: *"Income the
+    property earned. Money you put in yourself isn't income — record that as a transfer."*
+
+  ### 5. Behind waits for the month to end
+
+  `monthsBehind` counted a month from its **1st**, and the grid painted the running month gold with an
+  *Overdue* tooltip — so on Aug 1, August was already "1 mo behind". The rule George wants already
+  existed for the two dashboard reminders (`monthClosedForLogging`, written for his exact reason: *"A
+  landlord receives their bank statement AFTER the month closes"*), so it is **called with
+  `graceDays: 0`** rather than a second month-end calculation being written.
+  - **`owesToDate` deliberately does NOT change**, and that is the interesting half. Rent falls due on
+    the 1st; if August is unpaid on the 13th the tenant genuinely owes it, and a balance that hid it
+    would be wrong in the other direction. It is also what keeps `owesToDate` tying to arStatus's
+    `amountBehind` to the cent (the PARITY test). **What waits is the accusation, not the balance.**
+  - The tenant statement is untouched for the same reason — `statementRows` charges rent on the 1st.
+  - ⚠ The boundary is **local noon** on the 1st, not midnight: every month comparison in `ledger.js`
+    is noon-anchored so a timezone or DST shift can't move a month by a day. Half a day's lag on a
+    monthly signal is cheaper than a second date convention. Stated in the test.
+
+  ### 6. Verified
+  Unit **1813/1813** (`vitest run`); `vite build` compiles; live 200s (amlakre.com + www +
+  workers.dev). **Driven in a real browser against the demo mock, 5/5 items, zero console
+  errors/warnings** — and the two panels needed a real import to reach at all, because the demo seed
+  has no unplaced lines:
+  - **Behind timing.** Today Aug 2026. City Dental's Apr/May/Jun/Jul carry `rr-cell late`; **August
+    carries `rr-cell` with no `late`**. The chip reads **"4 mo behind"** (was 5), legend
+    "month ended, unpaid".
+  - **Moving a payment.** City Dental's January ✓ $9,150 → "to Mar": dialog named both sides
+    ("March counts it instead" / "January goes back to owing $9,150.00"); confirmed, and the grid
+    repainted Jan → ◐ (its $4,000 lump remains) and **Mar → ✓ $9,150**. Bright Coffee's August
+    correctly offers NO mover — that money is drawn from a lump, so there is no tagged payment to
+    re-file. The spread-forward dialog states the credit outcome verbatim.
+  - **Confirm + Decided + Undo**, reached by importing the sample statement: picking "Owner
+    distribution" asked first, then landed in **Decided** as **"recorded"** with no Undo (correct — it
+    wrote a row); "Leave it out… → Personal, not the business" asked first, then read **"Deliberately
+    left out — personal, not the business"** with **↩ Put it back**, which returned it to the unplaced
+    list (3 → 4 lines).
+  - **A named category.** "＋ New category…" → "Signage rent" → $400 saved, and it groups as its own
+    **"Signage rent"** subtotal rather than under Other income; the panel total moved $2,690 → $3,090.
+  - ⚠ **Worth knowing for the next verification round:** `./build` is produced with `.env.local`
+    present, so it is wired to PRODUCTION Supabase and never shows the demo banner. The verifier built
+    a second, key-free copy in scratch to get demo mode. `./build` and both env files were left
+    untouched and the deployed bundle carries the live refs (3 `supabase.co` hits).
+
+  ### Files
+  New: `src/components/IncomeCategorySelect.js` · `src/lib/__tests__/monthsBehindTiming.test.js` (5) ·
+  `src/lib/__tests__/paymentMonthMove.test.js` (4) · `src/lib/__tests__/customIncomeCategory.test.js` (6).
+  Edited: `src/pages/LedgerPage.js` · `src/lib/api.js` (`listDecidedLines`, `updatePayment`) ·
+  `src/lib/ledger.js` · `src/lib/otherIncome.js` · `src/components/MonthDetailPanel.js` ·
+  `src/components/OtherIncomeSection.js` · `src/components/StatementReview.js` · `src/App.css` ·
+  `CLAUDE.md`. Two existing assertions changed on purpose: the review's column header now reads
+  "For month · editable", and two `ledger.test.js` month-counts drop by one because the running month
+  no longer counts (their `owesToDate` assertions are untouched, which is the proof the split is right).
+
+  ### Flags / not done
+  - **⚠ The swallowed audit write** (`api.js`, the `statement_lines` insert): if it fails the import
+    still succeeds and those lines never existed — re-opening the exact untraceability 0076 closed. It
+    is deliberately best-effort (an import must not be lost over an audit row) but it fails
+    **silently**, and it should at least say so. Its own round.
+  - **⚠ FY scoping hides unplaced lines dated in an adjacent year** — a December/January statement can
+    leave lines nagging on a year he isn't looking at. Now applies to the Decided list too, by design.
+  - **Overpayment still reaches no Excel export.** It is visible on the Ledger, in the month panel and
+    on the tenant statement (whose running balance goes into credit), but `rentRollExcel` /
+    `reconciliationExcel` gain no credit column — each is a separate writer and this round is already
+    five features wide.
+  - **No "I refunded it to the tenant" state.** Move and carry-forward cover the common cases; a
+    refund is a real money-out event and deserves its own record, not a checkbox.
+  - `addendumReview.test.js` failed once mid-round and passed alone and on every re-run — **pre-existing
+    order-dependent flakiness in the shared demo store**, unrelated to anything here, but worth naming
+    so the next person doesn't chase it as new.
+
 - **2026-08-13** — **A rent step now says whether the tenant actually PAID it — the Ledger row
   states what the bill's increase was made of and whether the money followed, and a dashboard
   alert says so when it didn't** (George: *"lets say a rent escalation is due and it shows on the

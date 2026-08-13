@@ -11,7 +11,7 @@ import {
 } from '../lib/api';
 import { defaultCategoryFor } from '../lib/expenseCategories';
 import TaxCategorySelect from './TaxCategorySelect';
-import { INCOME_CATEGORIES, incomeCategoryLabel } from '../lib/otherIncome';
+import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
 import {
   matchStatement, suggestRulePattern, screenRulePatterns, depositProjectionDelta,
   corroborateAmount, monthOfDate, deriveEstimateFromDeposit, CAM_KEYWORD_LABELS,
@@ -853,7 +853,9 @@ function HeadRow() {
         <th>Description</th>
         <th className="num">Amount</th>
         <th>Record as</th>
-        <th>For month</th>
+        {/* The column has always been editable and nobody found it — a control nobody finds
+            is not a control (George, 2026-08-13, on tenants who pay a month early). */}
+        <th title="Which month a tenant's payment settles — dated from the line itself, and yours to change. A tenant paying early or late is filed on the month the rent was FOR, not the day it cleared.">For month <span className="muted" style={{ fontWeight: 400 }}>· editable</span></th>
         <th title="How confident the match is">Match</th>
       </tr>
     </thead>
@@ -888,6 +890,9 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   const payee = payeeOf ? payeeOf(txn.description) : suggestRulePattern(txn.description);
   // The new-bucket mini-form, opened by picking "＋ New bucket…" in the dropdown.
   const [addingBucket, setAddingBucket] = useState(false);
+  // Its money-in twin — naming a kind of other income that isn't on the list yet.
+  const [namingIncome, setNamingIncome] = useState(false);
+  const [newIncome, setNewIncome] = useState('');
   const [newName, setNewName] = useState('');
   const [newBillable, setNewBillable] = useState(true);
   // '' = follow the built-in default for whatever name is being typed; once the user
@@ -934,6 +939,16 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
     setNewBillable(true);
     setNewCategory('');
   };
+  // A write-in income category. Unlike a bucket it persists NOTHING of its own — the key is
+  // `custom:<slug>`, valid by shape, and it exists from the moment a row carries it. So
+  // there is no onNewCategory callback and nothing to clean up if the review is cancelled.
+  const confirmNewIncome = () => {
+    const key = customCategoryKey(newIncome);
+    if (!key) return;
+    setOv(r.i, { pick: `income:${key}` });
+    setNamingIncome(false);
+    setNewIncome('');
+  };
   return (
     <tr className={r.checked ? undefined : 'stmt-off'}>
       <td>
@@ -956,6 +971,9 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
           value={pickValue}
           onChange={(e) => {
             if (e.target.value === '__new') { setAddingBucket(true); return; }
+            // Its money-in twin (2026-08-13): name a kind of other income the six
+            // built-ins don't cover, exactly as ＋ New bucket… does for an expense.
+            if (e.target.value === '__new_income') { setNamingIncome(true); return; }
             setOv(r.i, { pick: e.target.value || 'ignore' });
           }}
         >
@@ -995,9 +1013,13 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
                   annual invoice, so the Ledger reads the month over-paid and the
                   Collected column reports rent that never arrived. */}
               <optgroup label="Other income — not rent">
-                {INCOME_CATEGORIES.map((c) => (
+                {/* The six built-ins, PLUS this row's own category when it is a write-in —
+                    without that the select's value matches no option the moment a category
+                    is named, and it blanks out over a pick that was actually made. */}
+                {incomeCategoriesInUse([{ category: r.category }]).map((c) => (
                   <option key={c.key} value={`income:${c.key}`}>{c.label}</option>
                 ))}
+                <option value="__new_income">＋ New category…</option>
               </optgroup>
               {/* A deposit belongs to a TENANT — that is the whole question, so the
                   pick carries the lease rather than asking twice. Scoped to this
@@ -1045,6 +1067,27 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             </>
           )}
         </select>
+        {namingIncome && (
+          <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              className="text-input"
+              style={{ maxWidth: 150 }}
+              placeholder="Category name (e.g. Signage)"
+              value={newIncome}
+              autoFocus
+              onChange={(e) => setNewIncome(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); confirmNewIncome(); } }}
+            />
+            <button type="button" className="btn-sm" onClick={confirmNewIncome} disabled={!newIncome.trim()}>Add</button>
+            <button type="button" className="ghost btn-sm" onClick={() => { setNamingIncome(false); setNewIncome(''); }}>Cancel</button>
+            {/* ⚠ Every category on this list is money the PROPERTY EARNED — one export
+                prints the lot as revenue. Money the owner put IN is a transfer, and
+                otherIncome.js refuses a `contribution` category for exactly this reason. */}
+            <span className="muted" style={{ fontSize: 10.5, width: '100%' }}>
+              Income the property earned. Money you put in yourself isn’t income — record that as a transfer.
+            </span>
+          </div>
+        )}
         {addingBucket && (
           <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
             <input
@@ -1159,8 +1202,13 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
           </>
         )}
         {r.alreadyPaid && !dupe && (
+          // ⚠ The commonest cause of this is a tenant paying a month early or late, not a
+          // duplicate — so the warning names the fix rather than only the problem (George,
+          // 2026-08-13: "some tenants may pay in the month before for rent … if it comes up
+          // as double in the statement reading"). The Month column beside it is editable.
           <div className="note-msg warn" style={{ marginTop: 4 }}>
-            {MONTH_NAMES[r.month - 1]} is already recorded as paid — ticking this records it twice
+            {MONTH_NAMES[r.month - 1]} is already recorded as paid — ticking this records it twice.
+            {' '}If this cheque was for a different month, change <strong>Month</strong> →.
           </div>
         )}
         {r.row.collision && !r.alreadyPaid && (

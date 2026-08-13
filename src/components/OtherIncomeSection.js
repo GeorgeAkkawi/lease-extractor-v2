@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listOtherIncome, addOtherIncomeEntry, deleteOtherIncomeEntry, setOtherIncomeCategory, listLeases } from '../lib/api';
-import { INCOME_CATEGORIES, incomeCategoryInfo, incomeCategoryLabel, summarizeOtherIncome } from '../lib/otherIncome';
+import { incomeCategoryInfo, incomeCategoryLabel, summarizeOtherIncome } from '../lib/otherIncome';
+import IncomeCategorySelect from './IncomeCategorySelect';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import Panel from './Panel';
@@ -83,15 +84,13 @@ export default function OtherIncomeSection({ propId, year }) {
   const catChip = (row) => {
     if (editCat === row.id) {
       return (
-        <select
-          className="text-input" style={{ maxWidth: 175, fontSize: 12, marginTop: 4 }}
+        <IncomeCategorySelect
+          style={{ maxWidth: 175, fontSize: 12, marginTop: 4 }}
           autoFocus
+          rows={entries}
           value={row.category || 'other'}
-          onChange={(e) => setCat.mutate({ id: row.id, category: e.target.value })}
-          onBlur={() => setEditCat(null)}
-        >
-          {INCOME_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-        </select>
+          onChange={(category) => setCat.mutate({ id: row.id, category })}
+        />
       );
     }
     return (
@@ -129,9 +128,12 @@ export default function OtherIncomeSection({ propId, year }) {
 
       {adding && (
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <select className="text-input" style={{ maxWidth: 190 }} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-            {INCOME_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-          </select>
+          <IncomeCategorySelect
+            style={{ maxWidth: 190 }}
+            rows={entries}
+            value={form.category}
+            onChange={(category) => setForm({ ...form, category })}
+          />
           <input className="text-input" style={{ maxWidth: 190 }} placeholder="What it was (optional)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
           <input className="text-input" style={{ maxWidth: 130 }} type="number" step="0.01" placeholder="Amount" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
           <input className="text-input" style={{ maxWidth: 150, minWidth: 0 }} type="date" value={form.txn_date} onChange={(e) => setForm({ ...form, txn_date: e.target.value })} />

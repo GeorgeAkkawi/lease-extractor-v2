@@ -1156,6 +1156,11 @@ tbody tr:last-child td{border-bottom:none}
 .mp-charge{color:var(--gold)}
 .mp-credit{color:var(--forest)}
 .mp-line.mp-adj .icon-btn{padding:0 4px;line-height:1}
+/* Re-file a payment onto another month. Sits UNDER its payment row rather than beside it:
+   the row already carries a date, a note and an amount, and a fourth thing on that line
+   pushes the figure off the right edge of the panel on a narrow window. */
+.mp-move{padding:2px 0 6px}
+.mp-move select{font-size:11px;padding:2px 6px;max-width:190px;color:var(--muted)}
 .mp-post{margin-top:20px;border-top:1px solid var(--border);padding-top:14px}
 .mp-note{font-size:12px;line-height:1.55;margin:0 0 10px}
 .mp-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}

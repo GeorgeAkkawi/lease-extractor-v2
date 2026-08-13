@@ -19,6 +19,10 @@
 // Insurance proceeds are the one genuine exception (a casualty recovery is not rent),
 // which is exactly why it is broken out rather than buried in "Other".
 import { monthOfYearIndex } from './isoDate';
+// The write-in machinery, shared with CAM buckets and tax categories — see the note above
+// `incomeCategoriesInUse` for why it is borrowed rather than copied. expenseCategories.js
+// imports nothing, so this cannot cycle.
+import { CUSTOM_PREFIX, isCustomCategory, customCategoryKey } from './expenseCategories';
 
 // key is stable and stored; label is what the user reads. Order is the order shown.
 export const INCOME_CATEGORIES = [
@@ -38,12 +42,50 @@ export const INCOME_CATEGORIES = [
 // himself. It uses the `transfer` disposition instead — recorded, placed, counted
 // nowhere, which is what that disposition has always meant.
 
+// ---- Write-ins (2026-08-13) --------------------------------------------------------
+// George: "there should be an option in record as to create a category of other income if
+// they want to." CAM buckets and tax categories already solve this, and the solution is
+// REUSED rather than re-implemented (CLAUDE.md §3): a custom key is `custom:<slug>` and is
+// recognizable BY SHAPE, so it stays valid at every call site that has never heard of the
+// landlord's list. `other_income.category` is free text with no CHECK (0078), so this needs
+// no migration and no table — the offered list is derived from what has actually been used.
+//
+// ⚠ NOT a back door for owner money. The note above is emphatic that every member of this
+// list is income the PROPERTY EARNED, because one export prints the lot as revenue. A
+// write-in is still income; a contribution still belongs on the `transfer` disposition.
+export { CUSTOM_PREFIX, isCustomCategory, customCategoryKey };
+
 const BY_KEY = new Map(INCOME_CATEGORIES.map((c) => [c.key, c]));
 
-export const incomeCategoryInfo = (key) =>
-  BY_KEY.get(key) || { key: key || 'other', label: 'Other income', hint: '' };
+// De-slugged from the key when nobody handed us a label — same fallback as
+// `categoryLabel`, so a write-in never renders as a blank or, worse, silently as "Other
+// income" when it is a category the landlord deliberately named.
+const labelFromCustomKey = (key) => {
+  const s = String(key).slice(CUSTOM_PREFIX.length).replace(/_/g, ' ').trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Other income';
+};
+
+export function incomeCategoryInfo(key) {
+  if (isCustomCategory(key)) {
+    return { key, label: labelFromCustomKey(key), hint: 'A category you named yourself.', custom: true };
+  }
+  return BY_KEY.get(key) || { key: key || 'other', label: 'Other income', hint: '' };
+}
 export const incomeCategoryLabel = (key) => incomeCategoryInfo(key).label;
-export const isIncomeCategory = (key) => BY_KEY.has(key);
+export const isIncomeCategory = (key) => BY_KEY.has(key) || isCustomCategory(key);
+
+// Everything a picker should offer: the six built-ins, then every write-in already in use
+// on these rows. Derived from use rather than stored — a category exists because a receipt
+// carries it, so there is no list to keep in sync and nothing to clean up when the last row
+// using one is deleted.
+export function incomeCategoriesInUse(rows = []) {
+  const seen = new Map();
+  for (const r of rows || []) {
+    const k = r?.category;
+    if (isCustomCategory(k) && !seen.has(k)) seen.set(k, incomeCategoryInfo(k));
+  }
+  return [...INCOME_CATEGORIES, ...[...seen.values()].sort((a, b) => a.label.localeCompare(b.label))];
+}
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const zero12 = () => Array(12).fill(0);

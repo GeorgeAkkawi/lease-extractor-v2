@@ -330,6 +330,39 @@ Two implementations of one rule always drift unless changed in the same commit.
   seeds no `user_preferences` row, so it runs the `null` path and shows the module happily while
   production hides it (that is exactly how `announcements` shipped invisible, 2026-08-04). Copy
   `0084_backfill_announcements_feature.sql` and change the key.
+- **A STATEMENT LINE'S DECISION IS WRITE-ONLY UNTIL SOMETHING READS IT BACK** (2026-08-13).
+  `statement_lines.disposition` + `ignore_reason` have been stored since 0076, and for two weeks
+  **nothing rendered them** — `listStatementLines` had zero importers and `ignoreReasonLabel` zero
+  callers, so a line the landlord filed left the screen forever. The read path is now
+  `listDecidedLines` (`api.js`) → the **Decided** panel on the Ledger, the mirror of
+  `listUnplacedLines` with identical FY scoping so a line sits in exactly one of the two.
+  ⚠ **Undo is offered for `ignored` and `transfer` ONLY.** Those write no money — the disposition IS
+  the record — so un-deciding them is lossless. Every other disposition wrote a real `other_income` /
+  not-billed `cam_line_items` / deposit row, and `setLineDisposition` deliberately does not touch
+  money: offering Undo there orphans that row and lets the line be placed a second time. Any new
+  disposition must declare which side it is on.
+- **A TAGGED PAYMENT'S EXCESS GOES NOWHERE — not to a later month, not into `credit`.**
+  `allocatePayments` settles a tagged month at whatever arrived, with no cap and no rollover; only an
+  *untagged* lump pools forward, and the import auto-tags nearly every deposit from its own date, so
+  the invisible case is the common one. `updatePayment(id, {period_month})` is the one way to move it:
+  a month re-files the cheque, `null` untags it into the pool. ⚠ It writes `period_month` **only** —
+  restating `source` would re-stamp a real cheque as `'system'` and make it re-pricable by
+  `resyncYearBillingToEstimate` (0088). And the pool fills each month's remaining need **from
+  January**, not from the payment's own month; any copy that says otherwise is wrong.
+- **`monthsBehind` WAITS FOR THE MONTH TO END; `owesToDate` DOES NOT** (George, 2026-08-13). Rent
+  falls due on the 1st, so an unpaid running month is genuinely owed — that is what keeps `owesToDate`
+  tying to `arStatus.amountBehind` to the cent. What waits is the **accusation**: the bank statement
+  that would settle the month does not exist yet. Both the badge and the grid's gold `late` cell call
+  `monthClosedForLogging(year, m, today, 0)` — the same function the two statement reminders use, with
+  no grace. Keep the split; collapsing it breaks a balance or restores a false accusation.
+- **A WRITE-IN CATEGORY IS `custom:<slug>` AND THE MACHINERY IS SHARED, NEVER COPIED.**
+  `otherIncome.js` imports `CUSTOM_PREFIX` / `isCustomCategory` / `customCategoryKey` from
+  `expenseCategories.js` (which imports nothing, so it cannot cycle). Validity is **structural**,
+  which is why a key survives call sites that have never heard of the landlord's list; the offered
+  list is derived from use (`incomeCategoriesInUse`), so there is no table and nothing to keep in
+  sync. ⚠ Every income category is money the **property earned** — one export prints the lot as
+  revenue — so a write-in must never become the back door for owner money that the refusal of a
+  `contribution` category exists to keep shut.
 - **THE LEDGER RAISES THREE ALERTS, NOT TWO** (2026-08-13). `statement_reminder` and
   `missing_payment` were joined by **`escalation_short`** — a rent step landed and the money since
   is still the pre-raise amount. All three are precomputed in **`computeLedgerAlerts`** (`api.js`)
