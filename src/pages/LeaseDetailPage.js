@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, listInvoices, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit } from '../lib/api';
 import { showRoof } from '../lib/roofDisplay';
 import { depositReconciliation } from '../lib/deposits';
 import { settleBillingChange, settleLeaseListChange, settleLeaseScheduleChange } from '../lib/invalidate';
@@ -9,8 +9,10 @@ import { supabase } from '../lib/supabaseClient';
 import { addMonths } from '../lib/renewals';
 import { buildLeaseAskContext } from '../lib/leaseContext';
 import { useFeatures } from '../lib/features';
+import { usePanelOpen } from '../lib/panelState';
 import { usePageChrome } from '../context/ChromeContext';
 import EditField from '../components/EditField';
+import Panel from '../components/Panel';
 import EscalationScheduleEditor from '../components/EscalationScheduleEditor';
 import RenewalOptionsEditor from '../components/RenewalOptionsEditor';
 import AbatementEditor from '../components/AbatementEditor';
@@ -27,7 +29,7 @@ import LeaseReviewStrip from '../components/LeaseReviewStrip';
 import EmailComposeModal from '../components/EmailComposeModal';
 import { buildInsuranceRequestEmail, buildInsuranceRenewalRequestEmail, buildAdditionalInsuredRequestEmail } from '../lib/emailTemplates';
 import { currentPhase } from '../lib/leaseTerm';
-import { reducedMonthlyBase, abatementKindLabel } from '../lib/abatement';
+import { reducedMonthlyBase, abatementKindLabel, abatementMonthCount } from '../lib/abatement';
 import { PageSkeleton } from '../components/Skeleton';
 import { sf, pct, psf, money, fmtDate } from '../lib/format';
 
@@ -61,7 +63,13 @@ export default function LeaseDetailPage() {
   const [showInsReq, setShowInsReq] = useState(false);
   const [renewalPolicy, setRenewalPolicy] = useState(null); // { policy, reason? } → cert-request email (renewal or additional-insured fix)
   const [startInput, setStartInput] = useState(''); // banner date entry for a start-less lease
-  const [escOpen, setEscOpen] = useState(true); // Rent escalations section — folds shut on demand
+  // ⚠ THE THREE FOLDS A DASHBOARD ALERT CAN POINT AT are CONTROLLED here rather than left
+  // to Panel's own state, because ?focus= (and the lease review's click-through) must be
+  // able to force one open before scrolling to it — never scroll-and-flash a shut panel.
+  // Every other section on this page folds on its own. All are remembered per browser.
+  const [escOpen, setEscOpen] = usePanelOpen('lease.escalations', true);
+  const [renOpen, setRenOpen] = usePanelOpen('lease.renewals', true);
+  const [insOpen, setInsOpen] = usePanelOpen('lease.insurance', true);
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
@@ -70,6 +78,10 @@ export default function LeaseDetailPage() {
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
   const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
   const { data: abatements = [] } = useQuery({ queryKey: ['abatements', leaseId], queryFn: () => listAbatements(leaseId) });
+  // Deliberately InvoicesPanel's OWN key, so this is a cache hit whenever that panel is
+  // open and a single request when it is folded — the folded line still has to state the
+  // outstanding balance, which is the whole reason anyone opens the panel.
+  const { data: invoices = [] } = useQuery({ queryKey: ['invoices', leaseId], queryFn: () => listInvoices(leaseId) });
   // Bank lines placed as this tenant's security deposit (0076 + 0078). The other half
   // of the cross-check; empty is the normal case for a deposit taken before Amlak.
   const { data: depositLines = [] } = useQuery({ queryKey: ['depositLines', leaseId], queryFn: () => listDepositLinesForLease(leaseId) });
@@ -231,6 +243,9 @@ export default function LeaseDetailPage() {
 
   // When opened from an alert, scroll the relevant section into view and flash it.
   const refByFocus = { termination: termsRef, escalation: escRef, renewal: renRef, insurance: insRef };
+  // …and the fold each one has to open first. `termination` is Lease terms, which never
+  // folds (George: "no need to have one for the lease terms"), so it has no entry.
+  const openByFocus = { escalation: setEscOpen, renewal: setRenOpen, insurance: setInsOpen };
   // The same scroll-and-flash, driven by a click instead of a URL — the lease review's
   // findings use it to put the landlord in front of the panel that fixes each one.
   // 'terms'/'renewals'/'escalations' are the review's own names for those sections.
@@ -241,7 +256,7 @@ export default function LeaseDetailPage() {
     const f = PANEL_TO_FOCUS[panel];
     const el = f && refByFocus[f]?.current;
     if (!el) return;
-    if (f === 'escalation') setEscOpen(true); // never scroll-and-flash a panel that's folded shut
+    openByFocus[f]?.(true); // never scroll-and-flash a panel that's folded shut
     setFlash(f);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setTimeout(() => setFlash(null), 2600);
@@ -250,7 +265,7 @@ export default function LeaseDetailPage() {
     if (!focus || isLoading || !lease) return;
     const el = refByFocus[focus]?.current;
     if (!el) return;
-    if (focus === 'escalation') setEscOpen(true);
+    openByFocus[focus]?.(true);
     setFlash(focus);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     const t = setTimeout(() => setFlash(null), 2600);
@@ -356,9 +371,12 @@ export default function LeaseDetailPage() {
     : false;
   const showReneg = renegDue && !renegCovered && lease.is_active !== false;
 
-  // What the Rent escalations panel says about itself while folded shut: how many steps
-  // it holds and the next one due, so collapsing never costs the landlord the one fact
-  // they'd have opened it for.
+  // ── What each folded section says about itself ────────────────────────────────────────
+  //
+  // The rule this page has kept since the escalations fold shipped, now applied to all of
+  // them: a folded panel still states WHAT IT HOLDS, so folding never costs the landlord
+  // the one fact they'd have opened it for. Every line below is built from data this page
+  // already loads — no section adds a query for the sake of its own summary.
   const escSummary = (() => {
     const n = (escalations || []).length;
     if (!n) return 'No escalations scheduled';
@@ -367,6 +385,51 @@ export default function LeaseDetailPage() {
       .sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)))[0];
     const count = `${n} step${n === 1 ? '' : 's'}`;
     return next ? `${count} · next ${fmtDate(next.effective_date)} → ${money(next.new_base_rent)}` : `${count} · none upcoming`;
+  })();
+
+  // `abatementMonthCount` is the editor's own display helper, not a second month count.
+  const abateSummary = (() => {
+    const n = (abatements || []).length;
+    if (!n) return 'None — full rent throughout';
+    const months = (abatements || []).reduce((t, a) => t + (abatementMonthCount(a) || 0), 0);
+    return `${n} period${n === 1 ? '' : 's'}${months > 0 ? ` · ${months} month${months === 1 ? '' : 's'}` : ''}`;
+  })();
+
+  const renSummary = (() => {
+    if (lease.no_renewal_option) return 'Marked: no renewal option';
+    const n = (renewals || []).length;
+    if (!n) return 'None recorded';
+    const next = (renewals || [])
+      .filter((r) => r.status === 'pending' && r.notice_by_date)
+      .sort((a, b) => String(a.notice_by_date).localeCompare(String(b.notice_by_date)))[0];
+    const count = `${n} option${n === 1 ? '' : 's'}${pendingRenewals ? ` · ${pendingRenewals} pending` : ''}`;
+    return next ? `${count} · notice by ${fmtDate(next.notice_by_date)}` : count;
+  })();
+
+  const addSummary = (() => {
+    const n = (addendums || []).length;
+    return n ? `${n} document${n === 1 ? '' : 's'} on file` : 'None — the original lease as signed';
+  })();
+
+  const invSummary = (() => {
+    const live = (invoices || []).filter((i) => i.display_status !== 'void');
+    if (!live.length) return 'None yet — invoices appear when you reconcile a year';
+    const owed = live.reduce((t, i) => t + Math.max(0, Number(i.balance) || 0), 0);
+    return `${live.length} invoice${live.length === 1 ? '' : 's'} · ${owed > 0.005 ? `${money(owed)} outstanding` : 'all settled'}`;
+  })();
+
+  const docsSummary = (() => {
+    const riders = (addendums || []).length;
+    const head = lease.lease_text ? 'Lease text on file' : 'No lease text saved';
+    return riders ? `${head} · ${riders} rider${riders === 1 ? '' : 's'}` : head;
+  })();
+
+  // The certificate itself, not the request trail — "expires when" is the fact the panel
+  // is opened for. `tenantPolicy` is already loaded for the lease review above.
+  const insSummary = (() => {
+    if (!policyLoaded) return 'Certificate of insurance';
+    if (!tenantPolicy) return 'No certificate on file';
+    return tenantPolicy.expiry_date ? `Expires ${fmtDate(tenantPolicy.expiry_date)}` : 'Certificate on file';
   })();
 
   return (
@@ -614,44 +677,40 @@ export default function LeaseDetailPage() {
           states what it holds (how many steps, and the next one), because a fold that
           hides its own summary just makes you open it again. Forced open when an alert
           deep-links here, so the flash never lands on a closed panel. */}
-      <div className={`panel${flash === 'escalation' ? ' panel-flash' : ''}`} ref={escRef}>
-        <div className="panel-head">
-          <button
-            type="button"
-            className="panel-toggle"
-            aria-expanded={escOpen}
-            onClick={() => setEscOpen((v) => !v)}
-            title={escOpen ? 'Collapse rent escalations' : 'Expand rent escalations'}
-          >
-            <span className="panel-caret" aria-hidden="true">{escOpen ? '▾' : '▸'}</span>
-            <strong>Rent escalations</strong>
-          </button>
-          <span className="muted">
-            {escOpen
-              ? 'Applied automatically on the effective date — you’re reminded as it approaches'
-              : escSummary}
-          </span>
-        </div>
-        {escOpen && <EscalationScheduleEditor lease={lease} />}
-      </div>
+      <Panel
+        panelRef={escRef}
+        className={flash === 'escalation' ? 'panel-flash' : ''}
+        title="Rent escalations"
+        hint="Applied automatically on the effective date — you’re reminded as it approaches"
+        summary={escSummary}
+        open={escOpen}
+        onOpenChange={setEscOpen}
+      >
+        <EscalationScheduleEditor lease={lease} />
+      </Panel>
 
-      <div className="panel">
-        <div className="panel-head">
-          <strong>Rent abatement (free / reduced rent)</strong>
-          <span className="muted">Free or reduced base rent for a stretch of the term</span>
-        </div>
+      <Panel
+        id="lease.abatement"
+        title="Rent abatement (free / reduced rent)"
+        hint="Free or reduced base rent for a stretch of the term"
+        summary={abateSummary}
+      >
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           A rent abatement is a period of <strong>free or reduced base rent</strong> (e.g. "first 8 months free"). The base
           rent up top stays the same — those months are simply credited on the invoice. CAM &amp; taxes still apply.
         </p>
         <AbatementEditor lease={lease} />
-      </div>
+      </Panel>
 
-      <div className={`panel${flash === 'renewal' ? ' panel-flash' : ''}`} ref={renRef}>
-        <div className="panel-head">
-          <strong>Renewal options</strong>
-          <span className="muted">Notice-by = deadline to act on a renewal</span>
-        </div>
+      <Panel
+        panelRef={renRef}
+        className={flash === 'renewal' ? 'panel-flash' : ''}
+        title="Renewal options"
+        hint="Notice-by = deadline to act on a renewal"
+        summary={renSummary}
+        open={renOpen}
+        onOpenChange={setRenOpen}
+      >
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           A renewal option is the tenant's <strong>right</strong> to extend — it never changes your term until you confirm
           the tenant is exercising it.
@@ -672,13 +731,14 @@ export default function LeaseDetailPage() {
             </>
           )}
         </div>
-      </div>
+      </Panel>
 
-      <div className="panel">
-        <div className="panel-head">
-          <strong>Addendums &amp; riders</strong>
-          <span className="muted">Amendments that extend the term or change the rent/options</span>
-        </div>
+      <Panel
+        id="lease.addendums"
+        title="Addendums & riders"
+        hint="Amendments that extend the term or change the rent/options"
+        summary={addSummary}
+      >
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           Add each amendment on top of the original lease — the app works out the rent and term you're in <strong>today</strong>.
         </p>
@@ -686,31 +746,35 @@ export default function LeaseDetailPage() {
             to send to, the property the envelope belongs to, and the business whose name the
             email goes out under. Already in scope here — no extra queries. */}
         <AddendumEditor leaseId={leaseId} leaseInactive={lease.is_active === false} squareFootage={lease.square_footage} currentTermEnd={lease.lease_termination_date} lease={lease} property={prop} corp={corp} />
-      </div>
+      </Panel>
 
       {showPanel('lease_receivables') && (
-        <div className="panel">
-          <div className="panel-head">
-            <strong>Invoices &amp; payments</strong>
-            <span className="muted">Invoices and recorded payments for this tenant</span>
-          </div>
+        <Panel
+          id="lease.invoices"
+          title="Invoices & payments"
+          hint="Invoices and recorded payments for this tenant"
+          summary={invSummary}
+        >
           <InvoicesPanel leaseId={leaseId} />
-        </div>
+        </Panel>
       )}
 
       {showPanel('lease_receivables') && (
         <TenantStatement leaseId={leaseId} year={Number(new Date().getFullYear())} tenantName={lease.tenant_name} />
       )}
 
-      <div className="panel">
-        <div className="panel-head">
-          <strong>Lease document &amp; assistant</strong>
-          {/* One line where there were three. The heading, an intro paragraph and the
-              assistant's own status line all used to say "ask questions about the
-              lease"; this is the only one that adds anything — what the answers are
-              actually drawn from. */}
-          <span className="muted">Reads the lease, every rider, and where the term stands today</span>
-        </div>
+      <Panel
+        id="lease.documents"
+        title="Lease document & assistant"
+        summary={docsSummary}
+        hint={
+          /* One line where there were three. The heading, an intro paragraph and the
+             assistant's own status line all used to say "ask questions about the
+             lease"; this is the only one that adds anything — what the answers are
+             actually drawn from. */
+          'Reads the lease, every rider, and where the term stands today'
+        }
+      >
         {/* Said once, at the top, for the whole panel. Every row below offers the same two
             actions and the names are the only thing telling them apart, so the difference
             is stated rather than left to be inferred — George, 2026-08-04: "it's pretty
@@ -743,16 +807,22 @@ export default function LeaseDetailPage() {
           }
           documents={<RiderDocs riders={addendums} leaseId={leaseId} />}
         />
-      </div>
+      </Panel>
 
       {insuranceOn && (
-      <div className={`panel${flash === 'insurance' ? ' panel-flash' : ''}`} ref={insRef}>
-        <div className="panel-head">
-          <strong>Insurance</strong>
+      <Panel
+        panelRef={insRef}
+        className={flash === 'insurance' ? 'panel-flash' : ''}
+        title="Insurance"
+        summary={insSummary}
+        open={insOpen}
+        onOpenChange={setInsOpen}
+        actions={(
           <div className="row" style={{ gap: 10 }}>
             <button type="button" className="ghost" onClick={() => setShowInsReq(true)}>Request from tenant</button>
           </div>
-        </div>
+        )}
+      >
         <p className="muted" style={{ marginTop: -6, marginBottom: insReqs.length ? 6 : 14, fontSize: 12.5 }}>
           The tenant's certificate of insurance. No copy on file? Use <strong>Request from tenant</strong> to email for it.
         </p>
@@ -764,7 +834,7 @@ export default function LeaseDetailPage() {
           </p>
         )}
         <InsuranceVault party="tenant" propertyId={lease.property_id} leaseId={lease.id} onRequestRenewal={(policy, reason) => setRenewalPolicy({ policy, reason })} />
-      </div>
+      </Panel>
       )}
 
       {renewalPolicy && (() => {

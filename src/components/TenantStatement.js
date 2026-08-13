@@ -1,8 +1,8 @@
-import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getMonthlyRent, localDateIso } from '../lib/api';
 import { statementRows, adjustmentKindInfo } from '../lib/adjustments';
 import { money } from '../lib/format';
+import Panel from './Panel';
 
 // The tenant's running account — George's "debits and credits per tenant", read as a
 // document rather than a grid: every charge, every credit and every payment in date
@@ -17,7 +17,6 @@ import { money } from '../lib/format';
 // ⚠ Only charges that have COME DUE are listed. Rent is charged on the 1st, so listing
 // December's rent in March would report a balance the tenant does not owe yet.
 export default function TenantStatement({ leaseId, year, tenantName }) {
-  const [open, setOpen] = useState(false);
   const { data, isLoading } = useQuery({
     queryKey: ['monthlyRent', leaseId, year],
     queryFn: () => getMonthlyRent(leaseId, year),
@@ -42,39 +41,39 @@ export default function TenantStatement({ leaseId, year, tenantName }) {
   });
   const adjCount = (data?.adjustmentRows || []).length;
 
-  return (
-    <div className="panel">
-      <button
-        type="button"
-        className="panel-toggle"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="panel-caret">{open ? '▾' : '▸'}</span>
-        <div>
-          <strong>Tenant statement · FY {year}</strong>
-          <div className="muted" style={{ fontSize: 12.5 }}>
-            {isLoading
-              ? 'Loading…'
-              : <>
-                  {rows.length} entr{rows.length === 1 ? 'y' : 'ies'}
-                  {adjCount > 0 ? ` · ${adjCount} adjustment${adjCount === 1 ? '' : 's'}` : ''}
-                  {' · '}
-                  {balance > 0.05
-                    ? <span className="stmt-owed">balance {money(balance)}</span>
-                    : balance < -0.05
-                      ? <span className="stmt-credit">credit {money(Math.abs(balance))}</span>
-                      : 'settled'}
-                </>}
-          </div>
-        </div>
-      </button>
+  // Said whether it's open or shut — this one has always led with its balance, and that
+  // stays true now the fold is shared: the note is both `hint` and `summary`.
+  const note = isLoading
+    ? 'Loading…'
+    : (
+      <>
+        {rows.length} entr{rows.length === 1 ? 'y' : 'ies'}
+        {adjCount > 0 ? ` · ${adjCount} adjustment${adjCount === 1 ? '' : 's'}` : ''}
+        {' · '}
+        {balance > 0.05
+          ? <span className="stmt-owed">balance {money(balance)}</span>
+          : balance < -0.05
+            ? <span className="stmt-credit">credit {money(Math.abs(balance))}</span>
+            : 'settled'}
+      </>
+    );
 
-      {open && (
-        <>
-          {rows.length === 0 ? (
-            <p className="muted">Nothing charged or received for {tenantName || 'this tenant'} in {year} yet.</p>
-          ) : (
+  return (
+    // ⚠ THE ONE SECTION THAT DEFAULTS SHUT, and it did before the shared fold existed. A
+    // running account is a document you go and read, not something you need on screen every
+    // time you open a tenant — so `defaultOpen={false}` is preserved deliberately.
+    <Panel
+      stack
+      id="lease.statement"
+      defaultOpen={false}
+      title={`Tenant statement · FY ${year}`}
+      hint={note}
+      summary={note}
+    >
+      <>
+        {rows.length === 0 ? (
+          <p className="muted">Nothing charged or received for {tenantName || 'this tenant'} in {year} yet.</p>
+        ) : (
             <div className="table-wrap">
               <table className="stmt-table">
                 <thead>
@@ -106,17 +105,16 @@ export default function TenantStatement({ leaseId, year, tenantName }) {
                 </tbody>
               </table>
             </div>
+        )}
+        <p className="table-note muted">
+          Rent is charged on the 1st of each month, so months still ahead aren't listed. Corrections,
+          fees and credits are posted per month from the <strong>Ledger</strong> tab — click any month
+          box with money on it. A payment is listed on the day it was received, whatever month it settles.
+          {adjCount > 0 && (
+            <> This year's adjustments: {[...new Set((data?.adjustmentRows || []).map((a) => adjustmentKindInfo(a.kind).label))].join(' · ')}.</>
           )}
-          <p className="table-note muted">
-            Rent is charged on the 1st of each month, so months still ahead aren't listed. Corrections,
-            fees and credits are posted per month from the <strong>Ledger</strong> tab — click any month
-            box with money on it. A payment is listed on the day it was received, whatever month it settles.
-            {adjCount > 0 && (
-              <> This year's adjustments: {[...new Set((data?.adjustmentRows || []).map((a) => adjustmentKindInfo(a.kind).label))].join(' · ')}.</>
-            )}
-          </p>
-        </>
-      )}
-    </div>
+        </p>
+      </>
+    </Panel>
   );
 }

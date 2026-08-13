@@ -227,6 +227,17 @@ Two implementations of one rule always drift unless changed in the same commit.
   the workbook's `spent` and in none of NOI. The sheet shipped on 2026-08-12 printing this
   reconciliation without it, wrong by exactly that figure, for an accountant to find. Pinned in
   `incomeExpense.test.js`.
+- **A SECTION THAT FOLDS USES `Panel` (`src/components/Panel.js`) — never a hand-rolled
+  `.panel-toggle`.** The pattern had been copied four times before 2026-08-12 and the four had
+  already drifted into two default states and two hit-target sizes; a dozen more copies would
+  have made that permanent. `Panel` also enforces the rule this codebase keeps: **a folded panel
+  still states what it holds** (`summary`), because a fold that hides its own figure just gets
+  reopened. Its state is remembered per section in one `localStorage` key via
+  `usePanelOpen` (`src/lib/panelState.js`), which stores **only sections the user has actually
+  toggled** — a key written on first render would freeze today's defaults into their browser.
+  ⚠ Any panel a **`?focus=` alert can point at** must be *controlled* by its page and forced open
+  before the scroll-and-flash (`openByFocus`, `LeaseDetailPage.js`) — a remembered fold is exactly
+  the state an alert has to overcome. Two copies survive on `HistoryPage.js` and should move here.
 - **JS ↔ SQL twins:** `effective_rent` (migration `0054`) ↔ `effectiveRent` (`escalations.js:38`) ·
   `abatement_credit` (`0041`) ↔ `abatement.js` · `app_today()` (`0051`) ↔ `localDateIso` (`api.js:36`) ·
   the renewal-option lapse rule in `apply_due_renewals()` (`0068`) ↔ `optionLapseReason`

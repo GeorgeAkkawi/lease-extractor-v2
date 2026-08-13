@@ -9,6 +9,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getTenantShares, listCamLineItems, listTaxLineItems, listRoofLineItems, listExpenseBuckets, getExpenseRecord } from '../lib/api';
 import { recoverabilityRows } from '../lib/recoverability';
 import { money } from '../lib/format';
+import Panel from './Panel';
 
 export default function RecoverabilityTable({ propId, year }) {
   const { data: shares = [] } = useQuery({ queryKey: ['tenantShares', propId, year], queryFn: () => getTenantShares(propId, year) });
@@ -34,15 +35,14 @@ export default function RecoverabilityTable({ propId, year }) {
   const pct = totals.spent > 0 ? (totals.recovered / totals.spent) * 100 : 0;
 
   return (
-    <div className="panel">
-      <div className="page-head" style={{ marginTop: 0 }}>
-        <h3 className="section-title" style={{ margin: 0 }}>What it cost you — FY {year}</h3>
-      </div>
-      <p className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 14 }}>
-        What you spent, what your tenants pay back, and what you carry — by the category each
-        bucket rolls up to.
-      </p>
-
+    <Panel
+      id="fin.cost"
+      title={`What it cost you — FY ${year}`}
+      hint="What you spent, what your tenants pay back, and what you carry — by category."
+      // Folded, it still answers the question the panel exists for. All three figures are
+      // already computed above; folding this must never cost the landlord the net cost.
+      summary={`Spent ${money(totals.spent)} · recovered ${money(totals.recovered)} · your net cost ${money(totals.net)}`}
+    >
       <div className="recov-table">
         <div className="recov-row recov-th">
           <div>Category</div>
@@ -109,7 +109,7 @@ export default function RecoverabilityTable({ propId, year }) {
         The gap is what you carry: vacant space nobody is billed for, any line marked
         <em> not billed to tenants</em>, and roof work on leases that don't make the tenant responsible.
       </div>
-    </div>
+    </Panel>
   );
 }
 

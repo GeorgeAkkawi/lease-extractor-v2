@@ -15,6 +15,7 @@ import { showRoof, roofOffered } from '../lib/roofDisplay';
 import { useConfirm } from '../components/ConfirmDialog';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import FinancialsTabs from '../components/FinancialsTabs';
+import Panel from '../components/Panel';
 import TenantShareTable from '../components/TenantShareTable';
 import CamSection from '../components/CamSection';
 import TaxSection from '../components/TaxSection';
@@ -90,6 +91,11 @@ export default function PropertyFinancialsPage() {
     queryFn: () => getTenantShares(propId, year),
   });
   const roofInUse = roof > 0 || shares.some((s) => s.roof_responsible);
+  // What the per-tenant table adds up to, for the line it shows while folded.
+  const allocated = shares.reduce(
+    (t, s) => t + (Number(s.tax_amount) || 0) + (Number(s.cam_amount) || 0) + (Number(s.roof_amount) || 0),
+    0,
+  );
   const roofVisible = showRoof(prop, roofInUse);
   const roofOn = roofOffered(prop);
   const setRoof = useMutation({
@@ -213,80 +219,91 @@ export default function PropertyFinancialsPage() {
       </div>
 
       {/* Same drop target as the Ledger's — a statement can be dragged anywhere onto
-          the panel it belongs to, not just onto the button. */}
+          the panel it belongs to, not just onto the button. The drop zone stays OUTSIDE the
+          fold: a statement dragged onto a folded section still lands. */}
       <StatementDropZone className="panel" onReady={setImportDoc}>
-        <div className="panel-head">
-          <strong>Expense entry · FY {year}</strong>
-          <span className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <span className="muted">Taxes, CAM and roof are each itemized.</span>
-            <ImportStatementButton onReady={setImportDoc} />
-          </span>
-        </div>
-        <ImportResultsStrip
-          imported={imported}
-          undoPending={undoImport.isPending}
-          onUndo={() => undoImport.mutate(imported.import)}
-          onDismiss={() => setImported(null)}
-        />
-        <MutationError of={[undoImport]} />
-        <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} year={year} />
-        <div className="cam-block">
-          <div className="cam-head">
-            <div>
-              <strong>Property taxes — itemized</strong>
-              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                One line per tax payment — every instalment an imported statement finds lands here. The total drives the tax PSF tenants are billed.
+        <Panel
+          bare
+          id="fin.expenses"
+          title={`Expense entry · FY ${year}`}
+          hint="Taxes, CAM and roof are each itemized."
+          summary={`Taxes ${money(taxes)} · CAM ${money(cam)}${roofVisible ? ` · Roof ${money(roof)}` : ''}`}
+          actions={<ImportStatementButton onReady={setImportDoc} />}
+        >
+          <ImportResultsStrip
+            imported={imported}
+            undoPending={undoImport.isPending}
+            onUndo={() => undoImport.mutate(imported.import)}
+            onDismiss={() => setImported(null)}
+          />
+          <MutationError of={[undoImport]} />
+          <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} year={year} />
+          <Panel
+            bare
+            stack
+            className="cam-block"
+            headClass="cam-head"
+            id="fin.taxes"
+            title="Property taxes — itemized"
+            hint="One line per tax payment — every instalment an imported statement finds lands here. The total drives the tax PSF tenants are billed."
+            summary={`${money(taxes)} for the year`}
+          >
+            <TaxSection propId={propId} year={year} expense={expense} />
+          </Panel>
+          <Panel
+            bare
+            stack
+            className="cam-block"
+            headClass="cam-head"
+            id="fin.cam"
+            title="CAM / maintenance — itemized"
+            hint="Every component that rolls into CAM. The total drives the CAM PSF tenants are billed."
+            summary={`${money(cam)} for the year`}
+          >
+            <CamSection propId={propId} year={year} expense={expense} />
+          </Panel>
+          {/* ⚠ THE HEAD ALWAYS RENDERS, the body is what's gated. The checkbox that turns roof
+              back on cannot live inside the section it hides, or the switch is one-way. Off and
+              empty, this whole block is a single row: the box, the words, and one line saying
+              where roof costs go instead. That is also why the checkbox is an `action` rather
+              than part of the toggle — roof can still be switched off with the section folded. */}
+          <Panel
+            bare
+            stack
+            className="cam-block"
+            headClass="cam-head"
+            id="fin.roof"
+            title="Roof — itemized"
+            hint={roofVisible
+              ? 'One line per roof payment. The total is billed in full to the tenants whose leases make them responsible for the roof — everything else you absorb.'
+              : 'Roof repairs go in CAM on this building — add them as a CAM line above.'}
+            summary={roofVisible
+              ? `${money(roof)} for the year`
+              : 'Not billed separately here — roof costs go in CAM'}
+            actions={(
+              <label className="row" style={{ gap: 6, alignItems: 'center', fontSize: 12, whiteSpace: 'nowrap' }}>
+                <input
+                  type="checkbox"
+                  checked={roofOn}
+                  disabled={setRoof.isPending}
+                  onChange={(e) => askRoof(e.target.checked)}
+                />
+                <span className="muted">Billed separately</span>
+              </label>
+            )}
+          >
+            {/* Still rendered while the box is unticked IF roof carries a figure here — a roof
+                total or a roof-responsible lease. Hiding it then would leave the landlord billing
+                tenants for something his own screen no longer mentions. */}
+            {roofVisible && <RoofSection propId={propId} year={year} expense={expense} />}
+            {roofVisible && !roofOn && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                Still shown because this building has roof on the books{roof > 0 ? '' : ' — a lease here is charged for the roof'}. Clear it and this section goes away.
               </div>
-            </div>
-          </div>
-          <TaxSection propId={propId} year={year} expense={expense} />
-        </div>
-        <div className="cam-block">
-          <div className="cam-head">
-            <div>
-              <strong>CAM / maintenance — itemized</strong>
-              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                Every component that rolls into CAM. The total drives the CAM PSF tenants are billed.
-              </div>
-            </div>
-          </div>
-          <CamSection propId={propId} year={year} expense={expense} />
-        </div>
-        {/* ⚠ THE HEAD ALWAYS RENDERS, the body is what's gated. The checkbox that turns roof
-            back on cannot live inside the section it hides, or the switch is one-way. Off and
-            empty, this whole block is a single row: the box, the words, and one line saying
-            where roof costs go instead. */}
-        <div className="cam-block">
-          <div className="cam-head">
-            <div>
-              <strong>Roof — itemized</strong>
-              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                {roofVisible
-                  ? 'One line per roof payment. The total is billed in full to the tenants whose leases make them responsible for the roof — everything else you absorb.'
-                  : 'Roof repairs go in CAM on this building — add them as a CAM line above.'}
-              </div>
-            </div>
-            <label className="row" style={{ gap: 6, alignItems: 'center', fontSize: 12, whiteSpace: 'nowrap' }}>
-              <input
-                type="checkbox"
-                checked={roofOn}
-                disabled={setRoof.isPending}
-                onChange={(e) => askRoof(e.target.checked)}
-              />
-              <span className="muted">Billed separately</span>
-            </label>
-          </div>
-          {/* Still rendered while the box is unticked IF roof carries a figure here — a roof
-              total or a roof-responsible lease. Hiding it then would leave the landlord billing
-              tenants for something his own screen no longer mentions. */}
-          {roofVisible && <RoofSection propId={propId} year={year} expense={expense} />}
-          {roofVisible && !roofOn && (
-            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-              Still shown because this building has roof on the books{roof > 0 ? '' : ' — a lease here is charged for the roof'}. Clear it and this section goes away.
-            </div>
-          )}
-        </div>
-        <MutationError of={[setRoof]} />
+            )}
+          </Panel>
+          <MutationError of={[setRoof]} />
+        </Panel>
       </StatementDropZone>
 
       <RecoverabilityTable propId={propId} year={year} />
@@ -299,13 +316,25 @@ export default function PropertyFinancialsPage() {
           own line in "What it cost you", instead of in a panel of its own.) */}
       <OtherIncomeSection propId={propId} year={year} />
 
-      <div className="page-head" style={{ marginTop: 8 }}>
-        <h3 className="section-title" style={{ margin: 0 }}>Per-tenant breakdown</h3>
-        <button className="secondary" onClick={() => setExporting(true)} title="Download a year-end reconciliation workbook — one tab per tenant, actual vs estimated CAM & tax">
-          ⬇ Export reconciliation
-        </button>
-      </div>
-      <TenantShareTable propertyId={propId} year={year} />
+      {/* Folded, this states the two things the table is for: who is on it, and how much of
+          the year's CAM & taxes their shares account for. `shares` is already on this page
+          for the roof check above — no second query. */}
+      <Panel
+        bare
+        className="breakdown-block"
+        id="fin.breakdown"
+        title="Per-tenant breakdown"
+        summary={shares.length
+          ? `${shares.length} tenant${shares.length === 1 ? '' : 's'} · ${money(allocated)} of CAM & taxes allocated`
+          : 'No tenants on this property yet'}
+        actions={(
+          <button className="secondary" onClick={() => setExporting(true)} title="Download a year-end reconciliation workbook — one tab per tenant, actual vs estimated CAM & tax">
+            ⬇ Export reconciliation
+          </button>
+        )}
+      >
+        <TenantShareTable propertyId={propId} year={year} />
+      </Panel>
       {exporting && (
         <ExportReconciliationModal propertyId={propId} year={year} propertyName={prop?.name} onClose={() => setExporting(false)} />
       )}

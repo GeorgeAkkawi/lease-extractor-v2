@@ -4,6 +4,7 @@ import { listOtherIncome, addOtherIncomeEntry, deleteOtherIncomeEntry, setOtherI
 import { INCOME_CATEGORIES, incomeCategoryInfo, incomeCategoryLabel, summarizeOtherIncome } from '../lib/otherIncome';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
+import Panel from './Panel';
 import { useConfirm } from './ConfirmDialog';
 import { useOptimisticRemove } from './useOptimisticRemove';
 
@@ -106,13 +107,20 @@ export default function OtherIncomeSection({ propId, year }) {
   };
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <strong>Other income · FY {year}</strong>
+    <Panel
+      id="fin.otherIncome"
+      title={`Other income · FY ${year}`}
+      // Folded, it states the figure and how many receipts make it up — `summarizeOtherIncome`
+      // already returns both, so this costs nothing.
+      summary={sum.count
+        ? `${money(sum.total)} across ${sum.count} receipt${sum.count === 1 ? '' : 's'}`
+        : `Nothing recorded for FY ${year}`}
+      actions={(
         <button type="button" className="secondary btn-sm" onClick={() => setAdding((v) => !v)}>
           {adding ? 'Cancel' : '＋ Record one'}
         </button>
-      </div>
+      )}
+    >
       <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
         Income this property really received that isn’t rent — late fees, parking, laundry, a utility
         a tenant paid back, an insurance payout. Recorded here rather than against a lease, because a
@@ -183,6 +191,6 @@ export default function OtherIncomeSection({ propId, year }) {
         </div>
       )}
       <MutationError of={[add, remove, setCat]} />
-    </div>
+    </Panel>
   );
 }

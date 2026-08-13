@@ -15,9 +15,21 @@
   --ui:'Hanken Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%}
+/* ⚠ THE SCROLL THAT RUNS OFF THE END OF THE FINANCIALS PAGE — third attempt, 2026-08-12.
+   `.content` is the app's only scroll container. With no `overscroll-behavior` anywhere,
+   reaching its end CHAINS the gesture to the document, which on macOS rubber-bands the
+   whole window: the overflow:hidden shell slides up and bare --paper shows beneath it,
+   then springs back. That is "scrolling past the bottom onto a blank page", and it is
+   exactly why the two previous hunts found nothing — a rubber-band leaves no trace in
+   scrollHeight, so measuring could never have seen it (see deploy-log 2026-08-05/08-06:
+   the shell, every absolutely-positioned descendant and every child component were swept
+   and came back clean). `overscroll-behavior-y` only — `none` on both axes would also kill
+   two-finger swipe-to-go-back. And #root is height:100% rather than 100vh so the document
+   never has real scroll of its own wherever 100vh ≠ the visible viewport (mobile toolbars,
+   a reserved scrollbar). Don't remove these without a replacement. */
+html,body{margin:0;height:100%;overscroll-behavior-y:none}
 body{background:var(--paper);color:var(--ink);font-family:var(--ui);font-size:14px;-webkit-font-smoothing:antialiased}
-#root{height:100vh}
+#root{height:100%}
 h1{font-family:var(--display);font-size:46px;font-weight:500;margin:0;letter-spacing:-.01em;line-height:1.02}
 h2{margin:0}
 .muted{color:var(--muted)}
@@ -280,7 +292,7 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
    years, with ZERO absolutely-positioned offenders (that class of bug was the .corp-flyout
    fix on 08-02). 28px matches the gap the pages already leave between panels; it cannot be
    0 — this is the only thing between the last panel and the window edge. */
-.content{flex:1;overflow:auto;padding:34px 40px 28px}
+.content{flex:1;overflow:auto;overscroll-behavior:contain;padding:34px 40px 28px}
 
 /* ---- crumbs ---- */
 .crumbs{display:flex;align-items:center;gap:5px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;flex-wrap:wrap}
@@ -593,12 +605,35 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--hair)}
 .panel-head strong{font-family:var(--display);font-size:21px;font-weight:600}
 .panel-head .muted{font-size:12px}
-/* A panel head that folds its section away. It has to keep looking like a heading, not a
-   button — so every button default is stripped and only the caret says it's operable. */
-.panel-toggle{background:none;border:0;padding:0;margin:0;cursor:pointer;display:flex;align-items:center;gap:9px;color:inherit;text-transform:none;letter-spacing:normal;font:inherit;min-width:0}
-.panel-toggle:hover .panel-caret{color:var(--accent)}
-.panel-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
-.panel-caret{font-size:11px;line-height:1;color:var(--muted);transition:color .15s ease}
+/* A panel head that folds its section away.
+   ⚠ THIS USED TO BE DELIBERATELY QUIET — an 11px muted glyph, "only the caret says it's
+   operable", so the head kept reading as a heading rather than a control. George reversed
+   that on 2026-08-12 ("the one for rent escalations is a bit unnoticeable") when the same
+   fold was extended to every section on Financials and the tenant page. So: the caret is a
+   bordered square that fills with the accent colour and rotates, the WHOLE heading row is
+   the hit target and tints under the cursor, and the cursor turns to a hand. Don't quietly
+   restore the discreet version — it was tried, and it read as not being there. */
+.panel-toggle{background:none;border:0;padding:6px 8px;margin:-6px -8px;cursor:pointer;display:flex;align-items:center;gap:10px;color:inherit;text-transform:none;letter-spacing:normal;font:inherit;min-width:0;flex:1;text-align:left;border-radius:4px;transition:background .14s ease}
+.panel-toggle:hover{background:var(--hair);filter:none}
+.panel-toggle:hover .panel-caret{border-color:var(--accent);background:var(--accent);color:#FBF8F1}
+.panel-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* The text half: title and its note side by side, so the note keeps its right-hand seat. */
+.panel-toggle-text{flex:1;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:14px}
+/* …and stacked, for the itemized blocks whose note is a sentence under the heading. */
+.panel-toggle-stack{align-items:flex-start}
+.panel-toggle-stack .panel-toggle-text{flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:4px}
+.panel-toggle-stack .panel-caret{margin-top:3px}
+.panel-note{font-size:12px;font-weight:400;text-align:right}
+.panel-toggle-stack .panel-note{text-align:left}
+.panel-caret{flex-shrink:0;width:19px;height:19px;display:grid;place-items:center;font-size:10px;line-height:1;color:var(--accent);border:1px solid var(--border);border-radius:var(--radius);background:var(--panel);transition:transform .16s ease,background .14s ease,border-color .14s ease,color .14s ease}
+.panel-caret.is-open{transform:rotate(90deg)}
+/* A FOLDED head is the section's last line — the rule and the gap beneath it would be
+   underlining nothing, so both go until it's opened again. */
+.panel-head-fold:not(.is-open){margin-bottom:0;padding-bottom:0;border-bottom:0}
+.panel.has-fold-shut{padding-bottom:18px}
+.cam-block.has-fold-shut{padding-bottom:0}
+/* The per-tenant breakdown draws its own card, so its fold head stands alone above it. */
+.breakdown-block{margin-top:8px}
 .field-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
 .field{display:flex;flex-direction:column;gap:6px}
 .field-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;display:flex;align-items:center;gap:8px}

@@ -12,6 +12,137 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-12** — **Every section on Financials and the tenant page folds, it remembers, and the
+  scroll that ran off the end of the page gets its third and best diagnosis** (George: *"can you make
+  all the tabs on the financials page and individual tenant pages collapsible like we have for rent
+  escalations? but the one for rent escalations is a bit unnoticeable. no need to have one for the
+  lease terms. also on the financials pages theres a bug where i can scroll past the bottom of the
+  page onto a blank page."*)
+  - **Cloudflare version `85163d4e-74c8-4e5d-b232-c1311aabeb79`**. **NO migration, NO edge function, NO view, NO feature gate,
+    NO query key, NO figure written** — every fold is local UI state. Tests **1772 across 172 files**
+    (was 1757/171: +15 new).
+  - **George's three answers, taken before any code:** fold the **panels plus the three itemized
+    sub-blocks** (Property taxes / CAM / Roof), not the stat strips · **remember it in this browser** ·
+    a **boxed caret that rotates, with the whole heading row lighting up**, not a bigger glyph.
+
+  ### 1. One collapsible, replacing four copies — `Panel.js` + `panelState.js`
+
+  The pattern had already been copy-pasted **four times** (`LeaseDetailPage`'s escalations block,
+  `TenantStatement`, twice on `HistoryPage`) and the four had drifted into **two default states and
+  two hit-target sizes**. Wrapping a dozen more sections by hand would have made that permanent, so
+  `src/components/Panel.js` is now the only thing that decides how a section folds (CLAUDE.md §3).
+  - **`actions` sit OUTSIDE the toggle button**, which is not a style choice: a `<button>` inside a
+    `<button>` is invalid HTML, and Expense entry's Import, Roof's "Billed separately" checkbox and
+    the breakdown's Export button all live in a fold head. All three verified still operable **while
+    their section is shut** — the Roof one especially, since the checkbox that turns roof back on
+    cannot live inside the section it hides or the switch is one-way.
+  - **`summary` is the load-bearing prop.** The convention this page has kept since the escalations
+    fold shipped — *a folded panel still states what it holds* — is now enforced for all fourteen.
+    Every summary is built from data the page or component **already had**: `totals`/`expense` on
+    Financials, `renewals`/`addendums`/`abatements`/`tenantPolicy` on the lease page,
+    `summarizeOtherIncome`'s existing `{ total, count }`, `recoverabilityRows`' existing three
+    figures, and `abatementMonthCount` (the editor's own display helper, not a second month count).
+    **One query was added and it is deliberately InvoicesPanel's OWN key** — a cache hit when that
+    panel is open, one request when it is folded, because the folded line has to state the
+    outstanding balance, which is the only reason anyone opens it.
+
+  ### ⚠ 2. "Remembered" has a failure mode, and it is the DEFAULTS
+
+  `panelState.js` stores **only the sections George has actually toggled**. Writing a key on first
+  render would have looked identical today and **frozen today's defaults into his browser forever**:
+  change a default later and it would reach nobody who had ever loaded the page. Pinned by a test
+  that toggles one section and asserts a *different* one still follows the default it was passed.
+  - Keyed by **section, not by record** — folding "Other income" folds it on every property. That is
+    the right unit: it is a preference about a kind of section, not about Maple Plaza.
+  - Every read and write is inside a `try/catch`. **This suite's jsdom has no `localStorage` at all**
+    (node's needs `--localstorage-file`), which the new test file stands one up for — and which means
+    every OTHER page test exercises the no-storage path for free: it degrades to "every section at
+    its default", not to a white screen.
+
+  ### ⚠ 3. THE FOLD AN ALERT POINTS AT IS THE ONE THAT BREAKS QUIETLY
+
+  `?focus=escalation` already forced its panel open before scrolling (*"never scroll-and-flash a
+  panel that's folded shut"*). **`renewal` and `insurance` are `?focus=` targets too** and are now
+  foldable, so all three are **controlled** by the page through `openByFocus`; the other five fold on
+  their own. This matters more than it did, because the fold is now **remembered** — a panel he shut
+  last week is exactly the state a dashboard alert has to overcome. Both new paths are pinned by
+  tests that fold the panel, remount with the deep link, and assert it comes back open.
+  `?focus=termination` needs nothing: **Lease terms has no toggle at all**, and a test asserts its
+  absence, because "we didn't add one" is exactly the kind of omission a later round restores.
+
+  ### 4. The quiet caret was deliberate, and is now deliberately reversed
+
+  `.panel-caret`'s comment used to read *"only the caret says it's operable"* — a considered decision
+  that the head should keep looking like a heading. George read it as not being there. So: a **19px
+  bordered square that fills with the accent colour and rotates 90°** (a transform, not a glyph
+  swap), the **whole heading row is the hit target** and tints on hover, and the cursor turns to a
+  hand. The old comment is replaced with one recording that the discreet version was tried and
+  failed, so nobody quietly restores it. A **folded** head also drops its rule and its bottom gap —
+  a border underlining nothing reads as a rendering fault.
+
+  ### ⚠ 5. The scroll past the bottom — the third attempt, and the first to name a mechanism
+
+  Two rounds have already hunted this **with measurements** (see 2026-08-05 and the "STILL OPEN"
+  entry): the shell double-height, every absolutely-positioned and `visibility:hidden` descendant on
+  all six fiscal years, every child component, `position:sticky`, a stale bundle — **all clean**, and
+  the 72px→28px gutter fix was real but was not his bug.
+
+  **What none of those could see: `overscroll-behavior` is set NOWHERE in this app.** `.content` is
+  the only scroll container; reaching its end **chains the gesture to the document**, which on macOS
+  rubber-bands the whole window — the `overflow:hidden` shell slides up, bare `--paper` shows beneath
+  it, and it springs back. That fits every fact: `scrollHeight` sweeps found nothing **because
+  nothing is there** (the blank is the page moving, not content existing), and it is reported on
+  Financials alone because Financials is the only page long enough that anyone reaches the bottom
+  with momentum. Three declarations:
+  - `html,body{overscroll-behavior-y:none}` — **`-y` only**; `none` on both axes would also kill
+    two-finger swipe-to-go-back.
+  - `.content{overscroll-behavior:contain}` — the only scroller stops handing its overshoot upward.
+  - `#root{height:100%}` (was `100vh`) — so the document never has real scroll of its own wherever
+    `100vh` ≠ the visible viewport.
+
+  **Stated plainly: a diagnosis, not a reproduction.** A rubber-band leaves no measurable trace, so
+  Playwright cannot prove it either way — which is precisely why two rounds of measuring missed it.
+  **If George can still scroll into blank canvas after this, that rules overscroll out for good and
+  the next step is a screenshot of the bottom of his own page, not a fourth sweep.**
+  Folding helps regardless: Financials is the longest page in the app, and folding what he isn't
+  using is the shortest route to never reaching the bottom at all.
+
+  ### 6. Verified by driving the built app
+  Maple Plaza + Bright Coffee Co., every figure read off the rendered page (ui-verifier, **zero
+  console errors or warnings**, 15/15 checks):
+  - **Financials:** seven toggles present, the three stat strips carry **none**. Folded,
+    *What it cost you* reads `Spent $49,950.00 · recovered $44,600.00 · your net cost $5,350.00`;
+    *Expense entry* reads `Taxes $25,000.00 · CAM $18,000.00 · Roof $4,000.00`; *Property taxes*
+    alone reads `$25,000.00 for the year` **with its parent and its sibling still open**; the
+    breakdown reads `2 tenants · $43,000.00 of CAM & taxes allocated`.
+  - **The actions survive the fold:** ⬇ Export reconciliation still opened its dialog with the
+    section shut, and Roof's "Billed separately" checkbox was present and enabled.
+  - **It remembers.** After a full browser reload: Property taxes, Roof, What it cost you and
+    Per-tenant breakdown came back **folded**; Expense entry, CAM and Other income came back
+    **open**; `localStorage['amlak.panels']` held exactly the five sections that had been clicked.
+  - **Tenant page:** `<strong>Lease terms</strong>` has `closest('button.panel-toggle') === null`
+    — no toggle, as asked. Eight others have one. *Tenant statement* starts shut, the other seven
+    start open. Folded summaries: `Expires September 3, 2026` · `1 invoice · all settled` ·
+    `None — the original lease as signed` · `None — full rent throughout`.
+  - **The caret:** 19px boxed control, olive glyph, `transform: matrix(0,1,-1,0,0,0)` open vs
+    `none` shut (a real 90° rotation), `cursor:pointer` across the full 959px heading row.
+
+  ### Files
+  New: `src/components/Panel.js` · `src/lib/panelState.js` · `src/components/__tests__/panelCollapse.test.js`.
+  Edited: `src/App.css` (the caret, the whole-row hover, the folded-head rule, the three scroll
+  declarations) · `PropertyFinancialsPage.js` · `LeaseDetailPage.js` · `RecoverabilityTable.js` ·
+  `OtherIncomeSection.js` · `TenantStatement.js` · `CLAUDE.md` (§3 gains the fold entry).
+
+  ### Not done, and worth naming
+  - **The two `.panel-toggle` copies on `HistoryPage.js`** were left alone — a different page, outside
+    the ask. So "one implementation" is true of these two pages and not yet of the app.
+  - **The fold is per-browser.** Nothing is written to the account, so a second computer starts open.
+    Syncing it would mean a `user_preferences` write on every click and a migration.
+  - **The three stat strips** on Financials keep no toggle, by his answer — one row each, and they
+    are the headline figures.
+  - **No "fold everything / open everything" control.** Worth having if he ends up clicking eight
+    carets; not worth inventing before he has used one.
+
 - **2026-08-12** — **The Income-and-expenses sheet becomes a reconciliation — twelve months across, buckets
   and items down — and the CAM-cap caveat comes off "What it cost you"** (George: *"in the what it cost you
   saying and whats it for its taking alot of space and cant be dismissed"* → *"take this feature out
