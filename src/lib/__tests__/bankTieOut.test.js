@@ -11,7 +11,7 @@
 // the null-year expense that ties here and appears in no year's figures.
 import { describe, it, expect, vi } from 'vitest';
 import JSZip from 'jszip';
-import { bankTieOut, rentPosition, tieOutSentence, rowFiscalYear } from '../bankTieOut';
+import { bankTieOut, rentPosition, tieOutSentence, rowFiscalYear, WHERE_IT_LANDS } from '../bankTieOut';
 import {
   applyStatementImport, getBankTieOut, getPropertyMonthlyRoll, placeUnplacedLine,
   listUnplacedLines, listCamLineItems, listStatementLinesForYear,
@@ -389,7 +389,7 @@ describe('placing an unplaced deposit as rent', () => {
 // this is the workbook a landlord would download HAVING imported a statement. Without that
 // ordering the seed has no statement lines at all and the whole sheet is skipped — which is
 // exactly how a tab can ship untested and never render for anyone.
-describe('the workbook grows a Bank tie-out tab once there is something to tie out', () => {
+describe('the workbook grows a “Where bank money went” tab once there is something to tie out', () => {
   it('carries the tie-out onto every property shape and writes the sheet', async () => {
     const pkg = await buildIncomeExpense('corp-1', Y);
     const maple = pkg.properties.find((p) => p.name === 'Maple Plaza');
@@ -404,15 +404,19 @@ describe('the workbook grows a Bank tie-out tab once there is something to tie o
     await downloadIncomeExpenseXlsx({ corporationId: 'corp-1', corporationName: 'Acme', year: Y });
     const zip = await JSZip.loadAsync(saved[0].buf);
     const wbXml = await zip.file('xl/workbook.xml').async('string');
-    expect(wbXml).toMatch(/name="Bank tie-out"/);
+    expect(wbXml).toMatch(/name="Where bank money went"/);
     // …and the sheet actually SAYS the things it exists to say. A tab that renders as a
     // title and four empty rows still passes a "does the file open?" check.
     const strings = await zip.file('xl/sharedStrings.xml').async('string');
     for (const phrase of [
-      'Bank tie-out — FY',
+      'Where your bank money went — FY',
       'Money in on your statements',
       'Money out on your statements',
       'Rent is a reconciling item, not a tie',
+      // The sheet's columns name the two ACTORS, the same words the Ledger panel uses.
+      // Two documents describing one comparison must not label it differently.
+      'The bank showed',
+      'Amlak recorded',
       'What this cannot catch',
       'not from the lines, because a report derived from the same list it is checking',
     ]) expect(strings, `the sheet must say "${phrase}"`).toContain(phrase);
@@ -431,7 +435,7 @@ describe('the workbook grows a Bank tie-out tab once there is something to tie o
     const wbXml = await zip.file('xl/workbook.xml').async('string');
     // "Nothing imported" and "imported and clean" are different answers. A tab that always
     // appears, always saying nothing, is the tab nobody opens the day it matters.
-    expect(wbXml).not.toMatch(/name="Bank tie-out"/);
+    expect(wbXml).not.toMatch(/name="Where bank money went"/);
   }, 30000);
 });
 
@@ -451,12 +455,98 @@ describe('the workbook pre-flight names an unbalanced tie-out', () => {
       }),
     };
     const said = flags([broken]);
-    expect(said.some((f) => /Bank tie-out sheet has 1 thing to look at/.test(f))).toBe(true);
+    expect(said.some((f) => /“Where bank money went” sheet has 1 thing to look at/.test(f))).toBe(true);
     expect(said.some((f) => /\$900\.00 more than the books hold/.test(f))).toBe(true);
 
     const clean = { ...broken, tieOut: bankTieOut({ year: Y, imports: 1, lines: [] }) };
-    expect(flags([clean]).some((f) => /Bank tie-out/.test(f))).toBe(false);
+    expect(flags([clean]).some((f) => /Where bank money went/.test(f))).toBe(false);
     // …and a property with no statements at all raises nothing either.
-    expect(flags([{ ...broken, tieOut: null }]).some((f) => /Bank tie-out/.test(f))).toBe(false);
+    expect(flags([{ ...broken, tieOut: null }]).some((f) => /Where bank money went/.test(f))).toBe(false);
+  });
+});
+
+// ── The second leak: a placed expense nobody could ever bill ─────────────────────────────
+//
+// George, 2026-08-16: *"lastly does all this stuff tie into income and expenses where it needs
+// to be?"* Tracing every disposition turned up two gaps. The first — an unplaced line reaching
+// nothing — is what "Tenant rent" above closed. This is the second: `placeUnplacedLine` FORCED
+// `billable: false`, a deliberate safety property ("answering the nag can never move a tenant's
+// bill") whose cost was that a genuinely recoverable cost placed after the fact reached "what
+// the year cost you" and no tenant's CAM. The landlord absorbed it, silently, with nothing on
+// any screen saying so.
+//
+// ⚠ THE DEFAULT DOES NOT MOVE. What changed is that the choice exists, is stated in the confirm,
+// and carries the money all the way through when it is taken.
+describe('a placed expense can now reach the tenants — but only when asked', () => {
+  const feed = async (hash, amount, description) => {
+    await applyStatementImport({
+      propertyId: 'prop-2', year: Y, fileName: `${hash}.pdf`,
+      entries: [],
+      lines: [{ hash, year: Y, date: `${Y}-03-11`, description, amount, direction: 'out', disposition: 'unclassified' }],
+    });
+    return (await listUnplacedLines('prop-2', Y)).find((l) => l.line_hash === hash);
+  };
+
+  it('absorbs it by default, exactly as before', async () => {
+    const l = await feed('bill-off', 1200, 'ARCTIC SNOW PLOWING');
+    const res = await placeUnplacedLine(l, { kind: 'expense', category: 'repairs', year: Y });
+    expect(res.billable).toBe(false);
+    const item = (await listCamLineItems('prop-2', Y)).find((c) => c.id === res.entry.id);
+    expect(item.billable).toBe(false);
+    // The whole safety property in one assertion: syncCamTotal sums `billable is not false`,
+    // so a not-billed line reaches no total, no share and no invoice.
+    expect(res.rebilled).toBeNull();
+  });
+
+  it('bills it to the tenants when asked, and carries the change through to their invoices', async () => {
+    const roll0 = await getPropertyMonthlyRoll('prop-2', Y);
+    const before = roll0.find((r) => r.lease_id === 'lease-3');
+
+    const l = await feed('bill-on', 6000, 'CITYWIDE LANDSCAPING SEASON');
+    const res = await placeUnplacedLine(l, { kind: 'expense', category: 'cleaning', year: Y, billable: true });
+    expect(res.billable).toBe(true);
+    const item = (await listCamLineItems('prop-2', Y)).find((c) => c.id === res.entry.id);
+    expect(item.billable).toBe(true);
+
+    // ⚠ THE CARRY-THROUGH IS THE POINT. `addCamLineItem` moved `cam_total`, which moves
+    // `v_tenant_shares` — and every screen that builds UP from live data follows on its own.
+    // The STORED invoice does not (CLAUDE.md §1), which is why `resyncPropertyBilling` runs.
+    const after = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-3');
+    expect(after.camTaxAnnual).toBeGreaterThan(before.camTaxAnnual);
+    expect(after.annual).toBeGreaterThan(before.annual);
+    // The bill was rebuilt rather than left behind — no drift between schedule and invoice.
+    expect(Math.abs(Number(after.drift) || 0)).toBeLessThanOrEqual(1);
+  });
+
+  // ⚠ AND A DRAW CAN NEVER BE BILLABLE, whatever is passed. `cam_line_items` is the table the
+  // building bills from and a distribution is money that is not the building's; the predicate
+  // keeping it inert is exactly this column. Asking for it must be refused, not obeyed.
+  it('refuses to bill an owner distribution to the tenants even when told to', async () => {
+    const l = await feed('bill-draw', 4000, 'TRANSFER TO OWNER');
+    const res = await placeUnplacedLine(l, { kind: 'expense', category: 'distribution', party: 'G. Akkawi', year: Y, billable: true });
+    expect(res.billable).toBe(false);
+    expect(res.line.disposition).toBe('owner');
+    const item = (await listCamLineItems('prop-2', Y)).find((c) => c.id === res.entry.id);
+    expect(item.billable).toBe(false);
+  });
+});
+
+// ⚠ THE MAP IS PRINTED ON THE SCREEN, so it has to stay true. Every disposition the tie-out can
+// group a line under needs a row here saying what it writes and whether the workbook counts it —
+// a decision missing from the map is one a landlord will look up and not find, on the one panel
+// that exists to answer exactly that question.
+describe('where each kind of line ends up', () => {
+  it('covers every disposition the tie-out groups a line under', () => {
+    const named = new Set(WHERE_IT_LANDS.map((w) => w.key));
+    for (const key of ['rent', 'other_income', 'deposit_held', 'expense', 'owner', 'transfer', 'ignored', 'unclassified']) {
+      expect(named.has(key), `the map must say where "${key}" ends up`).toBe(true);
+    }
+    // The one answer that surprises every landlord, and the one that must never quietly flip:
+    // the workbook is ACCRUAL, so a rent payment moves the Ledger and not what was earned.
+    expect(WHERE_IT_LANDS.find((w) => w.key === 'rent').sheet).toMatch(/^no/);
+    expect(WHERE_IT_LANDS.find((w) => w.key === 'rent').note).toMatch(/falls DUE/);
+    // …and an unplaced line is a gap, said out loud rather than filed as a legitimate zero.
+    expect(WHERE_IT_LANDS.find((w) => w.key === 'unclassified').sheet).toMatch(/gap/);
+    for (const w of WHERE_IT_LANDS) expect(w.filed && w.writes && w.sheet && w.note).toBeTruthy();
   });
 });

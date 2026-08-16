@@ -15,6 +15,7 @@ import {
   listDecidedLines,
   getBankTieOut,
   settleTenantBalance,
+  undoSettlement,
   listOtherIncome,
   resyncLeaseBilling,
   setLineDisposition,
@@ -40,8 +41,8 @@ import LeaseTypeChip from '../components/LeaseTypeChip';
 import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness, dispositionInfo, ignoreReasonLabel } from '../lib/dispositions';
-import { rentPosition, tieOutSentence } from '../lib/bankTieOut';
-import { tenantStanding, settleChoicesFor } from '../lib/settle';
+import { rentPosition, tieOutSentence, WHERE_IT_LANDS } from '../lib/bankTieOut';
+import { tenantStanding, settleChoicesFor, isBroughtForward, isSettlementRow } from '../lib/settle';
 import { settleBillingChange } from '../lib/invalidate';
 import Panel from '../components/Panel';
 import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
@@ -162,6 +163,12 @@ export default function LedgerPage() {
   // the tenant and the month are separate decisions, and putting twelve months × N tenants in
   // one dropdown would be unreadable. Cleared when the line is placed or cancelled.
   const [rentPick, setRentPick] = useState({});
+  // Expense picked but not yet recorded: { [lineId]: { category, label, billable } }. The
+  // second step exists because the answer to "does this reach a tenant's CAM?" cannot be
+  // inferred from the category — the same repair bill is recoverable on one building and
+  // absorbed on another — and it was FORCED to "no" until 2026-08-16, which is how a genuinely
+  // recoverable cost placed after the fact was silently eaten by the landlord.
+  const [expensePick, setExpensePick] = useState({});
   const [incomeDraft, setIncomeDraft] = useState('');
   // Scoped to the fiscal year the rest of the page follows, so the log resets with the
   // year instead of every statement ever imported piling into one list.
@@ -257,7 +264,8 @@ export default function LedgerPage() {
   const place = useMutation({
     // The pick encodes its own sub-destination: `rent:<leaseId>`, `income:<category>`,
     // `deposit:<leaseId>` and `expense:<category>` (a distribution is `expense:distribution`).
-    mutationFn: ({ line, kind, month = null }) => placeUnplacedLine(line, {
+    mutationFn: ({ line, kind, month = null, billable = false }) => placeUnplacedLine(line, {
+      billable,
       kind: kind.startsWith('income:') ? 'income' : kind.startsWith('deposit:') ? 'deposit' : kind.startsWith('expense:') ? 'expense' : kind.startsWith('rent:') ? 'payment' : kind,
       category: kind.startsWith('income:') ? kind.slice(7) : kind.startsWith('expense:') ? kind.slice(8) : null,
       leaseId: kind.startsWith('deposit:') ? kind.slice(8) : kind.startsWith('rent:') ? kind.slice(5) : null,
@@ -271,6 +279,7 @@ export default function LedgerPage() {
     onSuccess: (res, vars) => {
       settleLines();
       setRentPick((p) => { const n = { ...p }; delete n[vars?.line?.id]; return n; });
+      setExpensePick((p) => { const n = { ...p }; delete n[vars?.line?.id]; return n; });
       // A not-billed expense line landed: the CAM list, the bucket records that carry
       // its category, the corp-card distribution roll-up and the Financials strips all
       // read it. `camLineItems` is a prefix so every year of this property repaints.
@@ -287,6 +296,13 @@ export default function LedgerPage() {
       qc.invalidateQueries({ queryKey: ['payments'] });
       qc.invalidateQueries({ queryKey: ['invoicesForProperty'] });
       qc.invalidateQueries({ queryKey: ['portfolioCollected'] });
+      // ⚠ A BILLABLE expense is the one destination that moves a tenant's bill, so it needs the
+      // named set for "a billed figure moved" rather than the list above. `placeUnplacedLine`
+      // already ran `resyncPropertyBilling`; this is the repaint that follows it (CLAUDE.md §6).
+      if (res?.billable) {
+        settleBillingChange(qc, { propertyId: propId, year });
+        setNote(`Recorded, and billed to tenants — every ${year} invoice on this property was rebuilt at the new CAM total.`);
+      }
     },
   });
 
@@ -335,6 +351,36 @@ export default function LedgerPage() {
     if (ok) settleUp.mutate({ leaseId: standing.lease_id, choice: pick.key });
   }
 
+  // ⚠ THE WAY BACK. A settlement was reversible only by deleting its rows one at a time from
+  // the month panel — which for a carry-forward means finding rows in TWO years and knowing
+  // that you have to. Miss the second and the tenant is credited in one year and charged in
+  // the other, and each screen reads as correct on its own.
+  const undoSettle = useMutation({
+    mutationFn: (leaseId) => undoSettlement({ leaseId, propertyId: propId, year }),
+    onSuccess: (res, leaseId) => {
+      if (res?.refused) { setNote(res.message); return; }
+      for (const yr of res.years || [year]) settleBillingChange(qc, { propertyId: propId, leaseId, year: yr });
+      qc.invalidateQueries({ queryKey: ['historyEvents'] });
+      setNote(`${res.description}. ${res.removed} entr${res.removed === 1 ? 'y' : 'ies'} removed across FY ${(res.years || []).join(' and FY ')}.`);
+    },
+  });
+
+  async function askUndoSettlement(r) {
+    const ok = await askConfirm({
+      title: `Undo the last settlement on ${r.tenant_name}?`,
+      message: `Whatever was written off, carried forward or refunded comes back as an open balance.`,
+      implications: [
+        'Every entry that settlement wrote is removed — including the one in the following year, if it was carried.',
+        'If it was written off, this year’s income goes back UP by that amount: the sheet counted it as earned, and you are no longer forgiving it.',
+        'The invoices for every year it touched are rebuilt, so Outstanding moves.',
+        'A year you have already closed refuses the whole thing rather than undoing half of it.',
+      ],
+      confirmLabel: 'Undo it',
+      tone: 'warn',
+    });
+    if (ok) undoSettle.mutate(r.lease_id);
+  }
+
   // ⚠ BOTH dropdowns commit a DB write on a single change event, and until 2026-08-13 they
   // did it with no confirm and no way back — George picked "transfer between my own
   // accounts" by accident and the line was gone. So each one asks first, and the dialog's
@@ -370,7 +416,9 @@ export default function LedgerPage() {
         ? 'It is recorded as the tenant’s money, held. Never income, and never credited against their rent.'
         : kind.startsWith('income:')
           ? 'It lands in Other income on the Financials page and in the Income-and-expenses workbook.'
-          : 'It lands as a NOT-BILLED expense line: it shows in what the year cost you, and reaches no tenant’s CAM.';
+          // The only expense that still reaches this branch is a distribution — every other
+          // category goes through `askPlaceExpense`, which asks whether tenants reimburse it.
+          : 'It is recorded as YOUR money, not the building’s: reported on its own line as “Your own money”, counted in no expense subtotal, and never on a tenant’s CAM.';
     const ok = await askConfirm({
       title: `Record this as ${String(optionText || 'this').toLowerCase()}?`,
       message: lineLabel(l),
@@ -383,6 +431,35 @@ export default function LedgerPage() {
       tone: 'default',
     });
     if (ok) place.mutate({ line: l, kind });
+  }
+
+  // ⚠ AN EXPENSE HAS A SECOND QUESTION, and until 2026-08-16 the app answered it for the
+  // landlord and never said so. `placeUnplacedLine` forced `billable: false` — a deliberate
+  // safety property ("answering the nag can never move a tenant's bill") that quietly meant a
+  // recoverable cost placed after the fact reached "what the year cost you" and no tenant's
+  // CAM. George: *"does all this stuff tie into income and expenses where it needs to be?"*
+  // It is still OFF by default; what changed is that the choice exists and is stated.
+  async function askPlaceExpense(l, pick) {
+    const ok = await askConfirm({
+      title: `Record this as ${String(pick.label || 'an expense').toLowerCase()}?`,
+      message: `${lineLabel(l)} — ${pick.billable ? 'billed to tenants as CAM' : 'not billed to tenants'}.`,
+      implications: [
+        pick.billable
+          ? `It joins this property's ${year} CAM total, so every tenant's share is recalculated and their ${year} invoices are rebuilt at the new figure.`
+          : 'It shows in what the year cost you and reaches no tenant’s CAM — you absorb it.',
+        pick.billable
+          ? 'Their bills go UP by their share of it. This is the only thing on this panel that moves what a tenant owes besides recording rent.'
+          : 'No tenant’s bill and no CAM total moves.',
+        pick.billable
+          ? 'A year you have already closed is left alone — a bill already sent never moves under you.'
+          : 'You can change your mind later from the expense list on the Financials page.',
+        'It moves to “Decided” below, naming where it went.',
+      ],
+      confirmLabel: pick.billable ? 'Record and bill it' : 'Record it',
+      // Gold, not red: money moves onto tenants' bills. Nothing is destroyed.
+      tone: pick.billable ? 'warn' : 'default',
+    });
+    if (ok) place.mutate({ line: l, kind: `expense:${pick.category}`, billable: pick.billable });
   }
 
   // ⚠ RENT IS THE ONE DESTINATION THAT MOVES THE LEDGER, so its confirm says the opposite of
@@ -401,7 +478,7 @@ export default function LedgerPage() {
         m
           ? `${MONTHS[m - 1]} is marked paid at ${money(amt)}${owedThat ? ` against the ${money(owedThat)} billed` : ''}. A month settles at whatever arrived — this does not change what was billed.`
           : 'Left untagged, so the ledger spreads it across the months still owed, earliest first.',
-        'It is recorded as money RECEIVED. Income and expenses counts rent when it falls due, so that sheet does not move — the Ledger and the bank tie-out do.',
+        'It is recorded as money RECEIVED. Income and expenses counts rent when it falls DUE, so that sheet does not move — the Ledger and “Where your bank money went” do.',
         'It carries the statement it came from, so re-importing that statement later cannot book it twice.',
       ],
       confirmLabel: 'Record it',
@@ -566,7 +643,18 @@ export default function LedgerPage() {
       // must never happen is a third arithmetic for "what does this tenant owe" (CLAUDE.md §3),
       // because the number on this row is the number the Settle up button acts on.
       const standing = tenantStanding({ row: r, year, today, alloc, summary });
-      return { r, alloc, comp, summary, steps, followUp, standing };
+      // ⚠ THE LOGICAL PATH BETWEEN THE TWO YEARS, and there was none (George: *"if an over or
+      // undercharge is rolled through to a following year or month how does that show is there
+      // a logical path for that stuff?"*). A carry writes two rows in two years; next January's
+      // was anonymous, so the money simply appeared. `isBroughtForward` reads the memo the
+      // settlement wrote — the only thing separating an `opening` row that ARRIVED from one
+      // that CLEARED, since the kind is identical and the sign flips with the direction.
+      const adjRows = r.adjustmentRows || [];
+      const carriedIn = adjRows.filter(isBroughtForward)
+        .reduce((s, a) => round2(s + (Number(a.amount) || 0)), 0);
+      // Any settlement row at all — what makes an undo worth offering on this row.
+      const settlementRows = adjRows.filter(isSettlementRow);
+      return { r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows };
     }),
     { mode: tenantSort.mode, dir: tenantSort.dir, pick: (d) => d.r }
   );
@@ -701,7 +789,7 @@ export default function LedgerPage() {
               </tr>
             </thead>
             <tbody>
-              {derived.map(({ r, alloc, comp, summary, steps, followUp, standing }) => {
+              {derived.map(({ r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows }) => {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
                 const rate = pct(summary.collected, summary.projected);
                 const stepSet = new Set(steps.map((s) => s.month));
@@ -793,11 +881,18 @@ export default function LedgerPage() {
                       // adjustment, already in hand above.
                       if (owedM <= 0) {
                         const forgiven = adjM < -0.005 && !s?.abated;
+                        // ⚠ NAME THE DECISION, not just its effect. "This month was settled"
+                        // still leaves the landlord clicking through to find out WHICH — and
+                        // the memo the settlement wrote says it in four words. Falls back to
+                        // the generic sentence for a plain credit somebody posted by hand.
+                        const why = settlementRows
+                          .filter((a) => Number(a.month) === m && Number(a.amount) < 0)
+                          .map((a) => a.memo).filter(Boolean)[0] || null;
                         return (
                           <td key={m}>
                             <button type="button" className={`rr-cell ${forgiven ? 'settled-off' : 'abated'}`} onClick={open}
                               title={forgiven
-                                ? `${ml}: ${money(Math.abs(adjM))} credited — this month was settled, not billed. Click to open the month and see which entry did it.`
+                                ? `${ml}: ${money(Math.abs(adjM))} credited — this month was settled, not billed.${why ? ` ${why}.` : ''} Click to open the month and see the entry that did it.`
                                 : `${ml}: base rent abated — nothing due · click to open the month`}>
                               {forgiven ? '⌫' : 'F'}
                             </button>
@@ -941,6 +1036,34 @@ export default function LedgerPage() {
                           </select>
                         </div>
                       )}
+                      {/* ⚠ THE OTHER END OF A CARRY-FORWARD, NAMED. Without this, January of the
+                          receiving year simply carries a large anonymous adjustment and the money
+                          appears from nowhere — the halves of one decision, sitting in two years,
+                          with nothing joining them. */}
+                      {Math.abs(carriedIn) > 0.005 && (
+                        <div className="rr-drift">
+                          <span title={
+                            `${money(Math.abs(carriedIn))} ${carriedIn > 0 ? 'they still owed' : 'they were ahead by'} at the end of FY ${year - 1}, carried into this year rather than written off or refunded.`
+                            + ` FY ${year - 1} was cleared by the matching entry, so the money is counted once, in the year it was earned.`
+                          }>
+                            {money(Math.abs(carriedIn))} {carriedIn > 0 ? 'brought forward' : 'credit brought forward'} from {year - 1}
+                          </span>
+                        </div>
+                      )}
+                      {/* ⚠ ONE ACTION, BOTH YEARS. Removing a carry-forward's rows by hand from
+                          the month panel takes back one half of it and leaves the other year
+                          holding its own — which reads as correct on both screens. This works
+                          from the ids the settlement recorded, so it removes exactly what that
+                          decision wrote and nothing that merely looks like it. */}
+                      {settlementRows.length > 0 && (
+                        <div className="rr-drift">
+                          <button type="button" className="ghost btn-sm" disabled={undoSettle.isPending}
+                            title="Take back the last settlement on this tenant — every entry it wrote, in both years."
+                            onClick={() => askUndoSettlement(r)}>
+                            Undo settlement
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );
@@ -1046,9 +1169,21 @@ export default function LedgerPage() {
                             setRentPick((p) => ({ ...p, [l.id]: { leaseId: v.slice(5), month: m >= 1 && m <= 12 ? m : null } }));
                             return;
                           }
+                          // An ordinary expense asks its own second question — do the tenants
+                          // reimburse it? A DISTRIBUTION never does: it is the landlord's own
+                          // money on the table the building bills from, kept inert by exactly
+                          // that column, so it skips the step rather than offering a choice
+                          // that would be refused.
+                          if (v.startsWith('expense:') && v !== 'expense:distribution') {
+                            setExpensePick((p) => ({
+                              ...p,
+                              [l.id]: { category: v.slice(8), label: e.target.selectedOptions[0]?.text || 'expense', billable: false },
+                            }));
+                            return;
+                          }
                           askPlace(l, v, e.target.selectedOptions[0]?.text);
                         }}
-                        title="Record this line where it belongs. Only “Tenant rent” records money received against a tenant — the rest touch no tenant's bill and no CAM total."
+                        title="Record this line where it belongs. Only “Tenant rent” records money received against a tenant, and only an expense you mark billable moves a tenant's CAM."
                       >
                         <option value="">Record as…</option>
                         {/* Money OUT lands as a not-billed expense line carrying the
@@ -1123,6 +1258,28 @@ export default function LedgerPage() {
                             onClick={() => askPlaceRent(l, rentPick[l.id])}>Record</button>
                           <button type="button" className="icon-btn" aria-label="Cancel"
                             onClick={() => setRentPick((p) => { const n = { ...p }; delete n[l.id]; return n; })}>✕</button>
+                        </span>
+                      )}
+                      {/* ⚠ DEFAULT OFF, AND STATED EITHER WAY. This panel's promise has always
+                          been that answering the nag cannot move a tenant's bill; the second
+                          option breaks that promise deliberately and on purpose, so it is a
+                          choice the landlord makes in front of a confirm that says the bills
+                          go up — never a silent default. */}
+                      {expensePick[l.id] && (
+                        <span className="rr-drift" style={{ marginTop: 4 }}>
+                          <select
+                            className="text-input" style={{ maxWidth: 170, fontSize: 11 }}
+                            value={expensePick[l.id].billable ? 'yes' : 'no'}
+                            onChange={(e) => setExpensePick((p) => ({ ...p, [l.id]: { ...p[l.id], billable: e.target.value === 'yes' } }))}
+                            title="Is this a cost the tenants reimburse through CAM? Billing it recalculates every tenant's share and rebuilds their invoices for this year; leaving it unbilled means you absorb it."
+                          >
+                            <option value="no">you absorb it</option>
+                            <option value="yes">bill it to tenants as CAM</option>
+                          </select>
+                          <button type="button" className="ghost btn-sm" disabled={place.isPending}
+                            onClick={() => askPlaceExpense(l, expensePick[l.id])}>Record</button>
+                          <button type="button" className="icon-btn" aria-label="Cancel"
+                            onClick={() => setExpensePick((p) => { const n = { ...p }; delete n[l.id]; return n; })}>✕</button>
                         </span>
                       )}
                       <select
@@ -1215,23 +1372,30 @@ export default function LedgerPage() {
             absent. The workbook TAB still only appears when there is something to tie out — a
             sheet that says nothing is noise in a document — but this is where a landlord comes
             looking, so this one is always here and says what it is waiting for. */}
+        {/* ⚠ RENAMED, and the name was most of the problem (George: *"im super confused about
+            the bank tie-out … im just lost on what value it adds. what is the point of the tie
+            out?"*). "Bank tie-out" is right to an accountant and opaque to everyone else, and
+            it sat one panel below ⚖ Reconcile, which is about an entirely different question —
+            what the TENANTS owe. This one asks whether the landlord's OWN books are complete.
+            The `id` deliberately does not move: it is the key the fold state is remembered
+            under, and renaming a panel should not reopen it for everyone. */}
         <Panel
           id="ledger.tieout"
           defaultOpen={false}
-          title="Bank tie-out"
+          title="Where your bank money went"
           summary={
             tieOut ? tieOutSentence(tieOutWithRent)
               : tieOutError ? 'could not be read — open for the reason'
                 : tieOutLoading ? 'reading your statements…'
                   : `nothing imported for FY ${year} yet`
           }
-          hint="Every line on the statements you imported, against the rows they produced in your books."
+          hint="Every dollar that crossed your bank account this year, and which record in Amlak it became."
         >
           {!tieOut ? (
             <>
               {tieOutError ? (
                 <p className="note-msg danger" style={{ marginTop: 0 }}>
-                  The tie-out could not be read for FY {year}. Nothing is wrong with your figures — this
+                  This could not be read for FY {year}. Nothing is wrong with your figures — this
                   panel simply could not load. Reload the page, and if it keeps happening the statements
                   themselves are still listed under “Imported statements” below.
                 </p>
@@ -1255,19 +1419,44 @@ export default function LedgerPage() {
             </>
           ) : (
             <>
-              <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
-                The left column is what the statements showed. The right is read from your <strong>payments,
-                expenses and other-income rows themselves</strong> — never from the lines, because a check
-                derived from the list it is checking balances no matter what went wrong. Money in and money
-                out are never netted against each other.
+              {/* ── PURPOSE → ANSWER → METHOD, in that order. It opened with methodology, which
+                  is why it read as noise: a landlord met a paragraph about independent columns
+                  before ever being told what question was being asked. The method is still
+                  here — it is what makes the answer worth believing — but it is at the bottom,
+                  where a reader goes when they want to know how. */}
+              <p style={{ fontSize: 12.5, lineHeight: 1.6, margin: '0 0 4px' }}>
+                <strong>Of every dollar that crossed your bank account in {year}, where did it end up?</strong>
               </p>
-              {[['Money in on your statements', tieOut.in], ['Money out on your statements', tieOut.out]].map(([title, s]) => (
+              <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
+                This is not <strong>⚖ Reconcile</strong> on the Financials tab. That one asks what your
+                <strong> tenants</strong> owe — one tenant’s estimated CAM &amp; tax against their real share
+                — and can end in an invoice or a refund. This asks whether <strong>your own books are
+                complete</strong>, and it changes no money at all. And the panel above is the to-do list;
+                this is the account of what happened to everything, including the lines you already filed.
+              </p>
+
+              {/* ⚠ THE ANSWER FIRST. The findings used to sit below three tables, so the one
+                  thing a landlord opened this for was the last thing they reached. */}
+              {tieOut.differences.length > 0 ? (
+                <div className="export-flags" style={{ marginBottom: 12 }}>
+                  {tieOut.differences.map((d, i) => <div className="export-flag" key={i}>{d}</div>)}
+                </div>
+              ) : (
+                <p className="note-msg good" style={{ marginTop: 0 }}>
+                  Every line on these statements reaches the figure it was filed as. ✓
+                </p>
+              )}
+
+              {[['Money in', tieOut.in], ['Money out', tieOut.out]].map(([title, s]) => (
               <table key={title} style={{ minWidth: 0, marginBottom: 10 }}>
                 <thead>
                   <tr>
+                    {/* George quoted these two headers back at me as the thing he could not
+                        read. "On the statement / In your books" describes the columns and not
+                        the claim; naming the two ACTORS says who is being compared. */}
                     <th>{title}</th>
-                    <th className="num">On the statement</th>
-                    <th className="num">In your books</th>
+                    <th className="num">The bank showed</th>
+                    <th className="num">Amlak recorded</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -1324,23 +1513,48 @@ export default function LedgerPage() {
               </p>
             )}
 
-            {tieOut.differences.length > 0 ? (
-              <div className="export-flags">
-                {tieOut.differences.map((d, i) => <div className="export-flag" key={i}>{d}</div>)}
-              </div>
-            ) : (
-              <p className="note-msg good" style={{ marginTop: 0 }}>
-                Every line on these statements reaches the figure it was filed as. ✓
-              </p>
-            )}
+            {/* ⚠ THE MAP, PRINTED ONCE, ON THE SCREEN. George asked *"do all the numbers from
+                the bank statement show up on income and expenses unless its ignored?"* — a
+                question the app had no answer to anywhere, so the answer had to be remembered
+                from a conversation. The surprising row is rent, and it is right: the workbook
+                is ACCRUAL. Saying so is what stops a landlord concluding the sheet is broken. */}
+            <table style={{ minWidth: 0, marginBottom: 10 }}>
+              <thead>
+                <tr>
+                  <th>If you filed a line as…</th>
+                  <th>it writes</th>
+                  <th>on Income &amp; expenses?</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {WHERE_IT_LANDS.map((w) => (
+                  <tr key={w.key}>
+                    <td>{w.filed}</td>
+                    <td className="muted" style={{ fontSize: 11.5 }}>{w.writes}</td>
+                    <td style={{ fontSize: 11.5 }}>{w.sheet}</td>
+                    <td className="muted" style={{ fontSize: 11.5 }}>{w.note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
 
+            {/* ── METHOD, at the bottom, where someone goes to ask "how do you know?" ─────── */}
+            <p className="muted" style={{ fontSize: 11, lineHeight: 1.55, margin: '0 0 6px' }}>
+              <strong>How this is worked out.</strong> The left column is what the statements showed. The
+              right is read from your <strong>payments, expenses and other-income rows themselves</strong> —
+              never from the lines, because a check derived from the list it is checking balances no matter
+              what went wrong. Money in and money out are never netted against each other: a $5,000 deposit
+              and a $5,000 withdrawal that cancelled out would report “no difference” on a statement where
+              $10,000 went astray.
+            </p>
             {/* Said here, not assumed. A tie-out that balances is easily read as "the books
                 are right" — it says the two records agree, and they can agree on the same
                 wrong number. */}
             <p className="muted" style={{ fontSize: 11, lineHeight: 1.55, marginBottom: 0 }}>
-              What this cannot catch: a line transcribed with the wrong amount (both sides carry the same wrong
-              number) · money that never touched the account you imported · a line filed under the wrong
-              heading — it ties, in the wrong bucket.
+              <strong>What it cannot catch:</strong> a line transcribed with the wrong amount (both sides
+              carry the same wrong number) · money that never touched the account you imported · a line filed
+              under the wrong heading — it ties, in the wrong bucket.
             </p>
             </>
           )}

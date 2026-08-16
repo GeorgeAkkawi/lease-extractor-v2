@@ -143,7 +143,7 @@ describe('LedgerPage — the rent ledger grid', () => {
       expect(o.textContent.trim()).not.toBe('');
     }
     // The bank tie-out reads the same lines from the third angle and appears with them.
-    expect(await screen.findByText('Bank tie-out')).toBeTruthy();
+    expect(await screen.findByText('Where your bank money went')).toBeTruthy();
     // Undo from the results strip cleans everything back out.
     fireEvent.click(screen.getAllByText('↩ Undo')[0]);
     await waitFor(() => expect(screen.queryByText(/saved · Imported/)).toBeNull());
@@ -154,10 +154,10 @@ describe('LedgerPage — the rent ledger grid', () => {
   // with nothing imported the whole feature was invisible and indistinguishable from never
   // having been built (George, twice: "i still dont see the bank tie out button"). An empty
   // state has to SAY it is empty — "nothing to check" and "not here" must not look the same.
-  it('shows the Bank tie-out panel before any statement is imported, saying what it is waiting for', async () => {
+  it('shows the “Where your bank money went” panel before any statement is imported, saying what it is waiting for', async () => {
     renderLedger();
     await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
-    const toggle = (await screen.findByText('Bank tie-out')).closest('button.panel-toggle');
+    const toggle = (await screen.findByText('Where your bank money went')).closest('button.panel-toggle');
     expect(toggle).toBeTruthy();
     // Folded, it still states what it holds — Panel's own rule.
     expect(toggle.textContent).toMatch(new RegExp(`nothing imported for FY ${currentYear()} yet`));

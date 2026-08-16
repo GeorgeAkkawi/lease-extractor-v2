@@ -386,6 +386,31 @@ export function bankTieOut({
   };
 }
 
+/**
+ * Every decision a bank line can carry, what it writes, and whether it reaches the
+ * Income-and-expenses workbook — George's *"do all the numbers from the bank statement show up
+ * on income and expenses unless its ignored?"*, answered on the screen rather than in a reply
+ * he has to remember.
+ *
+ * ⚠ THE ONE ANSWER THAT SURPRISES EVERY LANDLORD IS RENT, and it is right: the workbook is
+ * ACCRUAL — Money in is what tenants were BILLED, not what they paid — so a rent deposit moves
+ * who has settled and not what was earned. That is precisely why this panel exists: it is the
+ * cash view the accrual sheet cannot give. Stating it here is the difference between a reader
+ * trusting both figures and a reader concluding one of them is broken.
+ *
+ * Data, not prose, so the screen and any later export cannot drift into two different maps.
+ */
+export const WHERE_IT_LANDS = [
+  { key: 'rent', filed: 'Tenant rent', writes: 'a payment', sheet: 'no — and correctly', note: 'The sheet counts rent when it falls DUE. Paying it changes the Ledger, not what was earned.' },
+  { key: 'expense', filed: 'Property expense', writes: 'an expense line', sheet: 'yes', note: 'Money out. Billed to tenants only if you said so when you placed it.' },
+  { key: 'owner', filed: 'Owner distribution', writes: 'a not-billed expense line', sheet: 'yes, apart', note: 'Reported as “Your own money” — not a cost of the building, so it is in no expense total.' },
+  { key: 'other_income', filed: 'Other income', writes: 'an income row', sheet: 'yes', note: 'Money in, on the category you chose.' },
+  { key: 'deposit_held', filed: 'Security deposit', writes: 'nothing', sheet: 'no', note: 'The tenant’s money, held. A liability — never income, never credited against rent.' },
+  { key: 'transfer', filed: 'Transfer', writes: 'nothing', sheet: 'no', note: 'It never left your hands. The record of the move is the point.' },
+  { key: 'ignored', filed: 'Left out', writes: 'nothing', sheet: 'no', note: 'You decided, and the reason is recorded beside the line under “Decided”.' },
+  { key: 'unclassified', filed: 'Not yet placed', writes: 'nothing', sheet: 'no — and that is a gap', note: 'Real money in no figure on any sheet until you give it a home.' },
+];
+
 /** The one-line bottom line, for a folded panel and for the workbook's headline. A folded
  *  section still states what it holds (Panel's own rule), and "the tie-out" with no figure
  *  is exactly the fold that gets reopened every time. */

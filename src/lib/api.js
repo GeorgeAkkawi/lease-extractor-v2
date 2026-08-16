@@ -25,6 +25,7 @@ import { lineCompleteness } from './dispositions';
 import { bankTieOut } from './bankTieOut';
 import {
   tenantStanding, settleChoicesFor, monthCapacity, spreadAcrossMonths, refundMonth, settleSentence,
+  settlementMemo, broughtForwardMemo,
 } from './settle';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
 import { isoDateOrNull } from './isoDate';
@@ -4357,16 +4358,36 @@ export async function settleTenantBalance({ leaseId, propertyId, year, choice, m
   }
 
   const oid = await ownerId();
+  // ⚠ EVERY ROW NAMES THE OTHER END. Until 2026-08-16 this passed `memo: memo || null` — which
+  // is null on every settlement the UI writes — so next January rendered as a bare "Balance
+  // brought forward" with no year, no amount and no route back to the decision (George: *"how
+  // does that show is there a logical path for that stuff?"*). The phrases come from `settle.js`
+  // because a reader has to recognise them: an `opening` row that CLEARED this year and one
+  // that ARRIVED from last year share a kind, and their signs flip with the direction of the
+  // balance, so the memo is the only thing that tells them apart.
+  const thisMemo = settlementMemo({ choice, year: y, label: standing.label });
+  const joinMemo = (base) => [base, memo].filter(Boolean).join(' — ') || null;
   const stamp = (r, yr) => ({
     owner_id: oid, lease_id: leaseId, property_id: propertyId, year: yr,
-    month: r.month, kind: r.kind, amount: r.amount, memo: memo || null,
+    month: r.month, kind: r.kind, amount: r.amount,
+    memo: joinMemo(yr === y ? thisMemo : broughtForwardMemo(y)),
   });
   // ⚠ THIS YEAR FIRST. An interruption after it leaves a cleared balance and no carry-forward
   // — visible on next year's Ledger as money that stopped existing, which someone will notice.
   // The other order leaves a tenant charged twice, in two years, which reads as correct on
   // both screens.
-  if (inserts.length) await rows(supabase.from('lease_adjustments').insert(inserts.map((r) => stamp(r, y))));
-  if (nextYearRows?.length) await rows(supabase.from('lease_adjustments').insert(nextYearRows.map((r) => stamp(r, y + 1))));
+  //
+  // ⚠ AND THE IDS ARE KEPT. `.select()` on the insert is what makes `undoSettlement` exact:
+  // it removes the rows THIS settlement wrote rather than every row that looks like it, which
+  // matters the moment a year holds two settlements or a carry from the year before.
+  const written = [];
+  if (inserts.length) {
+    written.push(...(await rows(supabase.from('lease_adjustments').insert(inserts.map((r) => stamp(r, y))).select('id')) || []));
+  }
+  if (nextYearRows?.length) {
+    written.push(...(await rows(supabase.from('lease_adjustments').insert(nextYearRows.map((r) => stamp(r, y + 1))).select('id')) || []));
+  }
+  const adjustmentIds = written.map((r) => r?.id).filter(Boolean);
 
   await resyncLeaseBilling(leaseId, propertyId, y).catch(() => null);
   if (nextYearRows?.length) {
@@ -4384,7 +4405,13 @@ export async function settleTenantBalance({ leaseId, propertyId, year, choice, m
     type: 'balance_settled',
     tenant_name: standing.label,
     description,
-    meta: { choice, amount, months, year: y, ...(nextYearRows?.length ? { carried_to: y + 1 } : {}) },
+    meta: {
+      choice, amount, months, year: y,
+      ...(nextYearRows?.length ? { carried_to: y + 1 } : {}),
+      // The undo reads this. A settlement logged before 2026-08-16 has no such list and
+      // `undoSettlement` says so plainly rather than guessing at which rows were its.
+      adjustment_ids: adjustmentIds,
+    },
   });
   return {
     standing, choice, amount, months,
@@ -4392,6 +4419,96 @@ export async function settleTenantBalance({ leaseId, propertyId, year, choice, m
     carriedTo: nextYearRows?.length ? y + 1 : null,
     description,
   };
+}
+
+/**
+ * Take a settlement back — every row it wrote, in BOTH years, in one action.
+ *
+ * George's *"when i click write it off or carry it forward how does that show?"* has a second
+ * half nobody asked out loud: how do I take it back? Deleting the rows by hand was possible
+ * (the month panel's ✕) and quietly wrong — a carry-forward is two rows in two years, and
+ * removing one of them leaves the tenant credited in one year and charged in the other, which
+ * reads as correct on both screens.
+ *
+ * ⚠ IT WORKS FROM THE HISTORY EVENT'S OWN ID LIST, never from "rows that look like a
+ * settlement". One year can hold `opening` rows from two different decisions — the credits
+ * that cleared it, and the charge carried in from the year before — and they are the same
+ * kind with opposite signs. Guessing between them is how an undo takes the wrong year's money.
+ *
+ * ⚠ EITHER YEAR BEING CLOSED REFUSES THE WHOLE THING. Half an undo is worse than none.
+ */
+export async function undoSettlement({ leaseId, propertyId, year }) {
+  const y = Number(year);
+  if (!leaseId || !propertyId || !(y > 0)) {
+    return { refused: true, reason: 'incomplete', message: 'Pick a tenant and a year.' };
+  }
+  // The settlement may have been made in THIS year, or in the year before and carried into
+  // it — one decision, two years, and the landlord may be looking at either one.
+  const events = await rows(
+    supabase.from('history_events').select('*')
+      .eq('lease_id', leaseId).eq('type', 'balance_settled')
+      .order('created_at', { ascending: false })
+  ).catch(() => []);
+  const mine = (events || []).filter((e) => {
+    const m = e?.meta || {};
+    return Number(m.year) === y || Number(m.carried_to) === y;
+  });
+  if (!mine.length) {
+    return { refused: true, reason: 'none', message: `No settlement is recorded against FY ${y} for this tenant.` };
+  }
+  // ⚠ THE MOST RECENT SETTLEMENT WHOSE ROWS ARE STILL THERE, not simply the most recent. A
+  // year can hold several, and one may already have been undone — by this action or by hand
+  // from the month panel. Reading only `mine[0]` would report "already undone" and refuse to
+  // touch the earlier one that is still sitting on the books. It also survives two events
+  // sharing a `created_at` to the millisecond, which the demo store does routinely.
+  const allIds = mine.flatMap((e) => (e?.meta?.adjustment_ids || []).filter(Boolean));
+  const surviving = allIds.length
+    ? new Set((await rows(supabase.from('lease_adjustments').select('*').in('id', allIds)).catch(() => []) || []).map((r) => String(r.id)))
+    : new Set();
+  const ev = mine.find((e) => (e?.meta?.adjustment_ids || []).some((id) => surviving.has(String(id))));
+  if (!ev) {
+    const untracked = mine.find((e) => !(e?.meta?.adjustment_ids || []).length);
+    if (untracked) {
+      return {
+        refused: true, reason: 'untracked',
+        message: `“${untracked.description}” was recorded before Amlak kept track of which entries a settlement wrote, so it cannot be undone in one click. Open the months it touched on the grid and remove the entries there.`,
+      };
+    }
+    return { refused: true, reason: 'gone', message: `“${mine[0].description}” has already been undone — its entries are no longer on the books.` };
+  }
+  const ids = (ev.meta.adjustment_ids || []).filter((id) => surviving.has(String(id)));
+  const live = await rows(supabase.from('lease_adjustments').select('*').in('id', ids)).catch(() => []);
+  if (!live?.length) {
+    return { refused: true, reason: 'gone', message: `“${ev.description}” has already been undone — its entries are no longer on the books.` };
+  }
+
+  const years = [...new Set(live.map((r) => Number(r.year)).filter(Boolean))].sort();
+  for (const yr of years) {
+    const lock = await yearLockState(propertyId, yr);
+    if (lock === 'closed') {
+      return {
+        refused: true, reason: 'closed',
+        message: `FY ${yr} is closed and holds part of this settlement, so nothing was undone. Reopen it first — taking half of it back would leave the two years disagreeing.`,
+      };
+    }
+    if (lock === 'unknown') {
+      return { refused: true, reason: 'lock_unknown', message: `Couldn’t check whether FY ${yr} is closed, so nothing was changed.` };
+    }
+  }
+
+  await rows(supabase.from('lease_adjustments').delete().in('id', live.map((r) => r.id)));
+  for (const yr of years) await resyncLeaseBilling(leaseId, propertyId, yr).catch(() => null);
+
+  const description = `${ev.tenant_name || 'Tenant'} — settlement undone: ${ev.description}`;
+  await logHistoryEvent({
+    property_id: propertyId,
+    lease_id: leaseId,
+    type: 'balance_settled',
+    tenant_name: ev.tenant_name || null,
+    description,
+    meta: { choice: 'undo', undid: ev.id, years, rows: live.length },
+  });
+  return { years, removed: live.length, description, restored: ev?.meta?.amount ?? null };
 }
 
 export async function deleteAdjustment(id) {
@@ -6507,7 +6624,7 @@ export const setLeaseSecurityDeposit = (leaseId, amount) =>
 // line's own year, the year of its own transaction date (the rule `statementMatch` uses to
 // derive it in the first place), then the fiscal year the landlord is looking at.
 // `bankTieOut` reports any pre-fix rows still carrying a null.
-export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null, year = null, month = null }) {
+export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null, year = null, month = null, billable = false }) {
   const placeYear =
     Number(line?.year)
     || (line?.txn_date ? Number(String(line.txn_date).slice(0, 4)) : 0)
@@ -6586,11 +6703,22 @@ export async function placeUnplacedLine(line, { kind, category = null, leaseId =
   // `distribution`. `party` names the bucket in the second case, because "who did this
   // go to" IS the label there: a draw's bucket is the person's name.
   //
-  // ⚠ `billable: false` is what keeps this billing-inert. syncCamTotal filters those
-  // rows out of `cam_total`, so answering the nag can never move a tenant's bill or the
-  // property's NOI — the same safety property the entity ledger had, obtained from the
-  // column that already existed rather than from a table of its own.
+  // ⚠ `billable: false` IS STILL THE DEFAULT, and it is the safety property this panel was
+  // built on: syncCamTotal sums `billable is not false` only, so a not-billed line reaches no
+  // `cam_total`, no share and no invoice. Answering the nag cannot move a tenant's bill by
+  // accident.
+  //
+  // ⚠ BUT IT WAS FORCED, and that was a leak (George, 2026-08-16: *"does all this stuff tie
+  // into income and expenses where it needs to be?"*). A genuinely recoverable cost — the snow
+  // plough, the landscaper — placed after the fact reached "what the year cost you" and no
+  // tenant's CAM, so the landlord silently absorbed it with nothing on any screen saying so.
+  // The choice is now the caller's, default off, and the confirm states which way it went.
+  //
+  // ⚠ AN OWNER DRAW CAN NEVER BE BILLABLE, whatever is passed. `cam_line_items` is the table
+  // the building bills from and a distribution is money that is not the building's; the one
+  // predicate keeping it inert is exactly this column (CLAUDE.md §1).
   const owner = isOwnerCategory(category);
+  const bill = !owner && billable === true;
   const label = (owner && String(party || '').trim())
     || (line.description ? String(line.description).slice(0, 200) : null)
     || (owner ? 'Owner distribution' : 'Expense');
@@ -6599,15 +6727,24 @@ export async function placeUnplacedLine(line, { kind, category = null, leaseId =
     year: placeYear,
     label,
     amount: Math.abs(Number(line.amount) || 0),
-    billable: false,
+    billable: bill,
     paid_date: line.txn_date || null,
     import_id: line.import_id || null,
   });
   if (category && isValidCategory(category)) {
-    await saveExpenseBucket({ label, category, billable: false });
+    await saveExpenseBucket({ label, category, billable: bill });
   }
   const updated = await setLineDisposition(line.id, owner ? 'owner' : 'expense', null, { kind: 'cam', id: entry.id });
-  return { line: updated, entry };
+  // ⚠ THE CARRY-THROUGH, and only on the billable branch. `addCamLineItem` already ran
+  // `syncCamTotal`, which moved `expense_records.cam_total` → `v_tenant_shares` → every screen
+  // that builds UP from live data. The stored invoice does not rebuild itself (CLAUDE.md §1),
+  // so a property-wide figure moving needs `resyncPropertyBilling` or the tenants' bills stay
+  // at yesterday's CAM. It skips a closed year on its own, so a bill already sent cannot move.
+  let rebilled = null;
+  if (bill && placeYear) {
+    rebilled = await resyncPropertyBilling(line.property_id, placeYear).catch(() => null);
+  }
+  return { line: updated, entry, billable: bill, rebilled };
 }
 
 // Everything the matcher needs, assembled once per import: every property's

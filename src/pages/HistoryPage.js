@@ -403,7 +403,11 @@ export default function HistoryPage() {
             <span className="panel-caret" aria-hidden="true">{showLedger ? '▾' : '▸'}</span>
             <strong>Bookkeeping log</strong>
             <span className="muted" style={{ fontSize: 12 }}>
-              {ledger.length} entr{ledger.length === 1 ? 'y' : 'ies'} · CAM reconciles, estimates and statement imports
+              {/* The label has to name what is actually in here. It listed three kinds while
+                  the log had grown to hold charges on a month, year-end settlements and
+                  replaced service contracts — a fold that misstates its own contents is a
+                  fold nobody opens. */}
+              {ledger.length} entr{ledger.length === 1 ? 'y' : 'ies'} · CAM reconciles, estimates, statement imports, charges and year-end settlements
             </span>
           </button>
           {showLedger && (

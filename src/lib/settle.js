@@ -255,6 +255,46 @@ export function settleChoicesFor(standing) {
   });
 }
 
+// ── The memo a settlement row carries, and the one predicate that reads it back ──────────
+//
+// George, 2026-08-16: *"if an over or undercharge is rolled through to a following year or
+// month how does that show is there a logical path for that stuff?"* Mechanically the carry
+// worked from the day it shipped — two rows, two years — and NOTHING connected the halves.
+// `settleTenantBalance` passed no memo at all, so next January rendered as a bare kind label
+// ("Balance brought forward") with no year, no amount context and no way back to the decision
+// that put it there. The landlord had to already know.
+//
+// ⚠ ONE DEFINITION, WRITER AND READER TOGETHER. The memo is the only thing distinguishing the
+// two kinds of `opening` row a single year can hold — the credits that CLEARED this year, and
+// the charge that ARRIVED from last year — because their kind is identical and their sign
+// flips with the direction of the balance. Matching a string written three files away would be
+// exactly the mirror-drift CLAUDE.md §3 is about, so the phrase and the test that recognises it
+// live side by side and neither is spelled out anywhere else.
+const BROUGHT_PREFIX = 'Brought forward from FY ';
+
+export const settlementMemo = ({ choice, year, label = null }) => {
+  const y = Number(year);
+  if (choice === 'carry') return `Carried forward to FY ${y + 1}`;
+  if (choice === 'writeoff') return `Written off at FY ${y} year end`;
+  if (choice === 'refund') return `Refunded to ${label || 'the tenant'}`;
+  return null;
+};
+
+/** The memo on the row that LANDS in the following year. */
+export const broughtForwardMemo = (fromYear) => `${BROUGHT_PREFIX}${Number(fromYear)}`;
+
+/** Is this adjustment a balance that arrived from the year before? The Ledger's row chip and
+ *  the month panel both ask; neither re-derives the answer. */
+export const isBroughtForward = (adj) =>
+  String(adj?.memo || '').startsWith(BROUGHT_PREFIX);
+
+/** The kinds only `settleTenantBalance` ever writes — none is offered in the manual picker
+ *  (`adjustmentKindsFor` filters `manual !== false`). A row of one of these kinds on a
+ *  tenant's year is what makes "Undo this settlement" worth offering at all. */
+export const SETTLEMENT_KINDS = ['writeoff', 'opening', 'refund'];
+const SETTLEMENT_SET = new Set(SETTLEMENT_KINDS);
+export const isSettlementRow = (adj) => SETTLEMENT_SET.has(String(adj?.kind || ''));
+
 /** One sentence describing what a settlement did, for the confirm and the history log. */
 export function settleSentence({ choice, amount, months = [], year, nextYear = null }) {
   const money = (n) => `$${round2(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;

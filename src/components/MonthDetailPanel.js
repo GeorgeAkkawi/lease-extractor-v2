@@ -190,12 +190,23 @@ export default function MonthDetailPanel({
                     disabled={busy}
                     aria-label="Remove this adjustment"
                     onClick={async () => {
+                      // ⚠ THE DIRECTION IS COMPUTED, and it was hardcoded to "lower" until
+                      // 2026-08-16. Removing a CREDIT raises the invoice — so the dialog
+                      // contradicted the line directly above it, which had the arithmetic
+                      // right, on every credit there has ever been.
+                      const isCredit = Number(a.amount) < 0;
                       const ok = await askConfirm({
                         title: 'Remove this adjustment?',
-                        message: `${adjustmentKindInfo(a.kind).label} of ${Number(a.amount) < 0 ? '−' : '+'}${money(Math.abs(Number(a.amount)))} on ${monthName(m)} ${year}.`,
+                        message: `${adjustmentKindInfo(a.kind).label} of ${isCredit ? '−' : '+'}${money(Math.abs(Number(a.amount)))} on ${monthName(m)} ${year}.`,
                         implications: [
                           `${monthName(m)} goes back to owing ${money(round2(owed - Number(a.amount)))}.`,
-                          "This year's invoice is re-issued at the lower total, so Outstanding moves.",
+                          `This year's invoice is re-issued at the ${isCredit ? 'HIGHER' : 'lower'} total, so Outstanding moves.`,
+                          // ⚠ HALF A SETTLEMENT IS WORSE THAN NONE. A carry-forward is two rows
+                          // in two years; delete one here and the tenant is cleared in one year
+                          // and charged in the other, and each screen reads as correct alone.
+                          ...(a.kind === 'opening' || a.kind === 'writeoff' || a.kind === 'refund'
+                            ? ['⚠ This entry is part of a year-end settlement, and a carried-forward balance has a matching entry in the OTHER year. Removing only this one leaves the two years disagreeing — use “Undo settlement” on the Ledger row to take back both.']
+                            : []),
                           'No payment is touched — only what was billed.',
                         ],
                         confirmLabel: 'Remove',

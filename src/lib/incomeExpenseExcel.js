@@ -174,10 +174,10 @@ const TIE_LAST = 'E';
 const TIE_ALIGN = ['left', 'right', 'right', 'right', 'left'];
 
 function addTieOut(wb, pkg, year) {
-  const ws = xlsxSheet(wb, 'Bank tie-out', TIE_WIDTHS, { freeze: 0 });
+  const ws = xlsxSheet(wb, 'Where bank money went', TIE_WIDTHS, { freeze: 0 });
   const pen = xlsxPen(ws, TIE_LAST);
 
-  pen.title(`Bank tie-out — FY ${year}`);
+  pen.title(`Where your bank money went — FY ${year}`);
   pen.note(
     'Two columns from two different places. The left is every line on the statements you imported, grouped by what '
     + 'you decided about it. The right is the real rows in your books — payments, expenses, other income — read from '
@@ -188,7 +188,7 @@ function addTieOut(wb, pkg, year) {
   pen.skip();
 
   const side = (title, s) => {
-    pen.head([title, 'On the statement', 'In your books', 'Difference', ''], TIE_ALIGN);
+    pen.head([title, 'The bank showed', 'Amlak recorded', 'Difference', ''], TIE_ALIGN);
     for (const r of s.rows) {
       const off = Math.abs(r.diff) > 0.005;
       const attention = off || (r.unplaced && r.statement > 0.005) || r.unknown;
@@ -489,7 +489,7 @@ export async function downloadIncomeExpenseXlsx({ corporationId, corporationName
   // told them money went astray.
   if (pkg.properties.some((p) => p.tieOut)) {
     addTieOut(wb, pkg, year);
-    used.add('bank tie-out');
+    used.add('where bank money went');
   }
   for (const p of pkg.properties) addProperty(wb, p, year, used);
 

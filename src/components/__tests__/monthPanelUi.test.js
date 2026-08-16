@@ -154,6 +154,32 @@ describe('the Rent Ledger month panel', () => {
     expect(screen.getByText('Balance owed')).toBeTruthy();
   });
 
+  // ⚠ THE DIALOG CONTRADICTED THE LINE DIRECTLY ABOVE IT, on every credit there has ever
+  // been. "This year's invoice is re-issued at the lower total" was hardcoded — removing a
+  // CREDIT raises the invoice, and the implication above it had the arithmetic right all
+  // along. A confirm that states the opposite of what will happen is worse than no confirm.
+  it('says the invoice goes HIGHER when the entry being removed is a credit', async () => {
+    await markMonthPaid('lease-3', 'prop-2', Y, 1);
+    renderLedger();
+    await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
+    await waitFor(() => expect(janCell().className).toContain('paid'));
+    fireEvent.click(janCell());
+    let panel = await screen.findByRole('dialog', { name: /January/ });
+
+    // A concession — the one kind that is locked to "credit".
+    fireEvent.change(within(panel).getByLabelText('Kind'), { target: { value: 'credit' } });
+    fireEvent.change(within(panel).getByLabelText('Amount'), { target: { value: '300' } });
+    fireEvent.click(within(panel).getByText('Post credit'));
+    await waitFor(() => expect(document.querySelector('.rent-roll .rr-adj.credit')).toBeTruthy());
+
+    panel = await screen.findByRole('dialog', { name: /January/ });
+    fireEvent.click(within(panel).getByLabelText('Remove this adjustment'));
+    const confirm = await screen.findByText('Remove this adjustment?');
+    const box = confirm.closest('.modal') || document.body;
+    expect(within(box).getByText(/re-issued at the HIGHER total/)).toBeTruthy();
+    expect(within(box).queryByText(/re-issued at the lower total/)).toBeNull();
+  });
+
   it('a GROSS tenant is not offered the CAM & tax correction', async () => {
     await updateLease('lease-3', { lease_type: 'gross' });
     try {

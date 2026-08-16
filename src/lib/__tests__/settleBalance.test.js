@@ -17,10 +17,10 @@ import { describe, it, expect, vi } from 'vitest';
 import JSZip from 'jszip';
 import {
   tenantStanding, propertyStandings, spreadAcrossMonths, monthCapacity,
-  refundMonth, settleChoicesFor, settleSentence,
+  refundMonth, settleChoicesFor, settleSentence, isBroughtForward, isSettlementRow,
 } from '../settle';
 import {
-  settleTenantBalance, getPropertyMonthlyRoll, listAdjustments, addAdjustment,
+  settleTenantBalance, undoSettlement, getPropertyMonthlyRoll, listAdjustments, addAdjustment,
   closeYear, reopenYear, ensureInvoice, recordPayment,
 } from '../api';
 import { allocatePayments, componentizeSchedule } from '../ledger';
@@ -381,4 +381,94 @@ describe('what the workbook says once balances have been settled', () => {
       expect(/state="frozen"/.test(xml)).toBe(false);
     }
   }, 30000);
+});
+
+// ── The logical path between the two years, and the way back ───────────────────────────
+//
+// George, 2026-08-16: *"if an over or undercharge is rolled through to a following year or
+// month how does that show is there a logical path for that stuff?"*
+//
+// The carry worked from the day it shipped and nothing joined its halves: `settleTenantBalance`
+// passed no memo, so next January carried a large anonymous adjustment and the money simply
+// appeared. And the only way back was deleting rows one at a time from the month panel — which
+// for a carry means finding rows in TWO years and knowing that you have to. Miss the second and
+// the tenant is cleared in one year and charged in the other, and each screen reads as correct.
+//
+// ⚠ THESE RUN LAST ON PURPOSE. The undo takes lease-3's carry-forward back apart, which the
+// workbook assertions above depend on existing.
+describe('a settlement names its other end, and can be taken back whole', () => {
+  it('writes a memo on every row saying which year the money went to or came from', async () => {
+    const here = (await listAdjustments({ leaseId: 'lease-3', year: Y })).filter((a) => a.kind === 'opening');
+    const there = (await listAdjustments({ leaseId: 'lease-3', year: Y + 1 })).filter((a) => a.kind === 'opening');
+    expect(here.length).toBeGreaterThan(0);
+    expect(there).toHaveLength(1);
+    for (const a of here) expect(a.memo).toBe(`Carried forward to FY ${Y + 1}`);
+    expect(there[0].memo).toBe(`Brought forward from FY ${Y}`);
+
+    // ⚠ THE MEMO IS THE ONLY THING TELLING THE TWO APART. Both rows are `kind: 'opening'`, and
+    // their signs flip with the direction of the balance — so a chip that read the kind, or the
+    // sign, would call the year that PAID the balance the year that RECEIVED it.
+    expect(here.every((a) => !isBroughtForward(a))).toBe(true);
+    expect(isBroughtForward(there[0])).toBe(true);
+    expect(here.every(isSettlementRow) && isSettlementRow(there[0])).toBe(true);
+  });
+
+  it('undoes both years in one action, and the balance comes back', async () => {
+    const carried = Number(
+      (await listAdjustments({ leaseId: 'lease-3', year: Y + 1 })).find((a) => a.kind === 'opening').amount
+    );
+    expect(carried).toBeGreaterThan(0);
+
+    const res = await undoSettlement({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y });
+    expect(res.refused).toBeFalsy();
+    expect(res.years).toEqual([Y, Y + 1]);
+    expect(res.removed).toBeGreaterThan(1);
+
+    expect((await listAdjustments({ leaseId: 'lease-3', year: Y })).filter((a) => a.kind === 'opening')).toHaveLength(0);
+    expect((await listAdjustments({ leaseId: 'lease-3', year: Y + 1 })).filter((a) => a.kind === 'opening')).toHaveLength(0);
+
+    // The balance is back — the same figure that was carried, which is the point of an undo
+    // rather than a partial reversal that leaves the tenant somewhere in between.
+    const after = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-3');
+    expect(tenantStanding({ row: after, year: Y }).owes).toBeCloseTo(carried, 2);
+    // …and next January no longer charges it.
+    const next = (await getPropertyMonthlyRoll('prop-2', Y + 1)).find((r) => r.lease_id === 'lease-3');
+    expect(round2(Number(next.schedule[1].owed) - Number(next.schedule[2].owed))).toBeCloseTo(0, 2);
+  });
+
+  it('says so rather than pretending, when there is nothing left to undo', async () => {
+    const again = await undoSettlement({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y });
+    expect(again.refused).toBe(true);
+    expect(again.reason).toBe('gone');
+    expect(again.message).toMatch(/already been undone/);
+
+    const never = await undoSettlement({ leaseId: 'lease-5', propertyId: 'prop-2', year: Y });
+    expect(never.refused).toBe(true);
+    expect(never.reason).toBe('none');
+  });
+
+  // ⚠ REACHABLE FROM EITHER SIDE. A carry-forward's other half sits in the following year, and
+  // that is the year the landlord is often looking at when they notice it — so asking to undo
+  // from FY+1 has to find the settlement that was MADE in FY.
+  it('finds the settlement from the receiving year too', async () => {
+    const res = await settleTenantBalance({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y, choice: 'carry' });
+    expect(res.refused).toBeFalsy();
+    const fromNextYear = await undoSettlement({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y + 1 });
+    expect(fromNextYear.refused).toBeFalsy();
+    expect(fromNextYear.years).toEqual([Y, Y + 1]);
+  });
+
+  // ⚠ HALF AN UNDO IS WORSE THAN NONE, so a closed year on either side refuses the whole thing.
+  it('refuses when a year holding part of the settlement is closed', async () => {
+    const made = await settleTenantBalance({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y, choice: 'carry' });
+    expect(made.refused).toBeFalsy();
+    await closeYear('prop-2', Y + 1);
+    const res = await undoSettlement({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y });
+    expect(res.refused).toBe(true);
+    expect(res.reason).toBe('closed');
+    expect(res.message).toMatch(new RegExp(`FY ${Y + 1} is closed`));
+    // Nothing moved.
+    expect((await listAdjustments({ leaseId: 'lease-3', year: Y + 1 })).filter((a) => a.kind === 'opening')).toHaveLength(1);
+    await reopenYear('prop-2', Y + 1);
+  });
 });

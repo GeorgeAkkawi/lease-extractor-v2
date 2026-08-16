@@ -540,12 +540,12 @@ export function flags(properties = []) {
 
   // ⚠ THE BANK'S OWN VERDICT, and it belongs on the pre-flight rather than only on its own
   // tab. Everything else in this workbook is Amlak checking Amlak; this is the one figure
-  // that came from outside it. A reader who never opens the Bank tie-out sheet still has to
+  // that came from outside it. A reader who never opens the bank-money sheet still has to
   // learn that money crossed the account and reached none of the figures above.
   for (const p of properties) {
     const t = p.tieOut;
     if (!t || t.balanced) continue;
-    out.push(`${p.name}: the Bank tie-out sheet has ${t.differences.length} thing${t.differences.length === 1 ? '' : 's'} to look at — ${t.differences.join(' ')}`);
+    out.push(`${p.name}: the “Where bank money went” sheet has ${t.differences.length} thing${t.differences.length === 1 ? '' : 's'} to look at — ${t.differences.join(' ')}`);
   }
 
   const noExpenses = properties.filter((p) => p.expenseTotals.spent <= 0);

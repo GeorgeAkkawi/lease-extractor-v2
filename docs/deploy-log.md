@@ -12,6 +12,152 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **ROUND 2 of five questions: the tie-out said what it was doing, a carried
+  balance got a path between its two years, and a settlement got a way back.** Round 1 closed
+  the holes where money went missing; this round is the half George could not read.
+  Cloudflare version **`0370ea17-84f2-4ed9-b85a-70eec0362e38`** (on top of `5bf10762`).
+
+  **The panel is renamed and rewritten — purpose, then answer, then method.** George: *"im super
+  confused about the bank tie out … im just lost on what value it adds. what is the point of the
+  tie out?"* Three things made it unreadable and all three are structural, not wording:
+  - It **opened with methodology**. A landlord met a paragraph about two independent columns
+    before ever being told what question was being asked. Order is now purpose → the finding →
+    the tables → the method, and the method paragraph is at the bottom where someone goes to ask
+    *how do you know*.
+  - Its **name and its neighbour**. "Bank tie-out" is right to an accountant and opaque to
+    everyone else, and it sits one panel below ⚖ Reconcile, which asks an entirely different
+    question. It is now **“Where your bank money went”**, and the first two sentences say what it
+    is not: *Reconcile asks what your TENANTS owe and can end in an invoice; this asks whether
+    YOUR OWN BOOKS are complete and changes no money at all.* One more line names the overlap
+    with the panel above it — *that is the to-do list; this is the account of what happened to
+    everything.* ⚠ The `Panel` **id does not move** (`ledger.tieout`): it is the key the fold
+    state is remembered under, and renaming a panel must not reopen it for everyone.
+  - Its **column headers were the words George quoted back at me**. "On the statement" / "In your
+    books" describe the columns and not the claim. They are now **“The bank showed”** /
+    **“Amlak recorded”** — the two actors, named. The workbook sheet moved with it (tab
+    `Where bank money went`, title `Where your bank money went — FY`, same two headers) because
+    two documents describing one comparison must not label it differently.
+
+  **The map is printed, and the accrual sentence with it** (`WHERE_IT_LANDS`, `bankTieOut.js`).
+  George: *"do all the numbers from the bank statement show up on income and expenses unless its
+  ignored?"* — a question the app could not answer anywhere, so the answer had to be remembered
+  from a conversation. Eight rows: what each disposition writes, whether the workbook counts it,
+  and why. ⚠ **The row that surprises everyone is rent, and it is right**: the workbook is
+  ACCRUAL — Money in is what tenants were BILLED — so a rent deposit moves the Ledger and not
+  what was earned. That is *why* this panel exists, and saying so is the difference between a
+  reader trusting both figures and a reader concluding one is broken. Data, not prose, so a later
+  export cannot drift into a second map; a test asserts every disposition the tie-out groups
+  under has a row, and pins the two answers that must never quietly flip.
+
+  **A carried balance now has a path between its two years.** George: *"if an over or undercharge
+  is rolled through to a following year or month how does that show is there a logical path for
+  that stuff?"* Mechanically the carry worked from the day it shipped — two rows, two years — and
+  **nothing joined the halves**: `settleTenantBalance` passed `memo: memo || null`, which is null
+  on every settlement the UI writes, so next January carried a large anonymous adjustment and the
+  money simply appeared.
+  - Every settlement row now names the other end: `Carried forward to FY 2027` on the year that
+    paid it, `Brought forward from FY 2026` on the year that received it, `Written off at FY 2026
+    year end`, `Refunded to <tenant>`.
+  - The receiving row shows a chip: **`$89,250.00 brought forward from 2026`**, with a tooltip
+    stating that the other year was cleared by the matching entry so the money is counted once.
+  - The `⌫` cell tooltip names the decision instead of describing its effect:
+    *"Jan: $12,750.00 credited — this month was settled, not billed. **Carried forward to FY
+    2027.**"*
+  - ⚠ **ONE DEFINITION, WRITER AND READER TOGETHER** (`settlementMemo` / `broughtForwardMemo` /
+    `isBroughtForward`, `settle.js`). The memo is the only thing separating the two kinds of
+    `opening` row one year can hold — the credits that CLEARED it and the charge that ARRIVED
+    from last year. Their kind is identical and their sign flips with the direction of the
+    balance, so a chip that read the kind, or the sign, would call the year that paid the balance
+    the year that received it. Matching a string written three files away is the §3 drift; the
+    phrase and the predicate that recognises it sit side by side.
+
+  **`undoSettlement` — every row it wrote, in both years, in one action** (`api.js`, button on
+  the Ledger row). A settlement was reversible only by deleting rows one at a time from the month
+  panel, which for a carry means finding rows in TWO years *and knowing that you have to*. Miss
+  the second and the tenant is cleared in one year and charged in the other, and each screen
+  reads as correct on its own.
+  - ⚠ **IT WORKS FROM THE HISTORY EVENT'S OWN ID LIST**, not from "rows that look like a
+    settlement" — `settleTenantBalance` now `.select('id')`s its inserts and stores
+    `meta.adjustment_ids`. Guessing between two `opening` rows of opposite sign is how an undo
+    takes the wrong year's money.
+  - It finds **the most recent settlement whose rows still exist**, so a year holding several, or
+    one already unpicked by hand, still undoes the right one — and it survives two events sharing
+    a `created_at` to the millisecond, which the demo store does routinely.
+  - Reachable **from either year**: the other half sits in FY+1, which is often the year the
+    landlord is looking at when they notice it.
+  - ⚠ **A closed year on either side refuses the whole thing.** Half an undo is worse than none.
+  - A settlement logged before today has no id list, and it says so plainly rather than guessing:
+    *"…was recorded before Amlak kept track of which entries a settlement wrote."*
+
+  **A real bug in the month panel, inverted on every credit there has ever been.**
+  `MonthDetailPanel.js` stated *"This year's invoice is re-issued at the lower total"* — hardcoded
+  — while the implication directly above it computed the direction correctly. Removing a CREDIT
+  raises the invoice. It now says **HIGHER** when it is a credit, and a settlement row additionally
+  warns that its other half is in another year and points at Undo settlement.
+
+  **The second leak: a placed expense nobody could ever bill** (§5 of the plan). `placeUnplacedLine`
+  forced `billable: false` — a deliberate safety property ("answering the nag can never move a
+  tenant's bill") whose cost was that a genuinely recoverable cost placed after the fact reached
+  "what the year cost you" and **no tenant's CAM**, silently absorbed with nothing on any screen
+  saying so. The picker now asks, as a second step beside the category (the same shape as Round 1's
+  month box): **you absorb it** (default, unchanged) or **bill it to tenants as CAM**.
+  - ⚠ **THE CARRY-THROUGH RUNS ON THE BILLABLE BRANCH ONLY.** `addCamLineItem` already moved
+    `cam_total` → `v_tenant_shares`, and everything that builds UP from live data follows on its
+    own; the STORED invoice does not (§1), so `resyncPropertyBilling` runs and
+    `settleBillingChange` repaints. It skips a closed year itself, so a bill already sent cannot
+    move — and the confirm says exactly that.
+  - ⚠ **AN OWNER DRAW CAN NEVER BE BILLABLE**, whatever is passed. `cam_line_items` is the table
+    the building bills from and a distribution is money that is not the building's; the predicate
+    keeping it inert is that column. It skips the question rather than offering a choice that
+    would be refused, and a test asserts asking for it is ignored.
+  - The confirm inverts this panel's standing promise deliberately and out loud: *"Their bills go
+    UP by their share of it. This is the only thing on this panel that moves what a tenant owes
+    besides recording rent."* Gold, not red.
+
+  **History's Bookkeeping log** listed three kinds while holding six — it now names charges and
+  year-end settlements too. A fold that misstates its own contents is a fold nobody opens.
+
+  *Files:* `src/lib/settle.js` · `src/lib/api.js` · `src/lib/bankTieOut.js` ·
+  `src/pages/LedgerPage.js` · `src/components/MonthDetailPanel.js` · `src/pages/HistoryPage.js` ·
+  `src/lib/incomeExpenseExcel.js` · `src/lib/incomeExpense.js` ·
+  `src/components/ExportIncomeExpenseModal.js` · tests in `settleBalance.test.js`,
+  `bankTieOut.test.js`, `monthPanelUi.test.js`, `ledgerPage.test.js`.
+  No migration, no edge function, no view, no feature key.
+
+  **Verified live in the demo build**, not just in the editor:
+  - Northwind Books, FY 2026, `owes $89,250.00` → **Carry it forward**. Jan–Jul went to `⌫` with
+    the tooltip *"$12,750.00 credited — this month was settled, not billed. Carried forward to FY
+    2027."*
+  - FY 2027 showed **`$89,250.00 brought forward from 2026`** beside January's `+$89,250` chip.
+  - **Undo settlement** from FY **2027** → *"Northwind Books — settlement undone … 8 entries
+    removed across FY 2026 and FY 2027."* 2027's chip and January charge gone; FY 2026 back to
+    `owes $89,250.00 · Settle up…` with no `⌫` cells. Exact round trip.
+  - Sample statement → placed the $212.48 Home Depot line as **repairs · bill it to tenants as
+    CAM**. Northwind's CAM & tax went $2,484.33 → $2,491.42/mo, the property's billed total
+    $179,022.84 → $179,125.53, **no drift chip** (the invoices were rebuilt, not left behind),
+    and the badge said which year moved. The remaining ~$0.09 vs the $212.48 is the vacant space's
+    share, correctly absorbed by the landlord.
+  - The panel opened reading *"Of every dollar that crossed your bank account in 2026, where did
+    it end up?"*, the ⚖ Reconcile distinction, the finding, `THE BANK SHOWED` / `AMLAK RECORDED`,
+    the map, then the method.
+
+  **1894 tests across 181 files** (was 1884), all three URLs 200.
+
+  ⚠ **Still outstanding, in George's hands:**
+  - **Round 3 — the year boundary** is unbuilt: the close-year dialog does not offer the
+    settlement (carry them all forward · leave them open, and what that means · settle
+    individually first), the snapshot's `breakdown` records no `closing_balance` / `settled_as`,
+    the workbook's *What the year left* has no `of which still uncollected at year end` line, and
+    *Where each tenant stands* has no **Settled as** column. Order is forced there: settle, then
+    snapshot — the snapshot is the lock.
+  - **`TenantStatement` is hardcoded to the current CALENDAR year** (`LeaseDetailPage.js:763`),
+    not the fiscal year on screen, so an FY-2025 settlement is invisible there. Pre-existing.
+  - **The import still calls no `resyncPropertyBilling`** — raised four times now. A statement
+    import writes billable expense rows and does not carry the change to stored invoices; the
+    Ledger's `bill behind by $X · Rebuild` is the only thing that catches it.
+  - **A tagged overpayment still creates no `credit`** — `allocatePayments` settles a tagged month
+    at whatever arrived, by design. Changing it moves money on every screen.
+
 - **2026-08-16** — **ROUND 1 of five questions: the nag could not answer "this is rent", the tie-out
   named a bucket instead of a line, and every tenant was accused of owing money on the 1st of every
   month** (George: *"why does it say every tenant owes something?"* · *"an option for money not placed
