@@ -151,6 +151,120 @@ function addSummary(wb, pkg, corporationName, now) {
   return ws;
 }
 
+// ── Bank tie-out ─────────────────────────────────────────────────────────────
+//
+// The one sheet in this workbook whose right-hand column did not come from Amlak. Every
+// other figure here is the app checking its own arithmetic; this asks whether the money
+// the BANK showed reached the books at all.
+//
+// ⚠ IT IS ITS OWN SHEET RATHER THAN A BLOCK ON EACH PROPERTY, because the question it
+// answers is asked once — "did anything go astray?" — and a reader who has to visit five
+// tabs to find out has been given five chances to stop looking. Properties with no
+// imported statement are named on it and skipped: "nothing imported" and "imported and
+// clean" are different answers and must not print the same.
+//
+// A: what it was filed as · B: on the statement · C: in the books · D: the difference ·
+// E: what that means in words. Five columns, no monthly grid — the tie-out is a
+// comparison, not a year.
+const TIE_WIDTHS = [36, 16, 16, 14, 62];
+const TIE_LAST = 'E';
+const TIE_ALIGN = ['left', 'right', 'right', 'right', 'left'];
+
+function addTieOut(wb, pkg, year) {
+  const ws = xlsxSheet(wb, 'Bank tie-out', TIE_WIDTHS, { freeze: 0 });
+  const pen = xlsxPen(ws, TIE_LAST);
+
+  pen.title(`Bank tie-out — FY ${year}`);
+  pen.note(
+    'Two columns from two different places. The left is every line on the statements you imported, grouped by what '
+    + 'you decided about it. The right is the real rows in your books — payments, expenses, other income — read from '
+    + 'those tables and not from the lines, because a report derived from the same list it is checking would balance '
+    + 'no matter what was wrong. Money in and money out are never netted against each other.',
+    { bg: P.NEUTRAL_BG, height: 40 }
+  );
+  pen.skip();
+
+  const side = (title, s) => {
+    pen.head([title, 'On the statement', 'In your books', 'Difference', ''], TIE_ALIGN);
+    for (const r of s.rows) {
+      const off = Math.abs(r.diff) > 0.005;
+      const attention = off || (r.unplaced && r.statement > 0.005) || r.unknown;
+      pen.line(
+        [
+          r.label,
+          r.statement,
+          r.books == null ? '—' : r.books,
+          r.books == null ? '' : r.diff,
+          r.booksLabel ? `${r.booksLabel}${off ? '' : ' ✓'}` : r.nowhere || '',
+        ],
+        { aligns: TIE_ALIGN, ...(attention ? { bg: P.GOLD_BG, ink: P.GOLD_INK } : {}) }
+      );
+    }
+    pen.line([`Total ${title.toLowerCase()}`, s.statementTotal, '', '', ''], { bold: true, bg: P.SUMMARY_BG, aligns: TIE_ALIGN });
+  };
+
+  for (const p of pkg.properties) {
+    pen.section(p.name);
+    const t = p.tieOut;
+    if (!t) {
+      pen.note('No bank statement has been imported for this property this year, so there is nothing to tie out. '
+        + 'That is not the same as "checked and clean".', { height: 26 });
+      pen.skip();
+      continue;
+    }
+    pen.pair('Statements read', String(t.imports));
+    side('Money in on your statements', t.in);
+    pen.skip();
+    side('Money out on your statements', t.out);
+    pen.skip();
+
+    // ⚠ RENT NEVER TIES, AND SAYS SO IN ITS OWN HEADING. Cash off the bank against what
+    // was billed differs by arrears or prepayment on every property in the world. Printed
+    // as a difference among the others it would read as a fault and teach the reader that
+    // this sheet cries wolf.
+    if (t.rent) {
+      pen.head(['Rent is a reconciling item, not a tie', 'Amount', '', '', ''], TIE_ALIGN);
+      pen.line(['Billed to tenants this year', t.rent.billed, '', '', 'every month of every lease\'s schedule'], { aligns: TIE_ALIGN });
+      pen.line(['Received this year', t.rent.received, '', '', 'every payment recorded against those bills, however it arrived'], { aligns: TIE_ALIGN });
+      pen.line([
+        t.rent.behind >= 0 ? 'Still owed' : 'Paid ahead',
+        Math.abs(t.rent.behind), '', '',
+        t.rent.behind >= 0
+          ? 'arrears. The Ledger names it tenant by tenant, month by month.'
+          : 'tenants are ahead of their bills. The Ledger names who.',
+      ], { bold: true, bg: P.SUMMARY_BG, aligns: TIE_ALIGN });
+      pen.skip();
+    }
+
+    if (t.handEntered && (t.handEntered.expenses > 0.005 || t.handEntered.income > 0.005)) {
+      pen.note(
+        `Not part of the comparison above: ${usd(t.handEntered.expenses)} of expenses and ${usd(t.handEntered.income)} `
+        + 'of other income are on the books with no imported statement behind them. Typed in by hand, or paid from an '
+        + 'account you have not imported. Real money, simply not something a bank line can confirm.',
+        { height: 28 }
+      );
+    }
+
+    if (t.differences.length) {
+      pen.head(['What to look at', '', '', '', ''], TIE_ALIGN);
+      for (const d of t.differences) pen.note(`• ${d}`, { bg: P.GOLD_BG, ink: P.GOLD_INK, height: 34 });
+    } else {
+      pen.note('Every line on these statements reaches the figure it was filed as. ✓', { height: 16 });
+    }
+    pen.skip();
+  }
+
+  // ⚠ SAID ON THE SHEET, NOT ASSUMED. A tie-out that balances is easily read as "the books
+  // are right", which it is not — it says the two records agree, and they can agree on the
+  // same wrong number. Stating the three blind spots is what makes the ✓ above worth
+  // anything.
+  pen.section('What this cannot catch');
+  pen.note('• A line transcribed with the wrong amount. Both sides carry the same wrong number and it ties perfectly.', { height: 16 });
+  pen.note('• Money that never touched the account you imported — another bank account, or cash.', { height: 16 });
+  pen.note('• A line filed under the wrong heading. It ties, in the wrong bucket.', { height: 16 });
+  return ws;
+}
+
 // ── One property ─────────────────────────────────────────────────────────────
 function addProperty(wb, p, year, used) {
   // Excel caps a sheet name at 31 chars and forbids : \ / ? * [ ]. Duplicates are
@@ -319,6 +433,13 @@ export async function downloadIncomeExpenseXlsx({ corporationId, corporationName
   const now = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
   addSummary(wb, pkg, corporationName || 'Portfolio', now);
   const used = new Set(['summary']);
+  // Only when there is something to tie out. An always-present tab reading "nothing
+  // imported" on every property teaches the reader to skip the one sheet that would have
+  // told them money went astray.
+  if (pkg.properties.some((p) => p.tieOut)) {
+    addTieOut(wb, pkg, year);
+    used.add('bank tie-out');
+  }
   for (const p of pkg.properties) addProperty(wb, p, year, used);
 
   const buf = await wb.xlsx.writeBuffer();

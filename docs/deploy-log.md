@@ -12,6 +12,141 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **SLICE 3: the bank tie-out. "38 of 38 lines placed ✓" counted DECISIONS;
+  nothing had ever counted the dollars** (George: *"i dont see that bank tie out im not sure if
+  you merged it with the income and expenses or if that wasnt the plan but i dont see it"* —
+  answered: it was never built, only Slices 1 and 2 shipped)
+  - **Cloudflare version `d36f9a62-ae3a-4741-875b-24e89eb5699d`**, on top of `f7aa6bc3`. No
+    migration, no edge function, no view, no feature key. Tests **1856 across 180 files** (was
+    1839/179): +17, one new file.
+
+  ### What it is
+
+  Two columns from two different places, and the gap is the entire product.
+  - **left** — every imported line for the year, grouped by what was decided about it. Pure
+    `statement_lines` (0076), the audit record.
+  - **right** — the real rows in the books: `payments`, `cam_line_items`, `other_income`.
+
+  ⚠ **THE RIGHT-HAND SIDE IS READ FROM THE MONEY TABLES, NEVER FROM THE LINES.** Derived from
+  the left it balances by construction and proves nothing — which is the failure mode of every
+  reconciliation that reconciles a thing against itself. The first test in the new file does not
+  assert that a clean case balances; it deletes the row behind a filed line and asserts the
+  tie-out *breaks*.
+
+  Lands in **two places from one function**: a `Panel id="ledger.tieout"` on the Ledger (shut by
+  default, stating its bottom line while folded) and a **Bank tie-out** sheet in the
+  Income-and-expenses workbook, plus a `flags()` entry so the download dialog and the Summary
+  sheet name it without anyone opening the tab.
+
+  ### The judgements, and why each one
+
+  - **⚠ THE BOOKS SIDE IS SCOPED BY `import_id`, NOT BY PROPERTY AND YEAR.** A statement
+    legitimately settles a lease on ANOTHER building (cross-property matching) and pays a bill
+    filed under a different fiscal year; both write rows this property's `.eq('property_id')` /
+    `.eq('year')` readers never see, while the LINE for them files under the account it was
+    imported from (`property_id: propertyId`, always, api.js:6706). Scoping by the import that
+    wrote them is the only arrangement under which the two sides describe the same money. The
+    fiscal year is then applied to **both** sides by one rule, `rowFiscalYear` — stored column,
+    else the row's own date (`Number(txn.date.slice(0,4))`, the rule `statementMatch` uses),
+    else "says nothing", which is included in every year exactly as `listUnplacedLines` /
+    `listDecidedLines` / `listOtherIncome` already do.
+  - **FOUR ROWS ARE MEANT TO READ ZERO AND SAY SO OUT LOUD** — transfer, left out, deposit held,
+    refund. That is George's *"unless it is ignored"*, and stating it is what stops a reader
+    treating a legitimate zero as a missing figure. `refund` is defined now though Slice 4
+    writes it, so it appears the day it exists rather than joining the catch-all unlabelled.
+  - **RENT NEVER TIES, AND HAS ITS OWN HEADING SAYING SO** — *"Rent is a reconciling item, not a
+    tie"*. Cash off the bank against what was billed differs by arrears or prepayment on every
+    property there has ever been. Printed among the comparisons it reads as a fault and teaches
+    the landlord that this panel cries wolf.
+  - **IN AND OUT ARE NEVER NETTED** — same rule and same reason as `lineCompleteness`: a $5,000
+    deposit and a $5,000 withdrawal that cancel would report "$0 difference" on a statement
+    where $10,000 went astray.
+  - **AN UNKNOWN DISPOSITION SURFACES RATHER THAN VANISHING**, into a "Filed some other way"
+    row that names the keys and says outright that the report does not know where they landed.
+    Same discipline as `dispositionInfo` refusing to read an unknown key as placed, and as
+    `noiBridge`'s catch-all residual.
+  - **HAND ENTRY IS CONTEXT, NEVER A DIFFERENCE.** The books legitimately hold money that never
+    crossed the imported account, so the panel states it (*"$73,950.00 of expenses … typed in by
+    hand, or paid from an account you haven't imported"*) instead of reporting it as a fault. A
+    tie-out that called normal bookkeeping an error would be ignored within a week.
+  - **WHAT IT CANNOT CATCH IS ON THE SHEET**: a line transcribed with the wrong amount (both
+    sides carry the same wrong number) · money that never touched the imported account · a line
+    filed under the wrong heading — it ties, in the wrong bucket. A ✓ that does not say what it
+    did not check reads as "the books are right", which it is not.
+  - **`rentPosition` is ONE function with two callers** (the Panel and `shapeProperty`), because
+    the workbook has no `derived` array to read and would otherwise need a second definition of
+    "billed for the year". Pinned against `ledgerRowSummary` on the real demo roll.
+  - **Returns `null` when nothing has been imported**, so the panel is absent and the tab is not
+    written. "Nothing imported" and "imported and clean" are different answers and must not
+    print the same.
+
+  ### ⚠ THE NULL-YEAR EXPENSE BUG — fixed, and the tie-out is what finds the old ones
+
+  `placeUnplacedLine` wrote `year: line.year || null` (both the income and the expense branch)
+  while `listExpenseLineItems` filters `.eq('year', year)` — **the one fiscal-year reader in
+  `api.js` that does not tolerate a null.** So an expense placed without a year was on the
+  books, read "recorded" on its line, and appeared in **no year's** Money out, on any sheet.
+  Money that is on the books and in no report is worse than money missing from both, because
+  nothing ever asks about it.
+  - Three fallbacks now, in order of how likely each is to be right: the line's own year, the
+    year of its own transaction date, then the fiscal year the landlord is looking at (threaded
+    from `LedgerPage`). Verified live: placing the $212.48 Home Depot line moved BOTH sides of
+    Property expenses from $4,530.00 to $4,742.48 — the books side only moves if the row landed
+    in FY 2026.
+  - The read path was NOT loosened. Making `listExpenseLineItems` tolerant would make every
+    pre-existing null-year row appear in every year at once, across the Financials CAM section,
+    `syncCamTotal`, recoverability and every year's workbook. Rows written before the fix are
+    **reported** instead: `stranded` counts them and the tie-out says *"it ties here, and it is
+    in NO year's Money out"*.
+
+  ### A REAL BUG FOUND BY THE REACT WARNING I COULD NOT PIN THIS MORNING
+
+  The unplaced panel's **"Security deposit from…"** picker read `t.lease_id` off the row
+  WRAPPER (`derived` holds `{ r, alloc, comp, summary, steps, followUp }` — the tenant is `r`).
+  Every option was `key={undefined}` with `value="deposit:undefined"` and a **blank label**: an
+  optgroup of empty rows that, if picked, would have filed a security deposit against the string
+  `"undefined"`. Its only symptom was React's duplicate-key warning on `LedgerPage`, which a
+  production build never prints — which is why it survived. Pinned in `ledgerPage.test.js`
+  (every option has a real value and a non-empty label), and the suite now emits zero key
+  warnings.
+
+  ### Watched working, on the demo, in a browser
+
+  Import → 4 expense lines + 2 tenant deposits accepted, 3 left unplaced:
+
+  | | on the statement | in the books | |
+  |---|---|---|---|
+  | Tenant rent · 2 lines | $10,716.66 | $10,716.66 | payments recorded ✓ |
+  | Property expenses · 4 lines | $4,530.00 | $4,530.00 | "Money out" rows ✓ |
+  | Not yet placed | $10,416.67 in · $5,412.48 out | — | in no figure on any sheet |
+
+  Rent block: billed **$190,518.00** · received **$111,016.66** · still owed **$79,501.34** —
+  the same three figures the grid's own footer prints. Placing one line repainted both panels.
+  The download dialog reads *"1 property · plus a Bank tie-out sheet"* and carries the tie-out
+  flag last, under the invoice-drift flag from this morning.
+
+  ### Files
+  **New:** `src/lib/bankTieOut.js` (pure) · `src/lib/__tests__/bankTieOut.test.js` (17).
+  Edited: `src/lib/api.js` (`listStatementLinesForYear`, `getBankTieOut`, the `placeUnplacedLine`
+  year fix) · `src/lib/incomeExpense.js` (`tieOut` on the shape + loader + flag) ·
+  `src/lib/incomeExpenseExcel.js` (`addTieOut`) · `src/pages/LedgerPage.js` (the Panel, the
+  deposit-picker fix, `year` threaded to `placeUnplacedLine`, `bankTieOut` invalidation) ·
+  `src/components/ImportStatementButton.js` (`decidedLines` + `bankTieOut` in
+  `settleStatementImport` — both were missing) · `src/components/ExportIncomeExpenseModal.js` ·
+  `src/components/__tests__/ledgerPage.test.js`.
+
+  ### Flags / not done
+  - **Slice 4 (settle up) is still outstanding** — the four ways to clear a year-end balance.
+    The `refund` row and disposition slot are pre-cut for it.
+  - **The swallowed audit write** (`api.js`, the bare `catch {}` around the `statement_lines`
+    insert) is now VISIBLE — booked money with no line behind it reads as "the books hold more
+    than these statements show" — and is still not fixed. Its own round.
+  - **The import still calls no `resyncPropertyBilling`.** Raised 2026-08-16 and unchanged; it
+    is George's call whether a statement may re-price issued invoices mid-year.
+  - **"Money not yet placed" still cannot place rent** — its picker offers other income,
+    transfer, a deposit or leave-out, and tells the landlord to re-import the statement. The
+    tie-out now puts a figure on what that costs.
+
 - **2026-08-16** — **Drove it as a landlord would, bank statement to Excel: the workbook was the only
   surface that did not know the invoices had stopped matching it** (George: *"act as a user and run
   through from end to end all the options i have all the way from uploading a bank statement to

@@ -131,6 +131,19 @@ describe('LedgerPage — the rent ledger grid', () => {
     await waitFor(() => expect(screen.getByText(/saved · Imported sample-statement.pdf/)).toBeTruthy());
     // The register lists the import with an Undo.
     expect(screen.getByText(/Imported statements \(1\)/)).toBeTruthy();
+    // ⚠ THE "SECURITY DEPOSIT FROM…" PICKER ON THE UNPLACED PANEL LISTS REAL TENANTS.
+    // It read `t.lease_id` off the row WRAPPER ({ r, alloc, comp, summary }), so every
+    // option was `value="deposit:undefined"` with a blank label — an optgroup of empty
+    // rows that would have filed a deposit against the string "undefined". Its only
+    // symptom was React's "unique key" warning, which a production build never prints.
+    const depositOpts = Array.from(document.querySelectorAll('optgroup[label="Security deposit from…"] option'));
+    expect(depositOpts.length).toBeGreaterThan(0);
+    for (const o of depositOpts) {
+      expect(o.value).not.toMatch(/undefined/);
+      expect(o.textContent.trim()).not.toBe('');
+    }
+    // The bank tie-out reads the same lines from the third angle and appears with them.
+    expect(await screen.findByText('Bank tie-out')).toBeTruthy();
     // Undo from the results strip cleans everything back out.
     fireEvent.click(screen.getAllByText('↩ Undo')[0]);
     await waitFor(() => expect(screen.queryByText(/saved · Imported/)).toBeNull());

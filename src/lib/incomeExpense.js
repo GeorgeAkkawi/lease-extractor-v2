@@ -35,8 +35,9 @@
 import {
   listProperties, listExpenseBuckets, listCamLineItems, listTaxLineItems,
   listRoofLineItems, getExpenseRecord, getTenantShares, getPropertyTotals, listOtherIncome,
-  getPropertyMonthlyRoll, listEscalationsByLeases,
+  getPropertyMonthlyRoll, listEscalationsByLeases, getBankTieOut,
 } from './api';
+import { rentPosition } from './bankTieOut';
 import { recoverabilityRows, absorbedFromItems } from './recoverability';
 import { summarizeOtherIncome } from './otherIncome';
 import { componentizeSchedule } from './ledger';
@@ -189,7 +190,7 @@ export function noiBridge({ noi = 0, net = 0, recovered = 0, otherIncome = 0, ab
  * distribution is not a cost of the building (see `isOwnerCategory`), and
  * `recoverabilityRows` has already split it out.
  */
-export function shapeProperty({ property, year, totals, items, shares, expense, buckets, income, roll, escByLease = {} }) {
+export function shapeProperty({ property, year, totals, items, shares, expense, buckets, income, roll, escByLease = {}, tieOut = null }) {
   const inc = summarizeOtherIncome(income, year);
   // ⚠ The term weighting is passed, not defaulted, and it is the SAME call the "What it
   // cost you" table on screen makes. Those two are one rule with two renderers; letting
@@ -348,6 +349,13 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
       noi: num(totals?.noi), net, recovered: rec.totals.recovered, otherIncome: inc.total,
       absorbed, charges, rentBasis: round2(rent - rentQuoted),
     }),
+    // ⚠ THE BANK TIE-OUT, and the rent position is attached HERE rather than read inside
+    // it. `rentPosition` needs the monthly roll — the most expensive query on this page and
+    // one this function is already holding — so the tie-out loader stays free of it and the
+    // Ledger panel attaches the same figures from the roll IT already holds. One function,
+    // two surfaces, no second definition of "billed" (CLAUDE.md §3). Null when nothing has
+    // been imported for the year: no statements means no tie-out, not a clean one.
+    tieOut: tieOut ? { ...tieOut, rent: rentPosition(roll) } : null,
   };
 }
 
@@ -493,6 +501,16 @@ export function flags(properties = []) {
     out.push(`${p.name}: the invoices you actually issued come to ${dollars(Math.abs(p.invoiceDriftTotal))} ${dir} what this sheet shows, on ${p.invoiceDrifted.length} lease${p.invoiceDrifted.length === 1 ? '' : 's'} — ${who}. These months are built from each lease's terms as they stand today; an invoice is frozen when it is issued and does not follow a later change, and importing a bank statement that moves your CAM or tax total does not re-price one. The Ledger names the same figure on the tenant's row and offers Rebuild, which brings the bill up to this sheet.`);
   }
 
+  // ⚠ THE BANK'S OWN VERDICT, and it belongs on the pre-flight rather than only on its own
+  // tab. Everything else in this workbook is Amlak checking Amlak; this is the one figure
+  // that came from outside it. A reader who never opens the Bank tie-out sheet still has to
+  // learn that money crossed the account and reached none of the figures above.
+  for (const p of properties) {
+    const t = p.tieOut;
+    if (!t || t.balanced) continue;
+    out.push(`${p.name}: the Bank tie-out sheet has ${t.differences.length} thing${t.differences.length === 1 ? '' : 's'} to look at — ${t.differences.join(' ')}`);
+  }
+
   const noExpenses = properties.filter((p) => p.expenseTotals.spent <= 0);
   if (noExpenses.length) {
     out.push(`${noExpenses.length} propert${noExpenses.length === 1 ? 'y has' : 'ies have'} no expenses recorded for this year: ${noExpenses.map((p) => p.name).join(', ')}.`);
@@ -511,7 +529,7 @@ export async function buildIncomeExpense(corporationId, year) {
   const [props, buckets] = await Promise.all([listProperties(corporationId), listExpenseBuckets()]);
   const properties = await Promise.all(
     (props || []).map(async (property) => {
-      const [totals, camItems, taxItems, roofItems, expense, shares, income, roll] = await Promise.all([
+      const [totals, camItems, taxItems, roofItems, expense, shares, income, roll, tieOut] = await Promise.all([
         getPropertyTotals(property.id, year),
         listCamLineItems(property.id, year),
         listTaxLineItems(property.id, year),
@@ -526,6 +544,10 @@ export async function buildIncomeExpense(corporationId, year) {
         // a §2 choke point. Re-deriving them here would be a second implementation of
         // the Ledger's own grid.
         getPropertyMonthlyRoll(property.id, year),
+        // ⚠ Returns null — and reads nothing beyond the import register — on a property
+        // with no imported statement, which is most of them. The five reads behind it are
+        // paid for only where there is something to tie out.
+        getBankTieOut(property.id, year),
       ]);
       // ⚠ Sequential on purpose — it needs the lease ids the shares query just returned.
       // One query for the whole property, and the same key TenantShareTable /
@@ -535,7 +557,7 @@ export async function buildIncomeExpense(corporationId, year) {
         ? await listEscalationsByLeases((shares || []).map((s) => s.lease_id))
         : {};
       return shapeProperty({
-        property, year, totals, shares, expense, buckets, income, roll, escByLease,
+        property, year, totals, shares, expense, buckets, income, roll, escByLease, tieOut,
         items: [...(taxItems || []), ...(camItems || []), ...(roofItems || [])],
       });
     })

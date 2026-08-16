@@ -63,6 +63,9 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
             <>
               <div className="fin-subhead" style={{ marginTop: 16 }}>
                 {pkg.properties.length} propert{pkg.properties.length === 1 ? 'y' : 'ies'}
+                {/* The tie-out tab only exists when a statement has been imported, so say
+                    when it is there rather than letting him hunt for a sheet that isn't. */}
+                {pkg.properties.some((p) => p.tieOut) && <span className="muted"> · plus a Bank tie-out sheet</span>}
               </div>
               {/* ⚠ THE SUMMARY SHEET'S OWN MONEY-IN ROWS, IN THE SAME ORDER. This preview
                   showed "Rent" alone until the 2026-08-16 audit — which was the whole of

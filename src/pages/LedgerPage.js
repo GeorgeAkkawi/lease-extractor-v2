@@ -13,6 +13,7 @@ import {
   listStatementImports,
   listUnplacedLines,
   listDecidedLines,
+  getBankTieOut,
   listOtherIncome,
   resyncLeaseBilling,
   setLineDisposition,
@@ -38,6 +39,7 @@ import LeaseTypeChip from '../components/LeaseTypeChip';
 import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness, dispositionInfo, ignoreReasonLabel } from '../lib/dispositions';
+import { rentPosition, tieOutSentence } from '../lib/bankTieOut';
 import Panel from '../components/Panel';
 import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
 import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
@@ -186,6 +188,15 @@ export default function LedgerPage() {
     queryFn: () => listDecidedLines(propId, year),
     enabled: isOn('ledger'),
   });
+  // Slice 3 — the same lines from the third angle: not "was a decision made?" but "did the
+  // money that decision promised actually reach a table?". Null when nothing has been
+  // imported for the year, so the panel is absent rather than claiming a clean bill of
+  // health nobody checked.
+  const { data: tieOut = null } = useQuery({
+    queryKey: ['bankTieOut', propId, year],
+    queryFn: () => getBankTieOut(propId, year),
+    enabled: isOn('ledger'),
+  });
   // The receipts already recorded, read ONLY to offer back the write-in categories they
   // carry. A custom income category exists because a row uses it — derived from use, so
   // there is no list to store and nothing to clean up. Same key the Financials page uses,
@@ -206,10 +217,13 @@ export default function LedgerPage() {
     },
     { in: 0, out: 0 },
   );
-  // Both panels move together — a line leaves one exactly when it joins the other.
+  // Both panels move together — a line leaves one exactly when it joins the other. The
+  // tie-out reads the SAME lines from the third angle, so it moves with them or it spends
+  // the rest of the session reporting money as unplaced that the landlord has just filed.
   const settleLines = () => {
     qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] });
     qc.invalidateQueries({ queryKey: ['decidedLines', propId, year] });
+    qc.invalidateQueries({ queryKey: ['bankTieOut', propId, year] });
   };
   const leaveOut = useMutation({
     mutationFn: ({ id, reason }) => setLineDisposition(id, 'ignored', reason || null),
@@ -236,6 +250,11 @@ export default function LedgerPage() {
       kind: kind.startsWith('income:') ? 'income' : kind.startsWith('deposit:') ? 'deposit' : kind.startsWith('expense:') ? 'expense' : kind,
       category: kind.startsWith('income:') ? kind.slice(7) : kind.startsWith('expense:') ? kind.slice(8) : null,
       leaseId: kind.startsWith('deposit:') ? kind.slice(8) : null,
+      // ⚠ The fiscal year the landlord is looking at, as the LAST fallback behind the
+      // line's own year and its transaction date. An expense row written with no year is
+      // invisible in every year's figures (`listExpenseLineItems` reads the year exactly),
+      // which is how a placed line could read "recorded" and reach no sheet at all.
+      year,
     }),
     onSuccess: () => {
       settleLines();
@@ -479,6 +498,13 @@ export default function LedgerPage() {
   const totalCollected = derived.reduce((s, { summary }) => s + summary.collected, 0);
   const totalProjected = derived.reduce((s, { summary }) => s + summary.projected, 0);
   const totalBilled = derived.reduce((s, { summary }) => s + summary.billed, 0);
+  // ⚠ The tie-out's rent block comes from `rentPosition` over the SAME roll this grid is
+  // painted from, not from `totalBilled` / `totalCollected` above — because the workbook's
+  // copy of this block has no `derived` to read and would otherwise need a second
+  // definition of "billed for the year". One function, both surfaces (CLAUDE.md §3). They
+  // agree to the cent: `summary.billed` sums the same `owed` array `r.annual` does.
+  const rentPos = rentPosition(rows);
+  const tieOutWithRent = tieOut ? { ...tieOut, rent: rentPos } : null;
   const totalVariance = round2(derived.reduce((s, { summary }) => s + summary.variance, 0));
   const totalCredit = derived.reduce((s, { summary }) => s + (summary.credit > 0.05 ? summary.credit : 0), 0);
   const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : null);
@@ -886,10 +912,17 @@ export default function LedgerPage() {
                             <option value={NEW_INCOME}>＋ New category…</option>
                           </optgroup>
                         )}
+                        {/* ⚠ `derived` holds { r, alloc, comp, summary, … } — the TENANT is
+                            `r`, not the entry. Reading `t.lease_id` off the wrapper gave every
+                            option `key={undefined}` and `value="deposit:undefined"` with a
+                            blank label: an optgroup of empty rows that, if picked, would have
+                            filed a deposit against the string "undefined". It announced itself
+                            for weeks as React's "unique key" warning on this page, which is
+                            invisible in a production build — the reason it survived. */}
                         {l.direction === 'in' && derived.length > 0 && (
                           <optgroup label="Security deposit from…">
-                            {derived.map((t) => (
-                              <option key={t.lease_id} value={`deposit:${t.lease_id}`}>{t.tenant_name}</option>
+                            {derived.map(({ r }) => (
+                              <option key={r.lease_id} value={`deposit:${r.lease_id}`}>{r.tenant_name}</option>
                             ))}
                           </optgroup>
                         )}
@@ -966,6 +999,111 @@ export default function LedgerPage() {
               </tbody>
             </table>
             <MutationError of={[unplaceLine]} />
+          </Panel>
+        )}
+
+        {/* ── The bank tie-out ────────────────────────────────────────────────────────
+            The third reader of the same lines, and the only one that asks whether the
+            money they promised actually landed. "38 of 38 lines placed ✓" counts
+            DECISIONS; this counts dollars, against the payments / expense / income tables
+            themselves. Shut by default and stating its bottom line while folded, per
+            Panel's own rule — a landlord opens it when something is wrong, and the
+            summary is how they find out that it is. */}
+        {tieOut && (
+          <Panel
+            id="ledger.tieout"
+            defaultOpen={false}
+            title="Bank tie-out"
+            summary={tieOutSentence(tieOutWithRent)}
+            hint="Every line on the statements you imported, against the rows they produced in your books."
+          >
+            <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
+              The left column is what the statements showed. The right is read from your <strong>payments,
+              expenses and other-income rows themselves</strong> — never from the lines, because a check
+              derived from the list it is checking balances no matter what went wrong. Money in and money
+              out are never netted against each other.
+            </p>
+            {[['Money in on your statements', tieOut.in], ['Money out on your statements', tieOut.out]].map(([title, s]) => (
+              <table key={title} style={{ minWidth: 0, marginBottom: 10 }}>
+                <thead>
+                  <tr>
+                    <th>{title}</th>
+                    <th className="num">On the statement</th>
+                    <th className="num">In your books</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {s.rows.map((r) => {
+                    const off = Math.abs(r.diff) > 0.005;
+                    const attention = off || (r.unplaced && r.statement > 0.005) || r.unknown;
+                    return (
+                      <tr key={r.key} style={attention ? { background: 'var(--gold-soft)' } : undefined}>
+                        <td>{r.label}{r.count ? <span className="muted" style={{ fontSize: 11 }}> · {r.count} line{r.count === 1 ? '' : 's'}</span> : null}</td>
+                        <td className="num">{money(r.statement)}</td>
+                        <td className="num">{r.books == null ? <span className="muted">—</span> : money(r.books)}</td>
+                        <td style={{ fontSize: 11.5 }} className="muted">
+                          {r.booksLabel ? `${r.booksLabel}${off ? ` · ${money(Math.abs(r.diff))} ${r.diff > 0 ? 'missing' : 'extra'}` : ' ✓'}` : r.nowhere}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr>
+                    <td><strong>Total</strong></td>
+                    <td className="num"><strong>{money(s.statementTotal)}</strong></td>
+                    <td></td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            ))}
+
+            {/* ⚠ Rent gets its own heading saying it does NOT tie. Cash against billed
+                differs by arrears or prepayment on every property there has ever been;
+                printed among the comparisons it reads as a fault and teaches him that this
+                panel cries wolf. */}
+            <table style={{ minWidth: 0, marginBottom: 10 }}>
+              <thead><tr><th>Rent is a reconciling item, not a tie</th><th className="num">Amount</th><th></th></tr></thead>
+              <tbody>
+                <tr><td>Billed to tenants this year</td><td className="num">{money(rentPos.billed)}</td><td className="muted" style={{ fontSize: 11.5 }}>every month of every lease’s schedule</td></tr>
+                <tr><td>Received this year</td><td className="num">{money(rentPos.received)}</td><td className="muted" style={{ fontSize: 11.5 }}>every payment recorded, however it arrived</td></tr>
+                <tr>
+                  <td><strong>{rentPos.behind >= 0 ? 'Still owed' : 'Paid ahead'}</strong></td>
+                  <td className="num"><strong>{money(Math.abs(rentPos.behind))}</strong></td>
+                  <td className="muted" style={{ fontSize: 11.5 }}>
+                    {rentPos.behind >= 0 ? 'the grid above names it tenant by tenant' : 'tenants are ahead of their bills'}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            {tieOut.handEntered && (tieOut.handEntered.expenses > 0.005 || tieOut.handEntered.income > 0.005) && (
+              <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
+                Not part of the comparison: {money(tieOut.handEntered.expenses)} of expenses and{' '}
+                {money(tieOut.handEntered.income)} of other income are on the books with no imported statement
+                behind them — typed in by hand, or paid from an account you haven’t imported. Real money, just
+                not something a bank line can confirm.
+              </p>
+            )}
+
+            {tieOut.differences.length > 0 ? (
+              <div className="export-flags">
+                {tieOut.differences.map((d, i) => <div className="export-flag" key={i}>{d}</div>)}
+              </div>
+            ) : (
+              <p className="note-msg good" style={{ marginTop: 0 }}>
+                Every line on these statements reaches the figure it was filed as. ✓
+              </p>
+            )}
+
+            {/* Said here, not assumed. A tie-out that balances is easily read as "the books
+                are right" — it says the two records agree, and they can agree on the same
+                wrong number. */}
+            <p className="muted" style={{ fontSize: 11, lineHeight: 1.55, marginBottom: 0 }}>
+              What this cannot catch: a line transcribed with the wrong amount (both sides carry the same wrong
+              number) · money that never touched the account you imported · a line filed under the wrong
+              heading — it ties, in the wrong bucket.
+            </p>
           </Panel>
         )}
 

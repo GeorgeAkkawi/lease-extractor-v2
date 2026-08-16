@@ -22,6 +22,7 @@ import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQ
 import { advanceDueDate } from './annualReports';
 import { isValidCategory, bucketKey, defaultCategoryFor, isOwnerCategory, categoryFor, customCategoryKey, EXPENSE_CATEGORIES } from './expenseCategories';
 import { lineCompleteness } from './dispositions';
+import { bankTieOut } from './bankTieOut';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
 import { isoDateOrNull } from './isoDate';
 import { coalesce } from './coalesce';
@@ -6188,6 +6189,65 @@ export async function listDecidedLines(propertyId, year = null) {
   return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
 }
 
+// EVERY line for the year, decided or not — the third reader of the same list, and the
+// only one that wants both halves at once. `listUnplacedLines` and `listDecidedLines`
+// split it because those two panels are a work-list and a record; the bank tie-out is
+// neither, it is the arithmetic over the whole statement.
+//
+// ⚠ IDENTICAL FISCAL-YEAR SCOPING to the other two, deliberately. A line must appear in
+// exactly one year across all three surfaces, or the tie-out reports a difference that
+// only exists because it counted a December line the Ledger did not.
+export async function listStatementLinesForYear(propertyId, year = null) {
+  const list = await rows(
+    supabase.from('statement_lines').select('*').eq('property_id', propertyId)
+  );
+  const y = Number(year);
+  const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
+  return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
+}
+
+/**
+ * The bank tie-out for one property-year (Slice 3). The reads; the arithmetic is pure and
+ * lives in `bankTieOut.js`.
+ *
+ * ⚠ THE BOOKS SIDE IS READ BY `import_id`, NOT BY PROPERTY AND YEAR, and the difference
+ * matters twice over. A statement legitimately settles a lease on ANOTHER building
+ * (cross-property matching) and pays a bill filed under a different fiscal year — both
+ * write rows this property's `.eq('property_id')` / `.eq('year')` readers would never see,
+ * while the LINE for them files under the account it was imported from. Reading by the
+ * import that wrote them is the only scoping under which the two sides describe the same
+ * money. The fiscal year is then applied to both sides by one rule (`rowFiscalYear`).
+ *
+ * Returns null when nothing has been imported for the year: there is no tie-out to do, and
+ * an empty panel reading "$0.00 ✓" would claim a clean bill of health nobody checked.
+ *
+ * `rent` is deliberately NOT read here — both callers already hold the monthly roll and
+ * attach `rentPosition(roll)` themselves, rather than this fanning out a second copy of the
+ * most expensive query on the page.
+ */
+export async function getBankTieOut(propertyId, year) {
+  const imports = await listStatementImports(propertyId, year);
+  const importIds = (imports || []).map((i) => i.id).filter(Boolean);
+  if (!importIds.length) return null;
+  const [lines, payments, camRows, incRows, buckets, camItems, taxItems, roofItems, allIncome] = await Promise.all([
+    listStatementLinesForYear(propertyId, year),
+    rows(supabase.from('payments').select('*').in('import_id', importIds)),
+    rows(supabase.from('cam_line_items').select('*').in('import_id', importIds)),
+    rows(supabase.from('other_income').select('*').in('import_id', importIds)),
+    listExpenseBuckets(),
+    listCamLineItems(propertyId, year),
+    listTaxLineItems(propertyId, year),
+    listRoofLineItems(propertyId, year),
+    listOtherIncome(propertyId, year),
+  ]);
+  return bankTieOut({
+    lines, payments, expenseItems: camRows, incomeRows: incRows, buckets, year,
+    imports: importIds.length,
+    allExpenseItems: [...(camItems || []), ...(taxItems || []), ...(roofItems || [])],
+    allIncomeRows: allIncome || [],
+  });
+}
+
 // Change a line's disposition after the fact. Today that means answering the nag —
 // "yes, leave this one out" — with an optional reason. Rounds 7 and 8 point it at
 // their new destinations. Deliberately does NOT write money: placing a line as an
@@ -6279,7 +6339,22 @@ export const setLeaseSecurityDeposit = (leaseId, amount) =>
 // entity ledger is retired — an expense line, an income row, or a disposition that writes
 // nothing — so the corporation is no longer part of answering the nag, and the picker is
 // no longer disabled on a property whose corporation the page hasn't resolved.
-export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null }) {
+//
+// ⚠ THE ROW MUST CARRY A YEAR, and this wrote `line.year || null` until 2026-08-16.
+// `listExpenseLineItems` filters `.eq('year', year)` — unlike every other fiscal-year
+// reader in this file, which tolerates a null — so a placed expense with no year is in NO
+// year's Money out, on any sheet, while the line reads "recorded". Money that is on the
+// books and in no report is worse than money that is missing from both, because nothing
+// ever asks about it. Three fallbacks, in the order that is most likely to be right: the
+// line's own year, the year of its own transaction date (the rule `statementMatch` uses to
+// derive it in the first place), then the fiscal year the landlord is looking at.
+// `bankTieOut` reports any pre-fix rows still carrying a null.
+export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null, year = null }) {
+  const placeYear =
+    Number(line?.year)
+    || (line?.txn_date ? Number(String(line.txn_date).slice(0, 4)) : 0)
+    || Number(year)
+    || null;
   if (kind === 'transfer') {
     // A transfer writes nothing — the disposition IS the record, exactly as an
     // ignore's is. There is no row to create and none to reverse.
@@ -6297,7 +6372,7 @@ export async function placeUnplacedLine(line, { kind, category = null, leaseId =
     const row = await addOtherIncomeEntry({
       property_id: line.property_id,
       lease_id: leaseId,
-      year: line.year || null,
+      year: placeYear,
       category: category || 'other',
       label: line.description ? String(line.description).slice(0, 200) : null,
       amount: line.amount,
@@ -6323,7 +6398,7 @@ export async function placeUnplacedLine(line, { kind, category = null, leaseId =
     || (owner ? 'Owner distribution' : 'Expense');
   const entry = await addCamLineItem({
     property_id: line.property_id,
-    year: line.year || null,
+    year: placeYear,
     label,
     amount: Math.abs(Number(line.amount) || 0),
     billable: false,

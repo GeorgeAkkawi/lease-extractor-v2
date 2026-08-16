@@ -207,6 +207,12 @@ export function settleStatementImport(qc) {
   // An import records every line it read, and an undo takes them away with it (0076
   // cascades) — so the "money not yet placed" panel moves in both directions.
   qc.invalidateQueries({ queryKey: ['unplacedLines'] });
+  // …and the two panels that read those same lines back: what was DECIDED, and the bank
+  // tie-out that weighs every line against the row it produced. An import is the only
+  // event that creates lines from nothing, so a tie-out left stale after one reports on a
+  // statement that is no longer the whole story.
+  qc.invalidateQueries({ queryKey: ['decidedLines'] });
+  qc.invalidateQueries({ queryKey: ['bankTieOut'] });
   // An import can book an owner distribution, and undo takes it away again. Since the
   // entity ledger was retired (2026-08-12) that lands as a NOT-BILLED cam_line_items row
   // plus the bucket record carrying its `distribution` category — so both of those keys
