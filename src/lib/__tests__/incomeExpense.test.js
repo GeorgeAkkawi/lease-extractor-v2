@@ -18,7 +18,8 @@
 //     twin (CLAUDE.md §3) and are meant to agree; if they ever stop, the workbook says so
 //     in dollars rather than disagreeing quietly with the Performance card beside it.
 import { describe, it, expect } from 'vitest';
-import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, flags, shapeProperty } from '../incomeExpense';
+import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, flags, shapeProperty, noiBridge } from '../incomeExpense';
+import { getPropertyMonthlyRoll } from '../api';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -160,6 +161,32 @@ describe('a corporation’s year, month by month', () => {
     expect(p.noi + p.recovered + p.otherIncome - p.absorbed + p.charges).toBeCloseTo(p.net, 2);
   });
 
+  // ⚠ THE NOTE PRINTS AN EQUATION, SO THE EQUATION IS WHAT GETS TESTED — the terms the
+  // sheet actually renders, summed the way a reader sums them. Asserting the identity by
+  // hand (above) only ever proved the identity I remembered to write; it passed all
+  // morning on 2026-08-16 while the sheet printed a sum out by $17,999.94 on the one demo
+  // property with a part-year tenancy, under the word "exactly".
+  it('prints a bridge from NOI that adds up, on every property', async () => {
+    for (const corp of ['corp-1', 'corp-2']) {
+      for (const p of (await buildIncomeExpense(corp, Y)).properties) {
+        const b = p.noiBridge;
+        expect(b.terms.reduce((s, t) => s + t.amount, b.noi)).toBeCloseTo(b.total, 2);
+        expect(b.total).toBeCloseTo(p.net, 2);
+        // And nothing is left over: the catch-all term is the fail-safe, not the norm.
+        expect(b.terms.some((t) => t.unexplained)).toBe(false);
+      }
+    }
+  });
+
+  // Oak Center is the case that broke it: Sunrise Yoga starts 1 July, so the schedule
+  // counts six months of its rent and `effective_rent` counts twelve.
+  it('names the rent basis as a term when a lease ran only part of the year', async () => {
+    const [p] = (await buildIncomeExpense('corp-2', Y)).properties;
+    const basis = p.noiBridge.terms.find((t) => t.key === 'rentBasis');
+    expect(basis.amount).toBeCloseTo(p.rent - p.rentQuoted, 2);
+    expect(basis.amount).toBeCloseTo(-17999.94, 2);
+  });
+
   it('says out loud how many dollars it could not date', async () => {
     const pkg = await build();
     expect(pkg.flags.some((f) => f.includes('$31,000.00') && f.includes('No date'))).toBe(true);
@@ -283,6 +310,94 @@ describe('the rent tie-out', () => {
   it('says nothing when the two agree', () => {
     const p = shapeProperty({ ...base, totals: { total_revenue: 0, noi: 0 } });
     expect(flags([p]).some((s) => s.includes('difference of'))).toBe(false);
+  });
+
+  // ⚠ THE FLAG QUOTES THE FIGURE IT SUBTRACTED. `rentDrift` measures `rentScheduled` —
+  // base rent at contract rates, plus a gross lease's carve, no adjustments — because that
+  // is the like-for-like comparable to `sum(effective_rent)`. The sheet's Rent ROW is a
+  // different figure the moment a gross lease or a base-rent correction is in play, and
+  // quoting it there (as this did until the 2026-08-16 audit) printed three numbers where
+  // the third was not the difference of the first two.
+  it('quotes the scheduled rent, not the Rent row, when a gross lease makes them differ', () => {
+    const schedule = Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [i + 1, { full: 1000, owed: 1000, abated: 0, credit: 0, kind: 'full', outsideTerm: false }])
+    );
+    const p = shapeProperty({
+      ...base,
+      totals: { total_revenue: 12000, noi: 0 },
+      roll: [{ lease_id: 'l1', tenant_name: 'T', schedule, factor: 1, camTaxAnnual: 2400, roofAnnual: 0, gross: true }],
+    });
+    expect(p.rent).toBe(9600);            // the Rent row: base only, the carve on its own row
+    expect(p.rentScheduled).toBe(12000);  // the whole flat rent, which is what the view counts
+    expect(p.rentDrift).toBe(0);          // so there is no drift at all, and no flag
+    expect(flags([p]).some((s) => s.includes('difference of'))).toBe(false);
+  });
+});
+
+// ── The bridge to NOI ─────────────────────────────────────────────────────────
+//
+// It prints as one sentence claiming a sum, so the sum is the contract. Written by hand it
+// was wrong twice — `absorbed` missing when it shipped (2026-08-12) and the rent basis
+// missing until the 2026-08-16 audit.
+
+describe('noiBridge', () => {
+  it('drops the terms that are zero rather than printing "+ $0.00" four times', () => {
+    const b = noiBridge({ noi: 100, net: 150, recovered: 50 });
+    expect(b.terms.map((t) => t.key)).toEqual(['recovered']);
+    expect(b.terms.reduce((s, t) => s + t.amount, b.noi)).toBeCloseTo(b.total, 2);
+  });
+
+  it('subtracts what the landlord absorbed and adds what was charged', () => {
+    const b = noiBridge({ noi: 100, net: 120, recovered: 50, otherIncome: 10, absorbed: 45, charges: 5 });
+    expect(Object.fromEntries(b.terms.map((t) => [t.key, t.amount])))
+      .toEqual({ recovered: 50, otherIncome: 10, absorbed: -45, charges: 5 });
+    expect(b.terms.some((t) => t.unexplained)).toBe(false);
+  });
+
+  // ⚠ THE FAIL-SAFE, AND THE POINT OF BUILDING THE TERMS RATHER THAN WRITING THEM. A
+  // figure nobody thought to name here shows up as a visible difference on the sheet
+  // instead of turning the printed equation into a wrong sum.
+  it('states whatever is left over rather than printing a sum that does not add up', () => {
+    const b = noiBridge({ noi: 100, net: 175, recovered: 50 });
+    const last = b.terms[b.terms.length - 1];
+    expect(last.unexplained).toBe(true);
+    expect(last.amount).toBe(25);
+    expect(b.terms.reduce((s, t) => s + t.amount, b.noi)).toBeCloseTo(b.total, 2);
+  });
+
+  it('is a balanced sum even with nothing at all in it', () => {
+    const b = noiBridge();
+    expect(b.terms).toEqual([]);
+    expect(b.noi).toBe(0);
+    expect(b.total).toBe(0);
+  });
+});
+
+// ── Every monthly cell is the Ledger's ────────────────────────────────────────
+//
+// The promise George's complaint bought: `Money in` for a month equals what the Ledger
+// paints that month as owed. It holds only while EVERY adjustment kind has a `pnlRow` —
+// a kind whose pnlRow is null still moves `owed` (buildLeaseSchedule adds it) but reaches
+// none of the four rows, so Total billed would part company with the Ledger by exactly
+// that amount. Slice 4 proposes two such kinds (`opening`, `refund`); this is the test
+// that will fail when they arrive, which is the whole reason it is here.
+
+describe('the four Money-in rows against the roll they came from', () => {
+  it('adds up to each month’s owed, tenant by tenant, on the demo seed', async () => {
+    for (const [leases, propId] of [[2, 'prop-1'], [2, 'prop-2']]) {
+      const roll = await getPropertyMonthlyRoll(propId, Y);
+      expect(roll.length).toBe(leases);   // never let this test pass by finding nothing
+      const b = billedRowsFromRoll(roll);
+      const by = (group, id) => group.find((r) => r.lease_id === id);
+      for (const r of roll) {
+        for (let m = 1; m <= 12; m++) {
+          const owed = Math.round((Number(r.schedule?.[m]?.owed) || 0) * 100) / 100;
+          const parts = ['rent', 'camTax', 'roof', 'charges']
+            .reduce((s, g) => s + (by(b[g], r.lease_id)?.byMonth[m - 1] || 0), 0);
+          expect(parts).toBeCloseTo(owed, 2);
+        }
+      }
+    }
   });
 });
 

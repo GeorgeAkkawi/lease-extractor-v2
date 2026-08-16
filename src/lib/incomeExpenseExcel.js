@@ -68,7 +68,8 @@ function addSummary(wb, pkg, corporationName, now) {
     'Each month of Money in is what tenants were billed that month — the same figure the Ledger and the invoice '
     + 'show. Expenses sit in the month they were paid. Anything with no date on it is in the last column rather '
     + 'than spread across the year — every row adds across to its Total. The year-end reconciliation is settled '
-    + 'once and has no month, so it sits on its own line.',
+    + 'once and has no month, so it sits on its own line; it is the tenants\' share of the expenses entered so '
+    + 'far, and stays provisional until the year\'s costs are all recorded.',
     { bg: P.NEUTRAL_BG, height: 32 }
   );
   pen.skip();
@@ -105,19 +106,26 @@ function addSummary(wb, pkg, corporationName, now) {
 
   pen.section('What the year left');
   pen.head(['', 'Amount'], RIGHT);
-  pen.line(['Total earned', t.earned], { aligns: RIGHT });
+  pen.line([Math.abs(t.trueUp) > 0.005 ? 'Total earned' : 'Total billed', t.earned], { aligns: RIGHT });
   pen.line(['Less what you spent', -t.spent], { aligns: RIGHT });
   pen.line(['What the year left', t.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
   pen.skip();
 
-  pen.section('What the year left — by property');
+  // ⚠ THESE ROWS ARE `grossNet`, NOT `net`, and the heading has to say which. They are the
+  // monthly grid split by building, so they cannot carry the year-end reconciliation — it
+  // has no month, and a row whose cells don't add across to its own total is what
+  // `workbookValidity.test.js` rejects out of the real file bytes. Calling them "what the
+  // year left" (as this did until the 2026-08-16 audit) named them after a figure they are
+  // not: on the demo they miss it by the true-up.
+  pen.section('Money in less money out — by property');
   pen.head(head('Property'), RIGHT);
   for (const p of pkg.properties) {
     grid(pen, p.name, { total: p.grossNet, byMonth: p.netByMonth, undated: p.netUndated });
   }
   pen.note(
-    'These are money in less money out, before the reimbursement — the same figures as the grid above, split by '
-    + 'building. Each property\'s own sheet carries its reimbursement and its final figure.',
+    'The grid above, split by building. These are the months only, so they stop short of the year-end '
+    + 'reconciliation, which belongs to no month — each property\'s own sheet carries that line and its final '
+    + 'figure.',
     { height: 26 }
   );
 
@@ -204,10 +212,17 @@ function addProperty(wb, p, year, used) {
     // file bytes and rejects, and which an accountant would reject for the same reason.
     grid(pen, 'Total earned', { total: p.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
   }
+  // ⚠ THE YEAR-END LINE IS PROVISIONAL UNTIL THE COSTS ARE ALL IN, and it has to say so.
+  // It is the tenants' share of the expenses RECORDED SO FAR less what they were billed —
+  // so a landlord downloading this in July, with half the year's costs entered, gets a
+  // large negative figure that is arithmetically right and reads like an alarm. The old
+  // sheet had the same dependency, buried below the grid as "what tenants paid back";
+  // giving it a line of its own is what made saying this necessary.
   pen.note(
     'Each month above is what the tenant was billed that month — the same figure the Ledger and the invoice show. '
     + 'Tenants pay an estimate for CAM & tax through the year; the difference between that and their actual share is '
-    + 'settled once at reconciliation, which is the line with no months against it.',
+    + 'settled once at reconciliation, which is the line with no months against it. That line is their share of the '
+    + 'expenses entered so far, so until the year\'s costs are all recorded it is provisional.',
     { height: 32 }
   );
   pen.skip();
@@ -236,10 +251,16 @@ function addProperty(wb, p, year, used) {
 
   // ── What came back ─────────────────────────────────────────────────────────
   pen.section('What tenants paid back — for the year');
+  // ⚠ THE SAME MONEY AS THE MONEY-IN ROWS, NOT A SECOND HELPING OF IT, and it has to say
+  // so. Until 2026-08-16 the reimbursement appeared only here, netted off the cost side;
+  // it is now stated on the income side too, so a reader who adds this to "CAM & tax
+  // billed" above would count it twice — the exact error the old arrangement avoided,
+  // arriving from the other direction. This block is what those dollars OFFSET, by
+  // category; "What the year left" below adds nothing back.
   pen.note(
-    'A tenant pays an estimate through the year and the difference is settled at reconciliation, so this is each '
-    + 'tenant\'s actual share for the year as a whole. There is no month for it, which is why it sits below the grid '
-    + 'rather than in it.',
+    'This is each tenant\'s actual pro-rata share of the year\'s costs, set against the categories it offsets. It is '
+    + 'the SAME money already shown in Money in — the CAM & tax and roof rows there, plus the year-end reconciliation '
+    + '— shown here a second way, not a second time. Nothing below adds it back.',
     { height: 28 }
   );
   pen.head(['Category', 'Spent', 'Recovered', 'Your net cost'], ['left', 'right', 'right', 'right']);
@@ -257,22 +278,23 @@ function addProperty(wb, p, year, used) {
   // old netting arrangement existed to avoid, arriving from the other direction. What the
   // year left is now plain subtraction, which is also what an accountant will try first.
   pen.head(['What the year left', 'Amount'], RIGHT);
-  pen.line(['Total earned', p.earned], { aligns: RIGHT });
+  pen.line([Math.abs(p.trueUp) > 0.005 ? 'Total earned' : 'Total billed', p.earned], { aligns: RIGHT });
   pen.line(['Less what you spent', -p.expenseTotals.spent], { aligns: RIGHT });
   pen.line(['What the year left', p.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
   // ⚠ THE RECONCILIATION AN ACCOUNTANT WILL CHECK. It has to be arithmetic they can
-  // follow on the page, not a claim. NOI is built from BILLED expenses only — `cam_total`
-  // counts `billable is not false` lines — so a cost the landlord entered and chose to
-  // eat is in this sheet and in none of NOI. Naming all three terms is what makes the two
-  // figures meet; naming two of them (as this note did when it shipped) does not.
+  // follow on the page, not a claim — so the terms are BUILT (`noiBridge`, incomeExpense.js)
+  // and this only renders them. Written as a sentence it was wrong twice: missing
+  // `absorbed` when it shipped, and missing the rent basis until the 2026-08-16 audit,
+  // where Oak Center printed an equation out by $17,999.94 under the word "exactly".
+  // `noiBridge` carries a catch-all residual, so a term nobody thought of prints as a
+  // visible difference instead of turning the sum into a lie.
   pen.note(
-    `The app's own NOI for this property reads ${usd(p.noi)}. It answers a different question, and these figures `
-    + `reconcile to it exactly: NOI ${usd(p.noi)} + ${usd(p.recovered)} tenants reimbursed + ${usd(p.otherIncome)} `
-    + `other income − ${usd(p.absorbed)} of costs you entered and chose not to bill `
-    + `${p.charges < 0 ? '−' : '+'} ${usd(Math.abs(p.charges))} of charges and credits = ${usd(p.net)}. NOI counts only `
-    + 'what you billed tenants for and knows nothing about a late fee or a write-off, which is why the last two '
-    + 'terms are there.',
-    { height: 32 }
+    `The app's own NOI for this property reads ${usd(p.noiBridge.noi)}. It answers a different question, and these `
+    + `figures bridge to it: NOI ${usd(p.noiBridge.noi)}`
+    + p.noiBridge.terms.map((t) => ` ${t.amount < 0 ? '−' : '+'} ${usd(Math.abs(t.amount))} ${t.label}`).join('')
+    + ` = ${usd(p.noiBridge.total)}. NOI counts only what you billed tenants for, at each lease's annual rate, and `
+    + 'knows nothing about a late fee or a write-off — which is what the terms after it are for.',
+    { height: 44 }
   );
 
   if (p.distributionsTotal > 0) {

@@ -12,6 +12,132 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **AUDIT of the same morning's work: the property sheet printed an equation that
+  did not add up, the drift flag quoted a figure it had not subtracted, and the download preview
+  still described the layout the workbook had stopped having six hours earlier** (George: *"go
+  through and run an audit of all the stuff you just fixed today? find any bugs pertaining to any
+  part of the process and fix them."*)
+  - **Cloudflare version `ff6b9354-8cfa-4329-8845-1e43ca876bbe`**, on top of `34e28016`. No
+    migration, no edge function, no view, no feature key — six files, all of them files that
+    moved that morning. Tests **1837 across 179 files** (was 1824/179): 13 new.
+
+  ### 1. ⚠ THE WORST ONE: a printed equation that was wrong, under the word "exactly"
+
+  The property sheet's closing note bridges the app's own NOI to the workbook's bottom line, as
+  arithmetic the reader can follow. On **Oak Center** it printed:
+
+  > NOI $79,000.00 + $33,833.33 tenants reimbursed − $0.00 absorbed + $0.00 charges = **$94,833.39**
+
+  79,000 + 33,833.33 is **$112,833.33**. The note was out by **$17,999.94** and the sentence above
+  it said *"these figures reconcile to it exactly"* — in the one place on the sheet written
+  specifically for an accountant to check.
+  - **The missing term is the rent BASIS, and it was never there.** `noi` is
+    `total_revenue − total_expenses`; `total_revenue` is `sum(effective_rent)`, an annual RATE that
+    prorates neither end of a term (and, for a gross lease, is the whole flat rent this sheet now
+    splits in two). The workbook counts rent month by month off each lease's schedule. The residual
+    is exactly `rent − rentQuoted` — Sunrise Yoga starts 1 July, so the view counts twelve months
+    of $36,000 and the schedule counts six.
+  - ⚠ **THIS PREDATES 2026-08-16.** It has been wrong since the sheet shipped on 2026-08-12; the
+    morning's change added `charges` to the note and left the hole. It is logged here because this
+    is the round that found and fixed it.
+  - **The fix is structural, not another term.** The note is no longer a sentence: `noiBridge`
+    (`incomeExpense.js`) BUILDS the terms and `incomeExpenseExcel` only renders them — and the
+    builder ends with a **catch-all**: whatever is left over after the named terms prints as
+    *"not accounted for — the app's own figures and this sheet disagree by this much"*. A figure
+    nobody thought to name can now only produce a visible difference, never a wrong sum. Pinned by
+    a test that sums **the terms the sheet actually prints**, on every demo property, rather than
+    re-asserting the identity I happened to remember — which is why the old test passed all
+    morning over a sheet that was wrong.
+
+  ### 2. The drift flag quoted a figure it had not subtracted
+
+  `rentDrift` is measured from `rentScheduled` (base at contract rates + a gross lease's carve, no
+  adjustments — the like-for-like comparable to `sum(effective_rent)`), but the flag's sentence
+  quoted the sheet's **Rent row**. Those are the same number on every demo property and diverge the
+  moment a gross lease or a base-rent correction exists: three figures printed, and the third not
+  the difference of the first two.
+  - `rentScheduled` is now on the shape, named, commented as to why it is NOT the Rent row, and is
+    what the flag quotes. When the two differ by more than $1 the flag adds a clause saying so.
+  - Pinned with a gross-lease fixture: Rent row $9,600, scheduled $12,000, view $12,000, **drift
+    $0 and no flag** — where quoting the row would have raised a $2,400 finding on a correct sheet.
+
+  ### 3. The download preview described a workbook that no longer existed
+
+  `ExportIncomeExpenseModal`'s own header says *"What is previewed here IS what the Summary sheet
+  says … so the two cannot disagree."* By that afternoon it showed **Rent** alone — the whole of
+  Money in that morning, 76% of it afterwards — under the sentence *"the reimbursement is taken off
+  the cost rather than added to the rent, so no dollar is counted twice"*, which had stopped being
+  true in the same commit that made the preview wrong. It is the figure the landlord checks the
+  download against.
+  - Now mirrors the Summary's Money-in block row for row, conditionals and all: Rent · CAM & tax
+    billed · Roof billed · Charges & credits · Other income · Year-end reconciliation · Total
+    earned · Less what you spent · What the year left.
+
+  ### 4. Three more sentences that had gone stale in the same commit
+
+  - **"What the year left — by property"** on the Summary prints `grossNet`, not `net`, and its
+    note said *"money in less money out, before the reimbursement"*. The reimbursement moved to the
+    income side that morning, so the gap is now the true-up ($800 on the demo), not `recovered`
+    ($44,600). Renamed **"Money in less money out — by property"**, note rewritten. The rows stay
+    `grossNet` deliberately: they are the monthly grid, and the year-end line has no month to sit in.
+  - **"What tenants paid back"** now says outright that it is the SAME money as the CAM & tax and
+    roof rows in Money in plus the year-end line — *"shown here a second way, not a second time"*.
+    Two sight of the same dollars on one page, with nothing saying so, is how a reader concludes a
+    sheet double-counts.
+  - **"Total earned"** appeared in *What the year left* even when the year-end line was suppressed
+    for being zero — a term defined nowhere on the page. It reads **"Total billed"** in that case.
+
+  ### 5. The year-end line is provisional, and now says so
+
+  `trueUp` is `recovered − billed`, and `recovered` is the tenants' share of the expenses **entered
+  so far**. A landlord downloading in July with half the year's costs in gets a large negative
+  figure that is arithmetically right and reads like an alarm. The old sheet had the same
+  dependency buried below the grid; giving it a line of its own is what made stating it necessary.
+  Both notes now do.
+
+  ### 6. Two latent ones, fixed before they could arrive
+
+  - **`adjustmentsForPnlRow` counted an out-of-range month in `total` but not in `byMonth`** — a row
+    whose cells do not add across to its own figure, which is precisely what `workbookValidity`
+    reads out of the real file bytes and rejects. Unreachable today (`month int not null check
+    (month between 1 and 12)`, 0082) and unreachable is not the same as harmless: `adjustmentKindRows`
+    put the same money in an `undated` bucket instead, so the parent row and its children disagreed
+    by construction. Both now apply one rule, with the comment saying that if that CHECK is ever
+    relaxed the fix is to carry `undated` through the parents — not to put the money back in a total
+    on its own.
+  - **A `pnlRow` of null would silently break the Ledger tie.** `buildLeaseSchedule` adds EVERY
+    adjustment to the month's `owed`, so a kind that reaches none of the four Money-in rows takes
+    `Total billed` away from the Ledger by exactly its amount. Slice 4 proposes two such kinds
+    (`opening`, `refund`). Two tests now hold the line: every registry kind files on a row, and the
+    four rows add to each month's `owed` tenant by tenant **against the real demo roll**.
+
+  ### 7. On screen
+
+  - **`RecoverabilityTable` weighed the recovery before it had the rent steps.** With the
+    escalations query still in flight it prorated from `lease_start` alone, which reads a RENEWED
+    tenant as beginning at its catch-up date — a third figure, briefly on screen, that is neither
+    the old unprorated one nor the right one. It now passes `null` until the query settles, so the
+    worst case is the coherent pre-2026-08-16 figure (and so is a failed query).
+  - **The panel's footnote listed three causes of the recovery gap and now lists four** — the part
+    of the year before a tenant moved in. Without it, the extra gap the morning's proration created
+    reads as an error in a correct figure.
+
+  ### Files
+  Edited: `src/lib/incomeExpense.js` (`noiBridge`, `rentScheduled`, flag wording) ·
+  `src/lib/incomeExpenseExcel.js` · `src/lib/adjustments.js` ·
+  `src/components/ExportIncomeExpenseModal.js` · `src/components/RecoverabilityTable.js` ·
+  `src/lib/__tests__/incomeExpense.test.js` · `src/lib/__tests__/adjustments.test.js`.
+
+  ### Flags / not done
+  - **⚠ The bridge's catch-all term has never fired on the demo**, which is the point — but it means
+    the *wording* of that term is unexercised in a browser. If it ever appears on a real sheet it is
+    a genuine disagreement between `v_property_totals` and this workbook and wants investigating,
+    not rephrasing.
+  - **Slices 3 and 4 are still to come** — the bank tie-out and settle-up. Nothing in this round
+    moved either, and §6 above is the guard rail Slice 4 will hit first.
+  - **`effective_rent` is still not migrated** (deliberate — it is a rate). The difference it causes
+    is now named in three places rather than two: the flag, the NOI bridge, and this entry.
+
 - **2026-08-16** — **The income-and-expenses sheet says what you BILLED: every monthly cell now equals
   the Ledger and the invoice, the reimbursement is a row instead of a silent netting, a charge or
   credit reaches a sheet at last, and a mid-year tenant reimburses only the months they were here**

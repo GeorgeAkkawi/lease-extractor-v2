@@ -14,6 +14,7 @@ import {
   ADJUSTMENT_KINDS, adjustmentKindInfo, adjustmentKindsFor, adjustmentAllowed,
   signedAmount, monthlyAdjustments, adjustmentsForMonth, adjustmentTotal,
   camTaxAdjustmentTotal, statementRows, monthName,
+  adjustmentsForPnlRow, adjustmentKindRows,
 } from '../adjustments';
 import { buildLeaseSchedule } from '../leaseSchedule';
 import { allocatePayments, componentizeSchedule, ledgerRowSummary } from '../ledger';
@@ -38,6 +39,17 @@ describe('the adjustment registry', () => {
       expect(k.label).toBeTruthy();
       expect(['both', 'charge', 'credit']).toContain(k.dir);
     }
+  });
+
+  // ⚠ EVERY KIND MUST REACH A ROW OF THE INCOME-AND-EXPENSES SHEET. A `pnlRow` of null is
+  // reserved for money that is not this year's income (a balance brought forward, a
+  // refund) — but such a row still moves the month's `owed`, because buildLeaseSchedule
+  // adds every adjustment to it. So the day a null-pnlRow kind can be posted to
+  // `lease_adjustments`, `Total billed` stops equalling the Ledger by exactly that amount
+  // and something else has to carry it. Until then this holds the line.
+  it('files every kind on a row of the sheet, so Total billed cannot drift from the Ledger', () => {
+    for (const k of ADJUSTMENT_KINDS) expect(['rent', 'camtax', 'charges']).toContain(k.pnlRow);
+    expect(adjustmentKindInfo('written_by_a_later_round').pnlRow).toBe('charges');
   });
 
   it('an unknown kind reports itself unknown and never offsets the year-end true-up', () => {
@@ -418,5 +430,50 @@ describe('other income and an adjustment stay different things', () => {
     const cd = roll.find((r) => r.tenant_name === 'City Dental');
     expect(cd.adjustments).toBeNull();
     expect(round2(cd.annual)).toBe(109800);
+  });
+});
+
+// ── What the workbook reads ───────────────────────────────────────────────────
+//
+// These two print as a parent row and its children on the Income-and-expenses sheet, so
+// they have to agree about which rows count. `lease_adjustments.month` is `not null check
+// (month between 1 and 12)` (0082), so an out-of-range month cannot arrive — but the first
+// draft of `adjustmentsForPnlRow` counted one in `total` while leaving it out of `byMonth`,
+// which is a row whose cells don't add across to its own figure: exactly what
+// `workbookValidity.test.js` rejects out of the real file bytes.
+
+describe('the sheet rows an adjustment lands on', () => {
+  const rows = [
+    { kind: 'base', month: 1, amount: 400 },
+    { kind: 'fee', month: 2, amount: 150 },
+    { kind: 'credit', month: 2, amount: -50 },
+    { kind: 'camtax', month: 3, amount: -25 },
+  ];
+
+  it('sends each kind to its own row and nowhere else', () => {
+    expect(adjustmentsForPnlRow(rows, 'rent')).toEqual({ byMonth: [400, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], total: 400 });
+    expect(adjustmentsForPnlRow(rows, 'camtax').total).toBe(-25);
+    expect(adjustmentsForPnlRow(rows, 'charges').total).toBe(100);   // 150 fee − 50 credit
+    expect(adjustmentsForPnlRow(rows, 'charges').byMonth[1]).toBe(100);
+  });
+
+  it('itemizes the charges row by kind, in registry order', () => {
+    expect(adjustmentKindRows(rows, 'charges').map((r) => [r.key, r.total])).toEqual([['fee', 150], ['credit', -50]]);
+  });
+
+  it('adds across to its own total, parent and children alike', () => {
+    const parent = adjustmentsForPnlRow(rows, 'charges');
+    const kids = adjustmentKindRows(rows, 'charges');
+    const across = (r) => r.byMonth.reduce((s, n) => s + n, 0) + (r.undated || 0);
+    expect(across(parent)).toBeCloseTo(parent.total, 2);
+    for (const k of kids) expect(across(k)).toBeCloseTo(k.total, 2);
+    expect(kids.reduce((s, k) => s + k.total, 0)).toBeCloseTo(parent.total, 2);
+  });
+
+  it('leaves a row with no usable month out of BOTH the months and the total', () => {
+    const bad = [...rows, { kind: 'fee', month: null, amount: 999 }, { kind: 'fee', month: 13, amount: 999 }];
+    expect(adjustmentsForPnlRow(bad, 'charges').total).toBe(100);
+    expect(adjustmentKindRows(bad, 'charges').reduce((s, k) => s + k.total, 0)).toBe(100);
+    expect(adjustmentKindRows(bad, 'charges').every((k) => k.undated === 0)).toBe(true);
   });
 });

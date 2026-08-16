@@ -132,15 +132,24 @@ export function adjustmentKindInfo(key) {
 // Σ of the adjustments landing on one row of the Income-and-expenses sheet, as a length-12
 // signed array [Jan..Dec] plus the annual total. `row` is a `pnlRow` value ('rent' |
 // 'camtax' | 'charges'); a kind whose pnlRow is null reaches no row and no total here.
+//
+// ⚠ THE TOTAL IS THE MONTHS AND NOTHING ELSE. `lease_adjustments.month` is `int not null
+// check (month between 1 and 12)` (0082), so a row outside that range cannot exist — but
+// counting one in `total` while leaving it out of `byMonth` would give the sheet a row
+// whose cells do not add across to its own figure, which `workbookValidity.test.js`
+// rejects out of the real file bytes. If that CHECK is ever relaxed, the fix is to carry
+// an `undated` field through the parent rows the way `summarizeOtherIncome` does — NOT to
+// put the money back in the total on its own.
 export function adjustmentsForPnlRow(rows = [], row) {
   const byMonth = Array(12).fill(0);
   let total = 0;
   for (const r of rows || []) {
     if (adjustmentKindInfo(r?.kind).pnlRow !== row) continue;
+    const m = Number(r?.month);
+    if (!(m >= 1 && m <= 12)) continue;
     const amt = Number(r?.amount) || 0;
     total = round2(total + amt);
-    const m = Number(r?.month);
-    if (m >= 1 && m <= 12) byMonth[m - 1] = round2(byMonth[m - 1] + amt);
+    byMonth[m - 1] = round2(byMonth[m - 1] + amt);
   }
   return { byMonth, total };
 }
@@ -153,14 +162,17 @@ export function adjustmentKindRows(rows = [], row = 'charges') {
   for (const r of rows || []) {
     const info = adjustmentKindInfo(r?.kind);
     if (info.pnlRow !== row) continue;
+    const m = Number(r?.month);
+    // Same rule as `adjustmentsForPnlRow` above, and it must STAY the same rule: these two
+    // print as a parent row and its children, so a month one of them counts and the other
+    // does not is a parent that no longer equals the sum beneath it.
+    if (!(m >= 1 && m <= 12)) continue;
     const key = info.key;
     let e = byKey.get(key);
     if (!e) { e = { key, label: info.label, byMonth: Array(12).fill(0), total: 0, undated: 0 }; byKey.set(key, e); }
     const amt = Number(r?.amount) || 0;
     e.total = round2(e.total + amt);
-    const m = Number(r?.month);
-    if (m >= 1 && m <= 12) e.byMonth[m - 1] = round2(e.byMonth[m - 1] + amt);
-    else e.undated = round2(e.undated + amt);   // no month on the row — never silently dropped
+    e.byMonth[m - 1] = round2(e.byMonth[m - 1] + amt);
   }
   const order = ADJUSTMENT_KINDS.map((k) => k.key);
   return [...byKey.values()].sort(

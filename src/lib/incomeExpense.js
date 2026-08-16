@@ -125,6 +125,50 @@ export function billedRowsFromRoll(roll = []) {
 const groupByMonth = (rows = []) => (rows || []).reduce((acc, r) => add12(acc, r.byMonth), zero12());
 
 /**
+ * The bridge from the app's own NOI to this sheet's bottom line, as TERMS rather than a
+ * sentence — because a sentence is how it went wrong.
+ *
+ * ⚠ THIS NOTE PRINTS AN EQUATION AND CLAIMS IT BALANCES, so an omitted term is not a
+ * wording problem, it is a wrong sum in front of an accountant. It shipped on 2026-08-12
+ * missing `absorbed`, gained `charges` on 2026-08-16, and was STILL short one term on the
+ * only demo property that has a part-year tenancy: Oak Center printed
+ * `NOI $79,000 + $33,833.33 reimbursed = $94,833.39` — out by $17,999.94, under the words
+ * "these figures reconcile to it exactly".
+ *
+ * The missing term is the rent BASIS. NOI is `total_revenue − total_expenses` and
+ * `total_revenue` is `sum(effective_rent)` — an annual RATE, which prorates neither end of
+ * a term (and, for a gross lease, counts the whole flat rent this sheet splits into rent
+ * and CAM & tax). This sheet counts rent month by month from each lease's schedule. The
+ * difference between those two readings of the same rent is `rent − rentQuoted`, and it is
+ * the residual exactly.
+ *
+ * ⚠ AND THE LAST TERM IS A CATCH-ALL, deliberately: whatever is left over after the named
+ * terms is printed as "not accounted for" rather than swallowed. A future figure nobody
+ * added here then shows up as a visible difference instead of turning the equation into a
+ * lie — which is the same discipline as the "No date" column and the rent-drift flag.
+ */
+export function noiBridge({ noi = 0, net = 0, recovered = 0, otherIncome = 0, absorbed = 0, charges = 0, rentBasis = 0 } = {}) {
+  const start = round2(noi);
+  const terms = [
+    { key: 'recovered', label: 'tenants reimbursed', amount: round2(recovered) },
+    { key: 'otherIncome', label: 'other income', amount: round2(otherIncome) },
+    { key: 'absorbed', label: 'of costs you entered and chose not to bill', amount: -round2(absorbed) },
+    { key: 'charges', label: 'of charges and credits on tenants’ bills', amount: round2(charges) },
+    {
+      key: 'rentBasis',
+      label: 'of rent that this sheet counts month by month and the Revenue figure counts at a full annual rate',
+      amount: round2(rentBasis),
+    },
+  ].filter((t) => Math.abs(t.amount) > 0.005);
+  const stated = terms.reduce((s, t) => round2(s + t.amount), start);
+  const residual = round2(round2(net) - stated);
+  if (Math.abs(residual) > 0.005) {
+    terms.push({ key: 'unexplained', label: 'not accounted for — the app’s own figures and this sheet disagree by this much', amount: residual, unexplained: true });
+  }
+  return { noi: start, terms, total: round2(net) };
+}
+
+/**
  * One property's year, shaped for the sheet. Pure — it takes the rows the loader read.
  *
  * `net` is the year's result: rent + other income − what the expenses actually cost you
@@ -164,7 +208,19 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   // if they ever stop, rather than shipping a workbook that quietly disagrees with the
   // Performance card on the same screen.
   const rentQuoted = round2(num(totals?.total_revenue));
-  const rentDrift = round2(billed.tieOut - rentQuoted);
+  // ⚠ TWO FIGURES, TWO JOBS, AND THEY ARE NOT INTERCHANGEABLE.
+  //   `rentScheduled` (= tieOut) is the LIKE-FOR-LIKE comparable to `total_revenue`: base
+  //     rent at contract rates, plus a gross lease's carve (because the view counts the
+  //     whole flat rent there, 0073), and no adjustments (the view knows of none). It is
+  //     what `rentDrift` measures and what the flag must QUOTE — quoting the sheet's Rent
+  //     row instead prints three figures where the third is not the difference of the
+  //     first two, which is what this said until 2026-08-16.
+  //   `rent` is what the sheet's Rent ROW prints: base only for a gross lease (its CAM
+  //     carve is stated on its own row now) and including a base-rent correction.
+  // They are equal on any property with no gross lease and no base correction — which is
+  // every property on the demo seed, and why the divergence was invisible.
+  const rentScheduled = billed.tieOut;
+  const rentDrift = round2(rentScheduled - rentQuoted);
 
   // ⚠ MONEY IN IS NOW EVERY COMPONENT OF THE BILL, not the rent alone. Each month of
   // `inByMonth` therefore equals what the Ledger shows that month as owed, plus that month's
@@ -205,6 +261,7 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   // and the concession with it. Everything else is presentation. `net === earned − spent` is
   // asserted in incomeExpense.test.js so the two can never quietly part company.
   const net = round2(earned - rec.totals.spent);
+  const absorbed = absorbedFromItems(items, buckets).total;
 
   return {
     id: property.id,
@@ -214,6 +271,7 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     rentRows,
     rentByMonth,
     rentQuoted,
+    rentScheduled,
     rentDrift,
     // The bill's other components, each with the per-lease rows the sheet indents under it.
     camTaxRows: billed.camTax,
@@ -251,26 +309,29 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     // than mysteriously different. NOI is not a smaller version of `net`; it answers a
     // different question and is built from a different set of dollars:
     //
-    //   net === noi + recovered + otherIncome − absorbed + charges
+    //   net === noi + recovered + otherIncome − absorbed + charges + (rent − rentQuoted)
     //
-    // ⚠ `charges` JOINED THIS ON 2026-08-16 and is the term that is easy to forget next,
-    // for the same reason `absorbed` was: it is money the landlord billed (a late fee) or
-    // gave up (a concession, a write-off) that reaches `net` and reaches NOI through
-    // nothing at all — `total_revenue` is `sum(effective_rent)` and knows nothing about
-    // `lease_adjustments`. Leave it out and the note is wrong by exactly what was charged
-    // or forgiven, in front of the accountant it was written for.
-    //
-    // ⚠ `absorbed` IS THE TERM THAT IS EASY TO FORGET, and leaving it out is a real error
-    // rather than a rounding one — this sheet shipped on 2026-08-12 claiming
-    // `net === noi + recovered + otherIncome`, which is off by exactly the not-billed
-    // costs (on the demo, $2,950). NOI is `total_revenue − total_expenses`, and
-    // `total_expenses` comes from `cam_total`, which `syncCamTotal` builds from
-    // `billable is not false` lines only. So a cost the landlord entered and chose to eat
-    // is in this sheet's `spent` and in none of NOI. It is subtracted here for the same
-    // reason "What actually stayed" subtracts it on screen.
+    // ⚠ EVERY ONE OF THOSE TERMS HAS BEEN FORGOTTEN AT LEAST ONCE, which is why the note
+    // is no longer written as a sentence: `noiBridge` above builds it, `noiBridge` carries
+    // a catch-all residual so a missing term can never make the printed sum wrong again,
+    // and `incomeExpenseExcel` only renders what it is handed.
+    //   `absorbed`  — shipped missing 2026-08-12, out by the not-billed costs ($2,950 on
+    //                 the demo). `total_expenses` comes from `cam_total`, which counts
+    //                 `billable is not false` lines only, so a cost the landlord chose to
+    //                 eat is in this sheet's `spent` and in none of NOI.
+    //   `charges`   — added 2026-08-16. `total_revenue` is `sum(effective_rent)` and knows
+    //                 nothing about `lease_adjustments`, so a late fee or a write-off
+    //                 reaches `net` and reaches NOI through nothing at all.
+    //   rent basis  — added 2026-08-16 (the audit). `effective_rent` is a RATE: it
+    //                 prorates neither end of a term, and for a gross lease it is the whole
+    //                 flat rent. See `noiBridge`.
     noi: num(totals?.noi),
     recovered: rec.totals.recovered,
-    absorbed: absorbedFromItems(items, buckets).total,
+    absorbed,
+    noiBridge: noiBridge({
+      noi: num(totals?.noi), net, recovered: rec.totals.recovered, otherIncome: inc.total,
+      absorbed, charges, rentBasis: round2(rent - rentQuoted),
+    }),
   };
 }
 
@@ -381,7 +442,16 @@ export function flags(properties = []) {
     // started or ended part-way through the year, while the schedule these months are built
     // from does. So a property with any part-year tenancy drifts by design, and a flag that
     // only stated the two figures read as an unexplained error on a perfectly correct sheet.
-    out.push(`${p.name}: the rent laid out here totals ${dollars(p.rent)}, and the Revenue figure on the Financials page reads ${dollars(p.rentQuoted)} — a difference of ${dollars(Math.abs(p.rentDrift))}. These months come from each lease's own schedule, so a tenancy that began part-way through the year is counted only from the month it began. The page's figure is the annual rate from the database view, which is not prorated.`);
+    //
+    // ⚠ AND QUOTE THE FIGURE THE DIFFERENCE IS ACTUALLY TAKEN FROM. `rentDrift` measures
+    // `rentScheduled`, not the sheet's Rent row — quoting the row instead (as this did
+    // until the 2026-08-16 audit) prints three figures where the third is not the
+    // difference of the first two the moment a gross lease or a base-rent correction makes
+    // the two diverge.
+    const alsoRow = Math.abs(round2(p.rentScheduled - p.rent)) > 1
+      ? ` The Rent row above reads ${dollars(p.rent)} rather than ${dollars(p.rentScheduled)}: a gross lease's flat rent is split there into rent and CAM & tax, and a base-rent correction rides the Rent row.`
+      : '';
+    out.push(`${p.name}: these leases schedule ${dollars(p.rentScheduled)} of rent at their contract rates, and the Revenue figure on the Financials page reads ${dollars(p.rentQuoted)} — a difference of ${dollars(Math.abs(p.rentDrift))}. These months come from each lease's own schedule, so a tenancy that began part-way through the year is counted only from the month it began. The page's figure is the annual rate from the database view, which is not prorated.${alsoRow}`);
   }
 
   const noExpenses = properties.filter((p) => p.expenseTotals.spent <= 0);

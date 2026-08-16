@@ -27,16 +27,22 @@ export default function RecoverabilityTable({ propId, year }) {
   // rather than a second fetch — and, more to the point, so the Recovered column here can
   // never weigh a mid-year tenant differently from the Estimated/Difference columns in the
   // breakdown below it. One query for the whole property, never one per lease.
-  const { data: escByLease = {} } = useQuery({
+  const { data: escByLease, isSuccess: escReady } = useQuery({
     queryKey: ['escalationsByLeases', propId, shares.map((s) => s.lease_id).join(',')],
     queryFn: () => listEscalationsByLeases(shares.map((s) => s.lease_id)),
     enabled: shares.length > 0,
   });
 
   const items = [...taxItems, ...camItems, ...roofItems];
+  // ⚠ NOT WEIGHED UNTIL THE STEPS ARE IN HAND. Weighing from `lease_start` alone, with the
+  // escalations still in flight, prorates a RENEWED tenant as though the tenancy began at
+  // its catch-up date — a third figure, briefly on screen, that is neither the old
+  // unprorated one nor the right one. Passing null until the query settles means the worst
+  // case is the figure this table showed before 2026-08-16, which is at least coherent —
+  // and it is also what a failed query leaves behind.
   const { rows, totals, owner, ownerTotal } = recoverabilityRows({
     items, shares, expense: expense || {}, buckets,
-    inTermByLease: inTermByLease({ year, shares, escByLease }),
+    inTermByLease: escReady ? inTermByLease({ year, shares, escByLease: escByLease || {} }) : null,
   });
 
   // Nothing spent yet — the expense sections above already say so; a table of zeroes
@@ -120,7 +126,13 @@ export default function RecoverabilityTable({ propId, year }) {
         <strong>Recovered</strong> is each tenant's actual pro-rata share for the year — what the
         year-end reconciliation entitles you to collect, whatever estimate they're paying meanwhile.
         The gap is what you carry: vacant space nobody is billed for, any line marked
-        <em> not billed to tenants</em>, and roof work on leases that don't make the tenant responsible.
+        <em> not billed to tenants</em>, roof work on leases that don't make the tenant responsible,
+        {/* ⚠ THE FOURTH CAUSE, AND IT WAS UNNAMED UNTIL 2026-08-16. A tenant who moved in
+            mid-year covers only the months they were here — the same proration ⚖ Reconcile
+            settles them at. Without this clause the extra gap reads as an error in a
+            correct figure. */}
+        {' '}and the part of the year before a tenant moved in — a mid-year tenancy covers only
+        the months it ran, exactly as its reconciliation settles.
       </div>
     </Panel>
   );

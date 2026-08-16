@@ -52,8 +52,8 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
         <div className="modal-body">
           <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
             A summary sheet for the whole company, then one sheet per property — laid out month by month,
-            January to December: rent and other income, every expense by category and bucket, what tenants
-            paid back, and what the year left.
+            January to December: what each tenant was billed, every expense by category and bucket, what
+            tenants paid back, and what the year left.
           </p>
 
           {isLoading && <p className="muted" style={{ marginTop: 14 }}>Reading your figures…</p>}
@@ -64,15 +64,36 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
               <div className="fin-subhead" style={{ marginTop: 16 }}>
                 {pkg.properties.length} propert{pkg.properties.length === 1 ? 'y' : 'ies'}
               </div>
+              {/* ⚠ THE SUMMARY SHEET'S OWN MONEY-IN ROWS, IN THE SAME ORDER. This preview
+                  showed "Rent" alone until the 2026-08-16 audit — which was the whole of
+                  Money in until that morning and 23% of it afterwards, under a sentence
+                  ("the reimbursement is taken off the cost rather than added to the rent")
+                  that had stopped being true in the same commit. A preview that describes
+                  a layout the workbook no longer has is worse than none: it is the figure
+                  the landlord checks the download against. */}
               <div className="export-pre">
                 <div><span className="muted">Rent</span><b className="pos">{money(t.rent)}</b></div>
+                {Math.abs(t.camTaxBilled) > 0.005 && (
+                  <div><span className="muted">CAM &amp; tax billed</span><b className="pos">{money(t.camTaxBilled)}</b></div>
+                )}
+                {Math.abs(t.roofBilled) > 0.005 && (
+                  <div><span className="muted">Roof billed</span><b className="pos">{money(t.roofBilled)}</b></div>
+                )}
+                {Math.abs(t.charges) > 0.005 && (
+                  <div><span className="muted">Charges &amp; credits</span><b className={t.charges < 0 ? 'neg' : 'pos'}>{money(t.charges)}</b></div>
+                )}
                 <div><span className="muted">Other income</span><b className="pos">{money(t.otherIncome)}</b></div>
-                <div><span className="muted">Your net cost</span><b className="neg">{money(t.netCost)}</b></div>
+                {Math.abs(t.trueUp) > 0.005 && (
+                  <div><span className="muted">Year-end reconciliation</span><b className={t.trueUp < 0 ? 'neg' : 'pos'}>{money(t.trueUp)}</b></div>
+                )}
+                <div><span className="muted">Total earned</span><b className="pos">{money(t.earned)}</b></div>
+                <div><span className="muted">Less what you spent</span><b className="neg">{money(-t.spent)}</b></div>
                 <div><span className="muted">What the year left</span><b>{money(t.net)}</b></div>
               </div>
               <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                You spent {money(t.spent)}; tenants reimbursed {money(t.recovered)} of it through their share.
-                The reimbursement is taken off the cost rather than added to the rent, so no dollar is counted twice.
+                Each month is what tenants were billed that month — the same figure the Ledger and the invoice show.
+                Of the {money(t.spent)} you spent, {money(t.recovered)} is the tenants' share; they pay an estimate
+                through the year and the difference is settled once, on the year-end line.
               </div>
 
               {/* ⚠ SAID BEFORE THE DOWNLOAD, NOT DISCOVERED INSIDE IT. A monthly sheet
