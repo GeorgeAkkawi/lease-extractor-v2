@@ -6,8 +6,9 @@
 // one of the three itemized sections and said so in its own footnote. This covers all
 // three, and adds the column that makes it worth reading.
 import { useQuery } from '@tanstack/react-query';
-import { getTenantShares, listCamLineItems, listTaxLineItems, listRoofLineItems, listExpenseBuckets, getExpenseRecord } from '../lib/api';
+import { getTenantShares, listCamLineItems, listTaxLineItems, listRoofLineItems, listExpenseBuckets, getExpenseRecord, listEscalationsByLeases } from '../lib/api';
 import { recoverabilityRows } from '../lib/recoverability';
+import { inTermByLease } from '../lib/leaseSchedule';
 import { money } from '../lib/format';
 import Panel from './Panel';
 
@@ -22,9 +23,21 @@ export default function RecoverabilityTable({ propId, year }) {
   // Same query key the page and the three expense sections use, so this is a cache hit
   // and the table can never read a different total than the sections above it.
   const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year) });
+  // ⚠ The SAME query key TenantShareTable uses on this very page, so this is a cache hit
+  // rather than a second fetch — and, more to the point, so the Recovered column here can
+  // never weigh a mid-year tenant differently from the Estimated/Difference columns in the
+  // breakdown below it. One query for the whole property, never one per lease.
+  const { data: escByLease = {} } = useQuery({
+    queryKey: ['escalationsByLeases', propId, shares.map((s) => s.lease_id).join(',')],
+    queryFn: () => listEscalationsByLeases(shares.map((s) => s.lease_id)),
+    enabled: shares.length > 0,
+  });
 
   const items = [...taxItems, ...camItems, ...roofItems];
-  const { rows, totals, owner, ownerTotal } = recoverabilityRows({ items, shares, expense: expense || {}, buckets });
+  const { rows, totals, owner, ownerTotal } = recoverabilityRows({
+    items, shares, expense: expense || {}, buckets,
+    inTermByLease: inTermByLease({ year, shares, escByLease }),
+  });
 
   // Nothing spent yet — the expense sections above already say so; a table of zeroes
   // would just be noise on a page that is otherwise asking you to fill them in. A year

@@ -16,6 +16,7 @@ import {
 } from './api';
 import { reconcileFigures, billedComponents } from './reconciliation';
 import { componentizeSchedule } from './ledger';
+import { adjustmentKindInfo } from './adjustments';
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const money = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -165,6 +166,14 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
     sharePct,
     base: { annual: baseAnnual, psf: sqft > 0 ? baseAnnual / sqft : null, monthly: monthlyBase },
     estCamTax, actualCamTax, estRoof, actualRoof,
+    // ⚠ CARRIED, NOT ABSORBED (2026-08-16). This figure has always been folded INTO
+    // `estCamTax` above — correctly, because a correction the tenant was already billed has
+    // to sit on the estimate side or the true-up charges the same dollars twice. But it was
+    // folded SILENTLY: it moved TOTAL VARIANCE with no line, no memo and no count, so a
+    // tenant querying their bill met a number nobody could account for. The arithmetic is
+    // untouched; it now also gets a row of its own.
+    camTaxAdjust: round2(Number(fig.camTaxAdjust) || 0),
+    camTaxAdjustCount: (adjustments || []).filter((a) => adjustmentKindInfo(a?.kind).offsetsCamTax).length,
     anyEstimate: est.anyEstimate,
     itemsActual,
     totalOwedEst, totalOwedActual, variance,

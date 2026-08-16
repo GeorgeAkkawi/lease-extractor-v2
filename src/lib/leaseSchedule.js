@@ -123,6 +123,25 @@ export function inTermMonths({ year, leaseStart = null, escalations = [] }) {
   return Object.values(schedule).filter((c) => !c.outsideTerm).length;
 }
 
+// The same count for every tenant share on a property, as { [lease_id]: months } — what
+// `recoveryFractions` needs to weigh each tenant's share by the part of the year they were
+// actually here.
+//
+// ⚠ It exists so the FOURTH caller of this rule isn't a fourth copy of it. ⚖ Reconcile, the
+// per-tenant breakdown and the invoice all prorate by inTerm/12 already; the recovery figure
+// on the "What it cost you" table and in the workbook did not, which is the only reason those
+// two disagreed with what a mid-year tenant actually settles at. Same escalations argument,
+// same reason (a catch-up renewal moves lease_start forward — read it alone and a ten-year
+// tenant looks brand new and gets prorated to a few months).
+export function inTermByLease({ year, shares = [], escByLease = {} } = {}) {
+  const out = {};
+  for (const s of shares || []) {
+    if (!s?.lease_id) continue;
+    out[s.lease_id] = inTermMonths({ year, leaseStart: s.lease_start, escalations: escByLease[s.lease_id] || [] });
+  }
+  return out;
+}
+
 // The per-month rent OWED for an invoice's own year, as a length-12 array [Jan..Dec],
 // scaled to settle exactly at the invoice total. Free months are $0, months before the
 // tenancy began are $0, and a mid-year rate change bills the old rate before it. The

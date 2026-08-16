@@ -29,11 +29,33 @@
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
+// ⚠ `pnlRow` — WHICH LINE OF THE INCOME-AND-EXPENSES SHEET THIS LANDS ON, and it is a
+// judgement about accounting, not layout. That workbook counts rent when it FALLS DUE, so a
+// tenant who never pays is already inside its revenue. Three consequences follow, and only
+// the first is obvious:
+//
+//   'rent' / 'camtax' — a correction to a figure the sheet already prints, so it rides that
+//       same row. `componentizeSchedule` computes base and camTax off the SCHEDULED owed
+//       (owed − adj), so adding the correction back on that row restores the month to the
+//       owed figure exactly — which is why Total billed still equals the Ledger to the cent.
+//   'charges' — earned (a fee) or forgiven (a concession, a write-off) THIS year. A
+//       write-off must reduce revenue: the sheet already counted that rent as income, so
+//       leaving it in would overstate what the property earned by exactly what was forgiven.
+//       ⚠ And it must NEVER be an expense — expense categories feed `recoveryFractions`, so
+//       a forgiven rent booked as a cost would be recovered from the OTHER tenants.
+//   null — real money that is not this year's income. A balance brought forward was last
+//       year's income and counting it again double-counts; a refund returns an overpayment
+//       that was never income, so giving it back is not a cost. Both still move the tenant's
+//       balance — they are simply invisible to the P&L, and appear in the bank tie-out.
+//
+// ⚠ AN UNKNOWN KIND FILES UNDER 'charges', never null. Money that a later round invented
+// must land in a visible total rather than disappear from a sheet an accountant is reading.
 export const ADJUSTMENT_KINDS = [
   {
     key: 'base',
     label: 'Base rent correction',
     short: 'Base',
+    pnlRow: 'rent',
     // 'both' = the landlord picks charge or credit; 'charge'/'credit' = locked one way.
     dir: 'both',
     // ⚠ A GROSS lease has no separate CAM to correct — the flat rent already CONTAINS
@@ -51,6 +73,7 @@ export const ADJUSTMENT_KINDS = [
     key: 'camtax',
     label: 'CAM & tax correction',
     short: 'CAM & tax',
+    pnlRow: 'camtax',
     dir: 'both',
     grossOk: false,
     offsetsCamTax: true,
@@ -60,6 +83,7 @@ export const ADJUSTMENT_KINDS = [
     key: 'fee',
     label: 'Late fee / other charge',
     short: 'Fee',
+    pnlRow: 'charges',
     dir: 'charge',
     grossOk: true,
     offsetsCamTax: false,
@@ -69,6 +93,7 @@ export const ADJUSTMENT_KINDS = [
     key: 'credit',
     label: 'Concession / credit / write-off',
     short: 'Credit',
+    pnlRow: 'charges',
     dir: 'credit',
     grossOk: true,
     offsetsCamTax: false,
@@ -91,12 +116,55 @@ export function adjustmentKindInfo(key) {
       key: key || 'unknown',
       label: 'Adjustment',
       short: '—',
+      // Visible, in a total — see the note above ADJUSTMENT_KINDS. Withholding
+      // `offsetsCamTax` keeps an unrecognized row out of the year-end netting; giving it a
+      // null `pnlRow` would instead delete it from a workbook, which is the opposite trade.
+      pnlRow: 'charges',
       dir: 'both',
       grossOk: true,
       offsetsCamTax: false,
       hint: '',
       unknown: true,
     }
+  );
+}
+
+// Σ of the adjustments landing on one row of the Income-and-expenses sheet, as a length-12
+// signed array [Jan..Dec] plus the annual total. `row` is a `pnlRow` value ('rent' |
+// 'camtax' | 'charges'); a kind whose pnlRow is null reaches no row and no total here.
+export function adjustmentsForPnlRow(rows = [], row) {
+  const byMonth = Array(12).fill(0);
+  let total = 0;
+  for (const r of rows || []) {
+    if (adjustmentKindInfo(r?.kind).pnlRow !== row) continue;
+    const amt = Number(r?.amount) || 0;
+    total = round2(total + amt);
+    const m = Number(r?.month);
+    if (m >= 1 && m <= 12) byMonth[m - 1] = round2(byMonth[m - 1] + amt);
+  }
+  return { byMonth, total };
+}
+
+// The same, split one row per KIND — what the sheet's "Charges & credits" block itemizes,
+// so a late fee and a write-off never merge into one unexplained figure. Ordered by the
+// registry so the layout is stable across properties and years.
+export function adjustmentKindRows(rows = [], row = 'charges') {
+  const byKey = new Map();
+  for (const r of rows || []) {
+    const info = adjustmentKindInfo(r?.kind);
+    if (info.pnlRow !== row) continue;
+    const key = info.key;
+    let e = byKey.get(key);
+    if (!e) { e = { key, label: info.label, byMonth: Array(12).fill(0), total: 0, undated: 0 }; byKey.set(key, e); }
+    const amt = Number(r?.amount) || 0;
+    e.total = round2(e.total + amt);
+    const m = Number(r?.month);
+    if (m >= 1 && m <= 12) e.byMonth[m - 1] = round2(e.byMonth[m - 1] + amt);
+    else e.undated = round2(e.undated + amt);   // no month on the row — never silently dropped
+  }
+  const order = ADJUSTMENT_KINDS.map((k) => k.key);
+  return [...byKey.values()].sort(
+    (a, b) => (order.indexOf(a.key) + 1 || 99) - (order.indexOf(b.key) + 1 || 99) || a.label.localeCompare(b.label)
   );
 }
 

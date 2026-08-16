@@ -12,6 +12,161 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **The income-and-expenses sheet says what you BILLED: every monthly cell now equals
+  the Ledger and the invoice, the reimbursement is a row instead of a silent netting, a charge or
+  credit reaches a sheet at last, and a mid-year tenant reimburses only the months they were here**
+  (George: *"the monthly numbers are way off on the excel income and expenses none of the rents match
+  because it shows base rent … should that update based on the CAM and TAX reconciliation at the end
+  of the year based on the actual that was charged to the tenants? … im not sure what form people want
+  their income and expenses in."*)
+  - **Cloudflare version `34e28016-ea85-4e6d-85c4-580e0008c8a7`**. Slices 1 and 2 of a four-slice
+    plan. **NO migration, NO edge function, NO view, NO feature key** — every column involved already
+    existed and `ADJUSTMENT_KINDS` is a CHECK-free JS registry (0082). Tests **1824 across 179 files**
+    (was 1813/178).
+  - **His decisions, taken before any code:** Money in reads **what you billed**, recoveries as their
+    own rows · the reconciliation gets **its own year-end line** · charges get **their own row group** ·
+    fix the correctness bugs now · the tenant statement is **left alone**.
+
+  ### 1. ⚠ A "BUG" I PUT TO HIM AND THEN WITHDREW — a lease past its end date is NOT a fault
+
+  I reported *"a lease that ended mid-year still bills twelve months"* as a bug and he approved fixing
+  it. **It is deliberate and it stays.** `monthlyScheduleForYear` zeroes months before the tenancy and
+  never after, and abatement.js:101 says why: *"a holdover tenant keeps owing until removed."* The
+  model is coherent and stated in four places — `is_active === false` means past-term-and-still-in-
+  possession (portfolio.js:234, rentRollExcel.js:278), it is raised as a **high** risk
+  (leaseRisks.js:51) and a danger-toned alert (alerts.js:232), and reconciliation.js:216 states the
+  invariant outright: *"Only the end of the term is un-prorated, on both sides equally."* Zeroing it
+  would have deleted real revenue from tenants who are still in the building, and it would have made
+  `owedByMonth` shrink under every frozen invoice at once.
+  - **The real gap it exposed, NOT built:** there is no way to record that a tenant actually **left**.
+    That is a missing feature, not a broken calculation, and it needs its own round.
+
+  ### 2. What WAS broken: a mid-year tenant reimbursed a full year
+
+  `reconcileFigures` has prorated both sides by `inTerm/12` since 0060 (reconciliation.js:242-249).
+  `recoveryFractions` (recoverability.js:62) summed `v_tenant_shares` **raw, with no term concept at
+  all**. So ⚖ Reconcile settled Sunrise Yoga (starts 1 Jul) at half a year while the workbook and the
+  on-screen "What it cost you" table counted a whole one — and because `recovered` is *subtracted*
+  from what the year cost you, the overstatement landed straight on the bottom line.
+  - Fixed with the **existing** `inTermMonths`, not a new helper — its own comment is the argument:
+    *"a second copy of 'is this month in term?' is precisely how the year-end reconciliation drifted
+    away from the invoice that billed it."* New `inTermByLease` (leaseSchedule.js) is that call per
+    share, and it takes the **escalations**, because a catch-up renewal moves `lease_start` forward and
+    a ten-year tenant would otherwise read as brand new.
+  - **BOTH renderers moved in the same commit** — `RecoverabilityTable` (screen) and `incomeExpense`
+    (workbook). It reuses the query key TenantShareTable already uses, so it is a cache hit on the
+    Financials page *and* the Recovered column can never weigh a tenant differently from the
+    Estimated/Difference columns in the breakdown directly below it.
+  - ⚠ **This changes REPORTING, not billing.** Invoices come from `v_tenant_shares` (SQL) and ⚖
+    Reconcile already prorated; this makes the two screens agree with what tenants actually settle at.
+  - ⚠ **`Number(null)` is 0, not NaN** — the first draft guarded the weight with `Number.isFinite`
+    alone, which read "no map supplied" as "in term for zero months" and **zeroed every recovery on
+    every property**. Five existing tests caught it instantly (`expected +0 to be close to 44600`).
+    The `m == null` check is first now, and a test pins that a lease genuinely in term for 0 months
+    still weighs 0 — the one case that must not be swallowed.
+
+  ### 3. The complaint itself: base rent is not what anybody was billed
+
+  `rentRowsFromRoll` returned `c.base` for a net lease — the month's owed **minus everything
+  recoverable**. On the demo that is 18-23% low per tenant and **$43,800 a year on one property**, and
+  nothing on the sheet said so. The arithmetic was defensible (the reimbursement came back on the cost
+  side, so `net` was right) but no monthly cell agreed with the Ledger, the invoice or the bank — which
+  is what a landlord actually checks.
+  - Now `billedRowsFromRoll` reports the components **separately** instead of folding one away:
+    **Rent · CAM & tax billed · Roof billed · Charges & credits · Other income → Total billed.** That
+    is `componentizeSchedule`'s own invariant (`base + camTax + roof + adj === owed`) printed rather
+    than collapsed. Demo, March: City Dental `7,000 + 2,150 + 0 = 9,150`; Bright Coffee
+    `5,000 + 1,375 + 125 = 6,500` — the exact cells the Ledger paints.
+  - **A gross lease now READS the same as a net one**, which is the point: both tenants owe $1,000 a
+    month and both sheets say so. The old gross branch existed only because the carve had to be added
+    back to a base-only row.
+  - ⚠ **`rentDrift` KEEPS THE OLD FORMULA** as `billed.tieOut` — it is compared against
+    `total_revenue`, which is base-only for a net lease and the WHOLE flat rent for a gross one (0073).
+    Same rows, two different questions; a true tie-out would otherwise have started reading as drift.
+  - ⚠ **A correction rides the row it corrects.** `componentizeSchedule` derives base and camTax from
+    the SCHEDULED owed (`owed − adj`), so a `base` correction is added back onto rent and a `camtax`
+    correction onto CAM & tax. Miss that and Total billed drifts from the Ledger by exactly the
+    adjustment. Pinned with a fixture whose `owed` carries the charge, the way a real roll does.
+
+  ### 4. Where a charge or a credit lands — and the write-off question he asked
+
+  He asked: *"for write it off wouldnt that change the revenue/income numbers?"* **Yes, and it must.**
+  This workbook counts rent when it FALLS DUE, so a tenant who never pays is already inside its
+  revenue; leaving a forgiven amount in would overstate what the property earned by exactly what was
+  forgiven. It goes in as a **negative line in Money in** — and ⚠ **never as an expense**, because
+  expense categories feed `recoveryFractions`, so a forgiven rent booked as a cost would be
+  **recovered from the other tenants**.
+  - New `pnlRow` on `ADJUSTMENT_KINDS`, one predicate with the reasoning on each entry:
+    `base → rent` · `camtax → camtax` · `fee`/`credit` → `charges` · (Slice 4: `writeoff → charges`,
+    `opening → null`, `refund → null`).
+  - ⚠ **An unknown kind files under `charges`, never null** — money a later round invents must land in
+    a visible total rather than disappear from a sheet an accountant is reading. That is the opposite
+    trade from `offsetsCamTax`, which is deliberately withheld from an unknown kind.
+
+  ### 5. "Should it update from the CAM & tax reconciliation?" — yes, on one line
+
+  Tenants pay the ESTIMATE month by month; what they OWE for the year is their share of the actual,
+  which is `recovered`. The gap is what ⚖ Reconcile settles, so it gets **one line and not twelve**.
+  - ⚠ **Derived as `recovered − billed`, NOT summed from `reconcileFigures`** — that makes the sheet
+    tie *by construction*. Substitute it and the reimbursement cancels:
+    `(rent + camTax + roof + charges + other) + (recovered − camTax − roof) − spent`
+    `=== (rent + charges + other) − (spent − recovered)` — the OLD formula plus `charges`.
+    **So `net` is unchanged to the cent** (demo: $141,340 before and after); the only thing that moves
+    it is the charges and credits that used to reach no sheet at all.
+  - ⚠ **The grid ties to `Total billed`, not to `Total earned`**, and that is the point of the line
+    rather than a fault in it. `workbookValidity.test.js` reads the real file bytes and rejects a row
+    whose months don't add to its own total — it caught `Total earned` carrying billed months. Both
+    copies now print **no months** on that row.
+  - ⚠ **It is NOT folded into the "No date" column.** That column means *"this had a date and we don't
+    know it"* (0074); a year-end settlement means *"this belongs to the year, not to a month"*. Two
+    different claims, and merging them would corrupt a column with a precise meaning.
+  - The "What the year left" block stopped adding the reimbursement back — it is on the income side
+    now, and adding it twice is the old double-count arriving from the other direction. It is plain
+    subtraction: **Total earned − what you spent**.
+  - The NOI note gained a term for the same reason `absorbed` was added on 2026-08-12:
+    `net === noi + recovered + otherIncome − absorbed + charges`. `total_revenue` is
+    `sum(effective_rent)` and knows nothing about `lease_adjustments`.
+
+  ### 6. The reconciliation export's missing label
+
+  A `camtax` correction has always been folded INTO "CAM & tax (estimated)" — correctly, or the
+  true-up charges the same dollars twice — but **silently**: it moved TOTAL VARIANCE with no line, no
+  memo and no count, so a tenant querying their bill met a figure nobody could account for. The
+  arithmetic is untouched; it now also gets a memo row (*"of which corrections billed during the year
+  (2 posted)"*), carried through `shapeTenantReport` rather than absorbed.
+
+  ### 7. "What form do people want their income and expenses in?"
+
+  Two conventions, and he does not have to choose: the **standard property P&L** (rent + recoveries +
+  other = revenue, then gross expenses) is what a lender, an accountant or a buyer expects and what
+  ties to the bank; **"What it cost you"** (recoveries netted off each category) is better for
+  deciding what to fix. Both now ship in the one workbook, the standard one first, reconciling to each
+  other. **No toggle** — a toggle is two versions of the truth and someone reading the wrong one.
+
+  ### Files
+  New: `src/lib/__tests__/recoveryProration.test.js` (8).
+  Edited: `src/lib/recoverability.js` · `src/lib/leaseSchedule.js` (`inTermByLease`) ·
+  `src/components/RecoverabilityTable.js` · `src/lib/incomeExpense.js` (`billedRowsFromRoll` replaces
+  `rentRowsFromRoll`) · `src/lib/incomeExpenseExcel.js` · `src/lib/adjustments.js` (`pnlRow`,
+  `adjustmentsForPnlRow`, `adjustmentKindRows`) · `src/lib/reconciliationData.js` ·
+  `src/lib/reconciliationExcel.js` · `src/lib/__tests__/incomeExpense.test.js`.
+
+  ### Flags / not done
+  - **⚠ NO GROSS LEASE EXISTS IN THE DEMO SEED** — `lease_type` appears nowhere in `store.js`, so all
+    four demo tenants take the net branch and the gross split is **unit-tested only**, never driven in
+    a browser. Worth seeding one.
+  - **Slices 3 and 4 of the approved plan are still to come:** the **bank tie-out** (every statement
+    dollar against what reached the books, in a panel and a workbook tab) and **settle up** (a
+    year-end balance: leave open · write off · carry forward both directions · record a refund). The
+    `pnlRow` nulls for `opening` and `refund` are already reasoned out above and land with Slice 4.
+  - **Overpayment still reaches no Excel export**, and `rentRollExcel` / `reconciliationExcel` still
+    roll their own writers — three workbook writers, three copies of `safeSheetName`, four money
+    formatters.
+  - **`effective_rent` was deliberately NOT migrated.** It is a *rate* and prorates neither end of a
+    term, which is why Oak Center's rent-drift flag fires on the demo by −$18,000. Migrating it would
+    move NOI on every screen; `flags()` now names part-year terms as the cause instead, so the
+    difference is explained rather than mysterious.
+
 - **2026-08-13** — **A statement line you file no longer vanishes — it moves to a list that says what
   you decided; a payment can be moved to the month it was actually for; other income takes a
   category you name; and "1 mo behind" waits until the month has ended** (George: *"In money not

@@ -58,9 +58,33 @@ const FLAT_LABEL = { tax: 'Property taxes', cam: 'CAM', roof: 'Roof' };
  *
  * null — not zero — when nothing was spent on that kind. A 0 would read as "recovered
  * nothing", which is a different and wrong claim.
+ *
+ * ⚠ EACH SHARE IS WEIGHED BY THE MONTHS THAT TENANT WAS ACTUALLY HERE (`inTermByLease`,
+ * leaseSchedule.js). `v_tenant_shares` states a tenant's share of the FULL year's expenses,
+ * but ⚖ Reconcile settles them at `inTerm/12` of it (reconciliation.js:242-249) — so
+ * without this weighting a tenant who moved in on 1 July was reported as reimbursing a
+ * whole year's CAM while being billed for half of it. The gap is
+ * `Σ actualᵢ × (1 − inTermᵢ/12)`, and it landed entirely in `recovered`, which is
+ * subtracted from what the year cost you — so it overstated the bottom line on the
+ * "What it cost you" table and in the Income-and-expenses workbook alike.
+ *
+ * ⚠ ONLY THE START PRORATES, matching reconciliation.js:216 exactly: months after term end
+ * keep owing, because a lease past its end date with the tenant still in it is a HOLDOVER
+ * (`is_active === false`), not a vacancy — the app has no move-out record and bills them on.
+ * An omitted or unknown lease weighs 12/12, so every existing caller is unchanged to the cent.
  */
-export function recoveryFractions({ shares = [], expense = {} } = {}) {
-  const sum = (field) => shares.reduce((s, r) => s + num(r[field]), 0);
+export function recoveryFractions({ shares = [], expense = {}, inTermByLease = null } = {}) {
+  const weight = (r) => {
+    const m = inTermByLease ? inTermByLease[r?.lease_id] : undefined;
+    // ⚠ `m == null` FIRST, and it is not pedantry: Number(null) is 0, not NaN, so a
+    // Number.isFinite guard alone reads "no map supplied" as "in term for zero months"
+    // and silently zeroes every recovery on the property. A lease genuinely in term for
+    // 0 months still weighs 0 — that is the one case this must not swallow.
+    if (m == null) return 1;
+    const n = Number(m);
+    return Number.isFinite(n) ? Math.min(12, Math.max(0, n)) / 12 : 1;
+  };
+  const sum = (field) => shares.reduce((s, r) => s + num(r[field]) * weight(r), 0);
   const frac = (recovered, total) => (total > 0 ? recovered / total : null);
   return {
     tax: frac(sum('tax_amount'), num(expense.taxes_total)),
@@ -162,8 +186,8 @@ function addToBreakdown(e, line, year) {
 // from both `rows` and `totals`, so every caller that renders a subtotal gets the right
 // answer without knowing the rule. The Income-and-expenses workbook prints `owner`
 // beneath the net line for the same reason.
-export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [], year = null } = {}) {
-  const fractions = recoveryFractions({ shares, expense });
+export function recoverabilityRows({ items = [], shares = [], expense = {}, buckets = [], year = null, inTermByLease = null } = {}) {
+  const fractions = recoveryFractions({ shares, expense, inTermByLease });
   const byCat = new Map();
   let uncategorized = null;
 

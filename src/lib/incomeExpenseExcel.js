@@ -65,18 +65,27 @@ function addSummary(wb, pkg, corporationName, now) {
   pen.skip();
 
   pen.note(
-    'Rent is what the leases oblige, month by month. Expenses sit in the month they were paid. Anything with no '
-    + 'date on it is in the last column rather than spread across the year — every row adds across to its Total. '
-    + 'What tenants reimbursed is shown below the grid, for the year: it is settled at reconciliation and has no month.',
+    'Each month of Money in is what tenants were billed that month — the same figure the Ledger and the invoice '
+    + 'show. Expenses sit in the month they were paid. Anything with no date on it is in the last column rather '
+    + 'than spread across the year — every row adds across to its Total. The year-end reconciliation is settled '
+    + 'once and has no month, so it sits on its own line.',
     { bg: P.NEUTRAL_BG, height: 32 }
   );
   pen.skip();
 
   pen.section('Money in — all properties');
   pen.head(head(''), RIGHT);
-  grid(pen, 'Rent — what the leases oblige', { total: t.rent, byMonth: t.rentByMonth, undated: 0 });
+  grid(pen, 'Rent', { total: t.rent, byMonth: t.rentByMonth, undated: 0 });
+  if (Math.abs(t.camTaxBilled) > 0.005) grid(pen, 'CAM & tax billed to tenants', { total: t.camTaxBilled, byMonth: t.camTaxByMonth, undated: 0 });
+  if (Math.abs(t.roofBilled) > 0.005) grid(pen, 'Roof billed to tenants', { total: t.roofBilled, byMonth: t.roofByMonth, undated: 0 });
+  if (Math.abs(t.charges) > 0.005) grid(pen, 'Charges & credits', { total: t.charges, byMonth: t.chargesByMonth, undated: 0 });
   grid(pen, 'Other income', { total: t.otherIncome, byMonth: t.incomeByMonth, undated: t.inUndated });
-  grid(pen, 'Total in', { total: t.revenue, byMonth: t.inByMonth, undated: t.inUndated }, { bold: true, bg: P.SUMMARY_BG });
+  grid(pen, 'Total billed', { total: t.billedTotal, byMonth: t.inByMonth, undated: t.inUndated }, { bold: true, bg: P.SUMMARY_BG });
+  if (Math.abs(t.trueUp) > 0.005) {
+    grid(pen, 'Year-end reconciliation — actual share less what was billed', { total: t.trueUp, byMonth: Array(12).fill(0), undated: 0 });
+    // No months — see the note on the property sheet's copy of this row.
+    grid(pen, 'Total earned', { total: t.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
+  }
   pen.skip();
 
   pen.section('Money out — all properties, by category');
@@ -96,8 +105,8 @@ function addSummary(wb, pkg, corporationName, now) {
 
   pen.section('What the year left');
   pen.head(['', 'Amount'], RIGHT);
-  pen.line(['Money in less money out', t.grossNet], { aligns: RIGHT });
-  pen.line(['Plus what tenants reimbursed (for the year)', t.recovered], { aligns: RIGHT });
+  pen.line(['Total earned', t.earned], { aligns: RIGHT });
+  pen.line(['Less what you spent', -t.spent], { aligns: RIGHT });
   pen.line(['What the year left', t.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
   pen.skip();
 
@@ -153,17 +162,54 @@ function addProperty(wb, p, year, used) {
   pen.skip();
 
   // ── Money in ───────────────────────────────────────────────────────────────
+  //
+  // ⚠ EVERY COMPONENT OF THE BILL, SEPARATELY (2026-08-16). This block used to print one
+  // "Rent" row carrying base rent alone, so no monthly cell matched the Ledger, the invoice
+  // or the bank — 18-23% low per tenant on the demo. The components are now stated, and
+  // `Total billed` for a month is exactly what the Ledger shows that month as owed.
   pen.section('Money in');
   pen.head(head(''), RIGHT);
-  grid(pen, 'Rent — what the leases oblige', { total: p.rent, byMonth: p.rentByMonth, undated: 0 }, { bold: true });
+  grid(pen, 'Rent', { total: p.rent, byMonth: p.rentByMonth, undated: 0 }, { bold: true });
   if (!p.rentRows.length) pen.line(['    No leases on this property for the year'], { aligns: RIGHT });
   for (const r of p.rentRows) grid(pen, indent(r.label), r);
+
+  if (Math.abs(p.camTaxBilled) > 0.005) {
+    grid(pen, 'CAM & tax billed to tenants', { total: p.camTaxBilled, byMonth: p.camTaxByMonth, undated: 0 }, { bold: true });
+    for (const r of p.camTaxRows) if (Math.abs(r.total) > 0.005) grid(pen, indent(r.label), r);
+  }
+  if (Math.abs(p.roofBilled) > 0.005) {
+    grid(pen, 'Roof billed to tenants', { total: p.roofBilled, byMonth: p.roofByMonth, undated: 0 }, { bold: true });
+    for (const r of p.roofRows) if (Math.abs(r.total) > 0.005) grid(pen, indent(r.label), r);
+  }
+  if (p.chargeRows.length) {
+    grid(pen, 'Charges & credits', { total: p.charges, byMonth: p.chargesByMonth, undated: 0 }, { bold: true });
+    for (const r of p.chargeRows) grid(pen, indent(r.label), r);
+  }
 
   if (p.otherIncome > 0) {
     grid(pen, 'Other income', { total: p.otherIncome, byMonth: p.incomeByMonth, undated: p.incomeUndated }, { bold: true });
     for (const g of p.incomeGroups) grid(pen, indent(`${g.label} — ${g.count} line${g.count === 1 ? '' : 's'}`), g);
   }
-  grid(pen, 'Total in', { total: p.revenue, byMonth: p.inByMonth, undated: p.inUndated }, { bold: true, bg: P.SUMMARY_BG });
+  grid(pen, 'Total billed', { total: p.billedTotal, byMonth: p.inByMonth, undated: p.inUndated }, { bold: true, bg: P.SUMMARY_BG });
+
+  // The year-end true-up. One line and not twelve, deliberately: it is settled once, and
+  // spreading it back across the months would invent figures and break the promise that
+  // every cell above equals the Ledger.
+  if (Math.abs(p.trueUp) > 0.005) {
+    grid(pen, 'Year-end reconciliation — actual share less what was billed',
+      { total: p.trueUp, byMonth: Array(12).fill(0), undated: 0 });
+    // ⚠ NO MONTHS ON THIS ROW, deliberately. It contains a year-end figure that belongs to
+    // no month, so printing the billed months beside it would give a row whose cells do not
+    // add across to its own total — which `workbookValidity.test.js` reads out of the real
+    // file bytes and rejects, and which an accountant would reject for the same reason.
+    grid(pen, 'Total earned', { total: p.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
+  }
+  pen.note(
+    'Each month above is what the tenant was billed that month — the same figure the Ledger and the invoice show. '
+    + 'Tenants pay an estimate for CAM & tax through the year; the difference between that and their actual share is '
+    + 'settled once at reconciliation, which is the line with no months against it.',
+    { height: 32 }
+  );
   pen.skip();
 
   // ── Money out ──────────────────────────────────────────────────────────────
@@ -205,9 +251,14 @@ function addProperty(wb, p, year, used) {
     { bold: true, bg: P.SUMMARY_BG, aligns: ['left', 'right', 'right', 'right'] });
   pen.skip();
 
+  // ⚠ THE REIMBURSEMENT IS NO LONGER ADDED BACK HERE, and it must not be: since 2026-08-16
+  // it is stated on the income side as "CAM & tax billed" + the year-end reconciliation, so
+  // adding it a second time below the expenses would count it twice — the exact error the
+  // old netting arrangement existed to avoid, arriving from the other direction. What the
+  // year left is now plain subtraction, which is also what an accountant will try first.
   pen.head(['What the year left', 'Amount'], RIGHT);
-  pen.line(['Money in less money out', p.grossNet], { aligns: RIGHT });
-  pen.line(['Plus what tenants reimbursed', p.expenseTotals.recovered], { aligns: RIGHT });
+  pen.line(['Total earned', p.earned], { aligns: RIGHT });
+  pen.line(['Less what you spent', -p.expenseTotals.spent], { aligns: RIGHT });
   pen.line(['What the year left', p.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
   // ⚠ THE RECONCILIATION AN ACCOUNTANT WILL CHECK. It has to be arithmetic they can
   // follow on the page, not a claim. NOI is built from BILLED expenses only — `cam_total`
@@ -217,8 +268,10 @@ function addProperty(wb, p, year, used) {
   pen.note(
     `The app's own NOI for this property reads ${usd(p.noi)}. It answers a different question, and these figures `
     + `reconcile to it exactly: NOI ${usd(p.noi)} + ${usd(p.recovered)} tenants reimbursed + ${usd(p.otherIncome)} `
-    + `other income − ${usd(p.absorbed)} of costs you entered and chose not to bill = ${usd(p.net)}. NOI counts only `
-    + 'what you billed tenants for, which is why the last term is there.',
+    + `other income − ${usd(p.absorbed)} of costs you entered and chose not to bill `
+    + `${p.charges < 0 ? '−' : '+'} ${usd(Math.abs(p.charges))} of charges and credits = ${usd(p.net)}. NOI counts only `
+    + 'what you billed tenants for and knows nothing about a late fee or a write-off, which is why the last two '
+    + 'terms are there.',
     { height: 32 }
   );
 

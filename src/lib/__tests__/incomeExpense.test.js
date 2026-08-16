@@ -18,7 +18,7 @@
 //     twin (CLAUDE.md §3) and are meant to agree; if they ever stop, the workbook says so
 //     in dollars rather than disagreeing quietly with the Performance card beside it.
 import { describe, it, expect } from 'vitest';
-import { buildIncomeExpense, rentRowsFromRoll, consolidateCategories, flags, shapeProperty } from '../incomeExpense';
+import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, flags, shapeProperty } from '../incomeExpense';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -49,10 +49,21 @@ describe('a corporation’s year, month by month', () => {
     const ties = (row) => expect(sum12(row.byMonth) + row.undated).toBeCloseTo(row.total ?? row.spent, 2);
     for (const p of pkg.properties) {
       for (const r of p.rentRows) ties(r);
+      for (const r of p.camTaxRows) ties(r);
+      for (const r of p.roofRows) ties(r);
+      for (const r of p.chargeRows) ties(r);
       for (const g of p.incomeGroups) ties(g);
       for (const r of p.expenseRows) { ties(r); for (const it of r.items) ties(it); }
       for (const r of p.distributions) ties(r);
-      expect(sum12(p.inByMonth) + p.inUndated).toBeCloseTo(p.revenue, 2);
+      // ⚠ THE GRID TIES TO `billedTotal`, NOT TO `revenue`/`earned` — and that is the point
+      // of the year-end reconciliation line rather than a fault in it. Every month here is
+      // what the tenant was billed that month; the true-up is settled ONCE at year end and
+      // genuinely has no month, so it sits on its own line below the grid's total with
+      // twelve dashes against it. It is deliberately NOT folded into the "No date" column:
+      // that column means "this had a date and we don't know it" (0074), which is a
+      // different claim from "this event belongs to the year, not to a month".
+      expect(sum12(p.inByMonth) + p.inUndated).toBeCloseTo(p.billedTotal, 2);
+      expect(p.billedTotal + p.trueUp).toBeCloseTo(p.earned, 2);
       expect(sum12(p.outByMonth) + p.outUndated).toBeCloseTo(p.expenseTotals.spent, 2);
       expect(sum12(p.netByMonth) + p.netUndated).toBeCloseTo(p.grossNet, 2);
     }
@@ -100,25 +111,53 @@ describe('a corporation’s year, month by month', () => {
     expect(p.expenseTotals.spent).toBe(49950);
   });
 
-  // The headline figures are unchanged by the monthly rewrite — the sheet says the same
-  // thing it did, in more detail.
-  it('reconciles the grid to what the year left, and to NOI', async () => {
+  // ⚠ THE BOTTOM LINE DOES NOT MOVE (2026-08-16). The Money-in block now states every
+  // component of the bill instead of printing base rent alone, and the reimbursement stops
+  // being netted silently off the cost side — but `net` lands on the identical figure,
+  // because the year-end reconciliation line brings the income side to the tenants' true
+  // entitlement, which is the same figure the cost side takes off. Presentation moved; the
+  // answer did not. (On this seed there are no charges or credits; the test below covers
+  // the one thing that IS meant to move the number.)
+  it('reconciles the grid to what the year left, and the bottom line is unchanged', async () => {
     const [p] = (await build()).properties;
-    expect(p.revenue).toBe(146690);                    // 144,000 rent + 2,690 other income
-    expect(p.grossNet).toBe(96740);                    // less the 49,950 gross spend
-    expect(p.net).toBe(141340);                        // plus the 44,600 tenants paid back
-    expect(p.grossNet + p.expenseTotals.recovered).toBeCloseTo(p.net, 2);
+    expect(p.rent).toBe(144000);                       // base — the row that used to be all of it
+    expect(p.camTaxBilled).toBe(42300);                // the reimbursement, now visible
+    expect(p.roofBilled).toBe(1500);
+    // 144,000 + 42,300 + 1,500 = $187,800 — exactly what the Ledger bills this property.
+    expect(p.rent + p.camTaxBilled + p.roofBilled).toBe(187800);
+    expect(p.billedTotal).toBe(190490);                // + 2,690 other income
+    expect(p.trueUp).toBe(800);                        // actual share 44,600 less 43,800 billed
+    expect(p.earned).toBe(191290);
+    expect(p.net).toBe(141340);                        // ⚠ THE SAME FIGURE AS BEFORE
+    expect(p.earned - p.expenseTotals.spent).toBeCloseTo(p.net, 2);
   });
 
-  // ⚠ THE TERM THAT IS EASY TO DROP. NOI is built from BILLED expenses only (`cam_total`
+  // ⚠ EVERY MONTHLY CELL IS WHAT THE LEDGER SHOWS. This is George's complaint, pinned:
+  // "the monthly numbers are way off … none of the rents match because it shows base rent."
+  it('lays each month out at what the tenant was actually billed', async () => {
+    const [p] = (await build()).properties;
+    // Bright Coffee: $5,000 base + $1,375 CAM & tax + $125 roof = the $6,500 the Ledger bills.
+    const bright = p.rentRows.find((r) => r.label.includes('Bright'));
+    const brightCam = p.camTaxRows.find((r) => r.label.includes('Bright'));
+    const brightRoof = p.roofRows.find((r) => r.label.includes('Bright'));
+    expect(bright.byMonth[2]).toBe(5000);
+    expect(brightCam.byMonth[2] + brightRoof.byMonth[2]).toBeCloseTo(1500, 2);
+    // And the property's March cell is the sum of what every tenant was billed that month.
+    expect(p.inByMonth[2]).toBeCloseTo(
+      p.rentByMonth[2] + p.camTaxByMonth[2] + p.roofByMonth[2] + p.chargesByMonth[2] + p.incomeByMonth[2], 2);
+  });
+
+  // ⚠ THE TERMS THAT ARE EASY TO DROP. NOI is built from BILLED expenses only (`cam_total`
   // sums `billable is not false`), so the $2,950 of costs the landlord entered and chose
   // to eat is in this sheet's `spent` and in none of NOI. The sheet shipped on 2026-08-12
   // printing this reconciliation with that term missing, which made it wrong by exactly
   // that figure — and an accountant checking the note is the person who would find it.
+  // `charges` joined it on 2026-08-16 for the same reason: total_revenue is
+  // sum(effective_rent) and knows nothing about a late fee or a write-off.
   it('reconciles to NOI including the costs NOI never counted', async () => {
     const [p] = (await build()).properties;
     expect(p.absorbed).toBe(2950);
-    expect(p.noi + p.recovered + p.otherIncome - p.absorbed).toBeCloseTo(p.net, 2);
+    expect(p.noi + p.recovered + p.otherIncome - p.absorbed + p.charges).toBeCloseTo(p.net, 2);
   });
 
   it('says out loud how many dollars it could not date', async () => {
@@ -148,23 +187,76 @@ describe('rent, month by month', () => {
   );
   const row = (gross) => ({ lease_id: 'l1', tenant_name: 'T', schedule, factor: 1, camTaxAnnual: 2400, roofAnnual: 0, gross });
 
-  // ⚠ THE BRANCH THAT KEEPS A YEAR FROM BEING COUNTED TWICE. On a NET lease the CAM/tax
-  // component of a month is the reimbursement, which this workbook takes off the COST
-  // side — putting it in rent as well would report the same dollars twice. On a GROSS
-  // lease (0073) it is carved OUT of a flat rent the tenant pays regardless, and
-  // total_revenue counts the whole flat figure, so leaving it out would under-report.
-  it('excludes a net tenant’s reimbursement and includes a gross tenant’s carve', () => {
-    const [net] = rentRowsFromRoll([row(false)]);
-    const [gross] = rentRowsFromRoll([row(true)]);
-    expect(net.total).toBe(9600);         // base only
-    expect(gross.total).toBe(12000);      // base + the carve
-    expect(gross.total - net.total).toBe(2400);
-    expect(net.byMonth).toEqual(Array(12).fill(800));
+  // ⚠ REWRITTEN 2026-08-16, and the old assertion is the bug George reported. This used to
+  // pin `rentRowsFromRoll`, which returned $9,600 for a net tenant owing $12,000 — base rent
+  // alone, 20% under every figure the Ledger, the invoice and the bank show for the same
+  // months. The components are now stated separately instead of one being folded away, and
+  // the thing that must hold is that they add back up to what was owed.
+  it('splits the bill into its components, and they sum to what was owed', () => {
+    const net = billedRowsFromRoll([row(false)]);
+    expect(net.rent[0].total).toBe(9600);        // base
+    expect(net.camTax[0].total).toBe(2400);      // the reimbursement, no longer invisible
+    expect(net.rent[0].byMonth).toEqual(Array(12).fill(800));
+    expect(net.camTax[0].byMonth).toEqual(Array(12).fill(200));
+    // THE INVARIANT: every month adds up to the month's owed, so a cell on this sheet is
+    // the cell on the Ledger.
+    for (let i = 0; i < 12; i++) {
+      expect(net.rent[0].byMonth[i] + net.camTax[0].byMonth[i] + net.roof[0].byMonth[i] + net.charges[0].byMonth[i])
+        .toBeCloseTo(1000, 2);
+    }
+  });
+
+  it('a gross lease splits the same way — the carve is shown, not added', () => {
+    // On a GROSS lease (0073) the CAM/tax is carved OUT of a flat rent the tenant pays
+    // regardless. Reporting the components separately means gross and net now READ the
+    // same, which is the point: both tenants owe $1,000 a month and both sheets say so.
+    const gross = billedRowsFromRoll([row(true)]);
+    expect(gross.rent[0].total).toBe(9600);
+    expect(gross.camTax[0].total).toBe(2400);
+    // ⚠ The TIE-OUT figure keeps the old formula, because it is compared against
+    // total_revenue — which is base-only for a net lease and the WHOLE flat rent for a
+    // gross one. Same rows, two different questions.
+    expect(billedRowsFromRoll([row(false)]).tieOut).toBe(9600);
+    expect(gross.tieOut).toBe(12000);
+  });
+
+  it('a correction rides the row it corrects, so the total still equals the owed', () => {
+    // componentizeSchedule derives base and camTax from the SCHEDULED owed (owed − adj), so
+    // a base correction has to be added back onto rent — otherwise Total billed drifts from
+    // the Ledger by exactly the adjustment.
+    // A real roll carries the adjustment inside `owed` (buildLeaseSchedule adds it last), so
+    // the fixture does too: Jan owes 1,400 of which 400 is a base correction, Feb owes 1,150
+    // of which 150 is a fee, Mar owes 950 after a −50 CAM & tax correction.
+    const owedBy = { 1: 1400, 2: 1150, 3: 950 };
+    const sched = Object.fromEntries(Array.from({ length: 12 }, (_, i) => {
+      const m = i + 1;
+      return [m, { full: 1000, owed: owedBy[m] ?? 1000, abated: 0, credit: 0, kind: 'full', outsideTerm: false }];
+    }));
+    const g = billedRowsFromRoll([{
+      lease_id: 'l1', tenant_name: 'T', schedule: sched, factor: 1, camTaxAnnual: 2400, roofAnnual: 0, gross: false,
+      adjustments: [400, 150, -50, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      adjustmentRows: [
+        { id: 'a1', kind: 'base', month: 1, amount: 400 },
+        { id: 'a2', kind: 'fee', month: 2, amount: 150 },
+        { id: 'a3', kind: 'camtax', month: 3, amount: -50 },
+      ],
+    }]);
+    expect(g.rent[0].byMonth[0]).toBe(1200);     // 800 base + the 400 correction
+    expect(g.camTax[0].byMonth[2]).toBe(150);    // 200 − the 50 correction
+    expect(g.charges[0].byMonth[1]).toBe(150);   // the fee, on its own row
+    expect(g.charges[0].total).toBe(150);        // and nothing else lands there
+    // THE INVARIANT AGAIN, this time with corrections in play: the components still add up
+    // to the month's owed, so Total billed cannot drift from the Ledger by an adjustment.
+    for (const m of [1, 2, 3]) {
+      const i = m - 1;
+      expect(g.rent[0].byMonth[i] + g.camTax[0].byMonth[i] + g.roof[0].byMonth[i] + g.charges[0].byMonth[i])
+        .toBeCloseTo(owedBy[m], 2);
+    }
   });
 
   it('reads a lease with no schedule as no rent rather than throwing', () => {
-    expect(rentRowsFromRoll([{ lease_id: 'l1', tenant_name: 'T' }])[0].total).toBe(0);
-    expect(rentRowsFromRoll()).toEqual([]);
+    expect(billedRowsFromRoll([{ lease_id: 'l1', tenant_name: 'T' }]).rent[0].total).toBe(0);
+    expect(billedRowsFromRoll().rent).toEqual([]);
   });
 });
 

@@ -134,6 +134,18 @@ function addTenantSheet(wb, used, t, now) {
   dataRow('Base rent', psfOf(t.base.annual), t.base.annual, t.base.monthly);
   r++; // spacer
   dataRow('CAM & tax (estimated)', psfOf(t.estCamTax), t.estCamTax, monthlyFlat(t.estCamTax));
+  // ⚠ THE LINE THAT WAS MISSING. A CAM & tax correction posted during the year is part of
+  // what the tenant was billed, so it belongs inside the estimate above — and it always has
+  // been. What it did not have was a name: it moved TOTAL VARIANCE with nothing on the page
+  // to explain it. Stated here as a memo row (it is already counted in the row above, so it
+  // must NOT be added again), because a figure a tenant cannot account for is one they call
+  // about.
+  if (Math.abs(t.camTaxAdjust || 0) > 0.005) {
+    dataRow(
+      `    of which corrections billed during the year (${t.camTaxAdjustCount} posted)`,
+      null, t.camTaxAdjust, null,
+    );
+  }
   dataRow('CAM & tax (actual)', psfOf(t.actualCamTax), t.actualCamTax, monthlyFlat(t.actualCamTax), { bg: ACTUAL_BG });
   const camTaxVar = Math.round((t.actualCamTax - t.estCamTax) * 100) / 100;
   const cv = varianceFill(camTaxVar);

@@ -35,11 +35,13 @@
 import {
   listProperties, listExpenseBuckets, listCamLineItems, listTaxLineItems,
   listRoofLineItems, getExpenseRecord, getTenantShares, getPropertyTotals, listOtherIncome,
-  getPropertyMonthlyRoll,
+  getPropertyMonthlyRoll, listEscalationsByLeases,
 } from './api';
 import { recoverabilityRows, absorbedFromItems } from './recoverability';
 import { summarizeOtherIncome } from './otherIncome';
 import { componentizeSchedule } from './ledger';
+import { inTermByLease } from './leaseSchedule';
+import { adjustmentsForPnlRow, adjustmentKindRows } from './adjustments';
 
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -51,42 +53,76 @@ const sum12 = (a) => round2(a.reduce((s, n) => s + n, 0));
 export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
- * The rent each lease owes, month by month.
+ * What each lease was BILLED, month by month, split the way the invoice splits it.
  *
- * ⚠ THE GROSS BRANCH IS LOAD-BEARING, not a nicety. On a NET lease the CAM/tax/roof
- * component of a month is the REIMBURSEMENT, which this workbook takes off the cost side —
- * adding it to rent as well would count the same dollars twice. On a GROSS lease (0073)
- * that component is carved OUT of a flat rent the tenant pays anyway, and
- * `v_property_totals.total_revenue` counts the whole flat figure — so leaving it out would
- * under-report the rent by exactly the carve. Same field, opposite meaning; `share.gross`
- * is what tells them apart.
+ * ⚠ THE CHANGE OF 2026-08-16, and George's complaint in one line: *"the monthly numbers are
+ * way off … none of the rents match because it shows base rent."* They didn't match because
+ * they were base rent — for a NET lease this returned `c.base` alone, which is the month's
+ * owed MINUS everything recoverable. On the demo that is 18–23% low per tenant and $43,800 a
+ * year on one property, and nothing on the sheet said so. The arithmetic was defensible (the
+ * reimbursement came back on the cost side, so the bottom line was right) but no monthly cell
+ * agreed with the Ledger, the invoice or the bank, which is what a landlord actually checks.
  *
- * `adj` is deliberately excluded: a one-off credit or charge on the invoice is not rent,
- * and `effective_rent` — the figure this has to tie to — knows nothing about it.
+ * So the components are now reported SEPARATELY instead of one being folded away:
+ * `rent` + `camTax` + `roof` + `charges` per month === that month's owed, which is
+ * `componentizeSchedule`'s own invariant (`base + camTax + roof + adj === owed`) printed
+ * rather than collapsed. The bottom line is unchanged — the reimbursement stops being netted
+ * silently off the cost side and is stated on both sides instead.
+ *
+ * ⚠ A CORRECTION RIDES THE ROW IT CORRECTS. `componentizeSchedule` derives base and camTax
+ * from the SCHEDULED owed (owed − adj), so a `base` correction is added back onto rent and a
+ * `camtax` correction onto CAM & tax — which is what keeps `Total billed === Σ owed` exact.
+ * Everything else lands in `charges`; `pnlRow` (adjustments.js) is the single rule and is
+ * where the reasoning lives.
+ *
+ * ⚠ `tieOut` IS NOT A DISPLAYED FIGURE and must keep the old formula. `rentDrift` compares
+ * against `v_property_totals.total_revenue`, which is base-only for a net lease and the WHOLE
+ * flat rent for a gross one (0073) — so the comparison figure still needs the gross carve
+ * added back, and still excludes adjustments, or a true tie-out would start reading as drift.
  */
-export function rentRowsFromRoll(roll = []) {
-  return (roll || []).map((r) => {
+export function billedRowsFromRoll(roll = []) {
+  const groups = { rent: [], camTax: [], roof: [], charges: [] };
+  let tieOut = 0;
+  for (const r of roll || []) {
     const comp = r?.schedule
       ? componentizeSchedule({
         schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual,
         camTaxByMonth: r.camTaxByMonth, roofByMonth: r.roofByMonth, adjustments: r.adjustments,
       })
       : null;
-    const byMonth = Array.from({ length: 12 }, (_, i) => {
-      const c = comp?.[i + 1];
-      if (!c) return 0;
-      return round2(num(c.base) + (r.gross ? num(c.camTax) + num(c.roof) : 0));
-    });
-    return {
-      lease_id: r.lease_id,
-      label: String(r.tenant_name || '').trim() || 'Tenant',
-      gross: !!r.gross,
-      byMonth,
-      total: sum12(byMonth),
-      undated: 0,   // a lease schedule always knows its months
+    const label = String(r.tenant_name || '').trim() || 'Tenant';
+    const adjRows = r?.adjustmentRows || [];
+    const per = (pick, pnlRow) => {
+      const extra = pnlRow ? adjustmentsForPnlRow(adjRows, pnlRow) : null;
+      const byMonth = Array.from({ length: 12 }, (_, i) => {
+        const c = comp?.[i + 1];
+        return round2((c ? num(c[pick]) : 0) + (extra ? extra.byMonth[i] : 0));
+      });
+      return { lease_id: r.lease_id, label, gross: !!r.gross, byMonth, total: sum12(byMonth), undated: 0 };
     };
-  }).sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+    groups.rent.push(per('base', 'rent'));
+    groups.camTax.push(per('camTax', 'camtax'));
+    groups.roof.push(per('roof', null));
+    // Everything not attached to a component of the bill — a late fee, a concession — as
+    // ONE row per lease, itemized by kind at the property level below.
+    const ch = adjustmentsForPnlRow(adjRows, 'charges');
+    groups.charges.push({
+      lease_id: r.lease_id, label, gross: !!r.gross,
+      byMonth: ch.byMonth.map(round2), total: round2(ch.total), undated: 0,
+    });
+    // The old formula, kept for the tie-out only.
+    for (let i = 0; i < 12; i++) {
+      const c = comp?.[i + 1];
+      if (c) tieOut = round2(tieOut + num(c.base) + (r.gross ? num(c.camTax) + num(c.roof) : 0));
+    }
+  }
+  const byTotal = (a, b) => b.total - a.total || a.label.localeCompare(b.label);
+  for (const k of Object.keys(groups)) groups[k].sort(byTotal);
+  return { ...groups, tieOut: round2(tieOut) };
 }
+
+/** The lease-level rows of one group, collapsed to a length-12 array. */
+const groupByMonth = (rows = []) => (rows || []).reduce((acc, r) => add12(acc, r.byMonth), zero12());
 
 /**
  * One property's year, shaped for the sheet. Pure — it takes the rows the loader read.
@@ -96,13 +132,30 @@ export function rentRowsFromRoll(roll = []) {
  * distribution is not a cost of the building (see `isOwnerCategory`), and
  * `recoverabilityRows` has already split it out.
  */
-export function shapeProperty({ property, year, totals, items, shares, expense, buckets, income, roll }) {
+export function shapeProperty({ property, year, totals, items, shares, expense, buckets, income, roll, escByLease = {} }) {
   const inc = summarizeOtherIncome(income, year);
-  const rec = recoverabilityRows({ items, shares, expense: expense || {}, buckets, year });
+  // ⚠ The term weighting is passed, not defaulted, and it is the SAME call the "What it
+  // cost you" table on screen makes. Those two are one rule with two renderers; letting
+  // one prorate a mid-year tenant's recovery and the other not is the §3 drift that puts
+  // two different net figures in front of the same landlord on the same afternoon.
+  const rec = recoverabilityRows({
+    items, shares, expense: expense || {}, buckets, year,
+    inTermByLease: inTermByLease({ year, shares, escByLease }),
+  });
 
-  const rentRows = rentRowsFromRoll(roll);
-  const rentByMonth = rentRows.reduce((acc, r) => add12(acc, r.byMonth), zero12());
+  const billed = billedRowsFromRoll(roll);
+  const rentRows = billed.rent;
+  const rentByMonth = groupByMonth(billed.rent);
   const rent = sum12(rentByMonth);
+  const camTaxByMonth = groupByMonth(billed.camTax);
+  const roofByMonth = groupByMonth(billed.roof);
+  const chargesByMonth = groupByMonth(billed.charges);
+  const camTaxBilled = sum12(camTaxByMonth);
+  const roofBilled = sum12(roofByMonth);
+  const charges = sum12(chargesByMonth);
+  // Itemized by kind at the property level, so a late fee and a write-off never merge into
+  // one unexplained figure on the sheet.
+  const chargeRows = adjustmentKindRows((roll || []).flatMap((r) => r?.adjustmentRows || []), 'charges');
 
   // ⚠ THE TIE-OUT. Until 2026-08-12 this sheet quoted `total_revenue` — one annual figure
   // straight out of the view. Laying rent across months means deriving it from the lease
@@ -111,18 +164,47 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   // if they ever stop, rather than shipping a workbook that quietly disagrees with the
   // Performance card on the same screen.
   const rentQuoted = round2(num(totals?.total_revenue));
-  const rentDrift = round2(rent - rentQuoted);
+  const rentDrift = round2(billed.tieOut - rentQuoted);
 
-  const inByMonth = add12(rentByMonth, inc.byMonth);
+  // ⚠ MONEY IN IS NOW EVERY COMPONENT OF THE BILL, not the rent alone. Each month of
+  // `inByMonth` therefore equals what the Ledger shows that month as owed, plus that month's
+  // other income — which is the whole point of the change and the thing to check first if
+  // this ever looks wrong.
+  const inByMonth = [rentByMonth, camTaxByMonth, roofByMonth, chargesByMonth, inc.byMonth]
+    .reduce((acc, a) => add12(acc, a), zero12());
   const inUndated = round2(inc.undated);
   const outByMonth = rec.totals.byMonth;
   const outUndated = rec.totals.undated;
 
-  const revenue = round2(rent + inc.total);
-  // What the grid itself adds up to — money in less the GROSS expense. It is not the
-  // headline: the reimbursement comes back below, because no month exists for it.
-  const grossNet = round2(revenue - rec.totals.spent);
-  const net = round2(revenue - rec.totals.net);
+  const billedTotal = round2(rent + camTaxBilled + roofBilled + charges + inc.total);
+
+  // ⚠ THE YEAR-END RECONCILIATION LINE — George, 2026-08-16: *"should that update based on
+  // the CAM and TAX reconciliation at the end of the year based on the actual that was
+  // charged to the tenants?"* Yes, and this is where. Tenants pay the ESTIMATE month by
+  // month; what they actually OWE for the year is their share of the actual expense, which
+  // is `recovered`. The gap is exactly what ⚖ Reconcile settles — a genuine year-end event,
+  // so it gets one line and not twelve. Spreading it back over the months would invent
+  // figures and break the promise that every monthly cell equals the Ledger.
+  //
+  // ⚠ DERIVED AS `recovered − billed`, NOT SUMMED FROM reconcileFigures, and that is
+  // deliberate: it makes the sheet tie by construction. Revenue already carries the billed
+  // CAM/tax/roof, so adding this brings the income side to the tenants' true entitlement —
+  // the same figure the cost side nets off — and `net` lands on precisely what it always
+  // was, plus the charges & credits that used to reach no sheet at all. A property with no
+  // estimates bills its actual share, so this is exactly $0 there.
+  const trueUp = round2(rec.totals.recovered - round2(camTaxBilled + roofBilled));
+  const earned = round2(billedTotal + trueUp);
+  const revenue = earned;
+  // What the monthly grid itself adds up to — money in less the GROSS expense. Still not the
+  // headline, because the year-end line above has no month.
+  const grossNet = round2(billedTotal - rec.totals.spent);
+  // ⚠ THE BOTTOM LINE MOVES BY THE CHARGES AND BY NOTHING ELSE. Substitute trueUp and the
+  // reimbursement cancels: (rent + camTax + roof + charges + other) + (recovered − camTax −
+  // roof) − spent === (rent + charges + other) − (spent − recovered). That right-hand side
+  // is the old formula with `charges` added — the write-off George asked about, and the fee
+  // and the concession with it. Everything else is presentation. `net === earned − spent` is
+  // asserted in incomeExpense.test.js so the two can never quietly part company.
+  const net = round2(earned - rec.totals.spent);
 
   return {
     id: property.id,
@@ -133,6 +215,19 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     rentByMonth,
     rentQuoted,
     rentDrift,
+    // The bill's other components, each with the per-lease rows the sheet indents under it.
+    camTaxRows: billed.camTax,
+    camTaxByMonth,
+    camTaxBilled,
+    roofRows: billed.roof,
+    roofByMonth,
+    roofBilled,
+    chargeRows,
+    chargesByMonth,
+    charges,
+    trueUp,
+    billedTotal,
+    earned,
     incomeGroups: inc.groups,
     otherIncome: inc.total,
     incomeByMonth: inc.byMonth,
@@ -156,7 +251,14 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     // than mysteriously different. NOI is not a smaller version of `net`; it answers a
     // different question and is built from a different set of dollars:
     //
-    //   net === noi + recovered + otherIncome − absorbed
+    //   net === noi + recovered + otherIncome − absorbed + charges
+    //
+    // ⚠ `charges` JOINED THIS ON 2026-08-16 and is the term that is easy to forget next,
+    // for the same reason `absorbed` was: it is money the landlord billed (a late fee) or
+    // gave up (a concession, a write-off) that reaches `net` and reaches NOI through
+    // nothing at all — `total_revenue` is `sum(effective_rent)` and knows nothing about
+    // `lease_adjustments`. Leave it out and the note is wrong by exactly what was charged
+    // or forgiven, in front of the accountant it was written for.
     //
     // ⚠ `absorbed` IS THE TERM THAT IS EASY TO FORGET, and leaving it out is a real error
     // rather than a rounding one — this sheet shipped on 2026-08-12 claiming
@@ -178,6 +280,15 @@ export function consolidate(properties = []) {
   return properties.reduce(
     (t, p) => ({
       rent: round2(t.rent + p.rent),
+      camTaxBilled: round2(t.camTaxBilled + p.camTaxBilled),
+      roofBilled: round2(t.roofBilled + p.roofBilled),
+      charges: round2(t.charges + p.charges),
+      trueUp: round2(t.trueUp + p.trueUp),
+      billedTotal: round2(t.billedTotal + p.billedTotal),
+      earned: round2(t.earned + p.earned),
+      camTaxByMonth: add12(t.camTaxByMonth, p.camTaxByMonth),
+      roofByMonth: add12(t.roofByMonth, p.roofByMonth),
+      chargesByMonth: add12(t.chargesByMonth, p.chargesByMonth),
       otherIncome: round2(t.otherIncome + p.otherIncome),
       revenue: round2(t.revenue + p.revenue),
       spent: round2(t.spent + p.expenseTotals.spent),
@@ -196,8 +307,10 @@ export function consolidate(properties = []) {
       netUndated: round2(t.netUndated + p.netUndated),
     }),
     {
-      rent: 0, otherIncome: 0, revenue: 0, spent: 0, recovered: 0, netCost: 0, grossNet: 0, net: 0, distributions: 0,
-      rentByMonth: zero12(), incomeByMonth: zero12(), inByMonth: zero12(), outByMonth: zero12(), netByMonth: zero12(),
+      rent: 0, camTaxBilled: 0, roofBilled: 0, charges: 0, trueUp: 0, billedTotal: 0, earned: 0,
+      otherIncome: 0, revenue: 0, spent: 0, recovered: 0, netCost: 0, grossNet: 0, net: 0, distributions: 0,
+      rentByMonth: zero12(), camTaxByMonth: zero12(), roofByMonth: zero12(), chargesByMonth: zero12(),
+      incomeByMonth: zero12(), inByMonth: zero12(), outByMonth: zero12(), netByMonth: zero12(),
       inUndated: 0, outUndated: 0, netUndated: 0,
     }
   );
@@ -264,7 +377,11 @@ export function flags(properties = []) {
   // dollars rather than left for the reader to notice.
   const drifted = properties.filter((p) => Math.abs(p.rentDrift) > 1);
   for (const p of drifted) {
-    out.push(`${p.name}: the rent laid out here totals ${dollars(p.rent)}, and the Revenue figure on the Financials page reads ${dollars(p.rentQuoted)} — a difference of ${dollars(Math.abs(p.rentDrift))}. The months come from each lease's own schedule; the page's figure comes from the database view.`);
+    // ⚠ NAME THE USUAL CAUSE. `effective_rent` is a RATE — it does not prorate a lease that
+    // started or ended part-way through the year, while the schedule these months are built
+    // from does. So a property with any part-year tenancy drifts by design, and a flag that
+    // only stated the two figures read as an unexplained error on a perfectly correct sheet.
+    out.push(`${p.name}: the rent laid out here totals ${dollars(p.rent)}, and the Revenue figure on the Financials page reads ${dollars(p.rentQuoted)} — a difference of ${dollars(Math.abs(p.rentDrift))}. These months come from each lease's own schedule, so a tenancy that began part-way through the year is counted only from the month it began. The page's figure is the annual rate from the database view, which is not prorated.`);
   }
 
   const noExpenses = properties.filter((p) => p.expenseTotals.spent <= 0);
@@ -301,8 +418,15 @@ export async function buildIncomeExpense(corporationId, year) {
         // the Ledger's own grid.
         getPropertyMonthlyRoll(property.id, year),
       ]);
+      // ⚠ Sequential on purpose — it needs the lease ids the shares query just returned.
+      // One query for the whole property, and the same key TenantShareTable /
+      // RecoverabilityTable use, so a landlord who just looked at the Financials page
+      // downloads from cache exactly as the rest of this loader does.
+      const escByLease = (shares || []).length
+        ? await listEscalationsByLeases((shares || []).map((s) => s.lease_id))
+        : {};
       return shapeProperty({
-        property, year, totals, shares, expense, buckets, income, roll,
+        property, year, totals, shares, expense, buckets, income, roll, escByLease,
         items: [...(taxItems || []), ...(camItems || []), ...(roofItems || [])],
       });
     })
