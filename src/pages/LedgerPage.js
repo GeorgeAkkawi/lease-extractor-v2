@@ -195,7 +195,10 @@ export default function LedgerPage() {
   // money that decision promised actually reach a table?". Null when nothing has been
   // imported for the year, so the panel is absent rather than claiming a clean bill of
   // health nobody checked.
-  const { data: tieOut = null } = useQuery({
+  // ⚠ `isError` and `isLoading` are READ, not discarded. The panel used to render only when
+  // this resolved to a value, so a failed read looked exactly like "you have not imported
+  // anything" — and both looked exactly like the feature not existing.
+  const { data: tieOut = null, isError: tieOutError, isLoading: tieOutLoading } = useQuery({
     queryKey: ['bankTieOut', propId, year],
     queryFn: () => getBankTieOut(propId, year),
     enabled: isOn('ledger'),
@@ -1105,21 +1108,62 @@ export default function LedgerPage() {
             themselves. Shut by default and stating its bottom line while folded, per
             Panel's own rule — a landlord opens it when something is wrong, and the
             summary is how they find out that it is. */}
-        {tieOut && (
-          <Panel
-            id="ledger.tieout"
-            defaultOpen={false}
-            title="Bank tie-out"
-            summary={tieOutSentence(tieOutWithRent)}
-            hint="Every line on the statements you imported, against the rows they produced in your books."
-          >
-            <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
-              The left column is what the statements showed. The right is read from your <strong>payments,
-              expenses and other-income rows themselves</strong> — never from the lines, because a check
-              derived from the list it is checking balances no matter what went wrong. Money in and money
-              out are never netted against each other.
-            </p>
-            {[['Money in on your statements', tieOut.in], ['Money out on your statements', tieOut.out]].map(([title, s]) => (
+        {/* ⚠ ALWAYS RENDERED, and the first version was not. It hung on `tieOut &&`, which is
+            null until a statement has been imported for THIS fiscal year — so on a property
+            with nothing imported the panel simply did not exist, and George asked twice where
+            the bank tie-out had gone. "Nothing to check" and "this feature is not here" looked
+            identical, which is the worse half of the rule the tab itself obeys: a screen has to
+            distinguish checked-and-clean from never-looked-at, and it cannot do that by being
+            absent. The workbook TAB still only appears when there is something to tie out — a
+            sheet that says nothing is noise in a document — but this is where a landlord comes
+            looking, so this one is always here and says what it is waiting for. */}
+        <Panel
+          id="ledger.tieout"
+          defaultOpen={false}
+          title="Bank tie-out"
+          summary={
+            tieOut ? tieOutSentence(tieOutWithRent)
+              : tieOutError ? 'could not be read — open for the reason'
+                : tieOutLoading ? 'reading your statements…'
+                  : `nothing imported for FY ${year} yet`
+          }
+          hint="Every line on the statements you imported, against the rows they produced in your books."
+        >
+          {!tieOut ? (
+            <>
+              {tieOutError ? (
+                <p className="note-msg danger" style={{ marginTop: 0 }}>
+                  The tie-out could not be read for FY {year}. Nothing is wrong with your figures — this
+                  panel simply could not load. Reload the page, and if it keeps happening the statements
+                  themselves are still listed under “Imported statements” below.
+                </p>
+              ) : tieOutLoading ? (
+                <p className="muted" style={{ fontSize: 12, margin: 0 }}>Reading your statements…</p>
+              ) : (
+                <>
+                  <p className="note-msg warn" style={{ marginTop: 0 }}>
+                    No bank statement has been imported for FY {year}, so there is nothing to tie out yet —
+                    which is not the same as “checked and clean”.
+                  </p>
+                  <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '10px 0 0' }}>
+                    Import one with <strong>⬆ Import statement</strong> above (or drag the file onto this page)
+                    and this panel will weigh every line it read against the rows it produced — the payments,
+                    expenses and other income actually on your books — and name anything that did not land.
+                    A statement whose transactions fall in another year belongs to that year’s tie-out, so
+                    check the year above if you have imported one recently.
+                  </p>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
+                The left column is what the statements showed. The right is read from your <strong>payments,
+                expenses and other-income rows themselves</strong> — never from the lines, because a check
+                derived from the list it is checking balances no matter what went wrong. Money in and money
+                out are never netted against each other.
+              </p>
+              {[['Money in on your statements', tieOut.in], ['Money out on your statements', tieOut.out]].map(([title, s]) => (
               <table key={title} style={{ minWidth: 0, marginBottom: 10 }}>
                 <thead>
                   <tr>
@@ -1200,8 +1244,9 @@ export default function LedgerPage() {
               number) · money that never touched the account you imported · a line filed under the wrong
               heading — it ties, in the wrong bucket.
             </p>
-          </Panel>
-        )}
+            </>
+          )}
+        </Panel>
 
         {register.length > 0 && (
           <div style={{ marginTop: 14 }}>

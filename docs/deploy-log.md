@@ -12,6 +12,49 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **The bank tie-out was invisible on every property that had not imported a
+  statement, which on live data is all of them** (George, for the second time: *"also i still
+  dont see the bank tie out button"*)
+  - **Cloudflare version `bdfd180e-b4b6-4a02-a0bc-098a9d5da1a8`**, on top of `80cab21b`. One
+    component, one test. Tests **1875 across 181 files** (was 1874): +1.
+
+  ### What was wrong
+
+  The panel hung on `{tieOut && (…)}`. `getBankTieOut` returns **null** when the property has no
+  `statement_imports` for the fiscal year — which was a deliberate decision ("no statements means
+  no tie-out, not a clean one") applied in exactly the wrong place. On the demo, after importing
+  the sample statement, it rendered perfectly and every verification passed. On real data, where
+  nothing had been imported, **the feature did not exist on the page at all.**
+  - ⚠ **"NOTHING TO CHECK" AND "THIS WAS NEVER BUILT" LOOKED IDENTICAL**, and there was no third
+    state to tell them apart, because absence has no wording. That is the same rule the sheet's
+    own tab obeys ("checked and clean" ≠ "never looked at") — applied to the two states I thought
+    about, and not to the one a landlord actually meets first.
+  - ⚠ **A FAILED READ LOOKED THE SAME AGAIN.** `isError` and `isLoading` were destructured away,
+    so a query that threw rendered exactly what an empty year rendered: nothing.
+
+  ### The fix
+
+  The Panel is now **always** rendered on the Ledger (the page is already behind the `ledger`
+  feature gate), with three empty states that each say which one they are:
+  - **folded** — `Bank tie-out · nothing imported for FY 2026 yet` — Panel's own rule, a fold
+    still states what it holds.
+  - **open, nothing imported** — *"No bank statement has been imported for FY 2026, so there is
+    nothing to tie out yet — which is not the same as 'checked and clean'"*, then how to get in
+    (⬆ Import statement, or drag the file onto the page) and what it will then do. It also names
+    the trap this class of feature has: **a statement whose transactions fall in another year
+    belongs to that year's tie-out**, so the year selector is the first thing to check.
+  - **open, read failed** — a sentence saying the figures are fine and the panel is not, and
+    pointing at the statement register below, which reads from a different query.
+
+  **The workbook TAB still only appears when there is something to tie out**, deliberately and
+  unchanged: a sheet in a document you hand an accountant that says "nothing here" is noise. The
+  screen is where a landlord goes looking; the document is not.
+
+  ### Files
+  Edited: `src/pages/LedgerPage.js` · `src/components/__tests__/ledgerPage.test.js` (+1 — the
+  panel exists BEFORE any import, states what it is waiting for while folded, and says outright
+  that empty is not clean).
+
 - **2026-08-16** — **SLICE 4: a year-end balance finally has an exit. The Ledger could say a
   tenant was $50,900 short and offer nothing to do about it** (George: *"How do we convey credits
   or debits at the end of the year? when those debits are conveyed how do we dismiss
