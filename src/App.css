@@ -117,6 +117,10 @@ span.rr-cell{display:inline-flex;align-items:center;justify-content:center;box-s
 .rr-cell.pool{cursor:default;border-style:dashed;opacity:.72}
 .rr-cell.abated{cursor:default}
 button.rr-cell.abated{cursor:pointer}
+/* A month whose bill was SETTLED rather than abated — written off, or carried into
+   another year (Slice 4). It has to read differently from an abatement: one is a
+   rent-free period the lease grants, the other is a decision the landlord made. */
+.rr-cell.settled-off{cursor:pointer;border-style:dashed;color:var(--muted);opacity:.85}
 /* The dollar figure recorded for a settled month — always shown under the ✓ so the
    landlord can see exactly what came in for each box (George: "the number doesnt show
    up"). Whole dollars, one line; the cell grows to fit, and full cents live in the title. */

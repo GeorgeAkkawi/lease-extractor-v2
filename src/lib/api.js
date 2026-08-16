@@ -23,6 +23,9 @@ import { advanceDueDate } from './annualReports';
 import { isValidCategory, bucketKey, defaultCategoryFor, isOwnerCategory, categoryFor, customCategoryKey, EXPENSE_CATEGORIES } from './expenseCategories';
 import { lineCompleteness } from './dispositions';
 import { bankTieOut } from './bankTieOut';
+import {
+  tenantStanding, settleChoicesFor, monthCapacity, spreadAcrossMonths, refundMonth, settleSentence,
+} from './settle';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
 import { isoDateOrNull } from './isoDate';
 import { coalesce } from './coalesce';
@@ -4234,6 +4237,157 @@ export async function addAdjustment({ leaseId, propertyId, year, month, kind, am
     meta: { month: m, kind, amount: amt },
   });
   return { row };
+}
+
+// ── Slice 4: settling a year-end balance ──────────────────────────────────────
+//
+// George, 2026-08-16: *"How do we convey credits or debits at the end of the year? when those
+// debits are conveyed how do we dismiss them/reconcile them. the user has to have autonomy
+// over these things."* Four choices — leave it open · write it off · carry it forward (both
+// directions) · record a refund — and the arithmetic behind them is pure (`settle.js`).
+//
+// ⚠ THIS DOES NOT CALL addAdjustment PER ROW, and that is deliberate. A write-off spread over
+// six months would otherwise fire six resyncs and write six history events for one decision —
+// six lines in the log where the landlord made one choice, and six overlapping writers on the
+// same invoice. The guards addAdjustment carries are restated here instead: the closed-year
+// refusal (identically worded), and the per-month cap — which is not re-checked but DESIGNED
+// OUT, because `monthCapacity` derives each month's headroom from the same `allocatePayments`
+// the grid is painted from and `spreadAcrossMonths` never exceeds it.
+//
+// ⚠ CARRY-FORWARD IS TWO ROWS IN TWO YEARS, AND WRITING ONLY ONE LOSES THE MONEY. The closing
+// row clears this year (so the balance stops showing) and the opening row charges next January
+// (so it starts showing there). Both are kind `opening`, whose `pnlRow` is null, so the pair
+// nets to nothing in either year's income — which is right: the revenue was earned in the year
+// that billed it and stays there. Only the receivable moves.
+export async function settleTenantBalance({ leaseId, propertyId, year, choice, memo = null, today = new Date() }) {
+  const y = Number(year);
+  if (!leaseId || !propertyId || !(y > 0)) {
+    return { refused: true, reason: 'incomplete', message: 'Pick a tenant and a year.' };
+  }
+  const lock = await yearLockState(propertyId, y);
+  if (lock === 'closed') {
+    return { refused: true, reason: 'closed', message: `FY ${y} is closed. Reopen it first — a balance settled under a snapshot would leave the two disagreeing.` };
+  }
+  if (lock === 'unknown') {
+    return { refused: true, reason: 'lock_unknown', message: `Couldn’t check whether FY ${y} is closed, so nothing was changed. Check your connection and try again.` };
+  }
+
+  const roll = await getPropertyMonthlyRoll(propertyId, y);
+  const row = (roll || []).find((r) => r.lease_id === leaseId);
+  if (!row) {
+    return { refused: true, reason: 'missing', message: `That tenant has no schedule for FY ${y}, so there is no balance to settle.` };
+  }
+  const standing = tenantStanding({ row, year: y, today });
+  if (choice === 'leave') return { standing, wrote: [], choice };
+  if (standing.settled) {
+    return { refused: true, reason: 'settled', message: `${standing.label} is square for FY ${y} — there is nothing to settle.` };
+  }
+  const pick = settleChoicesFor(standing).find((c) => c.key === choice);
+  if (!pick?.ok) {
+    return { refused: true, reason: 'not_applicable', message: pick?.why || 'That is not one of the ways this balance can be settled.' };
+  }
+
+  // Only months that have COME DUE can take a credit — see `monthCapacity`. A past year is
+  // due in full; the running year is due through the current month, because rent falls on
+  // the 1st (the same boundary `ledgerRowSummary` uses to build `owesToDate`, which is the
+  // figure being settled).
+  const now = today instanceof Date ? today : new Date();
+  const dueThrough = y < now.getFullYear() ? 12 : y > now.getFullYear() ? 0 : now.getMonth() + 1;
+  const amount = standing.owes || standing.inCredit;
+  const inserts = [];
+  let nextYearRows = null;
+
+  if (choice === 'writeoff' || (choice === 'carry' && standing.owes)) {
+    // They owe: credit the unpaid months back, earliest first.
+    const spread = spreadAcrossMonths({
+      capacity: monthCapacity({ alloc: standing.alloc, direction: 'credit', dueThrough }),
+      amount,
+    });
+    if (spread.shortfall > 0.005) {
+      return {
+        refused: true, reason: 'no_room',
+        message: `Only ${money(spread.placed)} of ${money(amount)} could be placed — the months that have come due cannot absorb the rest. Settle the remainder in the year it belongs to.`,
+      };
+    }
+    for (const s of spread.rows) {
+      inserts.push({ month: s.month, kind: choice === 'writeoff' ? 'writeoff' : 'opening', amount: round2(-s.amount) });
+    }
+  } else if (choice === 'refund' || (choice === 'carry' && standing.inCredit)) {
+    // They are ahead: a charge that consumes the credit, on the month that holds it.
+    inserts.push({ month: refundMonth(standing.alloc), kind: choice === 'refund' ? 'refund' : 'opening', amount: round2(amount) });
+  }
+
+  if (choice === 'carry') {
+    const ny = y + 1;
+    const nextLock = await yearLockState(propertyId, ny);
+    if (nextLock !== 'open') {
+      return {
+        refused: true, reason: 'next_closed',
+        message: nextLock === 'closed'
+          ? `FY ${ny} is closed, so the balance has nowhere to land. Reopen it first.`
+          : `Couldn’t check whether FY ${ny} is closed, so nothing was changed.`,
+      };
+    }
+    if (standing.owes) {
+      // A charge needs no headroom — it only ever increases what a month owes — so it lands
+      // whole on January even for a tenant whose term has ended. A departed tenant can still
+      // owe, and `buildLeaseSchedule` adds an adjustment to an out-of-term month deliberately.
+      nextYearRows = [{ month: 1, kind: 'opening', amount: round2(amount) }];
+    } else {
+      const nextRoll = await getPropertyMonthlyRoll(propertyId, ny);
+      const nextRow = (nextRoll || []).find((r) => r.lease_id === leaseId);
+      const nextAlloc = nextRow
+        ? allocatePayments({ owedByMonth: nextRow.schedule, payments: nextRow.payments, adjustments: nextRow.adjustments })
+        : null;
+      const spread = nextAlloc
+        ? spreadAcrossMonths({ capacity: monthCapacity({ alloc: nextAlloc, direction: 'credit', dueThrough: 12 }), amount })
+        : { rows: [], placed: 0, shortfall: amount };
+      if (spread.shortfall > 0.005) {
+        return {
+          refused: true, reason: 'no_room_next',
+          message: `FY ${ny} bills ${money(spread.placed)} to ${standing.label}, which is less than the ${money(amount)} they are ahead by. Record a refund instead, or carry it once the ${ny} lease is set up.`,
+        };
+      }
+      nextYearRows = spread.rows.map((s) => ({ month: s.month, kind: 'opening', amount: round2(-s.amount) }));
+    }
+  }
+
+  const oid = await ownerId();
+  const stamp = (r, yr) => ({
+    owner_id: oid, lease_id: leaseId, property_id: propertyId, year: yr,
+    month: r.month, kind: r.kind, amount: r.amount, memo: memo || null,
+  });
+  // ⚠ THIS YEAR FIRST. An interruption after it leaves a cleared balance and no carry-forward
+  // — visible on next year's Ledger as money that stopped existing, which someone will notice.
+  // The other order leaves a tenant charged twice, in two years, which reads as correct on
+  // both screens.
+  if (inserts.length) await rows(supabase.from('lease_adjustments').insert(inserts.map((r) => stamp(r, y))));
+  if (nextYearRows?.length) await rows(supabase.from('lease_adjustments').insert(nextYearRows.map((r) => stamp(r, y + 1))));
+
+  await resyncLeaseBilling(leaseId, propertyId, y).catch(() => null);
+  if (nextYearRows?.length) {
+    // Next January now carries a charge, so that year needs an invoice to carry it — and a
+    // resync of its own. This is the commonest way a two-year change half-lands.
+    await ensureInvoice(leaseId, propertyId, y + 1).catch(() => null);
+    await resyncLeaseBilling(leaseId, propertyId, y + 1).catch(() => null);
+  }
+
+  const months = inserts.map((r) => r.month).sort((a, b) => a - b);
+  const description = `${standing.label} — FY ${y}: ${settleSentence({ choice, amount, months, year: y })}`;
+  await logHistoryEvent({
+    property_id: propertyId,
+    lease_id: leaseId,
+    type: 'balance_settled',
+    tenant_name: standing.label,
+    description,
+    meta: { choice, amount, months, year: y, ...(nextYearRows?.length ? { carried_to: y + 1 } : {}) },
+  });
+  return {
+    standing, choice, amount, months,
+    wrote: inserts.length + (nextYearRows?.length || 0),
+    carriedTo: nextYearRows?.length ? y + 1 : null,
+    description,
+  };
 }
 
 export async function deleteAdjustment(id) {

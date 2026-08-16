@@ -12,6 +12,148 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **SLICE 4: a year-end balance finally has an exit. The Ledger could say a
+  tenant was $50,900 short and offer nothing to do about it** (George: *"How do we convey credits
+  or debits at the end of the year? when those debits are conveyed how do we dismiss
+  them/reconcile them. the user has to have autonomy over these things"*)
+  - **Cloudflare version `80cab21b-a2af-421c-b3c4-e3d2fe1d6edf`**, on top of `d36f9a62`. No
+    migration, no edge function, no view, no feature key. Tests **1874 across 181 files** (was
+    1856/180): +18, one new file. The four-slice plan is now complete.
+
+  ### What was actually missing
+
+  Not a display problem. `grep` for `write_off` / `forgive` / `carry forward` found NOTHING in the
+  codebase, and the only instrument that existed — a `credit` adjustment — is capped at **one
+  month's bill** by `addAdjustment`, so a year's arrears **could not be expressed at all**. The
+  balance was computed (`statementRows`), shown on one screen, current year only, and had no exit.
+
+  ### The four choices, and the accounting judgement behind each
+
+  | Choice | Writes | Moves the year's income? |
+  |---|---|---|
+  | **Leave it open** | nothing | — (the default; keeps showing) |
+  | **Write it off** | `writeoff` credits spread over the unpaid months | **YES — revenue falls** |
+  | **Carry it forward** | `opening` rows in **two** years, both directions | no |
+  | **Record a refund** | a `refund` charge on the month holding the credit | no |
+
+  **⚠ ONLY THE WRITE-OFF MOVES THE NUMBERS, and it must.** This sheet counts rent when it FALLS
+  DUE, so a tenant who never pays is already inside the year's revenue; leaving it there overstates
+  what the property earned by exactly what was forgiven. **And it must NEVER be an expense** —
+  expense categories feed `recoveryFractions`, so a forgiven rent booked as a cost would be
+  recovered from the OTHER tenants. A balance brought forward was last year's income (counting it
+  again double-counts) and a refund returns money that was never income, so both file at
+  `pnlRow: null`.
+
+  ### ⚠ THE `pnlRow: null` HOLE — the thing this morning's guard was written to catch
+
+  `adjustments.test.js` gained a test on 2026-08-16 asserting every kind files on
+  `rent | camtax | charges`, with a comment saying it would fail the day `opening`/`refund`
+  arrived *"which is the whole reason it is here"*. It did. The hole is real:
+  `buildLeaseSchedule` adds EVERY adjustment to the month's `owed`, so a kind reaching none of the
+  four Money-in rows takes **`Total billed` away from the Ledger by exactly the settled amount**,
+  silently, on the one figure the sheet promises ties.
+  - **Fixed with a FIFTH row, not by suppressing the test.** `billedRowsFromRoll` gains a
+    `carried` group; the sheet prints **"Brought forward and refunds — not this year's income"**
+    inside Money in (so every monthly cell still equals the Ledger) and then **"Less brought
+    forward and refunds"** beside the year-end reconciliation (so Total earned excludes it).
+    One row, twice, with opposite signs — which is exactly what the money is doing.
+  - `net === earned − spent` is unchanged, and so is `noiBridge`: `carried` cancels between
+    `billedTotal` and `earned`, so it adds no term.
+  - **An unknown kind still files at `'charges'`, never null** — a null now reaches a row that is
+    subtracted again, so guessing null for money a later round invented would quietly remove it
+    from the year's income. Pinned.
+
+  ### The three mechanics that bite, all designed in
+
+  1. **THE PER-MONTH CAP STAYS.** A credit larger than a month's bill makes `owed` negative, which
+     reads as "unbilled" everywhere downstream, breaks `componentizeSchedule`'s
+     `base + camTax + roof + adj === owed` and drops the excess out of the year total. So a
+     settlement **spreads** — earliest month first, against each month's own remaining capacity
+     (`monthCapacity` + `spreadAcrossMonths`, `settle.js`), the mirror image of how
+     `allocatePayments` fills months from a pool. **No guard weakened; the guard is restated as a
+     capacity.** ⚠ And a **shortfall is RETURNED, never swallowed** — the alternative is a landlord
+     clicking "write it off", watching the balance move partway, and being told nothing.
+  2. **CARRY-FORWARD IS TWO ROWS IN TWO YEARS.** The closing row clears this year; the opening row
+     charges next January. Writing only the second bills the tenant twice; writing only the first
+     loses the money outright. `ensureInvoice` + `resyncLeaseBilling` run on **both** years and
+     `settleBillingChange` fires twice — the commonest way this shape of change half-lands.
+     Next year's lock is checked **before** this year is touched.
+  3. **A REFUND LANDS ON THE MONTH THAT HOLDS THE CREDIT** — the last month that actually received
+     money, December only as a fallback. `allocatePayments` fills months from January, so a charge
+     on a month the tenant never paid into opens a false gap while leaving the credit untouched.
+
+  ### ⚠ THE CLOSING BALANCE IS `owesToDate − credit`, NOT `billed − received`
+
+  `billed` counts all twelve months including ones that have not fallen due, so on a year in
+  progress the naive figure would offer to write off rent the tenant has every right not to have
+  paid yet. `owesToDate` is the figure that already ties to `arStatus.amountBehind` to the cent
+  (CLAUDE.md §4). The two halves are mutually exclusive by construction — the pool fills every
+  month's need before any of it survives as `credit` — which is what makes one signed number honest.
+
+  ### On screen
+
+  - **The Ledger row** gains `owes $7,944.44 · Settle up…` — a select in the same shape as the
+    unplaced panel's "Record as…", confirming before it writes. The confirm names the tenant, the
+    amount, **which months it touches**, and **whether it moves the year's income** — that last
+    fact read off the registry (`movesIncome`) rather than re-decided in the dialog.
+  - **⚠ A MONTH CAN NOW OWE NOTHING FOR A SECOND REASON.** The grid had one explanation for an
+    empty month — `F`, *"base rent abated — nothing due"* — and after a write-off it was stating
+    the wrong one: an abatement is a rent-free period the LEASE grants, a settlement is a decision
+    the LANDLORD made. A settled month now reads `⌫` in `.rr-cell.settled-off` with its own
+    tooltip naming the credit. Found by driving it, not by reading it.
+  - **"Where each tenant stands"** on every property sheet — billed · received · charges & credits
+    · closing balance — from `propertyStandings`, reading the same `allocatePayments` /
+    `ledgerRowSummary` pair the grid is painted from. Never a third arithmetic for "what does this
+    tenant owe".
+  - **The close-year confirm now names the open balances**, because closing writes the snapshot
+    that `yearLockState` reads to refuse every later write — **including Settle up itself**. A year
+    closed over an unsettled balance can only be settled by reopening it, and nothing said so at
+    the moment it mattered. It does not block the close: leaving a balance open is one of the four
+    legitimate choices. It stops it being an accident.
+
+  ### Registries filled (CLAUDE.md §4)
+
+  `balance_settled` → `EVENT_LABEL` + `EVENT_BADGE` (`HistoryPage.js`) + `LEDGER_EVENTS`
+  (`tenantStory.js`) — ledger, not story: a write-off is a thing that happened to the BOOKS, and
+  putting it in the tenancy narrative would make a tenant read as a sequence of accounting entries.
+  ⚠ **`lease_adjusted` had been written since 0082 with NO entry in any of the three** and rendered
+  as a bare slug; it is fixed in the same commit rather than left sitting under a properly-labelled
+  new row.
+
+  ### Watched working, on the demo, in a browser
+  - Sunrise Yoga owed **$7,944.44** → *Write it off* → billed falls $23,833.34 → **$15,888.90**,
+    Jul/Aug read `⌫`, the balance and the "1 mo behind" badge both go.
+  - Northwind Books owed **$102,000** → *Carry it forward* → FY 2026 billed $153,000 →
+    **$51,000**, and January **2027** reads *"$112,416.67 owed ($10,416.67 base · **+$102,000.00
+    adjustment**)"*. Both halves, both years.
+  - The FY 2027 export dialog: Rent $161,000 · **Brought forward & refunds $102,000** · Total
+    billed **$263,000** · **Less brought forward & refunds −$102,000** · Total earned **$161,000**.
+    Billed, not earned — exactly the distinction.
+  - Close FY 2026 on Oak Center: *"1 tenant has an open balance: Sunrise Yoga Studio owes
+    $7,944.44. Closing does NOT settle them — and once closed, Settle up on the Ledger is refused
+    until you reopen the year."*
+
+  ### Files
+  **New:** `src/lib/settle.js` (pure) · `src/lib/__tests__/settleBalance.test.js` (18).
+  Edited: `src/lib/adjustments.js` (three kinds + `manual:false`; `credit` retitled so "write-off"
+  lives in one place) · `src/lib/api.js` (`settleTenantBalance`) · `src/lib/incomeExpense.js`
+  (the `carried` group, `standings`, `earned`) · `src/lib/incomeExpenseExcel.js` ·
+  `src/pages/LedgerPage.js` (Settle up, the settled-month cell) · `src/pages/HistoryPage.js`
+  (the close confirm + registries) · `src/lib/tenantStory.js` ·
+  `src/components/ExportIncomeExpenseModal.js` · `src/App.css` ·
+  `src/lib/__tests__/adjustments.test.js` · `src/lib/__tests__/incomeExpense.test.js`.
+
+  ### Flags / not done
+  - **Undoing a settlement is deleting its rows on the month panel** — there is no "unsettle"
+    button. That is honest (the rows are visible and deletable) but a carry-forward leaves rows in
+    TWO years and only one of them is on the screen the landlord is looking at. Worth a round.
+  - **A settlement is refused on a closed year**, both directions, and the confirm now warns before
+    closing. It does not offer to reopen-settle-reclose from inside the refusal.
+  - **⚠ The demo seeds prop-1's CURRENT fiscal year as closed** (`snap-2`), so every write against
+    Maple Plaza FY 2026 is refused. Noted 2026-08-16 and still true; the new tests run against
+    prop-2 for that reason, which is stated in the file.
+  - **The import still calls no `resyncPropertyBilling`** — raised twice now, still George's call.
+
 - **2026-08-16** — **SLICE 3: the bank tie-out. "38 of 38 lines placed ✓" counted DECISIONS;
   nothing had ever counted the dollars** (George: *"i dont see that bank tie out im not sure if
   you merged it with the income and expenses or if that wasnt the plan but i dont see it"* —

@@ -14,6 +14,7 @@ import {
   listUnplacedLines,
   listDecidedLines,
   getBankTieOut,
+  settleTenantBalance,
   listOtherIncome,
   resyncLeaseBilling,
   setLineDisposition,
@@ -40,6 +41,8 @@ import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness, dispositionInfo, ignoreReasonLabel } from '../lib/dispositions';
 import { rentPosition, tieOutSentence } from '../lib/bankTieOut';
+import { tenantStanding, settleChoicesFor } from '../lib/settle';
+import { settleBillingChange } from '../lib/invalidate';
 import Panel from '../components/Panel';
 import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
 import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
@@ -269,6 +272,51 @@ export default function LedgerPage() {
     },
   });
 
+  // ── Slice 4: settling a year-end balance ───────────────────────────────────────────────
+  //
+  // ⚠ The carry-through runs on BOTH years when a balance is carried forward — the invoice on
+  // next January moved too, and a set that only invalidated this year is exactly how the drift
+  // this app already knows about gets created. `settleBillingChange` is the named set for "a
+  // billed figure moved"; hand-rolling a list here is what CLAUDE.md §6 warns against.
+  const settleUp = useMutation({
+    mutationFn: ({ leaseId, choice }) => settleTenantBalance({ leaseId, propertyId: propId, year, choice, today }),
+    onSuccess: (res) => {
+      if (res?.refused) { setNote(res.message); return; }
+      settleBillingChange(qc, { propertyId: propId, leaseId: res.standing?.lease_id, year });
+      if (res.carriedTo) settleBillingChange(qc, { propertyId: propId, leaseId: res.standing?.lease_id, year: res.carriedTo });
+      qc.invalidateQueries({ queryKey: ['historyEvents'] });
+      setNote(res.wrote ? `${res.description}.` : `${res.standing?.label || 'That tenant'} — left open.`);
+    },
+  });
+
+  // ⚠ WHAT HAPPENS TO THE MONEY, not "are you sure". The one fact a landlord cannot work out
+  // for themselves is which of the four moves the YEAR'S INCOME — only the write-off does —
+  // so `movesIncome` comes off the registry rather than being re-decided in this dialog.
+  async function askSettle(standing, choiceKey) {
+    const pick = settleChoicesFor(standing).find((c) => c.key === choiceKey && c.ok);
+    if (!pick) return;
+    const owed = standing.owes || standing.inCredit;
+    const ok = await askConfirm({
+      title: `${pick.label} — ${standing.label}?`,
+      message: `${standing.owes ? `${standing.label} still owes ${money(owed)} for FY ${year}.` : `${standing.label} is ${money(owed)} ahead for FY ${year}.`}`,
+      implications: [
+        pick.hint,
+        pick.movesIncome
+          ? `This year's income falls by ${money(owed)} — the sheet already counted it as earned, so forgiving it has to take it back out.`
+          : 'The year’s income does not move. Only what the tenant owes changes.',
+        pick.key === 'carry'
+          ? `Two rows in two years: FY ${year} is cleared and January ${year + 1} carries it. Both are needed — one alone loses the money.`
+          : `It lands on the months it belongs to, never more than a month's own bill — the Ledger grid repaints as you watch.`,
+        'It is logged under History, naming the tenant and the amount.',
+      ],
+      confirmLabel: pick.label,
+      // Filing, not deleting. Red is reserved for permanent deletes — and a write-off is
+      // reversible by deleting its rows on the month panel.
+      tone: 'default',
+    });
+    if (ok) settleUp.mutate({ leaseId: standing.lease_id, choice: pick.key });
+  }
+
   // ⚠ BOTH dropdowns commit a DB write on a single change event, and until 2026-08-13 they
   // did it with no confirm and no way back — George picked "transfer between my own
   // accounts" by accident and the line was gone. So each one asks first, and the dialog's
@@ -470,7 +518,12 @@ export default function LedgerPage() {
       // Did the money follow the raise? Same allocation the boxes paint from, so the
       // verdict and the row's own `short $X` chip can never disagree.
       const followUp = escalationFollowThrough({ year, owedByMonth: r.schedule, allocation: alloc, steps, comp, today });
-      return { r, alloc, comp, summary, steps, followUp };
+      // ⚠ The alloc and summary already derived above are HANDED IN, not re-derived. The
+      // workbook's copy of this block builds its own from the same two choke points; what
+      // must never happen is a third arithmetic for "what does this tenant owe" (CLAUDE.md §3),
+      // because the number on this row is the number the Settle up button acts on.
+      const standing = tenantStanding({ row: r, year, today, alloc, summary });
+      return { r, alloc, comp, summary, steps, followUp, standing };
     }),
     { mode: tenantSort.mode, dir: tenantSort.dir, pick: (d) => d.r }
   );
@@ -605,7 +658,7 @@ export default function LedgerPage() {
               </tr>
             </thead>
             <tbody>
-              {derived.map(({ r, alloc, comp, summary, steps, followUp }) => {
+              {derived.map(({ r, alloc, comp, summary, steps, followUp, standing }) => {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
                 const rate = pct(summary.collected, summary.projected);
                 const stepSet = new Set(steps.map((s) => s.month));
@@ -688,8 +741,25 @@ export default function LedgerPage() {
                       if (s?.outsideTerm && !(owedM > 0)) {
                         return <td key={m}><button type="button" className="rr-cell outside" onClick={open} title={`${ml}: before this lease began — click to open the month`}>—</button></td>;
                       }
+                      // ⚠ A MONTH CAN NOW OWE NOTHING FOR A SECOND REASON, and calling both of
+                      // them "abated" states the wrong one. An abatement is a rent-free period
+                      // the LEASE grants; a settlement (Slice 4) is money the landlord decided
+                      // not to collect, or moved into another year. Same empty month, entirely
+                      // different fact — and the second is a decision somebody made, which this
+                      // tooltip is the only place to say. `adjM` is the month's own signed
+                      // adjustment, already in hand above.
                       if (owedM <= 0) {
-                        return <td key={m}><button type="button" className="rr-cell abated" onClick={open} title={`${ml}: base rent abated — nothing due · click to open the month`}>F</button></td>;
+                        const forgiven = adjM < -0.005 && !s?.abated;
+                        return (
+                          <td key={m}>
+                            <button type="button" className={`rr-cell ${forgiven ? 'settled-off' : 'abated'}`} onClick={open}
+                              title={forgiven
+                                ? `${ml}: ${money(Math.abs(adjM))} credited — this month was settled, not billed. Click to open the month and see which entry did it.`
+                                : `${ml}: base rent abated — nothing due · click to open the month`}>
+                              {forgiven ? '⌫' : 'F'}
+                            </button>
+                          </td>
+                        );
                       }
                       const parts = c ? `${money(c.base)} base · ${money(c.camTax)} CAM&tax${c.roof > 0 ? ` · ${money(c.roof)} roof` : ''}${Math.abs(adjM) > 0.005 ? ` · ${adjM < 0 ? '−' : '+'}${money(Math.abs(adjM))} adjustment` : ''}` : '';
                       const monthLine = `${ml}: ${money(owedM)} owed (${parts})${s?.abated ? ' — base rent abated' : ''}`;
@@ -788,6 +858,32 @@ export default function LedgerPage() {
                           </span>
                           <button type="button" className="ghost btn-sm" disabled={rebuild.isPending}
                             onClick={() => rebuild.mutate(r.lease_id)}>Rebuild</button>
+                        </div>
+                      )}
+                      {/* ⚠ Slice 4 — the balance finally has an EXIT. Until now the Ledger could
+                          say a tenant was $4,150 short and offer nothing to do about it: the
+                          only instrument was a credit capped at one month's bill, so a year's
+                          arrears could not be expressed at all. The button appears only on a
+                          row with a real balance, and states which way it runs. */}
+                      {!standing.settled && (
+                        <div className="rr-drift">
+                          <span title="What this tenant still owes for the year, or is ahead by — counting only the months that have come due.">
+                            {standing.owes ? 'owes' : 'in credit'} <strong>{money(standing.owes || standing.inCredit)}</strong>
+                          </span>
+                          {/* The same shape as the unplaced panel's "Record as…" — a pick that
+                              confirms before it writes. Leaving it open needs no entry: it is
+                              what happens when nothing is chosen. */}
+                          <select
+                            className="text-input" style={{ maxWidth: 150, fontSize: 11 }}
+                            value="" disabled={settleUp.isPending}
+                            onChange={(e) => { if (e.target.value) askSettle(standing, e.target.value); }}
+                            title="Close this balance out — leave it open, write it off, carry it into next January, or record a refund."
+                          >
+                            <option value="">Settle up…</option>
+                            {settleChoicesFor(standing).filter((c) => c.ok && c.key !== 'leave').map((c) => (
+                              <option key={c.key} value={c.key}>{c.label}</option>
+                            ))}
+                          </select>
                         </div>
                       )}
                     </td>

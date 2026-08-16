@@ -91,13 +91,67 @@ export const ADJUSTMENT_KINDS = [
   },
   {
     key: 'credit',
-    label: 'Concession / credit / write-off',
+    // ⚠ "write-off" left this label when `writeoff` became its own kind (Slice 4). Two
+    // entries competing for one word is how a landlord ends up filing the same thing two
+    // ways and the sheet itemizes it twice.
+    label: 'Concession / credit',
     short: 'Credit',
     pnlRow: 'charges',
     dir: 'credit',
     grossOk: true,
     offsetsCamTax: false,
-    hint: 'Money you have agreed not to collect — a concession, a goodwill credit, a write-off.',
+    hint: 'Money you have agreed not to collect — a concession, a goodwill credit.',
+  },
+  // ── Slice 4: the three kinds a SETTLEMENT writes ────────────────────────────────────
+  //
+  // ⚠ `manual: false` keeps all three off the month panel's picker. They are not things to
+  // type on a month — each one is half of a two-sided settlement that has to be spread
+  // across months, or paired with a row in another year, to be correct. Offering them as a
+  // free-text charge would let a landlord write the half that clears this year and never
+  // the half that carries it forward, which loses the money outright.
+  {
+    key: 'writeoff',
+    label: 'Written off',
+    short: 'Written off',
+    // ⚠ 'charges', and it MUST reduce revenue. This sheet counts rent when it falls due, so
+    // the forgiven rent is already inside the year's income; leaving it there overstates
+    // what the property earned by exactly what was forgiven. And it must NEVER be an
+    // expense — expense categories feed `recoveryFractions`, so a forgiven rent booked as a
+    // cost would be recovered from the OTHER tenants.
+    pnlRow: 'charges',
+    dir: 'credit',
+    grossOk: true,
+    offsetsCamTax: false,
+    manual: false,
+    hint: 'Rent you have decided you will not collect. It comes off the year’s income, because the year already counted it.',
+  },
+  {
+    key: 'opening',
+    label: 'Balance brought forward',
+    short: 'Brought fwd',
+    // ⚠ null — real money that is NOT this year's income. It was last year's, and counting
+    // it again double-counts. It still moves what the tenant owes, so it reaches `owed`,
+    // the Ledger and the invoice; the sheet states it and then takes it back out before
+    // "Total earned" (see `carried` in incomeExpense.js).
+    pnlRow: null,
+    dir: 'both',
+    grossOk: true,
+    offsetsCamTax: false,
+    manual: false,
+    hint: 'A balance carried over from another year — a charge if they owed you, a credit if they were ahead.',
+  },
+  {
+    key: 'refund',
+    label: 'Refunded to the tenant',
+    short: 'Refund',
+    // null for the mirror-image reason: an overpayment was never income, so handing it back
+    // is not a cost. It consumes the credit sitting on the tenant's ledger and nothing else.
+    pnlRow: null,
+    dir: 'charge',
+    grossOk: true,
+    offsetsCamTax: false,
+    manual: false,
+    hint: 'Money you have given back. It was never income, so returning it is not a cost — it just clears the credit.',
   },
 ];
 
@@ -182,11 +236,15 @@ export function adjustmentKindRows(rows = [], row = 'charges') {
 
 export const isAdjustmentKind = (key) => BY_KIND.has(key);
 
-// The kinds offered for a lease. A gross tenant is refused the CAM & tax correction for
-// the reason on that entry above — matching reconcileCamTax's throw (api.js) and
-// deriveEstimateFromDeposit's refusal (statementMatch.js).
+// The kinds offered for a lease TO TYPE ON A MONTH. A gross tenant is refused the CAM & tax
+// correction for the reason on that entry above — matching reconcileCamTax's throw (api.js)
+// and deriveEstimateFromDeposit's refusal (statementMatch.js).
+//
+// ⚠ `manual: false` kinds are excluded: each is half of a two-sided settlement (Slice 4)
+// that only `settleTenantBalance` knows how to write whole. They are still perfectly valid
+// rows — `adjustmentAllowed` accepts them, because that is what the API validates against.
 export function adjustmentKindsFor({ gross = false } = {}) {
-  return ADJUSTMENT_KINDS.filter((k) => k.grossOk || !gross);
+  return ADJUSTMENT_KINDS.filter((k) => k.manual !== false && (k.grossOk || !gross));
 }
 
 export const adjustmentAllowed = (key, { gross = false } = {}) =>

@@ -85,16 +85,29 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
                 {Math.abs(t.charges) > 0.005 && (
                   <div><span className="muted">Charges &amp; credits</span><b className={t.charges < 0 ? 'neg' : 'pos'}>{money(t.charges)}</b></div>
                 )}
+                {/* In Total billed, out again below — the one row on the sheet that appears
+                    twice with opposite signs, because it is money the tenant owes and is not
+                    this year's income. */}
+                {Math.abs(t.carried) > 0.005 && (
+                  <div><span className="muted">Brought forward &amp; refunds</span><b className={t.carried < 0 ? 'neg' : 'pos'}>{money(t.carried)}</b></div>
+                )}
                 <div><span className="muted">Other income</span><b className="pos">{money(t.otherIncome)}</b></div>
                 {/* ⚠ THE FIGURE THAT TIES TO THE LEDGER, and the first draft of this preview
                     left it out. Every month above it is what tenants were billed, so this
                     total is the one number a landlord can hold against the Ledger's own
                     "of $X billed" — which is exactly what the sheet is for. */}
                 <div><span className="muted">Total billed</span><b className="pos">{money(t.billedTotal)}</b></div>
+                {Math.abs(t.carried) > 0.005 && (
+                  <div><span className="muted">Less brought forward &amp; refunds</span><b className={t.carried > 0 ? 'neg' : 'pos'}>{money(-t.carried)}</b></div>
+                )}
                 {Math.abs(t.trueUp) > 0.005 && (
                   <div><span className="muted">Year-end reconciliation</span><b className={t.trueUp < 0 ? 'neg' : 'pos'}>{money(t.trueUp)}</b></div>
                 )}
-                <div><span className="muted">Total earned</span><b className="pos">{money(t.earned)}</b></div>
+                {/* Only when it differs from Total billed above — otherwise the preview
+                    prints the same figure twice under two names, which reads as an error. */}
+                {(Math.abs(t.trueUp) > 0.005 || Math.abs(t.carried) > 0.005) && (
+                  <div><span className="muted">Total earned</span><b className="pos">{money(t.earned)}</b></div>
+                )}
                 <div><span className="muted">Less what you spent</span><b className="neg">{money(-t.spent)}</b></div>
                 <div><span className="muted">What the year left</span><b>{money(t.net)}</b></div>
               </div>

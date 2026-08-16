@@ -34,6 +34,11 @@ export const STORY_EVENTS = [
 export const LEDGER_EVENTS = [
   'estimate_set', 'billing_rebuilt', 'cam_reconciled', 'cam_refunded', 'cam_reconcile_undone',
   'cam_refund_reopened', 'statement_imported', 'statement_import_undone',
+  // ⚠ LEDGER, not STORY, even though both carry a lease_id and a tenant name. A charge on a
+  // month and a year-end balance written off are things that happened to the BOOKS; the story
+  // is who was here and on what terms. Putting a write-off in the tenancy narrative would make
+  // "Bright Coffee Co." read as a sequence of accounting entries.
+  'lease_adjusted', 'balance_settled',
   // ⚠ LEDGER, not STORY. A service contract has no lease and no tenant, so it can never
   // belong to one tenant's story — but it changes what the year's CAM costs, which is
   // exactly what this log is for.

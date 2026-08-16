@@ -52,6 +52,7 @@ const grid = (pen, label, row, opts = {}) =>
 const indent = (label) => `    ${label}`;
 
 const usd = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 function addSummary(wb, pkg, corporationName, now) {
@@ -80,10 +81,12 @@ function addSummary(wb, pkg, corporationName, now) {
   if (Math.abs(t.camTaxBilled) > 0.005) grid(pen, 'CAM & tax billed to tenants', { total: t.camTaxBilled, byMonth: t.camTaxByMonth, undated: 0 });
   if (Math.abs(t.roofBilled) > 0.005) grid(pen, 'Roof billed to tenants', { total: t.roofBilled, byMonth: t.roofByMonth, undated: 0 });
   if (Math.abs(t.charges) > 0.005) grid(pen, 'Charges & credits', { total: t.charges, byMonth: t.chargesByMonth, undated: 0 });
+  if (Math.abs(t.carried) > 0.005) grid(pen, 'Brought forward and refunds — not this year’s income', { total: t.carried, byMonth: t.carriedByMonth, undated: 0 });
   grid(pen, 'Other income', { total: t.otherIncome, byMonth: t.incomeByMonth, undated: t.inUndated });
   grid(pen, 'Total billed', { total: t.billedTotal, byMonth: t.inByMonth, undated: t.inUndated }, { bold: true, bg: P.SUMMARY_BG });
-  if (Math.abs(t.trueUp) > 0.005) {
-    grid(pen, 'Year-end reconciliation — actual share less what was billed', { total: t.trueUp, byMonth: Array(12).fill(0), undated: 0 });
+  if (Math.abs(t.trueUp) > 0.005 || Math.abs(t.carried) > 0.005) {
+    if (Math.abs(t.carried) > 0.005) grid(pen, 'Less brought forward and refunds', { total: -t.carried, byMonth: Array(12).fill(0), undated: 0 });
+    if (Math.abs(t.trueUp) > 0.005) grid(pen, 'Year-end reconciliation — actual share less what was billed', { total: t.trueUp, byMonth: Array(12).fill(0), undated: 0 });
     // No months — see the note on the property sheet's copy of this row.
     grid(pen, 'Total earned', { total: t.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
   }
@@ -307,6 +310,14 @@ function addProperty(wb, p, year, used) {
     grid(pen, 'Charges & credits', { total: p.charges, byMonth: p.chargesByMonth, undated: 0 }, { bold: true });
     for (const r of p.chargeRows) grid(pen, indent(r.label), r);
   }
+  // ⚠ IN Total billed, OUT AGAIN BEFORE Total earned, and the row title has to carry that
+  // by itself — this is the one line on the sheet that appears twice with opposite signs.
+  // It is here because the Ledger bills it (a balance brought forward is genuinely owed) and
+  // it leaves before "earned" because it was another year's income, or never income at all.
+  if (p.carriedRows.length) {
+    grid(pen, 'Brought forward and refunds — not this year’s income', { total: p.carried, byMonth: p.carriedByMonth, undated: 0 }, { bold: true });
+    for (const r of p.carriedRows) grid(pen, indent(r.label), r);
+  }
 
   if (p.otherIncome > 0) {
     grid(pen, 'Other income', { total: p.otherIncome, byMonth: p.incomeByMonth, undated: p.incomeUndated }, { bold: true });
@@ -317,11 +328,16 @@ function addProperty(wb, p, year, used) {
   // The year-end true-up. One line and not twelve, deliberately: it is settled once, and
   // spreading it back across the months would invent figures and break the promise that
   // every cell above equals the Ledger.
-  if (Math.abs(p.trueUp) > 0.005) {
-    grid(pen, 'Year-end reconciliation — actual share less what was billed',
-      { total: p.trueUp, byMonth: Array(12).fill(0), undated: 0 });
-    // ⚠ NO MONTHS ON THIS ROW, deliberately. It contains a year-end figure that belongs to
-    // no month, so printing the billed months beside it would give a row whose cells do not
+  if (Math.abs(p.trueUp) > 0.005 || Math.abs(p.carried) > 0.005) {
+    if (Math.abs(p.carried) > 0.005) {
+      grid(pen, 'Less brought forward and refunds', { total: -p.carried, byMonth: Array(12).fill(0), undated: 0 });
+    }
+    if (Math.abs(p.trueUp) > 0.005) {
+      grid(pen, 'Year-end reconciliation — actual share less what was billed',
+        { total: p.trueUp, byMonth: Array(12).fill(0), undated: 0 });
+    }
+    // ⚠ NO MONTHS ON THESE ROWS, deliberately. They contain year-end figures that belong to
+    // no month, so printing the billed months beside them would give a row whose cells do not
     // add across to its own total — which `workbookValidity.test.js` reads out of the real
     // file bytes and rejects, and which an accountant would reject for the same reason.
     grid(pen, 'Total earned', { total: p.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
@@ -362,6 +378,41 @@ function addProperty(wb, p, year, used) {
 
   grid(pen, 'Money in less money out', { total: p.grossNet, byMonth: p.netByMonth, undated: p.netUndated }, { bold: true, bg: P.SUMMARY_BG });
   pen.skip();
+
+  // ── Where each tenant stands ───────────────────────────────────────────────
+  //
+  // George, 2026-08-16: *"How do we convey credits or debits at the end of the year?"* Here,
+  // and on the Ledger row, from one function (`propertyStandings`, settle.js) reading the same
+  // `allocatePayments` / `ledgerRowSummary` pair the Ledger grid is painted from.
+  //
+  // ⚠ THE CLOSING BALANCE IS NOT `billed − received`. It is `owesToDate − credit`, so a year
+  // still in progress does not report December's rent as arrears — see `tenantStanding`.
+  // ⚠ A TABLE, NOT THE MONTHLY GRID — like "What tenants paid back" below it. `workbookValidity`
+  // asserts every row's months add across to its own Total, and it reads the SUMMARY sheet,
+  // where the grid lives; a five-column block here would be checked as if C–E were months.
+  // Anything monthly belongs above, in the grid, where that guard can see it.
+  if (p.standings.rows.length) {
+    pen.section('Where each tenant stands');
+    pen.head(['Tenant', 'Billed', 'Received', 'Charges & credits', 'Closing balance'],
+      ['left', 'right', 'right', 'right', 'right']);
+    for (const s of p.standings.rows) {
+      pen.line(
+        [s.label, s.billed, s.received, dash(s.charges), s.settled ? '—' : s.closing],
+        { aligns: ['left', 'right', 'right', 'right', 'right'], ...(s.settled ? {} : { bg: P.GOLD_BG, ink: P.GOLD_INK }) }
+      );
+    }
+    pen.line(['Total', p.standings.totals.billed, p.standings.totals.received, dash(p.standings.totals.charges),
+      round2(p.standings.totals.owed - p.standings.totals.inCredit)],
+    { bold: true, bg: P.SUMMARY_BG, aligns: ['left', 'right', 'right', 'right', 'right'] });
+    pen.note(
+      'A positive closing balance is money the tenant still owes; a negative one is money they are ahead by. It counts '
+      + 'only the months that have come due, so a year still running does not report next month\'s rent as arrears. '
+      + 'Settle up on the Ledger row offers the four ways to close one: leave it open, write it off (which comes off '
+      + 'this year\'s income), carry it into next January, or record a refund.',
+      { height: 30 }
+    );
+    pen.skip();
+  }
 
   // ── What came back ─────────────────────────────────────────────────────────
   pen.section('What tenants paid back — for the year');

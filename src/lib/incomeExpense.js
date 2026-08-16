@@ -38,6 +38,7 @@ import {
   getPropertyMonthlyRoll, listEscalationsByLeases, getBankTieOut,
 } from './api';
 import { rentPosition } from './bankTieOut';
+import { propertyStandings } from './settle';
 import { recoverabilityRows, absorbedFromItems } from './recoverability';
 import { summarizeOtherIncome } from './otherIncome';
 import { componentizeSchedule } from './ledger';
@@ -82,7 +83,7 @@ export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', '
  * added back, and still excludes adjustments, or a true tie-out would start reading as drift.
  */
 export function billedRowsFromRoll(roll = []) {
-  const groups = { rent: [], camTax: [], roof: [], charges: [] };
+  const groups = { rent: [], camTax: [], roof: [], charges: [], carried: [] };
   let tieOut = 0;
   // ⚠ WHAT THE SHEET SAYS AND WHAT THE INVOICE SAYS ARE TWO DIFFERENT THINGS, and only one
   // of them is in the tenant's hands. These rows are built UP from each lease's current
@@ -118,6 +119,18 @@ export function billedRowsFromRoll(roll = []) {
     groups.charges.push({
       lease_id: r.lease_id, label, gross: !!r.gross,
       byMonth: ch.byMonth.map(round2), total: round2(ch.total), undated: 0,
+    });
+    // ⚠ THE FIFTH GROUP, AND IT IS WHAT KEEPS THE LEDGER TIE ALIVE (Slice 4). A kind whose
+    // `pnlRow` is null — a balance brought forward, a refund — reaches none of the four rows
+    // above, yet `buildLeaseSchedule` adds EVERY adjustment to the month's `owed`. Left out,
+    // `Total billed` would fall short of the Ledger by exactly its amount, silently, on the
+    // one figure this sheet promises ties. So it is stated on its own row, counted INTO Total
+    // billed, and then taken back out before Total earned — because it is real money the
+    // tenant owes and is not this year's income. Both facts, both said.
+    const cf = adjustmentsForPnlRow(adjRows, null);
+    groups.carried.push({
+      lease_id: r.lease_id, label, gross: !!r.gross,
+      byMonth: cf.byMonth.map(round2), total: round2(cf.total), undated: 0,
     });
     // The old formula, kept for the tie-out only.
     for (let i = 0; i < 12; i++) {
@@ -208,12 +221,16 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   const camTaxByMonth = groupByMonth(billed.camTax);
   const roofByMonth = groupByMonth(billed.roof);
   const chargesByMonth = groupByMonth(billed.charges);
+  const carriedByMonth = groupByMonth(billed.carried);
   const camTaxBilled = sum12(camTaxByMonth);
   const roofBilled = sum12(roofByMonth);
   const charges = sum12(chargesByMonth);
+  const carried = sum12(carriedByMonth);
   // Itemized by kind at the property level, so a late fee and a write-off never merge into
   // one unexplained figure on the sheet.
-  const chargeRows = adjustmentKindRows((roll || []).flatMap((r) => r?.adjustmentRows || []), 'charges');
+  const allAdjRows = (roll || []).flatMap((r) => r?.adjustmentRows || []);
+  const chargeRows = adjustmentKindRows(allAdjRows, 'charges');
+  const carriedRows = adjustmentKindRows(allAdjRows, null);
 
   // ⚠ THE TIE-OUT. Until 2026-08-12 this sheet quoted `total_revenue` — one annual figure
   // straight out of the view. Laying rent across months means deriving it from the lease
@@ -240,13 +257,13 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   // `inByMonth` therefore equals what the Ledger shows that month as owed, plus that month's
   // other income — which is the whole point of the change and the thing to check first if
   // this ever looks wrong.
-  const inByMonth = [rentByMonth, camTaxByMonth, roofByMonth, chargesByMonth, inc.byMonth]
+  const inByMonth = [rentByMonth, camTaxByMonth, roofByMonth, chargesByMonth, carriedByMonth, inc.byMonth]
     .reduce((acc, a) => add12(acc, a), zero12());
   const inUndated = round2(inc.undated);
   const outByMonth = rec.totals.byMonth;
   const outUndated = rec.totals.undated;
 
-  const billedTotal = round2(rent + camTaxBilled + roofBilled + charges + inc.total);
+  const billedTotal = round2(rent + camTaxBilled + roofBilled + charges + carried + inc.total);
 
   // ⚠ THE YEAR-END RECONCILIATION LINE — George, 2026-08-16: *"should that update based on
   // the CAM and TAX reconciliation at the end of the year based on the actual that was
@@ -263,7 +280,12 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   // was, plus the charges & credits that used to reach no sheet at all. A property with no
   // estimates bills its actual share, so this is exactly $0 there.
   const trueUp = round2(rec.totals.recovered - round2(camTaxBilled + roofBilled));
-  const earned = round2(billedTotal + trueUp);
+  // ⚠ `− carried` IS THE OTHER HALF OF THE FIFTH ROW. Total billed carries it so the monthly
+  // grid still equals the Ledger; Total EARNED must not, because a balance brought forward
+  // was last year's income and a refund was never income at all. Both are year-end movements
+  // with no month of their own on the earnings side, which is why this sits beside the
+  // reconciliation line rather than inside the grid.
+  const earned = round2(billedTotal + trueUp - carried);
   const revenue = earned;
   // What the monthly grid itself adds up to — money in less the GROSS expense. Still not the
   // headline, because the year-end line above has no month.
@@ -300,6 +322,15 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     chargeRows,
     chargesByMonth,
     charges,
+    // Slice 4 — money the tenant owes that is not this year's income. In Total billed (so
+    // the months still equal the Ledger), out again before Total earned.
+    carriedRows,
+    carriedByMonth,
+    carried,
+    // Where each tenant stands: billed · received · charges & credits · closing balance.
+    // Derived through `allocatePayments` / `ledgerRowSummary`, the same pair the Ledger grid
+    // is painted from, so the balance printed here is the balance the Settle up button acts on.
+    standings: propertyStandings({ roll, year }),
     trueUp,
     billedTotal,
     earned,
@@ -368,12 +399,16 @@ export function consolidate(properties = []) {
       camTaxBilled: round2(t.camTaxBilled + p.camTaxBilled),
       roofBilled: round2(t.roofBilled + p.roofBilled),
       charges: round2(t.charges + p.charges),
+      carried: round2(t.carried + p.carried),
       trueUp: round2(t.trueUp + p.trueUp),
       billedTotal: round2(t.billedTotal + p.billedTotal),
       earned: round2(t.earned + p.earned),
       camTaxByMonth: add12(t.camTaxByMonth, p.camTaxByMonth),
       roofByMonth: add12(t.roofByMonth, p.roofByMonth),
       chargesByMonth: add12(t.chargesByMonth, p.chargesByMonth),
+      carriedByMonth: add12(t.carriedByMonth, p.carriedByMonth),
+      owed: round2(t.owed + p.standings.totals.owed),
+      inCredit: round2(t.inCredit + p.standings.totals.inCredit),
       otherIncome: round2(t.otherIncome + p.otherIncome),
       revenue: round2(t.revenue + p.revenue),
       spent: round2(t.spent + p.expenseTotals.spent),
@@ -392,9 +427,11 @@ export function consolidate(properties = []) {
       netUndated: round2(t.netUndated + p.netUndated),
     }),
     {
-      rent: 0, camTaxBilled: 0, roofBilled: 0, charges: 0, trueUp: 0, billedTotal: 0, earned: 0,
+      rent: 0, camTaxBilled: 0, roofBilled: 0, charges: 0, carried: 0, trueUp: 0, billedTotal: 0, earned: 0,
       otherIncome: 0, revenue: 0, spent: 0, recovered: 0, netCost: 0, grossNet: 0, net: 0, distributions: 0,
+      owed: 0, inCredit: 0,
       rentByMonth: zero12(), camTaxByMonth: zero12(), roofByMonth: zero12(), chargesByMonth: zero12(),
+      carriedByMonth: zero12(),
       incomeByMonth: zero12(), inByMonth: zero12(), outByMonth: zero12(), netByMonth: zero12(),
       inUndated: 0, outUndated: 0, netUndated: 0,
     }

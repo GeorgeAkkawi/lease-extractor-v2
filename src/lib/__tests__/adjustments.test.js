@@ -41,15 +41,27 @@ describe('the adjustment registry', () => {
     }
   });
 
-  // ⚠ EVERY KIND MUST REACH A ROW OF THE INCOME-AND-EXPENSES SHEET. A `pnlRow` of null is
-  // reserved for money that is not this year's income (a balance brought forward, a
-  // refund) — but such a row still moves the month's `owed`, because buildLeaseSchedule
-  // adds every adjustment to it. So the day a null-pnlRow kind can be posted to
-  // `lease_adjustments`, `Total billed` stops equalling the Ledger by exactly that amount
-  // and something else has to carry it. Until then this holds the line.
+  // ⚠ EVERY KIND MUST REACH A ROW OF THE INCOME-AND-EXPENSES SHEET — and as of Slice 4 that
+  // includes the FIFTH row, "Brought forward and refunds". This test used to require a
+  // pnlRow of 'rent' | 'camtax' | 'charges' and warned that the day a null one could be
+  // posted, `Total billed` would stop equalling the Ledger by exactly that amount and
+  // something else would have to carry it. That day came: `opening` and `refund` are real
+  // money the tenant owes and are not this year's income, so they are counted INTO Total
+  // billed on a row of their own and taken back out before Total earned. The line held is
+  // the same one — every kind lands somewhere a reader can see — and `billedRowsFromRoll`'s
+  // fifth group is what makes null a legal answer rather than a hole.
   it('files every kind on a row of the sheet, so Total billed cannot drift from the Ledger', () => {
-    for (const k of ADJUSTMENT_KINDS) expect(['rent', 'camtax', 'charges']).toContain(k.pnlRow);
+    for (const k of ADJUSTMENT_KINDS) expect(['rent', 'camtax', 'charges', null]).toContain(k.pnlRow);
+    // ⚠ AND AN UNKNOWN KIND IS STILL 'charges', NEVER null. A null reaches a row that is
+    // subtracted again before Total earned, so guessing null for money a later round
+    // invented would quietly take it out of the year's income. 'charges' keeps it visible.
     expect(adjustmentKindInfo('written_by_a_later_round').pnlRow).toBe('charges');
+    // The three that file at null are exactly the settlement kinds, and all three are kept
+    // off the month panel: each is half of a two-sided write only settleTenantBalance
+    // knows how to complete.
+    const nulls = ADJUSTMENT_KINDS.filter((k) => k.pnlRow === null).map((k) => k.key);
+    expect(nulls.sort()).toEqual(['opening', 'refund']);
+    for (const k of nulls) expect(adjustmentKindInfo(k).manual).toBe(false);
   });
 
   it('an unknown kind reports itself unknown and never offsets the year-end true-up', () => {

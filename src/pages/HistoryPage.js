@@ -4,9 +4,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
 } from 'recharts';
-import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents, clearPropertyHistory, listLeases, localDateIso } from '../lib/api';
+import { getCorporation, getProperty, listSnapshots, listExpiredLeases, deleteExpiredLease, closeYear, reopenYear, listHistoryEvents, clearPropertyHistory, listLeases, localDateIso, getPropertyMonthlyRoll } from '../lib/api';
 import { buildTenantStories, ledgerEvents } from '../lib/tenantStory';
 import { snapshotCollectionSummary } from '../lib/ledger';
+import { propertyStandings } from '../lib/settle';
 import { invokeFunction } from '../lib/supabaseClient';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { money, sf, fmtDate } from '../lib/format';
@@ -44,6 +45,12 @@ const EVENT_LABEL = {
   cam_refund_reopened: 'CAM & tax refund reopened',
   statement_imported: 'Bank statement imported',
   statement_import_undone: 'Statement import undone',
+  // A charge or credit typed on one month, and (Slice 4) a whole year-end balance settled.
+  // `lease_adjusted` had been written since 0082 with no entry here, so it rendered as its
+  // own slug; adding `balance_settled` beside it without fixing that would have put a bare
+  // "lease_adjusted" directly under a properly-labelled row.
+  lease_adjusted: 'Charge or credit',
+  balance_settled: 'Year-end balance settled',
   // Derived from the lease rows themselves rather than logged — see tenantStory.js.
   moved_in: 'Moved in',
   term_ends: 'Term ends',
@@ -74,6 +81,10 @@ const EVENT_BADGE = {
   cam_refund_reopened: 'warn',
   statement_imported: 'info',
   statement_import_undone: 'warn',
+  lease_adjusted: 'info',
+  // Good, not info: a settled balance is a thing finished. Writing one off still reduces the
+  // year's income, which the description states in dollars — the badge is about closure.
+  balance_settled: 'good',
   moved_in: 'good',
   term_ends: 'info',
   term_ended: 'danger',
@@ -101,6 +112,10 @@ export default function HistoryPage() {
   // tenancy's bookends (moved in / term ends) are derived from these rows, so a card is
   // never blank even before a single history_event has been written.
   const { data: leases = [] } = useQuery({ queryKey: ['leases', propId], queryFn: () => listLeases(propId) });
+  // Read for one purpose: naming the open balances in the close-year confirm. Same query key
+  // the Ledger uses, so a landlord arriving from that page pays nothing for it.
+  const { data: roll = [] } = useQuery({ queryKey: ['propertyRentRoll', propId, year], queryFn: () => getPropertyMonthlyRoll(propId, year) });
+  const standings = propertyStandings({ roll, year });
   usePageChrome([
     { label: 'History', to: '/history' },
     { label: corp?.name || '…', to: `/history/${corpId}` },
@@ -135,10 +150,23 @@ export default function HistoryPage() {
   const closed = !!cur; // this fiscal year already has a saved snapshot
 
   async function handleClose() {
+    // ⚠ NAME THE OPEN BALANCES BEFORE FREEZING THE YEAR (Slice 4). Closing writes a snapshot,
+    // and a snapshot is what `yearLockState` reads to refuse every later write — including
+    // Settle up itself. So a year closed over an unsettled balance can only be settled by
+    // reopening it, and nothing said so at the moment it mattered. This does not block the
+    // close: leaving a balance open is one of the four legitimate choices. It just stops it
+    // being an accident.
+    const open = standings.open;
+    const owedTotal = standings.totals.owed;
+    const creditTotal = standings.totals.inCredit;
     if (await askConfirm({
       title: `Close FY ${year}?`,
       message: `Save a permanent snapshot of ${prop?.name || 'this property'}'s financials as they are now?`,
       implications: [
+        ...(open.length ? [
+          `${open.length} tenant${open.length === 1 ? ' has' : 's have'} an open balance: ${open.slice(0, 4).map((s) => `${s.label} ${s.owes ? `owes ${money(s.owes)}` : `is ${money(s.inCredit)} ahead`}`).join(' · ')}${open.length > 4 ? ` · and ${open.length - 4} more` : ''}.`,
+          `Closing does NOT settle them — and once closed, Settle up on the Ledger is refused until you reopen the year. ${owedTotal ? `${money(owedTotal)} owed` : ''}${owedTotal && creditTotal ? ' · ' : ''}${creditTotal ? `${money(creditTotal)} in credit` : ''} would be frozen as it stands.`,
+        ] : ['Every tenant is square for the year — no balance is being frozen open.']),
         'Files this year’s revenue, expenses, and per-tenant breakdown under History.',
         'Does NOT change your live financials — you can edit them anytime.',
         'You can reopen the year later to remove the snapshot.',

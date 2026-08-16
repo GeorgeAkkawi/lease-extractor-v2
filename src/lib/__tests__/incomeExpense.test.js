@@ -285,30 +285,39 @@ describe('rent, month by month', () => {
     // A real roll carries the adjustment inside `owed` (buildLeaseSchedule adds it last), so
     // the fixture does too: Jan owes 1,400 of which 400 is a base correction, Feb owes 1,150
     // of which 150 is a fee, Mar owes 950 after a −50 CAM & tax correction.
-    const owedBy = { 1: 1400, 2: 1150, 3: 950 };
+    // Apr owes 1,600 of which 600 is a balance brought forward from last year — a kind whose
+    // pnlRow is null. It reaches none of the four income rows and still has to be inside the
+    // month's total, or Total billed drifts from the Ledger by exactly the settlement.
+    const owedBy = { 1: 1400, 2: 1150, 3: 950, 4: 1600 };
     const sched = Object.fromEntries(Array.from({ length: 12 }, (_, i) => {
       const m = i + 1;
       return [m, { full: 1000, owed: owedBy[m] ?? 1000, abated: 0, credit: 0, kind: 'full', outsideTerm: false }];
     }));
     const g = billedRowsFromRoll([{
       lease_id: 'l1', tenant_name: 'T', schedule: sched, factor: 1, camTaxAnnual: 2400, roofAnnual: 0, gross: false,
-      adjustments: [400, 150, -50, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      adjustments: [400, 150, -50, 600, 0, 0, 0, 0, 0, 0, 0, 0],
       adjustmentRows: [
         { id: 'a1', kind: 'base', month: 1, amount: 400 },
         { id: 'a2', kind: 'fee', month: 2, amount: 150 },
         { id: 'a3', kind: 'camtax', month: 3, amount: -50 },
+        { id: 'a4', kind: 'opening', month: 4, amount: 600 },
       ],
     }]);
     expect(g.rent[0].byMonth[0]).toBe(1200);     // 800 base + the 400 correction
     expect(g.camTax[0].byMonth[2]).toBe(150);    // 200 − the 50 correction
     expect(g.charges[0].byMonth[1]).toBe(150);   // the fee, on its own row
     expect(g.charges[0].total).toBe(150);        // and nothing else lands there
+    expect(g.carried[0].byMonth[3]).toBe(600);   // the brought-forward balance, on the fifth row
+    expect(g.carried[0].total).toBe(600);
+    expect(g.charges[0].byMonth[3]).toBe(0);     // and NOT on charges, which feeds income
     // THE INVARIANT AGAIN, this time with corrections in play: the components still add up
     // to the month's owed, so Total billed cannot drift from the Ledger by an adjustment.
-    for (const m of [1, 2, 3]) {
+    for (const m of [1, 2, 3, 4]) {
       const i = m - 1;
-      expect(g.rent[0].byMonth[i] + g.camTax[0].byMonth[i] + g.roof[0].byMonth[i] + g.charges[0].byMonth[i])
-        .toBeCloseTo(owedBy[m], 2);
+      expect(
+        g.rent[0].byMonth[i] + g.camTax[0].byMonth[i] + g.roof[0].byMonth[i]
+        + g.charges[0].byMonth[i] + g.carried[0].byMonth[i]
+      ).toBeCloseTo(owedBy[m], 2);
     }
   });
 
@@ -407,13 +416,17 @@ describe('noiBridge', () => {
 // ── Every monthly cell is the Ledger's ────────────────────────────────────────
 //
 // The promise George's complaint bought: `Money in` for a month equals what the Ledger
-// paints that month as owed. It holds only while EVERY adjustment kind has a `pnlRow` —
-// a kind whose pnlRow is null still moves `owed` (buildLeaseSchedule adds it) but reaches
-// none of the four rows, so Total billed would part company with the Ledger by exactly
-// that amount. Slice 4 proposes two such kinds (`opening`, `refund`); this is the test
-// that will fail when they arrive, which is the whole reason it is here.
+// paints that month as owed.
+//
+// ⚠ IT IS FIVE ROWS SINCE SLICE 4, NOT FOUR, and that is exactly what this test was written
+// to catch. `opening` and `refund` file at `pnlRow: null` — real money the tenant owes that
+// is not this year's income — and `buildLeaseSchedule` adds every adjustment to `owed`
+// regardless. Left at four rows, Total billed would have parted company with the Ledger by
+// exactly the settled amount, silently, on the one figure this sheet promises ties. The
+// fifth group (`carried`) is what keeps the promise; the sheet then subtracts it again
+// before Total earned, which is where the "not this year's income" half is honoured.
 
-describe('the four Money-in rows against the roll they came from', () => {
+describe('the five Money-in rows against the roll they came from', () => {
   it('adds up to each month’s owed, tenant by tenant, on the demo seed', async () => {
     for (const [leases, propId] of [[2, 'prop-1'], [2, 'prop-2']]) {
       const roll = await getPropertyMonthlyRoll(propId, Y);
@@ -423,7 +436,7 @@ describe('the four Money-in rows against the roll they came from', () => {
       for (const r of roll) {
         for (let m = 1; m <= 12; m++) {
           const owed = Math.round((Number(r.schedule?.[m]?.owed) || 0) * 100) / 100;
-          const parts = ['rent', 'camTax', 'roof', 'charges']
+          const parts = ['rent', 'camTax', 'roof', 'charges', 'carried']
             .reduce((s, g) => s + (by(b[g], r.lease_id)?.byMonth[m - 1] || 0), 0);
           expect(parts).toBeCloseTo(owed, 2);
         }
