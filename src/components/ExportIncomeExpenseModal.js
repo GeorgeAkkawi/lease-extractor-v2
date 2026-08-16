@@ -83,6 +83,11 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
                   <div><span className="muted">Charges &amp; credits</span><b className={t.charges < 0 ? 'neg' : 'pos'}>{money(t.charges)}</b></div>
                 )}
                 <div><span className="muted">Other income</span><b className="pos">{money(t.otherIncome)}</b></div>
+                {/* ⚠ THE FIGURE THAT TIES TO THE LEDGER, and the first draft of this preview
+                    left it out. Every month above it is what tenants were billed, so this
+                    total is the one number a landlord can hold against the Ledger's own
+                    "of $X billed" — which is exactly what the sheet is for. */}
+                <div><span className="muted">Total billed</span><b className="pos">{money(t.billedTotal)}</b></div>
                 {Math.abs(t.trueUp) > 0.005 && (
                   <div><span className="muted">Year-end reconciliation</span><b className={t.trueUp < 0 ? 'neg' : 'pos'}>{money(t.trueUp)}</b></div>
                 )}
@@ -99,13 +104,11 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
               {/* ⚠ SAID BEFORE THE DOWNLOAD, NOT DISCOVERED INSIDE IT. A monthly sheet
                   invites the reader to scan across the year, so how much of the year is
                   NOT on the grid is the one thing they have to be told first. */}
-              {(t.outUndated > 0 || t.inUndated > 0) && (
-                <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-                  {money(t.outUndated + t.inUndated)} has no date on it and lands in a <em>No date</em> column
-                  rather than in a month — an expense typed by hand with the date left blank, a figure entered
-                  as one annual total, or a cost carried in from a service contract.
-                </div>
-              )}
+              {/* ⚠ THE UNDATED SENTENCE LIVED HERE AND HAS MOVED INTO `flags()`. It said the
+                  same total, in nearly the same words, immediately above the flag list that
+                  says it again — two paragraphs of the same fact in one small dialog. The
+                  flag is the copy that also reaches the workbook, where nobody can ask, so
+                  the explanation went there and this went away. Do not put it back. */}
 
               {/* Owner money, stated apart — the same rule the screen and the sheet follow. */}
               {t.distributions > 0 && (

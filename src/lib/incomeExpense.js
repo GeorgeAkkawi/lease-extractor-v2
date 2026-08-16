@@ -83,6 +83,14 @@ export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', '
 export function billedRowsFromRoll(roll = []) {
   const groups = { rent: [], camTax: [], roof: [], charges: [] };
   let tieOut = 0;
+  // ⚠ WHAT THE SHEET SAYS AND WHAT THE INVOICE SAYS ARE TWO DIFFERENT THINGS, and only one
+  // of them is in the tenant's hands. These rows are built UP from each lease's current
+  // terms; a stored invoice is a frozen copy that does not rebuild itself (CLAUDE.md §1).
+  // Move a property's CAM or tax total — which importing a bank statement does, and which
+  // calls no resync at all — and this sheet re-prices while the issued bill does not. The
+  // Ledger row already says "bill behind by $X · Rebuild"; the workbook is the thing you
+  // HAND SOMEONE, so it cannot be the only surface that doesn't know.
+  const drifted = [];
   for (const r of roll || []) {
     const comp = r?.schedule
       ? componentizeSchedule({
@@ -115,10 +123,15 @@ export function billedRowsFromRoll(roll = []) {
       const c = comp?.[i + 1];
       if (c) tieOut = round2(tieOut + num(c.base) + (r.gross ? num(c.camTax) + num(c.roof) : 0));
     }
+    // `drift` is already measured on the roll (`invoiceDrift`, api.js) — schedule less the
+    // stored invoice total. Positive = the sheet is ahead of the bill.
+    const d = round2(num(r?.drift));
+    if (Math.abs(d) > 0.005) drifted.push({ lease_id: r.lease_id, label, amount: d });
   }
   const byTotal = (a, b) => b.total - a.total || a.label.localeCompare(b.label);
   for (const k of Object.keys(groups)) groups[k].sort(byTotal);
-  return { ...groups, tieOut: round2(tieOut) };
+  drifted.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || a.label.localeCompare(b.label));
+  return { ...groups, tieOut: round2(tieOut), drifted, driftTotal: round2(drifted.reduce((s, d) => s + d.amount, 0)) };
 }
 
 /** The lease-level rows of one group, collapsed to a length-12 array. */
@@ -273,6 +286,9 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     rentQuoted,
     rentScheduled,
     rentDrift,
+    // The leases whose ISSUED invoice no longer matches these rows, and by how much.
+    invoiceDrifted: billed.drifted,
+    invoiceDriftTotal: billed.driftTotal,
     // The bill's other components, each with the per-lease rows the sheet indents under it.
     camTaxRows: billed.camTax,
     camTaxByMonth,
@@ -425,13 +441,19 @@ export function flags(properties = []) {
   // and a reader scanning across the months would otherwise never learn how much of the
   // year isn't on them. 0074 wrote the rule this obeys: anything that reads dates has to
   // state how many dollars it could not date.
+  //
+  // ⚠ IT CARRIES THE CAUSES, and that is not padding. The export dialog used to print its
+  // own sentence explaining WHY a figure has no date, immediately above this flag saying
+  // the same total a second way — two near-identical paragraphs in one small dialog. The
+  // explanation belongs on the flag, because the flag is the copy that also reaches the
+  // workbook, where there is nobody to ask.
   const undatedOut = round2(properties.reduce((s, p) => s + p.outUndated, 0));
   if (undatedOut > 0) {
-    out.push(`${dollars(undatedOut)} of expenses carry no payment date and sit in the "No date" column rather than in a month. Dating those lines on the Financials page moves them into the grid.`);
+    out.push(`${dollars(undatedOut)} of expenses carry no payment date and sit in the "No date" column rather than in a month — an expense typed by hand with the date left blank, a figure entered as one annual total, or a cost carried in from a service contract. Dating those lines on the Financials page moves them into the grid.`);
   }
   const undatedIn = round2(properties.reduce((s, p) => s + p.inUndated, 0));
   if (undatedIn > 0) {
-    out.push(`${dollars(undatedIn)} of other income carries no date and sits in the "No date" column.`);
+    out.push(`${dollars(undatedIn)} of other income carries no date and sits in the "No date" column rather than in a month.`);
   }
 
   // The rent tie-out. A difference is information, not an error — but it must be stated in
@@ -452,6 +474,23 @@ export function flags(properties = []) {
       ? ` The Rent row above reads ${dollars(p.rent)} rather than ${dollars(p.rentScheduled)}: a gross lease's flat rent is split there into rent and CAM & tax, and a base-rent correction rides the Rent row.`
       : '';
     out.push(`${p.name}: these leases schedule ${dollars(p.rentScheduled)} of rent at their contract rates, and the Revenue figure on the Financials page reads ${dollars(p.rentQuoted)} — a difference of ${dollars(Math.abs(p.rentDrift))}. These months come from each lease's own schedule, so a tenancy that began part-way through the year is counted only from the month it began. The page's figure is the annual rate from the database view, which is not prorated.${alsoRow}`);
+  }
+
+  // ⚠ THE BILL YOU ACTUALLY SENT. Everything above is built UP from each lease's current
+  // terms; an issued invoice is a frozen copy that does not rebuild itself. Importing a bank
+  // statement moves a property's CAM or tax total and calls NO resync, so this is the
+  // ordinary case, not the exotic one — on the demo, one imported tax payment puts City
+  // Dental's sheet $2,718 ahead of its invoice. The Ledger row has always said so; the
+  // workbook is the copy that leaves the building, so it says so too. It is the LAST flag
+  // deliberately: it asks the reader to go and do something, and the others do not.
+  for (const p of properties) {
+    if (!p.invoiceDrifted?.length) continue;
+    // ⚠ THE SIGN IS SAID IN WORDS, PER LEASE. A bare "+$2,718.00" beside the phrase
+    // "$2,718.00 below" reads as a contradiction, and with two leases drifting opposite
+    // ways one direction in the headline cannot describe both.
+    const who = p.invoiceDrifted.map((d) => `${d.label} ${dollars(Math.abs(d.amount))} ${d.amount > 0 ? 'below' : 'above'}`).join(' · ');
+    const dir = p.invoiceDriftTotal > 0 ? 'below' : 'above';
+    out.push(`${p.name}: the invoices you actually issued come to ${dollars(Math.abs(p.invoiceDriftTotal))} ${dir} what this sheet shows, on ${p.invoiceDrifted.length} lease${p.invoiceDrifted.length === 1 ? '' : 's'} — ${who}. These months are built from each lease's terms as they stand today; an invoice is frozen when it is issued and does not follow a later change, and importing a bank statement that moves your CAM or tax total does not re-price one. The Ledger names the same figure on the tenant's row and offers Rebuild, which brings the bill up to this sheet.`);
   }
 
   const noExpenses = properties.filter((p) => p.expenseTotals.spent <= 0);

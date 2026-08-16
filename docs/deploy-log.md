@@ -12,6 +12,101 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **Drove it as a landlord would, bank statement to Excel: the workbook was the only
+  surface that did not know the invoices had stopped matching it** (George: *"act as a user and run
+  through from end to end all the options i have all the way from uploading a bank statement to
+  seeing my income and expenses presented on the ledger, expenses page, and respective excel sheets
+  and take note of anything that breaks or falls apart or doesnt make sense and fix it … i dont see
+  that bank tie out"*)
+  - **Cloudflare version `f7aa6bc3-b5bb-4f0f-a605-c52ffe4958a3`**, on top of `ff6b9354`. No
+    migration, no edge function, no view. Tests **1839 across 179 files** (was 1837): +2.
+  - **First, the answer to his question: THE BANK TIE-OUT WAS NEVER BUILT.** It is Slice 3 of the
+    four-slice plan he approved; only Slices 1 and 2 shipped. It is not merged into the workbook and
+    it is not on the Ledger — there is nothing to find. Slice 4 (settle up) is likewise outstanding.
+  - **Method:** a key-free Vite build on :5199 (demo mode), driven end to end in a real browser —
+    Financials → *Try a sample statement* → review → Save to Ledger → the Ledger grid → the
+    expenses page → the export dialog → the actual `.xlsx`, unzipped and read cell by cell.
+
+  ### What ties, and now has been watched doing it
+
+  The chain holds on live data, which is worth recording because until today it was only ever
+  asserted in tests. After importing the sample statement (a $3,100 tax payment and $1,430 of CAM):
+
+  | | |
+  |---|---|
+  | Ledger, all tenants | `$190,518.00 billed` |
+  | Workbook, Total billed | `$193,208.00` = 190,518 + $2,690 other income |
+  | Workbook, month by month | every column adds across; Mar cell = the Ledger's Mar cell |
+  | NOI bridge on the property sheet | 92,470 + 49,130 + 2,690 − 2,950 = **$141,340** ✓ |
+  | What the year left | 195,820 − 54,480 = **$141,340** ✓ |
+
+  `$141,340` is unchanged by the import, and correctly so: every imported dollar was recoverable, so
+  `spent` and `recovered` rose together.
+
+  ### 1. ⚠ THE REAL FIND: the sheet re-prices, the invoice does not, and only the Ledger said so
+
+  Importing a statement moves `taxes_total` / `cam_total` → `v_tenant_shares` → the live projection.
+  **`applyStatementImport` calls no `resyncPropertyBilling` at all** — not "it is guarded and
+  skipped", it is not called. Every hand-entry path carries through (`CamSection`, `TaxSection`,
+  `RoofSection`, `BuildingSizeEditor` all call it); the import path never has.
+  - On the demo that puts City Dental's sheet **$2,718.00 ahead of its issued invoice**. The Ledger
+    row says so — `bill behind by $2,718.00 · Rebuild`. The workbook, **which is the copy that
+    leaves the building**, printed "CAM & tax billed to tenants — City Dental $28,518" and said
+    nothing. Hand that to an accountant beside the invoice and the two disagree with no explanation.
+  - **Fixed by surfacing, not by re-pricing.** `billedRowsFromRoll` now collects the roll's existing
+    `drift` (`invoiceDrift`, api.js — already measured, never read here) and `flags()` names it:
+    *"Maple Plaza: the invoices you actually issued come to $2,718.00 below what this sheet shows,
+    on 1 lease — City Dental $2,718.00 below … importing a bank statement that moves your CAM or tax
+    total does not re-price one. The Ledger names the same figure on the tenant's row and offers
+    Rebuild."* Same figure, same words, both surfaces.
+  - ⚠ **WHETHER THE IMPORT SHOULD RE-PRICE AT ALL IS GEORGE'S CALL, NOT MINE** — it would move every
+    tenant's issued bill on every statement import, mid-year, without being asked. Flagged, not done.
+  - The per-lease sign is stated in words (`$2,718.00 below`), because a bare `+$2,718.00` beside the
+    phrase "$2,718.00 below" reads as a contradiction — and two leases drifting opposite ways cannot
+    share one direction in the headline.
+
+  ### 2. The download preview was missing the one figure that ties to the Ledger
+
+  `Total billed` — $193,208 — never appeared. The preview jumped Other income → Year-end
+  reconciliation → Total earned. That is the single number a landlord holds against the Ledger's own
+  *"of $X billed"*, and the rewrite earlier the same day (which added five rows to that preview)
+  left out the bold total between them. Now there.
+
+  ### 3. Two paragraphs of the same fact, in one small dialog
+
+  The export dialog printed its own *"$31,000.00 has no date on it…"* sentence directly above the
+  flag list, whose second entry says the same total again. The **explanation** moved onto the flag
+  (which is also the copy that reaches the workbook, where there is nobody to ask) and the dialog's
+  paragraph went, with a comment saying not to put it back.
+
+  ### 4. Noted, not fixed — and why
+
+  - **⚠ THE DEMO SEEDS THE CURRENT FISCAL YEAR AS CLOSED** (`snap-2`, `store.js`, `year: Y` on
+    prop-1). So every line of the sample statement wears an `FY 2026 closed` badge and the whole
+    demo runs against a year the carry-through deliberately skips. It is why `snap-1`/`snap-2` exist
+    (History's 94%→96% collection trend), so moving it would ripple through the History tests. It
+    does mean a first-time demo user meets a closed-year warning on their first import.
+  - **The closed-year banner names only the History snapshot** — *"they import normally, but that
+    year's History snapshot is stale"*. An estimate line ALSO re-prices a closed year through the
+    unguarded `resyncYearBillingToEstimate`, which the 2026-08-07 audit already listed as open. The
+    banner's silence on the money consequence is that same open item, not a new one.
+  - **"Money not yet placed" cannot place rent.** A deposit that duplicates an already-paid month
+    lands here, and the panel offers only other-income categories, transfer or leave-out; its own
+    text says *"re-import that statement to place it"* — which requires having the PDF again. That
+    is Slice 3/4 territory.
+  - **A React `unique "key"` warning on `LedgerPage`**, dev-only (React does not warn in a
+    production build), fires when the unplaced/decided panels first appear after an import. Every
+    `.map` in the file and in its shared children (`Breadcrumb`, `ConfirmDialog`, `MutationError`,
+    `ImportResultsStrip`) carries a key; I could not pin it and am not claiming otherwise.
+  - **Discoverability:** the Income-and-expenses workbook lives two clicks inside a modal called
+    *Documents & filings* on the corporations LIST page, and is absent from the corporation's own
+    financials page where the figures are.
+
+  ### Files
+  Edited: `src/lib/incomeExpense.js` (`drifted`/`driftTotal` on `billedRowsFromRoll`,
+  `invoiceDrifted`/`invoiceDriftTotal` on the shape, the drift flag, the undated flags' causes) ·
+  `src/components/ExportIncomeExpenseModal.js` · `src/lib/__tests__/incomeExpense.test.js` (+2).
+
 - **2026-08-16** — **AUDIT of the same morning's work: the property sheet printed an equation that
   did not add up, the drift flag quoted a figure it had not subtracted, and the download preview
   still described the layout the workbook had stopped having six hours earlier** (George: *"go

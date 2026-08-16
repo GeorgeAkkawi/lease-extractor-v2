@@ -187,6 +187,37 @@ describe('a corporation’s year, month by month', () => {
     expect(basis.amount).toBeCloseTo(-17999.94, 2);
   });
 
+  // ⚠ THE BILL YOU SENT vs THE SHEET YOU HAND SOMEONE. Every row of this workbook is built
+  // UP from each lease's current terms; an issued invoice is a frozen copy. Importing a
+  // bank statement moves a property's CAM or tax total and calls no resync at all, so the
+  // two part company on the ordinary path — found by driving the app end to end on
+  // 2026-08-16, where one imported tax payment put City Dental's sheet $2,718 ahead of its
+  // invoice while the workbook said nothing.
+  it('names a lease whose issued invoice no longer matches these rows', () => {
+    const schedule = Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [i + 1, { full: 1000, owed: 1000, abated: 0, credit: 0, kind: 'full', outsideTerm: false }])
+    );
+    const p = shapeProperty({
+      property: { id: 'p', name: 'Maple Plaza' }, year: Y, totals: { total_revenue: 12000, noi: 0 },
+      items: [], shares: [], expense: {}, buckets: [], income: [],
+      roll: [{ lease_id: 'l1', tenant_name: 'City Dental', schedule, factor: 1, camTaxAnnual: 2400, roofAnnual: 0, drift: 2718 }],
+    });
+    expect(p.invoiceDriftTotal).toBe(2718);
+    expect(p.invoiceDrifted).toEqual([{ lease_id: 'l1', label: 'City Dental', amount: 2718 }]);
+    const [f] = flags([p]).filter((s) => s.includes('invoices you actually issued'));
+    expect(f).toContain('$2,718.00 below');
+    expect(f).toContain('City Dental');
+    expect(f).toContain('Rebuild');
+  });
+
+  // Dust is not a finding. `invoiceDrift` already swallows anything under its own
+  // threshold; this pins that a clean property says nothing at all.
+  it('says nothing when every invoice still matches', async () => {
+    const pkg = await build();
+    expect(pkg.properties[0].invoiceDrifted).toEqual([]);
+    expect(pkg.flags.some((s) => s.includes('invoices you actually issued'))).toBe(false);
+  });
+
   it('says out loud how many dollars it could not date', async () => {
     const pkg = await build();
     expect(pkg.flags.some((f) => f.includes('$31,000.00') && f.includes('No date'))).toBe(true);
