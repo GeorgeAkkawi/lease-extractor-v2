@@ -54,6 +54,63 @@ describe('bankTieOut — the two sides', () => {
     expect(t.differences[0]).toMatch(/statements show \$800\.00 more than the books hold/);
   });
 
+  // ⚠ NAMING THE BUCKET IS NOT NAMING THE FAULT. George: "if the moneys dont add up on the
+  // bank tie out it should show where the discrepancy is happening." A line stamps `ref_id`
+  // when it writes (0076), so a ref pointing at a row that is gone IS the evidence.
+  it('names the line whose row was deleted, not just the bucket', () => {
+    const t = bankTieOut({
+      year: Y, imports: 1,
+      lines: [
+        line({ id: 'L1', disposition: 'expense', amount: 1200, ref_kind: 'cam', ref_id: 'cam-alive', description: 'GREENLEAF LANDSCAPING' }),
+        line({ id: 'L2', disposition: 'expense', amount: 212.48, ref_kind: 'cam', ref_id: 'cam-gone', description: 'HOME DEPOT PURCHASE 8841', txn_date: `${Y}-03-22` }),
+      ],
+      expenseItems: [{ id: 'cam-alive', label: 'Landscaping', amount: 1200, year: Y }],
+    });
+    const row = t.out.rows.find((r) => r.key === 'expense');
+    expect(row.diff).toBe(212.48);
+    expect(row.suspects).toHaveLength(1);
+    expect(row.suspects[0].description).toBe('HOME DEPOT PURCHASE 8841');
+    const said = t.differences[0];
+    expect(said).toMatch(/It is this line: Mar 22 · HOME DEPOT PURCHASE 8841 · \$212\.48 — the expense line it produced has since been deleted/);
+    // The line that landed is never named.
+    expect(said).not.toMatch(/GREENLEAF/);
+  });
+
+  // A row that still exists but under another year is a DIFFERENT fault with a different fix,
+  // and reporting it as "deleted" sends the landlord hunting for something sitting right there.
+  it('distinguishes a row filed under another year from a row that is gone', () => {
+    const t = bankTieOut({
+      year: Y, imports: 1,
+      lines: [line({ id: 'L1', disposition: 'expense', amount: 500, ref_kind: 'cam', ref_id: 'cam-1', description: 'ACME' })],
+      expenseItems: [{ id: 'cam-1', label: 'Acme', amount: 500, year: Y - 1 }],
+    });
+    expect(t.differences[0]).toMatch(new RegExp(`filed under FY ${Y - 1}`));
+    expect(t.differences[0]).not.toMatch(/deleted/);
+  });
+
+  // ⚠ THE FIRST DRAFT OF THIS ACCUSED EVERY LINE THAT HAD NO REF, INCLUDING ONES THAT LANDED.
+  // A line with no link cannot be followed in either direction; saying so is useful, calling
+  // it the missing money is not.
+  it('keeps an untraceable line apart from the cause, and never lets it exceed the difference', () => {
+    const t = bankTieOut({
+      year: Y, imports: 1,
+      lines: [
+        line({ id: 'L1', disposition: 'expense', amount: 1200, description: 'LANDED' }),
+        line({ id: 'L2', disposition: 'expense', amount: 800, description: 'ALSO NO REF' }),
+      ],
+      expenseItems: [{ id: 'cam-1', label: 'Snow removal', amount: 1200, year: Y }],
+    });
+    const row = t.out.rows.find((r) => r.key === 'expense');
+    expect(row.diff).toBe(800);
+    expect(row.suspects).toEqual([]);            // nothing is PROVEN
+    expect(row.untraceable).toHaveLength(2);
+    const said = t.differences[0];
+    expect(said).toMatch(/No line names itself as the cause/);
+    expect(said).toMatch(/2 other lines on these statements \(\$2,000\.00\) carry no link/);
+    // …and it never claims to have accounted for more than the difference.
+    expect(said).not.toMatch(/\$2,000\.00 of it is/);
+  });
+
   it('reports the books holding money no line accounts for, the other way round', () => {
     const t = bankTieOut({
       year: Y, imports: 1,
@@ -278,6 +335,53 @@ describe('getBankTieOut — against the real import path', () => {
     // Every line for the year is visible to the third reader, decided or not.
     const all = await listStatementLinesForYear('prop-1', Y);
     expect(all.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ⚠ THE NAG COULD NOT ANSWER "THIS IS RENT" UNTIL 2026-08-16. The picker offered expenses,
+// income, a deposit, a transfer and leave-out; a deposit that was plainly a tenant's rent had
+// no home, and the panel told the landlord to re-import the statement — which means still
+// having the PDF. George: "an option for money not placed yet should be to record it as a
+// payment for the next or previous month. sometimes tenants pay twice in the same month."
+describe('placing an unplaced deposit as rent', () => {
+  it('settles the month it is tagged to, and the tie-out follows', async () => {
+    const dep = { hash: 'rent-late', year: Y, date: `${Y}-05-28`, description: 'MOBILE DEPOSIT', amount: 6500, direction: 'in' };
+    await applyStatementImport({
+      propertyId: 'prop-1', year: Y, fileName: 'rent.pdf',
+      entries: [], lines: [{ ...dep, disposition: 'unclassified' }],
+    });
+    const before = await getBankTieOut('prop-1', Y);
+    expect(before.in.unplaced).toBeGreaterThanOrEqual(6500);
+
+    const mine = (await listUnplacedLines('prop-1', Y)).find((l) => l.line_hash === 'rent-late');
+    // ⚠ TAGGED TO JUNE THOUGH IT CLEARED IN MAY — the whole request. A cheque that cleared on
+    // the 28th can be next month's rent, and the month is the landlord's choice, not the date's.
+    const { entry } = await placeUnplacedLine(mine, { kind: 'payment', leaseId: 'lease-1', month: 6, year: Y });
+    expect(Number(entry.period_month)).toBe(6);
+    expect(Number(entry.amount)).toBe(6500);
+    // ⚠ THE THREE STAMPS, each load-bearing: without import_id the tie-out cannot see the
+    // payment and reports a difference it caused itself; without import_hash the duplicate
+    // guard would let a re-import book it twice; `source` is stored, never inferred (0088),
+    // and left to the default it would read 'system' and become re-pricable.
+    expect(entry.import_id).toBeTruthy();
+    expect(entry.import_hash).toBe('rent-late');
+    expect(entry.source).toBe('import');
+
+    const after = await getBankTieOut('prop-1', Y);
+    expect(after.in.unplaced).toBeCloseTo(before.in.unplaced - 6500, 2);
+    // The line now sits in the rent bucket and TIES — the books side sees it because the
+    // payment carries the import.
+    expect(after.in.rows.find((r) => r.key === 'rent').diff).toBe(0);
+    // And the grid agrees: June is settled at what arrived.
+    const roll = await getPropertyMonthlyRoll('prop-1', Y);
+    const row = roll.find((r) => r.lease_id === 'lease-1');
+    expect(row.payments.some((p) => Number(p.period_month) === 6 && Number(p.amount) === 6500)).toBe(true);
+  });
+
+  it('refuses without a tenant rather than writing a payment against nobody', async () => {
+    const res = await placeUnplacedLine({ id: 'x', property_id: 'prop-1', amount: 100 }, { kind: 'payment', leaseId: null, year: Y });
+    expect(res.refused).toBe(true);
+    expect(res.entry).toBe(null);
   });
 });
 

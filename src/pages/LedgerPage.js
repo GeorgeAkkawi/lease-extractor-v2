@@ -158,6 +158,10 @@ export default function LedgerPage() {
   // Naming a new other-income category on an unplaced line — the id of the line being
   // named, and the text so far.
   const [namingIncome, setNamingIncome] = useState(null);
+  // Rent picked but not yet recorded: { [lineId]: { leaseId, month } }. Two steps on purpose —
+  // the tenant and the month are separate decisions, and putting twelve months × N tenants in
+  // one dropdown would be unreadable. Cleared when the line is placed or cancelled.
+  const [rentPick, setRentPick] = useState({});
   const [incomeDraft, setIncomeDraft] = useState('');
   // Scoped to the fiscal year the rest of the page follows, so the log resets with the
   // year instead of every statement ever imported piling into one list.
@@ -246,24 +250,27 @@ export default function LedgerPage() {
     onSuccess: settleLines,
   });
   // Give the line a real home from here, without re-importing the statement it came
-  // from. Every destination writes either an `other_income` row or a NOT-BILLED expense
-  // line, and syncCamTotal excludes the latter from cam_total — so answering the nag can
-  // never move a tenant's bill or this property's NOI.
+  // from. ⚠ Every destination EXCEPT rent writes either an `other_income` row or a NOT-BILLED
+  // expense line, and syncCamTotal excludes the latter from cam_total — so those can never
+  // move a tenant's bill or this property's NOI. Rent is the exception and has to be: it
+  // records a PAYMENT, which changes who has settled without touching what was billed.
   const place = useMutation({
-    // The pick encodes its own sub-destination: `income:<category>`, `deposit:<leaseId>`
-    // and `expense:<category>` (a distribution is `expense:distribution`).
-    mutationFn: ({ line, kind }) => placeUnplacedLine(line, {
-      kind: kind.startsWith('income:') ? 'income' : kind.startsWith('deposit:') ? 'deposit' : kind.startsWith('expense:') ? 'expense' : kind,
+    // The pick encodes its own sub-destination: `rent:<leaseId>`, `income:<category>`,
+    // `deposit:<leaseId>` and `expense:<category>` (a distribution is `expense:distribution`).
+    mutationFn: ({ line, kind, month = null }) => placeUnplacedLine(line, {
+      kind: kind.startsWith('income:') ? 'income' : kind.startsWith('deposit:') ? 'deposit' : kind.startsWith('expense:') ? 'expense' : kind.startsWith('rent:') ? 'payment' : kind,
       category: kind.startsWith('income:') ? kind.slice(7) : kind.startsWith('expense:') ? kind.slice(8) : null,
-      leaseId: kind.startsWith('deposit:') ? kind.slice(8) : null,
+      leaseId: kind.startsWith('deposit:') ? kind.slice(8) : kind.startsWith('rent:') ? kind.slice(5) : null,
+      month,
       // ⚠ The fiscal year the landlord is looking at, as the LAST fallback behind the
       // line's own year and its transaction date. An expense row written with no year is
       // invisible in every year's figures (`listExpenseLineItems` reads the year exactly),
       // which is how a placed line could read "recorded" and reach no sheet at all.
       year,
     }),
-    onSuccess: () => {
+    onSuccess: (res, vars) => {
       settleLines();
+      setRentPick((p) => { const n = { ...p }; delete n[vars?.line?.id]; return n; });
       // A not-billed expense line landed: the CAM list, the bucket records that carry
       // its category, the corp-card distribution roll-up and the Financials strips all
       // read it. `camLineItems` is a prefix so every year of this property repaints.
@@ -272,6 +279,14 @@ export default function LedgerPage() {
       qc.invalidateQueries({ queryKey: ['corpDistributions'] });
       qc.invalidateQueries({ queryKey: ['otherIncome'] });
       qc.invalidateQueries({ queryKey: ['depositLines'] });
+      // ⚠ A PAYMENT MOVES THE GRID ITSELF, which no other destination does. The roll carries
+      // the payments the cells and the Collected column are painted from, so without this the
+      // money lands and the month it settles goes on reading as unpaid until a reload.
+      qc.invalidateQueries({ queryKey: rollKey });
+      qc.invalidateQueries({ queryKey: ['invoices'] });
+      qc.invalidateQueries({ queryKey: ['payments'] });
+      qc.invalidateQueries({ queryKey: ['invoicesForProperty'] });
+      qc.invalidateQueries({ queryKey: ['portfolioCollected'] });
     },
   });
 
@@ -368,6 +383,31 @@ export default function LedgerPage() {
       tone: 'default',
     });
     if (ok) place.mutate({ line: l, kind });
+  }
+
+  // ⚠ RENT IS THE ONE DESTINATION THAT MOVES THE LEDGER, so its confirm says the opposite of
+  // every other one on this panel. The others all promise "no tenant's bill moves"; this one
+  // has to say plainly that it settles a month, and equally plainly that it does not change
+  // what was BILLED — the distinction the whole app rests on.
+  async function askPlaceRent(l, pick) {
+    const who = derived.find(({ r }) => r.lease_id === pick.leaseId)?.r;
+    const m = pick.month;
+    const owedThat = m ? round2(Number(who?.schedule?.[m]?.owed) || 0) : 0;
+    const amt = Math.abs(Number(l.amount) || 0);
+    const ok = await askConfirm({
+      title: `Record this as ${who?.tenant_name || 'this tenant'}’s rent?`,
+      message: `${lineLabel(l)} — for ${m ? `${MONTHS[m - 1]} ${year}` : 'no particular month'}.`,
+      implications: [
+        m
+          ? `${MONTHS[m - 1]} is marked paid at ${money(amt)}${owedThat ? ` against the ${money(owedThat)} billed` : ''}. A month settles at whatever arrived — this does not change what was billed.`
+          : 'Left untagged, so the ledger spreads it across the months still owed, earliest first.',
+        'It is recorded as money RECEIVED. Income and expenses counts rent when it falls due, so that sheet does not move — the Ledger and the bank tie-out do.',
+        'It carries the statement it came from, so re-importing that statement later cannot book it twice.',
+      ],
+      confirmLabel: 'Record it',
+      tone: 'default',
+    });
+    if (ok) place.mutate({ line: l, kind: `rent:${pick.leaseId}`, month: m });
   }
 
   // A category the six built-ins don't cover (George, 2026-08-13). `custom:<slug>` is the
@@ -868,9 +908,21 @@ export default function LedgerPage() {
                           only instrument was a credit capped at one month's bill, so a year's
                           arrears could not be expressed at all. The button appears only on a
                           row with a real balance, and states which way it runs. */}
+                      {/* ⚠ `settled` WAITS FOR THE MONTH TO END, and that is the fix for George's
+                          "why does it say every tenant owes something?". Rent falls due on the 1st,
+                          so a balance built from every month that has fallen DUE puts an owing
+                          figure — and an offer to write it off — on every tenant on the 1st of
+                          every month, for money whose bank statement cannot exist yet. The
+                          receivable is still carried (`closing`) for the workbook and the
+                          close-year confirm; what waits is the accusation and the action. */}
                       {!standing.settled && (
                         <div className="rr-drift">
-                          <span title="What this tenant still owes for the year, or is ahead by — counting only the months that have come due.">
+                          <span title={
+                            `${standing.owes ? 'Unpaid on' : 'Ahead by, across'} the months that have ENDED — the ones whose bank statement should have arrived.`
+                            + (standing.provisional > 0.005
+                              ? ` A further ${money(standing.provisional)} is owed on the month still running; it is not counted here because nothing has yet told you whether it arrived.`
+                              : '')
+                          }>
                             {standing.owes ? 'owes' : 'in credit'} <strong>{money(standing.owes || standing.inCredit)}</strong>
                           </span>
                           {/* The same shape as the unplaced panel's "Record as…" — a pick that
@@ -946,7 +998,9 @@ export default function LedgerPage() {
             {unplacedTotals.unplacedOut > 0 && <> · {money(unplacedTotals.unplacedOut)} out</>}
             <div className="muted" style={{ fontSize: 11, marginTop: 4, marginBottom: 8 }}>
               Your statements showed these and nothing has been decided about them.
-              {unplacedTotals.unplacedIn > 0 && ' Any of the money in that is rent should be recorded against a tenant — re-import that statement to place it.'}
+              {/* ⚠ This used to end "re-import that statement to place it", which meant still
+                  having the PDF — the dead end George hit. Rent is now one of the choices. */}
+              {unplacedTotals.unplacedIn > 0 && ' Money in that is rent goes under “Tenant rent”, where you pick the tenant and the month it pays — a cheque that cleared in March can be April’s rent.'}
               {' '}Or leave one out for good, and say why.
             </div>
             <table style={{ minWidth: 0 }}>
@@ -984,9 +1038,17 @@ export default function LedgerPage() {
                           const v = e.target.value;
                           if (!v) return;
                           if (v === NEW_INCOME) { setNamingIncome(l.id); setIncomeDraft(''); return; }
+                          // Rent asks a second question — which month — so it opens the month
+                          // box rather than going straight to a confirm. The default is the day
+                          // the bank printed, the same rule the import matcher starts from.
+                          if (v.startsWith('rent:')) {
+                            const m = Number(String(l.txn_date || '').slice(5, 7));
+                            setRentPick((p) => ({ ...p, [l.id]: { leaseId: v.slice(5), month: m >= 1 && m <= 12 ? m : null } }));
+                            return;
+                          }
                           askPlace(l, v, e.target.selectedOptions[0]?.text);
                         }}
-                        title="Record this line where it belongs. None of these touch a tenant's bill or this property's expenses."
+                        title="Record this line where it belongs. Only “Tenant rent” records money received against a tenant — the rest touch no tenant's bill and no CAM total."
                       >
                         <option value="">Record as…</option>
                         {/* Money OUT lands as a not-billed expense line carrying the
@@ -1000,6 +1062,18 @@ export default function LedgerPage() {
                             <option value="expense:distribution">Owner distribution — money you took out</option>
                             {EXPENSE_CATEGORIES.filter((c) => !c.ownerCapital).map((c) => (
                               <option key={c.key} value={`expense:${c.key}`}>{c.label}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {/* ⚠ RENT FIRST, and until 2026-08-16 it was not offered at all — the
+                            one destination the nag could not answer, on the panel whose whole
+                            job is giving every bank line a home. Picking a tenant opens the
+                            month box beside it, the same pair the import review screen has
+                            always had. */}
+                        {l.direction === 'in' && derived.length > 0 && (
+                          <optgroup label="Tenant rent — from…">
+                            {derived.map(({ r }) => (
+                              <option key={r.lease_id} value={`rent:${r.lease_id}`}>{r.tenant_name}</option>
                             ))}
                           </optgroup>
                         )}
@@ -1027,6 +1101,30 @@ export default function LedgerPage() {
                         )}
                         <option value="transfer">Transfer between my own accounts</option>
                       </select>
+                      {/* ⚠ THE MONTH IS ITS OWN STEP, and it is the point of the request. A
+                          cheque that cleared in March can be April's rent, and a tenant can pay
+                          twice in one month — so the month defaults to the day the bank printed
+                          and is then the landlord's to change, exactly as the import review
+                          screen's "For month · editable" column has always worked. "— (lump)"
+                          leaves it untagged and the ledger spreads it over the months still owed. */}
+                      {rentPick[l.id] && (
+                        <span className="rr-drift" style={{ marginTop: 4 }}>
+                          <span className="muted" style={{ fontSize: 11 }}>for</span>
+                          <select
+                            className="text-input" style={{ maxWidth: 90, fontSize: 11 }}
+                            value={rentPick[l.id].month ?? ''}
+                            onChange={(e) => setRentPick((p) => ({ ...p, [l.id]: { ...p[l.id], month: e.target.value === '' ? null : Number(e.target.value) } }))}
+                            title="Which month's rent this deposit pays — filled in from the date the bank printed, and yours to change. “— (lump)” leaves it untagged and the ledger spreads it across the months still owed."
+                          >
+                            <option value="">— (lump)</option>
+                            {MONTHS.map((nm, mi) => <option key={nm} value={mi + 1}>{nm}</option>)}
+                          </select>
+                          <button type="button" className="ghost btn-sm" disabled={place.isPending}
+                            onClick={() => askPlaceRent(l, rentPick[l.id])}>Record</button>
+                          <button type="button" className="icon-btn" aria-label="Cancel"
+                            onClick={() => setRentPick((p) => { const n = { ...p }; delete n[l.id]; return n; })}>✕</button>
+                        </span>
+                      )}
                       <select
                         className="text-input" style={{ maxWidth: 210, fontSize: 11 }}
                         value=""

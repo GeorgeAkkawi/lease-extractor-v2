@@ -21,31 +21,61 @@
 // balance a landlord settles is the same balance the grid shows them. A second definition of
 // "what does this tenant owe" is precisely the drift that puts two figures in front of one
 // person on one afternoon.
-import { allocatePayments, ledgerRowSummary } from './ledger';
+import { allocatePayments, ledgerRowSummary, monthClosedForLogging } from './ledger';
 import { adjustmentTotal } from './adjustments';
 
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 
 /**
- * One tenant's position for the year.
+ * One tenant's position for the year — and it carries TWO figures, because two different
+ * questions are being asked of it.
  *
- * ⚠ THE CLOSING BALANCE IS `owesToDate − credit`, NOT `billed − received`, and the difference
- * is the whole of the current year. `billed` counts all twelve months including ones that have
- * not fallen due, so on a year in progress `billed − received` would offer to write off rent
- * the tenant has every right not to have paid yet. `owesToDate` is the figure that already
- * ties to `arStatus.amountBehind` to the cent (CLAUDE.md §4), and `credit` is the untagged
- * money no month needed. The two are mutually exclusive by construction — the pool fills every
- * month's need before any of it survives as credit — so exactly one of them is ever non-zero.
+ * ⚠ `closing` IS THE RECEIVABLE: `owesToDate − credit`, every month that has fallen DUE.
+ * Rent falls due on the 1st, so it includes the month running now. That is right for an
+ * accountant and right for a year-end statement, which is what the workbook and the
+ * close-year confirm want.
  *
- * Positive = the tenant owes. Negative = the tenant is in credit.
+ * ⚠ `owes` IS WHAT CAN BE ACTED ON, and it waits for the month to END. This is the split
+ * CLAUDE.md §4 already records and that Slice 4 broke:
+ *
+ *     `monthsBehind` WAITS FOR THE MONTH TO END; `owesToDate` DOES NOT … What waits is the
+ *     accusation: the bank statement that would settle the month does not exist yet.
+ *
+ * Hanging "Settle up" on the receivable meant every tenant was offered a write-off on the
+ * 1st of every month, for money that had simply not been logged yet (George: *"why does it
+ * say every tenant owes something?"*). His own rule — *"only when their projected rent is
+ * above or below what they actually paid"* — needs one more ingredient, which months can be
+ * judged, and the codebase already owns that boundary: `monthClosedForLogging(y, m, today, 0)`,
+ * the same call behind the `4 mo behind` badge, the gold overdue cell and both statement
+ * reminders. Same function, no grace, so the three can never disagree.
+ *
+ * ⚠ `inCredit` DOES NOT WAIT, deliberately. Money you are already holding is not an
+ * accusation — refunding it needs no month to close. Only the owing side is an assertion
+ * about someone else's conduct, and only assertions have to wait for evidence.
+ *
+ * The two are mutually exclusive by construction: the pool fills every month's need before
+ * any of it survives as credit, so exactly one of `owes` / `inCredit` is ever non-zero.
  */
-export function tenantStanding({ row, year, today = new Date(), alloc = null, summary = null } = {}) {
+export function tenantStanding({ row, year, today = new Date(), alloc = null, summary = null, dust = 0.05 } = {}) {
   const a = alloc || allocatePayments({
     owedByMonth: row?.schedule, payments: row?.payments, adjustments: row?.adjustments,
   });
   const s = summary || ledgerRowSummary({ year, owedByMonth: row?.schedule, allocation: a, today });
   const closing = round2(s.owesToDate - s.credit);
+
+  // The months whose bank statement should exist by now, and the shortfall on them.
+  let owesClosed = 0;
+  let judgedThrough = 0;
+  for (let m = 1; m <= 12; m++) {
+    if (!monthClosedForLogging(year, m, today, 0)) continue;
+    judgedThrough = m;
+    const gap = round2(num(a.owed?.[m - 1]) - num(a.coverage?.[m - 1]));
+    if (gap > dust) owesClosed = round2(owesClosed + gap);
+  }
+  const inCredit = closing < -0.005 ? round2(-closing) : 0;
+  const owes = owesClosed > 0.005 ? owesClosed : 0;
+
   return {
     lease_id: row?.lease_id || null,
     label: String(row?.tenant_name || '').trim() || 'Tenant',
@@ -56,9 +86,25 @@ export function tenantStanding({ row, year, today = new Date(), alloc = null, su
     // is inside it.
     charges: adjustmentTotal(row?.adjustmentRows),
     closing,
-    owes: closing > 0.005 ? closing : 0,
-    inCredit: closing < -0.005 ? round2(-closing) : 0,
-    settled: Math.abs(closing) <= 0.005,
+    owes,
+    inCredit,
+    // What is owed on months that have NOT closed yet — the running month, almost always.
+    // Reported so the difference between the two figures is stated rather than mysterious,
+    // and never acted on.
+    provisional: round2(Math.max(0, round2(s.owesToDate) - owesClosed)),
+    // The owing side of `closing` — the receivable, including the month still running. Paired
+    // with `inCredit` (which is already closing-based) so the year-end totals add up from two
+    // fields measured the same way. `owes` deliberately is not that field.
+    receivable: closing > 0.005 ? closing : 0,
+    judgedThrough,
+    // ⚠ TWO PREDICATES, TWO QUESTIONS, AND THE NAMES SAY WHICH.
+    //   `settled`     — nothing to ACT on. What the Ledger's Settle up control reads.
+    //   `openBalance` — a receivable exists. What the workbook and the close-year confirm
+    //                   read, because a year-end statement must not hide a balance merely
+    //                   because this month's statement has not arrived.
+    // They coincide on any past year, which is when a settlement normally happens.
+    settled: owes <= 0.005 && inCredit <= 0.005,
+    openBalance: Math.abs(closing) > 0.005,
     alloc: a,
     summary: s,
   };
@@ -73,12 +119,15 @@ export function propertyStandings({ roll = [], year, today = new Date() } = {}) 
       billed: round2(t.billed + r.billed),
       received: round2(t.received + r.received),
       charges: round2(t.charges + r.charges),
-      owed: round2(t.owed + r.owes),
+      owed: round2(t.owed + r.receivable),
       inCredit: round2(t.inCredit + r.inCredit),
     }),
     { billed: 0, received: 0, charges: 0, owed: 0, inCredit: 0 }
   );
-  return { rows, totals, open: rows.filter((r) => !r.settled) };
+  // ⚠ `openBalance`, NOT `settled`. This list is what the close-year confirm names and what
+  // the workbook highlights — both are year-end statements, so they must report a receivable
+  // that exists even when this month's bank statement has not arrived to prove it.
+  return { rows, totals, open: rows.filter((r) => r.openBalance) };
 }
 
 /**
@@ -91,15 +140,26 @@ export function propertyStandings({ roll = [], year, today = new Date() } = {}) 
  *              nothing to protect; the array is returned anyway so both directions read the
  *              same at the call site.
  *
- * ⚠ MONTHS THAT HAVE NOT COME DUE ARE EXCLUDED from a credit's capacity when `dueThrough` is
- * given. Writing off December's rent in March forgives money nobody has failed to pay.
+ * ⚠ `basis` DECIDES WHICH MONTHS ARE ELIGIBLE, and the two answers are asking different
+ * questions rather than being a strict/loose pair:
+ *
+ *   'ended'  — only months whose bank statement should exist by now
+ *              (`monthClosedForLogging(y, m, today, 0)`, the same call `tenantStanding` uses
+ *              for `owes`). This is a settlement OF THE PAST: forgiving a month you cannot
+ *              yet know went unpaid is forgiving money nobody has failed to pay. It also
+ *              keeps the capacity and the amount measured the same way — spread a figure
+ *              built from ended months across months chosen by any other rule and the two
+ *              disagree at the edges.
+ *   'billed' — any month carrying an outstanding bill, whether or not it has closed. This is
+ *              a credit AGAINST THE FUTURE: a balance carried into next year lands on months
+ *              that have not happened, which is the whole point of carrying it.
  */
-export function monthCapacity({ alloc, direction = 'credit', dueThrough = 12 } = {}) {
+export function monthCapacity({ alloc, direction = 'credit', basis = 'ended', year, today = new Date() } = {}) {
   const owed = alloc?.owed || Array(12).fill(0);
   const coverage = alloc?.coverage || Array(12).fill(0);
   return Array.from({ length: 12 }, (_, i) => {
     if (direction === 'charge') return Infinity;
-    if (i + 1 > Number(dueThrough || 12)) return 0;
+    if (basis === 'ended' && !monthClosedForLogging(year, i + 1, today, 0)) return 0;
     return Math.max(0, round2(num(owed[i]) - num(coverage[i])));
   });
 }

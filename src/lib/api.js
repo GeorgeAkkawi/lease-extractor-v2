@@ -4287,12 +4287,12 @@ export async function settleTenantBalance({ leaseId, propertyId, year, choice, m
     return { refused: true, reason: 'not_applicable', message: pick?.why || 'That is not one of the ways this balance can be settled.' };
   }
 
-  // Only months that have COME DUE can take a credit — see `monthCapacity`. A past year is
-  // due in full; the running year is due through the current month, because rent falls on
-  // the 1st (the same boundary `ledgerRowSummary` uses to build `owesToDate`, which is the
-  // figure being settled).
+  // ⚠ ONLY MONTHS THAT HAVE ENDED can take a settlement credit, and `monthCapacity` applies
+  // that rule itself through the very function `tenantStanding` used to build `standing.owes`
+  // — so the amount and the months it is laid across are measured the same way. Deriving the
+  // eligible months here a second time is how a spread comes up a month short at the edge of
+  // a year and reports a shortfall nobody caused.
   const now = today instanceof Date ? today : new Date();
-  const dueThrough = y < now.getFullYear() ? 12 : y > now.getFullYear() ? 0 : now.getMonth() + 1;
   const amount = standing.owes || standing.inCredit;
   const inserts = [];
   let nextYearRows = null;
@@ -4300,13 +4300,13 @@ export async function settleTenantBalance({ leaseId, propertyId, year, choice, m
   if (choice === 'writeoff' || (choice === 'carry' && standing.owes)) {
     // They owe: credit the unpaid months back, earliest first.
     const spread = spreadAcrossMonths({
-      capacity: monthCapacity({ alloc: standing.alloc, direction: 'credit', dueThrough }),
+      capacity: monthCapacity({ alloc: standing.alloc, direction: 'credit', basis: 'ended', year: y, today: now }),
       amount,
     });
     if (spread.shortfall > 0.005) {
       return {
         refused: true, reason: 'no_room',
-        message: `Only ${money(spread.placed)} of ${money(amount)} could be placed — the months that have come due cannot absorb the rest. Settle the remainder in the year it belongs to.`,
+        message: `Only ${money(spread.placed)} of ${money(amount)} could be placed — the months that have ended cannot absorb the rest. Settle the remainder in the year it belongs to.`,
       };
     }
     for (const s of spread.rows) {
@@ -4339,8 +4339,12 @@ export async function settleTenantBalance({ leaseId, propertyId, year, choice, m
       const nextAlloc = nextRow
         ? allocatePayments({ owedByMonth: nextRow.schedule, payments: nextRow.payments, adjustments: nextRow.adjustments })
         : null;
+      // ⚠ `basis: 'billed'` HERE, and it is not a loosening — it is the other question. A
+      // credit carried into next year lands on months that have not happened yet, which is
+      // the entire point of carrying it. 'ended' is for forgiving the past; this is
+      // pre-crediting the future.
       const spread = nextAlloc
-        ? spreadAcrossMonths({ capacity: monthCapacity({ alloc: nextAlloc, direction: 'credit', dueThrough: 12 }), amount })
+        ? spreadAcrossMonths({ capacity: monthCapacity({ alloc: nextAlloc, direction: 'credit', basis: 'billed' }), amount })
         : { rows: [], placed: 0, shortfall: amount };
       if (spread.shortfall > 0.005) {
         return {
@@ -6503,12 +6507,52 @@ export const setLeaseSecurityDeposit = (leaseId, amount) =>
 // line's own year, the year of its own transaction date (the rule `statementMatch` uses to
 // derive it in the first place), then the fiscal year the landlord is looking at.
 // `bankTieOut` reports any pre-fix rows still carrying a null.
-export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null, year = null }) {
+export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null, year = null, month = null }) {
   const placeYear =
     Number(line?.year)
     || (line?.txn_date ? Number(String(line.txn_date).slice(0, 4)) : 0)
     || Number(year)
     || null;
+  // ⚠ RENT, AND UNTIL 2026-08-16 THIS WAS THE ONE THING THE NAG COULD NOT ANSWER. The picker
+  // offered expenses, income, a deposit, a transfer and leave-out; a deposit that was plainly
+  // a tenant's rent had no home, and the panel's own text told the landlord to *re-import the
+  // statement* — which means still having the PDF. George: *"an option for money not placed
+  // yet should be to record it as a payment for the next or previous month. sometimes tenants
+  // pay twice in the same month."*
+  //
+  // It writes exactly what the import path writes, and the three stamps are all load-bearing:
+  //   `import_id`   — the tie-out reads the books side BY IMPORT, so a payment without it is
+  //                   invisible there and the panel reports a difference it caused itself.
+  //   `import_hash` — the duplicate guard reads `payments.import_hash`, so re-importing the
+  //                   same statement later cannot book this money twice.
+  //   `source`      — 'import' because it IS real money off a bank statement. Stored, never
+  //                   inferred (0088); left to the column default it would read 'system' and
+  //                   become re-pricable by `resyncYearBillingToEstimate`.
+  //
+  // ⚠ `month` IS FREE CHOICE, not the transaction's own month, and that is the whole request:
+  // a cheque that cleared in March can be April's rent, and a tenant can pay twice in one
+  // month. `allocatePayments` sums two tags on the same month and settles a tagged month at
+  // whatever arrived; passing null leaves it untagged, and the pool fills the months still
+  // owed from January. All three behaviours already existed — only the way in was missing.
+  if (kind === 'payment') {
+    if (!leaseId) return { line, entry: null, refused: true, message: 'Pick which tenant this payment is from.' };
+    const m = Number(month);
+    const inv = await ensureInvoice(leaseId, line.property_id, placeYear);
+    const pay = await recordPayment({
+      invoice_id: inv.id,
+      lease_id: leaseId,
+      amount: Math.abs(Number(line.amount) || 0),
+      paid_date: line.txn_date || null,
+      method: 'other',
+      note: line.description ? String(line.description).slice(0, 200) : null,
+      period_month: m >= 1 && m <= 12 ? m : null,
+      import_id: line.import_id || null,
+      import_hash: line.line_hash || null,
+      source: 'import',
+    });
+    const updated = await setLineDisposition(line.id, 'rent', null, { kind: 'payment', id: pay.id });
+    return { line: updated, entry: pay };
+  }
   if (kind === 'transfer') {
     // A transfer writes nothing — the disposition IS the record, exactly as an
     // ignore's is. There is no row to create and none to reverse.

@@ -44,16 +44,61 @@ const sched = (owedPerMonth) => Object.fromEntries(
 const AUG = new Date(`${Y}-08-16T12:00:00`);
 
 describe('where a tenant stands', () => {
-  // ⚠ NOT `billed − received`. On a year still running that would offer to write off rent
-  // the tenant has every right not to have paid yet.
-  it('counts only the months that have come due', () => {
+  // ⚠ TWO FIGURES, TWO QUESTIONS. `closing` is the receivable and counts every month that has
+  // fallen DUE (rent falls on the 1st, so August counts on 16 August). `owes` is what can be
+  // ACTED on and waits for the month to END — because the bank statement that would settle
+  // August does not exist yet. Collapsing them is what put "owes $X · Settle up…" on every
+  // tenant on the 1st of every month (George: "why does it say every tenant owes something?").
+  it('separates the receivable from what can be acted on', () => {
     const row = { lease_id: 'l1', tenant_name: 'T', schedule: sched(1000), payments: [] };
     const s = tenantStanding({ row, year: Y, today: AUG });
     expect(s.billed).toBe(12000);       // the whole year is billed…
     expect(s.received).toBe(0);
-    expect(s.closing).toBe(8000);       // …but only Jan–Aug is owed today
-    expect(s.owes).toBe(8000);
+    expect(s.closing).toBe(8000);       // …Jan–Aug has fallen due…
+    expect(s.owes).toBe(7000);          // …and only Jan–Jul has ENDED
+    expect(s.provisional).toBe(1000);   // August, stated rather than hidden
+    expect(s.judgedThrough).toBe(7);
     expect(s.inCredit).toBe(0);
+    // The receivable still exists, so a year-end statement must report it.
+    expect(s.openBalance).toBe(true);
+  });
+
+  // The case that made George ask. Nothing is wrong with this tenant.
+  it('shows NOTHING to act on for a tenant whose only gap is the month still running', () => {
+    const paid = Array.from({ length: 7 }, (_, i) => ({
+      id: `p${i}`, amount: 1000, period_month: i + 1, paid_date: `${Y}-${String(i + 1).padStart(2, '0')}-03`,
+    }));
+    const row = { lease_id: 'l1', tenant_name: 'T', schedule: sched(1000), payments: paid };
+    const s = tenantStanding({ row, year: Y, today: AUG });
+    expect(s.owes).toBe(0);
+    expect(s.settled).toBe(true);          // → no balance chip, no Settle up
+    expect(s.provisional).toBe(1000);      // August is genuinely owed…
+    expect(s.closing).toBe(1000);          // …and still on the receivable
+    expect(s.openBalance).toBe(true);      // → the workbook and close-year still report it
+  });
+
+  // ⚠ A PAST YEAR HAS NO RUNNING MONTH, so the two figures coincide — which is when a
+  // settlement normally happens, and why the split costs nothing at year end.
+  it('reads the same both ways once the year is over', () => {
+    const row = { lease_id: 'l1', tenant_name: 'T', schedule: sched(1000), payments: [] };
+    const s = tenantStanding({ row, year: Y - 1, today: AUG });
+    expect(s.closing).toBe(12000);
+    expect(s.owes).toBe(12000);
+    expect(s.provisional).toBe(0);
+    expect(s.judgedThrough).toBe(12);
+  });
+
+  // ⚠ CREDIT DOES NOT WAIT. Money you are already holding is not an accusation — refunding it
+  // needs no month to close. Only the owing side asserts something about someone else.
+  it('does not make a credit wait for a month to end', () => {
+    const row = {
+      lease_id: 'l1', tenant_name: 'T', schedule: sched(1000),
+      payments: [{ id: 'lump', amount: 13000, paid_date: `${Y}-08-03` }],
+    };
+    const s = tenantStanding({ row, year: Y, today: AUG });
+    expect(s.inCredit).toBe(1000);
+    expect(s.settled).toBe(false);
+    expect(settleChoicesFor(s).find((c) => c.key === 'refund').ok).toBe(true);
   });
 
   it('reads an overpayment as credit, not as a negative debt by another name', () => {
@@ -94,9 +139,10 @@ describe('where a tenant stands', () => {
 describe('the spread — the per-month cap, restated as capacity', () => {
   it('fills earliest first and never exceeds a month’s own outstanding', () => {
     const alloc = allocatePayments({ owedByMonth: sched(1000), payments: [{ id: 'p', amount: 1000, period_month: 1, paid_date: `${Y}-01-03` }] });
-    const cap = monthCapacity({ alloc, direction: 'credit', dueThrough: 8 });
+    const cap = monthCapacity({ alloc, direction: 'credit', basis: 'ended', year: Y, today: AUG });
     expect(cap[0]).toBe(0);                        // January is paid — nothing to forgive
     expect(cap[1]).toBe(1000);
+    expect(cap[7]).toBe(0);                        // August has not ENDED
     expect(cap[8]).toBe(0);                        // September has not come due
     const out = spreadAcrossMonths({ capacity: cap, amount: 2500 });
     expect(out.rows).toEqual([{ month: 2, amount: 1000 }, { month: 3, amount: 1000 }, { month: 4, amount: 500 }]);
@@ -108,14 +154,29 @@ describe('the spread — the per-month cap, restated as capacity', () => {
   // watching the balance move partway, and being told nothing about the rest.
   it('reports a shortfall rather than placing what it can and calling it done', () => {
     const alloc = allocatePayments({ owedByMonth: sched(1000), payments: [] });
-    const out = spreadAcrossMonths({ capacity: monthCapacity({ alloc, direction: 'credit', dueThrough: 2 }), amount: 5000 });
+    const feb = new Date(`${Y}-03-02T12:00:00`);   // only Jan and Feb have ended
+    const out = spreadAcrossMonths({
+      capacity: monthCapacity({ alloc, direction: 'credit', basis: 'ended', year: Y, today: feb }), amount: 5000,
+    });
     expect(out.placed).toBe(2000);
     expect(out.shortfall).toBe(3000);
   });
 
   it('leaves a charge uncapped — a charge only ever increases what a month owes', () => {
-    const cap = monthCapacity({ alloc: { owed: Array(12).fill(0), coverage: Array(12).fill(0) }, direction: 'charge' });
+    const cap = monthCapacity({
+      alloc: { owed: Array(12).fill(0), coverage: Array(12).fill(0) }, direction: 'charge', year: Y, today: AUG,
+    });
     expect(spreadAcrossMonths({ capacity: cap, amount: 9999 }).rows).toEqual([{ month: 1, amount: 9999 }]);
+  });
+
+  // ⚠ THE OTHER QUESTION, not a loosening. A credit carried into next year lands on months
+  // that have not happened — which is the entire point of carrying it.
+  it('lets a credit land on future months when the basis is what was billed', () => {
+    const alloc = allocatePayments({ owedByMonth: sched(1000), payments: [] });
+    const ended = monthCapacity({ alloc, direction: 'credit', basis: 'ended', year: Y, today: AUG });
+    const billed = monthCapacity({ alloc, direction: 'credit', basis: 'billed' });
+    expect(ended[11]).toBe(0);      // December has not ended
+    expect(billed[11]).toBe(1000);  // …but it is billed, so a carried credit can sit there
   });
 
   it('puts a refund on the month that HOLDS the money, not on December', () => {

@@ -127,7 +127,7 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   // One resolved decision per row: what Save would actually write.
   const resolved = useMemo(() => {
     if (!matched) return [];
-    return matched.rows.map((row, i) => {
+    const list = matched.rows.map((row, i) => {
       const ov = overrides[i] || {};
       const pick = ov.pick != null ? resolvePick(ov.pick) : null;
       const kind = pick ? pick.kind : row.kind === 'unmatched' ? 'ignore' : row.kind;
@@ -197,6 +197,23 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         ignoreReason: ov.reason || (row.duplicate ? 'duplicate' : null),
       };
     });
+    // ⚠ TWO LINES ON ONE STATEMENT FOR ONE TENANT-MONTH — the case George named: *"sometimes
+    // tenants pay twice in the same month."* `alreadyPaid` above only catches a month the
+    // LEDGER already shows covered, so two deposits on the SAME statement for a month with
+    // nothing recorded yet sail through unwarned and settle it twice over. A second pass here
+    // rather than a prop threaded through Group → ReviewRow: the flag belongs to the row, and
+    // every surface that reads a row gets it without being told to.
+    const perMonth = new Map();
+    for (const r of list) {
+      if (r.kind !== 'tenant' || !r.tenant || !r.month || r.toRecon || !r.checked) continue;
+      const k = `${r.tenant.lease_id}:${r.month}`;
+      perMonth.set(k, (perMonth.get(k) || 0) + 1);
+    }
+    for (const r of list) {
+      r.doubled = !!(r.kind === 'tenant' && r.tenant && r.month && !r.toRecon && r.checked
+        && (perMonth.get(`${r.tenant.lease_id}:${r.month}`) || 0) > 1);
+    }
+    return list;
   }, [matched, overrides, ctx]);
 
   // The completeness tie-out, live as the landlord works: every transcribed line has a
@@ -1211,11 +1228,37 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             {' '}If this cheque was for a different month, change <strong>Month</strong> →.
           </div>
         )}
+        {/* The within-statement half of the same warning: two ticked lines for one tenant and
+            one month. Nothing on the ledger is covered yet, so `alreadyPaid` above stays quiet
+            — but saving both still settles that month twice over. Same fix, same column. */}
+        {r.doubled && !r.alreadyPaid && !dupe && (
+          <div className="note-msg warn" style={{ marginTop: 4 }}>
+            Another line on this statement is also going to {MONTH_NAMES[r.month - 1]} for this tenant.
+            {' '}If one of them was for a different month, change <strong>Month</strong> →.
+          </div>
+        )}
         {r.row.collision && !r.alreadyPaid && (
           <div className="note-msg warn" style={{ marginTop: 4 }}>possibly already recorded by hand — left unchecked</div>
         )}
       </td>
       <td>
+        {/* ⚠ AN UNMATCHED DEPOSIT SHOWS THE MONTH BOX TOO, greyed, and it is the row that most
+            needs it. The control was gated on `kind === 'tenant'`, so a deposit the matcher did
+            not recognize — a second payment in one month, a cheque for next month, a tenant
+            paying early — had an EMPTY cell, and nothing on screen suggested a month could be
+            set at all until after a tenant had been picked. George: *"is this an option in the
+            initial bank statement screening? so if it happens again the user can fix the problem
+            early."* It is, and this is what made it invisible on exactly the wrong rows. */}
+        {/* ⚠ `kind === 'ignore'` AND NOT PICKED is what an unrecognized deposit resolves to —
+            the mapping above turns `row.kind === 'unmatched'` into `'ignore'`, so testing for
+            'unmatched' here matches nothing. A row the landlord explicitly set to Ignore has
+            `picked` true and is left alone. */}
+        {isIn && r.kind === 'ignore' && !r.picked && (
+          <select className="text-input" value="" disabled
+            title="Pick a tenant on the left and this fills in with the month from the date the bank printed — then change it if the money was for a different month.">
+            <option value="">— pick a tenant first</option>
+          </select>
+        )}
         {isIn && r.kind === 'tenant' && (
           r.toRecon ? (
             <span className="badge info" title="Matches this tenant's open reconciliation true-up — records against that invoice, no month">true-up</span>

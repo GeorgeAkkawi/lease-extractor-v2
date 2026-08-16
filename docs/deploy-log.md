@@ -12,6 +12,115 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **ROUND 1 of five questions: the nag could not answer "this is rent", the tie-out
+  named a bucket instead of a line, and every tenant was accused of owing money on the 1st of every
+  month** (George: *"why does it say every tenant owes something?"* · *"an option for money not placed
+  yet should be to record it as a payment for the next or previous month. sometimes tenants pay twice
+  in the same month"* · *"is this an option in the initial bank statement screening?"* · *"if the
+  moneys dont add up on the bank tie out it should show where the discrepancy is happening"*)
+  - **Cloudflare version `5bf10762-2afb-40f4-a01e-850c458d36a3`**, on top of `bdfd180e`. No migration,
+    no edge function, no view, no feature key. Tests **1884 across 181 files** (was 1875): +9.
+
+  ### 1. ⚠ EVERY TENANT OWED SOMETHING, and CLAUDE.md §4 had already written the rule I broke
+
+  `tenantStanding` was built on `owesToDate`, which counts every month that has fallen DUE. Rent falls
+  due on the 1st, so on 16 August every tenant owes August — because August's bank statement cannot
+  exist yet. §4 states it outright: *"`monthsBehind` WAITS FOR THE MONTH TO END; `owesToDate` DOES NOT
+  … What waits is the **accusation**."* The receivable was right; hanging an **action** on it was not.
+
+  George's rule — *"shouldn't it only show when their projected rent is above or below what they
+  actually paid?"* — needed one more ingredient, which months can be judged, and the codebase already
+  owned that boundary. **`tenantStanding` now carries TWO figures**, and the names say which question
+  each answers:
+  - **`closing`** — the receivable, every month fallen due. What the workbook and the close-year
+    confirm read, because a year-end statement must not hide a balance merely because this month's
+    statement has not arrived. `openBalance` is its predicate; `propertyStandings.open` uses it.
+  - **`owes`** — what can be ACTED on, over months that have **ENDED**
+    (`monthClosedForLogging(y, m, today, 0)` — the same call behind the `4 mo behind` badge, the gold
+    overdue cell and both statement reminders, with no grace so the four can never disagree).
+    `settled` is its predicate; the Ledger's chip and Settle up read it.
+  - **`provisional`** carries the difference so it is stated rather than mysterious, in the tooltip.
+  - ⚠ **`inCredit` DOES NOT WAIT, deliberately.** Money you are already holding is not an accusation —
+    refunding it needs no month to close. Only the owing side asserts something about someone else.
+  - `monthCapacity` gains **`basis`**, and the two values are different questions rather than a
+    strict/loose pair: `'ended'` for forgiving the past (measured the same way as the amount, so a
+    spread can never come up a month short at a year's edge) and `'billed'` for pre-crediting the
+    future, which is what a balance carried into next year does.
+  - **Watched live:** Bright Coffee (paid Jan–Jul, August unlogged) went from `owes $6,500 · Settle
+    up…` to **nothing**. City Dental went from `$50,900` to **`$41,750`** — exactly August's $9,150
+    held back — and keeps its `4 mo behind` badge.
+
+  ### 2. THE NAG COULD NOT ANSWER "THIS IS RENT"
+
+  The "Money not yet placed" picker offered expenses, income, a deposit, a transfer and leave-out. A
+  deposit that was plainly a tenant's rent had **no home**, and the panel's own text said *"re-import
+  that statement to place it"* — which means still having the PDF. Flagged twice by me and left.
+  - **`placeUnplacedLine` gains a `payment` kind**: `ensureInvoice` → `recordPayment` → disposition
+    `rent` with a ref to the payment. Three stamps, each load-bearing: **`import_id`** (the tie-out
+    reads the books side BY IMPORT — without it the panel reports a difference it caused itself),
+    **`import_hash`** (the duplicate guard, so a later re-import cannot book it twice) and
+    **`source: 'import'`** (stored, never inferred — left to the column default it reads `'system'`
+    and becomes re-pricable by `resyncYearBillingToEstimate`, 0088).
+  - **The month is a SECOND step, and free choice** — the point of the request. Picking a tenant opens
+    a month box defaulted to the day the bank printed, `— (lump)` included. `allocatePayments` already
+    sums two tags on one month and settles a tagged month at whatever arrived; only the way in was
+    missing.
+  - ⚠ **The invalidation set had to grow.** Rent is the only destination on that panel that moves the
+    GRID — every other one writes a not-billed expense or an income row. Without `propertyRentRoll` /
+    `invoices` / `payments` the money lands and the month goes on reading unpaid until a reload.
+  - **Watched live:** the $10,416.67 J Pak deposit → Bright Coffee → month changed **March → April** →
+    April reads `✓ +$10,417`, the row goes to 108% / `in credit $6,500.00`, and the tie-out's
+    `Tenant rent · 1 line · $10,416.67 · $10,416.67 · payments recorded ✓`.
+
+  ### 3. THE EARLY FIX ALREADY EXISTED — two things blunted it
+
+  George: *"is this an option in the initial bank statement screening?"* Yes: the review screen has
+  carried a **"For month · editable"** column since 2026-08-13, built from his own words about tenants
+  paying early, with a warning when the month is already recorded as paid. Two gaps, both small:
+  - **⚠ The month box was gated on `kind === 'tenant'`**, so an **unrecognized** deposit — precisely
+    the row most likely to be a second payment or an early one — had an EMPTY cell, and nothing on
+    screen suggested a month could be set until after a tenant was picked. It now shows a disabled
+    `— pick a tenant first`. ⚠ And the first draft of that tested `kind === 'unmatched'`, which
+    matches nothing: the resolver maps an unmatched row to `'ignore'`. Caught in the browser, not in
+    the editor.
+  - **The double-pay warning only fired against the LEDGER.** Two ticked lines for one tenant-month on
+    the SAME statement — George's *"sometimes tenants pay twice in the same month"* — sailed through
+    unwarned and settled the month twice over. A second pass in the `resolved` memo sets `doubled` on
+    the row (not a prop threaded through Group → ReviewRow: the flag belongs to the row, so every
+    surface gets it without being told). Watched live: both lines warn, and re-tagging one to April
+    clears both.
+
+  ### 4. THE TIE-OUT NAMES THE LINE, NOT THE BUCKET
+
+  *"Property expenses are $800 short"* says something is wrong; *"the Home Depot line of 22 March
+  produced nothing"* says what to do. Every decided line stores what it produced (`ref_kind`/`ref_id`,
+  0076), so a diagnostic pass attributes the difference. **⚠ It does NOT break the rule at the top of
+  `bankTieOut.js`** — the totals still come from two independent columns; this runs afterwards and only
+  *attributes*. Deriving the total from the lines would balance every time; explaining it from them is
+  what the refs were stored for.
+  - **⚠ TWO TIERS, and conflating them accuses lines that landed perfectly well** — which is exactly
+    what my first draft did, caught by my own existing test. **PROVEN**: the line stamped a ref and
+    that row is gone, or is filed under another year (two different faults, two different sentences —
+    reporting the second as the first sends the landlord hunting for something sitting right there).
+    **UNTRACEABLE**: no ref at all, so it cannot be followed either way. Only the proven tier is ever
+    presented as the cause, and the sentence never claims to have accounted for more than the
+    difference.
+
+  ### Files
+  `src/lib/settle.js` (the two figures, `basis`) · `src/lib/api.js` (`placeUnplacedLine` payment
+  branch, the capacity call sites) · `src/lib/bankTieOut.js` (attribution) · `src/pages/LedgerPage.js`
+  (the chip, the rent picker + month step, the invalidation set, the panel copy) ·
+  `src/components/StatementReview.js` (the unmatched month affordance, `doubled`) · tests:
+  `settleBalance.test.js` (+6), `bankTieOut.test.js` (+5).
+
+  ### Flags / not done
+  - **Rounds 2 and 3 of the plan are outstanding**: the tie-out rewrite + rename, the bank→sheet map,
+    settlement memos and one-click undo, the `MonthDetailPanel` implication that is **inverted for a
+    credit**, and the year-boundary work (close-year offers the settlement; the snapshot records it;
+    the workbook's uncollected line).
+  - **A placed expense is still forced `billable: false`** — it reaches Money out and no tenant ever
+    reimburses it. Deliberate since 0076, and worth asking about at the picker; Round 2.
+
 - **2026-08-16** — **The bank tie-out was invisible on every property that had not imported a
   statement, which on live data is all of them** (George, for the second time: *"also i still
   dont see the bank tie out button"*)

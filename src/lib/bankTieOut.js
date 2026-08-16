@@ -41,6 +41,16 @@ const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 const abs2 = (n) => round2(Math.abs(num(n)));
 const money = (n) => `$${round2(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+// "Mar 22" from an ISO day, without pulling `format.js` into a file that is otherwise pure
+// over its arguments. Slices the string rather than parsing it — a Date would apply the
+// browser's timezone and can shift the day backwards for anyone west of UTC.
+const DAY_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const fmtDay = (iso) => {
+  const s = String(iso || '');
+  const m = Number(s.slice(5, 7));
+  const d = Number(s.slice(8, 10));
+  return m >= 1 && m <= 12 && d >= 1 ? `${DAY_MONTHS[m - 1]} ${d}` : s.slice(0, 10);
+};
 
 /**
  * The fiscal year a BOOKS row belongs to, by the same rule `statementMatch` applies to a
@@ -159,6 +169,60 @@ export function bankTieOut({
     refund: 0,
   };
 
+  // ── Which LINE is the difference? ───────────────────────────────────────────────────
+  //
+  // George: *"if the moneys dont add up on the bank tie out it should show where the
+  // discrepancy is happening."* Naming the bucket and the amount tells him something is
+  // wrong; naming the line tells him what to do.
+  //
+  // ⚠ THIS DOES NOT BREAK THE RULE AT THE TOP OF THIS FILE. The difference is still computed
+  // from the two independent columns — this pass runs afterwards and only ATTRIBUTES it.
+  // Deriving the total from the lines would balance every time and prove nothing; explaining
+  // it from the lines is exactly what `ref_kind` / `ref_id` were stored for (0076).
+  //
+  // Existence is checked against the UNSCOPED rows on purpose, so "the row is gone" and "the
+  // row is filed under another year" come back as different sentences. They are different
+  // faults with different fixes, and reporting the second as the first sends the landlord
+  // looking for something that is sitting right there.
+  const byId = new Map();
+  for (const [rowsOf, kind] of [[payments, 'payment'], [expenseItems, 'cam'], [incomeRows, 'income']]) {
+    for (const r of rowsOf || []) if (r?.id) byId.set(String(r.id), { row: r, kind });
+  }
+  // Which dispositions PROMISED a money row. A deposit's ref points at a lease and a transfer
+  // writes nothing, so neither can be missing from a money table.
+  const PRODUCES = { rent: 'payment', expense: 'expense line', owner: 'expense line', other_income: 'income row' };
+  // ⚠ TWO TIERS, AND CONFLATING THEM ACCUSES LINES THAT LANDED PERFECTLY WELL.
+  //   PROVEN      — the line stamped a `ref_id` and that row is gone, or is filed under
+  //                 another year. The line itself is the evidence; nothing is being guessed.
+  //   UNTRACEABLE — the line carries no `ref_id` at all, so it cannot be followed either way.
+  //                 That is worth saying (0076 stores the ref precisely so a line CAN be
+  //                 traced) but it is NOT proof the money is missing — an older row, or one
+  //                 written before the ref was stamped, looks identical to a failed write.
+  // Only the proven tier is ever presented as the cause of a figure.
+  const suspects = {};
+  const untraceable = {};
+  for (const l of lines || []) {
+    const key = l?.disposition || 'unclassified';
+    const promised = PRODUCES[key];
+    if (!promised) continue;
+    const entry = {
+      id: l.id, date: l.txn_date || null, description: l.description || null, amount: abs2(l.amount),
+    };
+    if (!l?.ref_id) {
+      (untraceable[key] ||= []).push({ ...entry, why: `carries no link to the ${promised} it produced, so it cannot be traced either way` });
+      continue;
+    }
+    const hit = byId.get(String(l.ref_id));
+    if (!hit) {
+      (suspects[key] ||= []).push({ ...entry, why: `the ${promised} it produced has since been deleted` });
+    } else if (!inYear(hit.row, year)) {
+      (suspects[key] ||= []).push({ ...entry, why: `its ${promised} is filed under FY ${rowFiscalYear(hit.row)}, so it counts in that year and not this one` });
+    }
+  }
+  const byAmount = (a, b) => b.amount - a.amount || String(a.date).localeCompare(String(b.date));
+  for (const k of Object.keys(suspects)) suspects[k].sort(byAmount);
+  for (const k of Object.keys(untraceable)) untraceable[k].sort(byAmount);
+
   const buildSide = (dir, defs) => {
     const rows = [];
     const claimed = new Set([...defs.map((d) => d.key), ...NOWHERE_KEYS, 'unclassified']);
@@ -178,6 +242,10 @@ export function bankTieOut({
         booksLabel: d.booksLabel || null,
         nowhere: d.nowhere || null,
         diff: d.nowhere ? 0 : round2(b.amount - bookAmt),
+        // The lines this bucket's difference can be pinned on, biggest first — and the ones
+        // that merely cannot be followed, kept apart from them.
+        suspects: suspects[d.key] || [],
+        untraceable: untraceable[d.key] || [],
       });
     }
     // Transfers and deliberate exclusions, as one line.
@@ -258,11 +326,35 @@ export function bankTieOut({
   for (const [side, s] of [['in', moneyIn], ['out', moneyOut]]) {
     for (const r of s.rows) {
       if (!r.booksLabel || Math.abs(r.diff) <= 0.005) continue;
-      differences.push(
-        r.diff > 0
-          ? `${r.label}: the statements show ${money(r.diff)} more than the books hold — ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'} against ${money(r.books)} in ${r.booksLabel}. A line was filed but the record it promised is not there: it was deleted by hand afterwards, or the write failed at import.`
-          : `${r.label}: the books hold ${money(-r.diff)} more than these statements show — ${money(r.books)} in ${r.booksLabel} against ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'}. Something was recorded against one of these imports that no line on them accounts for.`
-      );
+      // ⚠ NAME THE LINE, not just the bucket. "Property expenses are $800 short" tells the
+      // landlord something is wrong; "the Home Depot line of 22 March produced nothing" tells
+      // them what to do about it. When the suspects account for the whole difference the
+      // generic guess at a cause is dropped — it would be guessing at something now known.
+      const name = (x) => `${x.date ? fmtDay(x.date) : 'undated'} · ${x.description || 'this line'} · ${money(x.amount)} — ${x.why}`;
+      const named = (r.suspects || []).map(name);
+      const accounted = round2((r.suspects || []).reduce((t, x) => t + x.amount, 0));
+      const gap = round2(Math.abs(r.diff) - accounted);
+      const head = r.diff > 0
+        ? `${r.label}: the statements show ${money(r.diff)} more than the books hold — ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'} against ${money(r.books)} in ${r.booksLabel}.`
+        : `${r.label}: the books hold ${money(-r.diff)} more than these statements show — ${money(r.books)} in ${r.booksLabel} against ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'}.`;
+      let tail;
+      if (named.length && Math.abs(gap) <= 0.05) {
+        tail = ` It is ${named.length === 1 ? 'this line' : 'these lines'}: ${named.join(' · ')}`;
+      } else if (named.length) {
+        tail = ` ${money(accounted)} of it is ${named.length === 1 ? 'this line' : 'these lines'}: ${named.join(' · ')} The remaining ${money(Math.abs(gap))} is not explained by any line.`;
+      } else if (r.diff > 0) {
+        tail = ' No line names itself as the cause, so the record was removed after the import stamped it, or was never linked. Check the expense and payment lists for something deleted.';
+      } else {
+        tail = ' Something was recorded against one of these imports that no line on them accounts for.';
+      }
+      // ⚠ STATED SEPARATELY AND NEVER AS THE CAUSE. A line with no link cannot be followed in
+      // either direction — reporting it as the missing money would accuse lines that landed
+      // perfectly well, which is exactly what the first draft of this did.
+      const blind = r.untraceable || [];
+      if (blind.length) {
+        tail += ` ${blind.length} other line${blind.length === 1 ? '' : 's'} on these statements (${money(round2(blind.reduce((t, x) => t + x.amount, 0)))}) carr${blind.length === 1 ? 'ies' : 'y'} no link to what ${blind.length === 1 ? 'it' : 'they'} produced, so ${blind.length === 1 ? 'it' : 'they'} cannot be traced either way.`;
+      }
+      differences.push(head + tail);
       void side;
     }
   }
