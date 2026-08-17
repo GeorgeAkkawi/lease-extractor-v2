@@ -4,6 +4,7 @@
 // summary block + a commercial rent-roll table. No AI, no network: pure
 // formatting that runs in the browser. ExcelJS is loaded lazily by the caller.
 import { saveWorkbook, fileSlug } from './download';
+import { loadModule } from './lazyModule';
 
 // ---- column geometry (A..N) -------------------------------------------------
 // Suite | Tenant | Size(SF,%NRSF) | Annual Rent(Annual,PSF,%Total) |
@@ -271,7 +272,7 @@ function addPropertySheet(wb, usedNames, property, leases, now) {
  * instead of the generic portfolio name.
  */
 export async function downloadRentRollXlsx({ leases = [], properties = [], fileLabel } = {}) {
-  const mod = await import('exceljs/dist/exceljs.min.js');
+  const mod = await loadModule(() => import('exceljs/dist/exceljs.min.js'), 'the spreadsheet builder');
   const ExcelJS = mod.default || mod;
   const now = new Date();
 

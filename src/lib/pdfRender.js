@@ -14,11 +14,14 @@
 //
 // The module is cached after the first load, so opening a second document is instant.
 
+import { loadModule } from './lazyModule';
+
 let cached = null;
 
 export async function loadPdfjs() {
   if (cached) return cached;
-  const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+  // A deploy that lands while this page is open deletes this chunk — see lazyModule.js.
+  const pdfjs = await loadModule(() => import('pdfjs-dist/build/pdf.mjs'), 'the document viewer');
   pdfjs.GlobalWorkerOptions.workerSrc = new URL(
     'pdfjs-dist/build/pdf.worker.min.mjs',
     import.meta.url,

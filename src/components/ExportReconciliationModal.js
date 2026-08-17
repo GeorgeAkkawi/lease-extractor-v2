@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getTenantShares } from '../lib/api';
 import { downloadReconciliationXlsx } from '../lib/reconciliationExcel';
 import { useModalA11y } from './modalA11y';
+import StaleBuildNotice from './StaleBuildNotice';
 
 // Pick which tenants to export, then download a year-end reconciliation workbook
 // (one tab per tenant, itemized actual vs estimated CAM & tax). No AI, no charge —
@@ -16,7 +17,8 @@ export default function ExportReconciliationModal({ propertyId, year, propertyNa
   // Default: every tenant selected.
   const [picked, setPicked] = useState(null); // null = "all", else a Set of lease ids
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
+  // The ERROR OBJECT, not its message — StaleBuildNotice needs to know which kind it is.
+  const [err, setErr] = useState(null);
 
   const isOn = (id) => (picked ? picked.has(id) : true);
   const toggle = (id) => {
@@ -29,12 +31,12 @@ export default function ExportReconciliationModal({ propertyId, year, propertyNa
   const selectedIds = shares.filter((s) => isOn(s.lease_id)).map((s) => s.lease_id);
 
   async function download() {
-    setErr(''); setBusy(true);
+    setErr(null); setBusy(true);
     try {
       await downloadReconciliationXlsx({ propertyId, year, leaseIds: selectedIds });
       onClose();
     } catch (e) {
-      setErr(e?.message || 'Could not build the workbook — please try again.');
+      setErr(e);
     } finally {
       setBusy(false);
     }
@@ -66,7 +68,7 @@ export default function ExportReconciliationModal({ propertyId, year, propertyNa
               ))}
             </div>
           )}
-          {err && <p className="note-msg danger" style={{ marginTop: 10 }}>{err}</p>}
+          <StaleBuildNotice error={err} />
         </div>
         <div className="modal-foot">
           <div className="modal-actions" style={{ justifyContent: 'flex-end', gap: 10 }}>

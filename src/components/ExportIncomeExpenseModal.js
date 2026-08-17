@@ -4,6 +4,7 @@ import { buildIncomeExpense } from '../lib/incomeExpense';
 import { downloadIncomeExpenseXlsx } from '../lib/incomeExpenseExcel';
 import { money } from '../lib/format';
 import { useModalA11y } from './modalA11y';
+import StaleBuildNotice from './StaleBuildNotice';
 
 // The one workbook a landlord hands someone — one per entity per year.
 //
@@ -21,7 +22,8 @@ import { useModalA11y } from './modalA11y';
 export default function ExportIncomeExpenseModal({ corporationId, corporationName, year, onClose }) {
   const modalRef = useModalA11y(onClose);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
+  // The ERROR OBJECT, not its message — StaleBuildNotice needs to know which kind it is.
+  const [err, setErr] = useState(null);
 
   const { data: pkg, isLoading, isError } = useQuery({
     queryKey: ['incomeExpense', corporationId, year],
@@ -29,12 +31,12 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
   });
 
   async function download() {
-    setErr(''); setBusy(true);
+    setErr(null); setBusy(true);
     try {
       await downloadIncomeExpenseXlsx({ corporationId, corporationName, year, prebuilt: pkg });
       onClose();
     } catch (e) {
-      setErr(e?.message || 'Could not build the workbook — please try again.');
+      setErr(e);
     } finally {
       setBusy(false);
     }
@@ -147,7 +149,7 @@ export default function ExportIncomeExpenseModal({ corporationId, corporationNam
             </>
           )}
 
-          {err && <p className="note-msg danger" style={{ marginTop: 12 }}>{err}</p>}
+          <StaleBuildNotice error={err} />
         </div>
         <div className="modal-foot">
           <button className="secondary" onClick={onClose}>Close</button>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { dropToPdfPoint, pdfPointToBox, DEFAULT_SIG_WIDTH_PT, sigHeight } from '../lib/signPlacement';
+import { loadModule } from '../lib/lazyModule';
 
 // The document, with signatures on it. Used in exactly two places and it is the same
 // component in both, which is what keeps drag-to-sign from being two builds:
@@ -61,7 +62,7 @@ export default function PdfSignCanvas({
     let live = true;
     (async () => {
       try {
-        const { openPdf } = await import('../lib/pdfRender');
+        const { openPdf } = await loadModule(() => import('../lib/pdfRender'), 'the document viewer');
         const pdf = await openPdf(url);
         if (!live) return;
         pdfRef.current = pdf;
@@ -86,7 +87,7 @@ export default function PdfSignCanvas({
     const wrap = wrapRef.current;
     if (!pdf || !canvas || !wrap) return;
     try {
-      const { renderPage } = await import('../lib/pdfRender');
+      const { renderPage } = await loadModule(() => import('../lib/pdfRender'), 'the document viewer');
       const width = Math.max(240, wrap.clientWidth);
       setGeom(await renderPage(pdf, pageNum, canvas, width));
     } catch {

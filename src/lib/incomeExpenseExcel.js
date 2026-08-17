@@ -18,6 +18,7 @@
 // structure: the three packages this replaced ran to five sheets each because each was
 // arguing with a form. This one is a list of what came in and what went out.
 import { saveWorkbook, fileSlug } from './download';
+import { loadModule } from './lazyModule';
 import { xlsxSheet, xlsxPen, XLSX_PALETTE } from './xlsx';
 import { buildIncomeExpense, MONTHS } from './incomeExpense';
 
@@ -553,7 +554,7 @@ function addProperty(wb, p, year, used) {
 
 export async function downloadIncomeExpenseXlsx({ corporationId, corporationName, year, prebuilt = null } = {}) {
   const pkg = prebuilt || (await buildIncomeExpense(corporationId, year));
-  const ExcelJS = (await import('exceljs')).default;
+  const ExcelJS = (await loadModule(() => import('exceljs'), 'the spreadsheet builder')).default;
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Amlak';
 

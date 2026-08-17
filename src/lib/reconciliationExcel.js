@@ -3,6 +3,7 @@
 // formatting over the live figures from reconciliationData.js (no AI, no network of
 // its own). ExcelJS is imported lazily so it stays out of the initial page load.
 import { saveWorkbook, fileSlug } from './download';
+import { loadModule } from './lazyModule';
 import { buildReconciliationReport } from './reconciliationData';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -285,7 +286,7 @@ function addTenantSheet(wb, used, t, now) {
  */
 export async function downloadReconciliationXlsx({ propertyId, year, leaseIds = null } = {}) {
   const report = await buildReconciliationReport({ propertyId, year });
-  const mod = await import('exceljs/dist/exceljs.min.js');
+  const mod = await loadModule(() => import('exceljs/dist/exceljs.min.js'), 'the spreadsheet builder');
   const ExcelJS = mod.default || mod;
   const now = new Date();
 

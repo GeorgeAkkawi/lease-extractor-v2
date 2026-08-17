@@ -12,6 +12,95 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **"Failed to fetch dynamically imported module" — diagnosed against the live
+  site, and the app now says what actually happened.** A deploy that lands while a tab is open
+  deletes the chunks that tab hasn't loaded yet; the next Export said so in Chrome's words.
+  Cloudflare version **`1bd8ee7a-e518-4f67-9164-182cd015b2bb`** (on top of `13e0cd48`).
+
+  George: *"i got a Failed to fetch dynamically imported module:
+  https://www.amlakre.com/assets/exceljs.min-DjXlhIcS.js when trying to import sams nails on the
+  export reconciliation and for income and expenses"*.
+
+  ### ROOT CAUSE — measured, not guessed
+
+  Nothing was wrong with Sam Nails, the figures, or the workbook code. Three `curl`s settled it:
+
+  | URL | status | content-type | size |
+  |---|---|---|---|
+  | `exceljs.min-DjXlhIcS.js` (the one in his error) | **200** | **text/html** | 2,290 B |
+  | `exceljs.min-DH9f8gWk.js` (what the live bundle wanted) | 200 | text/javascript | 936,982 B |
+  | `index-BL0NlUzn.js` (his tab's main bundle) | **200** | **text/html** | 2,290 B |
+
+  The spreadsheet writer is deliberately code-split — it is not downloaded until Export is
+  clicked, which is why the main bundle is 1.8 MB and not 2.8 MB. **Every `wrangler deploy`
+  replaces the Worker's asset manifest, so the previous build's hashed chunks stop existing.**
+  His tab was opened before that morning's deploys; it kept working because its main bundle was
+  already in memory, and broke at the first thing it had to fetch. Three deploys went out in
+  quick succession while he had the app open, which is why it surfaced today.
+
+  ⚠ **And `not_found_handling: "single-page-application"` turns the 404 into something worse:**
+  the missing path is answered with **index.html, 200, text/html**. The browser never sees a
+  404 — it gets a page where a module should be, refuses it, and reports that in its own words.
+  Both exports failed together for the same reason, which is what ruled out anything
+  tenant-specific before a line was changed.
+
+  ### THE FIX — one place, because there is one failure
+
+  `src/lib/lazyModule.js` (new): `loadModule(loader, what)` wraps a lazy import and translates
+  **only** this failure — Chrome / Firefox / Safari each word it differently, plus the MIME
+  refusal the SPA fallback actually produces. All six `await import()` sites in the codebase now
+  go through it: three exceljs (`reconciliationExcel`, `rentRollExcel`, `incomeExpenseExcel`)
+  and three pdf.js (`pdfRender`, `PdfSignCanvas` ×2).
+
+  > *Amlak was updated while this page was open, so the spreadsheet builder could no longer be
+  > loaded. Reload the page and try again.*
+
+  ⚠ **EVERYTHING ELSE IS RETHROWN BYTE FOR BYTE, and that restraint is the point.** A catch-all
+  here would relabel a real bug inside the workbook code as "reload the page" — George reloads,
+  it happens again, and the actual error is never seen by anyone. Two tests pin it: an unrelated
+  `RangeError` and a plain `TypeError: Failed to fetch` both come back as themselves.
+
+  `StaleBuildNotice` (new) is shared by both export dialogs rather than copied into each, and
+  carries a **Reload now** button. ⚠ The TONE is the distinction: a stale build is **gold**, not
+  red — nothing failed and nothing was lost, the app moved while the page stayed still. Red
+  stays for a workbook that genuinely could not be built, which is a different next step.
+
+  ### FILES
+
+  `src/lib/lazyModule.js` **(new)** · `src/components/StaleBuildNotice.js` **(new)** ·
+  `reconciliationExcel.js` · `rentRollExcel.js` · `incomeExpenseExcel.js` · `pdfRender.js` ·
+  `PdfSignCanvas.js` · `ExportReconciliationModal.js` · `ExportIncomeExpenseModal.js`.
+  Tests: `lazyModule.test.js` **(new, 8)**.
+
+  ### VERIFIED
+
+  Test written FIRST and confirmed red (module did not exist), then green. **1960 tests / 186
+  files.** ⚠ **The load-bearing build check:** wrapping `import()` in a thunk could have
+  collapsed the code-split and inlined 937 kB into the main bundle. It did not —
+  `exceljs.min-*.js` is still 936.98 kB on its own and `index-*.js` grew by 1.4 kB.
+  Post-deploy, `/` briefly served the *previous* index.html from the edge (`cf-cache-status:
+  HIT`) before catching up on the second poll — worth knowing, because for those few seconds a
+  fresh load hits this exact bug, and now degrades to a sentence and a button.
+
+  ### NOW REDUNDANT
+
+  - **The two hand-written `{err && <p className="note-msg danger">}` blocks** in the export
+    dialogs — replaced by `StaleBuildNotice`, which is also what stops the two from drifting
+    into one having the Reload button and the other not. Gone.
+
+  ### FLAGGED TO GEORGE — the cause, as opposed to the symptom
+
+  This makes the failure legible and one click from fixed. It does not stop the chunk
+  disappearing. **`build.emptyOutDir: false` in `vite.config`** would leave previous builds'
+  hashed chunks in `./build`, so wrangler keeps uploading them and an open tab survives a
+  deploy outright. Hashed assets are immutable, so this is safe by construction — the cost is
+  that `build/` grows every deploy and somebody has to clear it periodically. **Not done: it
+  changes deploy hygiene, which is his call.**
+
+  Also unfixed and pre-existing: **`PdfSignCanvas` swallows the error entirely**
+  (`catch { setPhase('failed') }`), so a stale build there still shows a bare "failed" state.
+  It now throws a good message that nothing reads.
+
 - **2026-08-17** — **Re-reading a statement you already imported now PROVES something.** A line
   the duplicate guard recognizes is linked to the payment an earlier import already made,
   instead of landing with `ref_id` NULL. Shipped ahead of the June re-import George approved,
