@@ -6579,6 +6579,9 @@ export async function getBankTieOut(propertyId, year) {
   return bankTieOut({
     lines, payments, expenseItems: camRows, incomeRows: incRows, buckets, year,
     imports: importIds.length,
+    // The rows themselves, not just the count: the "cannot be checked" tier has to name
+    // WHICH statement to import again, and a number cannot.
+    importRows: imports || [],
     allExpenseItems: [...(camItems || []), ...(taxItems || []), ...(roofItems || [])],
     allIncomeRows: allIncome || [],
   });

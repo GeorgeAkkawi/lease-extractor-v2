@@ -121,6 +121,108 @@ describe('bankTieOut — the two sides', () => {
     expect(t.differences[0]).toMatch(/books hold \$250\.00 more/);
   });
 
+  // ⚠ THE ONE THIS FILE MISSED FOR FIVE MONTHS, and it is the shape George's own data was in
+  // (Pershing Plaza FY 2026, read out of the database 2026-08-17). Two faults in opposite
+  // directions inside ONE bucket, netting to a figure that describes neither — and the old
+  // code then subtracted the named suspects from the NET and reported the leftover as "not
+  // explained by any line", which was a number corresponding to nothing at all.
+  //
+  //   bank showed $62,686.59 · books hold $86,286.18 · net −$23,599.59
+  //   of which:   $12,630.00 missing (payments deleted)
+  //               $36,229.59 unrecorded (imported before line records existed)
+  //   $36,229.59 − $12,630.00 = $23,599.59 exactly, so nothing is left unexplained.
+  it('splits a bucket whose two faults partly cancel, and leaves no phantom remainder', () => {
+    const t = bankTieOut({
+      year: Y,
+      imports: 2,
+      importRows: [
+        { id: 'imp-new', file_name: 'july.pdf', created_at: `${Y}-08-13` },
+        { id: 'imp-old', file_name: 'june.pdf', created_at: `${Y}-07-24` },
+      ],
+      lines: [
+        // The good ones on the newer import.
+        line({ id: 'L1', direction: 'in', disposition: 'rent', amount: 50056.59, import_id: 'imp-new', ref_kind: 'payment', ref_id: 'pay-live', description: 'ACH RENT BATCH' }),
+        // Two whose payments have been deleted.
+        line({ id: 'L2', direction: 'in', disposition: 'rent', amount: 6315, import_id: 'imp-new', ref_kind: 'payment', ref_id: 'pay-gone-1', description: 'ACH DENTALOFFICE', txn_date: `${Y}-07-02` }),
+        line({ id: 'L3', direction: 'in', disposition: 'rent', amount: 6315, import_id: 'imp-new', ref_kind: 'payment', ref_id: 'pay-gone-2', description: 'ACH DENTALOFFICE', txn_date: `${Y}-07-31` }),
+      ],
+      payments: [
+        { id: 'pay-live', amount: 50056.59, paid_date: `${Y}-07-01`, import_id: 'imp-new' },
+        // June money from a statement that kept no lines at all.
+        { id: 'pay-june-a', amount: 20000, paid_date: `${Y}-06-01`, import_id: 'imp-old' },
+        { id: 'pay-june-b', amount: 16229.59, paid_date: `${Y}-06-02`, import_id: 'imp-old' },
+      ],
+    });
+    const r = t.in.rows.find((x) => x.key === 'rent');
+    expect(r.statement).toBe(62686.59);
+    expect(r.books).toBe(86286.18);
+    expect(r.diff).toBe(-23599.59);
+    // The three tiers, each with its own evidence and never added together.
+    expect(r.suspects.map((x) => x.amount)).toEqual([6315, 6315]);
+    expect(r.orphans).toEqual([]);
+    expect(r.unrecorded.map((x) => x.amount)).toEqual([20000, 16229.59]);
+    expect(t.unaccounted).toEqual({ missing: 12630, orphan: 0, unchecked: 36229.59 });
+
+    // The FAULT is the $12,630 and nothing else. "Cannot be checked" is filed apart.
+    const said = t.differences.join(' § ');
+    expect(said).toMatch(/\$12,630\.00 on these statements has no payment behind it/);
+    expect(said).toMatch(/ACH DENTALOFFICE/);
+    expect(t.notChecked).toHaveLength(1);
+    expect(t.notChecked[0]).toMatch(/\$36,229\.59 in payments recorded cannot be checked/);
+    expect(t.notChecked[0]).toMatch(/imported Jul 24/);
+    expect(t.notChecked[0]).toMatch(/“june\.pdf”/);
+
+    // ⚠ THE WHOLE POINT: no leftover is invented, and the net is explicitly disowned.
+    expect(said).not.toMatch(/not explained by any line/);
+    expect(said).not.toMatch(/\$10,969\.59/);
+    expect(said).toMatch(/don’t read the \$23,599\.59 between the two columns as a finding/);
+  });
+
+  // The benign tier alone must not read as a fault — but it must not read as a clean bill
+  // of health either. "Checked and clean" and "never looked at" printing the same is the
+  // failure this whole panel exists to avoid, applied to itself.
+  it('an import that kept no lines is “cannot be checked”, not a difference', () => {
+    const t = bankTieOut({
+      year: Y, imports: 1,
+      importRows: [{ id: 'imp-old', file_name: 'may.pdf', created_at: `${Y}-06-01` }],
+      lines: [],
+      payments: [{ id: 'p1', amount: 4200, paid_date: `${Y}-05-02`, import_id: 'imp-old' }],
+    });
+    expect(t.differences).toEqual([]);
+    expect(t.balanced).toBe(true);
+    expect(t.notChecked).toHaveLength(1);
+    expect(tieOutSentence(t)).toMatch(/cannot be checked/);
+    expect(tieOutSentence(t)).not.toMatch(/all of it accounted for ✓/);
+  });
+
+  // A books row that no line claims IS a finding — but only when the import demonstrably
+  // stamps refs. An import whose lines carry none can claim nothing, so its silence proves
+  // nothing, and accusing it would repeat the untraceable-line mistake from the other side.
+  it('calls out an unclaimed books row, and stays silent when the import stamps no refs at all', () => {
+    const stamped = bankTieOut({
+      year: Y, imports: 1,
+      lines: [line({ id: 'L1', disposition: 'expense', amount: 500, import_id: 'i1', ref_kind: 'cam', ref_id: 'cam-1', description: 'ACME' })],
+      expenseItems: [
+        { id: 'cam-1', label: 'Acme', amount: 500, year: Y, import_id: 'i1' },
+        { id: 'cam-2', label: 'Nobody asked for this', amount: 250, year: Y, import_id: 'i1' },
+      ],
+    });
+    const r = stamped.out.rows.find((x) => x.key === 'expense');
+    expect(r.orphans.map((x) => x.description)).toEqual(['Nobody asked for this']);
+    expect(stamped.differences.join(' ')).toMatch(/\$250\.00 in “Money out” rows is on these imports with no line accounting for it/);
+
+    const unstamped = bankTieOut({
+      year: Y, imports: 1,
+      lines: [line({ id: 'L1', disposition: 'expense', amount: 500, import_id: 'i1', description: 'ACME' })],
+      expenseItems: [
+        { id: 'cam-1', label: 'Acme', amount: 500, year: Y, import_id: 'i1' },
+        { id: 'cam-2', label: 'Nobody asked for this', amount: 250, year: Y, import_id: 'i1' },
+      ],
+    });
+    expect(unstamped.out.rows.find((x) => x.key === 'expense').orphans).toEqual([]);
+    expect(unstamped.notChecked).toEqual([]);
+  });
+
   it('ties clean when every line reaches its row', () => {
     const t = bankTieOut({
       year: Y, imports: 2,
@@ -412,7 +514,11 @@ describe('the workbook grows a “Where bank money went” tab once there is som
       'Where your bank money went — FY',
       'Money in on your statements',
       'Money out on your statements',
-      'Rent is a reconciling item, not a tie',
+      // ⚠ THE TWO RENT HEADINGS MUST NOT READ ALIKE. The Money-in row is a TIE (a difference
+      // is a fault); these three are arrears (a difference is normal). They sat a few rows
+      // apart under headings that both said "rent" and George read them as one thing.
+      'Your whole year’s rent — not a tie, and not meant to balance',
+      'Rent off these statements',
       // The sheet's columns name the two ACTORS, the same words the Ledger panel uses.
       // Two documents describing one comparison must not label it differently.
       'The bank showed',

@@ -157,13 +157,12 @@ button.rr-cell.abated{cursor:pointer}
 .rr-mark{position:absolute;top:0;right:0;width:0;height:0;border-top:7px solid var(--gold);border-left:7px solid transparent}
 .rr-cell.adj-credit .rr-mark{border-top-color:var(--forest)}
 button.rr-cell.outside{cursor:pointer}
-/* The key: real .rr-cell swatches wearing the live classes, so it can't drift from
-   the grid it explains. */
-.rr-key{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin:6px 0 14px;font-size:11.5px;color:var(--faint)}
-.rr-key-label{font-family:var(--ui);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
-.rr-key-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-.rr-key .rr-cell{cursor:default;pointer-events:none;height:26px;width:44px}
-.rr-key-note{flex-basis:100%;font-size:11px;color:var(--faint)}
+/* ⚠ THE `.rr-key` SWATCH LEGEND LIVED HERE and was removed 2026-08-17 with the row itself
+   — the hover card explains a box better than a swatch could, and a legend kept beside it is
+   a second explanation that drifts. What survives is the one thing hovering cannot tell you:
+   that the boxes respond to a click at all. */
+.rr-howto{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin:6px 0 14px;font-size:11px;line-height:1.5;color:var(--faint)}
+.rr-howto>span{flex:1;min-width:260px}
 .rent-roll th.rr-owes,.rent-roll td.rr-owes{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .rr-split{color:var(--faint);font-size:11px;margin-top:2px;white-space:nowrap}
 /* The raise, in one chip. It was three printed lines under the tenant's name until
@@ -1217,33 +1216,82 @@ tbody tr:last-child td{border-bottom:none}
 /* ---- Month detail panel (0082) — one month of one tenant, opened from a Ledger box.
    Two columns that read left to right the way the question is asked: what you billed,
    then what came in — with the "the bill itself was different" form underneath. */
-.month-panel{width:640px;max-width:calc(100vw - 32px)}
-.mp-nav{display:flex;align-items:center;gap:2px}
-.mp-nav-label{font-family:var(--ui);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);min-width:30px;text-align:center}
-.mp-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+/* ⚠ RESTYLED 2026-08-17, and only the styling moved — George: *"in the pop up when i double
+   click the formating in there seems lacking/poor can we give it that luxury feel that we
+   are about"*. It was the last dialog in the app laid out as three stacked lists with eight
+   inline style objects; the house language (Cormorant heads, letterspaced --ui caps, hairline
+   rules, --panel-2 insets, tabular figures) was already defined everywhere else. Every
+   figure, string and behaviour it prints is unchanged. */
+.month-panel{width:720px;max-width:calc(100vw - 32px)}
+.mp-title{display:flex;flex-direction:column;gap:2px;min-width:0}
+.mp-when{font-family:var(--ui);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.mp-head-right{display:flex;align-items:center;gap:10px}
+/* ◀ Jan ▶ as one bordered control rather than three loose glyphs, with the close set apart
+   from it so the month can't be stepped when the close was meant. */
+.mp-nav{display:flex;align-items:center;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-2);overflow:hidden}
+.mp-nav-btn{background:transparent;color:var(--muted);border:none;padding:5px 9px;font-size:11px;line-height:1;letter-spacing:0;text-transform:none;border-radius:0}
+.mp-nav-btn:hover:not(:disabled){background:var(--accent-soft);color:var(--accent);filter:none}
+.mp-nav-btn:disabled{opacity:.3}
+.mp-nav-label{font-family:var(--ui);font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink);min-width:34px;text-align:center;
+  border-left:1px solid var(--border);border-right:1px solid var(--border);padding:5px 0;align-self:stretch;display:flex;align-items:center;justify-content:center}
+/* A real rule between the two columns, the way .announce-side does it — 20px of air alone
+   never read as two answers to two questions. */
+.mp-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+.mp-col{min-width:0}
+.mp-col+.mp-col{border-left:1px solid var(--hair);padding-left:26px;margin-left:-13px}
 .mp-cap{font-family:var(--ui);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
-.mp-line{display:flex;align-items:baseline;gap:8px;font-size:13px;padding:3px 0;border-bottom:1px solid var(--hair)}
+.mp-line{display:flex;align-items:baseline;gap:10px;font-size:13px;padding:5px 0;border-bottom:1px solid var(--hair)}
 .mp-line>span{flex:1;min-width:0;color:var(--muted)}
-.mp-line>b{font-variant-numeric:tabular-nums;white-space:nowrap}
-.mp-line em{font-style:normal}
-.mp-line.mp-sub{border-bottom-style:dashed;color:var(--faint)}
-.mp-line.mp-total{border-bottom:0;border-top:1px solid var(--border);margin-top:4px;padding-top:6px;font-weight:700}
-.mp-line.mp-total>span{color:var(--ink)}
-.mp-line.mp-short>b{color:var(--gold)}
-.mp-charge{color:var(--gold)}
-.mp-credit{color:var(--forest)}
-.mp-line.mp-adj .icon-btn{padding:0 4px;line-height:1}
-/* Re-file a payment onto another month. Sits UNDER its payment row rather than beside it:
-   the row already carries a date, a note and an amount, and a fourth thing on that line
-   pushes the figure off the right edge of the panel on a narrow window. */
-.mp-move{padding:2px 0 6px}
-.mp-move select{font-size:11px;padding:2px 6px;max-width:190px;color:var(--muted)}
-.mp-post{margin-top:20px;border-top:1px solid var(--border);padding-top:14px}
+.mp-line>b{font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:600;color:var(--ink)}
+.mp-line.mp-sub{border-bottom-style:dashed}
+.mp-line.mp-sub>span,.mp-line.mp-sub>b{color:var(--faint);font-weight:500}
+.mp-empty{font-size:12.5px;margin:6px 0}
+/* The closing figure gets a band of its own so the eye lands on it rather than on the
+   last thing in the list. Negative margins so it spans the column, not the text. */
+.mp-foot{display:flex;align-items:baseline;gap:10px;font-size:13px;font-weight:700;
+  margin:6px -10px 0;padding:7px 10px;background:var(--panel-2);border-top:1px solid var(--border)}
+.mp-foot+.mp-foot{margin-top:0;border-top:1px solid var(--hair)}
+.mp-foot>span{flex:1;min-width:0;color:var(--ink)}
+.mp-foot>b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.mp-foot.mp-short{background:var(--gold-soft)}
+.mp-foot.mp-short>span,.mp-foot.mp-short>b{color:var(--gold)}
+/* A posted charge or credit is not another line in the list — it is a correction TO the
+   list, so it wears a bar in its own direction's colour and gives the note a line of its
+   own instead of trailing off the right edge. */
+.mp-adj{border-left:2px solid var(--gold);background:var(--panel-2);padding:5px 8px;margin:4px 0;border-radius:0 var(--radius) var(--radius) 0}
+.mp-adj.is-credit{border-left-color:var(--forest)}
+.mp-adj-head{display:flex;align-items:baseline;gap:8px;font-size:13px}
+.mp-adj-head>span{flex:1;min-width:0;color:var(--ink)}
+.mp-adj-head>b{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--gold)}
+.mp-adj.is-credit .mp-adj-head>b{color:var(--forest)}
+.mp-adj-memo{margin:2px 0 0;font-size:11.5px;line-height:1.45;color:var(--muted)}
+/* Revealed on hover or keyboard focus. Permanently visible it read as part of the figure. */
+.mp-adj-x{padding:0 3px;line-height:1;opacity:0;transition:opacity .12s}
+.mp-adj:hover .mp-adj-x,.mp-adj-x:focus-visible{opacity:1}
+/* ⚠ A pointer that cannot hover would never see it at all — reveal-on-hover has to carry
+   its own fallback or the control simply does not exist on a tablet. */
+@media (hover:none){.mp-adj-x{opacity:.7}}
+.mp-pay+.mp-pay{margin-top:6px}
+.mp-pay-note{display:block;font-style:normal;font-size:11.5px;color:var(--faint);margin-top:1px}
+/* Re-file a payment onto another month. Behind a link until asked for: the row already
+   carries a date, a note and an amount, and a fourth control on it pushes the figure off
+   the right edge of the panel on a narrow window. */
+.mp-move-open{margin:1px 0 0 -9px;color:var(--muted)}
+.mp-move-open:hover:not(:disabled){color:var(--accent)}
+.mp-move{display:flex;align-items:center;gap:4px;padding:3px 0 4px}
+.mp-move select{font-size:11px;padding:3px 6px;min-width:0;flex:1;color:var(--ink)}
+.mp-record{margin-top:10px}
 .mp-note{font-size:12px;line-height:1.55;margin:0 0 10px}
+.mp-note-tight{margin:8px 0 0}
+/* "The bill itself was different" is an ACTION, not a fourth list — so it reads as a card
+   rather than as more of the same column. */
+.mp-post{margin-top:22px;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}
+.mp-post .mp-note{margin-bottom:12px}
 .mp-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .mp-form label{display:flex;flex-direction:column;gap:4px;min-width:0}
 .mp-form label>span{font-family:var(--ui);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
 .mp-form .mp-memo{grid-column:1 / -1}
+.mp-form select,.mp-form .text-input{background:var(--panel)}
 .mp-hint{font-size:11.5px;line-height:1.5;margin:8px 0 0}
 /* Where the charge lands on the Income-and-expenses sheet, quoted in the sheet's own row
    names — said BEFORE it is posted, because the workbook counts rent when it falls due and
@@ -1252,8 +1300,18 @@ tbody tr:last-child td{border-bottom:none}
   color:var(--accent);font-size:11.5px;line-height:1.5}
 .mp-lands b{font-weight:700}
 .mp-preview{font-size:12.5px;margin-right:auto}
-@media (max-width:640px){
+.mp-foot-msg{margin:0 0 10px}
+/* The receipt. Sits in the slot the "will owe" preview used to leave empty the instant a
+   post succeeded — see the note in MonthDetailPanel.js for why that reading ("you have had
+   your one charge") was the whole complaint. */
+.mp-posted{display:flex;align-items:center;flex-wrap:wrap;gap:2px 6px;margin-right:auto;
+  font-size:12.5px;line-height:1.45;color:var(--forest)}
+.mp-posted b{font-weight:700;font-variant-numeric:tabular-nums}
+.mp-posted .ghost{color:var(--muted);padding:3px 7px}
+.mp-posted .ghost:hover:not(:disabled){color:var(--accent)}
+@media (max-width:720px){
   .mp-grid,.mp-form{grid-template-columns:1fr}
+  .mp-col+.mp-col{border-left:0;padding-left:0;margin-left:0;border-top:1px solid var(--hair);padding-top:16px}
 }
 
 /* ---- Tenant statement — the running account on the lease page. */
@@ -1369,6 +1427,21 @@ tbody tr:last-child td{border-bottom:none}
 
 .export-flags{margin-top:12px;display:flex;flex-direction:column;gap:8px}
 .export-flag{font-size:12px;line-height:1.45;color:var(--gold);background:var(--gold-soft,#FBF3DF);border-left:3px solid var(--gold);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
+
+/* ---- the bank tie-out: the answer, then the working ---- */
+/* Two sentences of arithmetic a landlord can check, in the app's display face, before any
+   table. See the note in LedgerPage.js for why "less" was the third answer to "I don't
+   get this panel". */
+.tie-answer{font-family:var(--display);font-size:19px;font-weight:500;line-height:1.4;margin:0 0 12px;color:var(--ink)}
+.tie-answer b{font-weight:600;font-variant-numeric:tabular-nums}
+.tie-answer strong{font-weight:600;color:var(--gold)}
+/* Neutral, deliberately NOT gold: money that could not be checked is not money that is
+   wrong, and colouring it as a fault is how a panel starts crying wolf on its own history. */
+.tie-unchecked{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.tie-unchecked p{margin:0;font-size:12px;line-height:1.45;color:var(--muted);background:var(--panel-2);
+  border-left:3px solid var(--border);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
+.tie-working-head{margin:6px 0 0;border-top:1px solid var(--hair);padding-top:8px}
+.tie-scope{font-size:11.5px;line-height:1.55;margin:10px 0}
 @media (max-width:560px){.export-pre{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 /* secondary line of small stats under a metric card (e.g. roof billed/absorbed):

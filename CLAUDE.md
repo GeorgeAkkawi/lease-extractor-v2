@@ -451,6 +451,41 @@ finished.
 Answer each in a line. Where the answer is "nothing happens" or "the user has to already know",
 that is the gap — it belongs in the plan, not in George's next message.
 
+## Saying what the change made redundant
+
+> **Standing instruction (George, 2026-08-17):** *"see how I realized that? is there a way you can
+> teach yourself to notice these kinds of things or a sentence or two you could write in the md that
+> allows you to be proactive in changes not reactive? but of course with my permission on the final
+> changes?"*
+
+**The rule.** Adding a better way to say something does not remove the old way, and **nobody ever goes
+back for it**. So every plan and every deploy-log entry ends with a **Now redundant** list: what this
+change has just made unnecessary, duplicated or contradictory, one line each on why. **Propose it;
+never delete on your own authority** — George picks from the list. That is the whole trade: he gets
+the noticing without losing the say.
+
+The two sections above trace what a change *breaks*. This one traces what it *replaces*, which is the
+half that never announces itself — nothing errors, no test fails, the screen simply keeps carrying two
+answers to one question until a landlord trips over the older one.
+
+Where to look, in order. Every entry below has actually happened here:
+
+1. **The thing the new thing replaced.** The Ledger's hover card retired a three-line printed note
+   *and* the entire eight-swatch Key row — the second one sat there for a whole round because nobody
+   asked. `Panel` retires a hand-rolled `.panel-toggle`. The one-click box toggle retired "Undo this
+   month" in the pop-up.
+2. **A second way to do one job.** Two doors to one action drift, and the older one keeps the older
+   rules: the grid's un-tick asks before deleting money that came off a bank statement; the pop-up's
+   version never did.
+3. **Prose that exists because the screen could not say it.** A paragraph explaining a panel is a
+   symptom, not a feature. If the panel now says it, cut the paragraph; if the paragraph is still
+   needed, the panel is not finished.
+4. **A registry entry, CSS rule or helper with no reader left.** `grep` the name before shipping — a
+   dead `.rr-key-item` costs nothing and quietly asserts that the thing it styled still exists.
+
+If a change makes nothing redundant, write **"Nothing redundant"**. The point is that the question was
+asked out loud, not that something is always found.
+
 ## Deploying to production
 
 - **Target:** Cloudflare Worker named `amlak` (serves the static `./build` directory).

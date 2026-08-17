@@ -99,6 +99,69 @@ describe('the Rent Ledger month panel', () => {
     expect(stored[0].memo).toBe('Snow removal ran high');
   });
 
+  // ⚠ ONE CHARGE PER VISIT IS WHAT IT LOOKED LIKE, and looked is all it took. Clearing the
+  // amount in onMutate dropped `preview` to 0, which greyed the button and emptied the whole
+  // foot of the form in the same frame — George: *"i should be able to post more than one
+  // charge if i choose but the post charge button goes grey after the first."* Nothing ever
+  // stopped a second charge; the screen simply stopped inviting one and never said what the
+  // first had done.
+  it('posts a second charge straight after the first, and says what each one did', async () => {
+    await markMonthPaid('lease-3', 'prop-2', Y, 1);
+    renderLedger();
+    await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
+    await waitFor(() => expect(janCell().className).toContain('paid'));
+    fireEvent.dblClick(janCell());
+    const panel = await screen.findByRole('dialog', { name: /January/ });
+    const post = () => within(panel).getByRole('button', { name: /^Post (charge|credit)$/ });
+
+    fireEvent.change(within(panel).getByLabelText('Kind'), { target: { value: 'fee' } });
+    fireEvent.change(within(panel).getByLabelText('Amount'), { target: { value: '150' } });
+    fireEvent.click(post());
+
+    // The receipt takes the slot the "will owe" preview used to leave empty.
+    const receipt = await waitFor(() => {
+      const el = panel.querySelector('.mp-posted');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    expect(receipt.textContent).toContain('+$150.00');
+    expect(receipt.textContent).toContain('January');
+    // …and the button is live again, not grey.
+    expect(post().disabled).toBe(false);
+
+    fireEvent.change(within(panel).getByLabelText('Amount'), { target: { value: '75' } });
+    // Typing retires the receipt — it describes the last post, not this one.
+    expect(panel.querySelector('.mp-posted')).toBeNull();
+    fireEvent.click(post());
+
+    await waitFor(async () => {
+      const rows = await listAdjustments({ leaseId: 'lease-3', year: Y });
+      expect(rows).toHaveLength(2);
+    });
+    const stored = await listAdjustments({ leaseId: 'lease-3', year: Y });
+    expect(stored.map((a) => Number(a.amount)).sort((a, b) => a - b)).toEqual([75, 150]);
+  });
+
+  // ⚠ A REFUSAL USED TO EAT WHAT YOU TYPED. onMutate cleared the amount and the note before
+  // the server had answered, and nothing put them back — so "FY 2026 is closed" also meant
+  // "type it all again", on the one path where the user has done nothing wrong. prop-1
+  // carries a financial_snapshots row for the current year, which is that refusal.
+  it('a refused post keeps the amount and the note that were typed', async () => {
+    renderLedger('prop-1');
+    await waitFor(() => expect(document.querySelector('.rent-roll tbody tr')).toBeTruthy());
+    fireEvent.dblClick(janCell());
+    const panel = await screen.findByRole('dialog', { name: /January/ });
+
+    fireEvent.change(within(panel).getByLabelText('Amount'), { target: { value: '250' } });
+    fireEvent.change(within(panel).getByLabelText('Note (optional)'), { target: { value: 'keep me' } });
+    fireEvent.click(within(panel).getByRole('button', { name: /^Post charge$/ }));
+
+    await waitFor(() => expect(panel.querySelector('.note-msg.danger')).toBeTruthy());
+    expect(panel.querySelector('.note-msg.danger').textContent).toMatch(/closed/i);
+    expect(within(panel).getByLabelText('Amount').value).toBe('250');
+    expect(within(panel).getByLabelText('Note (optional)').value).toBe('keep me');
+  });
+
   it('the panel offers to record the difference, and doing so settles the month', async () => {
     await markMonthPaid('lease-3', 'prop-2', Y, 1);
     renderLedger();

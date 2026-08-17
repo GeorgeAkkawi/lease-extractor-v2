@@ -28,6 +28,24 @@
 // `lineCompleteness`: a $5,000 deposit and a $5,000 withdrawal that cancel would report
 // "$0 difference" on a statement where $10,000 went astray.
 //
+// ⚠ AND NEITHER ARE THE TWO DIRECTIONS OF ERROR *INSIDE* A BUCKET — the same rule again,
+// read one level down, and it was missing until 2026-08-17. On Pershing Plaza FY 2026 the
+// rent row showed $62,686.59 on the bank against $86,286.18 in the books, and that single
+// figure was two unrelated faults partly cancelling:
+//   • $12,630.00 the bank showed whose payments had been deleted (two D&D Dental lines)
+//   • $36,229.59 of payments from two statements imported on 24 Jul 2026 — BEFORE this app
+//     kept a line-by-line record at all, so there is nothing to compare them against
+// The panel reported the $23,599.59 net, named $12,630.00 of it, and then stated that
+// "the remaining $10,969.59 is not explained by any line" — a figure corresponding to
+// nothing in the world. So the difference is now reported in THREE tiers that are never
+// summed together, and `residual` is what is left after all three are accounted for: on
+// that data it is exactly $0.00, which is the whole point of computing it.
+//   missing     — the bank showed it, the books lost it. Proven, line by line.
+//   orphan      — the books hold it, no line on a ref-stamping import claims it.
+//   unrecorded  — the books hold it and its import kept no lines. BENIGN, and it goes in
+//                 `notChecked`, never in `differences`: "cannot be checked" is not a fault,
+//                 and dressing it as one is how a panel teaches people to ignore it.
+//
 // WHAT IT CANNOT CATCH, stated on the sheet rather than left to be assumed:
 //   • a line transcribed with the wrong amount — both sides carry the same wrong number
 //   • money that never touched the account that was imported
@@ -83,6 +101,11 @@ const inYear = (row, year) => {
  *  whether a draw is an expense (CLAUDE.md §3). */
 const isOwnerRow = (it, buckets) => isOwnerCategory(categoryFor(it?.label, buckets).category);
 
+/** The money in one evidence tier (`suspects` / `orphans` / `unrecorded`). Exported so the
+ *  panel's cells quote the same arithmetic the sentences do — the two disagreeing about one
+ *  bucket is the drift CLAUDE.md §3 is about, and here it would be visible side by side. */
+export const tierTotal = (list) => round2((list || []).reduce((t, x) => t + (Number(x?.amount) || 0), 0));
+
 /**
  * Billed and received for the year, off the roll both surfaces already hold.
  *
@@ -106,7 +129,12 @@ export function rentPosition(roll = []) {
 // comparison and a difference is a finding. `nowhere` present ⇒ the books side is meant to
 // be empty, and the row says why.
 const IN_BUCKETS = [
-  { key: 'rent', label: 'Tenant rent', booksLabel: 'payments recorded' },
+  // ⚠ "Tenant rent" WAS THE NAME UNTIL 2026-08-17, and it collided with the reconciling-item
+  // table further down the same panel, which is also about tenant rent and means the exact
+  // opposite (a difference there is arrears and is normal; a difference HERE is a fault).
+  // Two headings that read the same and mean opposite things is a labelling bug, not a
+  // reader's mistake.
+  { key: 'rent', label: 'Rent off these statements', booksLabel: 'payments recorded' },
   { key: 'other_income', label: 'Other income', booksLabel: '“Other income” rows' },
   { key: 'deposit_held', label: 'Security deposits', nowhere: 'held for the tenant. A liability — in no income figure anywhere.' },
 ];
@@ -138,11 +166,14 @@ const NOWHERE_KEYS = ['transfer', 'ignored'];
  *                      much of the books never came off a statement at all
  * @param buckets       expense buckets, for the owner-capital rule
  * @param rent          { billed, received } from `rentPosition`, the reconciling item
+ * @param importRows    the statement_imports rows themselves, for dating the `unrecorded`
+ *                      tier ("2 statements imported on 24 Jul 2026"). A bare count cannot
+ *                      say WHICH statements to re-import, which is the only useful part.
  */
 export function bankTieOut({
   lines = [], payments = [], expenseItems = [], incomeRows = [],
   allExpenseItems = null, allIncomeRows = null,
-  buckets = [], year = null, imports = 0, rent = null,
+  buckets = [], year = null, imports = 0, rent = null, importRows = [],
 } = {}) {
   const scopedPayments = (payments || []).filter((p) => inYear(p, year));
   const scopedExpenses = (expenseItems || []).filter((it) => inYear(it, year));
@@ -160,12 +191,22 @@ export function bankTieOut({
   }
   const bank = (dir, key) => byKey.get(`${dir}:${key}`) || { amount: 0, count: 0 };
 
-  // The books side. Owner money is split from the building's by the one predicate.
+  // The books side. Owner money is split from the building's by the one predicate. Kept as
+  // ROWS as well as totals, because the reverse pass below has to ask of each individual row
+  // whether any line claims it.
+  const booksRows = {
+    rent: scopedPayments,
+    other_income: scopedIncome,
+    expense: scopedExpenses.filter((it) => !isOwnerRow(it, buckets)),
+    owner: scopedExpenses.filter((it) => isOwnerRow(it, buckets)),
+    refund: [],
+  };
+  const sumRows = (list) => (list || []).reduce((s, r) => round2(s + abs2(r?.amount)), 0);
   const books = {
-    rent: scopedPayments.reduce((s, p) => round2(s + abs2(p?.amount)), 0),
-    other_income: scopedIncome.reduce((s, r) => round2(s + abs2(r?.amount)), 0),
-    expense: scopedExpenses.filter((it) => !isOwnerRow(it, buckets)).reduce((s, it) => round2(s + abs2(it?.amount)), 0),
-    owner: scopedExpenses.filter((it) => isOwnerRow(it, buckets)).reduce((s, it) => round2(s + abs2(it?.amount)), 0),
+    rent: sumRows(booksRows.rent),
+    other_income: sumRows(booksRows.other_income),
+    expense: sumRows(booksRows.expense),
+    owner: sumRows(booksRows.owner),
     refund: 0,
   };
 
@@ -223,6 +264,54 @@ export function bankTieOut({
   for (const k of Object.keys(suspects)) suspects[k].sort(byAmount);
   for (const k of Object.keys(untraceable)) untraceable[k].sort(byAmount);
 
+  // ── And the same question from the other end: which BOOKS rows does no line claim? ──────
+  //
+  // Without this pass the books-side excess has no evidence at all, so it could only ever be
+  // reported as a residue of the netted difference — which is exactly how $36,229.59 of
+  // perfectly good June payments turned into "the remaining $10,969.59 is not explained".
+  //
+  // ⚠ THREE GUARDS, AND EACH ONE EXISTS TO STOP AN ACCUSATION THE DATA CANNOT SUPPORT.
+  //   • no `id` — nothing could have pointed at it, so "unclaimed" says nothing.
+  //   • no `import_id` — it did not come from an import at all; the hand-entered context
+  //     line below is where that money is reported, not here.
+  //   • its import kept lines but NONE of them stamps a ref — the import cannot claim
+  //     anything, so silence proves nothing. That is the `untraceable` tier read from the
+  //     books side, and it is already stated from the lines side.
+  const importsWithLines = new Set((lines || []).map((l) => l?.import_id).filter(Boolean).map(String));
+  const tracedImports = new Set(
+    (lines || []).filter((l) => l?.import_id && l?.ref_id).map((l) => String(l.import_id))
+  );
+  const claimedRefs = new Set((lines || []).filter((l) => l?.ref_id).map((l) => String(l.ref_id)));
+  const orphans = {};
+  const unrecorded = {};
+  const unrecordedImports = new Set();
+  for (const [key, list] of Object.entries(booksRows)) {
+    for (const r of list || []) {
+      if (!r?.id || !r?.import_id || claimedRefs.has(String(r.id))) continue;
+      const imp = String(r.import_id);
+      const entry = {
+        id: r.id,
+        date: r.paid_date || r.txn_date || r.date || null,
+        description: r.note || r.label || r.description || null,
+        amount: abs2(r.amount),
+        import_id: imp,
+      };
+      if (!importsWithLines.has(imp)) {
+        (unrecorded[key] ||= []).push(entry);
+        unrecordedImports.add(imp);
+      } else if (tracedImports.has(imp)) {
+        (orphans[key] ||= []).push(entry);
+      }
+    }
+  }
+  for (const k of Object.keys(orphans)) orphans[k].sort(byAmount);
+  for (const k of Object.keys(unrecorded)) unrecorded[k].sort(byAmount);
+  // When and what those un-recorded statements were, so the sentence can say which file to
+  // re-import rather than leaving the landlord to guess.
+  const unrecordedWhen = (importRows || [])
+    .filter((im) => unrecordedImports.has(String(im?.id)))
+    .map((im) => ({ id: String(im.id), name: im?.file_name || null, when: im?.created_at ? String(im.created_at).slice(0, 10) : null }));
+
   const buildSide = (dir, defs) => {
     const rows = [];
     const claimed = new Set([...defs.map((d) => d.key), ...NOWHERE_KEYS, 'unclassified']);
@@ -246,6 +335,9 @@ export function bankTieOut({
         // that merely cannot be followed, kept apart from them.
         suspects: suspects[d.key] || [],
         untraceable: untraceable[d.key] || [],
+        // The other direction, from the reverse pass. Never added to the two above.
+        orphans: orphans[d.key] || [],
+        unrecorded: unrecorded[d.key] || [],
       });
     }
     // Transfers and deliberate exclusions, as one line.
@@ -323,38 +415,97 @@ export function bankTieOut({
   // The findings, as sentences that name the side that is short. A slug or a bare signed
   // figure is not a finding — it is a puzzle.
   const differences = [];
+  // Benign, and kept out of `differences` on purpose — see the note at the top of the file.
+  const notChecked = [];
+  // The three tiers as money, so the panel's opening sentence quotes figures this file
+  // derived rather than re-deriving them from the rows (CLAUDE.md §3 — two implementations
+  // of one rule drift, and the second drifts silently).
+  const unaccounted = { missing: 0, orphan: 0, unchecked: 0 };
+  const total = tierTotal;
   for (const [side, s] of [['in', moneyIn], ['out', moneyOut]]) {
     for (const r of s.rows) {
-      if (!r.booksLabel || Math.abs(r.diff) <= 0.005) continue;
+      if (!r.booksLabel) continue;
       // ⚠ NAME THE LINE, not just the bucket. "Property expenses are $800 short" tells the
       // landlord something is wrong; "the Home Depot line of 22 March produced nothing" tells
-      // them what to do about it. When the suspects account for the whole difference the
-      // generic guess at a cause is dropped — it would be guessing at something now known.
+      // them what to do about it.
       const name = (x) => `${x.date ? fmtDay(x.date) : 'undated'} · ${x.description || 'this line'} · ${money(x.amount)} — ${x.why}`;
-      const named = (r.suspects || []).map(name);
-      const accounted = round2((r.suspects || []).reduce((t, x) => t + x.amount, 0));
-      const gap = round2(Math.abs(r.diff) - accounted);
-      const head = r.diff > 0
-        ? `${r.label}: the statements show ${money(r.diff)} more than the books hold — ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'} against ${money(r.books)} in ${r.booksLabel}.`
-        : `${r.label}: the books hold ${money(-r.diff)} more than these statements show — ${money(r.books)} in ${r.booksLabel} against ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'}.`;
-      let tail;
-      if (named.length && Math.abs(gap) <= 0.05) {
-        tail = ` It is ${named.length === 1 ? 'this line' : 'these lines'}: ${named.join(' · ')}`;
-      } else if (named.length) {
-        tail = ` ${money(accounted)} of it is ${named.length === 1 ? 'this line' : 'these lines'}: ${named.join(' · ')} The remaining ${money(Math.abs(gap))} is not explained by any line.`;
-      } else if (r.diff > 0) {
-        tail = ' No line names itself as the cause, so the record was removed after the import stamped it, or was never linked. Check the expense and payment lists for something deleted.';
-      } else {
-        tail = ' Something was recorded against one of these imports that no line on them accounts for.';
+      const nameRow = (x) => `${x.date ? fmtDay(x.date) : 'undated'} · ${x.description || 'no description'} · ${money(x.amount)}`;
+      const produced = PRODUCES[r.key] || 'record';
+      const missing = r.suspects || [];
+      const orphan = r.orphans || [];
+      const unseen = r.unrecorded || [];
+      const missingTotal = total(missing);
+      const orphanTotal = total(orphan);
+      const unseenTotal = total(unseen);
+      unaccounted.missing = round2(unaccounted.missing + missingTotal);
+      unaccounted.orphan = round2(unaccounted.orphan + orphanTotal);
+      unaccounted.unchecked = round2(unaccounted.unchecked + unseenTotal);
+
+      // ① The bank showed it and the books no longer hold it. Proven, line by line.
+      if (missing.length) {
+        differences.push(
+          `${r.label}: ${money(missingTotal)} on these statements has no ${produced} behind it in FY ${year}.`
+          + ` It is ${missing.length === 1 ? 'this line' : 'these lines'}: ${missing.map(name).join(' · ')}`
+          + (r.key === 'rent'
+            ? ' If the month was recorded again by hand afterwards it reads as paid on every screen — what has gone is the bank record behind it, and with it the ability to reconcile that month against a statement ever again.'
+            : '')
+        );
       }
-      // ⚠ STATED SEPARATELY AND NEVER AS THE CAUSE. A line with no link cannot be followed in
-      // either direction — reporting it as the missing money would accuse lines that landed
-      // perfectly well, which is exactly what the first draft of this did.
-      const blind = r.untraceable || [];
-      if (blind.length) {
-        tail += ` ${blind.length} other line${blind.length === 1 ? '' : 's'} on these statements (${money(round2(blind.reduce((t, x) => t + x.amount, 0)))}) carr${blind.length === 1 ? 'ies' : 'y'} no link to what ${blind.length === 1 ? 'it' : 'they'} produced, so ${blind.length === 1 ? 'it' : 'they'} cannot be traced either way.`;
+
+      // ② The books hold it and no line on a ref-stamping import claims it.
+      if (orphan.length) {
+        const shown = orphan.slice(0, 4);
+        differences.push(
+          `${r.label}: ${money(orphanTotal)} in ${r.booksLabel} is on these imports with no line accounting for it.`
+          + ` ${shown.length === orphan.length ? (orphan.length === 1 ? 'It is' : 'They are') : `The largest ${shown.length} are`}: ${shown.map(nameRow).join(' · ')}.`
+          + ' Something was recorded against one of these statements that the statement itself does not show.'
+        );
       }
-      differences.push(head + tail);
+
+      // ③ Its import kept no lines at all. NOT a fault — there is simply nothing to compare
+      //    against, and saying so is the difference between a report a landlord believes and
+      //    one they learn to skip.
+      if (unseen.length) {
+        const when = unrecordedWhen.filter((im) => unseen.some((u) => u.import_id === im.id));
+        const dates = [...new Set(when.map((im) => im.when).filter(Boolean))].map(fmtDay);
+        const n = new Set(unseen.map((u) => u.import_id)).size;
+        notChecked.push(
+          `${r.label}: ${money(unseenTotal)} in ${r.booksLabel} cannot be checked.`
+          + ` It came from ${n} statement${n === 1 ? '' : 's'}${dates.length ? ` imported ${dates.join(' and ')}` : ''}, which kept no line-by-line record.`
+          + ` The money is on your books and counts normally — there is simply nothing to compare it against.`
+          + ` Import ${when.length === 1 && when[0]?.name ? `“${when[0].name}”` : 'those statements'} again to have ${n === 1 ? 'it' : 'them'} checked.`
+        );
+      }
+
+      // ④ Whatever the three tiers do NOT account for. On real data this is normally $0.00,
+      //    and that is exactly why it is computed rather than assumed: a difference that the
+      //    evidence explains completely must not also be reported as an open question.
+      const residual = round2(r.diff - round2(missingTotal - orphanTotal - unseenTotal));
+      if (Math.abs(residual) > 0.005) {
+        let said = residual > 0
+          ? `${r.label}: the statements show ${money(residual)} more than the books hold — ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'} against ${money(r.books)} in ${r.booksLabel}.`
+          : `${r.label}: the books hold ${money(-residual)} more than these statements show — ${money(r.books)} in ${r.booksLabel} against ${money(r.statement)} on ${r.count} line${r.count === 1 ? '' : 's'}.`;
+        said += residual > 0
+          ? ' No line names itself as the cause, so the record was removed after the import stamped it, or was never linked. Check the expense and payment lists for something deleted.'
+          : ' Something was recorded against one of these imports that no line on them accounts for.';
+        // ⚠ STATED SEPARATELY AND NEVER AS THE CAUSE. A line with no link cannot be followed in
+        // either direction — reporting it as the missing money would accuse lines that landed
+        // perfectly well, which is exactly what the first draft of this did.
+        const blind = r.untraceable || [];
+        if (blind.length) {
+          said += ` ${blind.length} other line${blind.length === 1 ? '' : 's'} on these statements (${money(total(blind))}) carr${blind.length === 1 ? 'ies' : 'y'} no link to what ${blind.length === 1 ? 'it' : 'they'} produced, so ${blind.length === 1 ? 'it' : 'they'} cannot be traced either way.`;
+        }
+        differences.push(said);
+      }
+
+      // ⚠ SAID OUT LOUD WHEN THEY CANCEL. Two faults in opposite directions leave a net that
+      // describes neither, and a reader who takes it for one figure will chase the wrong one.
+      if (missing.length && (orphan.length || unseen.length) && Math.abs(r.diff) > 0.005) {
+        differences.push(
+          `${r.label}: don’t read the ${money(Math.abs(r.diff))} between the two columns as a finding.`
+          + ` It is ${money(missingTotal)} missing set against ${money(round2(orphanTotal + unseenTotal))} unmatched — different money, partly cancelling, and two separate questions.`
+        );
+      }
       void side;
     }
   }
@@ -381,6 +532,14 @@ export function bankTieOut({
     handEntered,
     rent: rent ? { ...rent } : null,
     differences,
+    // ⚠ SEPARATE FROM `differences`, AND IT DOES NOT BREAK `balanced`. Money that cannot be
+    // checked is not money that is wrong; filed among the faults it would put a permanent
+    // red mark on every account that imported a statement before 0076, which is the fastest
+    // way to teach a landlord that this panel cries wolf. It DOES stop the panel claiming a
+    // bare ✓ — see `tieOutSentence` — because "checked and clean" and "never looked at" must
+    // never print the same, and that is this file's own rule read the other way round.
+    notChecked,
+    unaccounted,
     balanced: differences.length === 0,
     lineCount: (lines || []).length,
   };
@@ -417,7 +576,12 @@ export const WHERE_IT_LANDS = [
 export function tieOutSentence(t) {
   if (!t) return '';
   const read = `${t.imports} statement${t.imports === 1 ? '' : 's'} · ${money(t.in.statementTotal)} in · ${money(t.out.statementTotal)} out`;
-  if (t.balanced) return `${read} — all of it accounted for ✓`;
+  const unchecked = (t.notChecked || []).length;
+  if (t.balanced) {
+    return unchecked
+      ? `${read} — accounted for, apart from ${unchecked} figure${unchecked === 1 ? '' : 's'} that cannot be checked`
+      : `${read} — all of it accounted for ✓`;
+  }
   const n = t.differences.length;
   return `${read} — ${n} thing${n === 1 ? '' : 's'} to look at`;
 }

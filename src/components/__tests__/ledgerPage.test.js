@@ -144,6 +144,35 @@ describe('LedgerPage — the rent ledger grid', () => {
     }
     // The bank tie-out reads the same lines from the third angle and appears with them.
     expect(await screen.findByText('Where your bank money went')).toBeTruthy();
+
+    // ⚠ THE ANSWER, THEN THE WORKING — and the working must start SHUT. George had told me
+    // twice this panel didn't land and both previous answers added more prose; the third
+    // answer is that a reader meets two sentences of arithmetic and nothing else. This
+    // asserts the shape, because "we moved it below a fold" is the kind of change that
+    // silently un-happens when someone edits the JSX around it.
+    const tieToggle = screen.getByText('Where your bank money went').closest('button.panel-toggle');
+    fireEvent.click(tieToggle);
+    const answer = await waitFor(() => {
+      const el = document.querySelector('.tie-answer');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    expect(answer.textContent).toMatch(/came in and .* went out of your bank account/);
+    const working = screen.getByText('Show the working').closest('button.panel-toggle');
+    expect(working.getAttribute('aria-expanded')).toBe('false');
+    // Nothing from the working is on screen until it is asked for.
+    expect(screen.queryAllByText('The bank showed')).toHaveLength(0);
+    fireEvent.click(working);
+    // Two tables — Money in and Money out — so both columns come back at once.
+    expect(screen.getAllByText('The bank showed')).toHaveLength(2);
+    // The two rent headings must not read alike — one is a tie, the other is arrears.
+    expect(screen.getByText('Rent off these statements')).toBeTruthy();
+    expect(screen.getByText(/not a tie, and not meant to balance/)).toBeTruthy();
+    // Put both folds back, so the fold state this writes to localStorage doesn't decide
+    // what the NEXT test in this file sees.
+    fireEvent.click(working);
+    fireEvent.click(tieToggle);
+
     // Undo from the results strip cleans everything back out.
     fireEvent.click(screen.getAllByText('↩ Undo')[0]);
     await waitFor(() => expect(screen.queryByText(/saved · Imported/)).toBeNull());

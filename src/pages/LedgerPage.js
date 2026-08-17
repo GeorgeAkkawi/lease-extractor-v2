@@ -41,7 +41,7 @@ import LeaseTypeChip from '../components/LeaseTypeChip';
 import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness, dispositionInfo, ignoreReasonLabel } from '../lib/dispositions';
-import { rentPosition, tieOutSentence, WHERE_IT_LANDS } from '../lib/bankTieOut';
+import { rentPosition, tieOutSentence, tierTotal, WHERE_IT_LANDS } from '../lib/bankTieOut';
 import { tenantStanding, settleChoicesFor, isBroughtForward, isSettlementRow } from '../lib/settle';
 import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
 import { paintPayment } from '../lib/rollPaint';
@@ -934,27 +934,22 @@ export default function LedgerPage() {
             <ImportStatementButton onReady={setImportDoc} />
           </span>
         </div>
-        {/* The key is built from REAL .rr-cell elements wearing the live classes, so it
-            can never drift from what the grid actually paints. */}
-        <div className="rr-key">
-          <span className="rr-key-label">Key</span>
-          <span className="rr-key-item"><span className="rr-cell paid">✓<span className="rr-amt">5,324</span></span> paid in full</span>
-          {/* ⚠ THE BOX ITSELF NOW CARRIES THE DIFFERENCE, not just its figure. George,
-              2026-08-17: *"if a charge comes in above or below i think we just have the box
-              itself change to a different color and when you hover over it it explains what
-              has happened"* — overriding his own earlier "paid = paid, only the FIGURE
-              carries it" (see the note in App.css). The ✓ stays, so a paid month still
-              reads as paid; gold is the same "look at this" gold as ◐ / — / ↓. */}
-          <span className="rr-key-item"><span className="rr-cell paid off">✓<span className="rr-amt">5,025</span></span> paid, but not the billed amount</span>
-          <span className="rr-key-item"><span className="rr-cell paid pool">✓</span> covered by a lump</span>
-          <span className="rr-key-item"><span className="rr-cell partial">◐</span> partly covered</span>
-          <span className="rr-key-item"><span className="rr-cell late">—</span> month ended, unpaid</span>
-          <span className="rr-key-item"><span className="rr-cell recv">↓</span> received, not billed</span>
-          <span className="rr-key-item"><span className="rr-cell rr-step">▌</span> rent stepped up</span>
-          <span className="rr-key-item"><span className="rr-cell paid has-adj"><span className="rr-mark" />✓<span className="rr-amt">5,324</span></span> a charge or credit is on it</span>
-          <span className="rr-key-note">Hover any box for what it is made of. One click records a month, one click takes it back; double-click to open it. A payment with no month recorded fills the earliest months first.</span>
+        {/* ⚠ THE KEY ROW IS GONE, and its removal is the point rather than a tidy-up (George,
+            2026-08-17: *"the boxes of partly covered, not the billed amount, covered by a lump,
+            and received not billed are not needed. we can take those out"* — then, asked how
+            far, *the whole Key row*). Eight swatches existed because a box could not explain
+            itself; hovering one now prints what it is made of, so the legend was the OLD way
+            of saying it, sitting above the new way. Two explanations of one thing drift, and
+            the printed one drifts silently because nothing compares them.
+            What stays is the part a hover cannot tell you: that a box is CLICKABLE at all. */}
+        <div className="rr-howto">
+          <span>
+            Hover any box for what it is made of. One click records a month, one click takes it
+            back; double-click to open it. A payment with no month recorded fills the earliest
+            months first.
+          </span>
           {prevCollection?.rate != null && (
-            <Link to={`/history/${corpId}/${propId}`} className="rr-key-note rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link>
+            <Link to={`/history/${corpId}/${propId}`} className="rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link>
           )}
         </div>
         {note && <p className={`note-msg ${noteBad ? 'warn' : 'good'}`} style={{ marginBottom: 10 }}>{note}</p>}
@@ -1670,33 +1665,66 @@ export default function LedgerPage() {
             </>
           ) : (
             <>
-              {/* ── PURPOSE → ANSWER → METHOD, in that order. It opened with methodology, which
-                  is why it read as noise: a landlord met a paragraph about independent columns
-                  before ever being told what question was being asked. The method is still
-                  here — it is what makes the answer worth believing — but it is at the bottom,
-                  where a reader goes when they want to know how. */}
-              <p style={{ fontSize: 12.5, lineHeight: 1.6, margin: '0 0 4px' }}>
-                <strong>Of every dollar that crossed your bank account in {year}, where did it end up?</strong>
+              {/* ⚠ THE ANSWER IS NOW THE FIRST THING, AND EVERYTHING ELSE IS BEHIND A FOLD.
+                  George had told me twice that this panel didn't land, and both previous
+                  answers added MORE prose — a purpose paragraph, then a not-⚖-Reconcile
+                  paragraph, then three tables, then a map, then two method notes, all before
+                  the reader reached anything they could act on. Third time, the answer is
+                  less: two sentences of arithmetic anyone can check, then only the things
+                  that are actually wrong. None of the rest is deleted — it is what makes the
+                  answer worth believing — it simply stops being what you meet first. */}
+              <p className="tie-answer">
+                <b>{money(tieOut.in.statementTotal)}</b> came in and <b>{money(tieOut.out.statementTotal)}</b>{' '}
+                went out of your bank account in {year}.
+                {' '}{(tieOut.unaccounted?.missing + tieOut.unaccounted?.orphan) > 0.005
+                  ? <>Amlak has a record for every dollar of it <strong>except {money(round2(tieOut.unaccounted.missing + tieOut.unaccounted.orphan))}</strong>.</>
+                  : tieOut.differences.length > 0
+                    ? <>There {tieOut.differences.length === 1 ? 'is one thing' : `are ${tieOut.differences.length} things`} to look at.</>
+                    : <>Amlak has a record for every dollar of it. ✓</>}
+                {tieOut.unaccounted?.unchecked > 0.005 && (
+                  <> A further <strong>{money(tieOut.unaccounted.unchecked)}</strong> is on your books from
+                  statements that kept no line-by-line record, so it could not be checked either way.</>
+                )}
               </p>
-              <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
+
+              {tieOut.differences.length > 0 && (
+                <div className="export-flags" style={{ marginBottom: 10 }}>
+                  {tieOut.differences.map((d, i) => <div className="export-flag" key={i}>{d}</div>)}
+                </div>
+              )}
+
+              {/* ⚠ NOT GOLD, AND NOT AMONG THE FINDINGS. "Cannot be checked" is not "wrong" —
+                  see the note in bankTieOut.js. Printed as a fault it would put a permanent
+                  red mark on every account that imported a statement before the line record
+                  existed, and the panel would be crying wolf on its own history. */}
+              {(tieOut.notChecked || []).length > 0 && (
+                <div className="tie-unchecked">
+                  {tieOut.notChecked.map((d, i) => <p key={i}>{d}</p>)}
+                </div>
+              )}
+
+              {tieOut.differences.length === 0 && !(tieOut.notChecked || []).length && (
+                <p className="note-msg good" style={{ marginTop: 0 }}>
+                  Every line on these statements reaches the figure it was filed as. ✓
+                </p>
+              )}
+
+              <Panel
+                bare
+                id="ledger.tieout.working"
+                defaultOpen={false}
+                title="Show the working"
+                headClass="tie-working-head"
+                summary="the two columns, your whole year’s rent, where each kind of line lands, and how this is worked out"
+                hint="the two columns, your whole year’s rent, where each kind of line lands, and how this is worked out"
+              >
+              <p className="muted tie-scope">
                 This is not <strong>⚖ Reconcile</strong> on the Financials tab. That one asks what your
                 <strong> tenants</strong> owe — one tenant’s estimated CAM &amp; tax against their real share
                 — and can end in an invoice or a refund. This asks whether <strong>your own books are
                 complete</strong>, and it changes no money at all. And the panel above is the to-do list;
                 this is the account of what happened to everything, including the lines you already filed.
               </p>
-
-              {/* ⚠ THE ANSWER FIRST. The findings used to sit below three tables, so the one
-                  thing a landlord opened this for was the last thing they reached. */}
-              {tieOut.differences.length > 0 ? (
-                <div className="export-flags" style={{ marginBottom: 12 }}>
-                  {tieOut.differences.map((d, i) => <div className="export-flag" key={i}>{d}</div>)}
-                </div>
-              ) : (
-                <p className="note-msg good" style={{ marginTop: 0 }}>
-                  Every line on these statements reaches the figure it was filed as. ✓
-                </p>
-              )}
 
               {[['Money in', tieOut.in], ['Money out', tieOut.out]].map(([title, s]) => (
               <table key={title} style={{ minWidth: 0, marginBottom: 10 }}>
@@ -1715,13 +1743,22 @@ export default function LedgerPage() {
                   {s.rows.map((r) => {
                     const off = Math.abs(r.diff) > 0.005;
                     const attention = off || (r.unplaced && r.statement > 0.005) || r.unknown;
+                    // ⚠ THE CELL NAMES THE TIERS, NEVER THE NET. "$23,599.59 extra" was one
+                    // number standing for $12,630.00 missing and $36,229.59 unmatched, and
+                    // it described neither of them.
+                    const bits = [];
+                    if (tierTotal(r.suspects) > 0.005) bits.push(`${money(tierTotal(r.suspects))} missing`);
+                    if (tierTotal(r.orphans) > 0.005) bits.push(`${money(tierTotal(r.orphans))} with no line`);
+                    if (tierTotal(r.unrecorded) > 0.005) bits.push(`${money(tierTotal(r.unrecorded))} not checkable`);
                     return (
                       <tr key={r.key} style={attention ? { background: 'var(--gold-soft)' } : undefined}>
                         <td>{r.label}{r.count ? <span className="muted" style={{ fontSize: 11 }}> · {r.count} line{r.count === 1 ? '' : 's'}</span> : null}</td>
                         <td className="num">{money(r.statement)}</td>
                         <td className="num">{r.books == null ? <span className="muted">—</span> : money(r.books)}</td>
                         <td style={{ fontSize: 11.5 }} className="muted">
-                          {r.booksLabel ? `${r.booksLabel}${off ? ` · ${money(Math.abs(r.diff))} ${r.diff > 0 ? 'missing' : 'extra'}` : ' ✓'}` : r.nowhere}
+                          {r.booksLabel
+                            ? `${r.booksLabel}${bits.length ? ` · ${bits.join(' · ')}` : off ? ` · ${money(Math.abs(r.diff))} unexplained` : ' ✓'}`
+                            : r.nowhere}
                         </td>
                       </tr>
                     );
@@ -1739,9 +1776,14 @@ export default function LedgerPage() {
             {/* ⚠ Rent gets its own heading saying it does NOT tie. Cash against billed
                 differs by arrears or prepayment on every property there has ever been;
                 printed among the comparisons it reads as a fault and teaches him that this
-                panel cries wolf. */}
+                panel cries wolf.
+                ⚠ AND THE HEADING NOW SAYS SO IN PLAIN WORDS. Two rent figures sat on one
+                screen with opposite meanings and nothing to tell them apart — the Money-in
+                row (a TIE: a difference is a fault) and these three (arrears: a difference
+                is normal). George read the pair as one thing, which is exactly what four
+                figures under two near-identical headings deserve. */}
             <table style={{ minWidth: 0, marginBottom: 10 }}>
-              <thead><tr><th>Rent is a reconciling item, not a tie</th><th className="num">Amount</th><th></th></tr></thead>
+              <thead><tr><th>Your whole year’s rent — not a tie, and not meant to balance</th><th className="num">Amount</th><th></th></tr></thead>
               <tbody>
                 <tr><td>Billed to tenants this year</td><td className="num">{money(rentPos.billed)}</td><td className="muted" style={{ fontSize: 11.5 }}>every month of every lease’s schedule</td></tr>
                 <tr><td>Received this year</td><td className="num">{money(rentPos.received)}</td><td className="muted" style={{ fontSize: 11.5 }}>every payment recorded, however it arrived</td></tr>
@@ -1807,6 +1849,7 @@ export default function LedgerPage() {
               carry the same wrong number) · money that never touched the account you imported · a line filed
               under the wrong heading — it ties, in the wrong bucket.
             </p>
+              </Panel>
             </>
           )}
         </Panel>

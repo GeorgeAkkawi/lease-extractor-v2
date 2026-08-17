@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { addAdjustment, deleteAdjustment, markMonthPaid, updatePayment } from '../lib/api';
 import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
@@ -26,6 +26,7 @@ import {
 // Collected figure starts claiming cash that never landed.
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const signedMoney = (n) => `${n < 0 ? '−' : '+'}${money(Math.abs(n))}`;
 
 export default function MonthDetailPanel({
   propertyId, year, month, row, comp, alloc, onClose, onMonth,
@@ -33,11 +34,18 @@ export default function MonthDetailPanel({
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const modalRef = useModalA11y(onClose);
+  const amountRef = useRef(null);
   const [kind, setKind] = useState('camtax');
   const [dir, setDir] = useState('charge');
   const [amount, setAmount] = useState('');
   const [memo, setMemo] = useState('');
   const [refused, setRefused] = useState(null);
+  // What the last post actually did, kept on screen until the next one is typed. See the
+  // receipt block below for why this exists at all.
+  const [posted, setPosted] = useState(null);
+  // Which payment is being re-filed. The month picker is a second control on a row that
+  // already carries a date, a note and an amount, so it stays behind a link until asked for.
+  const [movingId, setMovingId] = useState(null);
 
   const m = Number(month);
   const i = m - 1;
@@ -61,6 +69,7 @@ export default function MonthDetailPanel({
   const effDir = locked ? info.dir : dir;
   const preview = signedAmount({ kind, amount, direction: effDir });
   const dest = pnlDestination(kind);
+  const drawnFromLump = round2(received - monthPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0));
 
   const settle = () => settleBillingChange(qc, { propertyId, leaseId: row?.lease_id, year });
   // ⚠ A PAYMENT MOVES NO BILLED FIGURE, so it does not go through the billed-figure set —
@@ -79,6 +88,9 @@ export default function MonthDetailPanel({
   };
   const unpaint = (ctx) => { if (ctx?.prev !== undefined) qc.setQueryData(rollKey, ctx.prev); };
 
+  // Typing anything means the last post has been read and acted on. The receipt goes.
+  const editing = () => { setRefused(null); setPosted(null); };
+
   const post = useMutation({
     mutationFn: async () => {
       const res = await addAdjustment({
@@ -90,13 +102,30 @@ export default function MonthDetailPanel({
     // The row appears the moment it is clicked — with its note, which is the thing George
     // could not find afterwards. `id` is a placeholder until the real row lands; nothing
     // reads it before the refetch except React's key.
+    //
+    // ⚠ THE FORM IS NOT CLEARED HERE, and it was until 2026-08-17. Clearing on mutate dropped
+    // `preview` to 0, which greyed the button, emptied the "will owe" line and emptied the
+    // "where it lands" line all in the same frame — so a form that had just worked read as
+    // spent (George: *"i should be able to post more than one charge … the post charge button
+    // goes grey after the first"*). Worse, a REFUSAL — a closed year, a gross lease, a credit
+    // larger than the bill — threw away the amount AND the note he had typed, because nothing
+    // put them back. The optimistic row below is the instant feedback; clearing belongs in
+    // onSuccess, where it means "that one is filed", not "that one is gone".
     onMutate: async () => {
       const optimistic = { id: `pending-${m}-${kind}`, kind, amount: preview, memo: memo.trim() || null, month: m, pending: true };
       const ctx = await paint(optimistic);
-      setAmount(''); setMemo(''); setRefused(null);
-      return ctx;
+      // Snapshot BEFORE the paint lands, so the receipt can quote the month's new figure
+      // without re-deriving it from a cache that is about to be refetched.
+      return { ...ctx, snap: { kind, amount: preview, owedAfter: round2(owed + preview) } };
     },
-    onSuccess: () => { setRefused(null); settle(); },
+    onSuccess: (res, _v, ctx) => {
+      setRefused(null);
+      setPosted({ ...ctx.snap, id: res?.row?.id || null });
+      setAmount('');
+      setMemo('');
+      settle();
+      amountRef.current?.focus();
+    },
     onError: (e, _v, ctx) => { unpaint(ctx); setRefused(e?.message || 'Could not post that adjustment.'); },
   });
 
@@ -130,30 +159,37 @@ export default function MonthDetailPanel({
   // bank statement needs to reconcile against it later.
   const movePay = useMutation({
     mutationFn: ({ id, toMonth }) => updatePayment(id, { period_month: toMonth }),
-    onSuccess: settlePay,
+    onSuccess: () => { setMovingId(null); settlePay(); },
   });
 
   const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending;
 
   // Moving money between months changes what the grid says about BOTH of them, so it asks
   // first — and the dialog states each side rather than saying "are you sure".
+  //
+  // ⚠ "SPREAD FORWARD" IS GONE from every string here (George, 2026-08-17: *"i dont get what
+  // let it spread forward means in the pop up"*). It was wrong twice over: an untagged payment
+  // does not move FORWARD from this month, it fills each month's remaining need from JANUARY
+  // (allocatePayments) — and "spread" is not a word anybody uses about a cheque. What the
+  // action does is untie the payment from a month; the implications still state the rest.
   async function askMove(p, raw) {
     const amt = money(Number(p.amount) || 0);
     if (raw === '') {
       const ok = await askConfirm({
-        title: 'Let this payment spread forward?',
+        title: `Untie this payment from ${monthName(m)}?`,
         message: `${amt} recorded on ${monthName(m)} ${year} stops belonging to ${monthName(m)} alone.`,
         implications: [
           `It fills each month's remaining need from January onward, ${monthName(m)} included.`,
           'Anything still left over after December shows as a credit owed back to the tenant.',
-          'This is how an overpayment reaches the months after it — a payment tagged to one month settles that month and stops there.',
+          'This is how an overpayment reaches the months after it — a payment tied to one month settles that month and stops there.',
           'Nothing is deleted; put it back on a month whenever you like.',
         ],
-        confirmLabel: 'Let it spread',
+        confirmLabel: 'Untie it',
         // Money moves, nothing is destroyed — gold, not red.
         tone: 'warn',
       });
       if (ok) movePay.mutate({ id: p.id, toMonth: null });
+      else setMovingId(null);
       return;
     }
     const to = Number(raw);
@@ -169,6 +205,7 @@ export default function MonthDetailPanel({
       tone: 'warn',
     });
     if (ok) movePay.mutate({ id: p.id, toMonth: to });
+    else setMovingId(null);
   }
 
   return (
@@ -183,14 +220,18 @@ export default function MonthDetailPanel({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-head">
-          <div>
+          <div className="mp-title">
             <strong>{row?.tenant_name}</strong>
-            <div className="muted" style={{ fontSize: 12 }}>{monthName(m)} {year}</div>
+            <span className="mp-when">{monthName(m)} {year}</span>
           </div>
-          <div className="mp-nav">
-            <button className="icon-btn" disabled={m <= 1} onClick={() => onMonth?.(m - 1)} aria-label="Previous month">◀</button>
-            <span className="mp-nav-label">{MONTHS[i]}</span>
-            <button className="icon-btn" disabled={m >= 12} onClick={() => onMonth?.(m + 1)} aria-label="Next month">▶</button>
+          <div className="mp-head-right">
+            {/* One bordered group rather than three loose glyphs — ◀ Jan ▶ reads as a
+                control, and the close sits apart from it so it can't be hit by accident. */}
+            <div className="mp-nav">
+              <button className="mp-nav-btn" disabled={m <= 1} onClick={() => onMonth?.(m - 1)} aria-label="Previous month">◀</button>
+              <span className="mp-nav-label">{MONTHS[i]}</span>
+              <button className="mp-nav-btn" disabled={m >= 12} onClick={() => onMonth?.(m + 1)} aria-label="Next month">▶</button>
+            </div>
             <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
           </div>
         </div>
@@ -204,103 +245,113 @@ export default function MonthDetailPanel({
               {c.roof > 0 && <div className="mp-line"><span>Roof</span><b>{money(c.roof)}</b></div>}
               <div className="mp-line mp-sub"><span>Scheduled</span><b>{money(scheduled)}</b></div>
               {rowsForMonth.map((a) => (
-                <div className="mp-line mp-adj" key={a.id}>
-                  <span>
-                    {adjustmentKindInfo(a.kind).label}
-                    {a.memo ? <em className="muted"> — {a.memo}</em> : null}
-                  </span>
-                  <b className={Number(a.amount) < 0 ? 'mp-credit' : 'mp-charge'}>
-                    {Number(a.amount) < 0 ? '−' : '+'}{money(Math.abs(Number(a.amount)))}
-                  </b>
-                  <button
-                    className="icon-btn"
-                    disabled={busy}
-                    aria-label="Remove this adjustment"
-                    onClick={async () => {
-                      // ⚠ THE DIRECTION IS COMPUTED, and it was hardcoded to "lower" until
-                      // 2026-08-16. Removing a CREDIT raises the invoice — so the dialog
-                      // contradicted the line directly above it, which had the arithmetic
-                      // right, on every credit there has ever been.
-                      const isCredit = Number(a.amount) < 0;
-                      const ok = await askConfirm({
-                        title: 'Remove this adjustment?',
-                        message: `${adjustmentKindInfo(a.kind).label} of ${isCredit ? '−' : '+'}${money(Math.abs(Number(a.amount)))} on ${monthName(m)} ${year}.`,
-                        implications: [
-                          `${monthName(m)} goes back to owing ${money(round2(owed - Number(a.amount)))}.`,
-                          `This year's invoice is re-issued at the ${isCredit ? 'HIGHER' : 'lower'} total, so Outstanding moves.`,
-                          // ⚠ HALF A SETTLEMENT IS WORSE THAN NONE. A carry-forward is two rows
-                          // in two years; delete one here and the tenant is cleared in one year
-                          // and charged in the other, and each screen reads as correct alone.
-                          ...(a.kind === 'opening' || a.kind === 'writeoff' || a.kind === 'refund'
-                            ? ['⚠ This entry is part of a year-end settlement, and a carried-forward balance has a matching entry in the OTHER year. Removing only this one leaves the two years disagreeing — use “Undo settlement” on the Ledger row to take back both.']
-                            : []),
-                          'No payment is touched — only what was billed.',
-                        ],
-                        confirmLabel: 'Remove',
-                        tone: 'warn',
-                      });
-                      if (ok) removeAdj.mutate(a.id);
-                    }}
-                  >✕</button>
+                <div className={`mp-adj ${Number(a.amount) < 0 ? 'is-credit' : 'is-charge'}`} key={a.id}>
+                  <div className="mp-adj-head">
+                    <span>{adjustmentKindInfo(a.kind).label}</span>
+                    <b>{signedMoney(Number(a.amount) || 0)}</b>
+                    <button
+                      className="icon-btn mp-adj-x"
+                      disabled={busy}
+                      aria-label="Remove this adjustment"
+                      onClick={async () => {
+                        // ⚠ THE DIRECTION IS COMPUTED, and it was hardcoded to "lower" until
+                        // 2026-08-16. Removing a CREDIT raises the invoice — so the dialog
+                        // contradicted the line directly above it, which had the arithmetic
+                        // right, on every credit there has ever been.
+                        const isCredit = Number(a.amount) < 0;
+                        const ok = await askConfirm({
+                          title: 'Remove this adjustment?',
+                          message: `${adjustmentKindInfo(a.kind).label} of ${isCredit ? '−' : '+'}${money(Math.abs(Number(a.amount)))} on ${monthName(m)} ${year}.`,
+                          implications: [
+                            `${monthName(m)} goes back to owing ${money(round2(owed - Number(a.amount)))}.`,
+                            `This year's invoice is re-issued at the ${isCredit ? 'HIGHER' : 'lower'} total, so Outstanding moves.`,
+                            // ⚠ HALF A SETTLEMENT IS WORSE THAN NONE. A carry-forward is two rows
+                            // in two years; delete one here and the tenant is cleared in one year
+                            // and charged in the other, and each screen reads as correct alone.
+                            ...(a.kind === 'opening' || a.kind === 'writeoff' || a.kind === 'refund'
+                              ? ['⚠ This entry is part of a year-end settlement, and a carried-forward balance has a matching entry in the OTHER year. Removing only this one leaves the two years disagreeing — use “Undo settlement” on the Ledger row to take back both.']
+                              : []),
+                            'No payment is touched — only what was billed.',
+                          ],
+                          confirmLabel: 'Remove',
+                          tone: 'warn',
+                        });
+                        if (ok) removeAdj.mutate(a.id);
+                      }}
+                    >✕</button>
+                  </div>
+                  {a.memo ? <p className="mp-adj-memo">{a.memo}</p> : null}
                 </div>
               ))}
-              <div className="mp-line mp-total"><span>Owed</span><b>{money(owed)}</b></div>
+              <div className="mp-foot"><span>Owed</span><b>{money(owed)}</b></div>
             </div>
 
             <div className="mp-col">
               <p className="mp-cap">What came in</p>
               {monthPayments.length === 0 && received <= 0.005 && (
-                <p className="muted" style={{ margin: '4px 0' }}>Nothing recorded for {monthName(m)} yet.</p>
+                <p className="muted mp-empty">Nothing recorded for {monthName(m)} yet.</p>
               )}
               {monthPayments.map((p) => (
-                <div key={p.id}>
+                <div className="mp-pay" key={p.id}>
                   <div className="mp-line">
-                    <span>{p.paid_date || 'recorded'}{p.note ? <em className="muted"> — {p.note}</em> : null}</span>
+                    <span>
+                      {p.paid_date || 'recorded'}
+                      {p.note ? <em className="mp-pay-note">{p.note}</em> : null}
+                    </span>
                     <b>{money(p.amount)}</b>
                   </div>
                   {/* Re-file it, rather than delete-and-retype. The select resets to its
                       placeholder every render because the payment's CURRENT month is the
                       month this panel is showing — there is nothing for it to display. */}
-                  <div className="mp-move">
-                    <select
-                      className="text-input"
-                      value=""
+                  {movingId === p.id ? (
+                    <div className="mp-move">
+                      <select
+                        className="text-input"
+                        value=""
+                        disabled={busy}
+                        autoFocus
+                        onChange={(e) => { if (e.target.value !== '—') askMove(p, e.target.value); }}
+                      >
+                        <option value="—">Where does it belong?</option>
+                        {MONTHS.map((nm, mi) => (
+                          mi + 1 === m ? null : <option key={nm} value={mi + 1}>to {nm}</option>
+                        ))}
+                        <option value="">don’t tie it to a month</option>
+                      </select>
+                      <button className="ghost btn-sm" disabled={busy} onClick={() => setMovingId(null)}>Cancel</button>
+                    </div>
+                  ) : (
+                    <button
+                      className="ghost btn-sm mp-move-open"
                       disabled={busy}
-                      onChange={(e) => { if (e.target.value !== '—') askMove(p, e.target.value); }}
-                      title="Record this payment against a different month, or let it spread forward across the months still owing."
-                    >
-                      <option value="—">Move this payment…</option>
-                      {MONTHS.map((nm, mi) => (
-                        mi + 1 === m ? null : <option key={nm} value={mi + 1}>to {nm}</option>
-                      ))}
-                      <option value="">let it spread forward</option>
-                    </select>
-                  </div>
+                      onClick={() => setMovingId(p.id)}
+                    >Move this payment…</button>
+                  )}
                 </div>
               ))}
-              {round2(received - monthPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)) > 0.005 && (
-                <div className="mp-line"><span className="muted">Drawn from a lump payment</span><b>{money(round2(received - monthPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0)))}</b></div>
+              {drawnFromLump > 0.005 && (
+                <div className="mp-line"><span className="muted">Drawn from a lump payment</span><b>{money(drawnFromLump)}</b></div>
               )}
-              <div className="mp-line mp-total"><span>Received</span><b>{money(received)}</b></div>
-              <div className={`mp-line mp-total ${shortfall > 0.05 ? 'mp-short' : ''}`}>
+              <div className="mp-foot"><span>Received</span><b>{money(received)}</b></div>
+              <div className={`mp-foot ${shortfall > 0.05 ? 'mp-short' : ''}`}>
                 <span>{shortfall > 0.05 ? 'Still owed' : shortfall < -0.05 ? 'Paid over' : 'Settled'}</span>
                 <b>{money(Math.abs(shortfall))}</b>
               </div>
               {/* George, 2026-08-13: "if a tenant is over paying where does that go and how
                   does it show". It goes NOWHERE on its own, and that is worth saying: a
-                  payment tagged to a month settles that month at whatever arrived and does
+                  payment tied to a month settles that month at whatever arrived and does
                   not roll forward (allocatePayments). So the extra sits here until the
                   landlord moves it. The two honest destinations are both above. */}
               {shortfall < -0.05 && (
-                <p className="muted mp-note" style={{ marginTop: 6 }}>
+                <p className="muted mp-note mp-note-tight">
                   This month is settled at what arrived, so the extra <strong>stays on {monthName(m)}</strong> —
                   it does not move to another month by itself. Use <em>Move this payment</em> above to put it on
-                  the month it was for, or let it spread forward so it fills the months still owing and any true
-                  remainder shows as a credit owed back.
+                  the month it was for, or untie it, and it pays off the oldest months still owing — any true
+                  remainder then shows as a credit owed back.
                 </p>
               )}
               {shortfall > 0.05 && (
-                <button className="secondary" style={{ marginTop: 8 }} disabled={busy} onClick={() => recordGap.mutate()}>
+                <button className="secondary mp-record" disabled={busy} onClick={() => recordGap.mutate()}>
                   Record {money(shortfall)} received
                 </button>
               )}
@@ -312,7 +363,7 @@ export default function MonthDetailPanel({
                   grid's version also asks first when the money came off a bank statement,
                   which this one never did. */}
               {monthPayments.length > 0 && (
-                <p className="muted mp-note" style={{ marginTop: 8 }}>
+                <p className="muted mp-note mp-note-tight">
                   To take {monthName(m)} back, click its box on the Ledger — one click records a month,
                   one click undoes it.
                 </p>
@@ -331,13 +382,13 @@ export default function MonthDetailPanel({
             <div className="mp-form">
               <label>
                 <span>Kind</span>
-                <select value={kind} onChange={(e) => { setKind(e.target.value); setRefused(null); }} disabled={busy}>
+                <select value={kind} onChange={(e) => { setKind(e.target.value); editing(); }} disabled={busy}>
                   {kinds.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
                 </select>
               </label>
               <label>
                 <span>Charge or credit</span>
-                <select value={effDir} onChange={(e) => setDir(e.target.value)} disabled={busy || locked}>
+                <select value={effDir} onChange={(e) => { setDir(e.target.value); editing(); }} disabled={busy || locked}>
                   <option value="charge">Charge — the tenant owes more</option>
                   <option value="credit">Credit — the tenant owes less</option>
                 </select>
@@ -345,9 +396,10 @@ export default function MonthDetailPanel({
               <label>
                 <span>Amount</span>
                 <input
+                  ref={amountRef}
                   className="text-input" type="number" step="0.01" min="0" inputMode="decimal"
                   value={amount} placeholder="0.00" disabled={busy}
-                  onChange={(e) => { setAmount(e.target.value); setRefused(null); }}
+                  onChange={(e) => { setAmount(e.target.value); editing(); }}
                 />
               </label>
               <label className="mp-memo">
@@ -355,7 +407,7 @@ export default function MonthDetailPanel({
                 <input
                   className="text-input" type="text" value={memo} disabled={busy}
                   placeholder="e.g. snow removal invoice came in higher"
-                  onChange={(e) => setMemo(e.target.value)}
+                  onChange={(e) => { setMemo(e.target.value); editing(); }}
                 />
               </label>
             </div>
@@ -371,18 +423,53 @@ export default function MonthDetailPanel({
                   : <>This moves what the tenant owes. FY {year} income does not change — it is stated under <b>{dest.row}</b> and taken back out before <b>Total earned</b>.</>}
               </p>
             )}
-            <div className="modal-actions" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
-              {Math.abs(preview) > 0 && (
-                <span className="muted mp-preview">
-                  {monthName(m)} will owe <b>{money(round2(owed + preview))}</b>
-                </span>
-              )}
-              <button disabled={busy || !(Math.abs(preview) > 0)} onClick={() => post.mutate()}>
-                {post.isPending ? 'Posting…' : preview < 0 ? 'Post credit' : 'Post charge'}
-              </button>
-            </div>
-            {refused && <p className="note-msg danger">{refused}</p>}
-            <MutationError of={[removeAdj, recordGap]} />
+          </div>
+        </div>
+
+        {/* ── The foot: what will happen, or what just did ─────────────────────────────
+            ⚠ THIS SLOT IS WHY THE FORM READ AS SPENT. It held only the "will owe" preview,
+            which vanished the instant a post cleared the amount — so the last thing a
+            landlord saw after a successful post was an empty strip and a grey button, and
+            the app never once said what it had done. It now carries a receipt instead:
+            which adjustment, how much, on which month, and what the month owes now — with
+            Undo, because the next thing you want after posting the wrong figure is to take
+            it back. It clears the moment the next one is typed. */}
+        <div className="modal-foot">
+          {refused && <p className="note-msg danger mp-foot-msg">{refused}</p>}
+          <MutationError of={[removeAdj, recordGap, movePay]} />
+          <div className="modal-actions">
+            {Math.abs(preview) > 0 ? (
+              <span className="muted mp-preview">
+                {monthName(m)} will owe <b>{money(round2(owed + preview))}</b>
+              </span>
+            ) : posted ? (
+              <span className="mp-posted">
+                ✓ {adjustmentKindInfo(posted.kind).label} <b>{signedMoney(posted.amount)}</b> posted
+                to {monthName(m)} · {monthName(m)} now owes <b>{money(posted.owedAfter)}</b>
+                {posted.id && (
+                  <button
+                    className="ghost btn-sm"
+                    disabled={busy}
+                    onClick={() => { removeAdj.mutate(posted.id); setPosted(null); }}
+                  >Undo</button>
+                )}
+              </span>
+            ) : (
+              <span className="muted mp-preview">Post as many as the month needs.</span>
+            )}
+            {/* ⚠ DISABLED ONLY WHILE A WRITE IS IN FLIGHT. Greying it for an empty amount is
+                what made "you have had your one charge" the obvious reading; a live button
+                that says what is missing when you press it says the true thing instead. */}
+            <button disabled={busy} onClick={() => {
+              if (!(Math.abs(preview) > 0)) {
+                setRefused('Enter an amount to post.');
+                amountRef.current?.focus();
+                return;
+              }
+              post.mutate();
+            }}>
+              {post.isPending ? 'Posting…' : effDir === 'credit' ? 'Post credit' : 'Post charge'}
+            </button>
           </div>
         </div>
       </div>

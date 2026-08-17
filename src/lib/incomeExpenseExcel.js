@@ -273,8 +273,12 @@ function addTieOut(wb, pkg, year) {
     // was billed differs by arrears or prepayment on every property in the world. Printed
     // as a difference among the others it would read as a fault and teach the reader that
     // this sheet cries wolf.
+    // ⚠ AND THE HEADING SAYS IT IN PLAIN WORDS. "Rent is a reconciling item" is accountant's
+    // English sitting a few rows under a Money-in row that is ALSO about tenant rent and
+    // means the opposite. Two headings that read alike and mean opposite things is a
+    // labelling fault (George, 2026-08-17: *"i dont get the tenant rent difference"*).
     if (t.rent) {
-      pen.head(['Rent is a reconciling item, not a tie', 'Amount', '', '', ''], TIE_ALIGN);
+      pen.head(['Your whole year’s rent — not a tie, and not meant to balance', 'Amount', '', '', ''], TIE_ALIGN);
       pen.line(['Billed to tenants this year', t.rent.billed, '', '', 'every month of every lease\'s schedule'], { aligns: TIE_ALIGN });
       pen.line(['Received this year', t.rent.received, '', '', 'every payment recorded against those bills, however it arrived'], { aligns: TIE_ALIGN });
       pen.line([
@@ -299,8 +303,16 @@ function addTieOut(wb, pkg, year) {
     if (t.differences.length) {
       pen.head(['What to look at', '', '', '', ''], TIE_ALIGN);
       for (const d of t.differences) pen.note(`• ${d}`, { bg: P.GOLD_BG, ink: P.GOLD_INK, height: 34 });
-    } else {
+    } else if (!(t.notChecked || []).length) {
       pen.note('Every line on these statements reaches the figure it was filed as. ✓', { height: 16 });
+    }
+    // ⚠ ITS OWN HEADING, AND NOT GOLD. Money that could not be checked is not money that is
+    // wrong — filed under "what to look at" it would send an accountant hunting for a fault
+    // that does not exist, and would mark every account that imported a statement before the
+    // line record existed. See bankTieOut.js for why the two tiers are never summed.
+    if ((t.notChecked || []).length) {
+      pen.head(['Could not be checked — not a difference', '', '', '', ''], TIE_ALIGN);
+      for (const d of t.notChecked) pen.note(`• ${d}`, { bg: P.NEUTRAL_BG, height: 34 });
     }
     pen.skip();
   }

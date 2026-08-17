@@ -12,6 +12,238 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **ROUND C of the Ledger polish: the Key row comes out, the month pop-up gets the
+  house style, "spread forward" says what it means, Post charge stops looking like a one-shot, and
+  the bank tie-out stops netting two opposite faults into one meaningless number.** Plus a new
+  standing instruction in `CLAUDE.md` — every change now ends with a **Now redundant** list.
+  Cloudflare version **`c1262614-2267-4474-8524-90752c7a61df`** (on top of `df6a94c7`).
+
+  George, on the live app: *"i should be able to post more than one charge if i choose but the post
+  charge button goes grey after the first. now the boxes of partly covered, not the billed amount,
+  covered by a lump, and recieved not billed are not needed. we can take those out (see how i
+  realized thta? is there a way you can teach yourself to notice these kinds of things or a sentence
+  or two you could write in the md that alows you to be proactive in changes not reactive? but of
+  course with my permission on the final changes?) i dont get what let it spread forward means in the
+  pop up, also in the pop up when i double click the formating in there seems lacking/poor can we give
+  it that luxury feel that we are about? im confused on the discrepancy in the bank tie out explain
+  whats happneing there - i still dont know why this is something thats needed."*
+
+  ---
+
+  ### THE TIE-OUT DIFFERENCE, DIAGNOSED AGAINST THE LIVE DATABASE
+
+  George asked *"so you know why what the bank showed and what amlak recorded are different numbers
+  right now?"* — so it was read out of the production database rather than guessed at. Pershing
+  Plaza FY 2026: **the bank showed `$62,686.59` · Amlak recorded `$86,286.18`.** That one figure was
+  **two unrelated faults in opposite directions, partly cancelling**:
+
+  - **$12,630.00 the bank showed with no payment left behind it.** Two rent lines on the 31 Jul
+    statement (`ACH … From DENTALOFFICE`, 2 Jul and 31 Jul, $6,315.00 each) carry `ref_id`s pointing
+    at payments that no longer exist. D & D Dental does **not** read unpaid — those months were
+    recorded again on 13 Aug as `source:'system'` rows with no `import_id`. The money looks right on
+    every screen; what was lost is the **bank provenance**, which per `0088` makes those rows
+    re-pricable by `resyncYearBillingToEstimate` and means no future statement can reconcile against
+    those months. That is the exact shape un-tick-then-re-tick produces.
+  - **$36,229.59 of payments with no bank line at all.** The two statements imported **24 Jul 2026**
+    wrote 8 June payments still on the books, but those imports hold **zero `statement_lines`** — the
+    earliest line row in the entire database is `2026-08-13 17:24`. They ran before the app kept a
+    line-by-line record. Nothing is wrong with that money; there is simply nothing to compare it to.
+
+  `$36,229.59 − $12,630.00 = $23,599.59`, the net the panel printed.
+
+  **AND THE PANEL WAS WRONG ABOUT IT TWICE.** It reported *"the books hold $23,599.59 more"*, named
+  $12,630.00 of suspects, then stated *"The remaining $10,969.59 is not explained by any line"* — a
+  figure corresponding to nothing in the world. The real unexplained amount was $36,229.59, and it
+  had a benign explanation the code never looked for.
+
+  `bankTieOut.js` has forbidden netting **money in against money out** since it was written, for
+  exactly this reason. **The same rule was never applied one level down, inside a bucket.**
+
+  ### THE FIX: THREE TIERS THAT ARE NEVER SUMMED
+
+  A reverse pass now sits beside the existing `suspects` pass — `claimedRefs` from every line's
+  `ref_id`, then for each two-sided bucket, which books rows does nothing claim?
+
+  | tier | means | where it is reported |
+  |---|---|---|
+  | **`missing`** | the bank showed it, the books lost it. Proven, line by line | `differences` — a fault |
+  | **`orphan`** | the books hold it; no line on a **ref-stamping** import claims it | `differences` — a fault |
+  | **`unrecorded`** | the books hold it and its import kept **no lines at all** | **`notChecked`** — benign |
+
+  **THREE GUARDS ON THE REVERSE PASS, each stopping an accusation the data cannot support.** A row
+  with no `id` could never have been pointed at. A row with no `import_id` did not come from an
+  import (the hand-entered context line already reports that money). And a row whose import kept
+  lines but where **none of them stamps a ref** cannot be claimed by anything, so its silence proves
+  nothing — that is the `untraceable` tier read from the books side, and it is already stated from
+  the lines side. Without the third guard this would have accused every books row on every
+  pre-ref-stamping import; the test `calls out an unclaimed books row, and stays silent when the
+  import stamps no refs at all` pins both halves.
+
+  **`residual` IS THE POINT OF THE WHOLE EXERCISE.** `r.diff − (missing − orphan − unrecorded)` is
+  what none of the evidence explains. On George's data it is **exactly $0.00** — so the panel now
+  says nothing about a remainder, where before it invented $10,969.59. When it is non-zero the old
+  wording returns unchanged, including the `untraceable` caveat, so the four existing tests that pin
+  that sentence still pass untouched.
+
+  **AND WHEN THEY CANCEL, IT SAYS SO OUT LOUD:** *"don't read the $23,599.59 between the two columns
+  as a finding. It is $12,630.00 missing set against $36,229.59 unmatched — different money, partly
+  cancelling, and two separate questions."*
+
+  **`notChecked` DOES NOT BREAK `balanced`, AND IS NOT GOLD.** Money that cannot be checked is not
+  money that is wrong; filed among the faults it would put a permanent red mark on every account
+  that imported a statement before `0076`, which is the fastest way to teach a landlord that this
+  panel cries wolf. It renders in `--panel-2` with a grey rule, and the workbook gives it its own
+  heading — *"Could not be checked — not a difference"* — rather than the gold "What to look at"
+  band. But it **does** stop `tieOutSentence` printing a bare ✓: *"accounted for, apart from 1 figure
+  that cannot be checked"*, because checked-and-clean and never-looked-at must never read the same.
+  That is this file's own rule turned on itself.
+
+  ### THE TWO RENT FIGURES THAT MEANT OPPOSITE THINGS
+
+  This is what George was actually reading. The panel held **four rent figures under two headings
+  that both said "rent"**:
+
+  - the Money-in row `Tenant rent` — a **tie**. A difference is a fault.
+  - the table headed `Rent is a reconciling item, not a tie` — **arrears**. A difference is normal,
+    always, on every property there has ever been.
+
+  Renamed on both surfaces, in the same commit, so the screen and the workbook cannot drift:
+  **`Rent off these statements`** and **`Your whole year's rent — not a tie, and not meant to
+  balance`**. The workbook assertion list in `bankTieOut.test.js` now pins both strings.
+
+  ### ANSWER FIRST, WORKING BEHIND A FOLD
+
+  George had said twice that this panel did not land, and **both previous answers added more prose**
+  — a purpose paragraph, then a not-⚖-Reconcile paragraph, then three tables, then the
+  `WHERE_IT_LANDS` map, then two method notes, all before anything a landlord could act on. Third
+  time, the answer is **less**:
+
+  > **$21,133.33 came in and $9,942.48 went out of your bank account in 2026. Amlak has a record for
+  > every dollar of it except $12,630.00.**
+
+  Two sentences of arithmetic, in Cormorant 19px, then only the things that are wrong, then the
+  benign tier. Everything else moved behind **Show the working** — using `Panel` (`bare`), not a
+  hand-rolled toggle, per CLAUDE.md §3. Nothing is deleted; it is what makes the answer worth
+  believing, and it stops being what you meet first. The figures in that sentence come from a new
+  `unaccounted` object on the tie-out and the exported `tierTotal`, so the headline, the table cells
+  and the sentences are one arithmetic rather than three.
+
+  The Money-in/out difference cell follows the same rule: `$12,630.00 missing · $36,229.59 not
+  checkable` instead of `$23,599.59 extra`.
+
+  ---
+
+  ### POST CHARGE — IT WAS NEVER LIMITED, IT JUST STOPPED INVITING ONE
+
+  `post.onMutate` called `setAmount('')`, so `preview` dropped to 0, which greyed the button, emptied
+  the `Jun will owe …` preview and emptied the `.mp-lands` "where this lands" line **in the same
+  frame**. A form that had just worked read as spent.
+
+  **A worse bug fell out of the same line: a REFUSAL threw away the amount and the note you typed.**
+  Closed year, gross lease, credit larger than the bill — `onError` restored neither, so the one
+  path where the user has done nothing wrong also meant "type it all again". Clearing moved to
+  `onSuccess`; the optimistic row is the instant feedback `onMutate` was clearing for.
+
+  In its place, a **receipt** in the slot that used to go empty:
+  `✓ Late fee / other charge +$150.00 posted to January · January now owes $12,975.00 [Undo]`.
+  It clears the moment the next amount is typed. Focus returns to Amount. And the button is now
+  disabled **only while a write is in flight** — with an empty amount it stays live and says
+  *"Enter an amount to post"* when pressed, because a grey button is what made "you have had your
+  one charge" the obvious reading.
+
+  ### "LET IT SPREAD FORWARD" WAS WRONG TWICE
+
+  It does not spread **forward** — an untagged payment fills each month's remaining need from
+  **January** (`allocatePayments`) — and "spread" is not a word anybody uses about a cheque. Gone
+  from all five strings: the option is now `don't tie it to a month`, the confirm is *"Untie this
+  payment from June?"* with `Untie it`, and the over-payment note ends *"…or untie it, and it pays
+  off the oldest months still owing"*. The implications already stated the January rule correctly and
+  are unchanged. The `Move this payment…` select also moved behind a ghost link, so a settled month
+  is not three controls deep by default.
+
+  ### THE MONTH POP-UP, GIVEN THE HOUSE STYLE
+
+  It was the last dialog in the app laid out as three stacked lists with **eight inline `style={{}}`
+  objects** — now zero, verified in the browser. Panel 640 → 720px. A real hairline rule between the
+  two columns (the `.announce-side` shape) instead of 20px of air. `◀ Jan ▶` as one bordered pill
+  with the close set apart from it. Closing figures land in a `--panel-2` foot band that spans its
+  column. A posted charge is no longer another line in the list but a card with a 2px gold (charge)
+  or forest (credit) left bar and **its note on its own line** instead of trailing off the right
+  edge, with the `✕` revealed on hover — plus a `@media (hover:none)` fallback, because
+  reveal-on-hover has to carry one or the control does not exist on a tablet. The post form became a
+  `--panel-2` card so "the bill itself was different" reads as an action, and the actions moved to a
+  real sticky `.modal-foot` like every other dialog. **No arithmetic, no copy and no behaviour moved
+  with the styling.**
+
+  ### THE KEY ROW IS GONE — AND WHY THAT IS THE INTERESTING PART
+
+  George named four swatches; asked how far it should go, he said the whole row. He is right, and
+  the reason is the reason for the new standing instruction: **the hover card shipped a round ago,
+  and the legend it replaced simply stayed there.** Eight swatches existed because a box could not
+  explain itself. One now does. Two explanations of one thing drift, and the printed one drifts
+  silently because nothing compares them. What survives is the single thing hovering cannot tell
+  you — that the boxes respond to a click at all. `.rr-key*` went from `App.css` with it.
+
+  ### NEW STANDING INSTRUCTION IN `CLAUDE.md`: "Saying what the change made redundant"
+
+  George: *"is there a way you can teach yourself to notice these kinds of things … be proactive in
+  changes not reactive? but of course with my permission on the final changes?"*
+
+  Every plan and every deploy-log entry now ends with a **Now redundant** list — what the change
+  just made unnecessary, duplicated or contradictory, one line each on why — and it is **proposed,
+  never deleted on the assistant's own authority**. That is the trade: George gets the noticing
+  without losing the say. Four places to look, each drawn from something that actually happened
+  here: the thing the new thing replaced · a second way to do one job (two doors drift, and the older
+  one keeps the older rules) · prose that exists because the screen could not say it · a registry
+  entry or CSS rule with no reader left. "Nothing redundant" is a valid answer; asking out loud is
+  the point.
+
+  ---
+
+  **Files.** `src/lib/bankTieOut.js` (the reverse pass, the three tiers, `residual`, `notChecked`,
+  `unaccounted`, `tierTotal`, the rent rename) · `src/lib/api.js` (`getBankTieOut` passes
+  `importRows`) · `src/pages/LedgerPage.js` (Key row out, answer-first tie-out, the working fold, the
+  tiered difference cell) · `src/components/MonthDetailPanel.js` (rewritten: receipt, refusal keeps
+  your typing, untie wording, house style, zero inline styles) · `src/App.css` (`.rr-howto` replaces
+  `.rr-key*`; the whole `.mp-*` block; `.tie-answer` / `.tie-unchecked` / `.tie-working-head`) ·
+  `src/lib/incomeExpenseExcel.js` (the rent rename + the `notChecked` heading) · `CLAUDE.md` ·
+  `src/lib/__tests__/bankTieOut.test.js` · `src/components/__tests__/monthPanelUi.test.js` ·
+  `src/components/__tests__/ledgerPage.test.js`.
+
+  **Verified.** `npm test` — **1914 tests across 181 files**, up 5. Three new tie-out tests pin the
+  cancelling-faults case with George's own figures ($62,686.59 / $86,286.18 / −$23,599.59 →
+  $12,630.00 + $36,229.59, residual $0.00, **no `$10,969.59` anywhere**), the benign tier, and the
+  no-refs-stamped silence. Two new panel tests pin a second charge posting straight after the first
+  and a refusal keeping the amount and the note. In the browser: Key row absent and every box still
+  `48x32` with no horizontal overflow · the pop-up `720x633`, two columns with a 1px rule, **zero**
+  inline styles, sticky foot · two charges posted back to back, receipt reading
+  `+$150.00 … now owes $12,900.00` then `+$75.00 … now owes $12,975.00`, button live throughout,
+  focus back in Amount, receipt retiring on the next keystroke · the tie-out answer in Cormorant
+  19px with the working fold shut and `The bank showed` absent until it is opened. All three URLs
+  200.
+
+  **Now redundant** *(proposed — nothing here was deleted on my own authority)*:
+  - **The `title="Record this payment against a different month…"` native tooltip** — replaced by the
+    ghost link + select; already gone with it.
+  - **`MonthDetailPanel`'s hint line about clicking the Ledger box to take a month back** — the box's
+    own hover card says the same sentence. Two copies of one instruction.
+  - **The `WHERE_IT_LANDS` map on screen** — now behind the working fold, and duplicated verbatim on
+    the workbook's tie-out sheet. One of the two could go.
+  - **`.rr-drift` reused on the unplaced-lines second step** — a flex class doing duty as a layout
+    hack, left from before the fixed table. Cosmetic, still there.
+  - **Two hand-rolled `.panel-toggle` copies on `HistoryPage.js`** — still owed to `Panel`
+    (CLAUDE.md §3), raised again.
+
+  **Flagged to George, needing his decision (real data, not code):**
+  - **The two deleted D & D Dental bank payments.** Leave them (the months read paid, provenance
+    lost, and those rows are re-pricable), or re-import the 31 Jul statement so the lines re-link.
+  - **The two 24 Jul statements.** Re-importing gives June a line-by-line record and retires the
+    $36,229.59 "cannot be checked" finding. A re-read, not a fix.
+
+  **Unchanged, still George's call:** the statement import calls no `resyncPropertyBilling` ·
+  `TenantStatement` is pinned to the calendar year · a tagged overpayment creates no `credit` ·
+  every other `title=` in the app is still a native tooltip.
+
 - **2026-08-17** — **ROUND B of the Ledger polish: the app says where the money GOES, and stops
   making you wait for it. Post charge answers in 17ms instead of after five round trips; the
   Settle-up dialog names the exact workbook lines and figures before you agree; the
