@@ -695,6 +695,20 @@ select.cat-select{font-size:11px;margin-top:3px;padding:3px 22px 3px 6px;max-wid
 .opt-toggle.on .opt-dot{background:var(--accent);border-color:var(--accent)}
 .opt-toggle:focus-within{box-shadow:0 0 0 3px var(--accent-soft)}
 
+/* ---- picking which document you are about to download (ExportIncomeExpenseModal) ----
+   Two cards, not a <select>: the choice changes what every figure in the preview beneath
+   MEANS, so each option has to carry its sentence where the decision is made. Same
+   label-wraps-the-native-input trick as .opt-toggle — only the paint is ours. */
+.basis-pick{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0 4px}
+.basis-opt{display:block;padding:10px 12px;border:1px solid var(--hair);border-radius:var(--radius);background:var(--panel-2);cursor:pointer;transition:border-color .12s ease,background .12s ease,box-shadow .12s ease}
+.basis-opt:hover{border-color:var(--border)}
+.basis-opt input{position:absolute;width:1px;height:1px;opacity:0;margin:0}
+.basis-opt b{display:block;font-size:13px;color:var(--ink)}
+.basis-opt span{display:block;margin-top:3px;font-size:11.5px;line-height:1.45;color:var(--muted)}
+.basis-opt.on{background:var(--accent-soft);border-color:var(--accent)}
+.basis-opt:focus-within{box-shadow:0 0 0 3px var(--accent-soft)}
+@media (max-width:640px){.basis-pick{grid-template-columns:1fr}}
+
 /* ---- a cell you can click and retype (InlineEdit.js) ----
    Wears .notice-cell's dashed underline, which already means "editable" on the renewal
    options table, so the affordance is one idiom rather than two. */

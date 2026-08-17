@@ -12,6 +12,179 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **Income and expenses gets two bases: Projected and Live — plus the Total
+  column on the far right, and the bank tie-out sheet removed.** Cloudflare version
+  **`df15adfa-4c28-40f4-9b4f-909363438013`** (on top of `1bd8ee7a`).
+
+  George: *"in the income and expenses summary. I need a totals column for the money in, money
+  out sections. Also, there needs to be a button for the income and expenses to say, hey. I need
+  a live look, which uses the real numbers on the ledger and the actual cam and tax … let's say
+  somebody has been paying more than they should have or less than they should have, that should
+  reflect live on the money in … so there should be a projected at the beginning of the year,
+  which shows any escalations and such like that. Because right now, it doesn't show escalations
+  if there is one on the Excel sheet. And then there should be a live look option … any months
+  that haven't been paid and the ledger shouldn't show … It should be fully live based on the
+  numbers on the ledger. Also, take out the bank tie up."*
+
+  Three answers he gave before the build: **two** bases, not three · the button lives **in the
+  download dialog** · the Total column moves to the **far right only**.
+
+  ### 1. He was right that escalations never showed — and here is exactly why
+
+  `monthlyBases` (`escalations.js`) filters `status === 'applied'`. A step only flips to applied
+  on its effective date (nightly, `apply_due_escalations()`), so a step dated **October** is
+  invisible in a workbook downloaded in **August** and every month from October on prints the
+  OLD rent. It is now `monthlyBases(escalations, baseRent, year, { includeScheduled })`.
+
+  ⚠ **THE DEFAULT DID NOT MOVE, AND MUST NOT.** This is a §2 choke point: it feeds
+  `buildLeaseSchedule` → the Ledger grid, every invoice, `owedByMonthForInvoice`, `closeYear`
+  and the alerts, and it has an SQL twin (`effective_rent`, `0054`) that knows only about
+  applied steps. Exactly one caller opts in — `buildIncomeExpense`'s **projected** basis — and
+  it threads `buildLeaseSchedule` → `getPropertyMonthlyRoll(propertyId, year, { includeScheduled })`.
+  Pinned in **both directions** in `arStatus.test.js`, because the default is what protects
+  the Ledger.
+
+  **The demo seed already demonstrated it**: `esc-1` is a scheduled +3% on Bright Coffee dated
+  ~3 weeks out, and the projected workbook now prices the months from that step at $61,800.
+
+  ### 2. Two things had to be protected from the projection, and only one was obvious
+
+  - **`invoiceDrift`** — an issued invoice cannot contain a step that has not happened.
+    Measured against the projection, every lease with a future step would report drift under a
+    prompt to **Rebuild**, which would be advising the landlord to over-bill.
+  - **`rentScheduled` / `rentDrift`** — the JS↔SQL twin check against
+    `v_property_totals.total_revenue`, which is `sum(effective_rent)`: applied steps only. This
+    one was **found by the test suite**, not by reading: the seed's own step made the tie-out
+    flag fire on a correct sheet.
+
+  Both now measure the **contracted** schedule. `getPropertyMonthlyRoll` builds the schedule
+  twice when projecting and carries `contractedSchedule` / `contractedFactor` / `projectedAhead`
+  on the row; `billedRowsFromRoll` takes the tie-out from the contracted split. The difference
+  is stated by its own flag instead — *"$X of the rent on this sheet comes from rent steps that
+  have not taken effect yet"* — and the drift flag's `alsoRow` sentence now names the step as a
+  possible cause, or it would have sent a reader hunting for a gross lease that isn't there.
+
+  ### 3. The live basis — one option on the existing function, never a second copy
+
+  `billedRowsFromRoll(roll, { collected: true })` scales each lease's five money-in rows by that
+  month's `received / owed` from `allocatePayments` — the same allocation the Ledger grid is
+  painted from — with **rent as the remainder**, exactly as `componentizeSchedule` makes base
+  the remainder. The split is the part that must not drift, so it is an option on the function
+  that owns it rather than a function beside it (§3).
+
+  - **`received`, NOT `coverage`.** The plan said coverage; coverage is bill-*satisfaction* and
+    caps at owed, so a settled month reads FULL whatever arrived — which would have silently
+    contradicted the one sentence the feature exists for (*"somebody has been paying … less than
+    they should have, that should reflect live"*). `received` is the real dollars.
+  - **A payment does not record what it paid FOR.** A deposit is stored as one lump
+    (`applyStatementImport` writes a single row for the whole bank amount), so the split across
+    rent / CAM & tax / roof / charges is an **apportionment**, and both the sheet and the dialog
+    say so rather than letting a reader infer the bank told us. The month's *whole* figure is
+    exact.
+  - **`credit` is real cash with no month** — untagged money left after December. It rides the
+    tenant's rent row as `undated` and is counted in its total, or a cash sheet would
+    under-report the bank. A flag names it.
+  - **A month with a bill and no cash is blank; a month with cash and no bill puts it all on
+    rent** ('unbilled', ledger.js).
+  - **`marks` are dropped on the live basis.** A tint means "a charge was posted here and its
+    figure is inside the amount shown" — a statement about the BILL, false over cash.
+  - **`noiBridge` is null on the live basis, and the sheet says why.** Every term in it is
+    accrual; against a cash bottom line the year's arrears would land in the catch-all residual
+    and print an equation whose largest term is "not accounted for".
+  - **The billed-vs-view flags are projected-only.** On a cash sheet a gap between the schedule
+    and the view is just a tenant who has not paid — printed there it reads as a fault on a
+    sheet working exactly as intended. `rentDrift` is still *measured* on the shape; only the
+    flag is withheld.
+
+  The `trueUp` line survives on both bases and is where George's **"actual cam and tax"** lands:
+  same arithmetic (`recovered − camTax/roof`), different thing measured against — on live it
+  reads *"CAM & tax — tenants' actual share for the year, less what they have paid toward it"*.
+
+  ### 4. Total to the far right
+
+  `head()` is now `[first, ...MONTHS, 'No date', 'Total']`; `WIDTHS` reordered; A: label ·
+  B–M: Jan…Dec · N: No date · O: Total.
+
+  ⚠ **Two things had to move with it, and both are invisible from the line that changed:**
+  `markStyle`'s month offset (`col = i + 2` → `i + 1`, keyed by ARRAY index, `xlsx.js`) or the
+  tint would land one month late on every sheet; and every **two-column block** — "What the year
+  left", "Your own money", `uncollected` — which wrote its figure into column B and would now be
+  writing it under **January**. They go through `totLine` / `totHead`, padded to land in the
+  Total column. `workbookValidity.test.js` re-pointed from `B`/`C…O` to `O`/`B…N`, and the tint
+  test from column E to D — **both failed on the old letters first**, which is what proves the
+  move reached the bytes and not just the builder.
+
+  ### 5. The bank tie-out sheet is gone
+
+  `addTieOut`, `TIE_WIDTHS`/`TIE_LAST`/`TIE_ALIGN`, the call site, the `getBankTieOut` query, the
+  `tieOut` field on `shapeProperty`, the `rentPosition` import, the tie-out clause in `flags()`
+  and the dialog's "· plus a Where bank money went sheet" line. **`bankTieOut.js` and
+  `rentPosition` stay exported** — the Ledger panel is the surviving home and reads
+  `getBankTieOut` itself (`LedgerPage.js:295`). Removing the query also makes every download
+  faster (five reads per property).
+
+  ### 6. Through the user's hands
+
+  1. **Getting in** — the dialog gains two cards and opens on **Projected**, which is what it
+     did before. 2. **Before the click** — each card says in one line what its copy contains,
+     and the preview beneath re-queries on the choice, so the headline figures are seen first.
+     3. **The price** — nothing; no LLM, no new query, five fewer reads per property.
+     4. **During** — unchanged ("Reading your figures…" → "Building…"); the button disables
+     while the other basis loads. 5. **After** — the basis is in the workbook title, in every
+     property sheet's title, in a `Basis` pair on Summary, in the first flag, and in the
+     **filename** (`…-2026-projected.xlsx` / `…-live.xlsx`) so two downloads do not collide as
+     "(1)". 6. **Where do I look** — same download, same sheet order minus the tie-out tab.
+     7. **Can he see it** — Corporations page, no feature gate. 8. **What next** — a live sheet
+     showing a tenant short points at the Ledger, where the money is settled. 9. **When it goes
+     wrong** — `StaleBuildNotice` unchanged. 10. **The second time** — the choice is NOT
+     remembered; it opens on Projected every time, because the basis is a decision about the
+     document, not a preference, and a remembered one is how somebody hands their accountant the
+     wrong copy.
+
+  ### Files
+
+  `src/lib/escalations.js` (`monthlyBases` opt-in) · `src/lib/leaseSchedule.js` ·
+  `src/lib/api.js` (`getPropertyMonthlyRoll` opt-in + contracted schedule) ·
+  `src/lib/incomeExpense.js` · `src/lib/incomeExpenseExcel.js` ·
+  `src/components/ExportIncomeExpenseModal.js` · `src/App.css` (`.basis-pick`) ·
+  `src/lib/__tests__/{incomeExpense,arStatus,workbookValidity,bankTieOut}.test.js`.
+
+  ### Verified
+
+  `npm test` — **1,967 passing, 186 files**. New: `monthlyBases` in both directions and with an
+  applied+scheduled pair in one year · the basis on the package and every property · the live
+  rows summing to `allocatePayments().totalPaid` tenant by tenant on both demo properties · the
+  live grid reading the same across as down · the billed-vs-view flags withheld on live · a
+  1 October step priced from October and invisible to the default roll · City Dental's real
+  seeded shortfall ($9,150 billed, $4,000 arrived for March, nothing after) reading 9,150
+  projected / 4,000 live / **blank** in April · the live workbook's bytes opening and its grid
+  adding up. **Non-vacuity proved** by swapping `alloc.received` → `alloc.owed`: both live tests
+  went red, then green on restore.
+
+  Four pre-existing tests moved because the default basis now projects: they assert
+  **relationships** (`p.rent === 144000 + p.projectedAhead`) rather than figures, because the
+  seed's step is dated ~3 weeks from whenever the suite runs and a hardcoded `$144,450` would be
+  right today and wrong in a fortnight. One was re-pointed from Bright Coffee to City Dental for
+  the same reason.
+
+  ### Now redundant
+
+  - **The "Where bank money went" sheet** and its `TIE_WIDTHS` / `TIE_LAST` / `TIE_ALIGN` /
+    `addTieOut` — removed by request. The Ledger panel keeps the function.
+  - **`shapeProperty`'s `tieOut` field, the `getBankTieOut` call in the loader and the
+    `rentPosition` import** — the workbook was their only consumer.
+  - **The tie-out clause in `flags()`** and the dialog's "· plus a Where bank money went sheet"
+    line — no reader left.
+  - **The Money-in note's sentence** *"what actually reached the bank is the 'Where bank money
+    went' sheet"* — pointed at a sheet that no longer exists. On the live basis the answer is
+    the sheet you are already reading.
+  - **The `chargeRows` legend's `|| p.chargeRows.length` condition** — the tint legend now keys
+    off `marks` alone, since charge rows exist on both bases and carry no marks on live.
+  - ⚠ **PROPOSED, NOT DONE — the `alsoRow` clause in the rent-drift flag.** It now lists three
+    possible causes for one difference; if a gross lease and a base correction have never both
+    been in play, two of the three are speculative prose. Say the word and it reduces to the
+    cause actually present.
+
 - **2026-08-17** — **"Failed to fetch dynamically imported module" — diagnosed against the live
   site, and the app now says what actually happened.** A deploy that lands while a tab is open
   deletes the chunks that tab hasn't loaded yet; the next Export said so in Chrome's words.

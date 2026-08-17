@@ -4,8 +4,18 @@
 //
 // LAID OUT MONTH BY MONTH (George, 2026-08-12: "it should be itemized like a
 // reconciliation … all income and expenses monthly with the main buckets and items").
-// Fifteen columns: the line item, its year, Jan…Dec, and — the one column a reader must
-// not miss — "No date".
+// Fifteen columns: the line item, Jan…Dec, the one column a reader must not miss —
+// "No date" — and the year's Total.
+//
+// ⚠ THE TOTAL SITS ON THE FAR RIGHT, WHERE A SUM GOES (George, 2026-08-17). It was column B
+// until then, so a reader scanning left to right across the year never arrived at one — and
+// the twelve months plus No date ran off to its right adding up to a figure already behind
+// them. `markStyle`'s month offset is keyed off this and moved with it.
+//
+// ⚠ TWO BASES (2026-08-17). One workbook, two questions — the year as it is CONTRACTED to
+// run, or what has actually been collected. `incomeExpense.js` decides the figures; this file
+// only has to make sure every title, row label and note says WHICH, because the two files land
+// in the same downloads folder with the same shape and very different numbers.
 //
 // ⚠ "NO DATE" IS REAL MONEY, NOT A REMAINDER. `cam_line_items.paid_date` is nullable and
 // never backfilled (0074), a service contract's derived CAM line never carries one, and a
@@ -24,12 +34,49 @@ import { buildIncomeExpense, MONTHS } from './incomeExpense';
 
 const P = XLSX_PALETTE;
 
-// A: the line item · B: its year · C–N: Jan…Dec · O: what has no date.
-const WIDTHS = [34, 14, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 12];
+// A: the line item · B–M: Jan…Dec · N: what has no date · O: the year.
+const WIDTHS = [34, ...Array(12).fill(10), 12, 14];
 const LAST = 'O';
 const RIGHT = ['left', ...Array(14).fill('right')];
 
-const head = (first) => [first, 'Total', ...MONTHS, 'No date'];
+const head = (first) => [first, ...MONTHS, 'No date', 'Total'];
+
+// ── What each basis calls things ─────────────────────────────────────────────
+//
+// ⚠ ONE TABLE, NOT A BRANCH AT EVERY ROW. The two sheets differ in about a dozen words and
+// nothing else, and a dozen inline ternaries is how one of them ends up saying "billed" over
+// a column of cash six months from now.
+const WORDS = {
+  projected: {
+    what: 'projected',
+    moneyIn: 'Money in — what the leases bill',
+    rent: 'Rent',
+    camTax: 'CAM & tax billed to tenants',
+    roof: 'Roof billed to tenants',
+    charges: 'Charges & credits',
+    carried: 'Brought forward and refunds — not this year’s income',
+    lessCarried: 'Less brought forward and refunds',
+    total: 'Total billed',
+    trueUp: 'Year-end reconciliation — actual share less what was billed',
+    earned: 'Total earned',
+    monthMeans: 'what tenants were billed that month — the same figure the Ledger and the invoice show',
+  },
+  live: {
+    what: 'live',
+    moneyIn: 'Money in — what actually arrived',
+    rent: 'Rent collected',
+    camTax: 'CAM & tax collected from tenants',
+    roof: 'Roof collected from tenants',
+    charges: 'Charges & credits collected',
+    carried: 'Brought forward and refunds collected — not this year’s income',
+    lessCarried: 'Less brought forward and refunds collected',
+    total: 'Total collected',
+    trueUp: 'CAM & tax — tenants’ actual share for the year, less what they have paid toward it',
+    earned: 'Total earned',
+    monthMeans: 'money the Ledger says actually arrived that month — a blank month is one nothing came in on',
+  },
+};
+const wordsFor = (basis) => WORDS[basis === 'live' ? 'live' : 'projected'];
 
 // A zero prints as an em dash: on a 12-month grid most cells are empty, and a wall of
 // $0.00 buries the months that actually carry money. (A string skips the currency format,
@@ -59,7 +106,10 @@ const markStyle = (marks) => {
   const cellBg = {}; const cellInk = {}; const cellNote = {};
   marks.forEach((mk, i) => {
     if (!mk) return;
-    const col = i + 2;                       // A: label · B: total · C…N: Jan…Dec
+    // ⚠ AN ARRAY INDEX, NOT AN EXCEL COLUMN (xlsx.js) — and it moved on 2026-08-17 when Total
+    // went to the far right. It was `i + 2` while Total sat in B; leaving it there would tint
+    // the month AFTER the one the charge landed on, silently, on every sheet.
+    const col = i + 1;                       // A: label · B…M: Jan…Dec
     const credit = mk.total < 0;
     cellBg[col] = credit ? P.FOREST_BG : P.GOLD_BG;
     cellInk[col] = credit ? P.FOREST_INK : P.GOLD_INK;
@@ -72,11 +122,22 @@ const markStyle = (marks) => {
 
 const grid = (pen, label, row, opts = {}) =>
   pen.line(
-    [label, row.total ?? row.spent ?? 0, ...(row.byMonth || []).map(dash), dash(row.undated)],
+    [label, ...(row.byMonth || []).map(dash), dash(row.undated), row.total ?? row.spent ?? 0],
     { aligns: RIGHT, ...markStyle(row.marks), ...opts }
   );
 
 const indent = (label) => `    ${label}`;
+
+// A two-column block — a label and one figure — padded so the figure lands in the TOTAL
+// column rather than under January.
+//
+// ⚠ IT HAD TO BE PADDED THE MOMENT TOTAL MOVED (2026-08-17). These blocks used to write their
+// amount into column B, which was Total; leaving them there put "What the year left" under the
+// "Jan" heading, and `workbookValidity` — which reads B…N as the months out of the real file
+// bytes — would have read a summary figure as January and failed a sheet that was correct.
+const PAD = Array(13).fill('');
+const totLine = (pen, label, amount, opts = {}) => pen.line([label, ...PAD, amount], { aligns: RIGHT, ...opts });
+const totHead = (pen, label, amount = 'Amount') => pen.head([label, ...PAD, amount], RIGHT);
 
 const usd = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -98,8 +159,8 @@ const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const uncollected = (pen, s) => {
   const owed = round2(s?.owed || 0);
   const credit = round2(s?.inCredit || 0);
-  if (owed > 0.005) pen.line([indent('of which still uncollected at year end'), owed], { aligns: RIGHT, bg: P.GOLD_BG, ink: P.GOLD_INK });
-  if (credit > 0.005) pen.line([indent('and held for tenants who are ahead'), -credit], { aligns: RIGHT });
+  if (owed > 0.005) totLine(pen, indent('of which still uncollected at year end'), owed, { bg: P.GOLD_BG, ink: P.GOLD_INK });
+  if (credit > 0.005) totLine(pen, indent('and held for tenants who are ahead'), -credit);
 };
 
 // ── Summary ──────────────────────────────────────────────────────────────────
@@ -107,36 +168,40 @@ function addSummary(wb, pkg, corporationName, now) {
   const ws = xlsxSheet(wb, 'Summary', WIDTHS, { freeze: 0 });
   const pen = xlsxPen(ws, LAST);
   const t = pkg.totals;
+  const w = wordsFor(pkg.basis);
 
-  pen.title(`${corporationName} — income and expenses, FY ${pkg.year}`);
+  // ⚠ THE BASIS IS IN THE TITLE, not only in a note further down. This is the line a reader
+  // sees first and the line that gets screenshotted, and the two copies are otherwise
+  // indistinguishable at a glance.
+  pen.title(`${corporationName} — income and expenses (${w.what}), FY ${pkg.year}`);
   pen.pair('Prepared', now);
+  pen.pair('Basis', pkg.basis === 'live' ? 'Live — what actually happened' : 'Projected — what the leases contract');
   pen.pair('Properties', String(pkg.properties.length));
   pen.skip();
 
   pen.note(
-    'Each month of Money in is what tenants were billed that month — the same figure the Ledger and the invoice '
-    + 'show. Expenses sit in the month they were paid. Anything with no date on it is in the last column rather '
-    + 'than spread across the year — every row adds across to its Total. The year-end reconciliation is settled '
-    + 'once and has no month, so it sits on its own line; it is the tenants\' share of the expenses entered so '
-    + 'far, and stays provisional until the year\'s costs are all recorded.',
+    `Each month of Money in is ${w.monthMeans}. Expenses sit in the month they were paid. Anything with no date on `
+    + 'it is in the "No date" column rather than spread across the year — every row adds across to its Total, on the '
+    + 'far right. The year-end reconciliation is settled once and has no month, so it sits on its own line; it is the '
+    + 'tenants\' share of the expenses entered so far, and stays provisional until the year\'s costs are all recorded.',
     { bg: P.NEUTRAL_BG, height: 32 }
   );
   pen.skip();
 
-  pen.section('Money in — all properties');
+  pen.section(`${w.moneyIn} — all properties`);
   pen.head(head(''), RIGHT);
-  grid(pen, 'Rent', { total: t.rent, byMonth: t.rentByMonth, undated: 0 });
-  if (Math.abs(t.camTaxBilled) > 0.005) grid(pen, 'CAM & tax billed to tenants', { total: t.camTaxBilled, byMonth: t.camTaxByMonth, undated: 0 });
-  if (Math.abs(t.roofBilled) > 0.005) grid(pen, 'Roof billed to tenants', { total: t.roofBilled, byMonth: t.roofByMonth, undated: 0 });
-  if (Math.abs(t.charges) > 0.005) grid(pen, 'Charges & credits', { total: t.charges, byMonth: t.chargesByMonth, undated: 0 });
-  if (Math.abs(t.carried) > 0.005) grid(pen, 'Brought forward and refunds — not this year’s income', { total: t.carried, byMonth: t.carriedByMonth, undated: 0 });
-  grid(pen, 'Other income', { total: t.otherIncome, byMonth: t.incomeByMonth, undated: t.inUndated });
-  grid(pen, 'Total billed', { total: t.billedTotal, byMonth: t.inByMonth, undated: t.inUndated }, { bold: true, bg: P.SUMMARY_BG });
+  grid(pen, w.rent, { total: t.rent, byMonth: t.rentByMonth, undated: t.tenantCredit });
+  if (Math.abs(t.camTaxBilled) > 0.005) grid(pen, w.camTax, { total: t.camTaxBilled, byMonth: t.camTaxByMonth, undated: 0 });
+  if (Math.abs(t.roofBilled) > 0.005) grid(pen, w.roof, { total: t.roofBilled, byMonth: t.roofByMonth, undated: 0 });
+  if (Math.abs(t.charges) > 0.005) grid(pen, w.charges, { total: t.charges, byMonth: t.chargesByMonth, undated: 0 });
+  if (Math.abs(t.carried) > 0.005) grid(pen, w.carried, { total: t.carried, byMonth: t.carriedByMonth, undated: 0 });
+  grid(pen, 'Other income', { total: t.otherIncome, byMonth: t.incomeByMonth, undated: round2(t.inUndated - t.tenantCredit) });
+  grid(pen, w.total, { total: t.billedTotal, byMonth: t.inByMonth, undated: t.inUndated }, { bold: true, bg: P.SUMMARY_BG });
   if (Math.abs(t.trueUp) > 0.005 || Math.abs(t.carried) > 0.005) {
-    if (Math.abs(t.carried) > 0.005) grid(pen, 'Less brought forward and refunds', { total: -t.carried, byMonth: Array(12).fill(0), undated: 0 });
-    if (Math.abs(t.trueUp) > 0.005) grid(pen, 'Year-end reconciliation — actual share less what was billed', { total: t.trueUp, byMonth: Array(12).fill(0), undated: 0 });
+    if (Math.abs(t.carried) > 0.005) grid(pen, w.lessCarried, { total: -t.carried, byMonth: Array(12).fill(0), undated: 0 });
+    if (Math.abs(t.trueUp) > 0.005) grid(pen, w.trueUp, { total: t.trueUp, byMonth: Array(12).fill(0), undated: 0 });
     // No months — see the note on the property sheet's copy of this row.
-    grid(pen, 'Total earned', { total: t.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
+    grid(pen, w.earned, { total: t.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
   }
   pen.skip();
 
@@ -156,10 +221,10 @@ function addSummary(wb, pkg, corporationName, now) {
   pen.skip();
 
   pen.section('What the year left');
-  pen.head(['', 'Amount'], RIGHT);
-  pen.line([Math.abs(t.trueUp) > 0.005 ? 'Total earned' : 'Total billed', t.earned], { aligns: RIGHT });
-  pen.line(['Less what you spent', -t.spent], { aligns: RIGHT });
-  pen.line(['What the year left', t.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
+  totHead(pen, '');
+  totLine(pen, Math.abs(t.trueUp) > 0.005 ? w.earned : w.total, t.earned);
+  totLine(pen, 'Less what you spent', -t.spent);
+  totLine(pen, 'What the year left', t.net, { bold: true, bg: P.SUMMARY_BG });
   uncollected(pen, t);
   pen.skip();
 
@@ -191,8 +256,8 @@ function addSummary(wb, pkg, corporationName, now) {
       + 'It is listed because it crossed the bank, and every bank line has to be accounted for somewhere.',
       { height: 26 }
     );
-    pen.head(['', 'Amount'], RIGHT);
-    pen.line(['Distributions — money you took out', t.distributions], { aligns: RIGHT });
+    totHead(pen, '');
+    totLine(pen, 'Distributions — money you took out', t.distributions);
   }
 
   if (pkg.flags.length) {
@@ -203,134 +268,9 @@ function addSummary(wb, pkg, corporationName, now) {
   return ws;
 }
 
-// ── Bank tie-out ─────────────────────────────────────────────────────────────
-//
-// The one sheet in this workbook whose right-hand column did not come from Amlak. Every
-// other figure here is the app checking its own arithmetic; this asks whether the money
-// the BANK showed reached the books at all.
-//
-// ⚠ IT IS ITS OWN SHEET RATHER THAN A BLOCK ON EACH PROPERTY, because the question it
-// answers is asked once — "did anything go astray?" — and a reader who has to visit five
-// tabs to find out has been given five chances to stop looking. Properties with no
-// imported statement are named on it and skipped: "nothing imported" and "imported and
-// clean" are different answers and must not print the same.
-//
-// A: what it was filed as · B: on the statement · C: in the books · D: the difference ·
-// E: what that means in words. Five columns, no monthly grid — the tie-out is a
-// comparison, not a year.
-const TIE_WIDTHS = [36, 16, 16, 14, 62];
-const TIE_LAST = 'E';
-const TIE_ALIGN = ['left', 'right', 'right', 'right', 'left'];
-
-function addTieOut(wb, pkg, year) {
-  const ws = xlsxSheet(wb, 'Where bank money went', TIE_WIDTHS, { freeze: 0 });
-  const pen = xlsxPen(ws, TIE_LAST);
-
-  pen.title(`Where your bank money went — FY ${year}`);
-  pen.note(
-    'Two columns from two different places. The left is every line on the statements you imported, grouped by what '
-    + 'you decided about it. The right is the real rows in your books — payments, expenses, other income — read from '
-    + 'those tables and not from the lines, because a report derived from the same list it is checking would balance '
-    + 'no matter what was wrong. Money in and money out are never netted against each other.',
-    { bg: P.NEUTRAL_BG, height: 40 }
-  );
-  pen.skip();
-
-  const side = (title, s) => {
-    pen.head([title, 'The bank showed', 'Amlak recorded', 'Difference', ''], TIE_ALIGN);
-    for (const r of s.rows) {
-      const off = Math.abs(r.diff) > 0.005;
-      const attention = off || (r.unplaced && r.statement > 0.005) || r.unknown;
-      pen.line(
-        [
-          r.label,
-          r.statement,
-          r.books == null ? '—' : r.books,
-          r.books == null ? '' : r.diff,
-          r.booksLabel ? `${r.booksLabel}${off ? '' : ' ✓'}` : r.nowhere || '',
-        ],
-        { aligns: TIE_ALIGN, ...(attention ? { bg: P.GOLD_BG, ink: P.GOLD_INK } : {}) }
-      );
-    }
-    pen.line([`Total ${title.toLowerCase()}`, s.statementTotal, '', '', ''], { bold: true, bg: P.SUMMARY_BG, aligns: TIE_ALIGN });
-  };
-
-  for (const p of pkg.properties) {
-    pen.section(p.name);
-    const t = p.tieOut;
-    if (!t) {
-      pen.note('No bank statement has been imported for this property this year, so there is nothing to tie out. '
-        + 'That is not the same as "checked and clean".', { height: 26 });
-      pen.skip();
-      continue;
-    }
-    pen.pair('Statements read', String(t.imports));
-    side('Money in on your statements', t.in);
-    pen.skip();
-    side('Money out on your statements', t.out);
-    pen.skip();
-
-    // ⚠ RENT NEVER TIES, AND SAYS SO IN ITS OWN HEADING. Cash off the bank against what
-    // was billed differs by arrears or prepayment on every property in the world. Printed
-    // as a difference among the others it would read as a fault and teach the reader that
-    // this sheet cries wolf.
-    // ⚠ AND THE HEADING SAYS IT IN PLAIN WORDS. "Rent is a reconciling item" is accountant's
-    // English sitting a few rows under a Money-in row that is ALSO about tenant rent and
-    // means the opposite. Two headings that read alike and mean opposite things is a
-    // labelling fault (George, 2026-08-17: *"i dont get the tenant rent difference"*).
-    if (t.rent) {
-      pen.head(['Your whole year’s rent — not a tie, and not meant to balance', 'Amount', '', '', ''], TIE_ALIGN);
-      pen.line(['Billed to tenants this year', t.rent.billed, '', '', 'every month of every lease\'s schedule'], { aligns: TIE_ALIGN });
-      pen.line(['Received this year', t.rent.received, '', '', 'every payment recorded against those bills, however it arrived'], { aligns: TIE_ALIGN });
-      pen.line([
-        t.rent.behind >= 0 ? 'Still owed' : 'Paid ahead',
-        Math.abs(t.rent.behind), '', '',
-        t.rent.behind >= 0
-          ? 'arrears. The Ledger names it tenant by tenant, month by month.'
-          : 'tenants are ahead of their bills. The Ledger names who.',
-      ], { bold: true, bg: P.SUMMARY_BG, aligns: TIE_ALIGN });
-      pen.skip();
-    }
-
-    if (t.handEntered && (t.handEntered.expenses > 0.005 || t.handEntered.income > 0.005)) {
-      pen.note(
-        `Not part of the comparison above: ${usd(t.handEntered.expenses)} of expenses and ${usd(t.handEntered.income)} `
-        + 'of other income are on the books with no imported statement behind them. Typed in by hand, or paid from an '
-        + 'account you have not imported. Real money, simply not something a bank line can confirm.',
-        { height: 28 }
-      );
-    }
-
-    if (t.differences.length) {
-      pen.head(['What to look at', '', '', '', ''], TIE_ALIGN);
-      for (const d of t.differences) pen.note(`• ${d}`, { bg: P.GOLD_BG, ink: P.GOLD_INK, height: 34 });
-    } else if (!(t.notChecked || []).length) {
-      pen.note('Every line on these statements reaches the figure it was filed as. ✓', { height: 16 });
-    }
-    // ⚠ ITS OWN HEADING, AND NOT GOLD. Money that could not be checked is not money that is
-    // wrong — filed under "what to look at" it would send an accountant hunting for a fault
-    // that does not exist, and would mark every account that imported a statement before the
-    // line record existed. See bankTieOut.js for why the two tiers are never summed.
-    if ((t.notChecked || []).length) {
-      pen.head(['Could not be checked — not a difference', '', '', '', ''], TIE_ALIGN);
-      for (const d of t.notChecked) pen.note(`• ${d}`, { bg: P.NEUTRAL_BG, height: 34 });
-    }
-    pen.skip();
-  }
-
-  // ⚠ SAID ON THE SHEET, NOT ASSUMED. A tie-out that balances is easily read as "the books
-  // are right", which it is not — it says the two records agree, and they can agree on the
-  // same wrong number. Stating the three blind spots is what makes the ✓ above worth
-  // anything.
-  pen.section('What this cannot catch');
-  pen.note('• A line transcribed with the wrong amount. Both sides carry the same wrong number and it ties perfectly.', { height: 16 });
-  pen.note('• Money that never touched the account you imported — another bank account, or cash.', { height: 16 });
-  pen.note('• A line filed under the wrong heading. It ties, in the wrong bucket.', { height: 16 });
-  return ws;
-}
-
 // ── One property ─────────────────────────────────────────────────────────────
-function addProperty(wb, p, year, used) {
+function addProperty(wb, p, year, used, basis) {
+  const w = wordsFor(basis);
   // Excel caps a sheet name at 31 chars and forbids : \ / ? * [ ]. Duplicates are
   // impossible in principle (a corporation's properties are uniquely named) but a
   // truncation can create one, so the suffix is applied rather than assumed away —
@@ -343,7 +283,7 @@ function addProperty(wb, p, year, used) {
   const ws = xlsxSheet(wb, name, WIDTHS, { freeze: 0 });
   const pen = xlsxPen(ws, LAST);
 
-  pen.title(`${p.name} — FY ${year}`);
+  pen.title(`${p.name} — FY ${year} (${w.what})`);
   if (p.address) pen.pair('Address', p.address);
   pen.skip();
 
@@ -353,34 +293,47 @@ function addProperty(wb, p, year, used) {
   // "Rent" row carrying base rent alone, so no monthly cell matched the Ledger, the invoice
   // or the bank — 18-23% low per tenant on the demo. The components are now stated, and
   // `Total billed` for a month is exactly what the Ledger shows that month as owed.
-  pen.section('Money in');
+  pen.section(w.moneyIn);
+  // ⚠ WHAT THIS BLOCK MEANS, ON THE BLOCK. Its rows carry the same titles on both bases and
+  // the figures underneath them are cash on one and a bill on the other — the single most
+  // likely thing for a reader to get wrong.
+  pen.note(
+    basis === 'live'
+      ? 'Every figure below is money the Ledger says actually arrived. A blank month is a month nothing came in on. '
+        + 'A payment does not record what it paid FOR — a deposit is one lump — so each month\'s cash is split '
+        + 'across that month\'s bill in proportion: rent, CAM & tax, roof, charges. The split is an apportionment, '
+        + 'not something the bank told us; the whole figure per month is exact.'
+      : 'Every figure below is what the leases contract to bill, including any rent step that has not taken effect '
+        + 'yet — a step applies from its own month, not the whole year. CAM & tax is the estimate tenants are '
+        + 'billed. What has actually been collected is the live copy of this workbook.',
+    { bg: P.NEUTRAL_BG, height: 30 },
+  );
   // The tint's legend, printed where the tinted cells are. Without it a coloured cell is a
   // reader guessing, and the likeliest guess — "this month wasn't paid" — is the one thing
-  // it does NOT mean.
-  if (p.rentRows.some((r) => r.marks) || p.camTaxRows.some((r) => r.marks) || p.chargeRows.length) {
+  // it does NOT mean. (Never on the live basis: a tint is a statement about the BILL.)
+  if (p.rentRows.some((r) => r.marks) || p.camTaxRows.some((r) => r.marks)) {
     pen.note(
       'A shaded month carries a charge or a credit somebody posted on it, and that figure is already '
       + 'inside the amount shown — gold for a charge, green for a credit. Hover the cell for what it was. '
-      + 'Shading never means a month went unpaid: these columns are what tenants were BILLED, and what '
-      + 'actually reached the bank is the “Where bank money went” sheet.',
+      + 'Shading never means a month went unpaid: these columns are what tenants were BILLED.',
       { height: 28 },
     );
   }
   pen.head(head(''), RIGHT);
-  grid(pen, 'Rent', { total: p.rent, byMonth: p.rentByMonth, undated: 0 }, { bold: true });
+  grid(pen, w.rent, { total: p.rent, byMonth: p.rentByMonth, undated: p.tenantCredit }, { bold: true });
   if (!p.rentRows.length) pen.line(['    No leases on this property for the year'], { aligns: RIGHT });
   for (const r of p.rentRows) grid(pen, indent(r.label), r);
 
   if (Math.abs(p.camTaxBilled) > 0.005) {
-    grid(pen, 'CAM & tax billed to tenants', { total: p.camTaxBilled, byMonth: p.camTaxByMonth, undated: 0 }, { bold: true });
+    grid(pen, w.camTax, { total: p.camTaxBilled, byMonth: p.camTaxByMonth, undated: 0 }, { bold: true });
     for (const r of p.camTaxRows) if (Math.abs(r.total) > 0.005) grid(pen, indent(r.label), r);
   }
   if (Math.abs(p.roofBilled) > 0.005) {
-    grid(pen, 'Roof billed to tenants', { total: p.roofBilled, byMonth: p.roofByMonth, undated: 0 }, { bold: true });
+    grid(pen, w.roof, { total: p.roofBilled, byMonth: p.roofByMonth, undated: 0 }, { bold: true });
     for (const r of p.roofRows) if (Math.abs(r.total) > 0.005) grid(pen, indent(r.label), r);
   }
   if (p.chargeRows.length) {
-    grid(pen, 'Charges & credits', { total: p.charges, byMonth: p.chargesByMonth, undated: 0 }, { bold: true });
+    grid(pen, w.charges, { total: p.charges, byMonth: p.chargesByMonth, undated: 0 }, { bold: true });
     for (const r of p.chargeRows) grid(pen, indent(r.label), r);
   }
   // ⚠ IN Total billed, OUT AGAIN BEFORE Total earned, and the row title has to carry that
@@ -388,7 +341,7 @@ function addProperty(wb, p, year, used) {
   // It is here because the Ledger bills it (a balance brought forward is genuinely owed) and
   // it leaves before "earned" because it was another year's income, or never income at all.
   if (p.carriedRows.length) {
-    grid(pen, 'Brought forward and refunds — not this year’s income', { total: p.carried, byMonth: p.carriedByMonth, undated: 0 }, { bold: true });
+    grid(pen, w.carried, { total: p.carried, byMonth: p.carriedByMonth, undated: 0 }, { bold: true });
     for (const r of p.carriedRows) grid(pen, indent(r.label), r);
   }
 
@@ -396,24 +349,23 @@ function addProperty(wb, p, year, used) {
     grid(pen, 'Other income', { total: p.otherIncome, byMonth: p.incomeByMonth, undated: p.incomeUndated }, { bold: true });
     for (const g of p.incomeGroups) grid(pen, indent(`${g.label} — ${g.count} line${g.count === 1 ? '' : 's'}`), g);
   }
-  grid(pen, 'Total billed', { total: p.billedTotal, byMonth: p.inByMonth, undated: p.inUndated }, { bold: true, bg: P.SUMMARY_BG });
+  grid(pen, w.total, { total: p.billedTotal, byMonth: p.inByMonth, undated: p.inUndated }, { bold: true, bg: P.SUMMARY_BG });
 
   // The year-end true-up. One line and not twelve, deliberately: it is settled once, and
   // spreading it back across the months would invent figures and break the promise that
   // every cell above equals the Ledger.
   if (Math.abs(p.trueUp) > 0.005 || Math.abs(p.carried) > 0.005) {
     if (Math.abs(p.carried) > 0.005) {
-      grid(pen, 'Less brought forward and refunds', { total: -p.carried, byMonth: Array(12).fill(0), undated: 0 });
+      grid(pen, w.lessCarried, { total: -p.carried, byMonth: Array(12).fill(0), undated: 0 });
     }
     if (Math.abs(p.trueUp) > 0.005) {
-      grid(pen, 'Year-end reconciliation — actual share less what was billed',
-        { total: p.trueUp, byMonth: Array(12).fill(0), undated: 0 });
+      grid(pen, w.trueUp, { total: p.trueUp, byMonth: Array(12).fill(0), undated: 0 });
     }
     // ⚠ NO MONTHS ON THESE ROWS, deliberately. They contain year-end figures that belong to
     // no month, so printing the billed months beside them would give a row whose cells do not
     // add across to its own total — which `workbookValidity.test.js` reads out of the real
     // file bytes and rejects, and which an accountant would reject for the same reason.
-    grid(pen, 'Total earned', { total: p.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
+    grid(pen, w.earned, { total: p.earned, byMonth: Array(12).fill(0), undated: 0 }, { bold: true, bg: P.SUMMARY_BG });
   }
   // ⚠ THE YEAR-END LINE IS PROVISIONAL UNTIL THE COSTS ARE ALL IN, and it has to say so.
   // It is the tenants' share of the expenses RECORDED SO FAR less what they were billed —
@@ -422,10 +374,10 @@ function addProperty(wb, p, year, used) {
   // sheet had the same dependency, buried below the grid as "what tenants paid back";
   // giving it a line of its own is what made saying this necessary.
   pen.note(
-    'Each month above is what the tenant was billed that month — the same figure the Ledger and the invoice show. '
-    + 'Tenants pay an estimate for CAM & tax through the year; the difference between that and their actual share is '
-    + 'settled once at reconciliation, which is the line with no months against it. That line is their share of the '
-    + 'expenses entered so far, so until the year\'s costs are all recorded it is provisional.',
+    `Each month above is ${w.monthMeans}. Tenants pay an estimate for CAM & tax through the year; the difference `
+    + 'between that and their actual share is settled once at reconciliation, which is the line with no months '
+    + 'against it. That line is their share of the expenses entered so far, so until the year\'s costs are all '
+    + 'recorded it is provisional.',
     { height: 32 }
   );
   pen.skip();
@@ -520,10 +472,10 @@ function addProperty(wb, p, year, used) {
   // adding it a second time below the expenses would count it twice — the exact error the
   // old netting arrangement existed to avoid, arriving from the other direction. What the
   // year left is now plain subtraction, which is also what an accountant will try first.
-  pen.head(['What the year left', 'Amount'], RIGHT);
-  pen.line([Math.abs(p.trueUp) > 0.005 ? 'Total earned' : 'Total billed', p.earned], { aligns: RIGHT });
-  pen.line(['Less what you spent', -p.expenseTotals.spent], { aligns: RIGHT });
-  pen.line(['What the year left', p.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
+  totHead(pen, 'What the year left');
+  totLine(pen, Math.abs(p.trueUp) > 0.005 ? w.earned : w.total, p.earned);
+  totLine(pen, 'Less what you spent', -p.expenseTotals.spent);
+  totLine(pen, 'What the year left', p.net, { bold: true, bg: P.SUMMARY_BG });
   uncollected(pen, p.standings.totals);
   // ⚠ THE RECONCILIATION AN ACCOUNTANT WILL CHECK. It has to be arithmetic they can
   // follow on the page, not a claim — so the terms are BUILT (`noiBridge`, incomeExpense.js)
@@ -532,14 +484,27 @@ function addProperty(wb, p, year, used) {
   // where Oak Center printed an equation out by $17,999.94 under the word "exactly".
   // `noiBridge` carries a catch-all residual, so a term nobody thought of prints as a
   // visible difference instead of turning the sum into a lie.
-  pen.note(
-    `The app's own NOI for this property reads ${usd(p.noiBridge.noi)}. It answers a different question, and these `
-    + `figures bridge to it: NOI ${usd(p.noiBridge.noi)}`
-    + p.noiBridge.terms.map((t) => ` ${t.amount < 0 ? '−' : '+'} ${usd(Math.abs(t.amount))} ${t.label}`).join('')
-    + ` = ${usd(p.noiBridge.total)}. NOI counts only what you billed tenants for, at each lease's annual rate, and `
-    + 'knows nothing about a late fee or a write-off — which is what the terms after it are for.',
-    { height: 44 }
-  );
+  //
+  // ⚠ NULL ON THE LIVE BASIS, and the sheet SAYS why rather than going quiet. Every term in
+  // the bridge is accrual; against a cash bottom line the year's arrears would land in the
+  // catch-all and print an equation whose biggest term is "not accounted for".
+  if (p.noiBridge) {
+    pen.note(
+      `The app's own NOI for this property reads ${usd(p.noiBridge.noi)}. It answers a different question, and these `
+      + `figures bridge to it: NOI ${usd(p.noiBridge.noi)}`
+      + p.noiBridge.terms.map((t) => ` ${t.amount < 0 ? '−' : '+'} ${usd(Math.abs(t.amount))} ${t.label}`).join('')
+      + ` = ${usd(p.noiBridge.total)}. NOI counts only what you billed tenants for, at each lease's annual rate, and `
+      + 'knows nothing about a late fee or a write-off — which is what the terms after it are for.',
+      { height: 44 }
+    );
+  } else {
+    pen.note(
+      `The app's own NOI for this property reads ${usd(p.noi)}. It is not reconciled on this sheet, and deliberately: `
+      + 'NOI counts what tenants were BILLED at each lease\'s annual rate, and every figure above is cash that '
+      + 'actually arrived. The projected copy of this workbook carries the reconciliation term by term.',
+      { height: 30 }
+    );
+  }
 
   if (p.distributionsTotal > 0) {
     pen.skip();
@@ -552,8 +517,12 @@ function addProperty(wb, p, year, used) {
   return ws;
 }
 
-export async function downloadIncomeExpenseXlsx({ corporationId, corporationName, year, prebuilt = null } = {}) {
-  const pkg = prebuilt || (await buildIncomeExpense(corporationId, year));
+export async function downloadIncomeExpenseXlsx({ corporationId, corporationName, year, basis = 'projected', prebuilt = null } = {}) {
+  const pkg = prebuilt || (await buildIncomeExpense(corporationId, year, { basis }));
+  // ⚠ THE PACKAGE'S OWN BASIS WINS. A prebuilt package carries the basis it was built on, and
+  // labelling a workbook from the argument instead would let a stale `prebuilt` print "live"
+  // over projected figures — the one failure mode of this whole feature.
+  const b = pkg.basis === 'live' ? 'live' : 'projected';
   const ExcelJS = (await loadModule(() => import('exceljs'), 'the spreadsheet builder')).default;
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Amlak';
@@ -563,16 +532,11 @@ export async function downloadIncomeExpenseXlsx({ corporationId, corporationName
   const now = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
   addSummary(wb, pkg, corporationName || 'Portfolio', now);
   const used = new Set(['summary']);
-  // Only when there is something to tie out. An always-present tab reading "nothing
-  // imported" on every property teaches the reader to skip the one sheet that would have
-  // told them money went astray.
-  if (pkg.properties.some((p) => p.tieOut)) {
-    addTieOut(wb, pkg, year);
-    used.add('where bank money went');
-  }
-  for (const p of pkg.properties) addProperty(wb, p, year, used);
+  for (const p of pkg.properties) addProperty(wb, p, year, used, b);
 
   const buf = await wb.xlsx.writeBuffer();
-  saveWorkbook(buf, `${fileSlug(corporationName, 'portfolio')}-income-expenses-${year}.xlsx`);
+  // The basis is in the FILENAME too. Both copies land in the same downloads folder with the
+  // same shape and different figures; without it the second one is "(1)".
+  saveWorkbook(buf, `${fileSlug(corporationName, 'portfolio')}-income-expenses-${year}-${b}.xlsx`);
   return pkg;
 }

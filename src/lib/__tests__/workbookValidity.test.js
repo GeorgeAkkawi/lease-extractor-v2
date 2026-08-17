@@ -74,6 +74,36 @@ function expectSheetOpens(name, xml) {
   }
 }
 
+/**
+ * Every grid row reads the same across as down: B…N (Jan…Dec + No date) === O (the Total).
+ *
+ * ⚠ A MISSING Total IS THE FAILURE, not a row to skip. The expense CATEGORY rows shipped with
+ * a blank Total in the first draft — `recoverabilityRows` calls the year's figure `spent`
+ * where every other row calls it `total` — and a version of this check that skipped a null
+ * Total column would have passed straight over it.
+ */
+function expectGridAddsUp(name, xml) {
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  let checked = 0;
+  for (const row of doc.getElementsByTagName('row')) {
+    const cells = {};
+    for (const c of row.getElementsByTagName('c')) {
+      const ref = (c.getAttribute('r') || '').replace(/\d+/g, '');
+      const v = c.getElementsByTagName('v')[0];
+      if (v && c.getAttribute('t') !== 's') cells[ref] = Number(v.textContent);
+    }
+    const across = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N']
+      .reduce((s, k) => s + (cells[k] || 0), 0);
+    // Rows that are not part of the grid (the two-column "what the year left" block, the
+    // six-column tenant standings) carry no month cells at all, and are not what this asserts.
+    if (across === 0) continue;
+    expect(cells.O, `${name} row ${row.getAttribute('r')} carries months but no Total`).not.toBeUndefined();
+    expect(Math.abs(across - cells.O), `${name} row ${row.getAttribute('r')} totals ${cells.O} but its months add to ${across}`).toBeLessThan(0.02);
+    checked += 1;
+  }
+  return checked;
+}
+
 beforeEach(() => { saved.length = 0; });
 
 describe('every downloadable workbook opens without a repair dialog', () => {
@@ -89,32 +119,35 @@ describe('every downloadable workbook opens without a repair dialog', () => {
     expect(Object.values(sheets).every((x) => !/state="frozen"/.test(x))).toBe(true);
 
     // ⚠ AND THE GRID ADDS UP IN THE BYTES THAT SHIP, not just in the builder. The sheet is
-    // fifteen columns — the line item, its Total, Jan…Dec, and "No date" — and B must
-    // equal C…O on every row that carries numbers. A monthly sheet whose Total disagrees
+    // fifteen columns — the line item, Jan…Dec, "No date" and the year's Total — and O must
+    // equal B…N on every row that carries numbers. A monthly sheet whose Total disagrees
     // with its own months is the one error a reader would catch and never trust again.
-    const doc = new DOMParser().parseFromString(Object.values(sheets)[0], 'application/xml');
-    let checked = 0;
-    for (const row of doc.getElementsByTagName('row')) {
-      const cells = {};
-      for (const c of row.getElementsByTagName('c')) {
-        const ref = (c.getAttribute('r') || '').replace(/\d+/g, '');
-        const v = c.getElementsByTagName('v')[0];
-        if (v && c.getAttribute('t') !== 's') cells[ref] = Number(v.textContent);
-      }
-      const across = ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O']
-        .reduce((s, k) => s + (cells[k] || 0), 0);
-      // Rows that are not part of the grid (the two-column "what the year left" block)
-      // carry no month cells at all, and are not what this asserts.
-      if (across === 0) continue;
-      // ⚠ A MISSING Total IS THE FAILURE, not a row to skip. The expense CATEGORY rows
-      // shipped blank in column B in the first draft — `recoverabilityRows` calls the
-      // year's figure `spent` where every other row calls it `total` — and a version of
-      // this check that skipped a null B would have passed straight over it.
-      expect(cells.B, `row ${row.getAttribute('r')} carries months but no Total`).not.toBeUndefined();
-      expect(Math.abs(across - cells.B), `row ${row.getAttribute('r')} totals ${cells.B} but its months add to ${across}`).toBeLessThan(0.02);
-      checked += 1;
-    }
+    //
+    // ⚠ THE COLUMNS MOVED ON 2026-08-17 (Total from B to the far right, George's ask) and this
+    // is what proves the move actually landed in the file rather than only in the builder.
+    // Pointed at the old letters it would have gone on passing while every row printed its
+    // Total under "January".
+    //
+    // ⚠ THE SUMMARY SHEET ONLY, and that is not laziness. A property sheet carries two tables
+    // that are NOT the monthly grid — the six-column tenant standings and the four-column
+    // "what tenants paid back" — whose figures would be read here as January, February and
+    // March. The grid lives on Summary; anything monthly belongs there, where this can see it.
+    const checked = expectGridAddsUp('Summary', Object.values(sheets)[0]);
     expect(checked, 'no grid rows were found to check').toBeGreaterThan(3);
+  }, 30000);
+
+  // ⚠ THE LIVE COPY IS A SECOND FILE, and nothing else in the suite opens its bytes. It is
+  // built from the same writer but a different set of rows — the cash apportionment, no NOI
+  // bridge, a credit in the "No date" cell — and a workbook that only ever gets checked on one
+  // of its two bases is checked on the one nobody was worried about.
+  it('income and expenses — the live basis opens too, and its grid adds up', async () => {
+    await downloadIncomeExpenseXlsx({ corporationId: 'corp-1', corporationName: 'Acme', year: Y, basis: 'live' });
+    expect(saved).toHaveLength(1);
+    // The basis is in the filename, so two downloads do not collide as "(1)".
+    expect(saved[0].filename).toMatch(/-live\.xlsx$/);
+    const sheets = await sheetsOf(saved[0]);
+    for (const [n, xml] of Object.entries(sheets)) expectSheetOpens(n, xml);
+    expect(expectGridAddsUp('Summary', Object.values(sheets)[0])).toBeGreaterThan(3);
   }, 30000);
 
   // These two use their own writers and were already correct. Covering them is what stops
@@ -186,10 +219,14 @@ describe('the workbook flags the month a charge landed on — and only that mont
         const cells = [...row.getElementsByTagName('c')];
         const at = (col) => cells.find((c) => (c.getAttribute('r') || '').replace(/\d+/g, '') === col);
         const val = (c) => Number(c?.getElementsByTagName('v')[0]?.textContent);
-        // March is column E (A: label · B: total · C: Jan · D: Feb · E: Mar).
-        if (at('E') && val(at('E')) === 150) march.push(at('E'));
+        // ⚠ THE LETTERS MOVED ON 2026-08-17 when Total went to the far right: it is now
+        // A: label · B: Jan · C: Feb · D: Mar … N: No date · O: Total. This test failing on the
+        // old letters is what proved the move reached the bytes rather than only the builder —
+        // and `markStyle`'s own month offset had to move with it, or the tint would land one
+        // month late on every sheet.
+        if (at('D') && val(at('D')) === 150) march.push(at('D'));
         // February on a rent row — money came in short, nothing was decided.
-        if (at('D') && val(at('D')) === 12750) febRent.push(at('D'));
+        if (at('C') && val(at('C')) === 12750) febRent.push(at('C'));
       }
     }
 

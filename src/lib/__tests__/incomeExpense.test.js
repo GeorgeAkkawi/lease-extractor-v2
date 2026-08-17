@@ -19,7 +19,8 @@
 //     in dollars rather than disagreeing quietly with the Performance card beside it.
 import { describe, it, expect } from 'vitest';
 import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, flags, shapeProperty, noiBridge } from '../incomeExpense';
-import { getPropertyMonthlyRoll } from '../api';
+import { getPropertyMonthlyRoll, createEscalation, deleteEscalation } from '../api';
+import { allocatePayments } from '../ledger';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -34,15 +35,28 @@ const sum12 = (a) => Math.round(a.reduce((s, n) => s + n, 0) * 100) / 100;
 describe('a corporation’s year, month by month', () => {
   const build = () => buildIncomeExpense('corp-1', Y);
 
+  // ⚠ THE TIE-OUT IS MEASURED ON THE CONTRACTED SCHEDULE, NOT THE ROW (2026-08-17). The default
+  // basis is now `projected`, so the Rent ROW counts the seed's scheduled +3% step on Bright
+  // Coffee — while `total_revenue` is `sum(effective_rent)`, which counts applied steps only.
+  // Comparing the projection against it would report drift on every lease with a future step
+  // and turn this check into noise; the step gets its own flag instead.
+  //
+  // The seed's step is dated ~3 weeks from whenever the suite runs, so how many months it
+  // touches MOVES. Everything here is asserted as a relationship for that reason — a hardcoded
+  // $144,450 would be right today and wrong in a fortnight.
   it('ties the rent it lays out to the Revenue figure the page already shows', async () => {
     const [p] = (await build()).properties;
-    expect(p.rent).toBe(144000);
-    expect(p.rentQuoted).toBe(144000);   // v_property_totals.total_revenue
+    expect(p.rentScheduled).toBe(144000);  // contract rates, applied steps only
+    expect(p.rentQuoted).toBe(144000);     // v_property_totals.total_revenue
     expect(p.rentDrift).toBe(0);
-    expect(p.rentByMonth).toEqual(Array(12).fill(12000));
-    expect(p.rentRows.map((r) => [r.label, r.total])).toEqual([
-      ['City Dental', 84000], ['Bright Coffee Co.', 60000],
-    ]);
+    expect(p.projectedAhead).toBeGreaterThan(0);
+    expect(p.rent).toBeCloseTo(144000 + p.projectedAhead, 2);
+    expect(p.rentRows.map((r) => r.label)).toEqual(['City Dental', 'Bright Coffee Co.']);
+    expect(p.rentRows[0].total).toBe(84000);
+    expect(p.rentRows[1].total).toBeCloseTo(60000 + p.projectedAhead, 2);
+    // Every month before the step is still the flat rate, which is the other half of "a step
+    // applies from its own month, not the whole year".
+    expect(p.rentByMonth[0]).toBe(12000);
   });
 
   it('every row of the grid reads the same across as down', async () => {
@@ -121,28 +135,37 @@ describe('a corporation’s year, month by month', () => {
   // the one thing that IS meant to move the number.)
   it('reconciles the grid to what the year left, and the bottom line is unchanged', async () => {
     const [p] = (await build()).properties;
-    expect(p.rent).toBe(144000);                       // base — the row that used to be all of it
+    // `ahead` is the seed's scheduled step, whose month moves with the calendar (see above).
+    // A rent step changes the rent and nothing else: CAM & tax is a fixed annual estimate, so
+    // componentizeSchedule's `min` leaves it alone, and the true-up is measured against it.
+    const ahead = p.projectedAhead;
+    expect(p.rent).toBeCloseTo(144000 + ahead, 2);     // base — the row that used to be all of it
     expect(p.camTaxBilled).toBe(42300);                // the reimbursement, now visible
     expect(p.roofBilled).toBe(1500);
     // 144,000 + 42,300 + 1,500 = $187,800 — exactly what the Ledger bills this property.
-    expect(p.rent + p.camTaxBilled + p.roofBilled).toBe(187800);
-    expect(p.billedTotal).toBe(190490);                // + 2,690 other income
+    expect(p.rent + p.camTaxBilled + p.roofBilled).toBeCloseTo(187800 + ahead, 2);
+    expect(p.billedTotal).toBeCloseTo(190490 + ahead, 2);  // + 2,690 other income
     expect(p.trueUp).toBe(800);                        // actual share 44,600 less 43,800 billed
-    expect(p.earned).toBe(191290);
-    expect(p.net).toBe(141340);                        // ⚠ THE SAME FIGURE AS BEFORE
+    expect(p.earned).toBeCloseTo(191290 + ahead, 2);
+    expect(p.net).toBeCloseTo(141340 + ahead, 2);      // ⚠ THE SAME FIGURE AS BEFORE, plus the step
     expect(p.earned - p.expenseTotals.spent).toBeCloseTo(p.net, 2);
   });
 
   // ⚠ EVERY MONTHLY CELL IS WHAT THE LEDGER SHOWS. This is George's complaint, pinned:
   // "the monthly numbers are way off … none of the rents match because it shows base rent."
+  //
+  // ⚠ CITY DENTAL, NOT BRIGHT COFFEE (2026-08-17). Bright carries the seed's scheduled step,
+  // whose effective date is ~3 weeks from whenever the suite runs — so on a run in early
+  // February the step lands in March and a pinned March figure fails for a reason that has
+  // nothing to do with what this test is about. City Dental has no step and never moves.
   it('lays each month out at what the tenant was actually billed', async () => {
     const [p] = (await build()).properties;
-    // Bright Coffee: $5,000 base + $1,375 CAM & tax + $125 roof = the $6,500 the Ledger bills.
-    const bright = p.rentRows.find((r) => r.label.includes('Bright'));
-    const brightCam = p.camTaxRows.find((r) => r.label.includes('Bright'));
-    const brightRoof = p.roofRows.find((r) => r.label.includes('Bright'));
-    expect(bright.byMonth[2]).toBe(5000);
-    expect(brightCam.byMonth[2] + brightRoof.byMonth[2]).toBeCloseTo(1500, 2);
+    // City Dental: $7,000 base + $2,150 CAM & tax = the $9,150 the Ledger bills.
+    const bright = p.rentRows.find((r) => r.label.includes('City Dental'));
+    const brightCam = p.camTaxRows.find((r) => r.label.includes('City Dental'));
+    const brightRoof = p.roofRows.find((r) => r.label.includes('City Dental'));
+    expect(bright.byMonth[2]).toBe(7000);
+    expect((brightCam?.byMonth[2] || 0) + (brightRoof?.byMonth[2] || 0)).toBeCloseTo(2150, 2);
     // And the property's March cell is the sum of what every tenant was billed that month.
     expect(p.inByMonth[2]).toBeCloseTo(
       p.rentByMonth[2] + p.camTaxByMonth[2] + p.roofByMonth[2] + p.chargesByMonth[2] + p.incomeByMonth[2], 2);
@@ -158,7 +181,12 @@ describe('a corporation’s year, month by month', () => {
   it('reconciles to NOI including the costs NOI never counted', async () => {
     const [p] = (await build()).properties;
     expect(p.absorbed).toBe(2950);
-    expect(p.noi + p.recovered + p.otherIncome - p.absorbed + p.charges).toBeCloseTo(p.net, 2);
+    // ⚠ AND THE RENT BASIS, which the default `projected` basis made non-zero on this seed:
+    // NOI reads `total_revenue` (applied steps only) while the Rent row counts the scheduled
+    // one. Written by hand, this identity only ever proves the terms somebody remembered —
+    // which is exactly why `noiBridge` builds them and the test below checks what it printed.
+    expect(p.noi + p.recovered + p.otherIncome - p.absorbed + p.charges + (p.rent - p.rentQuoted))
+      .toBeCloseTo(p.net, 2);
   });
 
   // ⚠ THE NOTE PRINTS AN EQUATION, SO THE EQUATION IS WHAT GETS TESTED — the terms the
@@ -444,6 +472,148 @@ describe('the five Money-in rows against the roll they came from', () => {
     }
   });
 });
+
+// ── The two bases ─────────────────────────────────────────────────────────────
+//
+// George, 2026-08-17: *"there needs to be a button for the income and expenses to say, hey. I
+// need a live look, which uses the real numbers on the ledger and the actual cam and tax … let's
+// say somebody has been paying more than they should have or less than they should have, that
+// should reflect live on the money in … there should be a projected at the beginning of the
+// year, which shows any escalations … right now, it doesn't show escalations if there is one on
+// the Excel sheet."*
+//
+// ⚠ THESE RUN IN FILE ORDER AND MUTATE THE SHARED DEMO STORE. The block below marks a month
+// paid, which is the only way to produce a real underpayment; it is last in the file for that
+// reason, and anything added after it inherits that state.
+
+describe('projected vs live', () => {
+  it('carries the basis on the package, the properties and nothing implicit', async () => {
+    const proj = await buildIncomeExpense('corp-1', Y);
+    const live = await buildIncomeExpense('corp-1', Y, { basis: 'live' });
+    expect(proj.basis).toBe('projected');           // the default has not moved
+    expect(live.basis).toBe('live');
+    expect(proj.properties.every((p) => p.basis === 'projected')).toBe(true);
+    expect(live.properties.every((p) => p.basis === 'live')).toBe(true);
+    // The first flag on each copy says which one it is — the two files are otherwise
+    // indistinguishable on a desktop six weeks later.
+    expect(proj.flags[0]).toContain('PROJECTED');
+    expect(live.flags[0]).toContain('LIVE');
+  });
+
+  // ⚠ THE INVARIANT THAT MAKES THE LIVE SHEET WORTH ANYTHING: no cash invented, none lost.
+  // The five money-in rows are the month's cash apportioned across the month's bill, so they
+  // must add back to exactly what `allocatePayments` says the tenant paid — including the
+  // credit, which has no month and rides the rent row's "No date" cell.
+  it('adds up to exactly what the Ledger says arrived, tenant by tenant', async () => {
+    for (const propId of ['prop-1', 'prop-2']) {
+      const roll = await getPropertyMonthlyRoll(propId, Y);
+      expect(roll.length).toBeGreaterThan(0);
+      const c = billedRowsFromRoll(roll, { collected: true });
+      for (const r of roll) {
+        const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments, adjustments: r.adjustments });
+        const mine = ['rent', 'camTax', 'roof', 'charges', 'carried']
+          .reduce((s, g) => s + (c[g].find((x) => x.lease_id === r.lease_id)?.total || 0), 0);
+        expect(mine, `${r.tenant_name} on ${propId}`).toBeCloseTo(alloc.totalPaid, 2);
+      }
+    }
+  });
+
+  it('still reads the same across as down on the live basis', async () => {
+    const pkg = await buildIncomeExpense('corp-1', Y, { basis: 'live' });
+    const ties = (row) => expect(sum12(row.byMonth) + row.undated).toBeCloseTo(row.total ?? row.spent, 2);
+    for (const p of pkg.properties) {
+      for (const g of ['rentRows', 'camTaxRows', 'roofRows', 'chargeRows']) for (const r of p[g]) ties(r);
+      expect(sum12(p.inByMonth) + p.inUndated).toBeCloseTo(p.billedTotal, 2);
+      expect(sum12(p.netByMonth) + p.netUndated).toBeCloseTo(p.grossNet, 2);
+      // ⚠ AND NO NOI BRIDGE. Every term in it is accrual; against a cash bottom line the
+      // year's arrears would land in the catch-all residual and print an equation whose
+      // largest term is "not accounted for".
+      expect(p.noiBridge).toBeNull();
+    }
+  });
+
+  // ⚠ THE FLAG THAT SAYS WHAT WAS BILLED, NOT WHAT WAS COLLECTED, IS PROJECTED-ONLY. On a cash
+  // sheet a gap between the schedule and the view is just a tenant who has not paid — printed
+  // there it would read as a fault on a sheet working exactly as intended.
+  it('keeps the billed-vs-view checks off the live sheet', async () => {
+    const live = await buildIncomeExpense('corp-2', Y, { basis: 'live' });
+    expect(live.flags.some((f) => f.includes('difference of'))).toBe(false);
+    expect(live.flags.some((f) => f.includes('invoices you actually issued'))).toBe(false);
+    // …and it still measures the drift on the shape, so nothing was thrown away.
+    expect(live.properties.every((p) => typeof p.rentDrift === 'number')).toBe(true);
+  });
+
+  // The whole point of the projected basis. City Dental (lease-2) bills $84,000; a step dated
+  // 1 October takes it to $96,000, and until that date arrives `monthlyBases` cannot see it.
+  it('prices the months after a scheduled rent step at the new rent — and only when projecting', async () => {
+    const esc = await createEscalation({
+      lease_id: 'lease-2', effective_date: `${Y}-10-01`, new_base_rent: 96000,
+      escalation_type: 'manual', escalation_value: 0, status: 'scheduled',
+    });
+    try {
+      const pkg = await buildIncomeExpense('corp-1', Y);
+      const proj = pkg.properties[0];
+      const city = proj.rentRows.find((r) => r.label === 'City Dental');
+      expect(city.byMonth[8]).toBeCloseTo(7000, 2);    // September — 84,000 / 12
+      expect(city.byMonth[9]).toBeCloseTo(8000, 2);    // October — the step, from its own month
+      expect(city.total).toBeCloseTo(84000 + 3000, 2); // three months at +$1,000
+      // …and it is named in dollars rather than left for the reader to notice. (The seed's own
+      // scheduled step on Bright Coffee is in the same figure — hence the property, not a
+      // per-lease total.)
+      // ⚠ Matched on the whole phrase, not on "have not taken effect yet" — the basis flag
+      // above it uses those same words to explain what a projection is, and the looser matcher
+      // found that one instead.
+      const f = pkg.flags.find((s) => s.includes('comes from rent steps that have not taken effect yet'));
+      expect(f).toContain('Maple Plaza');
+      expect(f).toContain(`$${proj.projectedAhead.toLocaleString('en-US', { minimumFractionDigits: 2 })}`);
+      expect(proj.projectedAhead).toBeGreaterThanOrEqual(3000);
+
+      // The default basis of every OTHER reader is untouched: the roll the Ledger paints from
+      // still prices October at the old rent.
+      const roll = await getPropertyMonthlyRoll('prop-1', Y);
+      const r = roll.find((x) => x.lease_id === 'lease-2');
+      expect(billedRowsFromRoll([r]).rent[0].byMonth[9]).toBeCloseTo(7000, 2);
+
+      // ⚠ AND NEITHER CHECK THAT COMPARES AGAINST A *BILLED* RECORD FIRES ON IT. An issued
+      // invoice cannot contain a step that has not happened, and `total_revenue` is applied
+      // steps only — measured against the projection, every lease with a future step would
+      // report drift the landlord can do nothing about, under a prompt to Rebuild that would
+      // be advising them to over-bill.
+      expect(proj.invoiceDrifted).toEqual([]);
+      expect(proj.rentDrift).toBe(0);
+      expect(pkg.flags.some((s) => s.includes('difference of'))).toBe(false);
+    } finally {
+      await deleteEscalation(esc.id);
+    }
+  });
+
+  // George's own case, and the demo seed already is it: City Dental bills $9,150 a month, pays
+  // January and February in full, sends $4,000 against March and nothing after. No fixture is
+  // written here — the underpayment is the seed's, so this test cannot pass by arranging its
+  // own answer.
+  it('shows the shortfall on the live basis and the full bill on the projected one', async () => {
+    const proj = (await buildIncomeExpense('corp-1', Y)).properties[0];
+    const live = (await buildIncomeExpense('corp-1', Y, { basis: 'live' })).properties[0];
+    const at = (p, i) => {
+      const pick = (rows) => rows.find((r) => r.label.includes('City Dental'))?.byMonth[i] || 0;
+      return round2(pick(p.rentRows) + pick(p.camTaxRows) + pick(p.roofRows));
+    };
+    expect(at(proj, 0)).toBeCloseTo(9150, 2);   // January — billed and paid
+    expect(at(live, 0)).toBeCloseTo(9150, 2);
+    expect(at(proj, 2)).toBeCloseTo(9150, 2);   // March — billed, whatever arrived
+    expect(at(live, 2)).toBeCloseTo(4000, 2);   // what actually arrived
+    // ⚠ AND THE MONTH NOBODY PAID IS BLANK, not the bill. That is George's sentence in one
+    // assertion: *"any months that haven't been paid and the ledger shouldn't show."*
+    expect(at(proj, 3)).toBeCloseTo(9150, 2);
+    expect(at(live, 3)).toBe(0);
+    // The apportionment keeps the components in proportion to the bill and still sums to the
+    // cash exactly — the month's whole figure is exact even though the split is an assumption.
+    const liveCam = live.camTaxRows.find((r) => r.label.includes('City Dental'));
+    expect(liveCam.byMonth[2]).toBeCloseTo(2150 * (4000 / 9150), 2);
+  });
+});
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 // ── The Summary roll-up ───────────────────────────────────────────────────────
 

@@ -59,6 +59,37 @@ describe('monthlyBases — a mid-year rent step blends the year', () => {
   it('no applied steps → every month uses the base rent', () => {
     expect(monthlyBases([], 60000, 2026)).toEqual(Array(12).fill(60000));
   });
+
+  // ── The opt-in, and the default that protects the Ledger (2026-08-17) ───────────────
+  //
+  // A step only flips to `applied` on its effective date, so an October raise is invisible in
+  // August — which is why the Income-and-expenses workbook printed the old rent for the rest
+  // of the year (George: *"it doesn't show escalations if there is one on the Excel sheet"*).
+  //
+  // ⚠ BOTH DIRECTIONS ARE ASSERTED, and the DEFAULT one is the important half. This function
+  // feeds every invoice, the Ledger grid, the alerts and closeYear, and it mirrors the SQL
+  // `effective_rent` (0054), which knows only about applied steps. If the default ever starts
+  // counting a scheduled row, the app bills rent that is not yet due.
+  it('ignores a scheduled step by default and reads it only when asked', () => {
+    const esc = [{ effective_date: '2026-10-01', new_base_rent: 66000, status: 'scheduled' }];
+    // The default: October has not happened, so nothing moves. Byte for byte the old answer.
+    expect(monthlyBases(esc, 60000, 2026)).toEqual(Array(12).fill(60000));
+    // The projection: Oct–Dec at the new rent, Jan–Sep at the old one. The step applies from
+    // its own month, never the whole year.
+    expect(monthlyBases(esc, 60000, 2026, { includeScheduled: true }))
+      .toEqual([...Array(9).fill(60000), 66000, 66000, 66000]);
+  });
+
+  it('keeps the era rule when an applied step and a scheduled one sit in the same year', () => {
+    const esc = [
+      { effective_date: '2026-03-01', new_base_rent: 60000, status: 'applied' },
+      { effective_date: '2026-09-01', new_base_rent: 63000, status: 'scheduled' },
+    ];
+    // base_rent is authoritative from the latest APPLIED step (March) — so Mar–Aug read
+    // 60,000 from the live column, not from the row, and only the future step is read raw.
+    expect(monthlyBases(esc, 60000, 2026, { includeScheduled: true }))
+      .toEqual([60000, 60000, 60000, 60000, 60000, 60000, 60000, 60000, 63000, 63000, 63000, 63000]);
+  });
 });
 
 describe('monthlyScheduleForYear — term-aware', () => {

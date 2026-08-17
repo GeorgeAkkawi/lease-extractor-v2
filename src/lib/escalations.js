@@ -93,24 +93,49 @@ export function occupancyStart(lease, escalations) {
  * applied step), and the ledger supplies the rate for historical segments. A month
  * before any recorded applied step falls back to base_rent (its true prior rate isn't
  * recoverable once base_rent moved — a small, bounded degradation, never a crash).
+ * ⚠ `includeScheduled` IS OPT-IN, AND THE DEFAULT MUST NEVER MOVE. This function is a §2
+ * choke point: it feeds buildLeaseSchedule → the Ledger grid, every invoice, owedByMonthForInvoice,
+ * closeYear and the dashboard alerts, and it has an SQL twin (`effective_rent`, migration 0054)
+ * that knows only about APPLIED steps. Flip the default and the app starts billing rent that has
+ * not taken effect.
+ *
+ * The opt-in exists for ONE reader: the Income-and-expenses workbook's **projected** basis
+ * (2026-08-17, George: *"right now, it doesn't show escalations if there is one on the Excel
+ * sheet"*). A step only flips to `applied` on its effective date (nightly, `apply_due_escalations()`),
+ * so a step dated October is invisible in a workbook downloaded in August and every month from
+ * October on prints the OLD rent. A projection is the one place that is wrong.
+ *
+ * The era rule survives intact: base_rent is authoritative from the latest APPLIED step onward,
+ * so a step later than every applied one is read straight off its row — the ledger states that
+ * future rent outright and base_rent has not moved to it yet.
+ *
  * @param {Array} escalations rows with {effective_date, new_base_rent, status}
  * @param {number} baseRent   lease.base_rent (the current authoritative annual rent)
  * @param {number} year
+ * @param {{includeScheduled?: boolean}} opts
  * @returns {number[]} length-12 array of annual base rents, index 0 = January
  */
-export function monthlyBases(escalations, baseRent, year) {
+export function monthlyBases(escalations, baseRent, year, { includeScheduled = false } = {}) {
   const base = Number(baseRent) || 0;
-  const applied = (escalations || [])
-    .filter((e) => e.status === 'applied' && e.effective_date && e.new_base_rent != null)
+  const usable = (escalations || []).filter((e) => e.effective_date && e.new_base_rent != null);
+  const at = (list) => list
     .map((e) => ({ t: parseDate(e.effective_date).getTime(), rent: Number(e.new_base_rent) || 0 }))
     .sort((a, b) => a.t - b.t);
+  const applied = at(usable.filter((e) => e.status === 'applied'));
   const maxT = applied.length ? applied[applied.length - 1].t : null;
+  // With the opt-in off this IS `applied`, so every existing caller behaves byte for byte.
+  const steps = includeScheduled
+    ? at(usable.filter((e) => e.status === 'applied' || e.status === 'scheduled'))
+    : applied;
   const out = [];
   for (let m = 1; m <= 12; m++) {
     const ref = new Date(year, m - 1, 1, 12).getTime(); // first day of the month, local noon
-    const prior = applied.filter((s) => s.t <= ref);
+    const prior = steps.filter((s) => s.t <= ref);
     if (!prior.length) { out.push(base); continue; } // before any step → current best
     const latest = prior[prior.length - 1];
+    // A step dated after every APPLIED one has not been swept into base_rent yet, so the row
+    // is the only place the new rent exists. (Unreachable unless includeScheduled is on.)
+    if (maxT == null || latest.t > maxT) { out.push(latest.rent); continue; }
     // Latest applicable step is the globally-latest applied step → the current era →
     // base_rent is authoritative. Otherwise a later step supersedes it → historical
     // segment → read the ledger rate.

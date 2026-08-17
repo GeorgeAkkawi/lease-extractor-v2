@@ -49,9 +49,16 @@ function adjArray(adjustments) {
 // a length-12 array of the annual estimate in effect each month, from monthlyEstimates
 // (reconciliation.js). Omit it and every month uses otherAnnual/12, exactly as before — which
 // is what silently re-priced January when the estimate moved in August.
-export function buildLeaseSchedule({ year, grossBase, otherAnnual, otherByMonth = null, abatements, escalations, leaseStart, invoiceTotal, adjustments }) {
+//
+// `includeScheduled` (2026-08-17) is passed straight through to `monthlyBases` and is opt-in
+// for ONE caller — the Income-and-expenses workbook's projected basis. It prices the months
+// after a rent step that has not been swept yet at the new rent. ⚠ It must never reach a
+// billing path: an invoice built this way would charge rent that is not yet due. See the note
+// on `monthlyBases`. `occupancyStart` deliberately does NOT take it — a future step says
+// nothing about when the tenant moved in.
+export function buildLeaseSchedule({ year, grossBase, otherAnnual, otherByMonth = null, abatements, escalations, leaseStart, invoiceTotal, adjustments, includeScheduled = false }) {
   const occ = occupancyStart({ lease_start: leaseStart }, escalations);
-  const bases = monthlyBases(escalations, grossBase, year);
+  const bases = monthlyBases(escalations, grossBase, year, { includeScheduled });
   const schedule = monthlyScheduleForYear({
     year, annualBaseRent: grossBase, otherAnnual, abatements,
     occupancyStartIso: occ, monthlyBases: bases, monthlyOther: otherByMonth,

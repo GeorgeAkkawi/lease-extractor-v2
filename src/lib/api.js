@@ -4810,7 +4810,12 @@ export async function markMonthPaidAllTenants(propertyId, year, month, opts = {}
 // which months are paid, and the raw payments — powers the Ledger grid + "mark all
 // paid". Uses the year's invoice total when an invoice exists, else an estimate from
 // the tenant-share figures (exact once the first month is marked and the invoice is born).
-export async function getPropertyMonthlyRoll(propertyId, year) {
+//
+// `includeScheduled` (2026-08-17) is opt-in and reaches ONE caller: the Income-and-expenses
+// workbook's projected basis, which prices the months after an un-swept rent step at the new
+// rent (see `monthlyBases`). ⚠ NOTHING ELSE MAY PASS IT — the Ledger grid, the alerts and every
+// billing path read this roll, and a projection is not a bill.
+export async function getPropertyMonthlyRoll(propertyId, year, { includeScheduled = false } = {}) {
   const [shares, invoices] = await Promise.all([
     getTenantShares(propertyId, year),
     listInvoicesForProperty(propertyId),
@@ -4852,11 +4857,24 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
     // roofByMonth on the returned row — and it MUST, because base is a remainder there: split
     // a segmented month with a flat annual and the difference prints as changed BASE RENT.
     const estMonths = estimateMonths(estByLease[s.lease_id] || [], s, year);
-    const { schedule, annual, owedMonths, occupancyStartIso: occ, factor, adjustments: adjArr } = buildLeaseSchedule({
+    const args = {
       year, grossBase, otherAnnual: other,
       otherByMonth: otherMonthsFor(estByLease[s.lease_id] || [], s, year, billed),
       abatements, escalations, leaseStart: s.lease_start, adjustments: adjustmentRows,
-    });
+    };
+    const { schedule, annual, owedMonths, occupancyStartIso: occ, factor, adjustments: adjArr } =
+      buildLeaseSchedule({ ...args, includeScheduled });
+    // ⚠ DRIFT IS MEASURED AGAINST THE CONTRACTED SCHEDULE, NEVER THE PROJECTION. `invoiceDrift`
+    // asks "does the bill you issued still match what this lease says today" — and an invoice
+    // cannot contain a rent step that has not happened yet. Measured against the projection,
+    // every lease with a future step would report drift the landlord can do nothing about, and
+    // the Rebuild prompt that flag drives would be advising them to over-bill.
+    //
+    // It is also what the rent TIE-OUT has to be measured on. `v_property_totals.total_revenue`
+    // is `sum(effective_rent)` — applied steps only, migration 0054 — so comparing a projection
+    // against it would report drift on every lease with a future step and destroy the one check
+    // that tells us the JS and SQL halves of that twin still agree.
+    const contracted = includeScheduled ? buildLeaseSchedule(args) : null;
     const payments = inv ? (paymentsByInvoice[inv.id] || []) : [];
     const byMonth = {};
     for (const p of payments) {
@@ -4864,7 +4882,7 @@ export async function getPropertyMonthlyRoll(propertyId, year) {
       if (!m) continue;
       (byMonth[m] ||= { amount: 0 }).amount += Number(p.amount) || 0;
     }
-    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, adjustments: adjArr, adjustmentRows, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, camTaxByMonth: estMonths?.camTax || null, roofByMonth: estMonths?.roof || null, invoiceTotal: inv ? Number(inv.total_amount) : null, drift: invoiceDrift(inv, annual), occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage, base_rent: Number(s.base_rent || 0), premises_address: s.premises_address || null, anyEstimate: billed.anyEstimate, gross: billed.gross };
+    return { lease_id: s.lease_id, invoice_id: inv ? inv.id : null, tenant_name: s.tenant_name, annual, monthly: owedMonths ? annual / owedMonths : 0, owedMonths, byMonth, payments, schedule, factor, adjustments: adjArr, adjustmentRows, camTaxAnnual: billed.camTax ?? (billed.cam + billed.tax), roofAnnual: billed.roof, camTaxByMonth: estMonths?.camTax || null, roofByMonth: estMonths?.roof || null, invoiceTotal: inv ? Number(inv.total_amount) : null, drift: invoiceDrift(inv, contracted ? contracted.annual : annual), projectedAhead: contracted ? round2(annual - contracted.annual) : 0, contractedSchedule: contracted ? contracted.schedule : null, contractedFactor: contracted ? contracted.factor : null, occupancyStartIso: occ, hasAbatement: abatements.length > 0, balance: inv ? Number(inv.balance) : null, is_active: s.is_active, lease_termination_date: s.lease_termination_date, square_footage: s.square_footage, base_rent: Number(s.base_rent || 0), premises_address: s.premises_address || null, anyEstimate: billed.anyEstimate, gross: billed.gross };
   });
 }
 

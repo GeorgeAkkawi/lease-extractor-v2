@@ -25,7 +25,7 @@ vi.mock('../download', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, saveWorkbook: (buf, filename) => { saved.push({ buf, filename }); return 'blob:test'; } };
 });
-const { buildIncomeExpense, flags } = await import('../incomeExpense');
+const { buildIncomeExpense } = await import('../incomeExpense');
 const { downloadIncomeExpenseXlsx } = await import('../incomeExpenseExcel');
 
 const Y = currentYear();
@@ -487,45 +487,33 @@ describe('placing an unplaced deposit as rent', () => {
   });
 });
 
-// ⚠ RUNS AFTER the import above, deliberately: the demo store is shared across a file, so
-// this is the workbook a landlord would download HAVING imported a statement. Without that
-// ordering the seed has no statement lines at all and the whole sheet is skipped — which is
-// exactly how a tab can ship untested and never render for anyone.
-describe('the workbook grows a “Where bank money went” tab once there is something to tie out', () => {
-  it('carries the tie-out onto every property shape and writes the sheet', async () => {
+// ⚠ THE WORKBOOK NO LONGER CARRIES A TIE-OUT TAB (2026-08-17, George: *"take out the bank tie
+// up"*). `bankTieOut` itself is untouched and so is every test above it — the Ledger's own
+// panel is the surviving home, and it reads `getBankTieOut` directly (LedgerPage.js). What
+// changed is only that the Income-and-expenses download stopped carrying a second copy.
+//
+// ⚠ RUNS AFTER the import above, deliberately: the demo store is shared across a file, so this
+// is the workbook a landlord would download HAVING imported a statement — the exact case that
+// used to grow the tab. Asserting its absence on a corporation with nothing imported would
+// prove nothing at all.
+describe('the workbook no longer carries a bank tie-out tab', () => {
+  it('writes Summary plus one sheet per property, and nothing about the bank', async () => {
     const pkg = await buildIncomeExpense('corp-1', Y);
-    const maple = pkg.properties.find((p) => p.name === 'Maple Plaza');
-    expect(maple.tieOut, 'the property that was imported into carries a tie-out').not.toBe(null);
-    // The rent block is attached from the roll shapeProperty already holds, not read again.
-    expect(maple.tieOut.rent.billed).toBeGreaterThan(0);
-    expect(maple.tieOut.rent.behind).toBeCloseTo(
-      maple.tieOut.rent.billed - maple.tieOut.rent.received, 2
-    );
+    expect(pkg.properties.find((p) => p.name === 'Maple Plaza')).toBeTruthy();
+    // The field is gone from the shape too, not merely unread by the writer.
+    expect(pkg.properties.every((p) => p.tieOut === undefined)).toBe(true);
+    expect(pkg.flags.some((f) => /Where bank money went/.test(f))).toBe(false);
 
     saved.length = 0;
     await downloadIncomeExpenseXlsx({ corporationId: 'corp-1', corporationName: 'Acme', year: Y });
     const zip = await JSZip.loadAsync(saved[0].buf);
     const wbXml = await zip.file('xl/workbook.xml').async('string');
-    expect(wbXml).toMatch(/name="Where bank money went"/);
-    // …and the sheet actually SAYS the things it exists to say. A tab that renders as a
-    // title and four empty rows still passes a "does the file open?" check.
+    expect(wbXml).not.toMatch(/name="Where bank money went"/);
+    // …and none of its prose survives in a note on another sheet.
     const strings = await zip.file('xl/sharedStrings.xml').async('string');
-    for (const phrase of [
-      'Where your bank money went — FY',
-      'Money in on your statements',
-      'Money out on your statements',
-      // ⚠ THE TWO RENT HEADINGS MUST NOT READ ALIKE. The Money-in row is a TIE (a difference
-      // is a fault); these three are arrears (a difference is normal). They sat a few rows
-      // apart under headings that both said "rent" and George read them as one thing.
-      'Your whole year’s rent — not a tie, and not meant to balance',
-      'Rent off these statements',
-      // The sheet's columns name the two ACTORS, the same words the Ledger panel uses.
-      // Two documents describing one comparison must not label it differently.
-      'The bank showed',
-      'Amlak recorded',
-      'What this cannot catch',
-      'not from the lines, because a report derived from the same list it is checking',
-    ]) expect(strings, `the sheet must say "${phrase}"`).toContain(phrase);
+    for (const phrase of ['Where your bank money went', 'The bank showed', 'What this cannot catch']) {
+      expect(strings, `the workbook must no longer say "${phrase}"`).not.toContain(phrase);
+    }
     // Every sheet still opens: no frozen pane that splits nothing (see workbookValidity).
     for (const n of Object.keys(zip.files).filter((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f))) {
       const xml = await zip.file(n).async('string');
@@ -533,42 +521,6 @@ describe('the workbook grows a “Where bank money went” tab once there is som
       expect(/state="frozen"/.test(xml)).toBe(false);
     }
   }, 30000);
-
-  it('writes NO tie-out tab for a corporation with no imported statement', async () => {
-    saved.length = 0;
-    await downloadIncomeExpenseXlsx({ corporationId: 'corp-2', corporationName: 'Northwind', year: Y });
-    const zip = await JSZip.loadAsync(saved[0].buf);
-    const wbXml = await zip.file('xl/workbook.xml').async('string');
-    // "Nothing imported" and "imported and clean" are different answers. A tab that always
-    // appears, always saying nothing, is the tab nobody opens the day it matters.
-    expect(wbXml).not.toMatch(/name="Where bank money went"/);
-  }, 30000);
-});
-
-// ⚠ AND THE PRE-FLIGHT HAS TO CARRY IT. A reader who never opens the Bank tie-out tab still
-// has to learn that money crossed the account and reached none of the figures they are
-// about to hand someone — the flags are what the download dialog prints and what the
-// Summary sheet ends with.
-describe('the workbook pre-flight names an unbalanced tie-out', () => {
-  it('puts the difference in flags(), and says nothing when it balances', () => {
-    const broken = {
-      name: 'Maple Plaza', expenseRows: [], expenseTotals: { spent: 1, recovered: 0, net: 1 },
-      outUndated: 0, inUndated: 0, rentDrift: 0, rentScheduled: 0, rent: 0, rentQuoted: 0,
-      tieOut: bankTieOut({
-        year: Y, imports: 1,
-        lines: [line({ disposition: 'expense', amount: 900 })],
-        expenseItems: [],
-      }),
-    };
-    const said = flags([broken]);
-    expect(said.some((f) => /“Where bank money went” sheet has 1 thing to look at/.test(f))).toBe(true);
-    expect(said.some((f) => /\$900\.00 more than the books hold/.test(f))).toBe(true);
-
-    const clean = { ...broken, tieOut: bankTieOut({ year: Y, imports: 1, lines: [] }) };
-    expect(flags([clean]).some((f) => /Where bank money went/.test(f))).toBe(false);
-    // …and a property with no statements at all raises nothing either.
-    expect(flags([{ ...broken, tieOut: null }]).some((f) => /Where bank money went/.test(f))).toBe(false);
-  });
 });
 
 // ── The second leak: a placed expense nobody could ever bill ─────────────────────────────
