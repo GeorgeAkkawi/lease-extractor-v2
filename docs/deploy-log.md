@@ -12,6 +12,86 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **Re-reading a statement you already imported now PROVES something.** A line
+  the duplicate guard recognizes is linked to the payment an earlier import already made,
+  instead of landing with `ref_id` NULL. Shipped ahead of the June re-import George approved,
+  because without it that re-import would have cost an LLM read and changed nothing.
+  Cloudflare version **`13e0cd48-0cf8-4fc7-a211-1b28d6e24e5f`** (on top of `b0e0be5f`).
+
+  George: *"okay go ahead"* — approving the re-import of the two 24 Jul statements to retire the
+  $36,229.59 "cannot be checked" tie-out finding.
+
+  ### WHY THE RE-IMPORT ALONE WOULD HAVE DONE NOTHING
+
+  Traced before spending the read, not after. `applyStatementImport` writes one
+  `statement_lines` row per line the statement contained, and fills `ref_kind` / `ref_id` from
+  the `applied` array — **what THIS import wrote**. A line the duplicate guard recognizes writes
+  nothing (correctly: `matchStatement` lands it `duplicate: true` and unticked), so it produced
+  no `applied` record and got `ref_id: null`.
+
+  The tie-out's reverse pass skips a books row that any line claims
+  (`claimedRefs.has(String(r.id))`). With `ref_id` null, nothing would have been claimed — the
+  eight June payments still carry `import_id = fcd3544d`, an import with zero lines, so they
+  would have stayed `unrecorded` and the panel would have printed the same $36,229.59. One paid
+  read, one extra `statement_imports` row, no change to the finding.
+
+  ### THE LINK, AND WHY IT IS NOT THE BACKFILL THAT WAS REFUSED
+
+  ⚠ **The distinction is the whole of it.** `bankTieOut.js` opens by forbidding a books-side
+  check — a tie-out built from `statement_imports.applied` balances by construction. This does
+  not read the books to decide anything. It matches a **freshly read bank line's own hash** —
+  `date | amount | direction | normalizeDesc(description)`, computed off the statement — to the
+  hash a payment recorded when it was created from that same line. Equal hashes mean the two
+  ARE the same bank transaction, evidenced by the document.
+
+  And it fails in the safe direction: if the earlier import mis-transcribed a line, the new read
+  hashes differently, no link forms, and the money stays "cannot be checked". Pinned by a test
+  that feeds a re-read with one extra word in the description and asserts `ref_id` is null.
+
+  Only `payments.import_hash` and `other_income.line_hash` exist to match on. **`cam_line_items`
+  carries no hash column**, so a duplicate EXPENSE line still links to nothing — stated in the
+  code rather than hidden, and the remaining gap.
+
+  Two guards against claiming the same row twice: rows written by THIS import are excluded from
+  the fallback pool (they already come off the `applied` queue), and the fallback is itself a
+  queue, because two byte-identical lines are two transactions and must claim two rows.
+
+  **A linked duplicate stops reading "ignored · duplicate" and reads `rent`.** The money was not
+  skipped — it was already booked, and the row is now named. That also takes it out of the
+  Undo-able set (CLAUDE.md: Undo is offered for `ignored` and `transfer` only), which is right:
+  un-deciding it would put a line back on the work list whose money is on the books.
+
+  ### FILES
+
+  `src/lib/api.js` (`applyStatementImport`, the audit-line block).
+  Tests: `statementImport.test.js` (+2).
+
+  ### VERIFIED
+
+  **1952 tests / 185 files.** The link test was proven non-vacuous — `const back = null;`
+  substituted, the test failed, then restored. `npm run build` · `npx wrangler deploy`.
+
+  ### WHAT IS STILL GEORGE'S CLICK
+
+  The re-import itself needs the app: it uploads a file and calls the edge function under his
+  session. The June statement is downloadable from the Ledger's **Imported statements** register
+  (it already signs `imp.storage_path`), so it is download → Import statement → save.
+
+  ⚠ **Double-booking is guarded twice**, which is why this is safe to hand over: a hash match
+  lands the line greyed and unticked (`duplicate`), and independently `alreadyPaid` leaves any
+  line unticked that would settle a month already recorded as paid — all eight June months are.
+  The eight to watch: Sam Nails $4,418.00 · Hong Kong $3,600.00 · Five Points Wings $5,324.00 ·
+  Ricki's-Lyons $3,535.09 (all Jun 1) · D & D Dental $6,315.00 (Jun 2) · Michuacana $5,300.00
+  (Jun 4) · Tobacco $3,987.50 (Jun 5) · beauty and barber shop $3,750.00 (Jun 30).
+
+  **Only `20260630-statements-1680-.pdf` matters** — its eight payments are the whole $36,229.59.
+  The other 24 Jul import (`20260529-...`, the May statement) wrote a single record.
+
+  ### NOW REDUNDANT
+
+  - **Nothing.** The `ignored · duplicate` disposition is not retired — it still applies to a
+    duplicate line with no linkable row behind it (every expense one, for now).
+
 - **2026-08-17** — **Choosing something stops looking like a browser; an expense line's name
   and date paid become editable for the first time; and the beauty and barber shop's renewal
   tab stops printing three wrong things at once.** Two rent steps on one day are now flagged,

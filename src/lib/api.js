@@ -7257,10 +7257,58 @@ export async function applyStatementImport({ propertyId, year, fileName, account
         if (!byHash.has(a.hash)) byHash.set(a.hash, []);
         byHash.get(a.hash).push(a);
       }
+      // ── RE-READING A STATEMENT YOU ALREADY IMPORTED (2026-08-17) ────────────────
+      //
+      // A line the duplicate guard recognized wrote nothing this round, so it had no
+      // `applied` record and landed with ref_id NULL — a bank line the register showed
+      // as "ignored · duplicate" while naming none of the money it had actually made.
+      // Re-importing a statement therefore proved nothing, which is exactly the hole
+      // George's two 24 Jul statements sat in: eight June payments totalling $36,229.59
+      // on the books, imported before `statement_lines` existed, and no way to give them
+      // a bank line short of a backfill from the books — the circular check bankTieOut.js
+      // refuses in its first warning.
+      //
+      // ⚠ THIS IS NOT THAT BACKFILL, and the difference is the whole point. The link is
+      // made by matching a FRESHLY READ bank line's hash — date | amount | direction |
+      // normalized description, computed off the statement — to a payment that recorded
+      // that same hash when it was created. Equal hashes mean the two are the same bank
+      // transaction, evidenced by the document. If the earlier import mis-transcribed a
+      // line, the new read hashes differently and no link forms: it fails to "cannot be
+      // checked", never to a false ✓.
+      //
+      // Only `payments.import_hash` and `other_income.line_hash` exist to match on;
+      // `cam_line_items` carries no hash column, so a duplicate EXPENSE line still links
+      // to nothing. Stated rather than hidden — that is the remaining gap.
+      const hashes = [...new Set(lines.map((l) => l.hash).filter(Boolean).map(String))];
+      const prior = new Map();
+      if (hashes.length) {
+        const [payRows, incRows] = await Promise.all([
+          rows(supabase.from('payments').select('id,import_hash,import_id').in('import_hash', hashes)),
+          rows(supabase.from('other_income').select('id,line_hash,import_id').in('line_hash', hashes)),
+        ]);
+        const push = (h, v) => { if (!prior.has(h)) prior.set(h, []); prior.get(h).push(v); };
+        // ⚠ Rows THIS import just wrote are excluded: they already have an `applied`
+        // record and are handed out by the queue above. Leaving them in would let a
+        // second identical line claim the same payment twice.
+        for (const p of payRows || []) if (p.import_id !== imp.id) push(String(p.import_hash), { kind: 'payment', id: p.id });
+        for (const r of incRows || []) if (r.import_id !== imp.id) push(String(r.line_hash), { kind: 'income', id: r.id });
+      }
       const oid = await ownerId();
       const rowsToWrite = lines.map((l) => {
         const q = byHash.get(l.hash);
         const ref = q && q.length ? q.shift() : null;
+        // Nothing written this round — is this line the one that made a record on an
+        // EARLIER import? Queued for the same reason the map above is: two byte-identical
+        // lines are two transactions and must claim two rows.
+        const pq = !ref && l.hash ? prior.get(String(l.hash)) : null;
+        const back = pq && pq.length ? pq.shift() : null;
+        // A linked duplicate is not "ignored". It was recorded — by an earlier import —
+        // and the row it made is now named, so the register says so. That also keeps it
+        // out of the Undo-able set, which is right: un-deciding it would put a line back
+        // on the work list whose money is already on the books.
+        const disposition = back
+          ? (back.kind === 'payment' ? 'rent' : 'other_income')
+          : (l.disposition || 'unclassified');
         return {
           owner_id: oid,
           import_id: imp.id,
@@ -7271,13 +7319,13 @@ export async function applyStatementImport({ propertyId, year, fileName, account
           amount: Math.abs(Number(l.amount) || 0),
           direction: l.direction === 'in' ? 'in' : 'out',
           line_hash: l.hash || null,
-          disposition: l.disposition || 'unclassified',
-          ignore_reason: l.disposition === 'ignored' ? (l.ignore_reason || null) : null,
-          ref_kind: ref ? ref.kind : null,
+          disposition,
+          ignore_reason: disposition === 'ignored' ? (l.ignore_reason || null) : null,
+          ref_kind: ref ? ref.kind : (back ? back.kind : null),
           // entry_id covers the entity ledger (0077) and other income (0078);
           // lease_id covers a security deposit, which writes no row of its own and
           // whose whole record IS this pointer back to the lease it belongs to.
-          ref_id: ref ? (ref.payment_id || ref.item_id || ref.entry_id || ref.lease_id || null) : null,
+          ref_id: ref ? (ref.payment_id || ref.item_id || ref.entry_id || ref.lease_id || null) : (back ? back.id : null),
         };
       });
       await rows(supabase.from('statement_lines').insert(rowsToWrite));

@@ -303,6 +303,73 @@ describe('statement import — account-hinted rule learning', () => {
     await deleteImportRule(still.id);
   });
 
+  // ⚠ THE OTHER HALF OF THE SAME HOLE, closed 2026-08-17. Two statements imported 24 Jul 2026
+  // wrote eight June payments — $36,229.59 still on the books — before `statement_lines`
+  // existed, so the tie-out could only report them as "cannot be checked". Re-reading the
+  // statement used to prove nothing: the duplicate guard recognized every line, wrote no
+  // money (correctly), and therefore left every line with ref_id NULL.
+  //
+  // The link is made off the FRESHLY READ line's own hash, matched to the hash the payment
+  // recorded when it was created — not out of the books. A statement that no longer hashes
+  // the same links nothing, which is the failure direction that keeps the check honest.
+  it('re-reading a statement links its lines to the payments an EARLIER import already made', async () => {
+    const txn = { date: `${Y}-05-06`, description: 'ACH DEPOSIT WESTBRIDGE 55', amount: 812, direction: 'in', balance: null, line: 9 };
+    const h = lineHash(txn);
+    const first = await applyStatementImport({
+      propertyId: 'prop-2', year: Y, fileName: 'june-original.pdf',
+      entries: [{ type: 'payment', lease_id: 'lease-3', property_id: 'prop-2', year: Y, amount: txn.amount, date: txn.date, description: txn.description, period_month: 5, reconInvoiceId: null, hash: h }],
+      lines: [], // the state the 24 Jul imports are in: money written, not one audit line
+    });
+    expect((await listStatementLinesForYear('prop-2', Y)).some((l) => l.line_hash === h)).toBe(false);
+
+    // The re-read. The guard recognizes the line, so it writes NO money — `entries` is empty
+    // exactly as the review screen would leave it — and only the audit line goes in.
+    const again = await applyStatementImport({
+      propertyId: 'prop-2', year: Y, fileName: 'june-reread.pdf',
+      entries: [],
+      lines: [{ hash: h, date: txn.date, description: txn.description, amount: txn.amount, direction: 'in', year: Y, disposition: 'ignored', ignore_reason: 'duplicate' }],
+    });
+    const line = (await listStatementLinesForYear('prop-2', Y)).find((l) => l.line_hash === h);
+    const inv = (await listInvoices('lease-3')).find((i) => Number(i.year) === Y && i.status !== 'void');
+    const pay = (await listPayments(inv.id)).find((p) => p.import_hash === h);
+
+    // It names the payment the FIRST import made — the thing that was missing.
+    expect(line.ref_kind).toBe('payment');
+    expect(line.ref_id).toBe(pay.id);
+    // And it reads as recorded, not "ignored · duplicate": the money was not skipped, it was
+    // already booked. That also keeps it out of the Undo-able set, where un-deciding it would
+    // put money back on the work list that is already on the books.
+    expect(line.disposition).toBe('rent');
+    expect(line.ignore_reason).toBeNull();
+    // No second payment was created — the guard did its job and this changed nothing but proof.
+    expect((await listPayments(inv.id)).filter((p) => p.import_hash === h)).toHaveLength(1);
+
+    await undoStatementImport(again.import);
+    await undoStatementImport(first.import);
+  });
+
+  it('links nothing when the re-read hashes differently — it fails to unproven, never to a false tick', async () => {
+    const txn = { date: `${Y}-05-07`, description: 'ACH DEPOSIT EASTGATE 61', amount: 913, direction: 'in', balance: null, line: 10 };
+    const first = await applyStatementImport({
+      propertyId: 'prop-2', year: Y, fileName: 'orig.pdf',
+      entries: [{ type: 'payment', lease_id: 'lease-3', property_id: 'prop-2', year: Y, amount: txn.amount, date: txn.date, description: txn.description, period_month: 5, reconInvoiceId: null, hash: lineHash(txn) }],
+      lines: [],
+    });
+    // The same deposit, transcribed with a word the first read missed → a different hash.
+    const misread = lineHash({ ...txn, description: 'ACH DEPOSIT EASTGATE 61 REF 4471' });
+    const again = await applyStatementImport({
+      propertyId: 'prop-2', year: Y, fileName: 'reread.pdf',
+      entries: [],
+      lines: [{ hash: misread, date: txn.date, description: 'ACH DEPOSIT EASTGATE 61 REF 4471', amount: txn.amount, direction: 'in', year: Y, disposition: 'unclassified' }],
+    });
+    const line = (await listStatementLinesForYear('prop-2', Y)).find((l) => l.line_hash === misread);
+    expect(line.ref_id).toBeNull();
+    expect(line.disposition).toBe('unclassified');
+
+    await undoStatementImport(again.import);
+    await undoStatementImport(first.import);
+  });
+
   // ⚠ THE HOLE THE TIE-OUT FOUND ON PERSHING PLAZA, closed 2026-08-17. Deleting a payment an
   // import created left the bank line still saying "recorded ✓" and still pointing at a row
   // that no longer existed — so real money left the books with no trace anywhere that it had
