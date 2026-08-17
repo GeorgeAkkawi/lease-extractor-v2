@@ -5,6 +5,7 @@ import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
 import { resolvePick } from './StatementReview';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // The learned-payee memory, editable. Every checked tenant deposit teaches a
 // "always match {payee} → {tenant}" rule (StatementReview save), and an expense line
@@ -69,7 +70,9 @@ export default function LearnedPayeesPanel({ propId, year }) {
       qc.invalidateQueries({ queryKey: ['statementContext'] });
     },
   });
-  const remove = useMutation({
+  const remove = useOptimisticRemove({
+    queryKey: ['importRules'],
+    idOf: (id) => id,
     mutationFn: (id) => deleteImportRule(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['importRules'] });

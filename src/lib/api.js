@@ -4180,8 +4180,17 @@ export async function addAdjustment({ leaseId, propertyId, year, month, kind, am
   if (!(Math.abs(amt) > 0)) {
     return { refused: true, reason: 'zero', message: 'Enter an amount.' };
   }
+  // ⚠ THE THREE PRE-CHECKS ARE INDEPENDENT, so they go together (2026-08-17). They ran one
+  // after another — the lock, then the schedule, then this year's adjustments — for no reason
+  // beyond the order they were written in, and each is a round trip the landlord waits out
+  // before the insert has even started. George: *"post charge button is super slow"*. Nothing
+  // about WHICH refusal wins moves: they are still tested in the same order below.
+  const [lock, sched, existing] = await Promise.all([
+    yearLockState(propertyId, y),
+    scheduledOwedFor(leaseId, y),
+    listAdjustments({ leaseId, year: y }),
+  ]);
   // A closed year is a bill already sent — the same refusal resyncLeaseBilling makes.
-  const lock = await yearLockState(propertyId, y);
   if (lock === 'closed') {
     return { refused: true, reason: 'closed', message: `FY ${y} is closed. Reopen it first, or record the correction in an open year.` };
   }
@@ -4190,7 +4199,7 @@ export async function addAdjustment({ leaseId, propertyId, year, month, kind, am
   if (lock === 'unknown') {
     return { refused: true, reason: 'lock_unknown', message: `Couldn’t check whether FY ${y} is closed, so nothing was changed. Check your connection and try again.` };
   }
-  const { schedule, billed, share } = await scheduledOwedFor(leaseId, y);
+  const { schedule, billed, share } = sched;
   // ⚠ A GROSS lease has no separate CAM to correct: the flat rent already CONTAINS taxes
   // & CAM and the tenant's share is carved OUT of it, never billed on top (0073). Adding
   // a CAM correction there re-adds on top of a rent that already includes it — the exact
@@ -4205,7 +4214,6 @@ export async function addAdjustment({ leaseId, propertyId, year, month, kind, am
   // Keep the month non-negative. A credit larger than the month's bill would make owed
   // negative, which reads as "unbilled" everywhere downstream and would silently drop
   // the excess out of the year total.
-  const existing = await listAdjustments({ leaseId, year: y });
   const already = monthlyAdjustments(existing)[m - 1];
   const scheduled = round2(Number(schedule?.[m]?.owed) || 0);
   const after = round2(scheduled + already + amt);

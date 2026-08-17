@@ -40,7 +40,7 @@ vi.mock('../download', async (importOriginal) => {
 const { downloadIncomeExpenseXlsx } = await import('../incomeExpenseExcel');
 const { downloadReconciliationXlsx } = await import('../reconciliationExcel');
 const { downloadRentRollXlsx } = await import('../rentRollExcel');
-const { fetchSearchIndex } = await import('../api');
+const { fetchSearchIndex, addAdjustment, markMonthPaid } = await import('../api');
 const { currentYear } = await import('../format');
 
 const Y = currentYear();
@@ -134,4 +134,75 @@ describe('every downloadable workbook opens without a repair dialog', () => {
     // It genuinely freezes — proving the assertion above can tell a real split from none.
     expect(Object.values(sheets).some((x) => /state="frozen"/.test(x))).toBe(true);
   }, 30000);
+});
+
+// ── The tint, read out of the bytes that ship ─────────────────────────────────────────
+//
+// George, 2026-08-17, asked for the month a charge or credit landed on to be flagged on the
+// sheet — and set the condition that decides the whole design: *"only … when a charge is
+// actually confirmed as carried trhough or written off or a credit was paid. if nothing has
+// changed we dont want the revenue to not match the true money being exchanged."*
+//
+// ⚠ SO THE TEST THAT MATTERS IS THE NEGATIVE ONE. Any implementation tints the month with a
+// charge on it; the one that is WRONG also tints the month that merely came in short of
+// cash, which would colour a sheet for months still waiting on a bank statement and read as
+// a revenue difference that does not exist. Both are asserted here, out of the real package,
+// because a fill lives in the styles part and nothing about the builder proves it shipped.
+describe('the workbook flags the month a charge landed on — and only that month', () => {
+  it('tints the charge’s month, leaves a merely-underpaid month plain, and moves no figure', async () => {
+    // Northwind Books, prop-2: February settled UNDER its bill (money, nothing decided) and
+    // March carries a real late fee (a decision).
+    await markMonthPaid('lease-3', 'prop-2', Y, 2, { amount: 1000, source: 'manual' });
+    const posted = await addAdjustment({
+      leaseId: 'lease-3', propertyId: 'prop-2', year: Y, month: 3,
+      kind: 'fee', amount: 150, memo: 'late fee — paid on the 12th',
+    });
+    expect(posted?.refused).toBeFalsy();
+
+    saved.length = 0;
+    // ⚠ corp-2, because that is the corporation Oak Center sits under — a workbook for the
+    // wrong corporation prints no sheet for this property at all, and the assertion below
+    // would then be passing over an empty file.
+    await downloadIncomeExpenseXlsx({ corporationId: 'corp-2', corporationName: 'Beta', year: Y });
+    const zip = await JSZip.loadAsync(saved[0].buf);
+
+    // A cell's fill is `s="<n>"` into the styles part; resolve it rather than trusting an
+    // index, so a reordering of the palette cannot make this pass by accident.
+    const styles = await zip.file('xl/styles.xml').async('string');
+    const sdoc = new DOMParser().parseFromString(styles, 'application/xml');
+    const xfs = [...sdoc.getElementsByTagName('cellXfs')[0].getElementsByTagName('xf')];
+    const fills = [...sdoc.getElementsByTagName('fills')[0].getElementsByTagName('fill')];
+    const fillOf = (sIdx) => {
+      const xf = xfs[Number(sIdx || 0)];
+      const f = fills[Number(xf?.getAttribute('fillId') || 0)];
+      return f?.getElementsByTagName('fgColor')[0]?.getAttribute('rgb') || null;
+    };
+
+    const names = Object.keys(zip.files).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
+    const march = []; const febRent = [];
+    for (const n of names) {
+      const doc = new DOMParser().parseFromString(await zip.file(n).async('string'), 'application/xml');
+      for (const row of doc.getElementsByTagName('row')) {
+        const cells = [...row.getElementsByTagName('c')];
+        const at = (col) => cells.find((c) => (c.getAttribute('r') || '').replace(/\d+/g, '') === col);
+        const val = (c) => Number(c?.getElementsByTagName('v')[0]?.textContent);
+        // March is column E (A: label · B: total · C: Jan · D: Feb · E: Mar).
+        if (at('E') && val(at('E')) === 150) march.push(at('E'));
+        // February on a rent row — money came in short, nothing was decided.
+        if (at('D') && val(at('D')) === 12750) febRent.push(at('D'));
+      }
+    }
+
+    expect(march.length, 'the $150 fee never reached a month cell').toBeGreaterThan(0);
+    // ⚠ GOLD on the tenant's own row, and the FIGURE IS UNTOUCHED — the value is still 150,
+    // so every row still adds across to its own total and Total billed still ties to the
+    // Ledger. (The bold parent row above it prints the same figure and is deliberately not
+    // tinted: the mark belongs to the lease that carries the charge.)
+    expect(march.map((c) => fillOf(c.getAttribute('s')))).toContain('FFFBF3DF');
+    // ⚠ THE ASSERTION THAT DECIDES THE DESIGN. February settled $11,750 under its bill and
+    // NOTHING was decided about it, so it must stay plain — tinting it would colour a month
+    // that is simply waiting on a bank statement and read as a revenue difference.
+    expect(febRent.length).toBeGreaterThan(0);
+    expect(febRent.every((c) => fillOf(c.getAttribute('s')) !== 'FFFBF3DF')).toBe(true);
+  });
 });

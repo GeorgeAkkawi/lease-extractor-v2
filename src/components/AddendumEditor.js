@@ -10,6 +10,8 @@ import { useConfirm } from './ConfirmDialog';
 import AddendumEnvelopeRows from './AddendumEnvelopeRows';
 import SendForSignatureModal from './SendForSignatureModal';
 import { FilePickerZone } from './FileDrop';
+import { useOptimisticRemove } from './useOptimisticRemove';
+import MutationError from './MutationError';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
 // into the lease via applyAddendum. The AI reads the document and LEADS: it pre-fills
@@ -121,7 +123,10 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
       .forEach((key) => qc.invalidateQueries({ queryKey: [key] }));
   };
 
-  const remove = useMutation({ mutationFn: (id) => deleteAddendum(id), onSuccess: refresh });
+  const remove = useOptimisticRemove({
+    queryKey: ['addendums', leaseId], idOf: (id) => id,
+    mutationFn: (id) => deleteAddendum(id), onSuccess: refresh,
+  });
 
   // `discard` is set when the user is BACKING OUT rather than saving: the file that
   // was uploaded for a review that never became a rider is thrown away with it.
@@ -702,6 +707,9 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
             </form>
           )}
           {err && <p className="note-msg danger" style={{ marginTop: 10 }}>{err}</p>}
+          {/* ⚠ REQUIRED by useOptimisticRemove — a rider that reappears without a reason
+              reads as the app putting it back by itself. */}
+          <MutationError of={[remove]} />
         </div>
       )}
 

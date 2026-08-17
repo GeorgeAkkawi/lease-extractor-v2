@@ -4,6 +4,7 @@ import { listInvoices, listPayments, recordPayment, deletePayment, updateInvoice
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Per-lease invoices & payments: each invoice with its derived balance + status, a
 // "record payment" form (partial payments supported), and the payment history. Invoices
@@ -152,7 +153,10 @@ function PaymentBlock({ inv, onRefresh, onRemove }) {
     }),
     onSuccess: () => { setForm({ amount: '', paid_date: '', method: 'check', note: '', period_month: '' }); refreshAll(); },
   });
-  const remove = useMutation({ mutationFn: (id) => deletePayment(id), onSuccess: refreshAll });
+  const remove = useOptimisticRemove({
+    queryKey: ['payments', inv.id], idOf: (id) => id,
+    mutationFn: (id) => deletePayment(id), onSuccess: refreshAll,
+  });
 
   return (
     <div style={{ padding: '12px 4px' }}>

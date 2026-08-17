@@ -51,6 +51,29 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });
 }
 
+// One place that knows what goes stale when a PAYMENT moves — recorded, taken back, or
+// re-filed onto another month.
+//
+// ⚠ IT IS NOT `settleBillingChange`, and the difference is the point. Recording a cheque
+// changes who has SETTLED; it does not change what anybody was BILLED. Sending it through the
+// billed-figure set refetches sixteen key families — tenant shares, lease rows, estimate
+// ledgers, roll-ups, alerts — for a write that moved none of them, and on the Ledger that
+// means waiting out a full property-roll rebuild before the box answers. MonthDetailPanel did
+// exactly that until 2026-08-17, which is most of *"deleting anything on the app feels super
+// slow"*.
+//
+// `invoices` is here because recording a payment can DRAFT the year's invoice if none exists
+// (markMonthPaid → ensureInvoice), not because a figure on it moved.
+export function settlePaymentChange(qc, { propertyId } = {}) {
+  const keys = [
+    propertyId ? ['propertyRentRoll', propertyId] : ['propertyRentRoll'],
+    ['monthlyRent'],
+    ['invoices'],
+    ['payments'],
+  ];
+  for (const queryKey of keys) qc.invalidateQueries({ queryKey });
+}
+
 // One place that knows what goes stale when a lease's SCHEDULE is rewritten wholesale —
 // anchoring a start date, or applying a new lease document over the old one. Those replace
 // the rent steps, the renewal options and the abatement windows in one action, and all three

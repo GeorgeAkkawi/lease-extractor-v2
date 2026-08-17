@@ -43,10 +43,36 @@ const dash = (n) => (Math.abs(Number(n) || 0) < 0.005 ? '—' : Number(n));
 // also carries `recovered` and `net`; a rent row, an income group and a bucket item all
 // call it `total`. Reading only one of the two prints a grid of months under an empty
 // Total column — which is exactly what shipped in the first draft of this file.
+// ⚠ A TINT MEANS A DECISION WAS POSTED ON THAT MONTH — never that the cash came in short.
+// George set that condition himself (2026-08-17): *"only … when a charge is actually confirmed
+// as carried trhough or written off or a credit was paid. if nothing has changed we dont want
+// the revenue to not match the true money being exchanged."* Marking the months where the
+// money merely fell short would colour a sheet for months still waiting on a bank statement,
+// and it would mix bases: this grid is what tenants were BILLED. `row.marks` (adjustments.js)
+// is null unless a real `lease_adjustments` row lands on the month.
+//
+// The VALUE never moves, so every row still adds across to its own figure and Total billed
+// still ties to the Ledger to the cent — the colour is the only thing added.
+const markStyle = (marks) => {
+  if (!marks) return {};
+  const cellBg = {}; const cellInk = {}; const cellNote = {};
+  marks.forEach((mk, i) => {
+    if (!mk) return;
+    const col = i + 2;                       // A: label · B: total · C…N: Jan…Dec
+    const credit = mk.total < 0;
+    cellBg[col] = credit ? P.FOREST_BG : P.GOLD_BG;
+    cellInk[col] = credit ? P.FOREST_INK : P.GOLD_INK;
+    cellNote[col] = mk.items
+      .map((it) => `${it.label}: ${it.amount < 0 ? '−' : '+'}${usd(Math.abs(it.amount))}${it.memo ? ` — ${it.memo}` : ''}`)
+      .join('\n');
+  });
+  return { cellBg, cellInk, cellNote };
+};
+
 const grid = (pen, label, row, opts = {}) =>
   pen.line(
     [label, row.total ?? row.spent ?? 0, ...(row.byMonth || []).map(dash), dash(row.undated)],
-    { aligns: RIGHT, ...opts }
+    { aligns: RIGHT, ...markStyle(row.marks), ...opts }
   );
 
 const indent = (label) => `    ${label}`;
@@ -315,6 +341,18 @@ function addProperty(wb, p, year, used) {
   // or the bank — 18-23% low per tenant on the demo. The components are now stated, and
   // `Total billed` for a month is exactly what the Ledger shows that month as owed.
   pen.section('Money in');
+  // The tint's legend, printed where the tinted cells are. Without it a coloured cell is a
+  // reader guessing, and the likeliest guess — "this month wasn't paid" — is the one thing
+  // it does NOT mean.
+  if (p.rentRows.some((r) => r.marks) || p.camTaxRows.some((r) => r.marks) || p.chargeRows.length) {
+    pen.note(
+      'A shaded month carries a charge or a credit somebody posted on it, and that figure is already '
+      + 'inside the amount shown — gold for a charge, green for a credit. Hover the cell for what it was. '
+      + 'Shading never means a month went unpaid: these columns are what tenants were BILLED, and what '
+      + 'actually reached the bank is the “Where bank money went” sheet.',
+      { height: 28 },
+    );
+  }
   pen.head(head(''), RIGHT);
   grid(pen, 'Rent', { total: p.rent, byMonth: p.rentByMonth, undated: 0 }, { bold: true });
   if (!p.rentRows.length) pen.line(['    No leases on this property for the year'], { aligns: RIGHT });

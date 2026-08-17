@@ -43,7 +43,7 @@ import { recoverabilityRows, absorbedFromItems } from './recoverability';
 import { summarizeOtherIncome } from './otherIncome';
 import { componentizeSchedule } from './ledger';
 import { inTermByLease } from './leaseSchedule';
-import { adjustmentsForPnlRow, adjustmentKindRows } from './adjustments';
+import { adjustmentsForPnlRow, adjustmentKindRows, adjustmentMarks } from './adjustments';
 
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -108,7 +108,9 @@ export function billedRowsFromRoll(roll = []) {
         const c = comp?.[i + 1];
         return round2((c ? num(c[pick]) : 0) + (extra ? extra.byMonth[i] : 0));
       });
-      return { lease_id: r.lease_id, label, gross: !!r.gross, byMonth, total: sum12(byMonth), undated: 0 };
+      // `marks` says which of those months carry a POSTED charge or credit — never which
+      // came in short of cash. See `adjustmentMarks`; the condition is load-bearing.
+      return { lease_id: r.lease_id, label, gross: !!r.gross, byMonth, total: sum12(byMonth), undated: 0, marks: pnlRow ? adjustmentMarks(adjRows, pnlRow) : null };
     };
     groups.rent.push(per('base', 'rent'));
     groups.camTax.push(per('camTax', 'camtax'));
@@ -119,6 +121,7 @@ export function billedRowsFromRoll(roll = []) {
     groups.charges.push({
       lease_id: r.lease_id, label, gross: !!r.gross,
       byMonth: ch.byMonth.map(round2), total: round2(ch.total), undated: 0,
+      marks: adjustmentMarks(adjRows, 'charges'),
     });
     // ⚠ THE FIFTH GROUP, AND IT IS WHAT KEEPS THE LEDGER TIE ALIVE (Slice 4). A kind whose
     // `pnlRow` is null — a balance brought forward, a refund — reaches none of the four rows
@@ -131,6 +134,7 @@ export function billedRowsFromRoll(roll = []) {
     groups.carried.push({
       lease_id: r.lease_id, label, gross: !!r.gross,
       byMonth: cf.byMonth.map(round2), total: round2(cf.total), undated: 0,
+      marks: adjustmentMarks(adjRows, null),
     });
     // The old formula, kept for the tie-out only.
     for (let i = 0; i < 12; i++) {

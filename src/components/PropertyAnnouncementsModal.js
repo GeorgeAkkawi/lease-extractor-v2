@@ -17,6 +17,7 @@ import { fromTemplate, toTemplate } from '../lib/announcementTokens';
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
 import MutationError from './MutationError';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // One notice, every tenant of one property. Opened from the Announcements pill on a
 // property card, next to Insurance.
@@ -189,7 +190,8 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
     },
   });
 
-  const removeTemplate = useMutation({
+  const removeTemplate = useOptimisticRemove({
+    queryKey: ['announcementTemplates'], idOf: (id) => id,
     mutationFn: (id) => deleteAnnouncementTemplate(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['announcementTemplates'] }),
   });

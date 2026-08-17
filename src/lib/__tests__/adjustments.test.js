@@ -14,7 +14,7 @@ import {
   ADJUSTMENT_KINDS, adjustmentKindInfo, adjustmentKindsFor, adjustmentAllowed,
   signedAmount, monthlyAdjustments, adjustmentsForMonth, adjustmentTotal,
   camTaxAdjustmentTotal, statementRows, monthName,
-  adjustmentsForPnlRow, adjustmentKindRows,
+  adjustmentsForPnlRow, adjustmentKindRows, adjustmentMarks, pnlDestination, pnlDestinationLine,
 } from '../adjustments';
 import { buildLeaseSchedule } from '../leaseSchedule';
 import { allocatePayments, componentizeSchedule, ledgerRowSummary } from '../ledger';
@@ -487,5 +487,58 @@ describe('the sheet rows an adjustment lands on', () => {
     expect(adjustmentsForPnlRow(bad, 'charges').total).toBe(100);
     expect(adjustmentKindRows(bad, 'charges').reduce((s, k) => s + k.total, 0)).toBe(100);
     expect(adjustmentKindRows(bad, 'charges').every((k) => k.undated === 0)).toBe(true);
+  });
+});
+
+// ── Where a decision lands on the sheet, and which months carry one ────────────────────
+//
+// Both of these exist because of one message from George (2026-08-17): the app should say
+// where the money goes BEFORE he agrees to it, and the workbook should mark the month a
+// charge landed on — *"only when a charge is actually confirmed as carried trhough or
+// written off or a credit was paid. if nothing has changed we dont want the revenue to not
+// match the true money being exchanged."*
+describe('where an adjustment lands on the Income-and-expenses sheet', () => {
+  it('quotes the workbook’s own row names, and says whether the YEAR’S INCOME moves', () => {
+    expect(pnlDestination('fee')).toMatchObject({ section: 'Money in', row: 'Charges & credits', earned: true });
+    expect(pnlDestination('writeoff')).toMatchObject({ row: 'Charges & credits', earned: true });
+    expect(pnlDestination('camtax')).toMatchObject({ row: 'CAM & tax billed to tenants', earned: true });
+    expect(pnlDestination('base')).toMatchObject({ row: 'Rent', earned: true });
+    // ⚠ The two that are real money and NOT this year's income. Getting `earned` wrong here
+    // would have a dialog promise a revenue movement that the sheet then does not make.
+    expect(pnlDestination('opening').earned).toBe(false);
+    expect(pnlDestination('refund').earned).toBe(false);
+    // An unknown kind files visibly rather than vanishing — same rule as adjustmentKindInfo.
+    expect(pnlDestination('invented-later')).toMatchObject({ row: 'Charges & credits', earned: true });
+  });
+
+  it('prints one line a dialog can show, signed and with the year', () => {
+    expect(pnlDestinationLine('fee', 150, { year: 2026 }))
+      .toBe('Money in › Charges & credits (FY 2026) › Late fee / other charge   +$150.00');
+    expect(pnlDestinationLine('writeoff', -4150, { year: 2026 })).toContain('−$4,150.00');
+  });
+
+  it('marks ONLY the months a charge or credit was posted on', () => {
+    const rows = [
+      { kind: 'fee', month: 3, amount: 150, memo: 'late fee — paid on the 12th' },
+      { kind: 'credit', month: 3, amount: -50, memo: null },
+      { kind: 'camtax', month: 7, amount: 400, memo: 'snow ran high' },
+    ];
+    const charges = adjustmentMarks(rows, 'charges');
+    expect(charges[2]).toMatchObject({ total: 100 });
+    expect(charges[2].items.map((i) => i.label)).toEqual(['Late fee / other charge', 'Concession / credit']);
+    expect(charges[2].items[0].memo).toBe('late fee — paid on the 12th');
+    // Every other month is null — not a zero. A month with nothing posted must not be
+    // tinted, which is the whole condition George set.
+    expect(charges.filter(Boolean)).toHaveLength(1);
+    // A different pnl row sees only its own kinds.
+    expect(adjustmentMarks(rows, 'camtax')[6]).toMatchObject({ total: 400 });
+    expect(adjustmentMarks(rows, 'camtax').filter(Boolean)).toHaveLength(1);
+    // No adjustments at all → null, so `markStyle` adds nothing and the row is untouched.
+    expect(adjustmentMarks([], 'charges')).toBeNull();
+    expect(adjustmentMarks(rows, 'rent')).toBeNull();
+  });
+
+  it('ignores a row that rounds to nothing, so a $0.00 mark can never tint a cell', () => {
+    expect(adjustmentMarks([{ kind: 'fee', month: 2, amount: 0.001 }], 'charges')).toBeNull();
   });
 });

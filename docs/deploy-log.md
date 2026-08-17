@@ -12,6 +12,125 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **ROUND B of the Ledger polish: the app says where the money GOES, and stops
+  making you wait for it. Post charge answers in 17ms instead of after five round trips; the
+  Settle-up dialog names the exact workbook lines and figures before you agree; the
+  Income-and-expenses sheet tints the month a charge or credit landed on — and ONLY that month;
+  and the optimistic-delete helper finally reaches the eleven lists it was written for.**
+  Cloudflare version **`df6a94c7-fc49-44b6-8662-8d9a913c23be`** (on top of `f2d083a1`).
+
+  George: *"post charge button is super slow and when i press it it once goes dark. i added a note
+  but theres no way to see that note once i post the charge. once i add those charges and they are
+  settled up, the settle up button should say — this money is now going to revenue and then when
+  they accept that number should change the respective categories as noted in the .md."* And,
+  separately: *"honestly deleting anything on the app feels super slow is there a way to decrease
+  those times?"*
+
+  **WHY POST CHARGE WAS SLOW, and the two halves of the fix.** `addAdjustment` made ~7 **serial**
+  round trips: the closed-year lock, then the schedule read, then this year's adjustments, then the
+  insert, then a full invoice rebuild, then the history write. The first three are independent and
+  ran one after another for no reason beyond the order they were written in — they are one
+  `Promise.all` now, and **which refusal wins is unchanged** (they are still tested in the same
+  order). `resyncLeaseBilling` stays awaited: it is the carry-through that moves the stored invoice
+  (CLAUDE.md §1), and dropping it is how a bill goes stale.
+
+  The other half is that **the panel stops waiting at all**. `src/lib/rollPaint.js` is new and holds
+  BOTH painters over the cached roll — the payment one that LedgerPage already had, and a new
+  adjustment one — because they were about to live in two components, and two implementations of
+  "what does this row look like afterwards" is exactly the §3 drift: the grid and the pop-up paint
+  the same row. ⚠ The adjustment painter mirrors `buildLeaseSchedule`'s own fold, and it has to:
+  `schedule[m].owed` ALREADY contains the adjustment, `adjustments[m-1]` is what `allocatePayments`
+  and `componentizeSchedule` read, and `annual` sums it. Move one and not the others and the box,
+  the Collected column and the pop-up disagree until the refetch lands. Measured live: **17ms** from
+  click to the row appearing, with its note.
+
+  **AND THE NOTE FINALLY SURVIVES THE CLICK.** It was never lost — the memo has been stored and
+  rendered inside the pop-up since 0082 — but the form cleared and the row only appeared after the
+  server finished, so from the landlord's seat it vanished. It is now on screen before the request
+  leaves, and Round A put it on the box's hover card as well.
+
+  **THE APP NOW STATES WHERE THE MONEY GOES, in the sheet's own words.** `pnlDestination` /
+  `pnlDestinationLine` (`adjustments.js`) turn a kind into `Money in › Charges & credits › Late fee
+  / other charge`, quoting the row names `incomeExpenseExcel.js` actually prints rather than
+  paraphrasing them — one string table, two readers, so a dialog can never name a line the workbook
+  does not have. Under the Post form: *"Posting this adds $150.00 to FY 2026 income, under Money in
+  › Charges & credits › Late fee / other charge."*
+
+  ⚠ **AND THAT IS THE HONEST MOMENT TO SAY IT — not at Settle up.** The workbook counts rent when it
+  FALLS DUE, so a charge is revenue the instant it is posted, whether or not anyone ever pays it.
+  Putting "this money is now going to revenue" on the settlement would have been a true sentence in
+  the wrong place.
+
+  **Settle up names the lines and the figures.** Verified live on Northwind Books' $76,650:
+  - *Write it off* → `Money in › Charges & credits (FY 2026) › Written off  −$76,650.00` ·
+    *"Total earned falls by $76,650.00 — the sheet already counted this rent as earned, so forgiving
+    it has to take it back out."*
+  - *Carry it forward* → the **two** rows, one per year, `−$76,650.00` in FY 2026 and `+$76,650.00`
+    in FY 2027 · *"Total earned does not move in either year."*
+  - *Refund* → *"an overpayment was never income, so handing it back is not a cost."*
+  - *Leave it open* → *"FY 2026 income keeps counting rent that never arrived."*
+  The categories already moved correctly — `pnlRow` has decided this since 0082. What never existed
+  was the app SAYING so before the landlord agreed to it.
+
+  **THE WORKBOOK TINTS THE MONTH A DECISION LANDED ON — and George's condition ruled out the obvious
+  version.** He asked for the flag and then set the constraint: *"only … when a charge is actually
+  confirmed as carried trhough or written off or a credit was paid. if nothing has changed we dont
+  want the revenue to not match the true money being exchanged."* Tinting every month where the CASH
+  came in short would colour the sheet for months simply waiting on a bank statement — nothing
+  decided, nothing changed — and a reader would take the colour for a revenue difference that does
+  not exist. It would also mix bases: that grid is what tenants were **BILLED**, and cash-vs-bill is
+  the question the *Where bank money went* sheet answers. So a tint means exactly one thing: a
+  charge or a credit was POSTED on that month and is inside the figure printed. Gold for a charge,
+  green for a credit, the cell's own Excel note carrying the kind, the amount and the memo, and a
+  legend above the block saying what it does **not** mean.
+
+  ⚠ **THE VALUE NEVER MOVES**, so every row still adds across to its own figure and `Total billed`
+  still ties to the Ledger to the cent. `xlsxPen.line` gained `cellBg` / `cellInk` / `cellNote`
+  keyed by column — it could only ever colour a whole row — and `XLSX_PALETTE` gained the forest
+  pair so a tinted cell means what a tinted box on the Ledger means.
+
+  ⚠ **`adjustmentKindRows` CARRIES MARKS TOO, and finding that out was the point of testing it out
+  of the bytes.** The per-tenant rows were marked first, and the assertion failed — because a late
+  fee reaches the property sheet through the per-KIND charges block, not the per-tenant rows. Mark
+  only the tenant rows and the one charge a landlord posts most often is the one the workbook never
+  flags.
+
+  **"DELETING ANYTHING FEELS SUPER SLOW" — the mechanism existed and was never rolled out.**
+  `useOptimisticRemove` was written on 2026-08-06 for this exact complaint (*"deleting things needs
+  to happen faster"*) and reached **four** lists — CAM, Tax, Roof, Other income — and nothing else.
+  Everywhere else the row sat on screen for the round trip AND the refetch. It now covers eleven
+  more: the month pop-up's adjustment ✕, `InvoicesPanel` (delete a payment), `DocumentsList`,
+  `LearnedPayeesPanel`, `InsuranceVault` (archived policies), `AbatementEditor`,
+  `RenewalOptionsEditor`, `AddendumEditor`, `PropertyAnnouncementsModal`, and `HistoryPage`'s
+  archived leases. ⚠ Four of them had **no error surface at all** for a failed delete, which the
+  helper's own header calls out as required — a row that silently reappears reads as the app undoing
+  a decision on its own. Each got a `MutationError`.
+
+  **…and one whole class of refetch went away with it.** `MonthDetailPanel` ran its PAYMENT actions
+  through `settleBillingChange` — sixteen key families, including a full property-roll rebuild — for
+  writes that move no billed figure at all. New named set **`settlePaymentChange`**
+  (`src/lib/invalidate.js`) for "a payment moved"; `LedgerPage`'s hand-rolled four-key list is now
+  that same named set, per CLAUDE.md §6. Removing an *adjustment* keeps `settleBillingChange`: that
+  one genuinely does move the bill.
+
+  **Files:** `src/lib/rollPaint.js` (new) · `src/lib/adjustments.js` · `src/lib/invalidate.js` ·
+  `src/lib/api.js` · `src/lib/xlsx.js` · `src/lib/incomeExpense.js` · `src/lib/incomeExpenseExcel.js`
+  · `src/components/MonthDetailPanel.js` · `src/pages/LedgerPage.js` · `src/App.css` · and the
+  eleven delete call sites listed above · `src/lib/__tests__/adjustments.test.js`,
+  `workbookValidity.test.js`.
+
+  **Verified:** 1909 tests across 181 files (was 1904). The tint is asserted **out of the real
+  package bytes** — unzip, resolve the cell's style through `cellXfs` → `fills` → `fgColor`, and
+  assert gold on the fee's month AND **plain on a month that merely settled $11,750 under its bill**,
+  which is the assertion that decides the design. Live in the demo: the posted row appears in 17ms
+  with its note · the "where it lands" line reads correctly for a charge and for a credit · both
+  Settle-up dialogs print the rows and figures above. All three URLs 200.
+
+  **Still in George's hands, unchanged:** the statement import calls no `resyncPropertyBilling`
+  (raised six times) · `TenantStatement` is pinned to the calendar year (`LeaseDetailPage.js:763`) ·
+  a tagged overpayment still creates no `credit` · two hand-rolled `.panel-toggle` copies on
+  `HistoryPage.js` should move to `Panel`.
+
 - **2026-08-17** — **ROUND A of the Ledger polish: the grid says it by HOVERING. One hover card
   replaces three printed note-lines and every dense `title=`; a month box now changes COLOUR when
   the money came in off the bill; a charge or credit is a corner mark instead of a third line, so

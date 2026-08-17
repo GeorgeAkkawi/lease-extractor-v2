@@ -4,6 +4,8 @@ import { listDocuments, deleteDocument, uploadDoc, signDocUrl, markDocumentSigne
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
 import FileDrop from './FileDrop';
+import { useOptimisticRemove } from './useOptimisticRemove';
+import MutationError from './MutationError';
 
 // Every copy kept for one record — the version history George asked for
 // (2026-07-30: "keep every version but allow deletes").
@@ -52,10 +54,10 @@ export default function DocumentsList({
 
   const refresh = () => qc.invalidateQueries({ queryKey: key });
 
-  const remove = useMutation({
+  const remove = useOptimisticRemove({
+    queryKey: key, idOf: (id) => id,
     mutationFn: (id) => deleteDocument(id),
     onSuccess: refresh,
-    onError: (e) => setErr(e.message || String(e)),
   });
 
   // 0092 — designate a copy as THE SIGNED one. Keyed by document id, so it works for a
@@ -119,6 +121,10 @@ export default function DocumentsList({
       </div>
 
       {err && <p className="note-msg danger" style={{ margin: '6px 0 0' }}>{err}</p>}
+      {/* ⚠ REQUIRED by useOptimisticRemove: the row leaves the list on click and comes BACK
+          if the delete fails, and a row that silently reappears reads as the app undoing a
+          decision on its own. */}
+      <MutationError of={[remove]} />
 
       {!isLoading && docs.length === 0 && (
         <p className="muted doc-list-empty">{emptyText}</p>

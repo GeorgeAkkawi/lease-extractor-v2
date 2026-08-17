@@ -13,6 +13,7 @@ import NoticeByField from './NoticeByField';
 import RenewalOptionModal from './RenewalOptionModal';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Badge tone + label for an option's lifecycle status. A pending option whose window
 // has passed is shown as "Lapsed" (still actionable — the tenant may have renewed and
@@ -141,7 +142,10 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
     ['renewals', 'alerts', 'lease', 'leases', 'escalations', 'expiredLeases', 'notifications', 'searchIndex']
       .forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   };
-  const remove = useMutation({ mutationFn: (id) => deleteRenewal(id), onSuccess: refresh });
+  const remove = useOptimisticRemove({
+    queryKey: ['renewals', leaseId], idOf: (id) => id,
+    mutationFn: (id) => deleteRenewal(id), onSuccess: refresh,
+  });
   // The notice date drives the bell prompt, the lapse rule and — through the
   // renewal_options trigger (0002) — the reminder emails, so settle those too.
   const saveNotice = useMutation({

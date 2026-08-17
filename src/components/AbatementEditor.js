@@ -6,6 +6,7 @@ import { abatementEnd, abatementMonthCount, abatementKindLabel } from '../lib/ab
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import { useOptimisticRemove } from './useOptimisticRemove';
 
 // Lists, adds & removes rent-abatement windows (free / reduced BASE rent for a stretch
 // of the term). The base rent itself is never changed — a window just credits those
@@ -58,7 +59,9 @@ export default function AbatementEditor({ lease }) {
     onSuccess: () => { setMonths(''); setValue(''); setNote(''); refresh(); },
   });
 
-  const remove = useMutation({
+  const remove = useOptimisticRemove({
+    queryKey: ['abatements', leaseId],
+    idOf: (id) => id,
     mutationFn: async (id) => { await deleteAbatement(id); await carryThrough(); },
     onSuccess: refresh,
   });

@@ -183,6 +183,44 @@ export function adjustmentKindInfo(key) {
   );
 }
 
+// WHERE THIS LANDS ON THE INCOME-AND-EXPENSES SHEET, in the sheet's own words.
+//
+// George, 2026-08-17: *"the settle up button should say — this money is now going to revenue
+// and then when they accept that number should change the respective categories as noted in
+// the .md."* The categories already moved correctly (that is what `pnlRow` above is for);
+// what was missing was the app ever SAYING so before the landlord agreed to it.
+//
+// ⚠ The row names are quoted from `incomeExpenseExcel.js`, not paraphrased, so a dialog can
+// never describe a line the workbook does not print. One string table, two readers — a second
+// set of names would let the confirm and the sheet disagree about where a dollar went, and the
+// landlord would only find out in front of an accountant.
+//
+// `earned` is the fact that actually matters and the one a landlord cannot work out alone:
+// does the YEAR'S INCOME move? A fee or a write-off does; a balance brought forward and a
+// refund do not (they are stated in Total billed and taken back out before Total earned).
+const PNL_ROWS = {
+  rent: { section: 'Money in', row: 'Rent', earned: true },
+  camtax: { section: 'Money in', row: 'CAM & tax billed to tenants', earned: true },
+  charges: { section: 'Money in', row: 'Charges & credits', earned: true },
+};
+const PNL_CARRIED = { section: 'Money in', row: 'Brought forward and refunds — not this year’s income', earned: false };
+
+export function pnlDestination(kind) {
+  const info = adjustmentKindInfo(kind);
+  const base = PNL_ROWS[info.pnlRow] || PNL_CARRIED;
+  return { ...base, label: info.label, kind: info.key };
+}
+
+// "Money in › Charges & credits › Late fee / other charge  +$150.00" — the one line a dialog
+// or a form prints. `amount` is signed, exactly as it is stored.
+export function pnlDestinationLine(kind, amount, { year = null } = {}) {
+  const d = pnlDestination(kind);
+  const n = round2(Number(amount) || 0);
+  const sign = n < 0 ? '−' : '+';
+  const fig = `${sign}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${d.section} › ${d.row}${year ? ` (FY ${year})` : ''} › ${d.label}   ${fig}`;
+}
+
 // Σ of the adjustments landing on one row of the Income-and-expenses sheet, as a length-12
 // signed array [Jan..Dec] plus the annual total. `row` is a `pnlRow` value ('rent' |
 // 'camtax' | 'charges'); a kind whose pnlRow is null reaches no row and no total here.
@@ -208,6 +246,39 @@ export function adjustmentsForPnlRow(rows = [], row) {
   return { byMonth, total };
 }
 
+// WHICH MONTHS OF ONE PNL ROW CARRY A DECISION, and what it was — a length-12 array of
+// `null | { total, items: [{ kind, label, amount, memo }] }`.
+//
+// ⚠ THE CONDITION IS GEORGE'S AND IT RULES OUT THE OBVIOUS VERSION (2026-08-17): *"make sure
+// that that change only happens when a charge is actually confirmed as carried trhough or
+// written off or a credit was paid. if nothing has changed we dont want the revenue to not
+// match the true money being exchanged."* Marking every month where the CASH came in under
+// the bill would paint the sheet for months that are simply waiting on a bank statement —
+// nothing decided, nothing changed — and a reader would take the colour for a revenue
+// difference that does not exist. It would also mix bases: this grid is what tenants were
+// BILLED, and cash-vs-bill is the question the bank tie-out answers.
+//
+// So a mark means exactly one thing: a charge or a credit was POSTED on that month and is
+// inside the figure printed. Every kind here is a confirmed decision by the time its row
+// exists — a late fee, a CAM correction, a concession, a write-off, a balance carried
+// forward, a refund. Accrual stays accrual and the figure never moves.
+export function adjustmentMarks(rows = [], row) {
+  const out = Array(12).fill(null);
+  for (const r of rows || []) {
+    const info = adjustmentKindInfo(r?.kind);
+    if (info.pnlRow !== row) continue;
+    const m = Number(r?.month);
+    if (!(m >= 1 && m <= 12)) continue;
+    const amt = round2(Number(r?.amount) || 0);
+    if (!(Math.abs(amt) > 0.005)) continue;
+    const e = out[m - 1] || { total: 0, items: [] };
+    e.total = round2(e.total + amt);
+    e.items.push({ kind: info.key, label: info.label, amount: amt, memo: r?.memo || '' });
+    out[m - 1] = e;
+  }
+  return out.some(Boolean) ? out : null;
+}
+
 // The same, split one row per KIND — what the sheet's "Charges & credits" block itemizes,
 // so a late fee and a write-off never merge into one unexplained figure. Ordered by the
 // registry so the layout is stable across properties and years.
@@ -223,11 +294,24 @@ export function adjustmentKindRows(rows = [], row = 'charges') {
     if (!(m >= 1 && m <= 12)) continue;
     const key = info.key;
     let e = byKey.get(key);
-    if (!e) { e = { key, label: info.label, byMonth: Array(12).fill(0), total: 0, undated: 0 }; byKey.set(key, e); }
+    if (!e) { e = { key, label: info.label, byMonth: Array(12).fill(0), total: 0, undated: 0, marks: Array(12).fill(null) }; byKey.set(key, e); }
     const amt = Number(r?.amount) || 0;
     e.total = round2(e.total + amt);
     e.byMonth[m - 1] = round2(e.byMonth[m - 1] + amt);
+    // ⚠ These rows carry `marks` too, and they are where the commonest case actually PRINTS.
+    // A late fee reaches the sheet through this per-kind block, not through the per-tenant
+    // rows — mark only those and the one charge a landlord posts most often is the one the
+    // workbook never flags.
+    if (Math.abs(round2(amt)) > 0.005) {
+      const mk = e.marks[m - 1] || { total: 0, items: [] };
+      mk.total = round2(mk.total + amt);
+      mk.items.push({ kind: info.key, label: info.label, amount: round2(amt), memo: r?.memo || '' });
+      e.marks[m - 1] = mk;
+    }
   }
+  // A kind with nothing to mark carries `marks: null`, the same signal the per-tenant rows
+  // use, so a reader of either never has to test for an array of twelve nulls.
+  for (const e of byKey.values()) if (!e.marks.some(Boolean)) e.marks = null;
   const order = ADJUSTMENT_KINDS.map((k) => k.key);
   return [...byKey.values()].sort(
     (a, b) => (order.indexOf(a.key) + 1 || 99) - (order.indexOf(b.key) + 1 || 99) || a.label.localeCompare(b.label)

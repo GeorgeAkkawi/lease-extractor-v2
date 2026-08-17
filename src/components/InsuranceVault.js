@@ -13,6 +13,8 @@ import { money, fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
 import { missingAdditionalInsured, additionalInsuredAlertKey } from '../lib/insuranceNotices';
 import { useConfirm } from './ConfirmDialog';
+import { useOptimisticRemove } from './useOptimisticRemove';
+import MutationError from './MutationError';
 
 // Expiry status of a policy by its date: green while current, amber within a month,
 // red once expired. Drives the badge on the card and whether a tenant policy shows the
@@ -468,7 +470,8 @@ function ArchivedSection({ party, propertyId, leaseId, archivedKey }) {
     queryKey: archivedKey,
     queryFn: () => listArchivedInsurance({ party, propertyId, leaseId }),
   });
-  const del = useMutation({
+  const del = useOptimisticRemove({
+    queryKey: archivedKey, idOf: (id) => id,
     mutationFn: (id) => deleteInsurance(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: archivedKey }),
   });
@@ -523,6 +526,8 @@ function ArchivedSection({ party, propertyId, leaseId, archivedKey }) {
             </div>
           ))}
           {err && <p className="note-msg danger">{err}</p>}
+          {/* ⚠ REQUIRED by useOptimisticRemove — see its header note. */}
+          <MutationError of={[del]} />
         </div>
       )}
     </div>

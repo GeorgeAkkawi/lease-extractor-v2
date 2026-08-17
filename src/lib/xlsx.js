@@ -17,12 +17,15 @@ const CREAM = 'FFF1ECE1';
 const INK = 'FF333333';
 const MUTED = 'FF6B6B60';
 const GOLD_BG = 'FFFBF3DF', GOLD_INK = 'FF7A5A12';
+// The credit side of the same pair — the forest the app uses on screen for "a credit", so a
+// tinted cell in the workbook means what the tinted box on the Ledger means.
+const FOREST_BG = 'FFE0E6DE', FOREST_INK = 'FF3E5A3E';
 const NEUTRAL_BG = 'FFF1EFE8';
 const SUMMARY_BG = 'FFF5F4F0';
 
 const CUR = '$#,##0.00';
 
-export const XLSX_PALETTE = { OLIVE, CREAM, INK, MUTED, GOLD_BG, GOLD_INK, NEUTRAL_BG, SUMMARY_BG, CUR };
+export const XLSX_PALETTE = { OLIVE, CREAM, INK, MUTED, GOLD_BG, GOLD_INK, FOREST_BG, FOREST_INK, NEUTRAL_BG, SUMMARY_BG, CUR };
 
 export const fill = (argb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
 
@@ -115,15 +118,22 @@ export function xlsxPen(ws, lastCol) {
       r += 1;
       return api;
     },
+    // `cellBg` / `cellInk` / `cellNote` are keyed by COLUMN INDEX and win over the row-wide
+    // `bg` / `ink`. They exist because a workbook sometimes has to mark one figure rather
+    // than one row: the Income-and-expenses sheet tints the month a charge or a credit landed
+    // on, and prints what it was in the cell's own note (2026-08-17). Absent, the row behaves
+    // exactly as it always has.
     line(cells, opts = {}) {
-      const { bg, ink = INK, bold = false, money: moneyFrom = 1, aligns = [] } = opts;
+      const { bg, ink = INK, bold = false, money: moneyFrom = 1, aligns = [], cellBg = null, cellInk = null, cellNote = null } = opts;
       cells.forEach((v, i) => {
         const c = ws.getCell(r, i + 1);
         c.value = v == null ? '' : v;
         if (i >= moneyFrom && typeof v === 'number') c.numFmt = CUR;
         c.border = borders;
-        c.font = { size: 9, bold, color: { argb: ink } };
-        if (bg) c.fill = fill(bg);
+        c.font = { size: 9, bold, color: { argb: (cellInk && cellInk[i]) || ink } };
+        const bgHere = (cellBg && cellBg[i]) || bg;
+        if (bgHere) c.fill = fill(bgHere);
+        if (cellNote && cellNote[i]) c.note = String(cellNote[i]);
         c.alignment = { horizontal: aligns[i] || (i === 0 ? 'left' : 'right'), wrapText: i === 0 };
       });
       r += 1;

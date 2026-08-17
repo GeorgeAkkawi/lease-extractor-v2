@@ -14,6 +14,8 @@ import { money, sf, fmtDate } from '../lib/format';
 import LeaseAssistant from '../components/LeaseAssistant';
 import { useConfirm } from '../components/ConfirmDialog';
 import { settleBillingChange } from '../lib/invalidate';
+import { useOptimisticRemove } from '../components/useOptimisticRemove';
+import MutationError from '../components/MutationError';
 
 // Friendly labels + badge tones for history_events. Covers both halves — the events that
 // belong in a tenant's story and the bookkeeping ones that get their own folded log.
@@ -169,7 +171,11 @@ export default function HistoryPage() {
     },
   });
   const reopen = useMutation({ mutationFn: () => reopenYear(propId, year), onSuccess: () => qc.invalidateQueries({ queryKey: ['snapshots', propId] }) });
-  const removeExpired = useMutation({ mutationFn: (id) => deleteExpiredLease(id), onSuccess: () => qc.invalidateQueries({ queryKey: ['expiredLeases', propId] }) });
+  const removeExpired = useOptimisticRemove({
+    queryKey: ['expiredLeases', propId], idOf: (id) => id,
+    mutationFn: (id) => deleteExpiredLease(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['expiredLeases', propId] }),
+  });
   const clearHistory = useMutation({
     mutationFn: () => clearPropertyHistory(propId),
     onSuccess: () => {
@@ -484,6 +490,10 @@ export default function HistoryPage() {
                 removing={removeExpired.isPending}
               />
             ))}
+            {/* ⚠ REQUIRED by useOptimisticRemove: the card leaves on click and comes BACK if
+                the delete fails, and a card that silently reappears reads as the app undoing
+                a decision on its own. */}
+            <MutationError of={[removeExpired]} />
           </div>
         )}
       </div>

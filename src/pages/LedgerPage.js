@@ -43,10 +43,11 @@ import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness, dispositionInfo, ignoreReasonLabel } from '../lib/dispositions';
 import { rentPosition, tieOutSentence, WHERE_IT_LANDS } from '../lib/bankTieOut';
 import { tenantStanding, settleChoicesFor, isBroughtForward, isSettlementRow } from '../lib/settle';
-import { settleBillingChange } from '../lib/invalidate';
+import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
+import { paintPayment } from '../lib/rollPaint';
 import Panel from '../components/Panel';
 import Tip, { TipTitle, TipRow, TipRule, TipNote, TipAction } from '../components/Tip';
-import { adjustmentsForMonth, adjustmentKindInfo } from '../lib/adjustments';
+import { adjustmentsForMonth, adjustmentKindInfo, pnlDestinationLine } from '../lib/adjustments';
 import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
 import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
 
@@ -406,6 +407,36 @@ export default function LedgerPage() {
   // ⚠ WHAT HAPPENS TO THE MONEY, not "are you sure". The one fact a landlord cannot work out
   // for themselves is which of the four moves the YEAR'S INCOME — only the write-off does —
   // so `movesIncome` comes off the registry rather than being re-decided in this dialog.
+  // ⚠ WHICH LINES OF THE SHEET MOVE, in the sheet's own words and with the real figures —
+  // George, 2026-08-17: *"the settle up button should say — this money is now going to revenue
+  // and then when they accept that number should change the respective categories as noted in
+  // the .md."* The categories have always moved correctly; nothing said so before he agreed.
+  // Built from `pnlDestination`, the same registry the workbook reads, so a dialog can never
+  // name a row the sheet does not print.
+  function landsOn(choiceKey, standing, owed) {
+    const signed = standing.owes ? -Math.abs(owed) : Math.abs(owed);
+    if (choiceKey === 'writeoff') {
+      return [
+        pnlDestinationLine('writeoff', signed, { year }),
+        `Total earned ${signed < 0 ? 'falls' : 'rises'} by ${money(Math.abs(owed))} — the sheet already counted this rent as earned, so forgiving it has to take it back out.`,
+      ];
+    }
+    if (choiceKey === 'carry') {
+      return [
+        pnlDestinationLine('opening', signed, { year }),
+        pnlDestinationLine('opening', -signed, { year: year + 1 }),
+        `Total earned does not move in either year — it was earned in ${year}, and counting it again in ${year + 1} would count it twice.`,
+      ];
+    }
+    if (choiceKey === 'refund') {
+      return [
+        pnlDestinationLine('refund', signed, { year }),
+        'Total earned does not move: an overpayment was never income, so handing it back is not a cost. It clears the credit and nothing else.',
+      ];
+    }
+    return [`Nothing moves on the sheet. FY ${year} income keeps counting rent that never arrived — it shows as “of which still uncollected at year end” under what the year left.`];
+  }
+
   async function askSettle(standing, choiceKey) {
     const pick = settleChoicesFor(standing).find((c) => c.key === choiceKey && c.ok);
     if (!pick) return;
@@ -415,9 +446,8 @@ export default function LedgerPage() {
       message: `${standing.owes ? `${standing.label} still owes ${money(owed)} for FY ${year}.` : `${standing.label} is ${money(owed)} ahead for FY ${year}.`}`,
       implications: [
         pick.hint,
-        pick.movesIncome
-          ? `This year's income falls by ${money(owed)} — the sheet already counted it as earned, so forgiving it has to take it back out.`
-          : 'The year’s income does not move. Only what the tenant owes changes.',
+        'Where this lands on the Income-and-expenses sheet:',
+        ...landsOn(pick.key, standing, owed),
         pick.key === 'carry'
           ? `Two rows in two years: FY ${year} is cleared and January ${year + 1} carries it. Both are needed — one alone loses the money.`
           : `It lands on the months it belongs to, never more than a month's own bill — the Ledger grid repaints as you watch.`,
@@ -593,13 +623,10 @@ export default function LedgerPage() {
   }
 
   // Scoped invalidation after a write settles — this property's roll + the lease-page
-  // invoices/payments panels; deliberately not a blanket sweep.
-  const settle = () => {
-    qc.invalidateQueries({ queryKey: rollKey });
-    qc.invalidateQueries({ queryKey: ['monthlyRent'] });
-    qc.invalidateQueries({ queryKey: ['invoices'] });
-    qc.invalidateQueries({ queryKey: ['payments'] });
-  };
+  // invoices/payments panels; deliberately not a blanket sweep. Named rather than hand-rolled
+  // since 2026-08-17, because the month pop-up needed the identical set and a second copy of a
+  // list like this is how the two drift apart by omission (CLAUDE.md §6).
+  const settle = () => settlePaymentChange(qc, { propertyId: propId });
 
   // A statement import can touch OTHER properties' tenants (cross-property deposits)
   // plus this property's expenses — refresh every surface that money moved (shared
@@ -622,21 +649,11 @@ export default function LedgerPage() {
   const [editing, setEditing] = useState(null);
   const cellKey = (leaseId, m) => `${leaseId}:${m}`;
 
-  // Optimistic paint: adjust the row's raw payments (what the allocation derives from)
-  // so the click repaints instantly while the write settles.
+  // Optimistic paint: adjust the row's raw payments (what the allocation derives from) so the
+  // click repaints instantly while the write settles. Shared with the month pop-up's own
+  // painter (lib/rollPaint.js) — one cache, one idea of what it looks like afterwards.
   const paint = (old, leaseId, month, action, amount) =>
-    (old || []).map((r) => {
-      if (r.lease_id !== leaseId) return r;
-      const payments = [...(r.payments || [])];
-      const byMonth = { ...r.byMonth };
-      if (action === 'unmark') {
-        delete byMonth[month];
-        return { ...r, byMonth, payments: payments.filter((p) => Number(p.period_month) !== month) };
-      }
-      payments.push({ amount, period_month: month, paid_date: localDateIso() });
-      byMonth[month] = { amount: (byMonth[month]?.amount || 0) + amount };
-      return { ...r, byMonth, payments };
-    });
+    paintPayment(old, leaseId, month, action, amount, { today: localDateIso() });
 
   const cellMut = useMutation({
     // Every write carries a real amount (open→full owed, gap→the residual) so markMonthPaid

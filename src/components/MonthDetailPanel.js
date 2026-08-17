@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { addAdjustment, deleteAdjustment, markMonthPaid, updatePayment } from '../lib/api';
-import { settleBillingChange } from '../lib/invalidate';
+import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
+import { paintAdjustment } from '../lib/rollPaint';
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
 import MutationError from './MutationError';
 import { money } from '../lib/format';
 import {
   adjustmentKindsFor, adjustmentKindInfo, adjustmentsForMonth, signedAmount, monthName,
+  pnlDestination,
 } from '../lib/adjustments';
 
 // One month of one tenant, opened from the Rent Ledger grid — George's "go into months
@@ -58,8 +60,24 @@ export default function MonthDetailPanel({
   const locked = info.dir === 'charge' || info.dir === 'credit';
   const effDir = locked ? info.dir : dir;
   const preview = signedAmount({ kind, amount, direction: effDir });
+  const dest = pnlDestination(kind);
 
   const settle = () => settleBillingChange(qc, { propertyId, leaseId: row?.lease_id, year });
+  // ⚠ A PAYMENT MOVES NO BILLED FIGURE, so it does not go through the billed-figure set —
+  // that refetched sixteen key families (and a whole property roll) for a write that changed
+  // who had SETTLED, which is most of why this panel felt slow.
+  const settlePay = () => settlePaymentChange(qc, { propertyId });
+
+  const rollKey = ['propertyRentRoll', propertyId, year];
+  // Paint the cached roll, hand back the rollback. The grid, this panel and the box's hover
+  // card all read that one cache, so they move together or not at all.
+  const paint = async (adjRow) => {
+    await qc.cancelQueries({ queryKey: rollKey });
+    const prev = qc.getQueryData(rollKey);
+    qc.setQueryData(rollKey, (old) => paintAdjustment(old, row.lease_id, m, adjRow));
+    return { prev };
+  };
+  const unpaint = (ctx) => { if (ctx?.prev !== undefined) qc.setQueryData(rollKey, ctx.prev); };
 
   const post = useMutation({
     mutationFn: async () => {
@@ -69,12 +87,26 @@ export default function MonthDetailPanel({
       if (res?.refused) throw new Error(res.message);
       return res;
     },
-    onSuccess: () => { setAmount(''); setMemo(''); setRefused(null); settle(); },
-    onError: (e) => setRefused(e?.message || 'Could not post that adjustment.'),
+    // The row appears the moment it is clicked — with its note, which is the thing George
+    // could not find afterwards. `id` is a placeholder until the real row lands; nothing
+    // reads it before the refetch except React's key.
+    onMutate: async () => {
+      const optimistic = { id: `pending-${m}-${kind}`, kind, amount: preview, memo: memo.trim() || null, month: m, pending: true };
+      const ctx = await paint(optimistic);
+      setAmount(''); setMemo(''); setRefused(null);
+      return ctx;
+    },
+    onSuccess: () => { setRefused(null); settle(); },
+    onError: (e, _v, ctx) => { unpaint(ctx); setRefused(e?.message || 'Could not post that adjustment.'); },
   });
 
   const removeAdj = useMutation({
     mutationFn: (id) => deleteAdjustment(id),
+    onMutate: async (id) => {
+      const gone = rowsForMonth.find((a) => a.id === id);
+      return paint({ remove: id, amount: -(Number(gone?.amount) || 0) });
+    },
+    onError: (_e, _id, ctx) => unpaint(ctx),
     onSuccess: settle,
   });
 
@@ -90,7 +122,7 @@ export default function MonthDetailPanel({
     mutationFn: () => markMonthPaid(row.lease_id, propertyId, year, m, {
       amount: shortfall, additional: monthPayments.length > 0, source: 'manual',
     }),
-    onSuccess: settle,
+    onSuccess: settlePay,
   });
   // Re-file a payment (George, 2026-08-13: a tenant who pays the month before, and "if a
   // tenant is over paying where does that go"). Until now the only correction was Undo the
@@ -98,7 +130,7 @@ export default function MonthDetailPanel({
   // bank statement needs to reconcile against it later.
   const movePay = useMutation({
     mutationFn: ({ id, toMonth }) => updatePayment(id, { period_month: toMonth }),
-    onSuccess: settle,
+    onSuccess: settlePay,
   });
 
   const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending;
@@ -328,6 +360,17 @@ export default function MonthDetailPanel({
               </label>
             </div>
             <p className="mp-hint muted">{info.hint}</p>
+            {/* ⚠ WHERE IT LANDS ON THE SHEET, before it is posted (George, 2026-08-17: the app
+                should say "this money is now going to revenue"). And the honest moment to say
+                it is HERE, not at Settle up: the workbook counts rent when it FALLS DUE, so a
+                charge is revenue the instant it is posted, whether or not anyone pays it. */}
+            {Math.abs(preview) > 0 && (
+              <p className="mp-lands">
+                {dest.earned
+                  ? <>Posting this {preview < 0 ? <>takes <b>{money(Math.abs(preview))}</b> off</> : <>adds <b>{money(preview)}</b> to</>} FY {year} income, under <b>{dest.section} › {dest.row} › {dest.label}</b>.</>
+                  : <>This moves what the tenant owes. FY {year} income does not change — it is stated under <b>{dest.row}</b> and taken back out before <b>Total earned</b>.</>}
+              </p>
+            )}
             <div className="modal-actions" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
               {Math.abs(preview) > 0 && (
                 <span className="muted mp-preview">
