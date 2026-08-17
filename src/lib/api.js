@@ -24,8 +24,8 @@ import { isValidCategory, bucketKey, defaultCategoryFor, isOwnerCategory, catego
 import { lineCompleteness } from './dispositions';
 import { bankTieOut } from './bankTieOut';
 import {
-  tenantStanding, settleChoicesFor, monthCapacity, spreadAcrossMonths, refundMonth, settleSentence,
-  settlementMemo, broughtForwardMemo,
+  tenantStanding, propertyStandings, settleChoicesFor, monthCapacity, spreadAcrossMonths,
+  refundMonth, settleSentence, settlementMemo, broughtForwardMemo,
 } from './settle';
 import { adjustmentAllowed, adjustmentKindInfo, monthlyAdjustments, monthName } from './adjustments';
 import { isoDateOrNull } from './isoDate';
@@ -6297,11 +6297,53 @@ export const clearPropertyHistory = (propertyId) =>
 // projected (the year's billed total), collected, collection_rate, and the
 // 12-month collected array — so History can chart collection trends year over
 // year. Older snapshots simply lack the keys; every consumer renders "—" then.
-export async function closeYear(propertyId, year) {
+/**
+ * Freeze a year.
+ *
+ * ⚠ THE ORDER IS FORCED: SETTLE, THEN SNAPSHOT. The snapshot IS the lock — `yearLockState`
+ * reads it and refuses every later write, Settle up included — so a balance left open at the
+ * moment of closing can only be settled by reopening the year. Doing it the other way round
+ * would write a snapshot recording balances that the very next line then moved.
+ *
+ * `settleOpen` is the landlord's answer to what happens to those balances, offered at the
+ * close-year dialog rather than merely warned about:
+ *   null / 'leave' — freeze them exactly as they stand (what closing has always done)
+ *   'carry'        — carry every open balance into next January first
+ *
+ * ⚠ IT REPORTS WHAT IT COULD NOT DO. `settleTenantBalance` legitimately refuses — next year
+ * closed, a tenant with no room to take the credit — and a bulk action that swallowed those
+ * would freeze a balance the landlord believes they just moved. Every refusal comes back in
+ * `settlement.refused` and the screen prints it.
+ */
+export async function closeYear(propertyId, year, { settleOpen = null } = {}) {
+  const y = Number(year);
+  let settlement = null;
+  if (settleOpen && settleOpen !== 'leave') {
+    const pre = await getPropertyMonthlyRoll(propertyId, y).catch(() => []);
+    const open = propertyStandings({ roll: pre, year: y }).rows.filter((s) => !s.settled);
+    const done = [];
+    const refused = [];
+    for (const s of open) {
+      const res = await settleTenantBalance({ leaseId: s.lease_id, propertyId, year: y, choice: settleOpen });
+      if (res?.refused) refused.push({ label: s.label, message: res.message });
+      // ⚠ `left` IS NOT A ROUNDING REMAINDER — it is the month still RUNNING. A settlement acts
+      // on months that have ended (`standing.owes`), because the bank statement that would
+      // settle this month does not exist yet; the receivable (`closing`) includes it. Close a
+      // year mid-year and the difference is a whole month's rent that stays behind, frozen
+      // under the snapshot. Reporting the carry without it would have the landlord believe a
+      // balance moved that is still sitting there.
+      else done.push({ label: s.label, amount: res.amount, choice: res.choice, carriedTo: res.carriedTo, left: s.provisional });
+    }
+    settlement = { choice: settleOpen, done, refused };
+  }
+
   const [totals, shares, roll] = await Promise.all([
-    getPropertyTotals(propertyId, year),
-    getTenantShares(propertyId, year),
-    getPropertyMonthlyRoll(propertyId, year).catch(() => []),
+    getPropertyTotals(propertyId, y),
+    getTenantShares(propertyId, y),
+    // ⚠ RE-READ AFTER THE SETTLEMENT, not before. The rows above moved what every tenant owes,
+    // and a snapshot built from the roll as it was at the top of this function would freeze the
+    // pre-settlement figures under a post-settlement year.
+    getPropertyMonthlyRoll(propertyId, y).catch(() => []),
   ]);
   if (!totals) throw new Error('Enter expenses for this year before closing it.');
 
@@ -6312,10 +6354,16 @@ export async function closeYear(propertyId, year) {
     // open months at the current owed) — the same Y the live Ledger measures collected
     // against, so a fully-settled year freezes at exactly 100% and a later estimate edit
     // never re-prices a month already paid.
-    const sum = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc });
+    const sum = ledgerRowSummary({ year: y, owedByMonth: r.schedule, allocation: alloc });
     const projected = sum.projected;
     // Raw collected — an overpaid tenant can read a rate > 100% (truthful, unclamped).
     const collected = alloc.totalPaid;
+    // ⚠ WHAT THE YEAR CLOSED AT, AND WHAT WAS DECIDED ABOUT IT. `collection_rate` alone cannot
+    // tell a year that was collected from a year that was forgiven — both end at nothing owing,
+    // and they are opposite facts about the same tenant. Read from the same `tenantStanding`
+    // the Ledger row and the workbook are painted from, AFTER any settlement above, so the
+    // snapshot records the position it is actually freezing.
+    const stand = tenantStanding({ row: r, year: y, alloc, summary: sum });
     collectionByLease[r.lease_id] = {
       projected,
       // What the LEASE billed for the year, kept beside what was collected against it —
@@ -6324,6 +6372,8 @@ export async function closeYear(propertyId, year) {
       variance: sum.variance,
       collected,
       collection_rate: projected > 0 ? Math.round((collected / projected) * 1000) / 1000 : null,
+      closing_balance: stand.closing,
+      settled_as: stand.settledAs,
       // Real dollars received per month (a settled month = the tagged amount, a pooled
       // month = its FIFO draw) — the by-month collection history the chart reads back.
       collected_by_month: alloc.received,
@@ -6340,13 +6390,13 @@ export async function closeYear(propertyId, year) {
     ...(collectionByLease[s.lease_id] || {}),
   }));
 
-  return one(
+  const snap = await one(
     supabase
       .from('financial_snapshots')
       .upsert(
         {
           property_id: propertyId,
-          year,
+          year: y,
           owner_id: await ownerId(),
           total_revenue: totals.total_revenue,
           taxes_total: totals.taxes_total,
@@ -6363,6 +6413,9 @@ export async function closeYear(propertyId, year) {
       .select()
       .single()
   );
+  // The settlement report rides back on the snapshot rather than being logged and lost —
+  // the screen has to name which tenants moved and which refused, and only this call knows.
+  return settlement ? { ...snap, settlement } : snap;
 }
 
 // Reopen (undo) a closed year: remove its stored snapshot so it's no longer

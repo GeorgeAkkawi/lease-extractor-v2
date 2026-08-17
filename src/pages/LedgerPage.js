@@ -150,7 +150,13 @@ export default function LedgerPage() {
     { label: 'Ledger' },
   ], true);
 
-  const [note, setNote] = useState('');
+  // ⚠ A REFUSAL PRINTED IN GREEN READS AS A SUCCESS. Every message on this page went through
+  // one `badge good`, so "FY 2026 is closed, so nothing was undone" arrived in the same colour
+  // as "Recorded". The second argument is what a message says about itself; nothing else about
+  // the call sites moves.
+  const [note, setNoteRaw] = useState('');
+  const [noteBad, setNoteBad] = useState(false);
+  const setNote = (text, bad = false) => { setNoteRaw(text); setNoteBad(!!bad); };
   // Statement import: null | { fileName, accountHint, parsed, pdfLane } while reviewing.
   const [importDoc, setImportDoc] = useState(null);
   // The post-save results strip: { summary, import, fileName }.
@@ -315,7 +321,7 @@ export default function LedgerPage() {
   const settleUp = useMutation({
     mutationFn: ({ leaseId, choice }) => settleTenantBalance({ leaseId, propertyId: propId, year, choice, today }),
     onSuccess: (res) => {
-      if (res?.refused) { setNote(res.message); return; }
+      if (res?.refused) { setNote(res.message, true); return; }
       settleBillingChange(qc, { propertyId: propId, leaseId: res.standing?.lease_id, year });
       if (res.carriedTo) settleBillingChange(qc, { propertyId: propId, leaseId: res.standing?.lease_id, year: res.carriedTo });
       qc.invalidateQueries({ queryKey: ['historyEvents'] });
@@ -358,7 +364,7 @@ export default function LedgerPage() {
   const undoSettle = useMutation({
     mutationFn: (leaseId) => undoSettlement({ leaseId, propertyId: propId, year }),
     onSuccess: (res, leaseId) => {
-      if (res?.refused) { setNote(res.message); return; }
+      if (res?.refused) { setNote(res.message, true); return; }
       for (const yr of res.years || [year]) settleBillingChange(qc, { propertyId: propId, leaseId, year: yr });
       qc.invalidateQueries({ queryKey: ['historyEvents'] });
       setNote(`${res.description}. ${res.removed} entr${res.removed === 1 ? 'y' : 'ies'} removed across FY ${(res.years || []).join(' and FY ')}.`);
@@ -572,7 +578,7 @@ export default function LedgerPage() {
       qc.setQueryData(rollKey, (old) => paint(old, leaseId, month, action, amount));
       return { prev };
     },
-    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(rollKey, ctx.prev); setNote('Could not save that change — please try again.'); },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(rollKey, ctx.prev); setNote('Could not save that change — please try again.', true); },
     onSettled: (_d, _e, vars) => {
       setPendingCells((s) => { const n = new Set(s); n.delete(cellKey(vars.leaseId, vars.month)); return n; });
       settle();
@@ -580,7 +586,7 @@ export default function LedgerPage() {
   });
   const allMut = useMutation({
     mutationFn: (month) => markMonthPaidAllTenants(propId, year, month),
-    onError: () => setNote('Could not mark all paid — please try again.'),
+    onError: () => setNote('Could not mark all paid — please try again.', true),
     onSuccess: (res, month) => {
       setNote(`Marked ${MONTHS[month - 1]} paid for ${res.paid} tenant${res.paid === 1 ? '' : 's'}${res.skipped ? ` (${res.skipped} already covered or free)` : ''}.`);
     },
@@ -590,7 +596,7 @@ export default function LedgerPage() {
     // One round-trip for every due month × every tenant (the plural bulk), not a serial loop.
     mutationFn: (months) => markMonthsPaidAllTenants(propId, year, months),
     onSuccess: (res) => setNote(res.paid ? `Recorded ${res.paid} tenant-month${res.paid === 1 ? '' : 's'} of rent.` : 'Everyone was already caught up.'),
-    onError: () => setNote('Could not catch up the ledger — please try again.'),
+    onError: () => setNote('Could not catch up the ledger — please try again.', true),
     onSettled: settle,
   });
   const bulkBusy = allMut.isPending || catchUpAll.isPending;
@@ -604,10 +610,12 @@ export default function LedgerPage() {
   // a bill he has already sent.
   const rebuild = useMutation({
     mutationFn: (leaseId) => resyncLeaseBilling(leaseId, propId, year),
-    onSuccess: (res) => setNote(res?.skipped === 'closed'
-      ? 'That year is closed, so its bill was left exactly as it was sent.'
-      : 'Rebuilt this tenant’s bill from the lease as it stands now.'),
-    onError: () => setNote('Could not rebuild that bill — please try again.'),
+    onSuccess: (res) => (res?.skipped === 'closed'
+      // Not a failure and not a success — the year is closed and the bill was deliberately
+      // left alone. Gold says "nothing happened, and here is why" without crying error.
+      ? setNote('That year is closed, so its bill was left exactly as it was sent.', true)
+      : setNote('Rebuilt this tenant’s bill from the lease as it stands now.')),
+    onError: () => setNote('Could not rebuild that bill — please try again.', true),
     onSettled: settle,
   });
 
@@ -765,7 +773,7 @@ export default function LedgerPage() {
             <Link to={`/history/${corpId}/${propId}`} className="rr-key-note rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link>
           )}
         </div>
-        {note && <p className="badge good" style={{ marginBottom: 10 }}>{note}</p>}
+        {note && <p className={`note-msg ${noteBad ? 'warn' : 'good'}`} style={{ marginBottom: 10 }}>{note}</p>}
         {rows.length > 1 && <TenantSortBar />}
         {isLoading ? <p className="muted">Loading…</p> : (!rows.length && vacant <= 0) ? (
           <p className="empty-line muted">No tenants with rent on file for FY {year}.</p>
@@ -1589,7 +1597,7 @@ export default function LedgerPage() {
                               onClick={async () => {
                                 const url = await signDocUrl(imp.storage_path).catch(() => null);
                                 if (url) window.open(url, '_blank', 'noopener');
-                                else setNote('That statement file is no longer available.');
+                                else setNote('That statement file is no longer available.', true);
                               }}>
                               Open
                             </button>

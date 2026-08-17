@@ -54,6 +54,27 @@ const indent = (label) => `    ${label}`;
 const usd = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
+/**
+ * The accrual-to-cash bridge, printed under "What the year left" on BOTH sheets.
+ *
+ * ⚠ "LEAVE IT OPEN" HAD NO ACCOUNTING CONSEQUENCE AND NO VISIBILITY, which is the gap the
+ * five-questions audit turned up: the three settlements are deliberately different — a
+ * write-off reduces the year's income, a carry-forward moves only the receivable, and leaving
+ * it open moves NOTHING. The last is right, and it meant the sheet printed "Total earned
+ * $191,290" with no hint that $58,844 of it never arrived. This is the first question an
+ * accountant asks of an accrual statement, and the figure was already on the shape.
+ *
+ * ⚠ IT IS AN ANNOTATION, NEVER A TERM. It is printed BELOW the net line and subtracted from
+ * nothing — the money was earned and the sheet is right to count it. Netting it here would
+ * turn an accrual statement into neither one thing nor the other.
+ */
+const uncollected = (pen, s) => {
+  const owed = round2(s?.owed || 0);
+  const credit = round2(s?.inCredit || 0);
+  if (owed > 0.005) pen.line([indent('of which still uncollected at year end'), owed], { aligns: RIGHT, bg: P.GOLD_BG, ink: P.GOLD_INK });
+  if (credit > 0.005) pen.line([indent('and held for tenants who are ahead'), -credit], { aligns: RIGHT });
+};
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 function addSummary(wb, pkg, corporationName, now) {
   const ws = xlsxSheet(wb, 'Summary', WIDTHS, { freeze: 0 });
@@ -112,6 +133,7 @@ function addSummary(wb, pkg, corporationName, now) {
   pen.line([Math.abs(t.trueUp) > 0.005 ? 'Total earned' : 'Total billed', t.earned], { aligns: RIGHT });
   pen.line(['Less what you spent', -t.spent], { aligns: RIGHT });
   pen.line(['What the year left', t.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
+  uncollected(pen, t);
   pen.skip();
 
   // ⚠ THESE ROWS ARE `grossNet`, NOT `net`, and the heading has to say which. They are the
@@ -392,24 +414,29 @@ function addProperty(wb, p, year, used) {
   // where the grid lives; a five-column block here would be checked as if C–E were months.
   // Anything monthly belongs above, in the grid, where that guard can see it.
   if (p.standings.rows.length) {
+    // ⚠ SIX COLUMNS NOW, AND THE SIXTH IS THE ONE THAT SURVIVES REOPENING. A closing balance of
+    // zero cannot tell a year that was COLLECTED from one that was FORGIVEN — opposite facts,
+    // identical figure — so "Settled as" states what was decided. Same string the year-close
+    // snapshot stores (`settled_as`), from one function (`settledAs`, settle.js).
+    const ALIGN6 = ['left', 'right', 'right', 'right', 'right', 'left'];
     pen.section('Where each tenant stands');
-    pen.head(['Tenant', 'Billed', 'Received', 'Charges & credits', 'Closing balance'],
-      ['left', 'right', 'right', 'right', 'right']);
+    pen.head(['Tenant', 'Billed', 'Received', 'Charges & credits', 'Closing balance', 'Settled as'], ALIGN6);
     for (const s of p.standings.rows) {
       pen.line(
-        [s.label, s.billed, s.received, dash(s.charges), s.settled ? '—' : s.closing],
-        { aligns: ['left', 'right', 'right', 'right', 'right'], ...(s.settled ? {} : { bg: P.GOLD_BG, ink: P.GOLD_INK }) }
+        [s.label, s.billed, s.received, dash(s.charges), s.settled ? '—' : s.closing, s.settledAs],
+        { aligns: ALIGN6, ...(s.settled ? {} : { bg: P.GOLD_BG, ink: P.GOLD_INK }) }
       );
     }
     pen.line(['Total', p.standings.totals.billed, p.standings.totals.received, dash(p.standings.totals.charges),
-      round2(p.standings.totals.owed - p.standings.totals.inCredit)],
-    { bold: true, bg: P.SUMMARY_BG, aligns: ['left', 'right', 'right', 'right', 'right'] });
+      round2(p.standings.totals.owed - p.standings.totals.inCredit), ''],
+    { bold: true, bg: P.SUMMARY_BG, aligns: ALIGN6 });
     pen.note(
       'A positive closing balance is money the tenant still owes; a negative one is money they are ahead by. It counts '
       + 'only the months that have come due, so a year still running does not report next month\'s rent as arrears. '
-      + 'Settle up on the Ledger row offers the four ways to close one: leave it open, write it off (which comes off '
-      + 'this year\'s income), carry it into next January, or record a refund.',
-      { height: 30 }
+      + '"Settled as" is what was decided about it: written off (which came off this year\'s income), carried forward '
+      + 'into next January (which moved the receivable and not the income), refunded, left open — or square, meaning '
+      + 'there was nothing to decide. Settle up on the Ledger row is where those choices are made.',
+      { height: 42 }
     );
     pen.skip();
   }
@@ -446,6 +473,7 @@ function addProperty(wb, p, year, used) {
   pen.line([Math.abs(p.trueUp) > 0.005 ? 'Total earned' : 'Total billed', p.earned], { aligns: RIGHT });
   pen.line(['Less what you spent', -p.expenseTotals.spent], { aligns: RIGHT });
   pen.line(['What the year left', p.net], { bold: true, bg: P.SUMMARY_BG, aligns: RIGHT });
+  uncollected(pen, p.standings.totals);
   // ⚠ THE RECONCILIATION AN ACCOUNTANT WILL CHECK. It has to be arithmetic they can
   // follow on the page, not a claim — so the terms are BUILT (`noiBridge`, incomeExpense.js)
   // and this only renders them. Written as a sentence it was wrong twice: missing

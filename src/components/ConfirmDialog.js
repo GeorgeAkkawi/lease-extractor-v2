@@ -14,9 +14,17 @@ import { useModalA11y } from './modalA11y';
 //
 // `askConfirm(opts)` resolves true on confirm, false on cancel/Escape/scrim/✕.
 //   opts: { title, message, implications: string[], confirmLabel, cancelLabel,
-//           tone: 'danger' | 'warn' | 'default' }
+//           tone: 'danger' | 'warn' | 'default', choices?: [{ key, label, hint, tone }] }
 // tone drives severity: 'danger' (red, the default — permanent deletes), 'warn' (gold —
 // reversible/undo-able), 'default' (accent — consequential but not destructive).
+//
+// ⚠ `choices` MAKES IT A FORK RATHER THAN A YES/NO, and it resolves to the chosen KEY instead
+// of `true` (cancel still resolves `false`, so `if (await askConfirm(...))` keeps working —
+// a key is truthy). It exists because some decisions genuinely have three ways forward and
+// forcing them into "OK / Cancel" makes the third one invisible: closing a year over open
+// balances can carry them all forward, leave them frozen, or send the landlord to settle them
+// one at a time (2026-08-16). Each choice states its own consequence under its label, because
+// the whole point is that they differ.
 
 const ConfirmContext = createContext(() => Promise.resolve(false));
 
@@ -37,6 +45,7 @@ export function ConfirmProvider({ children }) {
           confirmLabel: options.confirmLabel || 'Delete',
           cancelLabel: options.cancelLabel || 'Cancel',
           tone: options.tone || 'danger',
+          choices: Array.isArray(options.choices) ? options.choices.filter((c) => c && c.key) : [],
         });
       }),
     []
@@ -52,12 +61,12 @@ export function ConfirmProvider({ children }) {
   return (
     <ConfirmContext.Provider value={askConfirm}>
       {children}
-      {opts && <ConfirmDialog {...opts} onCancel={() => settle(false)} onConfirm={() => settle(true)} />}
+      {opts && <ConfirmDialog {...opts} onCancel={() => settle(false)} onConfirm={() => settle(true)} onChoose={settle} />}
     </ConfirmContext.Provider>
   );
 }
 
-function ConfirmDialog({ title, message, implications, confirmLabel, cancelLabel, tone, onCancel, onConfirm }) {
+function ConfirmDialog({ title, message, implications, confirmLabel, cancelLabel, tone, choices = [], onCancel, onConfirm, onChoose }) {
   // Escape / focus-trap; opens focus on the first control (the ✕, i.e. cancel) so an
   // accidental Enter never deletes.
   const modalRef = useModalA11y(onCancel);
@@ -92,12 +101,33 @@ function ConfirmDialog({ title, message, implications, confirmLabel, cancelLabel
           )}
         </div>
         <div className="modal-foot">
-          <div className="modal-actions" style={{ justifyContent: 'flex-end' }}>
-            <button className="secondary" onClick={onCancel}>{cancelLabel}</button>
-            <button className={tone === 'danger' ? 'danger-solid' : undefined} onClick={onConfirm}>
-              {confirmLabel}
-            </button>
-          </div>
+          {choices.length > 0 ? (
+            // Stacked, full-width, each stating its own consequence — because they differ, and
+            // a row of three equal buttons makes the reader guess which one is the safe default.
+            <div className="confirm-choices">
+              {choices.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  className={`confirm-choice${c.tone === 'primary' ? ' is-primary' : ''}`}
+                  onClick={() => onChoose(c.key)}
+                >
+                  <span className="confirm-choice-label">{c.label}</span>
+                  {c.hint && <span className="confirm-choice-hint">{c.hint}</span>}
+                </button>
+              ))}
+              <div className="modal-actions" style={{ justifyContent: 'flex-end' }}>
+                <button className="secondary" onClick={onCancel}>{cancelLabel}</button>
+              </div>
+            </div>
+          ) : (
+            <div className="modal-actions" style={{ justifyContent: 'flex-end' }}>
+              <button className="secondary" onClick={onCancel}>{cancelLabel}</button>
+              <button className={tone === 'danger' ? 'danger-solid' : undefined} onClick={onConfirm}>
+                {confirmLabel}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

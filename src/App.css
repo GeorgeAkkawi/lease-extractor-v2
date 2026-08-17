@@ -1140,6 +1140,22 @@ tbody tr:last-child td{border-bottom:none}
 .confirm-imp.info .confirm-imp-title{color:var(--accent)}
 .confirm-imp ul{margin:0;padding-left:17px}
 .confirm-imp li{font-size:12.5px;line-height:1.5;color:var(--ink);margin:3px 0}
+/* A confirm with three ways forward rather than yes/no (2026-08-16 — closing a year over open
+   balances). Stacked and full-width so each choice can state its own consequence beneath its
+   label; a row of equal-width buttons hides the difference, which is the only thing that
+   matters here. */
+.confirm-choices{display:flex;flex-direction:column;gap:8px}
+/* ⚠ `text-transform:none` IS LOAD-BEARING HERE. The base `button` rule is uppercase with wide
+   tracking — right for a three-word action, and it rendered a two-line consequence as A WALL OF
+   SHOUTING CAPITALS, which is the one thing that must stay readable. */
+.confirm-choice{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;
+  text-align:left;padding:9px 12px;background:var(--card);color:var(--ink);
+  border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;white-space:normal;
+  text-transform:none;letter-spacing:0;font-weight:400}
+.confirm-choice:hover{border-color:var(--accent);background:var(--accent-soft)}
+.confirm-choice.is-primary{border-color:var(--accent);border-left-width:3px}
+.confirm-choice-label{font-size:13px;font-weight:600;line-height:1.35}
+.confirm-choice-hint{font-size:11.5px;line-height:1.45;color:var(--muted);font-weight:400}
 
 /* ---- Month detail panel (0082) — one month of one tenant, opened from a Ledger box.
    Two columns that read left to right the way the question is asked: what you billed,

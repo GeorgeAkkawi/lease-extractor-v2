@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
@@ -13,6 +13,7 @@ import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { money, sf, fmtDate } from '../lib/format';
 import LeaseAssistant from '../components/LeaseAssistant';
 import { useConfirm } from '../components/ConfirmDialog';
+import { settleBillingChange } from '../lib/invalidate';
 
 // Friendly labels + badge tones for history_events. Covers both halves — the events that
 // belong in a tenant's story and the bookkeeping ones that get their own folded log.
@@ -91,6 +92,34 @@ const EVENT_BADGE = {
   left: 'info',
 };
 
+// ⚠ WHICH TENANTS MOVED, AND WHICH DID NOT — never a count. A bulk settlement that reported
+// "3 balances carried" would look identical whether the fourth was square or refused, and a
+// refusal that nobody reads is a balance frozen under a snapshot the landlord believes they
+// settled. `settleTenantBalance` refuses for real reasons (next year already closed, a credit
+// with no month left to take it), so every one is named with its own sentence.
+function closeReport(snap, year) {
+  if (!snap) return '';
+  const s = snap.settlement;
+  if (!s) return `FY ${year} is closed. The snapshot is filed under History below.`;
+  const bits = [];
+  if (s.done.length) {
+    bits.push(`Carried forward into January ${year + 1}: ${s.done.map((d) => `${d.label} ${money(d.amount)}`).join(' · ')}.`);
+    // ⚠ THE MONTH STILL RUNNING DOES NOT GO. A settlement acts on months that have ENDED —
+    // nothing has yet told you whether this one was paid — so closing a year before it is over
+    // leaves a whole month's rent behind, frozen under the snapshot. Saying "carried forward"
+    // and stopping there would have the landlord believe it all moved.
+    const stayed = s.done.filter((d) => (d.left || 0) > 0.005);
+    if (stayed.length) {
+      bits.push(`Staying in FY ${year} because the month has not ended and nothing has yet said whether it was paid: ${stayed.map((d) => `${d.label} ${money(d.left)}`).join(' · ')}. Reopen the year once that month's statement arrives.`);
+    }
+  }
+  if (s.refused.length) {
+    bits.push(`NOT settled — ${s.refused.map((r) => `${r.label}: ${r.message}`).join(' ')} ${s.refused.length === 1 ? 'That balance is' : 'Those balances are'} frozen with the year; reopen FY ${year} to act on ${s.refused.length === 1 ? 'it' : 'them'}.`);
+  }
+  if (!bits.length) bits.push('No balance needed settling.');
+  return `FY ${year} is closed. ${bits.join(' ')}`;
+}
+
 const num = (v) => (v == null ? 0 : Number(v));
 const expenses = (s) => num(s.taxes_total) + num(s.cam_total) + num(s.roof_total);
 const noi = (s) => num(s.total_revenue) - expenses(s);
@@ -99,6 +128,7 @@ const kfmt = (v) => (v == null || isNaN(v) ? '' : Math.abs(v) >= 1000 ? `$${Math
 
 export default function HistoryPage() {
   const { corpId, propId } = useParams();
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const askConfirm = useConfirm();
   const { year } = useChrome();
@@ -122,7 +152,22 @@ export default function HistoryPage() {
     { label: prop?.name || '…' },
   ], true);
 
-  const close = useMutation({ mutationFn: () => closeYear(propId, year), onSuccess: () => qc.invalidateQueries({ queryKey: ['snapshots', propId] }) });
+  // ⚠ CLOSING CAN NOW MOVE MONEY IN TWO YEARS BEFORE IT FREEZES ONE (Round 3), so the
+  // invalidation is no longer just the snapshot list. Carrying the balances forward writes
+  // `lease_adjustments` in FY and FY+1 and rebuilds both years' invoices — every screen those
+  // feed has to repaint or the Ledger goes on showing balances that were settled a moment ago.
+  const close = useMutation({
+    mutationFn: ({ settleOpen = null } = {}) => closeYear(propId, year, { settleOpen }),
+    onSuccess: (snap) => {
+      qc.invalidateQueries({ queryKey: ['snapshots', propId] });
+      if (snap?.settlement) {
+        settleBillingChange(qc, { propertyId: propId, year });
+        settleBillingChange(qc, { propertyId: propId, year: year + 1 });
+        qc.invalidateQueries({ queryKey: ['historyEvents', propId] });
+      }
+      setCloseNote(closeReport(snap, year));
+    },
+  });
   const reopen = useMutation({ mutationFn: () => reopenYear(propId, year), onSuccess: () => qc.invalidateQueries({ queryKey: ['snapshots', propId] }) });
   const removeExpired = useMutation({ mutationFn: (id) => deleteExpiredLease(id), onSuccess: () => qc.invalidateQueries({ queryKey: ['expiredLeases', propId] }) });
   const clearHistory = useMutation({
@@ -135,6 +180,9 @@ export default function HistoryPage() {
   });
 
   const [narrative, setNarrative] = useState('');
+  // What closing actually did. Held on the page rather than shown in a toast: a landlord who
+  // just carried four balances into next year needs to be able to read the list twice.
+  const [closeNote, setCloseNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [openStory, setOpenStory] = useState(null); // story card key currently unfolded
   const [showLedger, setShowLedger] = useState(false);
@@ -153,27 +201,65 @@ export default function HistoryPage() {
     // ⚠ NAME THE OPEN BALANCES BEFORE FREEZING THE YEAR (Slice 4). Closing writes a snapshot,
     // and a snapshot is what `yearLockState` reads to refuse every later write — including
     // Settle up itself. So a year closed over an unsettled balance can only be settled by
-    // reopening it, and nothing said so at the moment it mattered. This does not block the
-    // close: leaving a balance open is one of the four legitimate choices. It just stops it
-    // being an accident.
+    // reopening it, and nothing said so at the moment it mattered.
+    //
+    // ⚠ AND NAMING IT WAS NOT ENOUGH. A warning that ends in "Close year / Cancel" leaves the
+    // landlord with a problem and no instrument: the only way to act on it was to abandon the
+    // close, walk to the Ledger, settle each tenant, and come back. The dialog now OFFERS the
+    // three ways forward, because they are genuinely different decisions and the difference is
+    // the only thing worth reading (Round 3, 2026-08-16). A square year is unchanged — one
+    // question, one answer, no fork.
     const open = standings.open;
     const owedTotal = standings.totals.owed;
     const creditTotal = standings.totals.inCredit;
-    if (await askConfirm({
-      title: `Close FY ${year}?`,
-      message: `Save a permanent snapshot of ${prop?.name || 'this property'}'s financials as they are now?`,
+    const frozen = `${owedTotal ? `${money(owedTotal)} owed` : ''}${owedTotal && creditTotal ? ' · ' : ''}${creditTotal ? `${money(creditTotal)} in credit` : ''}`;
+    const base = [
+      'Files this year’s revenue, expenses, and per-tenant breakdown under History.',
+      'Does NOT change your live financials — you can edit them anytime.',
+      'You can reopen the year later to remove the snapshot.',
+    ];
+
+    if (!open.length) {
+      if (await askConfirm({
+        title: `Close FY ${year}?`,
+        message: `Save a permanent snapshot of ${prop?.name || 'this property'}'s financials as they are now?`,
+        implications: ['Every tenant is square for the year — no balance is being frozen open.', ...base],
+        confirmLabel: 'Close year',
+        tone: 'default',
+      })) close.mutate({ settleOpen: null });
+      return;
+    }
+
+    const choice = await askConfirm({
+      title: `Close FY ${year} — ${open.length} open balance${open.length === 1 ? '' : 's'}`,
+      message: `${open.slice(0, 4).map((s) => `${s.label} ${s.owes ? `owes ${money(s.owes)}` : `is ${money(s.inCredit)} ahead`}`).join(' · ')}${open.length > 4 ? ` · and ${open.length - 4} more` : ''}.`,
       implications: [
-        ...(open.length ? [
-          `${open.length} tenant${open.length === 1 ? ' has' : 's have'} an open balance: ${open.slice(0, 4).map((s) => `${s.label} ${s.owes ? `owes ${money(s.owes)}` : `is ${money(s.inCredit)} ahead`}`).join(' · ')}${open.length > 4 ? ` · and ${open.length - 4} more` : ''}.`,
-          `Closing does NOT settle them — and once closed, Settle up on the Ledger is refused until you reopen the year. ${owedTotal ? `${money(owedTotal)} owed` : ''}${owedTotal && creditTotal ? ' · ' : ''}${creditTotal ? `${money(creditTotal)} in credit` : ''} would be frozen as it stands.`,
-        ] : ['Every tenant is square for the year — no balance is being frozen open.']),
-        'Files this year’s revenue, expenses, and per-tenant breakdown under History.',
-        'Does NOT change your live financials — you can edit them anytime.',
-        'You can reopen the year later to remove the snapshot.',
+        `Closing writes a snapshot, and the snapshot is the lock: once it exists, Settle up on the Ledger is refused until you reopen the year. ${frozen} would be frozen exactly as it stands.`,
+        ...base,
       ],
-      confirmLabel: 'Close year',
+      choices: [
+        {
+          key: 'carry',
+          label: 'Carry them all forward, then close',
+          tone: 'primary',
+          hint: `Each balance moves into January ${year + 1} — a charge for a tenant who owes, a credit for one who is ahead. The year's income does not move: it was earned in ${year} and stays there. It carries the months that have ENDED; anything owed on a month still running stays in ${year}, and FY ${year + 1} has to be open.`,
+        },
+        {
+          key: 'leave',
+          label: 'Leave them open, and close anyway',
+          hint: `${frozen} stays on the books as a receivable and is frozen with the year. Nothing is forgiven — but to act on it later you have to reopen ${year} first.`,
+        },
+        {
+          key: 'settle',
+          label: 'Settle them one at a time first',
+          hint: 'Takes you to the Ledger without closing anything. Use it when they need different answers — one written off, another carried, a third refunded.',
+        },
+      ],
+      cancelLabel: 'Not now',
       tone: 'default',
-    })) close.mutate();
+    });
+    if (choice === 'settle') { navigate(`/financials/${corpId}/${propId}/ledger`); return; }
+    if (choice === 'carry' || choice === 'leave') close.mutate({ settleOpen: choice });
   }
   async function handleReopen() {
     if (await askConfirm({
@@ -240,7 +326,15 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {close.isSuccess && <p className="badge good" style={{ marginBottom: 12 }}>Snapshot saved for {year}</p>}
+      {/* ⚠ WHICH RECORDS MOVED, not "Snapshot saved". Closing can now settle every open balance
+          on its way through, and a landlord who has just moved four tenants' arrears into next
+          January needs the list — including anything that REFUSED, which is a balance frozen
+          under the snapshot they believe they just cleared. */}
+      {close.isSuccess && closeNote && (
+        <p className={`note-msg ${close.data?.settlement?.refused?.length ? 'warn' : 'good'}`} style={{ marginBottom: 12 }}>
+          {closeNote}
+        </p>
+      )}
       {close.isError && <p className="badge danger" style={{ marginBottom: 12 }}>{close.error.message}</p>}
       {reopen.isSuccess && <p className="badge info" style={{ marginBottom: 12 }}>FY {year} reopened — snapshot removed.</p>}
 

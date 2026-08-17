@@ -105,9 +105,39 @@ export function tenantStanding({ row, year, today = new Date(), alloc = null, su
     // They coincide on any past year, which is when a settlement normally happens.
     settled: owes <= 0.005 && inCredit <= 0.005,
     openBalance: Math.abs(closing) > 0.005,
+    // What was DECIDED about this year, in words — carried into the year-close snapshot and
+    // printed as a column in the workbook. Derived, never stored twice.
+    settledAs: settledAs({ row, closing }),
     alloc: a,
     summary: s,
   };
+}
+
+/**
+ * What was decided about this tenant's year — the answer to "and then what happened?".
+ *
+ * ⚠ A CLOSED YEAR RECORDS THE OUTCOME, NOT JUST THE FIGURE. A snapshot froze `closing` and said
+ * nothing about whether the landlord forgave it, carried it, refunded it or simply left it — so
+ * a year reopened in 2029 could show a $0 balance with no way to tell a collected year from a
+ * written-off one. Those are opposite facts about the same tenant.
+ *
+ * ⚠ ROWS BROUGHT FORWARD ARE EXCLUDED. An `opening` charge that ARRIVED from last year is last
+ * year's decision, not this one's; counting it would report every receiving year as "carried
+ * forward" when nothing was decided in it at all.
+ */
+export function settledAs({ row, closing = null } = {}) {
+  const own = (row?.adjustmentRows || []).filter(isSettlementRow).filter((a) => !isBroughtForward(a));
+  const kinds = new Set(own.map((a) => String(a.kind)));
+  const parts = [];
+  if (kinds.has('writeoff')) parts.push('written off');
+  if (kinds.has('opening')) parts.push('carried forward');
+  if (kinds.has('refund')) parts.push('refunded');
+  // More than one is a real shape — part written off, the rest carried — and joining them says
+  // so rather than picking a winner and hiding the other half.
+  if (parts.length) return parts.join(' · ');
+  const c = closing == null ? null : Number(closing);
+  if (c == null) return 'square';
+  return Math.abs(c) > 0.005 ? 'left open' : 'square';
 }
 
 /** Every tenant on a property, biggest balance first — the "Where each tenant stands" block. */

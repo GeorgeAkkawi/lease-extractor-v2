@@ -17,7 +17,7 @@ import { describe, it, expect, vi } from 'vitest';
 import JSZip from 'jszip';
 import {
   tenantStanding, propertyStandings, spreadAcrossMonths, monthCapacity,
-  refundMonth, settleChoicesFor, settleSentence, isBroughtForward, isSettlementRow,
+  refundMonth, settleChoicesFor, settleSentence, isBroughtForward, isSettlementRow, settledAs,
 } from '../settle';
 import {
   settleTenantBalance, undoSettlement, getPropertyMonthlyRoll, listAdjustments, addAdjustment,
@@ -374,6 +374,14 @@ describe('what the workbook says once balances have been settled', () => {
       'Brought forward and refunds',
       'Less brought forward and refunds',
       'A positive closing balance is money the tenant still owes',
+      // ⚠ THE ACCRUAL-TO-CASH BRIDGE, and the reason "leave it open" was invisible: the three
+      // settlements are deliberately different, and the one that moves NOTHING left the sheet
+      // printing "Total earned" with no hint that a slice of it never arrived.
+      'of which still uncollected at year end',
+      // ⚠ AND WHAT WAS DECIDED. A closing balance of zero cannot tell a collected year from a
+      // forgiven one — opposite facts, identical figure.
+      'Settled as',
+      'what was decided about it: written off',
     ]) expect(strings, `the sheet must say "${phrase}"`).toContain(phrase);
     for (const n of Object.keys(zip.files).filter((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f))) {
       const xml = await zip.file(n).async('string');
@@ -470,5 +478,112 @@ describe('a settlement names its other end, and can be taken back whole', () => 
     // Nothing moved.
     expect((await listAdjustments({ leaseId: 'lease-3', year: Y + 1 })).filter((a) => a.kind === 'opening')).toHaveLength(1);
     await reopenYear('prop-2', Y + 1);
+  });
+});
+
+// ── Round 3: the year boundary ─────────────────────────────────────────────────────────
+//
+// George: *"where in amlak does this show? only at fiscal year close or per line item? … is
+// there information transfer between fiscal years?"* Closing a year is the one moment a
+// settlement exists for, and until now it only WARNED about the balances — a landlord was left
+// with a problem and no instrument, since the snapshot it writes is the very thing that refuses
+// Settle up afterwards.
+//
+// ⚠ THE ORDER IS THE WHOLE THING: SETTLE, THEN SNAPSHOT. The snapshot is the lock.
+describe('closing a year over open balances', () => {
+  it('settles first and snapshots second, so the frozen figures are the settled ones', async () => {
+    // Give Northwind a real balance again (the block above left it carried).
+    await undoSettlement({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y });
+    const before = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-3');
+    const owed = tenantStanding({ row: before, year: Y }).owes;
+    expect(owed).toBeGreaterThan(0);
+
+    const snap = await closeYear('prop-2', Y, { settleOpen: 'carry' });
+    expect(snap.settlement.choice).toBe('carry');
+    expect(snap.settlement.refused).toHaveLength(0);
+    expect(snap.settlement.done.some((d) => d.label === 'Northwind Books' && Math.abs(d.amount - owed) < 0.01)).toBe(true);
+
+    // ⚠ THE MONTH STILL RUNNING DOES NOT GO, AND THE REPORT SAYS SO. A settlement acts on
+    // months that have ENDED — nothing has yet told you whether August was paid — so closing
+    // a year mid-year leaves that month behind, frozen under the snapshot. `left` is what
+    // makes the difference legible instead of looking like a rounding remainder.
+    const carried = snap.settlement.done.find((d) => d.label === 'Northwind Books');
+    const stand = tenantStanding({ row: before, year: Y });
+    expect(carried.left).toBeCloseTo(stand.provisional, 2);
+
+    // ⚠ THE SNAPSHOT RECORDS THE POSITION IT IS FREEZING, not the one from before the
+    // settlement — the roll is re-read after the writes. A snapshot built from the earlier
+    // read would freeze a balance that had already been moved out of the year.
+    const row = snap.breakdown.find((b) => b.tenant === 'Northwind Books');
+    expect(round2(stand.closing - row.closing_balance)).toBeCloseTo(owed, 2);
+    expect(row.closing_balance).toBeCloseTo(stand.provisional, 2);
+    expect(row.settled_as).toBe('carried forward');
+    // …and the money really is in the next year.
+    const next = (await getPropertyMonthlyRoll('prop-2', Y + 1)).find((r) => r.lease_id === 'lease-3');
+    expect(round2(Number(next.schedule[1].owed) - Number(next.schedule[2].owed))).toBeCloseTo(owed, 2);
+
+    await reopenYear('prop-2', Y);
+    await undoSettlement({ leaseId: 'lease-3', propertyId: 'prop-2', year: Y });
+  });
+
+  // ⚠ A CLOSING BALANCE OF ZERO CANNOT TELL A COLLECTED YEAR FROM A FORGIVEN ONE. `settled_as`
+  // is the field that survives reopening the year in 2029 and asking what happened.
+  it('records what was DECIDED, not only the figure', async () => {
+    const snap = await closeYear('prop-2', Y);          // no option — freeze as it stands
+    expect(snap.settlement).toBeUndefined();
+    const left = snap.breakdown.find((b) => b.tenant === 'Northwind Books');
+    expect(left.closing_balance).toBeGreaterThan(0);
+    expect(left.settled_as).toBe('left open');
+    // Sunrise was written off earlier in this file and later refunded an overpayment, and the
+    // snapshot says BOTH — the same tenant reads $0 owing either way, which is exactly why the
+    // words are needed, and why picking a single winner would hide half of what happened.
+    const off = snap.breakdown.find((b) => b.tenant === 'Sunrise Yoga Studio');
+    expect(off.settled_as).toBe('written off · refunded');
+    expect(Math.abs(off.closing_balance)).toBeLessThanOrEqual(0.05);
+    await reopenYear('prop-2', Y);
+  });
+
+  // ⚠ A BULK ACTION THAT SWALLOWS ITS REFUSALS FREEZES A BALANCE THE LANDLORD BELIEVES THEY
+  // SETTLED. `settleTenantBalance` refuses for real reasons; each one comes back named.
+  it('names what it could not settle, and closes the year anyway', async () => {
+    await closeYear('prop-2', Y + 1);                    // nowhere for the balance to land
+    const snap = await closeYear('prop-2', Y, { settleOpen: 'carry' });
+    expect(snap.settlement.done).toHaveLength(0);
+    expect(snap.settlement.refused.some((r) => r.label === 'Northwind Books' && new RegExp(`FY ${Y + 1} is closed`).test(r.message))).toBe(true);
+    // The year still closed, and the frozen row states the balance is open rather than
+    // implying it was dealt with.
+    expect(snap.breakdown.find((b) => b.tenant === 'Northwind Books').settled_as).toBe('left open');
+    await reopenYear('prop-2', Y);
+    await reopenYear('prop-2', Y + 1);
+  });
+});
+
+describe('settledAs — what was decided about the year', () => {
+  const row = (kinds) => ({
+    adjustmentRows: kinds.map((k, i) => ({ id: `a${i}`, kind: k.kind, amount: k.amount ?? -100, memo: k.memo ?? null })),
+  });
+  it('reads the decision off the rows the settlement wrote', () => {
+    expect(settledAs({ row: row([{ kind: 'writeoff' }]), closing: 0 })).toBe('written off');
+    expect(settledAs({ row: row([{ kind: 'opening', memo: `Carried forward to FY ${Y + 1}` }]), closing: 0 })).toBe('carried forward');
+    expect(settledAs({ row: row([{ kind: 'refund' }]), closing: 0 })).toBe('refunded');
+  });
+  it('states both when a balance was settled two ways', () => {
+    expect(settledAs({
+      row: row([{ kind: 'writeoff' }, { kind: 'opening', memo: `Carried forward to FY ${Y + 1}` }]),
+      closing: 0,
+    })).toBe('written off · carried forward');
+  });
+  // ⚠ A BALANCE THAT ARRIVED IS LAST YEAR'S DECISION. Counting it would report every receiving
+  // year as "carried forward" when nothing at all was decided in it.
+  it('ignores a balance brought forward INTO the year', () => {
+    const r = row([{ kind: 'opening', amount: 5000, memo: `Brought forward from FY ${Y - 1}` }]);
+    expect(settledAs({ row: r, closing: 5000 })).toBe('left open');
+    expect(settledAs({ row: r, closing: 0 })).toBe('square');
+  });
+  it('distinguishes a year with nothing to decide from one left open', () => {
+    expect(settledAs({ row: { adjustmentRows: [] }, closing: 0 })).toBe('square');
+    expect(settledAs({ row: { adjustmentRows: [] }, closing: 4150 })).toBe('left open');
+    // A charge typed on a month is not a settlement and must not read as one.
+    expect(settledAs({ row: row([{ kind: 'fee', amount: 250 }]), closing: 250 })).toBe('left open');
   });
 });

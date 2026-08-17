@@ -12,6 +12,112 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-16** — **ROUND 3 of five questions: the year boundary. Closing a year now OFFERS the
+  settlement instead of warning about it, the snapshot records what was decided, and the workbook
+  states what of the year's income never arrived.** Cloudflare version
+  **`1ffa82f9-6231-4193-bc1f-40f3e9012a96`** (on top of `0370ea17`).
+
+  **The close-year dialog is a fork, not a yes/no.** Round 1 made it NAME the open balances; that
+  was still a warning that ended in "Close year / Cancel", which leaves the landlord with a
+  problem and no instrument — the only way to act was to abandon the close, walk to the Ledger,
+  settle each tenant and come back. And the snapshot is precisely the thing that refuses Settle
+  up afterwards. Three ways forward, each stating its own consequence:
+  - **Carry them all forward, then close** — every open balance into next January first.
+  - **Leave them open, and close anyway** — what closing has always done, now said out loud.
+  - **Settle them one at a time first** — navigates to the Ledger, closes nothing. For when they
+    need different answers: one written off, another carried, a third refunded.
+  A year with nothing open is unchanged: one question, one answer, no fork.
+
+  **`ConfirmDialog` gained an optional `choices`** (`[{ key, label, hint, tone }]`), resolving to
+  the chosen KEY. ⚠ Cancel still resolves `false`, and a key is truthy, so
+  `if (await askConfirm(...))` at twenty other call sites is untouched — pinned by a test that
+  asserts the no-choices path is byte-identical. Stacked and full-width, because three
+  equal-width buttons hide the difference, which is the only thing worth reading here.
+  ⚠ `text-transform:none` on `.confirm-choice` is load-bearing: the base `button` rule is
+  uppercase with wide tracking, and it rendered the two-line consequences as a wall of shouting
+  capitals. Caught in the browser, not the editor.
+
+  **`closeYear(propertyId, year, { settleOpen })` — and the ORDER IS FORCED: settle, THEN
+  snapshot.** The snapshot is the lock (`yearLockState` reads it and refuses every later write),
+  so doing it the other way round writes a record of balances the very next line then moves. The
+  roll is deliberately **re-read after** the settlement, so the frozen figures are the settled
+  ones.
+
+  **⚠ IT REPORTS WHAT IT COULD NOT DO, tenant by tenant.** `settleTenantBalance` refuses for real
+  reasons — next year already closed, a credit with no month left to take it — and a bulk action
+  that swallowed those would freeze a balance the landlord believes they just moved. Every
+  refusal comes back with its own sentence and the page prints it in gold, not green.
+
+  **⚠ AND IT NAMES THE MONTH THAT STAYED BEHIND**, which the tests caught rather than the plan. A
+  settlement acts on months that have **ENDED** (`standing.owes`) because the statement that
+  would settle the running month does not exist yet — that is Round 1's rule, unchanged. Close a
+  year mid-year and the receivable (`closing`) is a whole month's rent larger than what carries.
+  Reporting "carried forward" and stopping there would have the landlord believe it all moved,
+  so `settlement.done[].left` carries it and the report says: *"Staying in FY 2026 because the
+  month has not ended and nothing has yet said whether it was paid: Northwind Books $12,750.00 ·
+  Sunrise Yoga Studio $3,972.22. Reopen the year once that month's statement arrives."*
+  The three surfaces now agree while each answers its own question: the Ledger chip shows nothing
+  to act on, the report names what stayed, and the snapshot freezes the full receivable.
+
+  **The snapshot records `closing_balance` and `settled_as`** on every breakdown row.
+  ⚠ **A CLOSING BALANCE OF ZERO CANNOT TELL A COLLECTED YEAR FROM A FORGIVEN ONE** — opposite
+  facts, identical figure — and `collection_rate` cannot either. `settledAs` (`settle.js`) derives
+  the words from the rows the settlement wrote: *written off · carried forward · refunded · left
+  open · square*, joined when a balance was settled two ways (the demo's Sunrise reads
+  `written off · refunded`, which is true and which picking a single winner would have hidden).
+  ⚠ Rows **brought forward INTO** the year are excluded — that is last year's decision, and
+  counting it would report every receiving year as "carried forward" when nothing was decided in
+  it at all.
+
+  **The workbook says what of the year's income never arrived.** *What the year left* gains
+  `of which still uncollected at year end` (and `and held for tenants who are ahead`), on the
+  Summary sheet and every property sheet. ⚠ It is an **annotation, never a term** — printed below
+  the net line and subtracted from nothing, because the money WAS earned and the sheet is right
+  to count it. This is the gap behind "leave it open": the three settlements are deliberately
+  different, and the one that moves nothing left the sheet printing *Total earned $191,290* with
+  no hint that $58,844 of it never came in. It is the first question an accountant asks of an
+  accrual statement, and the figure was already on the shape.
+
+  **And *Where each tenant stands* gains a sixth column, Settled as** — the same string the
+  snapshot stores, from the same function, so the frozen record and the exported sheet cannot
+  disagree.
+
+  **One more thing the browser found:** every message on the Ledger went through a single
+  `badge good`, so *"FY 2026 is closed, so nothing was undone"* arrived in the same green as
+  *"Recorded"*. `setNote(text, bad)` now carries what a message says about itself; six refusal
+  and failure sites pass `true`, and a rebuild skipped for a closed year is gold — not a failure,
+  not a success, and the reason is stated.
+
+  *Files:* `src/lib/settle.js` · `src/lib/api.js` · `src/pages/HistoryPage.js` ·
+  `src/pages/LedgerPage.js` · `src/components/ConfirmDialog.js` · `src/App.css` ·
+  `src/lib/incomeExpenseExcel.js` · tests in `settleBalance.test.js`, `confirmDialog.test.js`.
+  No migration — `breakdown` is already JSON. No edge function, no view, no feature key.
+
+  **Verified live in the demo build:**
+  - Oak Center, FY 2026 → **Close FY 2026 — 2 open balances**, the three choices rendering in
+    sentence case with their hints.
+  - **Carry them all forward** → *"FY 2026 is closed. Carried forward into January 2027:
+    Northwind Books $89,250.00 · Sunrise Yoga Studio $3,972.22. Staying in FY 2026 …"* — and FY
+    2027's Ledger showed **both** brought-forward chips.
+  - FY 2026's Ledger then showed no owes chip (nothing to act on, correctly) and **Undo
+    settlement** refused in **gold**: *"FY 2026 is closed and holds part of this settlement, so
+    nothing was undone. Reopen it first."*
+  - **Settle them one at a time first** → landed on the Ledger with both balances intact and
+    **no snapshot written**.
+
+  **1904 tests across 181 files** (was 1894), all three URLs 200.
+
+  ⚠ **Still outstanding, in George's hands:**
+  - **`TenantStatement` is hardcoded to the current CALENDAR year** (`LeaseDetailPage.js:763`),
+    not the fiscal year on screen, so an FY-2025 settlement is invisible there. Pre-existing.
+  - **The import still calls no `resyncPropertyBilling`** — raised five times now. Placing a
+    billable expense from the nag carries through (Round 2); a statement import still does not,
+    and the Ledger's `bill behind by $X · Rebuild` is the only thing that catches it.
+  - **A tagged overpayment still creates no `credit`** — `allocatePayments` settles a tagged month
+    at whatever arrived, by design. Changing it moves money on every screen.
+  - **Two hand-rolled `.panel-toggle` copies survive on `HistoryPage.js`** and should move to
+    `Panel` (CLAUDE.md §3).
+
 - **2026-08-16** — **ROUND 2 of five questions: the tie-out said what it was doing, a carried
   balance got a path between its two years, and a settlement got a way back.** Round 1 closed
   the holes where money went missing; this round is the half George could not read.
