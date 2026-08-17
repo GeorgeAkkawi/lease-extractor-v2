@@ -177,7 +177,14 @@ export function billedRowsFromRoll(roll = [], { collected = false } = {}) {
           // Rent is the REMAINDER so the four parts sum to the cash exactly — the same reason
           // componentizeSchedule makes base the remainder. Scaling all five independently
           // would leave the rounding cents nowhere.
-          const f = got / owedM;
+          //
+          // ⚠ CAPPED AT 1, AND THAT IS NOT TIDINESS. A tag settles its month at whatever
+          // arrived, with NO cap (ledger.js) — so a lump cheque tagged to a nearly-free month
+          // gives `got / owedM` in the thousands, and the split would print an invented CAM & tax
+          // of six figures against an equally invented negative rent. The month's total would
+          // still be right and every row would be nonsense. You cannot have paid more CAM than
+          // you were billed: the excess is unattributable, so it lands on the remainder row.
+          const f = Math.min(1, got / owedM);
           m.camTax[i] = round2(m.camTax[i] * f);
           m.roof[i] = round2(m.roof[i] * f);
           m.charges[i] = round2(m.charges[i] * f);
@@ -218,6 +225,20 @@ export function billedRowsFromRoll(roll = [], { collected = false } = {}) {
   drifted.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || a.label.localeCompare(b.label));
   return { ...groups, tieOut: round2(tieOut), creditTotal, drifted, driftTotal: round2(drifted.reduce((s, d) => s + d.amount, 0)) };
 }
+
+/**
+ * The roll as it was actually BILLED — the projection stripped back off.
+ *
+ * ⚠ `tenantStanding` READS `row.schedule` TO DECIDE WHO IS BEHIND, which makes handing it a
+ * projected roll a false accusation: a rent step that has not taken effect would count as
+ * arrears, appear in every tenant's closing balance, and print under "of which still
+ * uncollected at year end" on a sheet the landlord may well send them. Nobody has been billed
+ * for it. `getPropertyMonthlyRoll` attaches `contractedSchedule` only when it was asked to
+ * project, so on every other path this is the identity.
+ */
+const contractedRoll = (roll = []) => (roll || []).map((r) => (r?.contractedSchedule
+  ? { ...r, schedule: r.contractedSchedule, factor: r.contractedFactor ?? r.factor }
+  : r));
 
 /** The lease-level rows of one group, collapsed to a length-12 array. */
 const groupByMonth = (rows = []) => (rows || []).reduce((acc, r) => add12(acc, r.byMonth), zero12());
@@ -323,6 +344,10 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   const allAdjRows = (roll || []).flatMap((r) => r?.adjustmentRows || []);
   const chargeRows = live ? shown.charges.filter((r) => Math.abs(r.total) > 0.005) : adjustmentKindRows(allAdjRows, 'charges');
   const carriedRows = live ? shown.carried.filter((r) => Math.abs(r.total) > 0.005) : adjustmentKindRows(allAdjRows, null);
+  // The three things that can make the Rent ROW differ from `rentScheduled`, each measured
+  // rather than listed — see the flag in `flags()`.
+  const grossCarve = billed.rent.some((r) => r.gross);
+  const rentCorrections = round2(adjustmentsForPnlRow(allAdjRows, 'rent').total);
 
   // ⚠ THE TIE-OUT. Until 2026-08-12 this sheet quoted `total_revenue` — one annual figure
   // straight out of the view. Laying rent across months means deriving it from the lease
@@ -412,6 +437,9 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     rentDrift,
     // Rent on this sheet that comes from a step not yet in effect (projected basis only).
     projectedAhead,
+    // Why the Rent row and `rentScheduled` differ, when they do. Measured, not guessed at.
+    grossCarve,
+    rentCorrections,
     // Cash paid beyond the year's bills, with no month to sit in (live basis only).
     tenantCredit,
     // The leases whose ISSUED invoice no longer matches these rows, and by how much.
@@ -435,7 +463,7 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     // Where each tenant stands: billed · received · charges & credits · closing balance.
     // Derived through `allocatePayments` / `ledgerRowSummary`, the same pair the Ledger grid
     // is painted from, so the balance printed here is the balance the Settle up button acts on.
-    standings: propertyStandings({ roll, year }),
+    standings: propertyStandings({ roll: contractedRoll(roll), year }),
     trueUp,
     billedTotal,
     earned,
@@ -579,11 +607,12 @@ const dollars = (n) => `$${round2(n).toLocaleString('en-US', { minimumFractionDi
  * removed packages' pre-flight served: a report that cannot tell a careful export from
  * one that quietly omitted something forces the reader to assume the worst.
  */
-export function flags(properties = []) {
+export function flags(properties = [], { basis = null } = {}) {
   const out = [];
-  // The basis rides on the shapes rather than being passed in again — one source, so a flag
-  // can never describe a copy of the workbook the reader is not holding.
-  const live = properties[0]?.basis === 'live';
+  // ⚠ THE PACKAGE'S BASIS FIRST, the shapes' second. Reading it off `properties[0]` alone means
+  // a corporation with no properties yet gets told it is holding the projected copy whichever
+  // one it asked for — the one case where there is no shape to ask.
+  const live = (basis || properties[0]?.basis) === 'live';
 
   // ⚠ THE FIRST FLAG ON EITHER BASIS SAYS WHICH ONE THIS IS. The two workbooks have the same
   // sheets, the same row titles and very different figures, and a landlord who downloads both
@@ -666,14 +695,17 @@ export function flags(properties = []) {
     // until the 2026-08-16 audit) prints three figures where the third is not the
     // difference of the first two the moment a gross lease or a base-rent correction makes
     // the two diverge.
-    // ⚠ AND IT NAMES EVERY CAUSE IT CAN HAVE. A scheduled rent step joined the list on
-    // 2026-08-17: the Rent row counts it and this comparison deliberately does not, so a flag
-    // that offered only the old two causes would send a reader looking for a gross lease that
-    // isn't there.
+    // ⚠ IT NAMES THE CAUSES THAT ARE ACTUALLY PRESENT, AND ONLY THOSE (George, 2026-08-17,
+    // on the redundancy). There are three ways the Rent ROW can differ from `rentScheduled`,
+    // and this used to recite all three whatever the property looked like — so a landlord
+    // reading it went hunting for a gross lease that wasn't there, on a sheet where the whole
+    // difference was one scheduled rent step. Each is measured on the shape instead.
+    const why = [];
+    if ((p.projectedAhead || 0) > 0.005) why.push(`${dollars(p.projectedAhead)} of it is a rent step that has not taken effect yet, which this comparison deliberately excludes`);
+    if (p.grossCarve) why.push('a gross lease\'s flat rent is split there into rent and CAM & tax');
+    if (Math.abs(p.rentCorrections || 0) > 0.005) why.push(`a base-rent correction of ${dollars(p.rentCorrections)} rides the Rent row`);
     const alsoRow = Math.abs(round2(p.rentScheduled - p.rent)) > 1
-      ? ` The Rent row above reads ${dollars(p.rent)} rather than ${dollars(p.rentScheduled)}: `
-        + `${(p.projectedAhead || 0) > 0.005 ? `${dollars(p.projectedAhead)} of it is a rent step not yet in effect, ` : ''}`
-        + 'a gross lease\'s flat rent is split there into rent and CAM & tax, and a base-rent correction rides the Rent row.'
+      ? ` The Rent row above reads ${dollars(p.rent)} rather than ${dollars(p.rentScheduled)}${why.length ? `: ${why.join('; and ')}.` : '.'}`
       : '';
     out.push(`${p.name}: these leases schedule ${dollars(p.rentScheduled)} of rent at their contract rates, and the Revenue figure on the Financials page reads ${dollars(p.rentQuoted)} — a difference of ${dollars(Math.abs(p.rentDrift))}. These months come from each lease's own schedule, so a tenancy that began part-way through the year is counted only from the month it began. The page's figure is the annual rate from the database view, which is not prorated.${alsoRow}`);
   }
@@ -754,6 +786,6 @@ export async function buildIncomeExpense(corporationId, year, { basis = 'project
     properties,
     totals: consolidate(properties),
     categories: consolidateCategories(properties),
-    flags: flags(properties),
+    flags: flags(properties, { basis }),
   };
 }

@@ -386,6 +386,27 @@ describe('the rent tie-out', () => {
   // different figure the moment a gross lease or a base-rent correction is in play, and
   // quoting it there (as this did until the 2026-08-16 audit) printed three numbers where
   // the third was not the difference of the first two.
+  // ⚠ IT NAMES THE CAUSE THAT IS PRESENT, AND ONLY THAT ONE (George, 2026-08-17, on the
+  // redundancy). Three things can make the Rent row differ from `rentScheduled`; reciting all
+  // three whatever the property looks like sends a reader hunting for a gross lease that isn't
+  // there. Each is measured on the shape now.
+  it('explains the Rent row only by the causes actually in play', () => {
+    const schedule = Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [i + 1, { full: 1000, owed: 1000, abated: 0, credit: 0, kind: 'full', outsideTerm: false }])
+    );
+    // A gross lease and nothing else: the view counts the whole flat rent, the Rent row counts
+    // base alone, and `total_revenue` is deliberately wrong here so the flag fires at all.
+    const p = shapeProperty({
+      ...base,
+      totals: { total_revenue: 1, noi: 0 },
+      roll: [{ lease_id: 'l1', tenant_name: 'T', schedule, factor: 1, camTaxAnnual: 2400, roofAnnual: 0, gross: true }],
+    });
+    const [f] = flags([p]).filter((s) => s.includes('The Rent row above reads'));
+    expect(f).toContain('a gross lease');
+    expect(f).not.toContain('rent step');            // there is no scheduled step here
+    expect(f).not.toContain('base-rent correction');  // and no correction either
+  });
+
   it('quotes the scheduled rent, not the Rent row, when a gross lease makes them differ', () => {
     const schedule = Object.fromEntries(
       Array.from({ length: 12 }, (_, i) => [i + 1, { full: 1000, owed: 1000, abated: 0, credit: 0, kind: 'full', outsideTerm: false }])
@@ -585,6 +606,47 @@ describe('projected vs live', () => {
     } finally {
       await deleteEscalation(esc.id);
     }
+  });
+
+  // ⚠ THE FALSE ACCUSATION THIS ROUND NEARLY SHIPPED. `tenantStanding` reads `row.schedule` to
+  // decide what a tenant was billed and how far behind they are — so a projected roll would put
+  // a rent step nobody has been billed for into every tenant's arrears, and print it under "of
+  // which still uncollected at year end" on a sheet the landlord may well send them.
+  it('measures where each tenant stands on what was billed, never on the projection', async () => {
+    const proj = (await buildIncomeExpense('corp-1', Y)).properties[0];
+    const live = (await buildIncomeExpense('corp-1', Y, { basis: 'live' })).properties[0];
+    expect(proj.projectedAhead).toBeGreaterThan(0);   // there IS a step to get this wrong on
+    // Identical on both bases, because both are the contracted bill — the projection reaches
+    // this table through nothing at all.
+    expect(proj.standings.totals.billed).toBeCloseTo(live.standings.totals.billed, 2);
+    expect(proj.standings.totals.owed).toBeCloseTo(live.standings.totals.owed, 2);
+    // And it is genuinely less than the grid above it, by exactly the step.
+    expect(proj.standings.totals.billed).toBeCloseTo(proj.rent + proj.camTaxBilled + proj.roofBilled - proj.projectedAhead, 2);
+  });
+
+  // ⚠ A TAG SETTLES ITS MONTH AT WHATEVER ARRIVED, WITH NO CAP (ledger.js). So a lump tagged to
+  // a nearly-free month gives a scale factor in the thousands, and an uncapped split would print
+  // an invented six-figure CAM & tax against an equally invented negative rent — a month whose
+  // total is right and whose every row is nonsense.
+  it('never invents a component when more arrived than the month billed', () => {
+    // January bills $400 — $100 roof, $200 CAM & tax, $100 base — and a $5,000 cheque is tagged
+    // to it. Uncapped, the split would read CAM & tax $2,500 and roof $1,250 for a month billed
+    // $200 and $100.
+    const schedule = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, {
+      full: i === 0 ? 400 : 0, owed: i === 0 ? 400 : 0, abated: 0, credit: 0, kind: 'full', outsideTerm: i !== 0,
+    }]));
+    const all = billedRowsFromRoll([{
+      lease_id: 'l1', tenant_name: 'T', schedule, factor: 1, camTaxAnnual: 2400, roofAnnual: 1200,
+      payments: [{ amount: 5000, paid_date: `${Y}-01-05`, period_month: 1 }],
+    }], { collected: true });
+    // No component exceeds what that month actually billed…
+    expect(all.camTax[0].byMonth[0]).toBeCloseTo(200, 2);
+    expect(all.roof[0].byMonth[0]).toBeCloseTo(100, 2);
+    // …the unattributable excess lands on the remainder row rather than being spread…
+    expect(all.rent[0].byMonth[0]).toBeCloseTo(4700, 2);
+    // …and the cash still adds up to the cent, which is the invariant the cap must not break.
+    const total = ['rent', 'camTax', 'roof', 'charges', 'carried'].reduce((s, g) => s + all[g][0].total, 0);
+    expect(total).toBeCloseTo(5000, 2);
   });
 
   // George's own case, and the demo seed already is it: City Dental bills $9,150 a month, pays

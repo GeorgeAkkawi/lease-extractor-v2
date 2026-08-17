@@ -72,7 +72,10 @@ const WORDS = {
     lessCarried: 'Less brought forward and refunds collected',
     total: 'Total collected',
     trueUp: 'CAM & tax — tenants’ actual share for the year, less what they have paid toward it',
-    earned: 'Total earned',
+    // ⚠ NOT "Total earned" ON A CASH SHEET. This line is a hybrid by construction — cash in
+    // PLUS a reimbursement entitlement nobody has paid yet — and calling it what the accrual
+    // sheet calls it would put two different figures under one name across two workbooks.
+    earned: 'Total collected, plus the CAM & tax still to settle',
     monthMeans: 'money the Ledger says actually arrived that month — a blank month is one nothing came in on',
   },
 };
@@ -436,6 +439,14 @@ function addProperty(wb, p, year, used, basis) {
     pen.note(
       'A positive closing balance is money the tenant still owes; a negative one is money they are ahead by. It counts '
       + 'only the months that have come due, so a year still running does not report next month\'s rent as arrears. '
+      // ⚠ THE ONE FIGURE ON THIS SHEET THAT IS DELIBERATELY NOT THE GRID'S. `tenantStanding`
+      // measures what was BILLED; a rent step that has not taken effect has been billed to
+      // nobody, so counting it here would put it in a tenant's arrears on a sheet the landlord
+      // may well send them. The difference is stated rather than left to be spotted.
+      + (round2(p.projectedAhead || 0) > 0.005
+        ? `Billed here is what tenants have actually been billed, which is ${usd(p.projectedAhead)} less than the Money in `
+          + 'grid above: that grid projects the rent steps still to come, and nobody has been billed for those. '
+        : '')
       + '"Settled as" is what was decided about it: written off (which came off this year\'s income), carried forward '
       + 'into next January (which moved the receivable and not the income), refunded, left open — or square, meaning '
       + 'there was nothing to decide. Settle up on the Ledger row is where those choices are made.',

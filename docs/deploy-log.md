@@ -12,6 +12,70 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **Follow-up to the two-bases round: the redundant flag reduced to the cause
+  actually present, and four defects found reviewing it.** Cloudflare version
+  **`5cd75c19-4733-4921-ac96-7117b931e4f7`** (on top of `df15adfa`).
+
+  George: *"fix the redundancy and run bug fixes"*.
+
+  ### The redundancy
+
+  The rent-drift flag's `alsoRow` sentence recited all three ways the Rent row can differ from
+  `rentScheduled` — a not-yet-effective step, a gross lease's carve, a base-rent correction —
+  whatever the property actually looked like, so a landlord went hunting for a gross lease that
+  wasn't there. Each is now MEASURED on the shape (`projectedAhead`, `grossCarve`,
+  `rentCorrections`) and only the ones in play are named, each with its own figure.
+
+  ### Four defects, found reviewing what had just gone live
+
+  1. **⚠ THE PROJECTION REACHED "WHERE EACH TENANT STANDS", AND IT WAS A FALSE ACCUSATION.**
+     `tenantStanding` reads `row.schedule` to decide what a tenant was billed and how far behind
+     they are — so the projected roll put a rent step nobody has been billed for into every
+     tenant's `billed`, `owes`, `closing` and `receivable`, and printed it under **"of which
+     still uncollected at year end"** on a sheet the landlord may well send the tenant. The
+     standings now read `contractedRoll(roll)`, which swaps `schedule` back to the contracted
+     one; on every non-projecting path it is the identity. The note under the table states the
+     difference when there is one, so two figures called "billed" on one sheet cannot silently
+     disagree.
+
+  2. **⚠ AN OVER-TAGGED MONTH BLEW THE LIVE SPLIT APART.** A tag settles its month at whatever
+     arrived, with **no cap** (`ledger.js`) — so a lump cheque tagged to a nearly-free month
+     gave `received / owed` in the thousands, and the apportionment printed an invented
+     six-figure CAM & tax against an equally invented **negative** rent. The month's total was
+     right and every row was nonsense. The factor is now `Math.min(1, got / owedM)`: you cannot
+     have paid more CAM than you were billed, so the unattributable excess lands on the
+     remainder row. Pinned with a $400 month paid $5,000.
+
+  3. **`flags()` inferred the basis from `properties[0]`**, so a corporation with no properties
+     was told it held the projected copy whichever one it asked for — the one case with no shape
+     to ask. It now takes the package's basis and falls back to the shapes.
+
+  4. **"Total earned" over a cash bottom line.** On the live basis that row is a hybrid by
+     construction (cash in PLUS a reimbursement entitlement nobody has paid yet), and reusing
+     the accrual sheet's label put two different figures under one name across two workbooks.
+     It reads **"Total collected, plus the CAM & tax still to settle"**.
+
+  Also: `.basis-opt` gained `position: relative`, so the visually-hidden radio is positioned
+  against its own card rather than against whatever is positioned further up the modal.
+
+  ### Files
+
+  `src/lib/incomeExpense.js` · `src/lib/incomeExpenseExcel.js` · `src/App.css` ·
+  `src/lib/__tests__/incomeExpense.test.js`.
+
+  ### Verified
+
+  `npm test` — **1,970 passing, 186 files**. Three new: the standings identical on both bases and
+  short of the grid by exactly the step · a $400 month paid $5,000 keeping every component at
+  what was billed, the excess on rent, and the cash still tying to the cent · the drift flag
+  naming a gross lease and NOT naming a step or a correction that are not there. **Non-vacuity
+  proved** on both real defects by reverting each fix in turn — both went red, then green on
+  restore.
+
+  ### Now redundant
+
+  Nothing redundant.
+
 - **2026-08-17** — **Income and expenses gets two bases: Projected and Live — plus the Total
   column on the far right, and the bank tie-out sheet removed.** Cloudflare version
   **`df15adfa-4c28-40f4-9b4f-909363438013`** (on top of `1bd8ee7a`).
