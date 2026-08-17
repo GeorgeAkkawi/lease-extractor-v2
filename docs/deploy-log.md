@@ -12,6 +12,146 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **The Dental repair: $6,315.00 of real bank money put back on the books, two
+  bank lines re-linked to the payments they made, and the hole that lost them closed at its one
+  choke point.** Deleting a record an import created now hands its bank line back to "Money not
+  yet placed" instead of leaving it pointing at a corpse.
+  Cloudflare version **`81808394-178b-4681-aa5b-7d8cf394517b`** (on top of `c1262614`).
+
+  George: *"fix the data and make sure those issues dont happen again."*
+
+  ### WHAT THE DATA ACTUALLY WAS
+
+  Read out of production before touching anything. On the 31 Jul statement (import
+  `03ad0b00`), every tenant's 1–3 Jul deposit was tagged `period_month = 7` and every 31 Jul
+  deposit `period_month = 8` — the last-day-of-month deposits are the NEXT month's rent, paid in
+  advance. That fixed what the two orphaned D & D Dental lines were for:
+
+  | line | date | amount | was | state before |
+  |---|---|---|---|---|
+  | `347441b3` | 2 Jul | $6,315.00 | July rent (m7) | payment deleted; money re-recorded 13 Aug as a `system` row |
+  | `a497d13e` | 31 Jul | $6,315.00 | **August rent (m8)** | payment deleted; **never re-recorded at all** |
+
+  So it was **not** symmetrical. The July money was on the books wearing the wrong clothes; the
+  **August money was simply gone** — $6,315.00 that crossed the bank on 31 July, sitting in no
+  figure on any screen, with Dental's August reading unpaid.
+
+  ### THE REPAIR — two writes, both stated, neither destructive
+
+  **A · Adopt, don't duplicate.** Dental's month-7 payment `80c044b6` (created 13 Aug 17:29,
+  five minutes after the statement was imported at 17:24, `source:'system'`, `method:'check'`,
+  no date of its own) IS the 2 Jul deposit, re-recorded by hand. Rather than delete it and write
+  a new one, it was **adopted**: `paid_date` corrected 2026-08-13 → **2026-07-02**, `method` →
+  `other`, note → the bank line's own description, and `source`/`import_id`/`import_hash`
+  stamped from the line. Then line `347441b3`'s `ref_id` re-pointed at it. **No money moved** —
+  July was already settled. What came back is the provenance, and with it the 0088 protection: a
+  `system` row is re-pricable by `resyncYearBillingToEstimate`, an `import` row is not.
+
+  **B · Book the money that was missing.** A new payment for Dental's **August**: $6,315.00,
+  `paid_date 2026-07-31`, `period_month 8`, `source:'import'`, carrying import `03ad0b00` and
+  hash `v1-bbf482e1-72`; line `a497d13e` re-pointed at it. ⚠ **This one changes figures** —
+  Dental's August goes from unpaid to paid and Outstanding falls by $6,315.00. It is correct:
+  the bank line is the evidence, and the alternative was continuing to show a tenant in arrears
+  for money already in the account.
+
+  Both ran as single statements with a CTE, so neither could half-apply. FY 2026 is **not**
+  closed on Pershing Plaza, so nothing was locked. The before-state of all three rows is
+  captured below for reversal.
+
+  ### AFTER — the whole database, not just the one property
+
+  ```
+  lines anywhere pointing at a deleted row ............ 0   (was 2 · $12,630.00)
+  books rows on a ref-stamping import that no line claims  0
+  rent: bank showed $62,686.59 · Amlak recorded $98,916.18
+  difference $36,229.59 — EXACTLY the June "cannot be checked" figure, so residual = $0.00
+  ```
+
+  The tie-out now reports **no faults on Pershing Plaza** and one benign line: the $36,229.59 of
+  June money from the two 24 Jul imports, which kept no line-by-line record.
+
+  **AND THAT ONE IS DELIBERATELY LEFT ALONE.** `statement_imports.applied` holds a per-line
+  record of everything those imports wrote — hash, kind, amount, payment_id — so backfilling
+  `statement_lines` from it would be a few minutes' work and would turn "cannot be checked" into
+  a ✓. **It would also be a lie.** `applied` is books-side data written by the same import that
+  wrote the payments, so a tie-out built on it balances *by construction* and proves nothing —
+  the exact failure mode the first ⚠ at the top of `bankTieOut.js` exists to forbid. The only
+  honest way to check that money is to re-read the two PDFs (still in storage), which is an LLM
+  call and therefore costs money, so it waits for George's word.
+
+  ### THE PREVENTION — one choke point, `releaseStatementLine`
+
+  The mechanism: an import writes a payment and stamps the line's `ref_id` at it; something
+  deletes the payment; **nothing tells the line.** It goes on reading "recorded ✓" while pointing
+  at a row that no longer exists, so the money leaves the books with no trace anywhere that it
+  ever arrived, "Money not yet placed" stays empty because the line still counts as decided, and
+  the only surface that notices is the tie-out — which is exactly why it took weeks.
+
+  `releaseStatementLine(refKind, refId)` sets the line back to `unclassified` and clears the ref,
+  **before** the row is deleted. It is wired into all three destinations, which are the only
+  paths that can delete a record an import produced:
+
+  | function | ref kind | reached by |
+  |---|---|---|
+  | `deletePayment` | `payment` | the Ledger's one-click un-tick (`unmarkMonthPaid`), InvoicesPanel, `undoStatementImport` |
+  | `deleteExpenseLineItem` | `cam` | Cam / Tax / Roof rows — one table, one ref kind |
+  | `deleteOtherIncomeEntry` | `income` | the Other-income list |
+
+  **THE ORDER IS FORCED**, on the same reasoning as `placeUnplacedLine`'s. Released first, an
+  interruption leaves the money on the books *and* on the work list — visible twice, and anyone
+  can see it. Deleted first, it leaves money gone and a line insisting it is fine, which is
+  invisible and is the fault being fixed. A record no line points at matches nothing and costs
+  one no-op update; skipping it on a guess is how the hole got here.
+
+  The one raw `cam_line_items` delete that does NOT go through it is the contract-derived sweep
+  in `syncContractCamItems` — those rows carry a `contract_id` and never an `import_id`, so no
+  bank line can point at one. Commented in place so the next reader does not have to work it out.
+
+  **AND THE ROUND TRIP IS NOW LOSSLESS.** A released deposit lands back on "Money not yet placed"
+  with its real date, description and amount, and `placeUnplacedLine` — which has had a month
+  picker since 2026-08-16 — files it again writing `import_id`, `import_hash` and
+  `source:'import'` properly. So un-ticking a month no longer costs the provenance; it just moves
+  the deposit back to the work list. The Ledger's un-tick confirm now says so, and says it is the
+  better route than re-ticking the box: *"The deposit goes back to 'Money not yet placed' below,
+  keeping its real date and description — file it from there rather than re-ticking the box, and
+  it keeps its link to the statement."*
+
+  **Files.** `src/lib/api.js` (`releaseStatementLine`; `deletePayment` becomes async and calls it;
+  `deleteExpenseLineItem` and `deleteOtherIncomeEntry` likewise; the contract-sweep comment) ·
+  `src/pages/LedgerPage.js` (the un-tick confirm names where the money goes) ·
+  `src/lib/__tests__/statementImport.test.js`.
+
+  **Verified.** `npm test` — **1915 tests across 181 files**, up 1. The new test imports a
+  statement with two lines, deletes the payment one wrote and the expense line the other wrote,
+  and asserts each line comes back `unclassified` with its ref cleared, keeps its own `txn_date`
+  and `description`, appears in `listUnplacedLines`, and that releasing one does **not** touch the
+  other. It was confirmed to FAIL without the fix (`expected 'rent' to be 'unclassified'`) before
+  being kept — a test that passes either way would have been worse than none here. Against
+  production: 0 lines anywhere pointing at a deleted row, 0 unclaimed books rows, residual $0.00.
+  All three URLs 200.
+
+  **Reversal, if any of this needs undoing.** Before-state of the three rows:
+  - payment `80c044b6-31e4-4881-b3fd-a1f6f5b1af06` — `paid_date 2026-08-13`, `method 'check'`,
+    `note null`, `source 'system'`, `import_id null`, `import_hash null`
+  - line `347441b3-c53b-4147-ac28-fdb8b24837b3` — `ref_id 2dad82af-619b-4512-a0eb-0931cb206d19`
+  - line `a497d13e-c808-4704-a098-d9f8511cce40` — `ref_id 72e6a69c-f499-4067-a066-e9dbde88b8ba`
+
+  The payment created by repair B is `c5cef150-fd9d-4c0a-83d0-cc593c67e34b`; deleting it reverses
+  that half (and, from this deploy on, hands line `a497d13e` back to the work list on the way out).
+
+  **Now redundant:**
+  - **The tie-out's `missing` tier on this account** — nothing left for it to report. It stays,
+    because it is the check; it is simply quiet now, which is the point.
+  - **`unmarkMonthPaid`'s "recording it again dates the payment today" warning** — still true, but
+    now the second-best route rather than the only one. Reworded rather than cut.
+  - **`statement_imports.applied`** — with `statement_lines` shipped (0076) it is a second, thinner
+    record of the same event, kept only for `undoStatementImport`. Worth revisiting; NOT worth
+    reading as an audit trail (see above).
+
+  **Still George's call:** re-importing the two 24 Jul PDFs (`20260630-statements-1680-.pdf` and
+  `20260529-statements-1680-.pdf`, both still in storage) to give June a line-by-line record and
+  retire the $36,229.59 "cannot be checked". It costs an LLM read, so it needs his word.
+
 - **2026-08-17** — **ROUND C of the Ledger polish: the Key row comes out, the month pop-up gets the
   house style, "spread forward" says what it means, Post charge stops looking like a one-shot, and
   the bank tie-out stops netting two opposite faults into one meaningless number.** Plus a new

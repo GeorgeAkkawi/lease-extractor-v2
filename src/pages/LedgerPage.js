@@ -746,11 +746,16 @@ export default function LedgerPage() {
       title: `Take ${MONTHS[m - 1]} back for ${r.tenant_name}?`,
       message: `${tagged.length} payment${tagged.length === 1 ? '' : 's'} recorded against ${MONTHS[m - 1]} ${year}, totalling ${money(tagged.reduce((s, p) => s + (Number(p.amount) || 0), 0))}.`,
       implications: [
+        // ⚠ IT SAYS WHERE THE MONEY GOES, because since 2026-08-17 it goes somewhere. The
+        // deposit is un-decided rather than orphaned (`releaseStatementLine`), so it lands
+        // back on the panel below with its own date and description and can be re-filed
+        // against the right month — which is what "recording it again dates it today"
+        // exists to warn you off doing.
         imported.length > 0
-          ? `${imported.length === tagged.length ? 'This money' : `${imported.length} of these`} came from an imported bank statement. Removing it also takes it out of “Where your bank money went”, so that statement line reads as unaccounted for again.`
+          ? `${imported.length === tagged.length ? 'This money' : `${imported.length} of these`} came from an imported bank statement. The deposit goes back to “Money not yet placed” below, keeping its real date and description — file it from there rather than re-ticking the box, and it keeps its link to the statement.`
           : 'Every one of them is deleted — the month goes back to owing its full bill.',
         'Any charges or credits on this month stay. They are what was billed, not what was paid.',
-        'Recording it again dates the payment today, not when the money actually arrived.',
+        'Recording it again by ticking the box dates the payment today, not when the money actually arrived.',
       ],
       confirmLabel: `Take ${MONTHS[m - 1]} back`,
       tone: 'warn',

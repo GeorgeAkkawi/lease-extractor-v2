@@ -3520,6 +3520,9 @@ export const addTaxLineItem = (fields) => addExpenseLineItem({ ...fields, kind: 
 export const addRoofLineItem = (fields) => addExpenseLineItem({ ...fields, kind: 'roof' });
 
 async function deleteExpenseLineItem(id, propertyId, year, kind) {
+  // A bank line that produced this expense gets its decision back — see releaseStatementLine.
+  // `cam` is the ref kind for all three of cam/tax/roof: they are one table.
+  await releaseStatementLine('cam', id);
   await rows(supabase.from('cam_line_items').delete().eq('id', id));
   return syncTotalFor(propertyId, year, kind);
 }
@@ -3592,6 +3595,9 @@ export async function syncContractCamItems(propertyId, year) {
     }
   }
   // Remove auto rows whose contract no longer covers this year (term change / made one-time).
+  // ⚠ The only raw `cam_line_items` delete that does NOT go through `releaseStatementLine`,
+  // and it does not need to: these rows are derived from a `service_contracts` row and carry
+  // a `contract_id`, never an `import_id`, so no bank line can be pointing at one.
   for (const [cid, it] of autoByContract) {
     if (!coveringIds.has(cid)) { await rows(supabase.from('cam_line_items').delete().eq('id', it.id)); changed = true; }
   }
@@ -3709,7 +3715,46 @@ export const recordPayment = async (pay) =>
     owner_id: await ownerId(),
   }).select().single());
 
-export const deletePayment = (id) => rows(supabase.from('payments').delete().eq('id', id));
+// ⚠ DELETING A RECORD A BANK LINE PRODUCED MUST GIVE THE LINE ITS DECISION BACK (2026-08-17).
+//
+// This is the repair for the fault the tie-out found on Pershing Plaza: two D & D Dental
+// deposits of $6,315.00 crossed the bank on 2 and 31 July, the import wrote a payment for
+// each and stamped the line's `ref_id` at it — and then the payments were deleted (an
+// un-ticked month, an Undo). Nothing told the lines. Each went on saying "recorded ✓" while
+// pointing at a row that no longer existed, so:
+//   • the money vanished from the books with no trace anywhere that it had ever arrived
+//   • "Money not yet placed" stayed empty, because the line still counted as decided
+//   • only the tie-out noticed, weeks later, and only because it re-reads both sides
+//   • re-ticking the month wrote a `source:'system'` row — an app-priced figure standing in
+//     for a real cheque, which 0088 then treats as re-pricable
+//
+// So the line is UN-DECIDED first: back to `unclassified`, ref cleared, which puts the
+// deposit back on the "Money not yet placed" work list with its own date, description and
+// amount. `placeUnplacedLine` is the way back in and it writes `import_id`, `import_hash`
+// and `source:'import'` properly, so the round trip is lossless — un-tick a month, and the
+// deposit is waiting to be filed against the right one.
+//
+// ⚠ THE ORDER IS FORCED, and it is the same reasoning as `placeUnplacedLine`'s. Released
+// first, an interruption leaves the money on the books AND on the work list — visible twice,
+// which anyone can see and fix. Deleted first, it leaves money gone and a line insisting it
+// is fine, which is invisible and is precisely the fault being fixed here.
+//
+// A record no line points at matches nothing and costs one no-op update. It is not worth a
+// read to find that out, and skipping it on a guess is how the hole got here.
+async function releaseStatementLine(refKind, refId) {
+  if (!refId) return;
+  await rows(
+    supabase.from('statement_lines')
+      .update({ disposition: 'unclassified', ref_kind: null, ref_id: null })
+      .eq('ref_kind', refKind)
+      .eq('ref_id', refId)
+  );
+}
+
+export async function deletePayment(id) {
+  await releaseStatementLine('payment', id);
+  return rows(supabase.from('payments').delete().eq('id', id));
+}
 
 // Re-file a payment onto a different month — or onto none at all. Until 2026-08-13 the ONLY
 // correction was delete-and-retype, which loses the paid_date, the note and the import
@@ -6640,8 +6685,10 @@ export async function addOtherIncomeEntry(entry) {
   );
 }
 
-export const deleteOtherIncomeEntry = (id) =>
-  rows(supabase.from('other_income').delete().eq('id', id));
+export async function deleteOtherIncomeEntry(id) {
+  await releaseStatementLine('income', id);
+  return rows(supabase.from('other_income').delete().eq('id', id));
+}
 
 export const setOtherIncomeCategory = (id, category) =>
   one(supabase.from('other_income').update({ category: category || 'other' }).eq('id', id).select().single());

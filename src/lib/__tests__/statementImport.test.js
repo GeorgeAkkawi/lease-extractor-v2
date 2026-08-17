@@ -17,6 +17,7 @@ import {
   getExpenseRecord, listCamLineItems, listRoofLineItems, deleteRoofLineItem,
   listPayments, deletePayment,
   createInvoice, listInvoices, getPropertyMonthlyRoll,
+  listStatementLinesForYear, listUnplacedLines, deleteCamLineItem,
 } from '../api';
 import { matchStatement, lineHash } from '../statementMatch';
 import { allocatePayments } from '../ledger';
@@ -300,6 +301,57 @@ describe('statement import — account-hinted rule learning', () => {
     const still = (await listImportRules()).find((r) => r.pattern === 'ZZHINT3');
     expect(still).toBeTruthy(); // hint-only refresh is intentionally lossy on undo — the rule stays
     await deleteImportRule(still.id);
+  });
+
+  // ⚠ THE HOLE THE TIE-OUT FOUND ON PERSHING PLAZA, closed 2026-08-17. Deleting a payment an
+  // import created left the bank line still saying "recorded ✓" and still pointing at a row
+  // that no longer existed — so real money left the books with no trace anywhere that it had
+  // ever arrived, "Money not yet placed" stayed empty because the line counted as decided,
+  // and only the tie-out noticed, weeks later. Two D & D Dental deposits of $6,315.00 went
+  // that way, and the months were then re-recorded as app-priced `system` rows.
+  //
+  // The deposit now goes BACK on the work list, keeping its own date and description, where
+  // placeUnplacedLine can re-file it with its import provenance intact.
+  it('deleting a record an import created puts its bank line back on the work list', async () => {
+    const res = await applyStatementImport({
+      propertyId: 'prop-2', year: Y, fileName: 'release.csv',
+      entries: [
+        { type: 'payment', lease_id: 'lease-3', property_id: 'prop-2', year: Y, amount: 777, date: `${Y}-05-02`, description: 'ACH FROM NORTHWIND', period_month: 5, reconInvoiceId: null, hash: 'h-rel-1' },
+        { type: 'cam', property_id: 'prop-2', year: Y, amount: 321, label: 'Snow removal', date: `${Y}-05-03`, description: 'ACME SNOW', hash: 'h-rel-2' },
+      ],
+      lines: [
+        { hash: 'h-rel-1', date: `${Y}-05-02`, description: 'ACH FROM NORTHWIND', amount: 777, direction: 'in', year: Y, disposition: 'rent' },
+        { hash: 'h-rel-2', date: `${Y}-05-03`, description: 'ACME SNOW', amount: 321, direction: 'out', year: Y, disposition: 'expense' },
+      ],
+    });
+    const lineFor = async (hash) => (await listStatementLinesForYear('prop-2', Y)).find((l) => l.line_hash === hash);
+    // Both lines start decided and pointing at the row they wrote.
+    expect((await lineFor('h-rel-1')).disposition).toBe('rent');
+    expect((await lineFor('h-rel-1')).ref_id).toBeTruthy();
+    expect((await lineFor('h-rel-2')).ref_kind).toBe('cam');
+
+    const inv = (await listInvoices('lease-3')).find((i) => Number(i.year) === Y && i.status !== 'void');
+    const pay = (await listPayments(inv.id)).find((p) => p.import_hash === 'h-rel-1');
+    await deletePayment(pay.id);
+
+    const released = await lineFor('h-rel-1');
+    expect(released.disposition).toBe('unclassified');
+    expect(released.ref_id).toBeNull();
+    expect(released.ref_kind).toBeNull();
+    // …and it keeps the real date and description, so it can be re-filed rather than retyped.
+    expect(released.txn_date).toBe(`${Y}-05-02`);
+    expect(released.description).toBe('ACH FROM NORTHWIND');
+    // It is on the work list, not merely un-decided in the database.
+    expect((await listUnplacedLines('prop-2', Y)).some((l) => l.line_hash === 'h-rel-1')).toBe(true);
+    // The OTHER line is untouched — releasing is per-record, never per-import.
+    expect((await lineFor('h-rel-2')).disposition).toBe('expense');
+
+    // The same rule on the expense side.
+    const camRow = (await listCamLineItems('prop-2', Y)).find((c) => c.import_hash === 'h-rel-2' || c.label === 'Snow removal');
+    await deleteCamLineItem(camRow.id, 'prop-2', Y);
+    expect((await lineFor('h-rel-2')).disposition).toBe('unclassified');
+
+    await undoStatementImport(res.import);
   });
 
   it('saveImportRule 23505 path updates the hint in place', async () => {
