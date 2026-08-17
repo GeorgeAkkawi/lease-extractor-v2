@@ -5,7 +5,9 @@ import { settleBillingChange } from '../lib/invalidate';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
+import InlineEdit from './InlineEdit';
 import { useOptimisticRemove } from './useOptimisticRemove';
+import { useExpenseLineEdit } from './useExpenseLineEdit';
 
 // Roof costs, itemized the way property taxes are (0074). A roof is replaced once and
 // repaired several times, and one accumulating figure hid which payment was which — the
@@ -101,6 +103,17 @@ export default function RoofSection({ propId, year, expense }) {
   });
   const undoMut = useMutation({ mutationFn: (p) => p.undo(), onSuccess: invalidate });
 
+  // Naming which repair this was, or the day it cleared. Neither figure is billed — no
+  // carryThrough(), unlike every other write here. See updateExpenseLineItem.
+  const editLine = useExpenseLineEdit({
+    invalidate,
+    setSaved,
+    describe: ({ item, field, value }) =>
+      field === 'paid_date'
+        ? (value ? `${item.label} dated ${fmtShortDate(value)}` : `date cleared on ${item.label}`)
+        : `renamed ${item.label} → ${value}`,
+  });
+
   const total = items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
 
   return (
@@ -117,12 +130,24 @@ export default function RoofSection({ propId, year, expense }) {
       ) : (
         items.map((it, i) => (
           <div className={`cam-row${i === items.length - 1 ? ' last' : ''}`} key={it.id}>
-            <div>
-              {it.label}
-              {it.import_id && <span className="badge info" style={{ marginLeft: 8 }} title="Recorded by a bank-statement import — ✕ removes just this line; ↩ Undo on the import reverses the whole statement">imported</span>}
+            <div className="cam-name">
+              <InlineEdit
+                value={it.label} maxLength={80}
+                title="Rename this line — which repair or replacement it was."
+                onCommit={(v) => editLine.mutate({ item: it, field: 'label', value: v })}
+              />
+              {it.import_id && <span className="badge info" title="Recorded by a bank-statement import — ✕ removes just this line; ↩ Undo on the import reverses the whole statement">imported</span>}
             </div>
             <div className="num">{money(it.amount)}</div>
-            <div className="num muted" style={{ fontSize: 12 }} title={it.paid_date ? undefined : 'No date on file — entered by hand rather than read from a statement'}>{fmtShortDate(it.paid_date)}</div>
+            <div className="num">
+              <InlineEdit
+                type="date" className="cam-date" placeholder="＋ date"
+                value={it.paid_date || ''}
+                display={it.paid_date ? fmtShortDate(it.paid_date) : null}
+                title="The day it was paid. It decides which month this cost falls in on the income-and-expenses sheet — it never changes what a tenant is billed."
+                onCommit={(v) => editLine.mutate({ item: it, field: 'paid_date', value: v })}
+              />
+            </div>
             {/* Every roof line is editable again: capitalizing was removed 2026-08-12 and
                 the amortized rows it derived became ordinary lines. Their `asset_id` stays
                 in the database — the FK cascades from fixed_assets, so clearing it would
@@ -132,7 +157,7 @@ export default function RoofSection({ propId, year, expense }) {
         ))
       )}
 
-      <MutationError of={[add, remove, saveFlat, undoMut]} />
+      <MutationError of={[add, remove, saveFlat, undoMut, editLine]} />
       {saved && (
         <div style={{ marginTop: 8 }}>
           <UndoStrip

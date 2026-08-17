@@ -133,6 +133,69 @@ export function priorRentBefore(lease, escalations, date) {
   return earlier.length ? Number(earlier[0].new_base_rent) : base;
 }
 
+// ─── Two rent steps on one day ───────────────────────────────────────────────────────
+//
+// George, 2026-08-17, on the beauty and barber shop: *"see how it says two values for june
+// 2025? if you look at the 3rd addendumn … it read the monthly value and the yearly value
+// as two different numbers which they are becaue they are off by 4 cents. if this happens
+// it should flag and tell the user that number is off and have them choose what theyd like
+// to do just for the sake of the software not flagging it every time."*
+//
+// The real rows: 2025-06-01 carries **$31,800.96** (read 24 Jul) and **$31,801.00** (written
+// by applyAddendum on 12 Aug from the fourth addendum). The document says both — *"$31,801.00
+// annually or $2,650.08 monthly"* — and $2,650.08 × 12 = $31,800.96. It disagrees with itself.
+//
+// ⚠ DELIBERATELY DETECTED ON READ, NOT DEDUPED ON INSERT. Two steps on one date are
+// sometimes a real disagreement the landlord has to see, and silently dropping one picks a
+// winner without asking — the wrong pick moves the rent. So: find it, say what it is, let
+// them choose, and remember the choice.
+//
+// `kind` is the whole diagnosis, and the test for it is not a tolerance — it is whether the
+// two figures are the SAME MONTHLY RENT. $31,800.96 / 12 and $31,801.00 / 12 both round to
+// $2,650.08, which is exactly why the screen can say "these are the same rent, rounded two
+// ways" rather than "these are four cents apart" and leave the landlord to work out which.
+// A pair that genuinely disagrees ($31,800 vs $31,801 → $2,650.00 vs $2,650.08) comes back
+// as 'conflict' and gets no such reassurance.
+//
+// @param escalations  rows with {id, effective_date, new_base_rent}
+// @param dismissed    a Set of alert keys the landlord answered "keep both" to (see
+//                     rentDupKey) — pass none and nothing is filtered
+// @param leaseId      only needed to build those keys
+// @returns [{ date, rows (highest first), spread, monthly, kind }]
+export function duplicateRentSteps(escalations, { leaseId = null, dismissed = null } = {}) {
+  const byDate = new Map();
+  for (const e of escalations || []) {
+    if (!e?.effective_date || e.new_base_rent == null) continue;
+    const k = String(e.effective_date);
+    if (!byDate.has(k)) byDate.set(k, []);
+    byDate.get(k).push(e);
+  }
+  const out = [];
+  for (const [date, list] of byDate) {
+    if (list.length < 2) continue;
+    if (dismissed?.has(rentDupKey(leaseId, date))) continue;
+    const amounts = list.map((e) => Number(e.new_base_rent) || 0);
+    const hi = Math.max(...amounts);
+    const lo = Math.min(...amounts);
+    // Same monthly rent to the cent → the annual figures differ only in the rounding.
+    const sameMonthly = hi / 12 - lo / 12 <= 0.005;
+    out.push({
+      date,
+      rows: [...list].sort((a, b) => (Number(b.new_base_rent) || 0) - (Number(a.new_base_rent) || 0)),
+      spread: round2(hi - lo),
+      monthly: sameMonthly ? round2(hi / 12) : null,
+      kind: sameMonthly ? 'rounding' : 'conflict',
+    });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// "Keep both" is remembered in `alert_states` (migration 0028) rather than in a column of
+// its own — it is a keyed decision, which is precisely what that table is, and InsuranceVault
+// already uses it the same way. Built here so the lease page's folded summary and the editor
+// that offers the buttons can never key it two different ways.
+export const rentDupKey = (leaseId, date) => `rent_dup:${leaseId}:${date}`;
+
 // Parse a date-only string (yyyy-mm-dd) at LOCAL noon so comparisons don't shift a
 // day in timezones behind UTC — matching src/lib/format.js + src/lib/leaseTerm.js.
 function parseDate(d) {

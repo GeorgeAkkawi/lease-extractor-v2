@@ -12,6 +12,216 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **Choosing something stops looking like a browser; an expense line's name
+  and date paid become editable for the first time; and the beauty and barber shop's renewal
+  tab stops printing three wrong things at once.** Two rent steps on one day are now flagged,
+  explained and answerable — with "keep both" remembered so it asks once.
+  Cloudflare version **`b0e0be5f-d04e-415f-b793-59469749266e`** (on top of `81808394`).
+
+  George, in one message: *"i dont like the selection design for things in most places in this
+  software like slecting dates or … recording something"* (clarified: **inside the pop-up you
+  get when you double-click a month**) · *"formatting on expense entry is way too cluttered"* ·
+  *"theres no way to edit date paid or the names of the expense components"* · *"in the renewal
+  options drop down in a specific lease i cant change the notice by deadline"* · *"see how it
+  says two values for june 2025? … off by 4 cents … it should flag and tell the user that number
+  is off and have them choose what theyd like to do just for the sake of the software not
+  flagging it every time"* · *"what is the new rent number in the renewal option referring too
+  (19,386)? i think that renewal option tab is just way off in general."*
+
+  ### WHAT WAS ACTUALLY ON THAT LEASE
+
+  Read out of production first, not guessed. `beauty and barber shop`, `1abd522d` — base rent
+  **$31,801**, term **2004-01-01 → 2030-05-31**.
+
+  **The four cents.** The fourth addendum says, verbatim: *"the base rent for the Option Period
+  of 6/1/2025-5/31/2030 will be **$31,801.00 annually or $2,650.08 monthly**."* And
+  $2,650.08 × 12 = **$31,800.96**. The document disagrees with itself. One read (24 Jul) took the
+  monthly figure and annualized it; `applyAddendum` (12 Aug) took the annual one — and it inserts
+  rent steps **without ever looking at what is already on that date** (`api.js:3042`). Two rows,
+  same date, four cents apart.
+
+  ⚠ The money was right **by luck**: both rows tie at `maxT` inside `monthlyBases`, so it falls
+  through to `lease.base_rent`. Nothing else in the codebase expects two steps on one date.
+
+  **The renewal option was wrong three separate ways.** Stored: `First Option to Renew` · 60
+  months · notice by 2008-09-01 · new rent $19,386 · status **applied** · `applied_at` 2008-09-01.
+
+  | what the row said | what was true |
+  |---|---|
+  | `New rent $19,386` | the rent that option set **in 2009** — there is a `rent_escalations` row for exactly $19,386 effective 2009-01-01 — printed with no tense beside a lease paying $31,801 today |
+  | `Covers Jun 1, 2025 → May 31, 2030` | **the fourth addendum's period, on an option applied in 2008.** `optionWindows` walks applied options *backwards* from `lease_termination_date`, assuming the applied chain is what reached that end. Here two ADDENDUMS carried the term there, seventeen years later. The arithmetic was right and the premise was false |
+  | `Notice by` — plain text | editable only while `status === 'pending'`, and this lease's one option is `applied`. That is exactly George's item 4 |
+
+  ### 1 · CHOOSING SOMETHING (`App.css`)
+
+  The two `<select>`s in the month pop-up carried **no class at all** — raw browser widgets in a
+  hand-drawn ivory card — and every date field in the app wore OS chrome, including the system
+  blue that paints when you tab across DD / MM / YYYY.
+
+  A block keyed off the ELEMENT, so a control added tomorrow is covered without anyone
+  remembering a class name. `appearance:none`, a hand-drawn chevron as an inline SVG, `--ui`
+  face, the same `--accent-soft` focus ring `.text-input` already uses; the date segments'
+  focus colour, tabular figures, a brass-tinted picker glyph, no spin buttons; and `::selection`
+  across the whole app. Three bare selects in `MonthDetailPanel` got `className="text-input"`.
+
+  ⚠ **SPLIT BY SPECIFICITY, AND THAT IS THE LOAD-BEARING PART.** The BOX — fill, border, radius
+  — sits on a bare `select` at **(0,0,1)**, *below* every class in the app, and the date fields
+  are given **no box at all**. Not timidity: `.cam-input` is deliberately borderless on
+  `--panel-2` inside a table, `.mp-form select` is `--panel` against a `--panel-2` card,
+  `.field-input` is white. Each was chosen against the surface it sits on, and a blanket fill
+  here would have quietly repainted forty controls that were already right — a redesign nobody
+  asked for, hidden inside one that was. Only the part no class *could* set is taken at (0,1,1).
+  Four `background:` shorthands became `background-color:` (`.text-input`, `.cam-input`,
+  `.year-sel select`, `.cam-input:hover/:focus`) because the shorthand resets `background-image`
+  and would have wiped the chevron. The opened menu and the calendar popup are still OS-drawn —
+  the accepted trade of staying native, which buys real keyboard and screen-reader behaviour.
+
+  ### 2 · THE EXPENSE ADD FORM (`CamSection.js`)
+
+  It borrowed `.cam-row`'s four data columns and then stacked a date field **and two bare
+  browser checkboxes** inside the 132px column meant for a single date. The four entry fields
+  keep those columns — lining up with the table they feed — and the two switches moved to a line
+  of their own as `.opt-toggle` pills, where the %-of-rent read-out sits beside them instead of
+  floating below the form. The second section head dropped its repeated `Annual cost` / `Date
+  paid` caps, which sat thirty pixels under the identical first set.
+
+  **Tax and Roof were left alone here** — reading them showed their add forms are already one
+  clean line. The clutter was CAM's only.
+
+  ### 3 · EDITING A NAME AND A DATE PAID — the write that never existed
+
+  `cam_line_items` had an **add and a delete and nothing between them**, so fixing a typo meant
+  deleting a real expense row and retyping it; on an imported line that also threw away the bank
+  provenance. New `updateExpenseLineItem` (`api.js`), new `InlineEdit` (a table-cell click-to-edit
+  wearing `.notice-cell`'s dashed underline — the app's existing "this cell is editable" idiom),
+  new `useExpenseLineEdit` so the write is **one implementation across all three sections**
+  rather than a fourth triplet of copies.
+
+  ⚠ **NO CARRY-THROUGH, DELIBERATELY, AND THAT IS WHY ONLY THESE TWO FIELDS ARE ACCEPTED.**
+  Walked both chains: `label` → bucket key → tax category → `recoverabilityRows` → the "What it
+  cost you" table and the Income-and-expenses workbook. `paid_date` → `monthOfYearIndex` → which
+  month column (or **No date**) a cost files under in that same workbook. **Both stop at
+  reporting.** `syncTotalFor` sums `amount` under `billable is not false` and reads neither
+  field, so neither reaches `cam_total`, `v_tenant_shares`, a share, or a stored invoice. Firing
+  `resyncPropertyBilling` because someone fixed a spelling would be a write nobody asked for.
+  `amount` is refused here — that one *does* move a bill. Pinned by two tests that assert
+  `cam_total` is unchanged.
+
+  ⚠ **A CONTRACT-DERIVED LINE IS NOT RENAMABLE.** `syncContractCamItems` rewrites its `label`
+  from the contract every time that fiscal year is opened, so a rename would look accepted and be
+  gone on the next page load. It renders `.inline-edit-static` and says to rename it in Contracts.
+  Its **date** stays editable — a contract states the cost, never the day it cleared.
+
+  A rename says what it moved: *"renamed Snow removal → Parking lot sweeping — now files under
+  Repairs and maintenance"*, with Undo. A landlord who renames a bucket has just re-filed that
+  money under a different tax line, and finding that out from the workbook three weeks later is
+  the version of this that goes wrong.
+
+  ### 4 · NOTICE BY, ON A SETTLED OPTION
+
+  Clickable at every status. An applied or declined option's deadline is still a record of what
+  the lease said, and a mis-read shouldn't need the option un-applied to correct. It opens in
+  **date mode only** (`NoticeByField` gained `dateOnly`) — there is no live period left to count
+  a duration back from, and offering "6 months before" would offer a rule `resolveNotice` resolves
+  to blanks, silently clearing the date on save. The chooser is **hidden, not disabled**: a
+  control you can see and can't use is a question the screen refuses to answer.
+
+  ### 5 · TWO RENT STEPS ON ONE DAY — flag, choose, remember
+
+  New pure `duplicateRentSteps` + `rentDupKey` (`escalations.js`), read by the schedule editor
+  **and** by the lease page's folded-panel summary, so a shut panel still says a step needs
+  deciding.
+
+  ⚠ **DETECTED ON READ, NOT DEDUPED ON INSERT.** Two steps on one date are sometimes a real
+  disagreement the landlord has to see; silently dropping one picks a winner without asking, and
+  the wrong pick moves the rent.
+
+  **`kind` is the diagnosis, and the test for it is not a tolerance.** It is whether the two
+  figures are the SAME MONTHLY RENT: $31,800.96 / 12 and $31,801.00 / 12 both round to $2,650.08.
+  That is why the screen can say *"they are the same rent: both work out to $2,650.08 a month"*
+  instead of *"four cents apart"* and leaving the landlord to go back to the document. A pair that
+  genuinely disagrees ($2,650.00 vs $2,650.08) comes back `conflict` and gets no such reassurance.
+
+  Three answers. **Keep $X** deletes the others through the existing confirm and the existing
+  `backfillLeaseToToday` + `resyncLeaseBilling` — dropping a step can change the rent in effect
+  today, and the stored invoice does not rebuild itself. **Keep both** writes
+  `alert_states { alert_key: 'rent_dup:<leaseId>:<date>', dismissed: true }` and it never asks
+  again. **No migration** — 0028 is a generic keyed decision store and `InsuranceVault` already
+  uses it this way; the demo mock auto-creates unknown tables (`mockClient.js:262`), so nothing
+  to seed. Server-side, so the answer follows George to another browser.
+
+  ### 6 · THE RENEWAL TAB
+
+  **(a) `optionWindows` gained a premise check.** An applied option cannot open a period that
+  begins long after it was applied. When `applied_at` is present and the backwards walk puts
+  `start` past it by more than `APPLIED_WINDOW_GRACE_MONTHS` (24 — generous on purpose; the real
+  case is off by seventeen years and a false positive would blank a correct period), the chain is
+  contradicted and the walk **stops**, dating nothing — the same silence a declined option gets.
+  `break`, not `continue`: everything earlier in the chain is equally unknowable. A row with no
+  `applied_at` (every pre-0068 row and the whole existing test corpus) is untouched. The row now
+  shows `60 mo (5 yr)` plus *"dates unknown — the term has been extended since"*.
+
+  **(b) `renewalRent` gained a tense for applied options** — `$19,386` · *"took effect January 1,
+  2009 · today $31,801"*. The date is **the real `rent_escalations` row carrying that figure**,
+  out of the `escalations` array the component is already handed — a lookup, not an inference.
+  No match → *"the rent it set · today $31,801"*, without pretending to a date.
+
+  **(c)** The Decision cell stopped repeating the Status cell's "Applied" and now shows only the
+  date, which was the part not already on screen.
+
+  ### FILES
+
+  `src/App.css` · `src/lib/api.js` (`updateExpenseLineItem`) · `src/lib/escalations.js`
+  (`duplicateRentSteps`, `rentDupKey`) · `src/lib/renewals.js` (`APPLIED_WINDOW_GRACE_MONTHS`,
+  the `optionWindows` premise check) · `src/components/InlineEdit.js` **(new)** ·
+  `src/components/useExpenseLineEdit.js` **(new)** · `CamSection.js` · `TaxSection.js` ·
+  `RoofSection.js` · `EscalationScheduleEditor.js` · `RenewalOptionsEditor.js` ·
+  `NoticeByField.js` · `MonthDetailPanel.js` · `src/pages/LeaseDetailPage.js`.
+  Tests: `duplicateRentSteps.test.js` **(new)** · `appliedRenewalRow.test.js` **(new)** ·
+  `duplicateStepFlag.test.js` **(new)** · `expenseLineEdit.test.js` **(new)** ·
+  `optionWindows.test.js` (+4).
+
+  ### VERIFIED
+
+  **1950 tests / 185 files pass** (was 1915 / 181). The `optionWindows` guard was **proven
+  non-vacuous**: temporarily neutered to `if (false) break`, four tests failed — including the
+  component one asserting `June 1, 2025 → May 31, 2030` is absent — then restored and re-run.
+  The contract-rename test initially pointed at `prop-1`, which seeds **no** contract-derived CAM
+  lines, so it was silently passing on a `return`; re-pointed at `prop-2` where they actually
+  live, and it then caught a real selector bug (two `.inline-edit`s per row).
+  The CSS was checked by rendering a probe page against the **built** stylesheet: chevrons,
+  brass picker glyph, tabular figures, the toggle pills, the duplicate flag and the pop-up's
+  selects all correct, and the `.mp-form` selects still `--panel` on their `--panel-2` card.
+  `npm run build` · `npx wrangler deploy` · all three URLs 200.
+
+  ### NOW REDUNDANT
+
+  - **The two stacked raw checkboxes in the CAM date column** — replaced by `.opt-toggle`. Gone.
+  - **`title="No date on file — entered by hand…"`** on all three sections' date cells — the cell
+    is now clickable, which answers the question the tooltip was explaining. Gone.
+  - **The inline `style={{ padding: '2px 4px' }}` on the tax-category select** — an inline padding
+    shorthand beats every stylesheet rule including the one reserving room for the chevron. Moved
+    to `.cat-select`. Gone.
+  - **`EditField`** (`src/components/EditField.js`) is now the *older* of two click-to-edit
+    controls. It is right for the lease page's labelled field grid and wrong for a table cell, so
+    `InlineEdit` is not a duplicate today — but two of these will drift. **Flagged, not touched.**
+  - **The five-bullet `<ul>` under the renewal options table** — bullet 5 ("if an option's rent
+    reads **Not listed**…") and the `Covers` column's `title=` now explain things the row says
+    itself. **Proposed; George's call.**
+
+  ### FLAGGED TO GEORGE
+
+  - **`applyAddendum` still writes duplicates.** §5 catches them on read and lets him resolve
+    them; it does not stop the next addendum creating one. Checking on insert is a separate,
+    riskier change.
+  - **His June 2025 pair is waiting on the lease page** — one click on `Keep $31,801.00` settles
+    it. Deliberately not resolved from here: which figure is right is his call, and the whole
+    point of the round was to ask rather than pick.
+  - Carried forward: the statement import calls no `resyncPropertyBilling` · `TenantStatement` is
+    pinned to the calendar year · a tagged overpayment creates no `credit` · two hand-rolled
+    `.panel-toggle` copies on `HistoryPage.js` · re-importing the two 24 Jul PDFs to retire the
+    $36,229.59 "cannot be checked" tie-out finding (costs an LLM read — **needs his OK**).
+
 - **2026-08-17** — **The Dental repair: $6,315.00 of real bank money put back on the books, two
   bank lines re-linked to the payments they made, and the hole that lost them closed at its one
   choke point.** Deleting a record an import created now hands its bank line back to "Money not

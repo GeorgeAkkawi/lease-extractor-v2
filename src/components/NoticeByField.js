@@ -17,9 +17,15 @@ import { leadAsUnits } from '../lib/notifyPrefs';
 // dialog's deadline follow the term while it's being typed, with no effect to keep in
 // sync — and it means this one control can serve both the dialog and the inline row on
 // the options table without the two drifting apart.
-export default function NoticeByField({ win, draft, onChange, autoFocus, defaultDays = null }) {
+// `dateOnly` is for an option that is already applied or declined (2026-08-17). Its
+// deadline is still correctable — it's a record of what the lease said — but there is no
+// live period left to count a duration back from, so offering "6 months before" would
+// offer a rule that resolves to nothing (resolveNotice returns blanks) and silently clear
+// the date. The mode select is hidden rather than disabled: a control you can see and
+// can't use is a question the screen refuses to answer.
+export default function NoticeByField({ win, draft, onChange, autoFocus, defaultDays = null, dateOnly = false }) {
   const set = (patch) => onChange({ ...draft, ...patch });
-  const isDate = draft.mode === 'date';
+  const isDate = dateOnly || draft.mode === 'date';
   const anchor = noticeAnchor(win);
   const { notice_by_date: resolved } = resolveNotice(draft, win);
   // Where the figure in the box came from, when it came from the owner's Settings rather
@@ -38,12 +44,14 @@ export default function NoticeByField({ win, draft, onChange, autoFocus, default
             aria-label="How far ahead notice is due" autoFocus={autoFocus}
             value={draft.n} onChange={(e) => set({ n: e.target.value })} />
         )}
-        <select className="text-input" aria-label="How the notice deadline is stated"
-          value={draft.mode} onChange={(e) => set({ mode: e.target.value })}>
-          <option value="months">months before</option>
-          <option value="days">days before</option>
-          <option value="date">on a set date</option>
-        </select>
+        {!dateOnly && (
+          <select className="text-input" aria-label="How the notice deadline is stated"
+            value={draft.mode} onChange={(e) => set({ mode: e.target.value })}>
+            <option value="months">months before</option>
+            <option value="days">days before</option>
+            <option value="date">on a set date</option>
+          </select>
+        )}
       </div>
 
       {/* The arithmetic, shown rather than asked for — including WHAT it counts back

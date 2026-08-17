@@ -34,6 +34,10 @@ export function monthsBetween(fromIso, toIso) {
 // lease has since been extended past.
 export const STALE_NOTICE_MONTHS = 18;
 
+// How far after it was applied an option's own period may still begin before the
+// backwards walk in optionWindows is treated as contradicted. See the note there.
+export const APPLIED_WINDOW_GRACE_MONTHS = 24;
+
 // Is a PENDING renewal option lapsed, and why? Two ways:
 //
 //   'term_ended'    — the term it would have extended has already ended.
@@ -137,10 +141,29 @@ function addDays(iso, n) {
 // for years as if it were still ahead. Applied options are walked BACKWARDS from the
 // committed end instead, most recent first: the same arithmetic in reverse.
 //
-// Two deliberate silences. A DECLINED option gets no window: nothing will ever cover
-// it, and dating a period that won't happen is worse than saying nothing. And an option
+// THREE deliberate silences. A DECLINED option gets no window: nothing will ever cover
+// it, and dating a period that won't happen is worse than saying nothing. An option
 // with no stated length stops its chain — everything after it is unknowable, so we
 // return what we know and no more rather than guessing a boundary.
+//
+// And the third, added 2026-08-17 — THE BACKWARDS WALK'S PREMISE CAN BE FALSE.
+// It assumes the applied chain is what carried the term to where it now ends. On the
+// beauty and barber shop lease it is not: the term reached 2030-05-31 through two
+// ADDENDUM extensions, so walking 60 months back from there dated a 2008 option as
+// covering **Jun 1, 2025 → May 31, 2030** — the fourth addendum's period, printed on an
+// option exercised seventeen years earlier. The arithmetic was right and the premise was
+// wrong, which is the worst kind of wrong because nothing looks broken.
+//
+// The check needs no extra data: an option cannot open a period that begins long after
+// it was applied. `applied_at` is on the row. When the computed start runs past it by
+// more than the grace below, the chain is contradicted and we stop — the row falls back
+// to its stated length, and the screen says the term has moved since. An option with no
+// `applied_at` (every pre-0068 row, and the whole test corpus) is untouched.
+//
+// The grace is generous on purpose. A renewal is applied when the tenant gives notice,
+// which can be a year or more before the period it buys; the case this exists for is off
+// by SEVENTEEN years, so there is nothing to gain from a tight bound and a false positive
+// would silently blank a correct period.
 //
 // @param ordered  the options in the order they'd be exercised (sort with cmpRenewal —
 //                 imported here it would close a cycle through leaseTerm → abatement).
@@ -158,7 +181,12 @@ export function optionWindows(ordered = [], termEnd) {
     if (!months) break;
     const prevEnd = addMonths(back, -months);
     if (!prevEnd) break;
-    out[applied[i].id] = { start: addDays(prevEnd, 1), end: back };
+    const start = addDays(prevEnd, 1);
+    // The premise check — see the note above. `applied_at` is a timestamptz; only its day
+    // matters here.
+    const appliedOn = applied[i].applied_at ? String(applied[i].applied_at).slice(0, 10) : null;
+    if (appliedOn && start > addMonths(appliedOn, APPLIED_WINDOW_GRACE_MONTHS)) break;
+    out[applied[i].id] = { start, end: back };
     back = prevEnd;
   }
 

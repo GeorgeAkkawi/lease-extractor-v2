@@ -46,6 +46,27 @@ const termLabel = (m) => {
 // falling back to today's base rent. `pendingSteps` are the option-period rent steps
 // sitting past the committed term end (the muted "pending renewal" group): when this
 // option's flat rent OPENS a multi-year climb, show where it steps up to.
+//
+// George, 2026-08-17: *"what is the new rent number in the renewal option referring too
+// (19,386)?"* — on a lease whose base rent is $31,801 today. It was the rent that option
+// set, in 2009, and the column said only "New rent". A figure with no tense next to a
+// figure with no tense is unreadable, so an APPLIED option now says WHEN its rent took
+// effect and what the rent is now.
+//
+// The date is not inferred: it is the real rent_escalations row carrying that same
+// figure, out of the `escalations` array this component is already handed. When no step
+// matches (an option applied before the schedule was captured), we say what it is without
+// pretending to a date.
+function appliedRentSub(r, escalations, currentRent) {
+  const booked = Number(r.new_rent);
+  const step = (escalations || [])
+    .filter((e) => e.new_base_rent != null && Math.abs(Number(e.new_base_rent) - booked) <= 0.5)
+    .sort((a, b) => String(a.effective_date || '').localeCompare(String(b.effective_date || '')))[0];
+  const now = Number(currentRent) || 0;
+  const today = now > 0 && Math.abs(now - booked) > 0.5 ? ` · today ${money0(now)}` : '';
+  return step?.effective_date ? `took effect ${fmtDate(step.effective_date)}${today}` : `the rent it set${today}`;
+}
+
 function renewalRent(r, base, pendingSteps) {
   if (r.new_rent != null) {
     const main = money0(r.new_rent);
@@ -274,40 +295,66 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
           <table style={{ minWidth: 0 }}>
             <thead><tr><th>Option</th><th>Notice by</th><th title="The period the option covers — it picks up the day after the current term ends, and each option chains from the one before it. For an option not yet exercised this is the period it would cover.">Covers</th><th className="num">New rent</th><th>Status</th><th>Decision</th><th></th></tr></thead>
             <tbody>
-              {renewals.map((r) => { const reason = lapseReason(r); const lapsed = !!reason; const badge = statusBadge(r.status, reason); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); const covers = windowLabel(windows[r.id]); const lead = noticeLeadLabel(r.notice_lead_n, r.notice_lead_unit); const drift = noticeDrift(r, windows[r.id]); return (
+              {renewals.map((r) => { const reason = lapseReason(r); const lapsed = !!reason; const badge = statusBadge(r.status, reason); const rent = renewalRent(r, base, r.status === 'pending' ? pendingSteps : null); const covers = windowLabel(windows[r.id]); const lead = noticeLeadLabel(r.notice_lead_n, r.notice_lead_unit); const drift = noticeDrift(r, windows[r.id]);
+                // An APPLIED option's rent is history, so it says when it landed and what
+                // the rent is now — the two figures were indistinguishable before.
+                if (r.status === 'applied' && r.new_rent != null) rent.sub = appliedRentSub(r, escalations, lease?.base_rent);
+                // No period, but a stated length: either the chain stopped at an option
+                // with no length, or optionWindows refused to date this one because the
+                // term has been extended since it was applied (see renewals.js). Naming
+                // which is the difference between a blank cell and an answer.
+                const undatable = !covers && r.status === 'applied' && Number(r.term_months) > 0;
+                return (
                 <Fragment key={r.id}>
                 <tr>
                   <td>{r.option_label || '—'}</td>
                   {/* The deadline is editable in place, because it's a rule the lease
                       states as a duration and the app can only guess at from an import.
-                      A settled option shows it as the record it now is. */}
+                      ⚠ EVERY status, not just pending (George, 2026-08-17: "in the renewal
+                      options drop down in a specific lease i cant change the notice by
+                      deadline" — the lease he was on has one option and it is `applied`,
+                      so the cell was plain text). A settled option's deadline is still a
+                      record of what the lease said, and a mis-read shouldn't need the
+                      option un-applied to correct. What it does NOT get is the duration
+                      rule: there is no live period left to count back from, so it opens on
+                      a plain date — see NoticeByField's dateOnly. */}
                   <td className="opt-notice">
-                    {r.status !== 'pending' ? (
-                      r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">—</span>
-                    ) : (
-                      <button type="button" className="notice-cell"
-                        title={drift
+                    <button type="button" className="notice-cell"
+                      title={r.status !== 'pending'
+                        ? 'The deadline this option carried. Click to correct it — the option stays ' + (r.status === 'applied' ? 'applied' : 'declined') + ' and nothing is re-billed.'
+                        : drift
                           ? `Notice is ${lead} the option period starts — but that period has moved since. Click to bring the date with it.`
                           : usesDefault(r) && defaultLead
                             ? `No deadline on this option yet. Click to set one — it opens on your default of ${defaultLead}, and you can change it for this tenant.`
                             : 'Set when notice is due — as the lease states it ("180 days prior"), or a set date'}
-                        onClick={() => setNoticeEntry({ id: r.id, draft: noticeDraftFrom(r, defaultNoticeDays) })}>
-                        <div>{r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">＋ set</span>}</div>
-                        {lead && <div className="cell-sub">{lead}</div>}
-                        {/* No deadline of its own — say what clicking in will offer. Worded
-                            as the DEFAULT, not as a date, because nothing is stored yet and
-                            the bell reads only what's stored. */}
-                        {!lead && usesDefault(r) && defaultLead && <div className="cell-sub">default {defaultLead}</div>}
-                        {drift && <div className="cell-sub notice-drift">period moved → {fmtDate(drift)}</div>}
-                      </button>
-                    )}
+                      onClick={() => setNoticeEntry({
+                        id: r.id,
+                        draft: r.status === 'pending'
+                          ? noticeDraftFrom(r, defaultNoticeDays)
+                          : { mode: 'date', n: '', date: r.notice_by_date || '' },
+                      })}>
+                      <div>{r.notice_by_date ? fmtDate(r.notice_by_date) : <span className="muted">＋ set</span>}</div>
+                      {lead && r.status === 'pending' && <div className="cell-sub">{lead}</div>}
+                      {/* No deadline of its own — say what clicking in will offer. Worded
+                          as the DEFAULT, not as a date, because nothing is stored yet and
+                          the bell reads only what's stored. */}
+                      {!lead && r.status === 'pending' && usesDefault(r) && defaultLead && <div className="cell-sub">default {defaultLead}</div>}
+                      {drift && <div className="cell-sub notice-drift">period moved → {fmtDate(drift)}</div>}
+                    </button>
                   </td>
                   {/* The period, with the stated length under it. A declined option has
                       no period — nothing will cover it — so it shows the length alone. */}
                   <td className="opt-covers">
                     {covers
                       ? (<><div>{covers}</div><div className="cell-sub">{termLabel(r.term_months)}</div></>)
-                      : <span className="muted">{termLabel(r.term_months)}</span>}
+                      : (<>
+                          <span className="muted">{termLabel(r.term_months)}</span>
+                          {undatable && (
+                            <div className="cell-sub wrap" title="This option's period is worked out from where the committed term ends. That end has since been moved by an addendum, so counting back from it would date this option as covering the addendum's years instead of its own.">
+                              dates unknown — the term has been extended since
+                            </div>
+                          )}
+                        </>)}
                   </td>
                   <td className="num">
                     <div>{rent.main}</div>
@@ -373,7 +420,10 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                         </button>
                       </div>
                     ) : (
-                      <span className="muted" style={{ fontSize: 12 }}>{r.applied_at ? `Applied · ${fmtDate(r.applied_at)}` : (r.notes || '—')}</span>
+                      // The Status cell one column left already says "Applied"; saying it
+                      // again here only pushed the date — the part that isn't already on
+                      // screen — into a second line.
+                      <span className="muted" style={{ fontSize: 12 }}>{r.applied_at ? `on ${fmtDate(r.applied_at)}` : (r.notes || '—')}</span>
                     )}
                   </td>
                   <td className="num">
@@ -409,14 +459,25 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
                     <td colSpan={7} style={{ background: 'var(--panel-2)' }}>
                       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', padding: '4px 2px' }}>
                         <div className="muted" style={{ fontSize: 12.5, flex: '1 1 240px', minWidth: 220 }}>
-                          When the tenant has to say whether they’re taking this option. A lease states
-                          it as a duration — “180 days prior to expiration” — so put that in and the
-                          date follows the period above.
+                          {r.status === 'pending' ? (
+                            <>
+                              When the tenant has to say whether they’re taking this option. A lease states
+                              it as a duration — “180 days prior to expiration” — so put that in and the
+                              date follows the period above.
+                            </>
+                          ) : (
+                            <>
+                              The deadline this option carried. It’s a record now — correcting it leaves the
+                              option {r.status === 'applied' ? 'applied' : 'declined'} and re-bills nothing.
+                              There’s no live period left to count a duration back from, so put the date in.
+                            </>
+                          )}
                           {r.notes ? <> This one says: <em>“{r.notes}”</em></> : ''}
                         </div>
                         <div style={{ flex: '0 1 300px', minWidth: 240 }}>
                           <NoticeByField win={windows[r.id]} draft={noticeEntry.draft} autoFocus
-                            defaultDays={usesDefault(r) ? defaultNoticeDays : null}
+                            dateOnly={r.status !== 'pending'}
+                            defaultDays={r.status === 'pending' && usesDefault(r) ? defaultNoticeDays : null}
                             onChange={(draft) => setNoticeEntry({ id: r.id, draft })} />
                         </div>
                         <button type="button" disabled={saveNotice.isPending || unchanged}

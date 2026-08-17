@@ -8,7 +8,9 @@ import TaxCategorySelect from './TaxCategorySelect';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
 import UndoStrip from './UndoStrip';
+import InlineEdit from './InlineEdit';
 import { useOptimisticRemove } from './useOptimisticRemove';
+import { useExpenseLineEdit } from './useExpenseLineEdit';
 
 // A management fee isn't a figure you look up — it's a percentage of the rent. Typing
 // a label that reads like one offers the percentage entry automatically; the toggle
@@ -163,6 +165,27 @@ export default function CamSection({ propId, year, expense }) {
   });
   const undoMut = useMutation({ mutationFn: (p) => p.undo(), onSuccess: invalidate });
 
+  // Correcting a name or a date paid. Neither is billed — see updateExpenseLineItem for
+  // the walk — so there is deliberately no carryThrough() here, unlike every other write
+  // in this file. What a rename DOES move is which bucket the line sits in and therefore
+  // which tax line it files under, so the strip says that outright rather than leaving it
+  // to be found on the workbook three weeks later.
+  const editLine = useExpenseLineEdit({
+    invalidate,
+    setSaved,
+    describe: ({ item, field, value }) => {
+      if (field === 'paid_date') {
+        return value ? `${item.label} dated ${fmtShortDate(value)}` : `date cleared on ${item.label}`;
+      }
+      const before = categoryFor(String(item.label || '').trim(), buckets).category || null;
+      const after = categoryFor(String(value || '').trim(), buckets).category || null;
+      const moved = after !== before
+        ? ` — now files under ${after ? categoryLabel(after) : 'no tax category yet'}`
+        : '';
+      return `renamed ${item.label} → ${value}${moved}`;
+    },
+  });
+
   const billableItems = items.filter((it) => it.billable !== false);
   const otherItems = items.filter((it) => it.billable === false);
   const total = billableItems.reduce((s, it) => s + (Number(it.amount) || 0), 0);
@@ -189,11 +212,12 @@ export default function CamSection({ propId, year, expense }) {
     const { category, source } = categoryFor(label, buckets);
     if (editCat === bucketKey(label)) {
       return (
+        // The padding lives in .cat-select, not inline: an inline padding shorthand beats
+        // every stylesheet rule, including the one that reserves room for the chevron.
         <TaxCategorySelect
-          className="cam-input" autoFocus value={category || ''}
+          className="cam-input cat-select" autoFocus value={category || ''}
           onChange={(next) => saveCat.mutate({ label, category: next })}
           onBlur={() => setEditCat(null)}
-          style={{ fontSize: 11, marginTop: 3, padding: '2px 4px', maxWidth: 200 }}
         />
       );
     }
@@ -213,9 +237,20 @@ export default function CamSection({ propId, year, expense }) {
   const itemRow = (it, last, showCat) => (
     <div className={`cam-row${last ? ' last' : ''}`} key={it.id}>
       <div>
-        {it.label}
-        {it.contract_id && <span className="badge info" style={{ marginLeft: 8 }}>from contract</span>}
-        {it.import_id && <span className="badge info" style={{ marginLeft: 8 }} title="Recorded by a bank-statement import — ✕ removes just this line; ↩ Undo on the import reverses the whole statement">imported</span>}
+        <div className="cam-name">
+          {/* A contract-derived line is NOT renamable: syncContractCamItems rewrites its
+              label from the contract every time this fiscal year is opened, so a rename
+              would look accepted and be gone on the next page load. */}
+          <InlineEdit
+            value={it.label} maxLength={80}
+            readOnly={!!it.contract_id}
+            readOnlyTitle="This line's name comes from the service contract and is rewritten from it — rename it in Contracts."
+            title="Rename this component. It changes which bucket the line sits in, and so which tax line it files under — nothing about what tenants are billed."
+            onCommit={(v) => editLine.mutate({ item: it, field: 'label', value: v })}
+          />
+          {it.contract_id && <span className="badge info">from contract</span>}
+          {it.import_id && <span className="badge info" title="Recorded by a bank-statement import — ✕ removes just this line; ↩ Undo on the import reverses the whole statement">imported</span>}
+        </div>
         {it.rent_pct != null && (
           <div className="muted" style={{ fontSize: 11, marginTop: 2 }} title="Priced as a percentage of this property's annual base rent — it follows the rent when a lease escalates or a tenant changes.">
             {Number(it.rent_pct)}% of {money(rentBasis)} base rent
@@ -224,7 +259,15 @@ export default function CamSection({ propId, year, expense }) {
         {showCat && <div>{catChip(String(it.label || '').trim())}</div>}
       </div>
       <div className="num">{money(it.amount)}</div>
-      <div className="num muted" style={{ fontSize: 12 }} title={it.paid_date ? undefined : 'No date on file — entered by hand, or carried from a service contract, rather than read from a statement'}>{fmtShortDate(it.paid_date)}</div>
+      <div className="num">
+        <InlineEdit
+          type="date" className="cam-date" placeholder="＋ date"
+          value={it.paid_date || ''}
+          display={it.paid_date ? fmtShortDate(it.paid_date) : null}
+          title="The day it was paid. It decides which month this cost falls in on the income-and-expenses sheet — it never changes what a tenant is billed."
+          onCommit={(v) => editLine.mutate({ item: it, field: 'paid_date', value: v })}
+        />
+      </div>
       {/* `asset_id` no longer marks a row as managed elsewhere: capitalizing was removed
           2026-08-12 and the rows it once derived became ordinary, editable lines. The
           column and its rows stay in the database untouched — cam_line_items.asset_id is
@@ -267,7 +310,7 @@ export default function CamSection({ propId, year, expense }) {
         groupRows(billableItems)
       )}
 
-      <MutationError of={[add, remove, saveFlat, undoMut]} />
+      <MutationError of={[add, remove, saveFlat, undoMut, editLine]} />
       {saved && (
         <div style={{ marginTop: 8 }}>
           <UndoStrip
@@ -290,10 +333,12 @@ export default function CamSection({ propId, year, expense }) {
 
       {otherItems.length > 0 && (
         <>
-          <div className="cam-row cam-th" style={{ marginTop: 14 }}>
+          {/* The column captions sit thirty pixels above this, on the first head, and
+              nothing between the two changes what they mean. */}
+          <div className="cam-row cam-th" style={{ marginTop: 18 }}>
             <div>Other expenses — not billed to tenants</div>
-            <div className="num">Annual cost</div>
-            <div className="num">Date paid</div>
+            <div></div>
+            <div></div>
             <div></div>
           </div>
           {groupRows(otherItems)}
@@ -316,37 +361,43 @@ export default function CamSection({ propId, year, expense }) {
           about scope. Setting a category still happens here, on the chip beside each
           bucket — that is this section's job and it stays. */}
 
-      {/* add a line item */}
-      <form className="cam-row" onSubmit={(e) => { e.preventDefault(); if (label.trim()) add.mutate(); }} style={{ borderBottom: 'none', marginTop: 8 }}>
-        <input className="cam-input" placeholder="e.g. Landscaping" value={label} onChange={(e) => setLabel(e.target.value)} list="cam-bucket-list" />
-        <datalist id="cam-bucket-list">
-          {bucketLabels.map((l) => <option key={l} value={l} />)}
-        </datalist>
-        {pctMode ? (
-          <div className="cam-amt"><span className="cam-pre">%</span><input className="cam-input num" type="number" step="any" placeholder="5" value={pct} onChange={(e) => setPct(e.target.value)} /></div>
-        ) : (
-          <div className="cam-amt"><span className="cam-pre">$</span><input className="cam-input num" type="number" step="any" placeholder="0" value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
-        )}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          <input className="cam-input" type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} title="The day it was paid — optional" style={{ fontSize: 12, padding: '5px 7px' }} />
-          <label className="muted" style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title="Price this line as a percentage of the property's annual base rent — the usual way a management fee is set. The dollar figure is worked out for you and follows the rent.">
+      {/* Add a line item. The four columns line up with the table above; the two switches
+          that used to be stacked inside the 132px date column — raw browser checkboxes,
+          under a date field, in a column meant for one date — sit on their own line
+          underneath, where they have room to say what they do (George, 2026-08-17: "way
+          too cluttered … reduce the noise there"). */}
+      <form className="cam-add" onSubmit={(e) => { e.preventDefault(); if (label.trim()) add.mutate(); }}>
+        <div className="cam-add-line">
+          <input className="cam-input" placeholder="e.g. Landscaping" value={label} onChange={(e) => setLabel(e.target.value)} list="cam-bucket-list" />
+          <datalist id="cam-bucket-list">
+            {bucketLabels.map((l) => <option key={l} value={l} />)}
+          </datalist>
+          {pctMode ? (
+            <div className="cam-amt"><span className="cam-pre">%</span><input className="cam-input num" type="number" step="any" placeholder="5" value={pct} onChange={(e) => setPct(e.target.value)} /></div>
+          ) : (
+            <div className="cam-amt"><span className="cam-pre">$</span><input className="cam-input num" type="number" step="any" placeholder="0" value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
+          )}
+          <input className="cam-input" type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} aria-label="Date paid — optional" />
+          <button type="submit" className="icon-btn" disabled={!label.trim() || add.isPending || (pctMode && !(Number(pct) > 0))} title="Add expense item">＋</button>
+        </div>
+        <div className="cam-add-opts">
+          <label className={`opt-toggle${pctMode ? ' on' : ''}`} title="Price this line as a percentage of the property's annual base rent — the usual way a management fee is set. The dollar figure is worked out for you and follows the rent.">
             <input type="checkbox" checked={pctMode} onChange={(e) => setPctMode(e.target.checked)} />
-            % of rent
+            <span className="opt-dot" aria-hidden="true" />% of rent
           </label>
-          <label className="muted" style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title="Tick for spending tenants shouldn't reimburse — it stays itemized here but never bills through CAM">
+          <label className={`opt-toggle${notBilled ? ' on' : ''}`} title="Tick for spending tenants shouldn't reimburse — it stays itemized here but never bills through CAM">
             <input type="checkbox" checked={notBilled} onChange={(e) => setNotBilled(e.target.checked)} />
-            not billed
+            <span className="opt-dot" aria-hidden="true" />not billed
           </label>
+          {pctMode && (
+            <span className="cam-add-calc">
+              {rentBasis > 0
+                ? <>{Number(pct) || 0}% of {money(rentBasis)} base rent = <strong>{money(feeAmount)}</strong> for FY {year}{notBilled ? '' : ' — billed back through CAM'}</>
+                : <>No base rent on file for FY {year} yet, so there's nothing to take a percentage of — enter the fee as a dollar figure instead.</>}
+            </span>
+          )}
         </div>
-        <button type="submit" className="icon-btn" disabled={!label.trim() || add.isPending || (pctMode && !(Number(pct) > 0))} title="Add expense item">＋</button>
       </form>
-      {pctMode && (
-        <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-          {rentBasis > 0
-            ? <>{Number(pct) || 0}% of {money(rentBasis)} base rent = <strong>{money(feeAmount)}</strong> for FY {year}{notBilled ? '' : ' — billed back through CAM'}</>
-            : <>No base rent on file for FY {year} yet, so there's nothing to take a percentage of — enter the fee as a dollar figure instead.</>}
-        </div>
-      )}
 
       {items.length === 0 && (
         <form className="row" onSubmit={(e) => { e.preventDefault(); saveFlat.mutate(); }} style={{ marginTop: 10 }}>

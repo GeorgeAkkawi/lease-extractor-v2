@@ -99,6 +99,44 @@ describe('optionWindows — what it deliberately refuses to date', () => {
   });
 });
 
+// George, 2026-08-17: "i think that renewal option tab is just way off in general."
+// The beauty and barber shop lease, out of production: a 2004 lease whose ONE option was
+// applied 2008-09-01, on a term that two later ADDENDUMS carried to 2030-05-31. Walking
+// 60 months back from that end dated the option as covering Jun 1 2025 → May 31 2030 —
+// the fourth addendum's period, printed on an option exercised seventeen years earlier.
+describe('optionWindows — the backwards walk refuses a period its own dates contradict', () => {
+  const applied = (id, months, appliedAt) => ({
+    id, option_label: 'First Option to Renew', notice_by_date: '2008-09-01',
+    term_months: months, status: 'applied', applied_at: appliedAt,
+  });
+
+  it('dates nothing when the option was applied long before the period that falls out', () => {
+    const w = optionWindows(sorted([applied('o1', 60, '2008-09-01 12:00:00+00')]), '2030-05-31');
+    expect(w.o1).toBeUndefined();
+  });
+
+  it('still dates an option applied around the period it bought', () => {
+    // Notice given eight months ahead of a window opening 2026-06-01 — the ordinary case.
+    const w = optionWindows(sorted([applied('o1', 60, '2025-10-01 12:00:00+00')]), '2031-05-31');
+    expect(w.o1).toEqual({ start: '2026-06-01', end: '2031-05-31' });
+  });
+
+  it('leaves every row with no applied_at exactly as it was', () => {
+    // Pre-0068 rows and the whole corpus above carry none, so the guard cannot fire.
+    const w = optionWindows(sorted([applied('o1', 60, null)]), '2030-05-31');
+    expect(w.o1).toEqual({ start: '2025-06-01', end: '2030-05-31' });
+  });
+
+  it('stops the chain rather than skipping one link — earlier options are unknowable too', () => {
+    const w = optionWindows(sorted([
+      { id: 'o1', option_label: 'Option 1', term_months: 60, status: 'applied', applied_at: '2004-01-01 12:00:00+00', notice_by_date: '2003-07-01' },
+      { id: 'o2', option_label: 'Option 2', term_months: 60, status: 'applied', applied_at: '2008-09-01 12:00:00+00', notice_by_date: '2008-09-01' },
+    ]), '2030-05-31');
+    expect(w.o2).toBeUndefined();
+    expect(w.o1).toBeUndefined();
+  });
+});
+
 describe('windowLabel', () => {
   it('reads as a period, in the same arrow form a rider uses', () => {
     expect(windowLabel({ start: '2031-05-02', end: '2036-05-01' })).toBe('May 2, 2031 → May 1, 2036');

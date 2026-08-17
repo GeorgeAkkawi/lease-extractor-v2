@@ -382,13 +382,13 @@ export default function MonthDetailPanel({
             <div className="mp-form">
               <label>
                 <span>Kind</span>
-                <select value={kind} onChange={(e) => { setKind(e.target.value); editing(); }} disabled={busy}>
+                <select className="text-input" value={kind} onChange={(e) => { setKind(e.target.value); editing(); }} disabled={busy}>
                   {kinds.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
                 </select>
               </label>
               <label>
                 <span>Charge or credit</span>
-                <select value={effDir} onChange={(e) => { setDir(e.target.value); editing(); }} disabled={busy || locked}>
+                <select className="text-input" value={effDir} onChange={(e) => { setDir(e.target.value); editing(); }} disabled={busy || locked}>
                   <option value="charge">Charge — the tenant owes more</option>
                   <option value="credit">Credit — the tenant owes less</option>
                 </select>

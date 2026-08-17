@@ -1,7 +1,9 @@
 import { useRef, useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, listInvoices, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit } from '../lib/api';
+import { getCorporation, getProperty, getLease, updateLease, resyncYearBillingToEstimate, resyncLeaseBilling, listRenewals, listAddendums, listEscalations, listAbatements, listInvoices, getHiddenWidgets, anchorLeaseSchedule, logInsuranceRequest, listInsuranceRequests, getTenantInsurance, listDepositLinesForLease, setLeaseSecurityDeposit, listAlertStates } from '../lib/api';
+import { duplicateRentSteps } from '../lib/escalations';
+import { toAlertStates } from '../lib/alerts';
 import { showRoof } from '../lib/roofDisplay';
 import { depositReconciliation } from '../lib/deposits';
 import { settleBillingChange, settleLeaseListChange, settleLeaseScheduleChange } from '../lib/invalidate';
@@ -77,6 +79,9 @@ export default function LeaseDetailPage() {
   const { data: renewals = [] } = useQuery({ queryKey: ['renewals', leaseId], queryFn: () => listRenewals(leaseId) });
   const { data: addendums = [] } = useQuery({ queryKey: ['addendums', leaseId], queryFn: () => listAddendums(leaseId) });
   const { data: escalations = [] } = useQuery({ queryKey: ['escalations', leaseId], queryFn: () => listEscalations(leaseId) });
+  // Only so the folded Escalations panel can say a duplicated step is waiting — the same
+  // key the dashboard and the editor use, so this is normally a cache hit, not a new read.
+  const { data: alertStateRows = [] } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates });
   const { data: abatements = [] } = useQuery({ queryKey: ['abatements', leaseId], queryFn: () => listAbatements(leaseId) });
   // Deliberately InvoicesPanel's OWN key, so this is a cache hit whenever that panel is
   // open and a single request when it is folded — the folded line still has to state the
@@ -380,6 +385,13 @@ export default function LeaseDetailPage() {
   const escSummary = (() => {
     const n = (escalations || []).length;
     if (!n) return 'No escalations scheduled';
+    // A date carrying two steps is the one thing you'd open this panel for, so a folded
+    // panel has to say so — the Panel rule. Same dismissal set the editor filters on, so
+    // "keep both" quiets the summary and the flag together.
+    const dupes = duplicateRentSteps(escalations, { leaseId, dismissed: toAlertStates(alertStateRows).dismissed });
+    if (dupes.length) {
+      return `${n} step${n === 1 ? '' : 's'} · ⚠ ${dupes.length === 1 ? `two steps on ${fmtDate(dupes[0].date)}` : `${dupes.length} dates carry two steps`} — needs a decision`;
+    }
     const next = (escalations || [])
       .filter((e) => e.effective_date && String(e.effective_date) > todayIso)
       .sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)))[0];

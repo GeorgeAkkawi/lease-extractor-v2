@@ -351,7 +351,9 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .topbar{height:62px;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;padding:0 30px;gap:18px}
 .topbar-right{display:flex;align-items:center;gap:22px}
 .year-sel{display:flex;align-items:center;gap:8px;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
-.year-sel select{font-family:var(--ui);font-size:13px;font-weight:600;border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px;background:var(--panel);color:var(--ink)}
+/* `background-color` so the shared select chevron survives — see the choosing-something
+   block near .text-input. Same reason for .cam-input and .mp-form select below. */
+.year-sel select{font-family:var(--ui);font-size:13px;font-weight:600;border:1px solid var(--border);border-radius:var(--radius);padding:7px 26px 7px 9px;background-color:var(--panel);color:var(--ink)}
 /* ⚠ THE BLOCK-END PADDING IS SCROLLABLE, and it is the app's only scroll container.
    A scroll container's block-end padding is part of its scrollable overflow region, so
    every page scrolled 72px past its last pixel of content into blank canvas. Invisible on
@@ -611,6 +613,9 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .cat-chip:hover{border-color:var(--accent);color:var(--ink)}
 .cat-chip.derived{border-style:dashed}
 .cat-chip.none{border-color:var(--gold);color:var(--gold);background:transparent}
+/* The chip, open for editing. Qualified past `.cam-input`'s padding so it stays small
+   while still leaving room for the shared select chevron. */
+select.cat-select{font-size:11px;margin-top:3px;padding:3px 22px 3px 6px;max-width:200px;background-position:right 6px center;background-size:8px 5px}
 .cat-summary{margin-top:18px;padding-top:4px;border-top:1px solid var(--line)}
 /* Slice 3 — "What it cost you". Its own grid rather than .cam-row's: the four columns
    here mean something different (category | spent | recovered | net) and the expense
@@ -654,9 +659,9 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
   .recov-row .num{text-align:left}
 }
 .cam-row.cat-none .num{color:var(--gold);font-weight:600}
-.cam-input{font-family:inherit;font-size:14px;padding:9px 11px;border:1px solid transparent;border-radius:var(--radius);background:var(--panel-2);color:var(--ink);width:100%;outline:none}
-.cam-input:hover{border-color:var(--border);background:#fff}
-.cam-input:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
+.cam-input{font-family:inherit;font-size:14px;padding:9px 11px;border:1px solid transparent;border-radius:var(--radius);background-color:var(--panel-2);color:var(--ink);width:100%;outline:none}
+.cam-input:hover{border-color:var(--border);background-color:#fff}
+.cam-input:focus{border-color:var(--accent);background-color:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
 .cam-input.num{text-align:right;font-variant-numeric:tabular-nums}
 /* A native date input carries an intrinsic minimum width (wide enough for mm/dd/yyyy
    plus the picker) that is larger than this row's date column once the phone
@@ -667,6 +672,48 @@ button.stmt-ai:hover:not(:disabled){border-color:var(--accent);filter:none}
 .cam-amt{display:flex;align-items:center;position:relative}
 .cam-amt .cam-pre{position:absolute;left:11px;color:var(--muted);font-size:14px;pointer-events:none}
 .cam-amt .cam-input{padding-left:21px}
+
+/* ---- adding an expense line (George, 2026-08-17: "way too cluttered … reduce the noise")
+   The add form used to BORROW .cam-row's four data columns and then stack a date field and
+   two bare browser checkboxes inside the 132px one meant for a single date. The four
+   entry fields keep those columns — lining up with the table they feed — and the two
+   switches move to a line of their own, where the percentage read-out can sit beside
+   them instead of floating below the form as a loose paragraph. */
+.cam-add{margin-top:10px}
+.cam-add-line{display:grid;grid-template-columns:1fr 170px 132px 34px;gap:14px;align-items:center}
+.cam-add-opts{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-top:9px}
+.cam-add-calc{font-size:12px;color:var(--muted);line-height:1.4}
+.cam-add-calc strong{color:var(--ink)}
+/* A switch that says what it is, instead of a system checkbox with a caption beside it.
+   The native input stays in the DOM (label-wrapped) so it keeps its keyboard and
+   screen-reader behaviour — only the paint is ours. */
+.opt-toggle{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border:1px solid var(--hair);border-radius:999px;background:var(--panel-2);color:var(--muted);font-size:11px;line-height:1;cursor:pointer;user-select:none;transition:border-color .12s ease,background .12s ease,color .12s ease}
+.opt-toggle:hover{border-color:var(--border);color:var(--ink)}
+.opt-toggle input{position:absolute;width:1px;height:1px;opacity:0;margin:0}
+.opt-dot{width:8px;height:8px;border-radius:50%;border:1px solid var(--border);background:transparent;flex:none;transition:background .12s ease,border-color .12s ease}
+.opt-toggle.on{background:var(--accent-soft);border-color:var(--accent);color:var(--ink);font-weight:600}
+.opt-toggle.on .opt-dot{background:var(--accent);border-color:var(--accent)}
+.opt-toggle:focus-within{box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* ---- a cell you can click and retype (InlineEdit.js) ----
+   Wears .notice-cell's dashed underline, which already means "editable" on the renewal
+   options table, so the affordance is one idiom rather than two. */
+.cam-name{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}
+.cam-name .badge{flex:none}
+.inline-edit{display:inline-flex;flex-direction:column;align-items:flex-start;gap:1px;max-width:100%;background:none;border:0;padding:2px 5px;margin:-2px 0 0 -5px;border-radius:5px;text-align:inherit;cursor:pointer;font:inherit;color:inherit;text-transform:none;letter-spacing:normal;transition:background .12s ease,box-shadow .12s ease}
+.inline-edit-val{text-decoration:underline;text-decoration-style:dashed;text-decoration-color:var(--faint);text-underline-offset:3px;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.inline-edit:hover{background:var(--panel-2);box-shadow:0 0 0 1px var(--gold) inset}
+.inline-edit:hover .inline-edit-val{text-decoration-color:var(--gold)}
+.inline-edit:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.inline-edit-sub{font-size:11px;color:var(--muted)}
+.inline-edit-static{color:var(--ink)}
+.inline-edit-input{font-size:13px;padding:5px 8px}
+/* In a right-aligned numeric column the trigger has to hang on the right edge too. */
+.num>.inline-edit{align-items:flex-end;margin-left:0;margin-right:-5px}
+.cam-date{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.cam-date:hover{color:var(--ink)}
+/* Hover reveals nothing on a touch screen, so the mark that says "editable" stays put. */
+@media (hover:none){.inline-edit-val{text-decoration-color:var(--muted)}}
 .cam-psf{color:var(--muted);font-size:13.5px}
 
 /* ---- panels & fields ---- */
@@ -1291,7 +1338,7 @@ tbody tr:last-child td{border-bottom:none}
 .mp-form label{display:flex;flex-direction:column;gap:4px;min-width:0}
 .mp-form label>span{font-family:var(--ui);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
 .mp-form .mp-memo{grid-column:1 / -1}
-.mp-form select,.mp-form .text-input{background:var(--panel)}
+.mp-form select,.mp-form .text-input{background-color:var(--panel)}
 .mp-hint{font-size:11.5px;line-height:1.5;margin:8px 0 0}
 /* Where the charge lands on the Income-and-expenses sheet, quoted in the sheet's own row
    names — said BEFORE it is posted, because the workbook counts rent when it falls due and
@@ -1577,10 +1624,86 @@ tbody tr:last-child td{border-bottom:none}
 .stack-gap{display:flex;flex-direction:column;gap:14px}
 
 /* plain text/number inputs used by simple add-forms & editors */
-.text-input{font-family:var(--ui);font-size:14px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel);color:var(--ink);outline:none}
+/* ⚠ `background-color`, not the `background` shorthand — the shorthand resets
+   background-image, which would wipe the chevron the select block below paints. */
+.text-input{font-family:var(--ui);font-size:14px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background-color:var(--panel);color:var(--ink);outline:none}
 .text-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 select.text-input{font-weight:600}
 textarea.text-input{resize:vertical;min-height:90px}
+
+/* ---- CHOOSING SOMETHING (George, 2026-08-17: "i dont like the selection design …
+   like slecting dates or … inside the pop up when i double click") -----------------
+   Every <select> and every date field in the app was wearing browser chrome: a system
+   arrow, a system font, a blue focus ring and — the one he was actually looking at —
+   the OS's blue highlight when you tab across DD / MM / YYYY. Two of the worst offenders
+   are the bare, class-less <select>s in the month pop-up, sitting inside a hand-drawn
+   ivory card.
+
+   Keyed off the ELEMENT, not a class, so a control added tomorrow is covered without
+   anyone remembering to reach for a class name.
+
+   ⚠ AND SPLIT BY SPECIFICITY ON PURPOSE. The BOX — fill, border, radius — sits on a bare
+   `select` at (0,0,1), below every class in the app, and the date fields are given no box
+   at all. That is not timidity: `.cam-input` is deliberately borderless on `--panel-2`
+   inside a table, `.mp-form select` is `--panel` against a `--panel-2` card, `.field-input`
+   is white. Each was chosen against the surface it sits on, and a blanket fill here would
+   quietly repaint forty controls that were already right — a redesign nobody asked for,
+   hidden inside one that was.
+
+   What IS taken at (0,1,1), where a call site's class can't override it, is only the part
+   no class could set: the arrow, the face, the focus ring, and the browser's own furniture
+   inside a date field. The opened menu and the calendar popup are still drawn by the OS —
+   the accepted trade of staying on native controls (George chose it over custom menus),
+   and it buys every one of these fields real keyboard and screen-reader behaviour free. */
+select{background-color:var(--panel);border:1px solid var(--border);border-radius:var(--radius);color:var(--ink)}
+select:not([multiple]){
+  -webkit-appearance:none;appearance:none;
+  font-family:var(--ui);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23877F70' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 9px center;background-size:10px 6px;
+  padding-right:26px;cursor:pointer;outline:none;
+  transition:border-color .12s ease,background-color .12s ease,box-shadow .12s ease;
+}
+/* Border and ring only — the fill belongs to whatever class the call site already uses. */
+select:not([multiple]):hover:not(:disabled){border-color:var(--border)}
+select:not([multiple]):focus-visible,select:not([multiple]):focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+select:not([multiple]):disabled{opacity:.5;cursor:not-allowed;background-image:none}
+/* Honoured by Firefox and Windows Chrome; macOS draws the popup itself and ignores it. */
+select option{font-family:var(--ui);color:var(--ink)}
+/* The compact selects already in the app set their own `padding` shorthand, which resets
+   the room the chevron needs — give them a smaller mark and a tighter inset instead. */
+.line-actions select,.line-step select,.stmt-table select.text-input,.mp-move select,.lease-sortbar select,.svc-add select{
+  padding-right:20px;background-position:right 6px center;background-size:8px 5px;
+}
+
+/* A date field already gets its box from `.text-input` / `.cam-input` / `.field-input`
+   wherever it is used, and every one of those was chosen deliberately — so nothing here
+   touches the border or the fill. What none of them could reach is the browser's own
+   furniture INSIDE the field, which is the whole of what looked wrong. */
+input[type="date"],input[type="month"]{font-family:var(--ui);outline:none}
+input[type="date"]::-webkit-datetime-edit,input[type="month"]::-webkit-datetime-edit{font-variant-numeric:tabular-nums}
+/* THE LINE GEORGE WAS LOOKING AT. Tabbing across the day / month / year segments paints
+   the OS selection colour — system blue on macOS, inside an ivory-and-brass page. */
+input[type="date"]::-webkit-datetime-edit-day-field:focus,
+input[type="date"]::-webkit-datetime-edit-month-field:focus,
+input[type="date"]::-webkit-datetime-edit-year-field:focus,
+input[type="month"]::-webkit-datetime-edit-month-field:focus,
+input[type="month"]::-webkit-datetime-edit-year-field:focus{
+  background:var(--accent-soft);color:var(--ink);border-radius:2px;outline:none;
+}
+/* The picker glyph is left in place rather than hidden behind a painted one: hiding it
+   costs right-padding maths that every narrow date cell in the app would have to agree
+   with. Tinted toward brass and given a hover instead. */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator{
+  opacity:.5;cursor:pointer;filter:sepia(1) saturate(2.2) hue-rotate(3deg);transition:opacity .12s ease;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="month"]::-webkit-calendar-picker-indicator:hover{opacity:1}
+input[type="date"]::-webkit-inner-spin-button,input[type="month"]::-webkit-inner-spin-button{display:none}
+
+/* Highlighting any text in the app stopped being system blue at the same time. */
+::selection{background:var(--accent-soft);color:var(--ink)}
 
 /* form field (label over input) for create/edit forms */
 .form-field{display:flex;flex-direction:column;gap:6px;max-width:440px;margin-bottom:16px}
@@ -1840,6 +1963,16 @@ body.sign-body{background:var(--paper)}
    actually worked had no voice of its own until now. */
 .note-msg.good{background:var(--forest-soft);color:var(--forest)}
 
+/* Two rent steps on one date, and the three answers to it (duplicateRentSteps,
+   escalations.js). Sits above the schedule it is talking about; the rows it means carry
+   the matching badge. */
+.dup-flag{margin-bottom:12px;padding:12px 14px}
+.dup-flag-line{margin:0;font-weight:400;line-height:1.55;color:var(--ink)}
+.dup-flag-line strong{color:var(--gold)}
+.dup-flag-line em{font-style:italic}
+.dup-flag-acts{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+.badge.dup-badge{margin-left:7px;text-transform:none;letter-spacing:0}
+
 /* per-tenant lease document + AI assistant */
 .lease-doc{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:340px;overflow:auto;color:var(--ink);margin-bottom:16px}
 .qa-log{display:flex;flex-direction:column;gap:14px;margin-bottom:16px}
@@ -1958,4 +2091,7 @@ button.qa-chip:hover{background:var(--accent-soft);border-color:var(--accent);co
   .prop-mix-tip{left:50%;top:calc(100% + 8px);transform:translateX(-50%)}
   .esc-row{grid-template-columns:1fr 1fr;gap:12px}
   .cam-row{grid-template-columns:1fr 110px 34px;gap:10px}
+  /* Two by two rather than four across: the name and the amount, then the date and the
+     ＋ under them. Four columns at this width squeezes the name to nothing. */
+  .cam-add-line{grid-template-columns:1fr 110px;gap:10px}
 }

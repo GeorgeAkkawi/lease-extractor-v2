@@ -3531,6 +3531,42 @@ export const deleteCamLineItem = (id, propertyId, year) => deleteExpenseLineItem
 export const deleteTaxLineItem = (id, propertyId, year) => deleteExpenseLineItem(id, propertyId, year, 'tax');
 export const deleteRoofLineItem = (id, propertyId, year) => deleteExpenseLineItem(id, propertyId, year, 'roof');
 
+// Correct an expense line's NAME or the DAY IT WAS PAID (George, 2026-08-17: "theres no
+// way to edit date paid or the names of the expense components"). Until now this table
+// had an add and a delete and nothing in between, so fixing a typo meant deleting a real
+// expense row and retyping it — which on an imported line also threw away its bank
+// provenance.
+//
+// ⚠ ONLY THESE TWO FIELDS, and that is the whole reason this needs no carry-through.
+// Walk them (CLAUDE.md §1) and both chains stop short of money:
+//
+//   label     → the bucket key (groupsOf / categoryFor) → the bucket's tax category
+//               → recoverabilityRows → the "What it cost you" table and the
+//                 Income-and-expenses workbook.                         REPORTING ONLY.
+//   paid_date → monthOfYearIndex → which month column (or the "No date" column) a cost
+//               files under in that same workbook.                      REPORTING ONLY.
+//
+// Neither reaches expense_records.cam_total (syncTotalFor sums `amount` under
+// `billable is not false` — it reads neither field), so neither reaches v_tenant_shares,
+// a tenant's share, or a stored invoice. So NO syncTotalFor and NO resyncPropertyBilling:
+// firing a property-wide invoice rebuild because someone fixed a spelling would be a
+// write nobody asked for. `amount` is deliberately NOT accepted here — that one DOES move
+// a bill and needs the full carry-through plus a confirm.
+//
+// A renamed line does move between buckets, and therefore possibly between tax lines, so
+// the callers say so on screen rather than leaving it to be discovered on the workbook.
+export async function updateExpenseLineItem(id, patch = {}) {
+  const next = {};
+  if ('label' in patch) {
+    const label = String(patch.label ?? '').trim();
+    if (!label) throw new Error('An expense component needs a name.');
+    next.label = label;
+  }
+  if ('paid_date' in patch) next.paid_date = isoDateOrNull(patch.paid_date) || null;
+  if (!Object.keys(next).length) return null;
+  return one(supabase.from('cam_line_items').update(next).eq('id', id).select().single());
+}
+
 // A management fee is priced off the rent, not typed as a figure: the row stores the
 // percentage it was struck at (0067 `rent_pct`) and this keeps its dollar amount in
 // step with the property's annual base rent for that year — the same self-healing

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listEscalations, createEscalation, deleteEscalation, backfillLeaseToToday, resyncLeaseBilling } from '../lib/api';
+import { listEscalations, createEscalation, deleteEscalation, backfillLeaseToToday, resyncLeaseBilling, listAlertStates, upsertAlertState } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
-import { computeEscalatedRent, priorRentBefore } from '../lib/escalations';
+import { computeEscalatedRent, priorRentBefore, duplicateRentSteps, rentDupKey } from '../lib/escalations';
+import { toAlertStates } from '../lib/alerts';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
@@ -87,6 +88,44 @@ export default function EscalationScheduleEditor({ lease }) {
     onSuccess: refresh,
   });
 
+  // ── Two steps on one date (see duplicateRentSteps) ────────────────────────────────
+  // The lookup is the same server-synced key/value the dashboard's dismissals use, on the
+  // same query key — normally a cache hit — so "keep both" follows the landlord to another
+  // browser instead of living in this one's localStorage.
+  const { data: stateRows = [] } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates });
+  const dupes = duplicateRentSteps(escalations, { leaseId, dismissed: toAlertStates(stateRows).dismissed });
+  const dupDates = new Set(dupes.map((d) => d.date));
+
+  const keepBoth = useMutation({
+    mutationFn: (d) => upsertAlertState({ alert_key: rentDupKey(leaseId, d), dismissed: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['alertStates'] }),
+  });
+  // Keeping one figure removes the others on that date. It goes through the same
+  // backfill + resync the single-step delete does, because dropping a step can change the
+  // rent in effect today and the stored invoice does not rebuild itself.
+  const resolveDup = useMutation({
+    mutationFn: async ({ keep, group }) => {
+      for (const r of group.rows) if (r.id !== keep) await deleteEscalation(r.id);
+      await backfillLeaseToToday(leaseId);
+      await resyncLeaseBilling(leaseId, propId, fy);
+    },
+    onSuccess: refresh,
+  });
+  async function askKeep(group, row) {
+    const going = group.rows.filter((r) => r.id !== row.id);
+    if (await askConfirm({
+      title: `Keep ${money(row.new_base_rent)} for ${fmtDate(group.date)}?`,
+      message: `${going.length === 1 ? 'The other step' : `The other ${going.length} steps`} on that date ${going.length === 1 ? 'is' : 'are'} removed: ${going.map((r) => money(r.new_base_rent)).join(', ')}.`,
+      implications: [
+        `${fmtDate(group.date)} is left with a single rent step of ${money(row.new_base_rent)}.`,
+        'The rent schedule and any billing that used it re-compute.',
+        'This can’t be undone — you’d re-add the step by hand.',
+      ],
+      confirmLabel: `Keep ${money(row.new_base_rent)}`,
+      tone: 'warn',
+    })) resolveDup.mutate({ keep: row.id, group });
+  }
+
   const priorRent = priorRentBefore(lease, escalations, date);
   const preview = value !== '' && date
     ? computeEscalatedRent(priorRent, { escalation_type: type, escalation_value: Number(value) })
@@ -112,7 +151,39 @@ export default function EscalationScheduleEditor({ lease }) {
 
   return (
     <div>
-      <MutationError of={[add, remove]} />
+      <MutationError of={[add, remove, resolveDup, keepBoth]} />
+
+      {/* Two rent steps on one day. The lease said it twice and the two readings don't
+          quite agree — so say which two figures, say WHY they differ, and offer the three
+          answers. "Keep both" is remembered server-side, which is what stops this from
+          being a permanent nag (George: "just for the sake of the software not flagging it
+          every time"). */}
+      {dupes.map((d) => (
+        <div className="note-msg warn dup-flag" key={d.date}>
+          <p className="dup-flag-line">
+            <strong>Two rent steps on {fmtDate(d.date)}</strong> — {d.rows.map((r) => money(r.new_base_rent)).join(' and ')},
+            {' '}{money(d.spread)} apart.{' '}
+            {d.kind === 'rounding'
+              ? <>They are the same rent: both work out to <strong>{money(d.monthly)} a month</strong>. A lease that prints an annual figure <em>and</em> a monthly one usually rounds one of them, and each was read as its own step.</>
+              : <>These are genuinely different rents, so one of them is wrong.</>}
+            {' '}Which should the schedule keep?
+          </p>
+          <div className="dup-flag-acts">
+            {d.rows.map((r) => (
+              <button type="button" className="btn-sm" key={r.id} disabled={resolveDup.isPending}
+                onClick={() => askKeep(d, r)}>
+                Keep {money(r.new_base_rent)}
+              </button>
+            ))}
+            <button type="button" className="ghost btn-sm" disabled={keepBoth.isPending}
+              title="Both steps are meant to be there. Nothing is deleted and this stops being flagged."
+              onClick={() => keepBoth.mutate(d.date)}>
+              Keep both — stop asking
+            </button>
+          </div>
+        </div>
+      ))}
+
       {sortedEsc.length === 0 ? (
         <p className="empty-line muted">No escalations scheduled.</p>
       ) : (
@@ -122,7 +193,8 @@ export default function EscalationScheduleEditor({ lease }) {
             <tbody>
               {visibleEsc.map((e) => (
                 <tr key={e.id}>
-                  <td>{fmtDate(e.effective_date)}</td>
+                  {/* The flag above names a date; this is that date, on the rows it means. */}
+                  <td>{fmtDate(e.effective_date)}{dupDates.has(String(e.effective_date)) && <span className="badge warn dup-badge">duplicate</span>}</td>
                   <td>{e.escalation_type}</td>
                   <td className="num">{e.escalation_type === 'percent' ? `${e.escalation_value}%` : e.escalation_type === 'fixed' ? money(e.escalation_value) : '—'}</td>
                   <td className="num">{money(e.new_base_rent)}</td>
@@ -171,7 +243,7 @@ export default function EscalationScheduleEditor({ lease }) {
               <tbody>
                 {pendingRenewalEsc.map((e) => (
                   <tr key={e.id} style={{ opacity: 0.7 }}>
-                    <td>{fmtDate(e.effective_date)}</td>
+                    <td>{fmtDate(e.effective_date)}{dupDates.has(String(e.effective_date)) && <span className="badge warn dup-badge">duplicate</span>}</td>
                     <td>{e.escalation_type}</td>
                     <td className="num">{e.escalation_type === 'percent' ? `${e.escalation_value}%` : e.escalation_type === 'fixed' ? money(e.escalation_value) : '—'}</td>
                     <td className="num">{money(e.new_base_rent)}</td>
