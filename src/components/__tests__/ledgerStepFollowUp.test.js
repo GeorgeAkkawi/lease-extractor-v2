@@ -22,7 +22,7 @@
 // ⚠ The demo store persists across tests in this file, so these run in sequence and each
 // evolves the state the previous one left.
 import { describe, it, expect } from 'vitest';
-import { render, screen, waitFor, within, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
@@ -61,15 +61,21 @@ const rowFor = async (name) => {
   await waitFor(() => expect(screen.getByText(name)).toBeTruthy());
   return screen.getByText(name).closest('tr');
 };
-const verdictIn = (row) => row.querySelector('.rr-step-verdict');
-const noteIn = (row) => row.querySelector('.rr-step-note');
+// The raise is ONE chip now, with the whole story on its hover card (2026-08-17) — three
+// printed lines under the tenant's name is exactly what George read back as noise. So the
+// assertions hover the chip and read the card, which keeps the coverage on the sentences
+// themselves rather than on where they happened to be printed.
+const chipIn = (row) => row.querySelector('.rr-raise');
+const cardFor = (row) => {
+  fireEvent.mouseEnter(chipIn(row));
+  return document.querySelector('.tipcard');
+};
 
 describe('LedgerPage — did the tenant pick up the raise?', () => {
-  it('a lease with no applied step shows neither line', async () => {
+  it('a lease with no applied step shows no raise chip at all', async () => {
     renderLedger();
     const row = await rowFor('City Dental');
-    expect(noteIn(row)).toBeNull();
-    expect(verdictIn(row)).toBeNull();
+    expect(chipIn(row)).toBeNull();
     cleanup();
   });
 
@@ -86,19 +92,25 @@ describe('LedgerPage — did the tenant pick up the raise?', () => {
     renderLedger();
     const row = await rowFor('City Dental');
 
-    // The existing cue still names the raise…
-    expect(noteIn(row).textContent).toMatch(/rent raised to .* in Jun/);
-    // …and the new line says what that increase is MADE OF. City Dental carries CAM & tax,
-    // and it did not move — so the line says so rather than leaving it to be inferred.
-    // This is George's question in one sentence.
-    const madeOf = within(row).getByText(/the bill went up/);
-    expect(madeOf.textContent).toContain(`$${STEP}.00`);
-    expect(madeOf.textContent).toContain('in Jun');
-    expect(madeOf.textContent).toContain('all of it base rent');
+    // The chip names the month at a glance…
+    expect(chipIn(row).textContent).toContain('Jun raise');
+
+    // …and the card states the raise as a BEFORE AND AFTER, which is the part three
+    // sentences never actually said (George: "the rent raise effect isnt clear").
+    const card = cardFor(row);
+    // Monthly, because that is what a box on this row bills — the constants above are annual.
+    expect(card.textContent).toContain(`$${(OLD_BASE / 12).toLocaleString('en-US')}.00 → $${(NEW_BASE / 12).toLocaleString('en-US')}.00`);
+    expect(card.textContent).toContain('The whole bill');
+    expect(card.textContent).toContain(`+$${STEP}.00/mo`);
+    // City Dental carries CAM & tax and it did not move — so the card says so rather than
+    // leaving it to be inferred. This is George's question in one sentence.
+    expect(card.textContent).toContain('base rent');
+    expect(card.textContent).toContain('CAM & tax estimate is unchanged');
 
     // Nothing settled since June yet — and it says that, rather than reading a shortfall
     // into months no cheque has been recorded against.
-    expect(verdictIn(row).textContent).toContain('nothing recorded since the raise yet');
+    expect(chipIn(row).textContent).toContain('nothing in yet');
+    expect(card.textContent).toContain('Nothing has been recorded since the raise yet');
     cleanup();
   });
 
@@ -107,11 +119,11 @@ describe('LedgerPage — did the tenant pick up the raise?', () => {
     await markMonthPaid('lease-2', 'prop-1', Y, 7, { amount: OLD_MONTHLY, source: 'manual' });
     renderLedger();
     const row = await rowFor('City Dental');
-    const v = verdictIn(row);
-    expect(v.textContent).toContain('still at the pre-raise rate');
-    expect(v.textContent).toContain(`$${STEP}.00/mo since Jun`);
-    expect(v.textContent).toContain('$700.00 over 2 months');
-    expect(v.querySelector('.rr-step-bad')).toBeTruthy();
+    expect(chipIn(row).className).toContain('rr-raise-bad');
+    const card = cardFor(row);
+    expect(card.textContent).toContain('still paying the pre-raise amount');
+    expect(card.textContent).toContain(`$${STEP}.00/mo since Jun`);
+    expect(card.textContent).toContain('$700.00 over 2 months');
     cleanup();
   });
 
@@ -122,14 +134,14 @@ describe('LedgerPage — did the tenant pick up the raise?', () => {
     await markMonthPaid('lease-2', 'prop-1', Y, 7, { amount: STEP, additional: true, source: 'manual' });
     renderLedger();
     const row = await rowFor('City Dental');
-    const v = verdictIn(row);
-    expect(v.textContent).toContain('picked up');
-    expect(v.textContent).not.toContain('short');
-    expect(v.querySelector('.rr-step-ok')).toBeTruthy();
-    // The unstepped tenant beside it still shows neither line.
+    const chip = chipIn(row);
+    expect(chip.textContent).toContain('picked up');
+    expect(chip.textContent).not.toContain('short');
+    expect(chip.className).toContain('rr-raise-ok');
+    expect(cardFor(row).textContent).toContain('every one at the new bill');
+    // The unstepped tenant beside it still shows no chip.
     const other = screen.getByText('Bright Coffee Co.').closest('tr');
-    expect(noteIn(other)).toBeNull();
-    expect(verdictIn(other)).toBeNull();
+    expect(chipIn(other)).toBeNull();
     cleanup();
   });
 });

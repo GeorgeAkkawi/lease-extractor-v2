@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { addAdjustment, deleteAdjustment, markMonthPaid, unmarkMonthPaid, updatePayment } from '../lib/api';
+import { addAdjustment, deleteAdjustment, markMonthPaid, updatePayment } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
@@ -92,11 +92,6 @@ export default function MonthDetailPanel({
     }),
     onSuccess: settle,
   });
-  const undoMonth = useMutation({
-    mutationFn: () => unmarkMonthPaid(row.lease_id, year, m),
-    onSuccess: settle,
-  });
-
   // Re-file a payment (George, 2026-08-13: a tenant who pays the month before, and "if a
   // tenant is over paying where does that go"). Until now the only correction was Undo the
   // month and retype, which throws away the paid date, the note and the import provenance a
@@ -106,7 +101,7 @@ export default function MonthDetailPanel({
     onSuccess: settle,
   });
 
-  const busy = post.isPending || removeAdj.isPending || recordGap.isPending || undoMonth.isPending || movePay.isPending;
+  const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending;
 
   // Moving money between months changes what the grid says about BOTH of them, so it asks
   // first — and the dialog states each side rather than saying "are you sure".
@@ -277,22 +272,18 @@ export default function MonthDetailPanel({
                   Record {money(shortfall)} received
                 </button>
               )}
+              {/* ⚠ "Undo this month" USED TO LIVE HERE and has moved to the grid, where a
+                  single click on the box takes the month back and a double-click opens this
+                  panel (George, 2026-08-17: *"one click to mark it paid one to mark it
+                  unpaid and a double click to enter the pop up not an undo this month in the
+                  popup to remove it"*). Two ways to do one thing is how they drift; the
+                  grid's version also asks first when the money came off a bank statement,
+                  which this one never did. */}
               {monthPayments.length > 0 && (
-                <button className="ghost" style={{ marginTop: 6 }} disabled={busy} onClick={async () => {
-                  const ok = await askConfirm({
-                    title: `Undo ${monthName(m)}?`,
-                    message: `Deletes ${monthPayments.length} payment${monthPayments.length === 1 ? '' : 's'} recorded for ${monthName(m)} ${year}.`,
-                    implications: [
-                      `${money(monthPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0))} comes off what has been collected.`,
-                      'Any adjustments on this month stay — they are what was billed, not what was paid.',
-                    ],
-                    confirmLabel: 'Undo the month',
-                    tone: 'warn',
-                  });
-                  if (ok) undoMonth.mutate();
-                }}>
-                  Undo this month
-                </button>
+                <p className="muted mp-note" style={{ marginTop: 8 }}>
+                  To take {monthName(m)} back, click its box on the Ledger — one click records a month,
+                  one click undoes it.
+                </p>
               )}
             </div>
           </div>
@@ -348,7 +339,7 @@ export default function MonthDetailPanel({
               </button>
             </div>
             {refused && <p className="note-msg danger">{refused}</p>}
-            <MutationError of={[removeAdj, recordGap, undoMonth]} />
+            <MutationError of={[removeAdj, recordGap]} />
           </div>
         </div>
       </div>

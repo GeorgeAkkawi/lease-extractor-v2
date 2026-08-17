@@ -95,9 +95,21 @@ button.danger-solid:hover{filter:brightness(1.07)}
 .rent-roll th:last-child,.rent-roll td:last-child{padding-right:16px}
 .rr-mhead{display:flex;flex-direction:column;align-items:center;gap:3px}
 .rr-all{padding:1px 6px;font-size:10px;line-height:1.5;text-transform:none;letter-spacing:0}
-.rr-cell{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;box-sizing:border-box;min-width:30px;min-height:26px;padding:2px 3px;line-height:1.1;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-2);cursor:pointer;color:var(--faint);font-weight:700;font-family:var(--ui)}
-.rr-cell:hover:not(:disabled){border-color:var(--accent)}
+/* ⚠ ONE SIZE, EVERY STATE. The box was 30px empty and 46px paid, and .rr-adj added a
+   THIRD line inside it — so recording a month or posting a charge reflowed all twelve
+   columns (George, 2026-08-17: "if i add a charge or credit the box gets way bigger and
+   doesnt look good"). Fixed width and height means the grid never moves, whatever lands
+   on it; everything that used to need the extra room is on the hover card now. */
+.rr-cell{position:relative;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;box-sizing:border-box;width:48px;height:32px;padding:2px 3px;line-height:1.1;border:1px solid var(--border);border-radius:var(--radius);background:var(--panel-2);cursor:pointer;color:var(--faint);font-weight:700;font-family:var(--ui);overflow:hidden}
+.rr-cell:hover:not(:disabled):not(.is-pending){border-color:var(--accent)}
 .rr-cell:disabled{opacity:.55;cursor:default}
+/* ⚠ A BOX WITH A WRITE IN FLIGHT IS DIMMED, NOT `disabled` — and that is a bug fix, not a
+   style. A disabled button receives NO click events at all, so the `disabled={pending}`
+   this replaces swallowed the SECOND click of every double-click: the first click painted
+   the month and disabled the box, and the double-click that was meant to cancel it and
+   open the pop-up never reached the DOM. Found in the browser; the jsdom tests cannot see
+   it, because fireEvent dispatches straight at the node. */
+.rr-cell.is-pending{opacity:.55}
 .rr-cell.paid{background:var(--forest-soft);border-color:var(--forest);color:var(--forest)}
 .rr-cell.late{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
 /* A scheduled rent escalation lands on this month — a subtle olive left accent marks
@@ -125,44 +137,45 @@ button.rr-cell.abated{cursor:pointer}
    landlord can see exactly what came in for each box (George: "the number doesnt show
    up"). Whole dollars, one line; the cell grows to fit, and full cents live in the title. */
 .rr-amt{font-size:9.5px;font-weight:700;line-height:1;margin-top:1px;opacity:.9;white-space:nowrap;font-variant-numeric:tabular-nums}
-.rr-cell.paid{min-width:46px}
-/* "paid = paid" stands — a month with a recorded payment keeps its forest ✓ and stays
-   clickable. The DIFFERENCE rides the figure alone: gold when the deposit came in under
-   what the lease billed, forest with a + when it came in over. One tint, no new cell
-   state, so a landlord reads the gap at a glance without the box changing meaning. */
-.rr-amt.under{color:var(--gold);opacity:1}
-.rr-amt.over{opacity:1}
+/* ⚠ THE BOX CARRIES THE DIFFERENCE NOW, not only its figure. Until 2026-08-17 "paid =
+   paid" meant the box stayed forest whatever arrived and only the small figure tinted —
+   George's own rule, which he then overrode: "if a charge comes in above or below i think
+   we just have the box itself change to a different color and when you hover over it it
+   explains what has happened". The ✓ stays, so a paid month still reads as paid; the gold
+   is the SAME gold as ◐ / — / ↓, because it means the same thing on all of them — look at
+   this — and the glyph says which kind of look. Still deliberately not a third palette. */
+.rr-cell.paid.off{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
 /* Money recorded FOR a month this lease bills nothing for — a new tenant's first
    deposits, or an abated month. It settles no charge, so it can't be a ✓; it says so
    instead of quietly drifting onto the next month the lease does bill. */
-.rr-cell.recv{background:var(--gold-soft);border-color:var(--gold);color:var(--gold);border-style:dashed;min-width:46px}
-/* A per-month charge or credit posted on this box (0082). It rides UNDER the figure so
-   the cell still reads as its own state — the adjustment is why the box is off, not a
-   state of its own. Gold = a charge the tenant owes on top; forest = a credit. */
-.rr-adj{display:block;font-size:9px;font-weight:700;line-height:1;margin-top:1px;color:var(--gold);white-space:nowrap;font-variant-numeric:tabular-nums}
-.rr-adj.credit{color:var(--forest)}
+.rr-cell.recv{background:var(--gold-soft);border-color:var(--gold);color:var(--gold);border-style:dashed}
+/* A per-month charge or credit posted on this box (0082) — a corner mark, not a line.
+   It printed its amount under the figure until 2026-08-17, which grew the box and moved
+   the grid; the amount, the kind and the note typed with it are on the hover card, which
+   is also the only place the note has ever been readable from the grid at all. Gold = a
+   charge the tenant owes on top; forest = a credit. */
+.rr-mark{position:absolute;top:0;right:0;width:0;height:0;border-top:7px solid var(--gold);border-left:7px solid transparent}
+.rr-cell.adj-credit .rr-mark{border-top-color:var(--forest)}
 button.rr-cell.outside{cursor:pointer}
 /* The key: real .rr-cell swatches wearing the live classes, so it can't drift from
    the grid it explains. */
 .rr-key{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin:6px 0 14px;font-size:11.5px;color:var(--faint)}
 .rr-key-label{font-family:var(--ui);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
 .rr-key-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-.rr-key .rr-cell{cursor:default;pointer-events:none;min-height:22px}
+.rr-key .rr-cell{cursor:default;pointer-events:none;height:26px;width:44px}
 .rr-key-note{flex-basis:100%;font-size:11px;color:var(--faint)}
 .rent-roll th.rr-owes,.rent-roll td.rr-owes{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .rr-split{color:var(--faint);font-size:11px;margin-top:2px;white-space:nowrap}
-/* Plain-language cue next to a tenant whose base rent stepped up mid-year — so the two
-   different monthly box values read as the scheduled raise, not a mismatch. */
-.rr-step-note{color:var(--accent);font-size:11px;margin-top:2px;white-space:nowrap;font-weight:600}
-/* …and whether the money followed the raise (2026-08-13). Deliberately NOT a third
-   palette: forest = the money picked it up, gold = it didn't — the same two colours the
-   month boxes and the `short $X` / `over $X` chips already use for exactly this
-   distinction, so one row never says "short" in two different colours. Wraps, unlike
-   .rr-step-note above: this line carries a whole sentence and a nowrap would push the
-   twelve month columns off screen on a narrow window. */
-.rr-step-verdict{font-size:11px;margin-top:2px;line-height:1.35;max-width:340px}
-.rr-step-ok{color:var(--forest);font-weight:600}
-.rr-step-bad{color:var(--gold);font-weight:600}
+/* The raise, in one chip. It was three printed lines under the tenant's name until
+   2026-08-17 — the ↗ note, what the bill's jump was made of, and the verdict — which made
+   every stepped row three lines taller and read as noise. Same two colours as everything
+   else on this grid: forest = the money picked the raise up, gold = it didn't. */
+.rr-raise{display:inline-block;margin-top:3px;font-size:10.5px;font-weight:700;line-height:1.4;
+  padding:0 7px;border-radius:10px;white-space:nowrap;cursor:help}
+.rr-raise:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.rr-raise-ok{color:var(--forest);background:var(--forest-soft)}
+.rr-raise-bad{color:var(--gold);background:var(--gold-soft)}
+.rr-raise-muted{color:var(--faint);background:var(--panel-2)}
 .rr-tenant{color:inherit;text-decoration:none}
 .rr-tenant:hover{color:var(--accent)}
 /* Collected-of-total column: "$X of $Y", a slim progress bar, then %/credit/behind. */
@@ -177,6 +190,50 @@ button.rr-cell.outside{cursor:pointer}
 .rr-short{color:var(--gold);background:var(--gold-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
 .rr-over{color:var(--forest);background:var(--forest-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
 .rent-roll tr.rr-totals td{border-top:1px solid var(--border);padding-top:8px}
+/* ── The hover card (components/Tip.js) ──────────────────────────────────────────────
+   `position:fixed` because it is portalled to <body> — the Ledger table sits inside
+   .table-wrap, and a box with overflow on one axis computes `auto` on the other, so a
+   card positioned inside the table would be clipped by the scroller on both. */
+.tipcard{position:fixed;z-index:60;width:280px;max-width:calc(100vw - 16px);
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:10px 12px;font-size:12px;line-height:1.45;color:var(--ink);
+  pointer-events:none}
+.tip-title{margin:0 0 6px;font-family:var(--ui);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--faint);font-weight:700}
+.tip-row{display:flex;align-items:baseline;gap:10px;padding:1px 0}
+.tip-row>span{flex:1;min-width:0;color:var(--muted)}
+.tip-row>b{font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:700}
+.tip-row.sub{font-size:11px}
+.tip-row.sub>span,.tip-row.sub>b{color:var(--faint);font-weight:600}
+.tip-row.strong{border-top:1px solid var(--hair);margin-top:3px;padding-top:4px}
+.tip-row.strong>span{color:var(--ink);font-weight:700}
+.tip-warn{color:var(--gold)}
+.tip-ok{color:var(--forest)}
+.tip-memo{font-style:normal;color:var(--faint)}
+.tip-rule{border-top:1px solid var(--hair);margin:6px 0}
+.tip-note{margin:6px 0 0;font-size:11.5px;line-height:1.45;color:var(--muted)}
+/* Always the last line, always the same shape: what a click will do. Kept visually apart
+   so it can never be mistaken for one of the figures above it. */
+.tip-action{margin:8px 0 0;padding-top:6px;border-top:1px solid var(--hair);
+  font-size:10.5px;color:var(--faint);font-weight:600}
+/* ── The two statement-line tables (unplaced · decided) ──────────────────────────────
+   FIXED columns. With auto layout the actions cell (two 210px selects) set the table's
+   width, so putting a line back from Decided re-measured every column and the Amount
+   figures moved under their own header. */
+.line-table{table-layout:fixed;min-width:0}
+.line-table th,.line-table td{padding:8px 10px;font-size:13px;vertical-align:top}
+.line-table th:first-child,.line-table td:first-child{padding-left:0}
+.line-table th:last-child,.line-table td:last-child{padding-right:0}
+.line-desc{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.line-table td.num{white-space:nowrap}
+/* One right-aligned column of controls, each on its own line. They used to be inline-block
+   selects inside a text-align:right cell, with a display:flex second step wedged between
+   them — so the step row left-aligned while everything around it right-aligned. */
+.line-actions{display:flex;flex-direction:column;align-items:stretch;gap:5px}
+.line-actions select,.line-actions .text-input{width:100%;max-width:none;font-size:11px}
+.line-step{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+.line-step select,.line-step .text-input{flex:1;min-width:0;max-width:none}
+.line-step .btn-sm{flex:0 0 auto}
 /* Statement-import review (full-page, not a modal). */
 .stmt-propline{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:6px 0 10px}
 .stmt-group{margin-top:14px}

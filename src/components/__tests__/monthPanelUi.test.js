@@ -71,7 +71,7 @@ describe('the Rent Ledger month panel', () => {
     await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
     await waitFor(() => expect(janCell().className).toContain('paid'));
 
-    fireEvent.click(janCell());
+    fireEvent.dblClick(janCell());
     const panel = await screen.findByRole('dialog', { name: /January/ });
     expect(within(panel).getByText('What you billed')).toBeTruthy();
     expect(within(panel).getByText('What came in')).toBeTruthy();
@@ -83,11 +83,16 @@ describe('the Rent Ledger month panel', () => {
     fireEvent.change(within(panel).getByLabelText('Note (optional)'), { target: { value: 'Snow removal ran high' } });
     fireEvent.click(within(panel).getByText('Post charge'));
 
-    // The month now owes $400 more than what came in — and the BOX says so: its figure
-    // goes gold ("under") and carries the +$400 chip.
-    await waitFor(() => expect(document.querySelector('.rent-roll .rr-adj')).toBeTruthy());
-    expect(document.querySelector('.rent-roll .rr-adj').textContent).toBe('+$400');
-    expect(janCell().querySelector('.rr-amt.under')).toBeTruthy();
+    // The month now owes $400 more than what came in — and the BOX says so: it goes gold
+    // and wears the corner mark. The amount and the note ride the hover card (2026-08-17),
+    // which is the only place the note has ever been readable from the grid.
+    await waitFor(() => expect(document.querySelector('.rent-roll .rr-cell.has-adj')).toBeTruthy());
+    expect(janCell().className).toContain('off');
+    fireEvent.mouseEnter(janCell());
+    const card = document.querySelector('.tipcard');
+    expect(card.textContent).toContain('+$400.00');
+    expect(card.textContent).toContain('Snow removal ran high');
+    fireEvent.mouseLeave(janCell());
     const stored = await listAdjustments({ leaseId: 'lease-3', year: Y });
     expect(stored).toHaveLength(1);
     expect(Number(stored[0].amount)).toBe(400);
@@ -99,7 +104,7 @@ describe('the Rent Ledger month panel', () => {
     renderLedger();
     await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
     await waitFor(() => expect(janCell().className).toContain('paid'));
-    fireEvent.click(janCell());
+    fireEvent.dblClick(janCell());
     let panel = await screen.findByRole('dialog', { name: /January/ });
     fireEvent.change(within(panel).getByLabelText('Kind'), { target: { value: 'fee' } });
     fireEvent.change(within(panel).getByLabelText('Amount'), { target: { value: '250' } });
@@ -117,7 +122,7 @@ describe('the Rent Ledger month panel', () => {
     renderLedger();
     await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
     await waitFor(() => expect(janCell().className).toContain('paid'));
-    fireEvent.click(janCell());
+    fireEvent.dblClick(janCell());
     const panel = await screen.findByRole('dialog', { name: /January/ });
     fireEvent.change(within(panel).getByLabelText('Kind'), { target: { value: 'fee' } });
     const picker = within(panel).getByLabelText('Charge or credit');
@@ -130,7 +135,7 @@ describe('the Rent Ledger month panel', () => {
     renderLedger();
     await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
     await waitFor(() => expect(janCell().className).toContain('paid'));
-    fireEvent.click(janCell());
+    fireEvent.dblClick(janCell());
     const panel = await screen.findByRole('dialog', { name: /January/ });
     fireEvent.change(within(panel).getByLabelText('Kind'), { target: { value: 'fee' } });
     fireEvent.change(within(panel).getByLabelText('Amount'), { target: { value: '75' } });
@@ -163,14 +168,14 @@ describe('the Rent Ledger month panel', () => {
     renderLedger();
     await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
     await waitFor(() => expect(janCell().className).toContain('paid'));
-    fireEvent.click(janCell());
+    fireEvent.dblClick(janCell());
     let panel = await screen.findByRole('dialog', { name: /January/ });
 
     // A concession — the one kind that is locked to "credit".
     fireEvent.change(within(panel).getByLabelText('Kind'), { target: { value: 'credit' } });
     fireEvent.change(within(panel).getByLabelText('Amount'), { target: { value: '300' } });
     fireEvent.click(within(panel).getByText('Post credit'));
-    await waitFor(() => expect(document.querySelector('.rent-roll .rr-adj.credit')).toBeTruthy());
+    await waitFor(() => expect(document.querySelector('.rent-roll .rr-cell.adj-credit')).toBeTruthy());
 
     panel = await screen.findByRole('dialog', { name: /January/ });
     fireEvent.click(within(panel).getByLabelText('Remove this adjustment'));
@@ -187,7 +192,7 @@ describe('the Rent Ledger month panel', () => {
       renderLedger();
       await waitFor(() => expect(screen.getByText('Northwind Books')).toBeTruthy());
       await waitFor(() => expect(janCell().className).toContain('paid'));
-      fireEvent.click(janCell());
+      fireEvent.dblClick(janCell());
       const panel = await screen.findByRole('dialog', { name: /January/ });
       const options = Array.from(within(panel).getByLabelText('Kind').options).map((o) => o.value);
       expect(options).not.toContain('camtax');

@@ -12,6 +12,123 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **ROUND A of the Ledger polish: the grid says it by HOVERING. One hover card
+  replaces three printed note-lines and every dense `title=`; a month box now changes COLOUR when
+  the money came in off the bill; a charge or credit is a corner mark instead of a third line, so
+  the box never changes size; one click records a month and one click takes it back, with a
+  double-click into the pop-up; and the two statement-line tables stop moving their Amount column.**
+  Cloudflare version **`f2d083a1-fe36-4efa-9fdf-6cd9f4932ac3`** (on top of `1ffa82f9`).
+
+  George, looking at the live Ledger: *"the formatting on the ledger is not good either — we need to
+  implement hover technology on those and convey good information that makes sense without having to
+  write it out … the little notes like '↗ rent raised to $4,418.00/mo in Jun the bill went up $54.12
+  in Jun — all of it base rent ✓ picked up …' and the rent raise effect isnt clear. also if i add a
+  charge or credit the box gets way bigger and doesnt look good … the fomratting on the money not
+  placed yet is also off near the amounts collumn when i added the 5 points entry back. also theres
+  no way to uncheck a box on the ledger. it should be one click to mark it paid one to mark it
+  unpaid and a double click to enter the pop up not an undo this month in the popup to remove it."*
+  And, on the colour: *"if a charge comes in above or below i think we just have the box itself
+  change to a different color and when you hover over it it explains what has happened. same thing
+  for when the user themselves makes a change to the charge a hover explains it but you can still
+  click in and see."*
+
+  **THE HOVER CARD IS A PORTAL, AND IT HAD TO BE.** `src/components/Tip.js` is new: `<Tip as="button"
+  …/>` renders the anchor itself and mounts a `position:fixed` card through `createPortal` on
+  hover/focus, positioned from the anchor's rect, flipped above when there is no room below, clamped
+  to the viewport, and closed by scroll / resize / Escape. The obvious build — an absolutely
+  positioned panel revealed on `:hover`, the way `.corp-flyout` works — CANNOT work here: the Ledger
+  table lives inside `.table-wrap`, which is `overflow-x:auto`, and a box with overflow on one axis
+  computes `auto` on the other, so the card would be clipped by the scroller on both. (App.css:305
+  already records the sibling of that bug.) Only the hovered anchor mounts a card, so a 12 × N grid
+  holds no hidden DOM, and there is deliberately **no provider** — the tests that read these cards
+  mount the page, not a tree of contexts.
+
+  **A REVERSAL OF GEORGE'S OWN EARLIER RULE, recorded because it is one.** *"paid = paid — the box
+  stays forest ✓ and only the FIGURE carries the difference"* (2026-08-05) is now overridden by him:
+  a settled month whose money differs from its bill by more than 50¢ paints the **whole box gold**,
+  keeping the ✓ so a paid month still reads as paid. Gold is the same "look at this" gold as ◐ / — /
+  ↓ and the glyph says which kind of look, so this is still not a third palette.
+
+  **THE BOX HAS ONE SIZE NOW, IN EVERY STATE.** It was `min-width:30px` empty and `46px` paid, and
+  `.rr-adj` printed the adjustment as a third line inside it — so recording a month or posting a
+  charge reflowed all twelve columns. Fixed `48×32` for every state; the adjustment is a 7px corner
+  triangle (gold = a charge, forest = a credit) that cannot move the box. Measured live: every one
+  of the 24 boxes on Maple Plaza reports `48x32`, before and after posting a $150 fee.
+
+  **AND THE NOTE FINALLY HAS A READER.** George: *"i added a note but theres no way to see that note
+  once i post the charge."* The memo has been stored and rendered inside the pop-up since 0082 —
+  what never existed was any way to see it **from the grid**, which is where he looked. The card
+  prints the kind, the amount and the note together: verified live, a $150 late fee on Northwind
+  Books' January reads *`Late fee / other charge "late fee — paid on the 12th"  +$150.00`* above
+  `Billed $12,900.00 · Received $12,750.00 · $150.00 under the bill`.
+
+  **THREE PRINTED LINES BECAME ONE CHIP.** `↗ Jun raise · picked up` (forest) or `· short $54/mo`
+  (gold), with the whole story on hover — and the raise stated as a **before-and-after**, which is
+  the part three sentences never actually said: `Base rent $7,000.00 → $7,350.00  +$350.00/mo`,
+  `The whole bill $9,150.00 → $9,500.00`, `What rose: $350.00 base rent`, *"Nothing else moved — the
+  CAM & tax estimate is unchanged."* Every figure still comes from `escalationFollowThrough` over the
+  same allocation the boxes paint from; only where it prints has moved.
+
+  **ONE CLICK ON, ONE CLICK OFF, DOUBLE-CLICK TO OPEN — and the event order is the whole problem.**
+  A browser fires click, click, dblclick, so acting on the first click means a double-click has
+  already written something before the second click lands. Two things follow, both deliberate:
+  the cache is painted IMMEDIATELY (the box answers with no delay at all) but the network write is
+  held `TAP_MS = 260`; a double-click inside that window clears the timer and restores the cache, so
+  nothing was ever sent. And opening the pop-up waits the same window even on a plain single click,
+  because the modal scrim is full-screen and a pop-up opened on the FIRST click would catch the
+  second click on its own scrim and close itself again. Past the window the write has gone and the
+  pop-up opens on the month as it now stands.
+
+  ⚠ **A BOX WITH A WRITE IN FLIGHT IS DIMMED, NOT `disabled` — and that is a bug fix, not a style.**
+  The first build kept `disabled={pending}`, and a disabled button receives **no click events at
+  all**: the first click painted the month and disabled the box, and the double-click that was meant
+  to cancel it and open the pop-up never reached the DOM. Found in the browser on the second
+  drive-through; **jsdom cannot see it**, because `fireEvent` dispatches straight at the node —
+  the tests passed over it in both directions.
+
+  ⚠ **ONE CLICK MUST NOT SILENTLY DELETE A BANK PAYMENT.** `unmarkMonthPaid` deletes every payment
+  tagged to the month, and where one came from an import, deleting it also moves the bank tie-out's
+  books side — money the statement showed stops being accounted for on the very panel that exists to
+  say every line landed. So one click undoes what the app recorded; a month holding **more than one**
+  payment, or any payment whose `source` is `'import'`, asks first and names what it holds.
+  `payments.source` is already on the roll (0088), so this costs no query.
+
+  **"Undo this month" has LEFT the pop-up** (George's instruction), replaced by a line saying where
+  it went. Two ways to do one thing is how they drift — and the grid's version is the one that asks
+  about imported money.
+
+  **THE UNPLACED / DECIDED TABLES STOP MOVING.** With auto layout the actions cell (two 210px
+  selects) set the table's width, so putting a line back from **Decided** re-measured every column
+  and the Amount figures slid out from under their own header — exactly what George hit with the
+  "5 points" entry. Both tables are `table-layout:fixed` with explicit `<col>` widths, the
+  description truncates with the full text on hover, and the actions are one right-aligned
+  `.line-actions` flex column (the second-step row was a repurposed `.rr-drift`, which is
+  `display:flex` and therefore left-aligned inside a right-aligned cell). Measured live on Maple
+  Plaza: every Amount cell's right edge is 1009px, at 5 rows and at 4.
+
+  **Files:** `src/components/Tip.js` (new) · `src/pages/LedgerPage.js` · `src/components/MonthDetailPanel.js`
+  · `src/App.css` · `src/components/__tests__/ledgerPage.test.js`, `ledgerStepFollowUp.test.js`,
+  `monthPanelUi.test.js`.
+
+  **Verified:** 1904 tests across 181 files. Live in the key-free demo build: all 24 boxes measure
+  48×32 before and after a posted charge · the card escapes `.table-wrap` and stays in the viewport ·
+  double-click opens the pop-up and writes nothing (the box stayed `paid`) · a single click on an
+  open month records it · the fee's card carries the note · the Amount column holds still across a
+  row count change · and a closed year still refuses a charge in words (*"FY 2026 is closed. Reopen
+  it first…"*) rather than failing silently. All three URLs 200.
+
+  **Round B is NOT in this deploy** and is next: `addAdjustment`'s ~7 serial round trips
+  parallelised and made optimistic (George: *"post charge button is super slow"*), the Settle-up
+  dialog naming which workbook line moves and by how much, the Income-and-expenses workbook tinting
+  the month a charge or credit landed on — **only** where one actually did, never for a month merely
+  short of cash, which is George's own condition — and `useOptimisticRemove` rolled out to the eleven
+  delete lists that never got it (*"honestly deleting anything on the app feels super slow"*).
+
+  **Still in George's hands, unchanged:** the statement import calls no `resyncPropertyBilling`
+  (raised six times) · `TenantStatement` is pinned to the calendar year (`LeaseDetailPage.js:763`) ·
+  a tagged overpayment still creates no `credit` · two hand-rolled `.panel-toggle` copies on
+  `HistoryPage.js` should move to `Panel`.
+
 - **2026-08-16** — **ROUND 3 of five questions: the year boundary. Closing a year now OFFERS the
   settlement instead of warning about it, the snapshot records what was decided, and the workbook
   states what of the year's income never arrived.** Cloudflare version

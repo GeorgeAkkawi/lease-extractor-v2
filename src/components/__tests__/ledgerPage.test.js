@@ -181,7 +181,7 @@ describe('LedgerPage — the rent ledger grid', () => {
     await updateLease('lease-4', { square_footage: 1000 });
   });
 
-  it('a settled-SHORT month reads ✓ paid (paid = paid) — no "short" badge; clicking opens the month panel, where undo lives', async () => {
+  it('a settled-SHORT month reads ✓ in a GOLD box, its card names the gap, and one click takes it back', async () => {
     const Y = currentYear();
     // Tag City Dental's April at only $5,000 of the $9,150 owed → settled short.
     await markMonthPaid('lease-2', 'prop-1', Y, 4, { amount: 5000 });
@@ -190,35 +190,37 @@ describe('LedgerPage — the rent ledger grid', () => {
     // "paid = paid": a recorded payment marks the month paid whatever the amount — there is
     // NO amber "short" cell state (its removal is a deliberate earlier fix).
     expect(document.querySelector('.rr-cell.paid.short')).toBeNull();
-    // The DIFFERENCE is readable all the same: the figure alone goes gold, and the row
-    // states the gap. $5,000 against April's $9,150 bill → short $4,150. (Scoped to the
-    // grid — the key strip above it carries the same classes on purpose, so it can never
-    // drift from what the cells actually look like.)
-    expect(document.querySelector('.rent-roll .rr-amt.under').textContent).toBe('$5,000');
-    // Once on City Dental's row, once on the all-tenants total (it's the only gap).
-    expect(screen.getAllByText('short $4,150.00')).toHaveLength(2);
-    // April's cell reads ✓ with the received figure ($5,000) and is a single-payment
-    // click-to-undo (not a top-up button).
-    const aprCell = Array.from(document.querySelectorAll('button.rr-cell.paid'))
-      .find((c) => (c.getAttribute('title') || '').includes('received $5,000'));
+    // ⚠ THE BOX ITSELF carries the difference now (2026-08-17), not only its figure —
+    // George overriding his own earlier "only the FIGURE tints" call. $5,000 against
+    // April's $9,150 bill → a gold ✓ box, and the row still states the gap.
+    const aprCell = document.querySelector('.rent-roll button.rr-cell.paid.off');
     expect(aprCell).toBeTruthy();
     expect(within(aprCell).getByText('$5,000')).toBeTruthy();
-    // Clicking a settled month now OPENS it (George, 2026-08-03: "make the ledger
-    // clickable per month to go in and edit to show the differences"). The panel states
-    // what was billed vs what came in, and carries the undo the cell used to.
-    fireEvent.click(aprCell);
+    // Once on City Dental's row, once on the all-tenants total (it's the only gap).
+    expect(screen.getAllByText('short $4,150.00')).toHaveLength(2);
+
+    // Hovering says WHAT HAPPENED, which is the whole point of the card.
+    fireEvent.mouseEnter(aprCell);
+    const card = document.querySelector('.tipcard');
+    expect(card.textContent).toContain('Apr · City Dental');
+    expect(card.textContent).toContain('$4,150.00 under the bill');
+    expect(card.textContent).toContain('take this month back');
+    fireEvent.mouseLeave(aprCell);
+
+    // DOUBLE-click opens the month (single click is the toggle now).
+    fireEvent.dblClick(aprCell);
     await waitFor(() => expect(screen.getByRole('dialog', { name: /April/ })).toBeTruthy());
     const panel = screen.getByRole('dialog', { name: /April/ });
     expect(within(panel).getByText('Still owed')).toBeTruthy();
     expect(within(panel).getByText('$4,150.00')).toBeTruthy();
-    // Undo through the panel → its confirm → April re-opens (nothing is topped up).
-    fireEvent.click(within(panel).getByText('Undo this month'));
-    await waitFor(() => expect(screen.getByRole('alertdialog')).toBeTruthy());
-    fireEvent.click(screen.getByText('Undo the month'));
-    await waitFor(() => expect(
-      Array.from(document.querySelectorAll('button.rr-cell.paid'))
-        .find((c) => (c.getAttribute('title') || '').includes('received $5,000'))
-    ).toBeUndefined());
+    // …and "Undo this month" has LEFT the panel — the grid does it in one click.
+    expect(within(panel).queryByText('Undo this month')).toBeNull();
+    fireEvent.click(within(panel).getByLabelText('Close'));
+
+    // One click on the box takes April back. The payment was recorded by hand and there is
+    // only one of it, so nothing is asked first.
+    fireEvent.click(aprCell);
+    await waitFor(() => expect(document.querySelector('.rent-roll button.rr-cell.paid.off')).toBeNull(), { timeout: 3000 });
     await unmarkMonthPaid('lease-2', Y, 4); // clean up (no-op if already undone)
   });
 
@@ -235,9 +237,12 @@ describe('LedgerPage — the rent ledger grid', () => {
     const recv = document.querySelector('.rent-roll .rr-cell.recv');
     expect(recv).toBeTruthy();
     expect(within(recv).getByText('$2,716')).toBeTruthy();
-    expect(recv.getAttribute('title')).toContain('bills nothing for May');
     // It settles no charge, so it can't read as a paid month.
     expect(recv.className).not.toContain('paid');
+    // The card says why: the lease bills nothing for May, so the money sits where it landed.
+    fireEvent.mouseEnter(recv);
+    expect(document.querySelector('.tipcard').textContent).toContain('May · Sunrise Yoga Studio');
+    fireEvent.mouseLeave(recv);
 
     await unmarkMonthPaid('lease-4', Y, 5);
   });

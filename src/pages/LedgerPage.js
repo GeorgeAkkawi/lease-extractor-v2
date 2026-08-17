@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useParams, Navigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
@@ -45,6 +45,8 @@ import { rentPosition, tieOutSentence, WHERE_IT_LANDS } from '../lib/bankTieOut'
 import { tenantStanding, settleChoicesFor, isBroughtForward, isSettlementRow } from '../lib/settle';
 import { settleBillingChange } from '../lib/invalidate';
 import Panel from '../components/Panel';
+import Tip, { TipTitle, TipRow, TipRule, TipNote, TipAction } from '../components/Tip';
+import { adjustmentsForMonth, adjustmentKindInfo } from '../lib/adjustments';
 import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
 import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
 
@@ -64,11 +66,9 @@ function VarianceChip({ variance }) {
     : <span className="rr-over" title="Across the months already paid, the deposits came in over what the lease billed.">over {money(v)}</span>;
 }
 
-// A raise landed — did the money follow? The ↗ note above says the rent stepped up;
-// without this the Ledger says nothing more about it, which was George's question
-// (2026-08-13). Two lines, both derived by escalationFollowThrough from the same
-// allocation the boxes paint from:
-//   1. WHAT THE BILL'S JUMP WAS MADE OF — his "recognize what the payment increase
+// A raise landed — did the money follow? Everything here is derived by
+// escalationFollowThrough from the SAME allocation the boxes paint from:
+//   1. WHAT THE BILL'S JUMP WAS MADE OF — George's "recognize what the payment increase
 //      should have been on the base and see if the estimate cam and tax increased by
 //      that much". The parts always sum to the jump (componentizeSchedule's invariant),
 //      so this can't print a decomposition that doesn't add up.
@@ -76,48 +76,122 @@ function VarianceChip({ variance }) {
 // `older_gap` exists because bill-vs-money-in alone misreads a tenant who was ALREADY
 // underpaying: the gap looks exactly like a raise they ignored. Naming the older part
 // is the difference between a true sentence and a wrong accusation.
-function StepFollowUp({ step, follow }) {
+//
+// ⚠ IT USED TO BE THREE PRINTED LINES under the tenant's name, and George read them back
+// as noise: *"the little notes … and the rent raise effect isnt clear"* (2026-08-17). The
+// arithmetic is unchanged; what moved is where it is printed. The chip carries the
+// verdict at a glance and the card carries the whole story on hover — INCLUDING the raise
+// as a before-and-after, which is the part three sentences never actually said.
+function raiseVerdict(follow) {
+  if (!follow || follow.verdict === 'pending') return { tone: 'muted', label: 'nothing in yet' };
+  if (follow.verdict === 'honored') return { tone: 'ok', label: 'picked up' };
+  if (follow.verdict === 'over') return { tone: 'ok', label: 'paying over' };
+  const per = money(Math.abs(follow.shortPerMonth));
+  if (follow.verdict === 'pre_raise_rate') return { tone: 'bad', label: 'still at the old rate' };
+  return { tone: 'bad', label: `short ${per}/mo` };
+}
+
+function RaiseChip({ step, follow, owed, prevOwed }) {
   if (!step) return null;
   const monthName = MONTHS[step.month - 1];
-  const jump = follow ? round2(follow.billJump) : 0;
+  const jump = follow ? round2(follow.billJump) : round2(owed - prevOwed);
+  const v = raiseVerdict(follow);
   const parts = [];
   if (follow?.stepMonthly > 0.005) parts.push(`${money(follow.stepMonthly)} base rent`);
-  if (Math.abs(follow?.camTaxMonthly || 0) > 0.005) parts.push(`${follow.camTaxMonthly < 0 ? '−' : ''}${money(Math.abs(follow.camTaxMonthly))} CAM&tax estimate`);
+  if (Math.abs(follow?.camTaxMonthly || 0) > 0.005) parts.push(`${follow.camTaxMonthly < 0 ? '−' : ''}${money(Math.abs(follow.camTaxMonthly))} CAM & tax estimate`);
   if (Math.abs(follow?.roofMonthly || 0) > 0.005) parts.push(`${follow.roofMonthly < 0 ? '−' : ''}${money(Math.abs(follow.roofMonthly))} roof`);
-  // A step only exists because BASE rose, so parts always leads with base when comp is
-  // present. One part means nothing else moved — which is the answer to "did the CAM &
-  // tax estimate go up too?" and worth saying rather than leaving to inference.
-  const madeOf = parts.length > 1 ? ` — ${parts.join(' + ')}` : (parts.length === 1 ? ' — all of it base rent' : '');
 
-  let verdict = null;
+  const n = follow?.settledSince || 0;
+  let since = null;
   if (follow) {
     const per = money(Math.abs(follow.shortPerMonth));
     const total = money(Math.abs(follow.shortSince));
-    const n = follow.settledSince;
-    const spread = `${per}/mo since ${monthName}${n > 1 ? ` (${total} over ${n} months)` : ''}`;
-    if (follow.verdict === 'pending') {
-      verdict = <span className="muted">nothing recorded since the raise yet</span>;
-    } else if (follow.verdict === 'honored') {
-      verdict = <span className="rr-step-ok" title="Every month since the raise has settled at the new bill.">✓ picked up — {n > 1 ? `every month since ${monthName}` : `${monthName}`} came in at the new rate</span>;
-    } else if (follow.verdict === 'over') {
-      verdict = <span className="rr-step-ok" title="Paying above the new bill — the credit shows in the Collected column.">✓ picked up — paying {per}/mo over the new bill</span>;
-    } else if (follow.verdict === 'pre_raise_rate') {
-      verdict = <span className="rr-step-bad" title="The gap since the step is the step itself — this tenant is still paying the pre-raise amount.">⚠ still at the pre-raise rate — short {spread}</span>;
-    } else if (follow.verdict === 'older_gap') {
-      verdict = <span className="rr-step-bad" title="This tenant was already paying under the bill before the raise, so the gap is not the escalation alone.">⚠ short {spread} — but {money(Math.abs(follow.shortBeforePerMonth))}/mo of that was already short before the raise</span>;
-    } else {
-      const got = round2(jump - follow.shortPerMonth);
-      verdict = <span className="rr-step-bad" title="The cheque moved, but not by the whole increase.">⚠ picked up {money(got)} of the {money(jump)} increase — short {spread}</span>;
-    }
+    if (follow.verdict === 'pending') since = `Nothing has been recorded since the raise yet.`;
+    else if (follow.verdict === 'honored') since = `${n} month${n === 1 ? '' : 's'} settled since ${monthName}, every one at the new bill.`;
+    else if (follow.verdict === 'over') since = `Paying ${per}/mo over the new bill — the extra shows in the Collected column.`;
+    else if (follow.verdict === 'pre_raise_rate') since = `Short ${per}/mo since ${monthName}${n > 1 ? ` — ${total} over ${n} months` : ''}. The gap IS the raise: this tenant is still paying the pre-raise amount.`;
+    else if (follow.verdict === 'older_gap') since = `Short ${per}/mo since ${monthName}, but ${money(Math.abs(follow.shortBeforePerMonth))}/mo of that was already short BEFORE the raise — so the gap is not the escalation alone.`;
+    else since = `Picked up ${money(round2(jump - follow.shortPerMonth))} of the ${money(jump)} increase — still short ${per}/mo since ${monthName}${n > 1 ? ` (${total} over ${n} months)` : ''}.`;
   }
+
+  const card = (
+    <>
+      <TipTitle>Rent raise · {monthName}</TipTitle>
+      <TipRow label="Base rent" value={`${money(step.prevBase)} → ${money(step.base)}`} />
+      <TipRow label="" value={`+${money(round2(step.base - step.prevBase))}/mo`} sub tone="ok" />
+      {jump > 0.005 && prevOwed > 0 && (
+        <TipRow label="The whole bill" value={`${money(prevOwed)} → ${money(owed)}`} strong />
+      )}
+      {parts.length > 0 && (
+        <TipRow label="What rose" value={parts.join(' + ')} sub />
+      )}
+      {parts.length === 1 && <TipNote>Nothing else moved — the CAM &amp; tax estimate is unchanged.</TipNote>}
+      {since && (
+        <>
+          <TipRule />
+          <TipNote>{since}</TipNote>
+        </>
+      )}
+    </>
+  );
+
+  return (
+    <Tip as="span" className={`rr-raise rr-raise-${v.tone}`} tabIndex={0} content={card}>
+      ↗ {monthName} raise · {v.label}
+    </Tip>
+  );
+}
+
+// One month of one tenant, as a card: what the bill is made of, every charge or credit
+// posted on it (with the note that was typed with it — which until now could be read
+// NOWHERE but inside the pop-up), what came in, and what a click will do.
+function MonthTip({ ml, tenant, comp, adjRows, owed, received, isStep, settled, lump, outside, abated, action }) {
+  const c = comp || { base: 0, camTax: 0, roof: 0 };
+  const diff = round2(received - owed);
   return (
     <>
-      {jump > 0.005 && (
-        <div className="rr-step-note" title="What this month's bill went up by, and what that increase is made of. Only the base-rent part is the escalation.">
-          the bill went up {money(jump)} in {monthName}{madeOf}
-        </div>
+      <TipTitle>{ml} · {tenant}</TipTitle>
+      {outside ? (
+        <TipNote>Before this lease began — nothing is billed for {ml}.</TipNote>
+      ) : (
+        <>
+          {owed > 0 || adjRows.length > 0 ? (
+            <>
+              <TipRow label="Base rent" value={money(c.base)} />
+              <TipRow label="CAM &amp; tax" value={money(c.camTax)} />
+              {c.roof > 0.005 && <TipRow label="Roof" value={money(c.roof)} />}
+              {adjRows.map((a) => (
+                <TipRow
+                  key={a.id}
+                  label={<>{adjustmentKindInfo(a.kind).label}{a.memo ? <em className="tip-memo"> “{a.memo}”</em> : null}</>}
+                  value={`${Number(a.amount) < 0 ? '−' : '+'}${money(Math.abs(Number(a.amount) || 0))}`}
+                  tone={Number(a.amount) < 0 ? 'ok' : 'warn'}
+                />
+              ))}
+              <TipRow label="Billed" value={money(owed)} strong />
+            </>
+          ) : abated ? (
+            <TipNote>Base rent abated — nothing is due for {ml}.</TipNote>
+          ) : null}
+          <TipRow
+            label="Received"
+            value={money(received)}
+            strong
+            tone={settled && Math.abs(diff) > 0.5 ? 'warn' : undefined}
+          />
+          {settled && Math.abs(diff) > 0.5 && (
+            <TipRow
+              label=""
+              value={`${money(Math.abs(diff))} ${diff < 0 ? 'under' : 'over'} the bill`}
+              sub
+              tone="warn"
+            />
+          )}
+          {lump && <TipNote>Covered by an untagged lump payment, which fills the months still owing from January onward.</TipNote>}
+        </>
       )}
-      {verdict && <div className="rr-step-verdict">{verdict}</div>}
+      {isStep && <TipNote>↗ A scheduled rent escalation lands on this month — the higher amount from here is the raise, not an error.</TipNote>}
+      {action && <TipAction>{action}</TipAction>}
     </>
   );
 }
@@ -571,9 +645,13 @@ export default function LedgerPage() {
       action === 'unmark'
         ? unmarkMonthPaid(leaseId, year, month)
         : markMonthPaid(leaseId, propId, year, month, { amount }),
-    onMutate: async ({ leaseId, month, action, amount }) => {
+    onMutate: async ({ leaseId, month, action, amount, prePainted = false, prev: painted }) => {
       setPendingCells((s) => new Set(s).add(cellKey(leaseId, month)));
       await qc.cancelQueries({ queryKey: rollKey });
+      // ⚠ The tap handler below paints BEFORE it schedules the write, so the box answers
+      // the click at once and a double-click still has time to take it back. Painting a
+      // second time here would record the month twice over.
+      if (prePainted) return { prev: painted };
       const prev = qc.getQueryData(rollKey);
       qc.setQueryData(rollKey, (old) => paint(old, leaseId, month, action, amount));
       return { prev };
@@ -584,6 +662,88 @@ export default function LedgerPage() {
       settle();
     },
   });
+
+  // ── One click on, one click off, double-click to open ────────────────────────────────
+  //
+  // George, 2026-08-17: *"theres no way to uncheck a box on the ledger. it should be one
+  // click to mark it paid one to mark it unpaid and a double click to enter the pop up not
+  // an undo this month in the popup to remove it."*
+  //
+  // ⚠ THE ORDER OF EVENTS IS THE WHOLE PROBLEM. A browser fires click, click, dblclick —
+  // so acting on the first click means a double-click has already written something before
+  // the second click arrives. Two things follow, and both are deliberate:
+  //   1. The cache is painted IMMEDIATELY (the box answers with no delay at all) but the
+  //      network write is held for TAP_MS. A double-click inside that window clears the
+  //      timer and puts the cache back, so nothing was ever sent.
+  //   2. Opening the pop-up waits the same window even on a plain single click — because
+  //      the modal's scrim is full-screen, and a pop-up opened on the FIRST click would
+  //      catch the second click on its scrim and close itself again.
+  // Past the window the write has gone; the pop-up then opens on the month as it now
+  // stands, which is coherent rather than surprising.
+  const TAP_MS = 260;
+  const tapRef = useRef(null);
+
+  const cancelTap = () => {
+    const t = tapRef.current;
+    if (!t) return;
+    tapRef.current = null;
+    clearTimeout(t.id);
+    if (t.paint) {
+      if (t.prev !== undefined) qc.setQueryData(rollKey, t.prev);
+      setPendingCells((s) => { const n = new Set(s); n.delete(t.key); return n; });
+    }
+  };
+
+  // A single click that does something after the double-click window has passed.
+  const tap = (fn) => {
+    cancelTap();
+    const id = setTimeout(() => { tapRef.current = null; fn(); }, TAP_MS);
+    tapRef.current = { id, paint: false };
+  };
+
+  const tapToggle = ({ leaseId, month, action, amount }) => {
+    cancelTap();
+    const key = cellKey(leaseId, month);
+    const prev = qc.getQueryData(rollKey);
+    qc.setQueryData(rollKey, (old) => paint(old, leaseId, month, action, amount));
+    setPendingCells((s) => new Set(s).add(key));
+    const id = setTimeout(() => {
+      tapRef.current = null;
+      cellMut.mutate({ leaseId, month, action, amount, prePainted: true, prev });
+    }, TAP_MS);
+    tapRef.current = { id, key, prev, paint: true };
+  };
+
+  const openMonth = (leaseId, month) => { cancelTap(); setEditing({ leaseId, month }); };
+
+  // ⚠ ONE CLICK MUST NOT SILENTLY DELETE A BANK PAYMENT. `unmarkMonthPaid` removes every
+  // payment tagged to the month — and where one came from an imported statement, deleting
+  // it also moves the bank tie-out's books side, so money the statement showed stops being
+  // accounted for on the very panel that exists to say every line landed. So the one-click
+  // undo is for what the app recorded; anything else asks first and names what it holds.
+  const unmarkNeedsAsk = (tagged) => tagged.length > 1 || tagged.some((p) => p.source === 'import');
+
+  async function askUnmark(r, m, tagged) {
+    const imported = tagged.filter((p) => p.source === 'import');
+    const ok = await askConfirm({
+      title: `Take ${MONTHS[m - 1]} back for ${r.tenant_name}?`,
+      message: `${tagged.length} payment${tagged.length === 1 ? '' : 's'} recorded against ${MONTHS[m - 1]} ${year}, totalling ${money(tagged.reduce((s, p) => s + (Number(p.amount) || 0), 0))}.`,
+      implications: [
+        imported.length > 0
+          ? `${imported.length === tagged.length ? 'This money' : `${imported.length} of these`} came from an imported bank statement. Removing it also takes it out of “Where your bank money went”, so that statement line reads as unaccounted for again.`
+          : 'Every one of them is deleted — the month goes back to owing its full bill.',
+        'Any charges or credits on this month stay. They are what was billed, not what was paid.',
+        'Recording it again dates the payment today, not when the money actually arrived.',
+      ],
+      confirmLabel: `Take ${MONTHS[m - 1]} back`,
+      tone: 'warn',
+    });
+    if (ok) cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'unmark' });
+  }
+
+  // What a click does on a box, resolved once so the handler and the hover card's closing
+  // line can never describe different behaviour.
+  const cellClick = (fn) => (e) => { if (e.detail > 1) return; fn(); };
   const allMut = useMutation({
     mutationFn: (month) => markMonthPaidAllTenants(propId, year, month),
     onError: () => setNote('Could not mark all paid — please try again.', true),
@@ -762,13 +922,20 @@ export default function LedgerPage() {
         <div className="rr-key">
           <span className="rr-key-label">Key</span>
           <span className="rr-key-item"><span className="rr-cell paid">✓<span className="rr-amt">5,324</span></span> paid in full</span>
-          <span className="rr-key-item"><span className="rr-cell paid">✓<span className="rr-amt under">5,025</span></span> paid under the bill</span>
+          {/* ⚠ THE BOX ITSELF NOW CARRIES THE DIFFERENCE, not just its figure. George,
+              2026-08-17: *"if a charge comes in above or below i think we just have the box
+              itself change to a different color and when you hover over it it explains what
+              has happened"* — overriding his own earlier "paid = paid, only the FIGURE
+              carries it" (see the note in App.css). The ✓ stays, so a paid month still
+              reads as paid; gold is the same "look at this" gold as ◐ / — / ↓. */}
+          <span className="rr-key-item"><span className="rr-cell paid off">✓<span className="rr-amt">5,025</span></span> paid, but not the billed amount</span>
           <span className="rr-key-item"><span className="rr-cell paid pool">✓</span> covered by a lump</span>
           <span className="rr-key-item"><span className="rr-cell partial">◐</span> partly covered</span>
           <span className="rr-key-item"><span className="rr-cell late">—</span> month ended, unpaid</span>
           <span className="rr-key-item"><span className="rr-cell recv">↓</span> received, not billed</span>
           <span className="rr-key-item"><span className="rr-cell rr-step">▌</span> rent stepped up</span>
-          <span className="rr-key-note">Click a box to record that month, or undo it. A payment with no month recorded fills the earliest months first.</span>
+          <span className="rr-key-item"><span className="rr-cell paid has-adj"><span className="rr-mark" />✓<span className="rr-amt">5,324</span></span> a charge or credit is on it</span>
+          <span className="rr-key-note">Hover any box for what it is made of. One click records a month, one click takes it back; double-click to open it. A payment with no month recorded fills the earliest months first.</span>
           {prevCollection?.rate != null && (
             <Link to={`/history/${corpId}/${propId}`} className="rr-key-note rr-tenant" title="From the closed year's snapshot — open History for the trend">FY {year - 1} collection rate: {Math.round(prevCollection.rate * 100)}%</Link>
           )}
@@ -826,18 +993,20 @@ export default function LedgerPage() {
                       <div className="rr-split">
                         {money(repMonthly)}/mo{rep ? ` = ${money(rep.base)} base · ${money(rep.camTax)} CAM&tax${rep.roof > 0 ? ` · ${money(rep.roof)} roof` : ''}` : ''}{r.owedMonths < 12 ? ` · ${r.owedMonths} mo` : ''}
                       </div>
+                      {/* …and whether the money followed. Judged from the SAME step the
+                          chip names — on the rare twice-stepped lease the two must talk
+                          about one month, or the row contradicts itself.
+                          escalationFollowThrough returns every step, so a later round can
+                          refine which one without touching this. */}
                       {steps.length > 0 && (
-                        <>
-                          <div className="rr-step-note" title="This tenant's base rent stepped up mid-year on a scheduled escalation — the two different monthly amounts are both correct.">
-                            ↗ rent raised to {money(steps[0].owed)}/mo in {MONTHS[steps[0].month - 1]}
-                          </div>
-                          {/* …and whether the money followed. Judged from the SAME step
-                              the note above names — on the rare twice-stepped lease the
-                              two lines must talk about one month, or the row contradicts
-                              itself. escalationFollowThrough returns every step, so a
-                              later round can refine which one without touching it. */}
-                          <StepFollowUp step={steps[0]} follow={followUp?.[0]} />
-                        </>
+                        <div>
+                          <RaiseChip
+                            step={steps[0]}
+                            follow={followUp?.[0]}
+                            owed={round2(alloc.owed[steps[0].month - 1])}
+                            prevOwed={round2(alloc.owed[steps[0].month - 2])}
+                          />
+                        </div>
                       )}
                     </td>
                     {MONTHS.map((ml, i) => {
@@ -845,11 +1014,19 @@ export default function LedgerPage() {
                       const s = r.schedule?.[m];
                       const c = comp[m];
                       const adjM = round2(Number(c?.adj) || 0);
-                      // Any cell carrying a charge or a credit says so under its figure.
-                      const adjChip = Math.abs(adjM) > 0.005
-                        ? <span className={`rr-adj${adjM < 0 ? ' credit' : ''}`}>{adjM < 0 ? '−' : '+'}{money0(Math.abs(adjM))}</span>
-                        : null;
-                      const open = () => setEditing({ leaseId: r.lease_id, month: m });
+                      // ⚠ A CHARGE OR CREDIT NO LONGER PRINTS A THIRD LINE INSIDE THE BOX.
+                      // `.rr-adj` was `display:block` under the figure, so posting one made
+                      // the box taller AND wider and the whole twelve-column grid reflowed
+                      // — George: *"if i add a charge or credit the box gets way bigger and
+                      // doesnt look good"*. It is a corner mark now (gold = a charge, forest
+                      // = a credit), the box never changes size, and the amount, the kind
+                      // and the note typed with it are all on the hover card.
+                      const adjRows = Math.abs(adjM) > 0.005 || (r.adjustmentRows || []).length
+                        ? adjustmentsForMonth(r.adjustmentRows || [], m)
+                        : [];
+                      const adjCls = Math.abs(adjM) > 0.005 ? ` has-adj${adjM < 0 ? ' adj-credit' : ''}` : '';
+                      const adjMark = Math.abs(adjM) > 0.005 ? <span className="rr-mark" /> : null;
+                      const open = () => openMonth(r.lease_id, m);
                       const owedM = alloc.owed[i];
                       const state = alloc.states[i];
                       const covered = alloc.coverage[i];
@@ -861,24 +1038,48 @@ export default function LedgerPage() {
                       // the intended raise. outsideTerm/owed<=0 months can't be steps.
                       const isStep = stepSet.has(m);
                       const stepCls = isStep ? ' rr-step' : '';
-                      const stepTip = isStep ? '↗ Scheduled rent escalation — base rent stepped up this month; the higher amount from here on is the raise, not an error. ' : '';
                       // Money recorded FOR a month the lease bills nothing for (a tenant
                       // whose lease starts later in the year, an abated month). The tag
                       // holds — it renders before the out-of-term / abated cells, which
                       // would otherwise print "—" over a real deposit and leave the money
                       // to drift onto whatever month the lease does bill.
+                      const tagged = (r.payments || []).filter((p) => Number(p.period_month) === m);
+                      // The card and the handler read the same two lines, so the box can
+                      // never promise one thing and do another.
+                      const card = (props) => (
+                        <MonthTip
+                          ml={ml} tenant={r.tenant_name} comp={c} adjRows={adjRows}
+                          owed={round2(owedM)} received={round2(receivedM)} isStep={isStep}
+                          {...props}
+                        />
+                      );
+                      const takeBack = () => {
+                        if (pending) return;
+                        if (unmarkNeedsAsk(tagged)) tap(() => askUnmark(r, m, tagged));
+                        else tapToggle({ leaseId: r.lease_id, month: m, action: 'unmark' });
+                      };
+
                       if (state === 'unbilled') {
                         return (
                           <td key={m}>
-                            <button type="button" className="rr-cell recv" disabled={pending} onClick={open}
-                              title={`${ml}: ${money(receivedM)} received — this lease bills nothing for ${ml}, so it settles no charge and isn't counted as collected rent. Click to open the month.`}>
-                              ↓<span className="rr-amt">{money0(receivedM)}</span>{adjChip}
-                            </button>
+                            <Tip as="button" type="button" className={`rr-cell recv${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
+                              onClick={cellClick(takeBack)} onDoubleClick={open}
+                              content={card({ settled: true, action: 'Click to take this month back · double-click to open it' })}
+                              aria-label={`${ml} — ${money(receivedM)} received, nothing billed`}>
+                              {adjMark}↓<span className="rr-amt">{money0(receivedM)}</span>
+                            </Tip>
                           </td>
                         );
                       }
                       if (s?.outsideTerm && !(owedM > 0)) {
-                        return <td key={m}><button type="button" className="rr-cell outside" onClick={open} title={`${ml}: before this lease began — click to open the month`}>—</button></td>;
+                        return (
+                          <td key={m}>
+                            <Tip as="button" type="button" className="rr-cell outside"
+                              onClick={cellClick(open)} onDoubleClick={open}
+                              content={card({ outside: true, action: 'Click to open this month' })}
+                              aria-label={`${ml} — before this lease began`}>—</Tip>
+                          </td>
+                        );
                       }
                       // ⚠ A MONTH CAN NOW OWE NOTHING FOR A SECOND REASON, and calling both of
                       // them "abated" states the wrong one. An abatement is a rent-free period
@@ -898,60 +1099,66 @@ export default function LedgerPage() {
                           .map((a) => a.memo).filter(Boolean)[0] || null;
                         return (
                           <td key={m}>
-                            <button type="button" className={`rr-cell ${forgiven ? 'settled-off' : 'abated'}`} onClick={open}
-                              title={forgiven
-                                ? `${ml}: ${money(Math.abs(adjM))} credited — this month was settled, not billed.${why ? ` ${why}.` : ''} Click to open the month and see the entry that did it.`
-                                : `${ml}: base rent abated — nothing due · click to open the month`}>
+                            <Tip as="button" type="button" className={`rr-cell ${forgiven ? 'settled-off' : 'abated'}`}
+                              onClick={cellClick(open)} onDoubleClick={open}
+                              aria-label={`${ml} — ${forgiven ? 'settled, not billed' : 'base rent abated'}`}
+                              content={(
+                                <>
+                                  <TipTitle>{ml} · {r.tenant_name}</TipTitle>
+                                  {forgiven ? (
+                                    <>
+                                      <TipRow label="Credited" value={money(Math.abs(adjM))} tone="ok" strong />
+                                      <TipNote>{why ? `${why}. ` : ''}This month was settled, not billed — a decision somebody made, not a rent-free period the lease grants.</TipNote>
+                                    </>
+                                  ) : (
+                                    <TipNote>Base rent abated — the lease grants this month rent-free, so nothing is due.</TipNote>
+                                  )}
+                                  <TipAction>Click to open this month and see the entry that did it</TipAction>
+                                </>
+                              )}>
                               {forgiven ? '⌫' : 'F'}
-                            </button>
+                            </Tip>
                           </td>
                         );
                       }
-                      const parts = c ? `${money(c.base)} base · ${money(c.camTax)} CAM&tax${c.roof > 0 ? ` · ${money(c.roof)} roof` : ''}${Math.abs(adjM) > 0.005 ? ` · ${adjM < 0 ? '−' : '+'}${money(Math.abs(adjM))} adjustment` : ''}` : '';
-                      const monthLine = `${ml}: ${money(owedM)} owed (${parts})${s?.abated ? ' — base rent abated' : ''}`;
                       const started = year < curY || (isCurrentFy && m <= curM);
                       if (state === 'covered') {
-                        // A TAGGED month is settled — "paid = paid". It reads ✓ whatever the amount;
-                        // when what came in differs from the projection, show that received figure.
+                        // A TAGGED month is settled — "paid = paid": it reads ✓ whatever the
+                        // amount, and stays clickable.
                         if (settledM) {
-                          const tagCount = (r.payments || []).filter((p) => Number(p.period_month) === m).length;
                           const diff = round2(receivedM - owedM);
-                          // "paid = paid" stands: the box stays forest ✓ and stays clickable. Only
-                          // the FIGURE carries the difference — gold when the deposit came in under
-                          // the bill, a + when it came in over. That's the whole signal George
-                          // asked to be able to read at a glance, and it costs the cell nothing.
+                          // ⚠ THE BOX CARRIES THE DIFFERENCE NOW, not only its figure. The
+                          // earlier rule (only the FIGURE tints) is George's own, and he
+                          // overrode it on 2026-08-17: *"if a charge comes in above or below
+                          // … we just have the box itself change to a different color and
+                          // when you hover over it it explains what has happened."* The ✓
+                          // stays, so "paid = paid" still reads; gold is the same
+                          // "look at this" gold the other states already use.
                           const off = Math.abs(diff) > 0.5;
-                          const amtCls = `rr-amt${off ? (diff < 0 ? ' under' : ' over') : ''}`;
-                          const amtText = `${off && diff > 0 ? '+' : ''}${money0(receivedM)}`;
-                          const diffTip = off
-                            ? ` — ${diff < 0 ? `${money(Math.abs(diff))} under` : `${money(diff)} over`} the ${money(owedM)} billed`
-                            : '';
-                          // Recorded across MORE than one same-month payment: undoing would delete
-                          // them all, so it's inert here and managed on the lease's Invoices & payments.
-                          // A settled month opens the month panel — where the base/CAM&tax
-                          // split, every payment on it, and the two ways to close a
-                          // difference (record the money, or say the bill itself was
-                          // different) all live. George, 2026-08-03: "make the ledger
-                          // clickable per month to go in and edit to show the differences."
-                          // Undo moved inside the panel; several same-month payments are
-                          // no longer inert (the panel lists them all).
                           return (
                             <td key={m}>
-                              <button type="button" className={`rr-cell paid${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
-                                onClick={open}
-                                title={`${stepTip}${ml} paid — received ${money(receivedM)}${diffTip}${tagCount > 1 ? ` across ${tagCount} payments` : ''} · click to open the month`}>
-                                ✓<span className={amtCls}>{amtText}</span>{adjChip}
-                              </button>
+                              <Tip as="button" type="button" className={`rr-cell paid${off ? ' off' : ''}${s?.abated ? ' abated' : ''}${stepCls}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
+                                onClick={cellClick(takeBack)} onDoubleClick={open}
+                                aria-label={`${ml} paid — ${money(receivedM)} received of ${money(owedM)} billed`}
+                                content={card({
+                                  settled: true,
+                                  action: 'Click to take this month back · double-click to open it',
+                                })}>
+                                {adjMark}✓<span className="rr-amt">{money0(receivedM)}</span>
+                              </Tip>
                             </td>
                           );
                         }
-                        // Covered by an untagged lump. Show the amount it drew and say a lump paid it.
+                        // Covered by an untagged lump. Nothing month-specific to take back —
+                        // the lump spans months — so a click opens it instead of toggling.
                         return (
                           <td key={m}>
-                            <button type="button" className={`rr-cell paid pool${stepCls}`} disabled={pending} onClick={open}
-                              title={`${stepTip}${monthLine} — ${money(receivedM)} drawn from a lump payment · click to open the month`}>
-                              ✓<span className="rr-amt">{money0(receivedM)}</span>{adjChip}
-                            </button>
+                            <Tip as="button" type="button" className={`rr-cell paid pool${stepCls}${adjCls}${pending ? ' is-pending' : ''}`}
+                              onClick={cellClick(open)} onDoubleClick={open}
+                              aria-label={`${ml} — ${money(receivedM)} drawn from a lump payment`}
+                              content={card({ lump: true, action: 'Click to open this month' })}>
+                              {adjMark}✓<span className="rr-amt">{money0(receivedM)}</span>
+                            </Tip>
                           </td>
                         );
                       }
@@ -961,15 +1168,16 @@ export default function LedgerPage() {
                         const gap = round2(owedM - covered);
                         return (
                           <td key={m}>
-                            <button type="button" className={`rr-cell partial${stepCls}`} disabled={pending} onClick={open}
-                              title={`${stepTip}${monthLine} — ${money(covered)} covered by a lump payment · click to open the month and record the remaining ${money(gap)}`}>◐{adjChip}</button>
+                            <Tip as="button" type="button" className={`rr-cell partial${stepCls}${adjCls}${pending ? ' is-pending' : ''}`}
+                              onClick={cellClick(open)} onDoubleClick={open}
+                              aria-label={`${ml} — part covered, ${money(gap)} still owing`}
+                              content={card({ lump: true, action: `Click to open this month and record the remaining ${money(gap)}` })}>
+                              {adjMark}◐
+                            </Tip>
                           </td>
                         );
                       }
-                      // An OPEN month keeps its one-click mark-paid — George's call: only a
-                      // month with money on it opens the panel. (Shift/right-click isn't a
-                      // discoverable affordance, so the panel is reached from any settled
-                      // month and its ◀ ▶ switcher walks to this one.)
+                      // An OPEN month: one click records it.
                       // ⚠ OVERDUE needs the month to have ENDED, not merely started (George,
                       // 2026-08-13). The bank statement that would prove August was paid does
                       // not exist until August does, so painting the running month gold
@@ -979,9 +1187,13 @@ export default function LedgerPage() {
                       const late = started && monthClosedForLogging(year, m, today, 0);
                       return (
                         <td key={m}>
-                          <button type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}${stepCls}`} disabled={pending}
-                            onClick={() => cellMut.mutate({ leaseId: r.lease_id, month: m, action: 'mark', amount: round2(owedM) })}
-                            title={`${stepTip}${late ? 'Overdue — mark' : started ? 'Due this month — mark' : 'Mark'} ${monthLine.replace(`${ml}: `, `${ml} paid: `)}`}>—{adjChip}</button>
+                          <Tip as="button" type="button" className={`rr-cell${late ? ' late' : ''}${s?.abated ? ' abated' : ''}${stepCls}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
+                            onClick={cellClick(() => { if (pending) return; tapToggle({ leaseId: r.lease_id, month: m, action: 'mark', amount: round2(owedM) }); })}
+                            onDoubleClick={open}
+                            aria-label={`${ml} — ${late ? 'overdue' : started ? 'due'  : 'not yet due'}, ${money(owedM)} owed`}
+                            content={card({ action: `Click to record ${ml} paid · double-click to open it` })}>
+                            {adjMark}—
+                          </Tip>
                         </td>
                       );
                     })}
@@ -1134,23 +1346,32 @@ export default function LedgerPage() {
               {unplacedTotals.unplacedIn > 0 && ' Money in that is rent goes under “Tenant rent”, where you pick the tenant and the month it pays — a cheque that cleared in March can be April’s rent.'}
               {' '}Or leave one out for good, and say why.
             </div>
-            <table style={{ minWidth: 0 }}>
+            {/* ⚠ FIXED COLUMNS, and it is not cosmetic. With auto layout the last cell's
+                two 210px selects set the table's width, so putting a line BACK from Decided
+                re-measured every column and the Amount figures moved under their own header
+                (George, 2026-08-17: *"the fomratting on the money not placed yet is also off
+                near the amounts collumn when i added the 5 points entry back"*). Fixed
+                widths pin Amount where it is however many lines are on the list. */}
+            <table className="line-table">
+              <colgroup>
+                <col style={{ width: 78 }} /><col /><col style={{ width: 104 }} /><col style={{ width: 232 }} />
+              </colgroup>
               <thead><tr><th>Date</th><th>Description</th><th className="num">Amount</th><th></th></tr></thead>
               <tbody>
                 {unplaced.map((l) => (
                   <tr key={l.id}>
                     <td>{fmtShortDate(l.txn_date) || '—'}</td>
-                    <td style={{ fontSize: 12 }}>{l.description || '—'}</td>
+                    <td className="line-desc" title={l.description || ''}>{l.description || '—'}</td>
                     <td className="num">{l.direction === 'in' ? '+' : '−'}{money(Math.abs(Number(l.amount) || 0))}</td>
-                    <td className="num">
+                    <td className="line-actions">
                       {/* The nag is answerable, not just silenceable — these are the
                           homes that make the panel a work-list rather than a complaint. */}
                       {namingIncome === l.id ? (
                         /* Naming a category the list doesn't have yet. Inline rather than a
                            modal: the row's date, description and amount are the context for
                            what to call it, and a dialog would cover them. */
-                        <div className="row" style={{ gap: 6, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', marginBottom: 4 }}>
-                          <input className="text-input" style={{ maxWidth: 150, fontSize: 11 }} autoFocus
+                        <div className="line-step">
+                          <input className="text-input" autoFocus
                             placeholder="Name the category" value={incomeDraft}
                             onChange={(e) => setIncomeDraft(e.target.value)}
                             onKeyDown={(e) => {
@@ -1162,7 +1383,7 @@ export default function LedgerPage() {
                         </div>
                       ) : null}
                       <select
-                        className="text-input" style={{ maxWidth: 210, fontSize: 11, marginBottom: 4 }}
+                        className="text-input"
                         value=""
                         disabled={place.isPending}
                         onChange={(e) => {
@@ -1251,10 +1472,10 @@ export default function LedgerPage() {
                           screen's "For month · editable" column has always worked. "— (lump)"
                           leaves it untagged and the ledger spreads it over the months still owed. */}
                       {rentPick[l.id] && (
-                        <span className="rr-drift" style={{ marginTop: 4 }}>
+                        <span className="line-step">
                           <span className="muted" style={{ fontSize: 11 }}>for</span>
                           <select
-                            className="text-input" style={{ maxWidth: 90, fontSize: 11 }}
+                            className="text-input" style={{ maxWidth: 92 }}
                             value={rentPick[l.id].month ?? ''}
                             onChange={(e) => setRentPick((p) => ({ ...p, [l.id]: { ...p[l.id], month: e.target.value === '' ? null : Number(e.target.value) } }))}
                             title="Which month's rent this deposit pays — filled in from the date the bank printed, and yours to change. “— (lump)” leaves it untagged and the ledger spreads it across the months still owed."
@@ -1274,9 +1495,9 @@ export default function LedgerPage() {
                           choice the landlord makes in front of a confirm that says the bills
                           go up — never a silent default. */}
                       {expensePick[l.id] && (
-                        <span className="rr-drift" style={{ marginTop: 4 }}>
+                        <span className="line-step">
                           <select
-                            className="text-input" style={{ maxWidth: 170, fontSize: 11 }}
+                            className="text-input"
                             value={expensePick[l.id].billable ? 'yes' : 'no'}
                             onChange={(e) => setExpensePick((p) => ({ ...p, [l.id]: { ...p[l.id], billable: e.target.value === 'yes' } }))}
                             title="Is this a cost the tenants reimburse through CAM? Billing it recalculates every tenant's share and rebuilds their invoices for this year; leaving it unbilled means you absorb it."
@@ -1291,7 +1512,7 @@ export default function LedgerPage() {
                         </span>
                       )}
                       <select
-                        className="text-input" style={{ maxWidth: 210, fontSize: 11 }}
+                        className="text-input"
                         value=""
                         disabled={leaveOut.isPending}
                         onChange={(e) => { if (e.target.value) askLeaveOut(l, e.target.value); }}
@@ -1328,7 +1549,12 @@ export default function LedgerPage() {
               not in a total, not on a statement, not in an export. The record that you decided it is the point,
               and it lives here. Anything else names the figure it landed in, and is edited there rather than undone here.
             </p>
-            <table style={{ minWidth: 0 }}>
+            {/* Same fixed columns as the panel above, so the two lists line up under each
+                other and a line moving between them does not shift either one. */}
+            <table className="line-table">
+              <colgroup>
+                <col style={{ width: 78 }} /><col /><col style={{ width: 104 }} /><col style={{ width: 190 }} /><col style={{ width: 120 }} />
+              </colgroup>
               <thead><tr><th>Date</th><th>Description</th><th className="num">Amount</th><th>Recorded as</th><th></th></tr></thead>
               <tbody>
                 {decided.map((l) => {
@@ -1342,7 +1568,7 @@ export default function LedgerPage() {
                   return (
                     <tr key={l.id}>
                       <td>{fmtShortDate(l.txn_date) || '—'}</td>
-                      <td style={{ fontSize: 12 }}>{l.description || '—'}</td>
+                      <td className="line-desc" title={l.description || ''}>{l.description || '—'}</td>
                       <td className="num">{l.direction === 'in' ? '+' : '−'}{money(Math.abs(Number(l.amount) || 0))}</td>
                       <td style={{ fontSize: 12 }} title={info.hint}>
                         {info.label}{why ? <span className="muted"> — {why.toLowerCase()}</span> : null}
