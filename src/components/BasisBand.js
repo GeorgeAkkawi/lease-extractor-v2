@@ -1,6 +1,6 @@
-import { Link } from 'react-router-dom';
 import { money, money0 } from '../lib/format';
 import { CHART_SERIES, CHART_LIVE } from '../lib/portfolioCharts';
+import BasisBridge from './BasisBridge';
 
 // The Overview's headline: the year's BILL, and what has actually come in against it.
 //
@@ -23,9 +23,16 @@ import { CHART_SERIES, CHART_LIVE } from '../lib/portfolioCharts';
 // it can only land on the live side. Total live has to equal the bank, so it goes IN; and a
 // Total that silently outgrew the two columns above it would be the same unexplained figure
 // all over again, so it is stated. That is George's own question answered rather than dodged.
-export default function BasisBand({ totals, year, ledgerHref = null, incomeHref = null }) {
+//
+// ⚠ THE FOOT'S TWO CAVEAT SENTENCES MOVED INTO `BasisBridge` (2026-08-18) rather than being
+// copied there. Other income and unapplied cash were hand-written here AND are terms the bridge
+// derives per property, and two sentences quoting one figure from two sources is the §3 drift
+// this codebase keeps losing an afternoon to. The bridge says both, with the properties behind
+// them, and this keeps only the sentence that says what the two columns MEAN — which the bridge
+// does not repeat.
+export default function BasisBand({ totals, bridge = null, year, ledgerHref = null, incomeHref = null }) {
   if (!totals) return null;
-  const { rent, camTax, total, otherIncome, unapplied, loading } = totals;
+  const { rent, camTax, total, loading } = totals;
 
   // Nothing billed and nothing in — a band of dashes claiming to be a reading.
   if (!loading && total.projected === 0 && total.live === 0) return null;
@@ -70,21 +77,7 @@ export default function BasisBand({ totals, year, ledgerHref = null, incomeHref 
           roof you charge at estimate. It is the same rent the donut below sums.{' '}
           <b>Live</b> is what has actually arrived, straight off the Ledger.
         </p>
-        {otherIncome > 0.5 && (
-          <p className="chart-foot-line basis-caveat">
-            Total live includes <b>{money(otherIncome)}</b> of other income — parking, storage and
-            the like. It rides no invoice and nothing forecasts it, so it is in no projection
-            here.{' '}
-            {incomeHref ? <Link to={incomeHref}>See where it came from</Link> : 'See it on the property’s Financials page'}.
-          </p>
-        )}
-        {unapplied > 0.5 && (
-          <p className="chart-foot-line basis-caveat">
-            <b>{money(unapplied)}</b> arrived beyond what those months billed and is counted in
-            nothing here until you say what it is.{' '}
-            {ledgerHref ? <Link to={ledgerHref}>Answer it on the Ledger</Link> : 'Answer it on the Ledger'}.
-          </p>
-        )}
+        <BasisBridge bridge={bridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />
       </div>
     </div>
   );

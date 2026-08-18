@@ -22,7 +22,6 @@ import { buildPortfolioSnapshot, snapshotToText, snapshotFingerprint, normalizeQ
 import { advanceDueDate } from './annualReports';
 import { isValidCategory, bucketKey, defaultCategoryFor, isOwnerCategory, categoryFor, customCategoryKey, EXPENSE_CATEGORIES } from './expenseCategories';
 import { lineCompleteness } from './dispositions';
-import { bankTieOut } from './bankTieOut';
 import {
   tenantStanding, propertyStandings, settleChoicesFor, monthCapacity, spreadAcrossMonths,
   refundMonth, settleSentence, settlementMemo, broughtForwardMemo,
@@ -3914,10 +3913,10 @@ export const updatePayment = (id, patch = {}) =>
  * side is ever tested. Copying it also keeps the halves of one real cheque telling the same
  * story about where the money came from.
  *
- * ⚠ `import_id` / `import_hash` ARE COPIED SO THE BANK TIE-OUT STILL BALANCES. It reads the
- * books side by `import_id` and SUMS (`getBankTieOut`), so two rows totalling the statement
- * line tie exactly as one did. Dropping them would make the split-off half look hand-entered
- * and report the statement as short by that amount.
+ * ⚠ `import_id` / `import_hash` ARE COPIED SO THE HALF STILL POINTS AT ITS BANK LINE. Both
+ * rows carry the statement line they came from, so the register goes on naming the money it
+ * made and re-importing that statement still cannot book it twice. Dropping them would make
+ * the split-off half look hand-entered.
  *
  * Refuses rather than writing a nonsense row: a closed year, an amount that is not strictly
  * inside the payment, or a month outside 1–12.
@@ -6903,14 +6902,15 @@ export async function listDecidedLines(propertyId, year = null) {
   return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
 }
 
-// EVERY line for the year, decided or not — the third reader of the same list, and the
-// only one that wants both halves at once. `listUnplacedLines` and `listDecidedLines`
-// split it because those two panels are a work-list and a record; the bank tie-out is
-// neither, it is the arithmetic over the whole statement.
+// EVERY line for the year, decided or not. `listUnplacedLines` and `listDecidedLines`
+// split the same list because those two panels are a work-list and a record; this is the
+// unsplit read.
 //
-// ⚠ IDENTICAL FISCAL-YEAR SCOPING to the other two, deliberately. A line must appear in
-// exactly one year across all three surfaces, or the tie-out reports a difference that
-// only exists because it counted a December line the Ledger did not.
+// ⚠ IDENTICAL FISCAL-YEAR SCOPING to the other two, deliberately — a line must appear in
+// exactly one year across every surface that reads it.
+//
+// ⚠ NO PRODUCTION READER since the bank tie-out was retired (2026-08-18); it is kept
+// because it completes the FY-scoped trio and the import tests read the whole list back.
 export async function listStatementLinesForYear(propertyId, year = null) {
   const list = await rows(
     supabase.from('statement_lines').select('*').eq('property_id', propertyId)
@@ -6918,51 +6918,6 @@ export async function listStatementLinesForYear(propertyId, year = null) {
   const y = Number(year);
   const scoped = y ? (list || []).filter((r) => r.year == null || Number(r.year) === y) : (list || []);
   return [...scoped].sort((a, b) => String(b.txn_date || '').localeCompare(String(a.txn_date || '')));
-}
-
-/**
- * The bank tie-out for one property-year (Slice 3). The reads; the arithmetic is pure and
- * lives in `bankTieOut.js`.
- *
- * ⚠ THE BOOKS SIDE IS READ BY `import_id`, NOT BY PROPERTY AND YEAR, and the difference
- * matters twice over. A statement legitimately settles a lease on ANOTHER building
- * (cross-property matching) and pays a bill filed under a different fiscal year — both
- * write rows this property's `.eq('property_id')` / `.eq('year')` readers would never see,
- * while the LINE for them files under the account it was imported from. Reading by the
- * import that wrote them is the only scoping under which the two sides describe the same
- * money. The fiscal year is then applied to both sides by one rule (`rowFiscalYear`).
- *
- * Returns null when nothing has been imported for the year: there is no tie-out to do, and
- * an empty panel reading "$0.00 ✓" would claim a clean bill of health nobody checked.
- *
- * `rent` is deliberately NOT read here — both callers already hold the monthly roll and
- * attach `rentPosition(roll)` themselves, rather than this fanning out a second copy of the
- * most expensive query on the page.
- */
-export async function getBankTieOut(propertyId, year) {
-  const imports = await listStatementImports(propertyId, year);
-  const importIds = (imports || []).map((i) => i.id).filter(Boolean);
-  if (!importIds.length) return null;
-  const [lines, payments, camRows, incRows, buckets, camItems, taxItems, roofItems, allIncome] = await Promise.all([
-    listStatementLinesForYear(propertyId, year),
-    rows(supabase.from('payments').select('*').in('import_id', importIds)),
-    rows(supabase.from('cam_line_items').select('*').in('import_id', importIds)),
-    rows(supabase.from('other_income').select('*').in('import_id', importIds)),
-    listExpenseBuckets(),
-    listCamLineItems(propertyId, year),
-    listTaxLineItems(propertyId, year),
-    listRoofLineItems(propertyId, year),
-    listOtherIncome(propertyId, year),
-  ]);
-  return bankTieOut({
-    lines, payments, expenseItems: camRows, incomeRows: incRows, buckets, year,
-    imports: importIds.length,
-    // The rows themselves, not just the count: the "cannot be checked" tier has to name
-    // WHICH statement to import again, and a number cannot.
-    importRows: imports || [],
-    allExpenseItems: [...(camItems || []), ...(taxItems || []), ...(roofItems || [])],
-    allIncomeRows: allIncome || [],
-  });
 }
 
 // Change a line's disposition after the fact. Today that means answering the nag —
@@ -7067,7 +7022,6 @@ export const setLeaseSecurityDeposit = (leaseId, amount) =>
 // ever asks about it. Three fallbacks, in the order that is most likely to be right: the
 // line's own year, the year of its own transaction date (the rule `statementMatch` uses to
 // derive it in the first place), then the fiscal year the landlord is looking at.
-// `bankTieOut` reports any pre-fix rows still carrying a null.
 export async function placeUnplacedLine(line, { kind, category = null, leaseId = null, party = null, year = null, month = null, billable = false }) {
   const placeYear =
     Number(line?.year)
@@ -7562,8 +7516,8 @@ export async function applyStatementImport({ propertyId, year, fileName, account
       // Re-importing a statement therefore proved nothing, which is exactly the hole
       // George's two 24 Jul statements sat in: eight June payments totalling $36,229.59
       // on the books, imported before `statement_lines` existed, and no way to give them
-      // a bank line short of a backfill from the books — the circular check bankTieOut.js
-      // refuses in its first warning.
+      // a bank line short of a backfill from the books, which is circular: a check derived
+      // from the rows it is checking balances no matter what went wrong.
       //
       // ⚠ THIS IS NOT THAT BACKFILL, and the difference is the whole point. The link is
       // made by matching a FRESHLY READ bank line's hash — date | amount | direction |

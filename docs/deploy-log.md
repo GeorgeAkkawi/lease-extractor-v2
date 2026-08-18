@@ -1,3 +1,130 @@
+## 2026-08-18 (5) — The bank tie-out retired, and the band made to explain itself
+
+**Cloudflare version:** `18e129aa-2144-42a6-adf6-eac214116737` · 2,000 tests / 190 files green.
+
+Two asks in one round (George): *"i want to remove the bak tie out we dont need that remove it
+from the excel sheets its on as well"* and *"at the end of the year it should give a summary of
+any differences in the numbers and where they came from for the projected vs live stats"*.
+
+### Part A — the bank tie-out is gone
+
+**The Excel half was already done** — removed 2026-08-17 on George's earlier *"take out the bank
+tie up"*. A byte-safe grep of all five workbook builders returned zero hits before anything was
+touched. What actually remained was the Ledger panel and the module behind it.
+
+Deleted: `src/lib/bankTieOut.js` (587 lines) · `getBankTieOut` and its nine parallel reads
+(`api.js`) · the `['bankTieOut', …]` query, its `settleLines()` invalidation, `rentPosition` /
+`tieOutWithRent`, and the ~250-line "Where your bank money went" JSX block (`LedgerPage.js`) ·
+the `['bankTieOut']` invalidation in `settleStatementImport` (`ImportStatementButton.js`) ·
+`.tie-answer` / `.tie-unchecked` / `.tie-working-head` / `.tie-scope` (`App.css`).
+
+⚠ **`incomeExpense.js`'s `tieOut` is NOT this feature and was left alone** — it is the *rent*
+tie-out, the JS↔SQL twin behind `rentDrift` (CLAUDE.md §3), and Part B now depends on it. Anyone
+verifying the removal must use `grep -a`: that file carries a literal NUL at `:623`, so plain
+grep calls it binary and reports a false clean.
+
+**Four comments repointed rather than deleted**, because each explained a rule that is still
+true and only its *destination* died: the split-payment `import_id` note (`api.js`), the
+null-year fallback (`api.js`), the re-import backfill note (`api.js`), and the
+"Record this as X's rent?" confirm (`LedgerPage.js:592`), which named the panel as the place to
+look.
+
+**Tests.** `bankTieOut.test.js` held three describes that were never about the tie-out; they
+moved to a new `statementPlacement.test.js` (deposit → rent placement, the billable-expense
+choice, and the workbook regression guard) and the file was deleted. `ledgerPage.test.js` lost
+its tie-out assertions from the import round-trip and its empty-state test; the round-trip now
+asserts the **Decided** panel instead, which is the surviving record that an import produced
+anything.
+
+⚠ **What was lost, stated for the record.** The tie-out was the only detector of a *decided
+statement line whose money never reached a table*, and `WHERE_IT_LANDS` was the only reference
+answering "if I file a line as X, does it reach the Income & expenses sheet?". Neither is a
+figure anything computes from, so nothing broke — but nothing looks any more either.
+
+### Part B — `yearBridge`: the band now says WHY
+
+`BasisBand` has shown `FY {year} · projected vs live` since 2026-08-18 (1) and never said what
+the gap was. A folded `BasisBridge` panel now sits in its foot and decomposes each of the three
+measures into named causes, largest first, each naming the properties behind it.
+
+```
+Revenue · base rent        $305,000.00 projected · $77,060.11 live   −$227,939.89
+   −$209,939.95  rent billed and not yet in      Oak Center $143,000.06 · Maple Plaza $66,939.89
+   −$17,999.94   the annual rate the Financials page quotes, against these leases' own
+                 month-by-month schedule
+```
+
+⚠ **IT DERIVES NOTHING.** Every figure was *already computed* by `listBasisByProperty` — which
+runs `billedRowsFromRoll` twice per property and threw most of both results away — and is now
+carried through `basisRows` untouched. **No new query, no new read.** That is the §2 rule, not an
+optimisation: a second reading of "what this year billed" beside the first is exactly how two
+boxes on one screen come to quote different dollars.
+
+⚠ **WHICH TERMS ARE MEASURED AND WHICH ARE THE REMAINDER**, because it decides what the catch-all
+can catch. *Measured, independently:* the rent basis (JS schedule vs the SQL view), the gross
+carve (the rows' own flag), the corrections (`adjustmentsForPnlRow`), the year-end credit and
+unbilled-month cash (the allocator). Those five **over-determine** `rentPosted`, so when they
+stop agreeing the gap prints as *"not accounted for"* — that is the real check.
+*The remainder:* arrears, and the CAM & tax proration. Nothing measures "billed and not yet in"
+a second way, so Expenses and Total close by construction and their catch-all only catches an
+arithmetic slip. Said out loud in the module header, because a catch-all that cannot catch
+anything reads as a guarantee.
+
+**Four causes were evaluated and deliberately excluded**, each because it would double-count:
+`projectedAhead` (in neither column — the live roll is read without `includeScheduled`),
+`unapplied` (already held out of every live figure, so arrears nets it), `invoiceDrift` (a third
+record; its payments are already inside the live side) and the ⚖ Reconcile true-up (billed on a
+`kind='reconciliation'` invoice the roll excludes, `api.js:5111`). The first is dropped
+entirely; the rest are **caveats with somewhere to go**, never terms.
+
+⚠ **A LIVE FIGURE WAS WRONG AND IS NOW FIXED — the band's projected Total.**
+`basisRows` computed `rentProjected + camTaxProjected + chargesProjected`, which **double-counts
+a gross lease**: `total_revenue` counts the whole flat rent (0049 + `effective_rent`) and
+`billedComponents` returns the CAM & tax carved out of that same rent (0073). `totalLive` was
+right all along (`componentizeSchedule` splits ONE flat owed), so the band was **understating its
+own gap** by exactly the carve. Invisible on the demo seed, which has no gross lease — the new
+test flips `lease-4` on purpose, and it is the only thing in the suite that looks.
+
+**One figure newly measured:** `billedRowsFromRoll` now returns `unbilled` — cash landing on a
+month the lease bills nothing for (before a term started, after it ended, a free month), which
+`m.rent[i] = got` has always let straight into the live rent figure. It is **not** `unapplied`:
+that is a surplus over a bill, held pending an answer. Anything comparing billed against received
+has to know how much of the cash answers to no bill, or it reads as an overpaid bill.
+
+**Files.** New `src/lib/yearBridge.js`, `src/components/BasisBridge.js`,
+`src/lib/__tests__/yearBridge.test.js` (9 tests, weighted on closure). Changed
+`portfolioBasis.js` (returns the causes it already had), `portfolioCharts.js` (carries them;
+the Total fix), `incomeExpense.js` (`unbilled`), `BasisBand.js`, `DashboardPage.js`, `App.css`,
+`dashboardOverview.test.js` (+4).
+
+⚠ **A TEST-HARNESS TRAP WORTH REMEMBERING:** `prop-2` belongs to **corp-2**, not corp-1. The
+first version of the bridge helper read one corporation, so `basisRows` silently returned a
+shorter list and the gross-lease test "passed" against **zero rows**. The helper now asserts it
+found every property it asked for.
+
+### Now redundant
+
+- **`BasisBand`'s two `basis-caveat` paragraphs** — other income and unapplied cash were
+  hand-written there *and* are figures the bridge derives per property. **Moved, not copied**;
+  the band keeps only the sentence saying what the two columns mean.
+- **`LedgerPage.js`'s `rentPosition` block** — quoted billed / received / behind, which the
+  Ledger's own footer already computes and agrees with to the cent. Gone with Part A.
+- **`listStatementLinesForYear`** (`api.js`) — its only production caller was `getBankTieOut`.
+  **Kept**, with a comment saying so: it completes the FY-scoped trio beside `listUnplacedLines`
+  / `listDecidedLines` and five import assertions read it. George's call whether it goes.
+- **The `Collected` `DeltaCard`** (`HistoryPage.js:357`) — reads the *frozen* snapshot figure,
+  and payments on a closed year are not blocked, so it can visibly disagree with a live
+  collected total. Untouched; worth relabelling "Collected (as at close)".
+- **The literal NUL at `incomeExpense.js:623`** — a `Map`-key sentinel written as a raw byte
+  instead of an escape. Behaviour-identical to change, and it costs every future session the
+  ability to `grep` that file. Untouched — one character, George's call.
+- **Five pre-existing dead imports**, verified unchanged at HEAD and therefore *not* mine to
+  remove this round: `TipRule`, `adjustmentKindInfo` (`LedgerPage.js`), `applyBalanceCheck`,
+  `parseBankStatementCsv`, `uploadDoc` (`ImportStatementButton.js`).
+- **⚠ There is no eslint config in this repo** (`eslint.config.js` absent, ESLint 10 refuses
+  `.eslintrc.*`), so `npx eslint` returns a *false clean* on everything. The dead imports above
+  were found with a script instead. Anyone relying on lint here is relying on nothing.
+
 ## 2026-08-18 (4) — The picker stops being the browser's, and Sam Nails' August is one cheque again
 
 **Cloudflare version:** `c8376cb8-8013-406c-acb2-4490830cd12c` · 2,009 tests, 189 files

@@ -289,6 +289,15 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
       const chargesProjected = round2(num(b?.chargesProjected));
       const chargesLive = round2(num(b?.chargesLive));
       const otherLive = round2(num(b?.otherLive));
+      // ⚠ A GROSS LEASE IS COUNTED IN BOTH COLUMNS AND MUST BE ADDED TO TOTAL ONLY ONCE.
+      // `total_revenue` counts a gross tenant's WHOLE flat rent (0049 + `effective_rent`), and
+      // `billedComponents` returns the CAM & tax carved out of that same rent (0073) — so the
+      // carve is in `rentProjected` and in `camTaxProjected` both. Adding them gave a projected
+      // Total larger than anything the tenant is charged, while `totalLive` was right all along
+      // (`componentizeSchedule` splits ONE flat owed), so the band understated its own gap by
+      // exactly this. Invisible on the demo seed, which has no gross lease — see
+      // `yearBridge.test.js`, which flips one on purpose.
+      const grossCarve = round2(num(b?.grossCarve));
       if (rentProjected === 0 && camTaxProjected === 0 && rentLive === 0 && camTaxLive === 0 && otherLive === 0) return null;
       return {
         id: p.id,
@@ -300,8 +309,19 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
         chargesProjected,
         chargesLive,
         otherLive,
-        totalProjected: round2(rentProjected + camTaxProjected + chargesProjected),
+        totalProjected: round2(rentProjected + camTaxProjected + chargesProjected - grossCarve),
         totalLive: round2(rentLive + camTaxLive + chargesLive + otherLive),
+        // The causes of the two gaps, carried through untouched for `yearBridge`. Each was
+        // already computed by `listBasisByProperty`; none costs a read.
+        grossCarve,
+        rentScheduled: round2(num(b?.rentScheduled)),
+        rentPosted: round2(num(b?.rentPosted)),
+        camTaxPosted: round2(num(b?.camTaxPosted)),
+        rentCorrections: round2(num(b?.rentCorrections)),
+        camTaxCorrections: round2(num(b?.camTaxCorrections)),
+        tenantCredit: round2(num(b?.tenantCredit)),
+        unbilled: round2(num(b?.unbilled)),
+        driftTotal: round2(num(b?.driftTotal)),
         // Cash beyond what a month billed, still waiting on the landlord's answer on the
         // Ledger. In NO figure here — that is the whole point of it.
         unapplied: round2(num(b?.unapplied)),

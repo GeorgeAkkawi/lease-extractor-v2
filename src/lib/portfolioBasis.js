@@ -35,12 +35,25 @@ import {
 import { billedRowsFromRoll } from './incomeExpense';
 import { billedComponents } from './reconciliation';
 import { summarizeOtherIncome } from './otherIncome';
+import { adjustmentsForPnlRow } from './adjustments';
 
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 
 /** One group of `billedRowsFromRoll`, collapsed to its annual figure. */
 const groupTotal = (rows = []) => round2((rows || []).reduce((s, r) => s + num(r.total), 0));
+
+/** …and the part of it belonging to GROSS leases, which is a figure in its own right: for a
+ *  gross tenant `total_revenue` counts the whole flat rent (0073) and `billedComponents`
+ *  returns the CAM & tax carved out of that same rent, so the carve is on both sides of the
+ *  band. `yearBridge` needs it named to close, and Total needs it subtracted not to
+ *  double-count. The rows already carry the flag — this reads it, it does not re-derive it. */
+const grossPart = (...groupLists) => round2(
+  groupLists.reduce((s, rows) => s + (rows || []).filter((r) => r.gross).reduce((n, r) => n + num(r.total), 0), 0)
+);
+
+/** Each lease's adjustment rows, flattened once — the input `adjustmentsForPnlRow` wants. */
+const allAdjRows = (roll = []) => (roll || []).flatMap((r) => r?.adjustmentRows || []);
 
 /**
  * Both readings of the bill for every property, keyed by id.
@@ -89,6 +102,7 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
       // credits sitting on this year's bills, which belong to the projected Total exactly as
       // they belong to the live one.
       const posted = billedRowsFromRoll(roll);
+      const adj = allAdjRows(roll);
       return [id, {
         rentLive: groupTotal(live.rent),
         // Roof rides with CAM & tax: it is a recoverable billed the same way, and a fourth
@@ -98,6 +112,28 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
         chargesLive: round2(groupTotal(live.charges) + groupTotal(live.carried)),
         chargesProjected: round2(groupTotal(posted.charges) + groupTotal(posted.carried)),
         unapplied: round2(live.unapplied),
+        // ── Everything below is for `yearBridge`, and every one of it was ALREADY COMPUTED
+        // above and thrown away. Naming the causes of the band's gap costs no extra read;
+        // that is the whole reason the bridge lives beside the band rather than deriving a
+        // second reading of the same year somewhere else (CLAUDE.md §2).
+        //
+        // What the leases contract to bill, at their own rates — the like-for-like comparable
+        // to `total_revenue` and the JS half of that twin.
+        rentScheduled: round2(posted.tieOut),
+        // What the Rent row actually posts, and what CAM & tax actually posts.
+        rentPosted: groupTotal(posted.rent),
+        camTaxPosted: round2(groupTotal(posted.camTax) + groupTotal(posted.roof)),
+        grossCarve: grossPart(posted.camTax, posted.roof),
+        rentCorrections: round2(num(adjustmentsForPnlRow(adj, 'rent').total)),
+        camTaxCorrections: round2(num(adjustmentsForPnlRow(adj, 'camtax').total)),
+        // Cash with no month to settle: paid past the whole year's bills, and paid onto a
+        // month the lease bills nothing for. Both are inside the live figures already.
+        tenantCredit: round2(live.creditTotal),
+        unbilled: round2(live.unbilled),
+        // The issued bills against what the leases now say — `invoiceDrift`, already measured on
+        // the roll. In NEITHER column of the band (an invoice is a third record), so the bridge
+        // carries it as a caveat with somewhere to go, never as a term.
+        driftTotal: round2(posted.driftTotal),
       }];
     })),
   ]);

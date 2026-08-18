@@ -1559,22 +1559,44 @@ tbody tr:last-child td{border-bottom:none}
 
 .export-flags{margin-top:12px;display:flex;flex-direction:column;gap:8px}
 .export-flag{font-size:12px;line-height:1.45;color:var(--gold);background:var(--gold-soft,#FBF3DF);border-left:3px solid var(--gold);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
-
-/* ---- the bank tie-out: the answer, then the working ---- */
-/* Two sentences of arithmetic a landlord can check, in the app's display face, before any
-   table. See the note in LedgerPage.js for why "less" was the third answer to "I don't
-   get this panel". */
-.tie-answer{font-family:var(--display);font-size:19px;font-weight:500;line-height:1.4;margin:0 0 12px;color:var(--ink)}
-.tie-answer b{font-weight:600;font-variant-numeric:tabular-nums}
-.tie-answer strong{font-weight:600;color:var(--gold)}
-/* Neutral, deliberately NOT gold: money that could not be checked is not money that is
-   wrong, and colouring it as a fault is how a panel starts crying wolf on its own history. */
-.tie-unchecked{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
-.tie-unchecked p{margin:0;font-size:12px;line-height:1.45;color:var(--muted);background:var(--panel-2);
-  border-left:3px solid var(--border);border-radius:0 var(--radius) var(--radius) 0;padding:8px 10px}
-.tie-working-head{margin:6px 0 0;border-top:1px solid var(--hair);padding-top:8px}
-.tie-scope{font-size:11.5px;line-height:1.55;margin:10px 0}
 @media (max-width:560px){.export-pre{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* ---- why the two readings differ: the band's own working, folded ---- */
+/* Sits INSIDE .basis-foot, so it reads as the band explaining itself rather than as a second
+   panel making a second claim about the same year. `bare` on the Panel is what keeps it from
+   drawing a card inside a card. */
+.basis-bridge{margin-top:10px;border-top:1px solid var(--hair);padding-top:8px}
+.basis-bridge-head{display:flex;align-items:flex-start;gap:8px}
+.basis-bridge-head .panel-toggle{padding:2px 0}
+.basis-bridge-head .panel-toggle-text strong{font-size:12.5px}
+.basis-bridge-body{margin-top:10px;display:flex;flex-direction:column;gap:14px}
+.basis-bridge-measure-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;
+  padding-bottom:5px;border-bottom:1px solid var(--hair)}
+.basis-bridge-measure-name{font-weight:600;font-size:12.5px;display:flex;align-items:baseline;gap:6px}
+.basis-bridge-measure-figs{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.basis-bridge-delta{margin-left:auto;font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.basis-bridge-delta.neg{color:var(--gold)}
+.basis-bridge-delta.pos{color:var(--good,var(--ink))}
+.basis-bridge-terms{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:5px}
+.basis-bridge-terms li{display:flex;gap:10px;align-items:baseline;font-size:11.5px;line-height:1.5}
+/* The amount column is fixed-width and tabular so a reader can scan the dollars straight down
+   without the labels — which run to a full sentence on purpose — pushing them out of line. */
+.basis-term-amt{flex:0 0 auto;min-width:92px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.basis-term-amt.neg{color:var(--gold)}
+.basis-term-amt.pos{color:var(--muted)}
+.basis-term-label{color:var(--muted);min-width:0}
+.basis-term-rows{display:block;color:var(--ink);opacity:.72;font-variant-numeric:tabular-nums;margin-top:1px}
+/* The catch-all reads as a finding, because it is one: the app's own figures disagree. */
+.basis-bridge-terms li.is-unexplained .basis-term-amt,
+.basis-bridge-terms li.is-unexplained .basis-term-label{color:var(--gold)}
+.basis-bridge-none{font-size:11.5px;margin:6px 0 0}
+.basis-bridge-caveats{border-top:1px solid var(--hair);padding-top:8px}
+.basis-bridge-caveat-head{font-size:10px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:0 0 4px}
+@media (max-width:560px){
+  .basis-bridge-terms li{flex-direction:column;gap:1px}
+  .basis-term-amt{min-width:0;text-align:left}
+}
 
 /* secondary line of small stats under a metric card (e.g. roof billed/absorbed):
    one tidy line, the two figures pushed to opposite ends */

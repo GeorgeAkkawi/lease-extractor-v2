@@ -142,62 +142,14 @@ describe('LedgerPage — the rent ledger grid', () => {
       expect(o.value).not.toMatch(/undefined/);
       expect(o.textContent.trim()).not.toBe('');
     }
-    // The bank tie-out reads the same lines from the third angle and appears with them.
-    expect(await screen.findByText('Where your bank money went')).toBeTruthy();
-
-    // ⚠ THE ANSWER, THEN THE WORKING — and the working must start SHUT. George had told me
-    // twice this panel didn't land and both previous answers added more prose; the third
-    // answer is that a reader meets two sentences of arithmetic and nothing else. This
-    // asserts the shape, because "we moved it below a fold" is the kind of change that
-    // silently un-happens when someone edits the JSX around it.
-    const tieToggle = screen.getByText('Where your bank money went').closest('button.panel-toggle');
-    fireEvent.click(tieToggle);
-    const answer = await waitFor(() => {
-      const el = document.querySelector('.tie-answer');
-      expect(el).toBeTruthy();
-      return el;
-    });
-    expect(answer.textContent).toMatch(/came in and .* went out of your bank account/);
-    const working = screen.getByText('Show the working').closest('button.panel-toggle');
-    expect(working.getAttribute('aria-expanded')).toBe('false');
-    // Nothing from the working is on screen until it is asked for.
-    expect(screen.queryAllByText('The bank showed')).toHaveLength(0);
-    fireEvent.click(working);
-    // Two tables — Money in and Money out — so both columns come back at once.
-    expect(screen.getAllByText('The bank showed')).toHaveLength(2);
-    // The two rent headings must not read alike — one is a tie, the other is arrears.
-    expect(screen.getByText('Rent off these statements')).toBeTruthy();
-    expect(screen.getByText(/not a tie, and not meant to balance/)).toBeTruthy();
-    // Put both folds back, so the fold state this writes to localStorage doesn't decide
-    // what the NEXT test in this file sees.
-    fireEvent.click(working);
-    fireEvent.click(tieToggle);
+    // ⚠ THE LINES SURVIVE THE ROUND-TRIP, and "Decided" is where they land. It is the mirror
+    // of the unplaced panel with identical FY scoping, so a saved line sits in exactly one of
+    // the two — which is the only remaining on-screen record that an import produced anything.
+    expect(await screen.findByText(/Decided/)).toBeTruthy();
 
     // Undo from the results strip cleans everything back out.
     fireEvent.click(screen.getAllByText('↩ Undo')[0]);
     await waitFor(() => expect(screen.queryByText(/saved · Imported/)).toBeNull());
-  });
-
-  // ⚠ THE PANEL IS THERE BEFORE ANYTHING HAS BEEN IMPORTED, and it was not: it hung on
-  // `tieOut &&`, which is null until a statement exists for the fiscal year, so on a property
-  // with nothing imported the whole feature was invisible and indistinguishable from never
-  // having been built (George, twice: "i still dont see the bank tie out button"). An empty
-  // state has to SAY it is empty — "nothing to check" and "not here" must not look the same.
-  it('shows the “Where your bank money went” panel before any statement is imported, saying what it is waiting for', async () => {
-    renderLedger();
-    await waitFor(() => expect(screen.getByText('Bright Coffee Co.')).toBeTruthy());
-    const toggle = (await screen.findByText('Where your bank money went')).closest('button.panel-toggle');
-    expect(toggle).toBeTruthy();
-    // Folded, it still states what it holds — Panel's own rule.
-    expect(toggle.textContent).toMatch(new RegExp(`nothing imported for FY ${currentYear()} yet`));
-    fireEvent.click(toggle);
-    expect(screen.getByText(/No bank statement has been imported for FY/)).toBeTruthy();
-    // ⚠ …and it says outright that empty is not the same as clean. A blank panel reading
-    // "$0.00 ✓" would claim a bill of health nobody checked.
-    expect(screen.getByText(/not the same as .checked and clean./)).toBeTruthy();
-    // It names the way in, rather than leaving the landlord to find it — the same words
-    // the button above it carries, which is why there are two matches.
-    expect(screen.getAllByText(/Import statement/).length).toBeGreaterThan(1);
   });
 
   it('renders a Vacant space row when the building has unleased SF', async () => {

@@ -16,6 +16,7 @@ import { PageSkeleton } from '../components/Skeleton';
 import PortfolioCharts from '../components/PortfolioCharts';
 import BasisBand from '../components/BasisBand';
 import { basisRows, portfolioBasis } from '../lib/portfolioCharts';
+import { yearBridge } from '../lib/yearBridge';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 
 // Portfolio overview — the landlord's one-glance home: rent roll, occupancy,
@@ -241,6 +242,11 @@ export default function DashboardPage() {
   // whole point of the rebuild and is asserted in portfolioBasis.test.js.
   const bandRows = basisRows(properties, totalsByProp, basisByProp);
   const bandTotals = bandRows.length ? portfolioBasis(bandRows) : null;
+  // …and WHY the two readings differ, from the same rows. Nothing is read for this: the causes
+  // ride on the rows `listBasisByProperty` already built (CLAUDE.md §2 — one reading of the
+  // year, not two). Null while the live side is still loading, so the panel never states a gap
+  // it is about to revise.
+  const bandBridge = bandRows.length && !bandTotals?.loading ? yearBridge(bandRows, { year }) : null;
   // Where each caveat sends the landlord: the property carrying the MOST of it. A caveat
   // that names a figure and then can't say where to fix it is a complaint, not a prompt —
   // and with one property that link is simply the right one anyway.
@@ -301,7 +307,7 @@ export default function DashboardPage() {
           more prominent in the overview page graphs."* It is the sentence the four panels
           below elaborate on, and it shares their one Display-settings switch rather than
           taking a second, which would let a landlord hide half of one idea. */}
-      {showCharts && <BasisBand totals={bandTotals} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />}
+      {showCharts && <BasisBand totals={bandTotals} bridge={bandBridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />}
 
       {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} leases={leases} year={year} />}
 

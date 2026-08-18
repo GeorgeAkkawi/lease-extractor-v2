@@ -13,7 +13,6 @@ import {
   listStatementImports,
   listUnplacedLines,
   listDecidedLines,
-  getBankTieOut,
   listAlertStates,
   settleTenantBalance,
   undoSettlement,
@@ -42,7 +41,6 @@ import LeaseTypeChip from '../components/LeaseTypeChip';
 import MonthDetailPanel from '../components/MonthDetailPanel';
 import { money, money0, sf, fmtDate, fmtShortDate } from '../lib/format';
 import { IGNORE_REASONS, lineCompleteness, dispositionInfo, ignoreReasonLabel } from '../lib/dispositions';
-import { rentPosition, tieOutSentence, tierTotal, WHERE_IT_LANDS } from '../lib/bankTieOut';
 import { tenantStanding, settleChoicesFor, isBroughtForward, isSettlementRow } from '../lib/settle';
 import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
 import { paintPayment } from '../lib/rollPaint';
@@ -284,18 +282,6 @@ export default function LedgerPage() {
     queryFn: () => listDecidedLines(propId, year),
     enabled: isOn('ledger'),
   });
-  // Slice 3 — the same lines from the third angle: not "was a decision made?" but "did the
-  // money that decision promised actually reach a table?". Null when nothing has been
-  // imported for the year, so the panel is absent rather than claiming a clean bill of
-  // health nobody checked.
-  // ⚠ `isError` and `isLoading` are READ, not discarded. The panel used to render only when
-  // this resolved to a value, so a failed read looked exactly like "you have not imported
-  // anything" — and both looked exactly like the feature not existing.
-  const { data: tieOut = null, isError: tieOutError, isLoading: tieOutLoading } = useQuery({
-    queryKey: ['bankTieOut', propId, year],
-    queryFn: () => getBankTieOut(propId, year),
-    enabled: isOn('ledger'),
-  });
   // The receipts already recorded, read ONLY to offer back the write-in categories they
   // carry. A custom income category exists because a row uses it — derived from use, so
   // there is no list to store and nothing to clean up. Same key the Financials page uses,
@@ -316,13 +302,11 @@ export default function LedgerPage() {
     },
     { in: 0, out: 0 },
   );
-  // Both panels move together — a line leaves one exactly when it joins the other. The
-  // tie-out reads the SAME lines from the third angle, so it moves with them or it spends
-  // the rest of the session reporting money as unplaced that the landlord has just filed.
+  // Both panels move together — a line leaves one exactly when it joins the other, so a line
+  // the landlord has just filed must stop being reported as unplaced in the same breath.
   const settleLines = () => {
     qc.invalidateQueries({ queryKey: ['unplacedLines', propId, year] });
     qc.invalidateQueries({ queryKey: ['decidedLines', propId, year] });
-    qc.invalidateQueries({ queryKey: ['bankTieOut', propId, year] });
   };
   const leaveOut = useMutation({
     mutationFn: ({ id, reason }) => setLineDisposition(id, 'ignored', reason || null),
@@ -589,7 +573,7 @@ export default function LedgerPage() {
         m
           ? `${MONTHS[m - 1]} is marked paid at ${money(amt)}${owedThat ? ` against the ${money(owedThat)} billed` : ''}. A month settles at whatever arrived — this does not change what was billed.`
           : 'Left untagged, so the ledger spreads it across the months still owed, earliest first.',
-        'It is recorded as money RECEIVED. Income and expenses counts rent when it falls DUE, so that sheet does not move — the Ledger and “Where your bank money went” do.',
+        'It is recorded as money RECEIVED. Income and expenses counts rent when it falls DUE, so the projected copy of that sheet does not move — the Ledger and the live copy do.',
         'It carries the statement it came from, so re-importing that statement later cannot book it twice.',
       ],
       confirmLabel: 'Record it',
@@ -735,10 +719,10 @@ export default function LedgerPage() {
   const openMonth = (leaseId, month) => { cancelTap(); setEditing({ leaseId, month }); };
 
   // ⚠ ONE CLICK MUST NOT SILENTLY DELETE A BANK PAYMENT. `unmarkMonthPaid` removes every
-  // payment tagged to the month — and where one came from an imported statement, deleting
-  // it also moves the bank tie-out's books side, so money the statement showed stops being
-  // accounted for on the very panel that exists to say every line landed. So the one-click
-  // undo is for what the app recorded; anything else asks first and names what it holds.
+  // payment tagged to the month — and where one came from an imported statement, that is a
+  // deposit the bank really showed being erased on a stray click, with the statement line it
+  // came from left pointing at nothing. So the one-click undo is for what the app recorded;
+  // anything else asks first and names what it holds.
   const unmarkNeedsAsk = (tagged) => tagged.length > 1 || tagged.some((p) => p.source === 'import');
 
   async function askUnmark(r, m, tagged) {
@@ -888,13 +872,6 @@ export default function LedgerPage() {
   const totalCollected = derived.reduce((s, { summary }) => s + summary.collected, 0);
   const totalProjected = derived.reduce((s, { summary }) => s + summary.projected, 0);
   const totalBilled = derived.reduce((s, { summary }) => s + summary.billed, 0);
-  // ⚠ The tie-out's rent block comes from `rentPosition` over the SAME roll this grid is
-  // painted from, not from `totalBilled` / `totalCollected` above — because the workbook's
-  // copy of this block has no `derived` to read and would otherwise need a second
-  // definition of "billed for the year". One function, both surfaces (CLAUDE.md §3). They
-  // agree to the cent: `summary.billed` sums the same `owed` array `r.annual` does.
-  const rentPos = rentPosition(rows);
-  const tieOutWithRent = tieOut ? { ...tieOut, rent: rentPos } : null;
   const totalVariance = round2(derived.reduce((s, { summary }) => s + summary.variance, 0));
   const totalCredit = derived.reduce((s, { summary }) => s + (summary.credit > 0.05 ? summary.credit : 0), 0);
   const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : null);
@@ -1646,258 +1623,6 @@ export default function LedgerPage() {
             <MutationError of={[unplaceLine]} />
           </Panel>
         )}
-
-        {/* ── The bank tie-out ────────────────────────────────────────────────────────
-            The third reader of the same lines, and the only one that asks whether the
-            money they promised actually landed. "38 of 38 lines placed ✓" counts
-            DECISIONS; this counts dollars, against the payments / expense / income tables
-            themselves. Shut by default and stating its bottom line while folded, per
-            Panel's own rule — a landlord opens it when something is wrong, and the
-            summary is how they find out that it is. */}
-        {/* ⚠ ALWAYS RENDERED, and the first version was not. It hung on `tieOut &&`, which is
-            null until a statement has been imported for THIS fiscal year — so on a property
-            with nothing imported the panel simply did not exist, and George asked twice where
-            the bank tie-out had gone. "Nothing to check" and "this feature is not here" looked
-            identical, which is the worse half of the rule the tab itself obeys: a screen has to
-            distinguish checked-and-clean from never-looked-at, and it cannot do that by being
-            absent. The workbook TAB still only appears when there is something to tie out — a
-            sheet that says nothing is noise in a document — but this is where a landlord comes
-            looking, so this one is always here and says what it is waiting for. */}
-        {/* ⚠ RENAMED, and the name was most of the problem (George: *"im super confused about
-            the bank tie-out … im just lost on what value it adds. what is the point of the tie
-            out?"*). "Bank tie-out" is right to an accountant and opaque to everyone else, and
-            it sat one panel below ⚖ Reconcile, which is about an entirely different question —
-            what the TENANTS owe. This one asks whether the landlord's OWN books are complete.
-            The `id` deliberately does not move: it is the key the fold state is remembered
-            under, and renaming a panel should not reopen it for everyone. */}
-        <Panel
-          id="ledger.tieout"
-          defaultOpen={false}
-          title="Where your bank money went"
-          summary={
-            tieOut ? tieOutSentence(tieOutWithRent)
-              : tieOutError ? 'could not be read — open for the reason'
-                : tieOutLoading ? 'reading your statements…'
-                  : `nothing imported for FY ${year} yet`
-          }
-          hint="Every dollar that crossed your bank account this year, and which record in Amlak it became."
-        >
-          {!tieOut ? (
-            <>
-              {tieOutError ? (
-                <p className="note-msg danger" style={{ marginTop: 0 }}>
-                  This could not be read for FY {year}. Nothing is wrong with your figures — this
-                  panel simply could not load. Reload the page, and if it keeps happening the statements
-                  themselves are still listed under “Imported statements” below.
-                </p>
-              ) : tieOutLoading ? (
-                <p className="muted" style={{ fontSize: 12, margin: 0 }}>Reading your statements…</p>
-              ) : (
-                <>
-                  <p className="note-msg warn" style={{ marginTop: 0 }}>
-                    No bank statement has been imported for FY {year}, so there is nothing to tie out yet —
-                    which is not the same as “checked and clean”.
-                  </p>
-                  <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '10px 0 0' }}>
-                    Import one with <strong>⬆ Import statement</strong> above (or drag the file onto this page)
-                    and this panel will weigh every line it read against the rows it produced — the payments,
-                    expenses and other income actually on your books — and name anything that did not land.
-                    A statement whose transactions fall in another year belongs to that year’s tie-out, so
-                    check the year above if you have imported one recently.
-                  </p>
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              {/* ⚠ THE ANSWER IS NOW THE FIRST THING, AND EVERYTHING ELSE IS BEHIND A FOLD.
-                  George had told me twice that this panel didn't land, and both previous
-                  answers added MORE prose — a purpose paragraph, then a not-⚖-Reconcile
-                  paragraph, then three tables, then a map, then two method notes, all before
-                  the reader reached anything they could act on. Third time, the answer is
-                  less: two sentences of arithmetic anyone can check, then only the things
-                  that are actually wrong. None of the rest is deleted — it is what makes the
-                  answer worth believing — it simply stops being what you meet first. */}
-              <p className="tie-answer">
-                <b>{money(tieOut.in.statementTotal)}</b> came in and <b>{money(tieOut.out.statementTotal)}</b>{' '}
-                went out of your bank account in {year}.
-                {' '}{(tieOut.unaccounted?.missing + tieOut.unaccounted?.orphan) > 0.005
-                  ? <>Amlak has a record for every dollar of it <strong>except {money(round2(tieOut.unaccounted.missing + tieOut.unaccounted.orphan))}</strong>.</>
-                  : tieOut.differences.length > 0
-                    ? <>There {tieOut.differences.length === 1 ? 'is one thing' : `are ${tieOut.differences.length} things`} to look at.</>
-                    : <>Amlak has a record for every dollar of it. ✓</>}
-                {tieOut.unaccounted?.unchecked > 0.005 && (
-                  <> A further <strong>{money(tieOut.unaccounted.unchecked)}</strong> is on your books from
-                  statements that kept no line-by-line record, so it could not be checked either way.</>
-                )}
-              </p>
-
-              {tieOut.differences.length > 0 && (
-                <div className="export-flags" style={{ marginBottom: 10 }}>
-                  {tieOut.differences.map((d, i) => <div className="export-flag" key={i}>{d}</div>)}
-                </div>
-              )}
-
-              {/* ⚠ NOT GOLD, AND NOT AMONG THE FINDINGS. "Cannot be checked" is not "wrong" —
-                  see the note in bankTieOut.js. Printed as a fault it would put a permanent
-                  red mark on every account that imported a statement before the line record
-                  existed, and the panel would be crying wolf on its own history. */}
-              {(tieOut.notChecked || []).length > 0 && (
-                <div className="tie-unchecked">
-                  {tieOut.notChecked.map((d, i) => <p key={i}>{d}</p>)}
-                </div>
-              )}
-
-              {tieOut.differences.length === 0 && !(tieOut.notChecked || []).length && (
-                <p className="note-msg good" style={{ marginTop: 0 }}>
-                  Every line on these statements reaches the figure it was filed as. ✓
-                </p>
-              )}
-
-              <Panel
-                bare
-                id="ledger.tieout.working"
-                defaultOpen={false}
-                title="Show the working"
-                headClass="tie-working-head"
-                summary="the two columns, your whole year’s rent, where each kind of line lands, and how this is worked out"
-                hint="the two columns, your whole year’s rent, where each kind of line lands, and how this is worked out"
-              >
-              <p className="muted tie-scope">
-                This is not <strong>⚖ Reconcile</strong> on the Financials tab. That one asks what your
-                <strong> tenants</strong> owe — one tenant’s estimated CAM &amp; tax against their real share
-                — and can end in an invoice or a refund. This asks whether <strong>your own books are
-                complete</strong>, and it changes no money at all. And the panel above is the to-do list;
-                this is the account of what happened to everything, including the lines you already filed.
-              </p>
-
-              {[['Money in', tieOut.in], ['Money out', tieOut.out]].map(([title, s]) => (
-              <table key={title} style={{ minWidth: 0, marginBottom: 10 }}>
-                <thead>
-                  <tr>
-                    {/* George quoted these two headers back at me as the thing he could not
-                        read. "On the statement / In your books" describes the columns and not
-                        the claim; naming the two ACTORS says who is being compared. */}
-                    <th>{title}</th>
-                    <th className="num">The bank showed</th>
-                    <th className="num">Amlak recorded</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {s.rows.map((r) => {
-                    const off = Math.abs(r.diff) > 0.005;
-                    const attention = off || (r.unplaced && r.statement > 0.005) || r.unknown;
-                    // ⚠ THE CELL NAMES THE TIERS, NEVER THE NET. "$23,599.59 extra" was one
-                    // number standing for $12,630.00 missing and $36,229.59 unmatched, and
-                    // it described neither of them.
-                    const bits = [];
-                    if (tierTotal(r.suspects) > 0.005) bits.push(`${money(tierTotal(r.suspects))} missing`);
-                    if (tierTotal(r.orphans) > 0.005) bits.push(`${money(tierTotal(r.orphans))} with no line`);
-                    if (tierTotal(r.unrecorded) > 0.005) bits.push(`${money(tierTotal(r.unrecorded))} not checkable`);
-                    return (
-                      <tr key={r.key} style={attention ? { background: 'var(--gold-soft)' } : undefined}>
-                        <td>{r.label}{r.count ? <span className="muted" style={{ fontSize: 11 }}> · {r.count} line{r.count === 1 ? '' : 's'}</span> : null}</td>
-                        <td className="num">{money(r.statement)}</td>
-                        <td className="num">{r.books == null ? <span className="muted">—</span> : money(r.books)}</td>
-                        <td style={{ fontSize: 11.5 }} className="muted">
-                          {r.booksLabel
-                            ? `${r.booksLabel}${bits.length ? ` · ${bits.join(' · ')}` : off ? ` · ${money(Math.abs(r.diff))} unexplained` : ' ✓'}`
-                            : r.nowhere}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  <tr>
-                    <td><strong>Total</strong></td>
-                    <td className="num"><strong>{money(s.statementTotal)}</strong></td>
-                    <td></td>
-                    <td></td>
-                  </tr>
-                </tbody>
-              </table>
-            ))}
-
-            {/* ⚠ Rent gets its own heading saying it does NOT tie. Cash against billed
-                differs by arrears or prepayment on every property there has ever been;
-                printed among the comparisons it reads as a fault and teaches him that this
-                panel cries wolf.
-                ⚠ AND THE HEADING NOW SAYS SO IN PLAIN WORDS. Two rent figures sat on one
-                screen with opposite meanings and nothing to tell them apart — the Money-in
-                row (a TIE: a difference is a fault) and these three (arrears: a difference
-                is normal). George read the pair as one thing, which is exactly what four
-                figures under two near-identical headings deserve. */}
-            <table style={{ minWidth: 0, marginBottom: 10 }}>
-              <thead><tr><th>Your whole year’s rent — not a tie, and not meant to balance</th><th className="num">Amount</th><th></th></tr></thead>
-              <tbody>
-                <tr><td>Billed to tenants this year</td><td className="num">{money(rentPos.billed)}</td><td className="muted" style={{ fontSize: 11.5 }}>every month of every lease’s schedule</td></tr>
-                <tr><td>Received this year</td><td className="num">{money(rentPos.received)}</td><td className="muted" style={{ fontSize: 11.5 }}>every payment recorded, however it arrived</td></tr>
-                <tr>
-                  <td><strong>{rentPos.behind >= 0 ? 'Still owed' : 'Paid ahead'}</strong></td>
-                  <td className="num"><strong>{money(Math.abs(rentPos.behind))}</strong></td>
-                  <td className="muted" style={{ fontSize: 11.5 }}>
-                    {rentPos.behind >= 0 ? 'the grid above names it tenant by tenant' : 'tenants are ahead of their bills'}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-
-            {tieOut.handEntered && (tieOut.handEntered.expenses > 0.005 || tieOut.handEntered.income > 0.005) && (
-              <p className="muted" style={{ fontSize: 11.5, lineHeight: 1.55, margin: '0 0 10px' }}>
-                Not part of the comparison: {money(tieOut.handEntered.expenses)} of expenses and{' '}
-                {money(tieOut.handEntered.income)} of other income are on the books with no imported statement
-                behind them — typed in by hand, or paid from an account you haven’t imported. Real money, just
-                not something a bank line can confirm.
-              </p>
-            )}
-
-            {/* ⚠ THE MAP, PRINTED ONCE, ON THE SCREEN. George asked *"do all the numbers from
-                the bank statement show up on income and expenses unless its ignored?"* — a
-                question the app had no answer to anywhere, so the answer had to be remembered
-                from a conversation. The surprising row is rent, and it is right: the workbook
-                is ACCRUAL. Saying so is what stops a landlord concluding the sheet is broken. */}
-            <table style={{ minWidth: 0, marginBottom: 10 }}>
-              <thead>
-                <tr>
-                  <th>If you filed a line as…</th>
-                  <th>it writes</th>
-                  <th>on Income &amp; expenses?</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {WHERE_IT_LANDS.map((w) => (
-                  <tr key={w.key}>
-                    <td>{w.filed}</td>
-                    <td className="muted" style={{ fontSize: 11.5 }}>{w.writes}</td>
-                    <td style={{ fontSize: 11.5 }}>{w.sheet}</td>
-                    <td className="muted" style={{ fontSize: 11.5 }}>{w.note}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            {/* ── METHOD, at the bottom, where someone goes to ask "how do you know?" ─────── */}
-            <p className="muted" style={{ fontSize: 11, lineHeight: 1.55, margin: '0 0 6px' }}>
-              <strong>How this is worked out.</strong> The left column is what the statements showed. The
-              right is read from your <strong>payments, expenses and other-income rows themselves</strong> —
-              never from the lines, because a check derived from the list it is checking balances no matter
-              what went wrong. Money in and money out are never netted against each other: a $5,000 deposit
-              and a $5,000 withdrawal that cancelled out would report “no difference” on a statement where
-              $10,000 went astray.
-            </p>
-            {/* Said here, not assumed. A tie-out that balances is easily read as "the books
-                are right" — it says the two records agree, and they can agree on the same
-                wrong number. */}
-            <p className="muted" style={{ fontSize: 11, lineHeight: 1.55, marginBottom: 0 }}>
-              <strong>What it cannot catch:</strong> a line transcribed with the wrong amount (both sides
-              carry the same wrong number) · money that never touched the account you imported · a line filed
-              under the wrong heading — it ties, in the wrong bucket.
-            </p>
-              </Panel>
-            </>
-          )}
-        </Panel>
 
         {register.length > 0 && (
           <div style={{ marginTop: 14 }}>

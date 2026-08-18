@@ -129,6 +129,14 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
   let creditTotal = 0;
   let unapplied = 0;
   const unappliedRows = [];
+  // ⚠ CASH ON A MONTH THE LEASE BILLS NOTHING FOR, and it is NOT the same thing as `unapplied`.
+  // A surplus over a month's bill is held out pending the landlord's answer; this is money on a
+  // month whose bill is zero — before the term started, after it ended, a free month — which
+  // `m.rent[i] = got` lets straight through into the live rent figure. It is real cash and it
+  // belongs there. It is measured because anything comparing what was BILLED against what came
+  // IN has to know how much of the cash answers to no bill, or it reads as a bill that was
+  // overpaid (`yearBridge`).
+  let unbilled = 0;
   // ⚠ WHAT THE SHEET SAYS AND WHAT THE INVOICE SAYS ARE TWO DIFFERENT THINGS, and only one
   // of them is in the tenant's hands. These rows are built UP from each lease's current
   // terms; a stored invoice is a frozen copy that does not rebuild itself (CLAUDE.md §1).
@@ -218,6 +226,7 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
         } else {
           m.rent[i] = got;
           m.camTax[i] = 0; m.roof[i] = 0; m.charges[i] = 0; m.carried[i] = 0;
+          if (Math.abs(got) > 0.005) unbilled = round2(unbilled + got);
         }
       }
       credit = round2(alloc.credit);
@@ -250,7 +259,7 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
   drifted.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || a.label.localeCompare(b.label));
   unappliedRows.sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label) || a.month - b.month);
   return {
-    ...groups, tieOut: round2(tieOut), creditTotal, unapplied, unappliedRows,
+    ...groups, tieOut: round2(tieOut), creditTotal, unapplied, unappliedRows, unbilled,
     drifted, driftTotal: round2(drifted.reduce((s, d) => s + d.amount, 0)),
   };
 }

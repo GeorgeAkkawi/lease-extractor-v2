@@ -7,7 +7,7 @@
 // its parent, and in jsdom every element is 0×0 — so no SVG is ever drawn. Assert the
 // panel titles and legends (real DOM, rendered regardless), never chart geometry.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup, within } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, within, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import DashboardPage from '../DashboardPage';
@@ -133,6 +133,88 @@ describe('Overview — portfolio charts', () => {
     expect(container.querySelector('.basis-band')).toBeNull();
   });
 });
+
+// ── Why the two readings differ ───────────────────────────────────────────────────────────
+//
+// George, 2026-08-18: *"at the end of the year it should give a summary of any differences in
+// the numbers and where they came from for the projected vs live stats"*. The arithmetic is
+// pinned in `yearBridge.test.js`; this pins that a landlord can actually reach it — which is the
+// half a pure-function test cannot see, and the half CLAUDE.md's §7 is about.
+describe('Overview — where the difference is', () => {
+  const bridgeIn = async (container) => waitFor(() => {
+    const el = container.querySelector('.basis-bridge');
+    expect(el).toBeTruthy();
+    return el;
+  });
+
+  // ⚠ FOLDED, IT STILL STATES THE ANSWER. That is Panel's own rule and the whole reason this is
+  // a fold rather than a link: a landlord who never opens it must still learn the year is short
+  // and roughly why. A summary that said "3 causes" would be the count CLAUDE.md §5 refuses.
+  it('starts folded and still says what the year did, in dollars', async () => {
+    const { container } = renderDash();
+    const bridge = await bridgeIn(container);
+    const toggle = bridge.querySelector('button.panel-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toMatch(/where the difference is/);
+    // Two figures and a gap, all real dollars — never a bare count.
+    expect(toggle.querySelector('.panel-note').textContent).toMatch(/^\$[\d,]+\.\d\d billed, \$[\d,]+\.\d\d in/);
+    // Nothing of the working is on screen until it is asked for.
+    expect(container.querySelector('.basis-bridge-terms')).toBeNull();
+  });
+
+  it('opens onto the band’s own three measures, each with the causes behind its gap', async () => {
+    const { container } = renderDash();
+    const bridge = await bridgeIn(container);
+    fireEvent.click(bridge.querySelector('button.panel-toggle'));
+
+    const names = [...bridge.querySelectorAll('.basis-bridge-measure-name')].map((n) => n.firstChild.textContent);
+    expect(names).toEqual(['Revenue', 'Expenses', 'Total']);
+    // The same sub-labels the columns above carry — one vocabulary, not two.
+    expect([...bridge.querySelectorAll('.basis-bridge-measure .basis-col-sub')].map((n) => n.textContent))
+      .toEqual(['base rent', 'CAM & tax billed', 'what tenants are charged']);
+
+    // Every cause is a signed dollar figure with a sentence, and the demo seed has arrears.
+    const terms = [...bridge.querySelectorAll('.basis-bridge-terms li')];
+    expect(terms.length).toBeGreaterThan(0);
+    for (const li of terms) {
+      expect(li.querySelector('.basis-term-amt').textContent).toMatch(/^[+−]\$[\d,]+\.\d\d$/);
+      expect(li.querySelector('.basis-term-label').textContent.trim().length).toBeGreaterThan(10);
+    }
+    expect(bridge.textContent).toMatch(/rent billed and not yet in/);
+    // ⚠ AND NOTHING IT CANNOT ACCOUNT FOR. The catch-all is real, so its absence on a clean
+    // seed is the assertion — a bridge that always prints one has stopped meaning anything.
+    expect(bridge.querySelector('.is-unexplained')).toBeNull();
+  });
+
+  // ⚠ THE TWO SENTENCES MOVED, THEY WERE NOT COPIED. Other income and unapplied cash were
+  // hand-written in the band's foot AND are figures the bridge derives per property; leaving
+  // both would put one figure on screen twice from two sources, which is the §3 drift this
+  // codebase keeps paying for.
+  it('says other income and unapplied cash once, in the bridge and not in the band’s foot', async () => {
+    const { container } = renderDash();
+    const band = await waitFor(() => {
+      const el = container.querySelector('.basis-band');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    const foot = band.querySelector('.basis-foot');
+    const outsideBridge = [...foot.children].filter((n) => !n.classList.contains('basis-bridge'));
+    expect(outsideBridge.length).toBe(1);
+    expect(outsideBridge[0].textContent).toMatch(/Projected.*Live/s);
+    expect(outsideBridge[0].textContent).not.toMatch(/other income|arrived beyond/i);
+  });
+
+  // §7 in one assertion: it rides the band's switch, so hiding the widget cannot leave a
+  // reconciliation of figures that are no longer on screen.
+  it('goes with the widget the band goes with', async () => {
+    await setHiddenWidgets(['portfolio_charts']);
+    const { container } = renderDash();
+    await waitFor(() => expect(screen.getByText('Overview')).toBeTruthy());
+    await waitFor(() => expect(container.querySelector('.basis-band')).toBeNull());
+    expect(container.querySelector('.basis-bridge')).toBeNull();
+  });
+});
+
 
 describe('Overview — alert urgency', () => {
   it('gives a date-driven alert a countdown chip, an urgency hairline and a who/where tooltip', async () => {
