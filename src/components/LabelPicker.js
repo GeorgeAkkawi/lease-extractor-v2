@@ -75,6 +75,11 @@ export default function LabelPicker({
   };
 
   const listId = `${id}-list`;
+  // ⚠ ONE CONDITION, NOT TWO. `aria-expanded` and `aria-controls` must describe the listbox
+  // that is actually rendered — a box announcing itself as expanded while nothing exists to
+  // point at tells a screen-reader user to go looking for a list that isn't there. This is
+  // the state a typed-in new name always lands in, which is the common case, not an edge one.
+  const listOpen = open && shown.length > 0;
   return (
     <div className="lp-wrap" ref={wrapRef}>
       <input
@@ -83,15 +88,15 @@ export default function LabelPicker({
         value={value}
         aria-label={ariaLabel}
         role="combobox"
-        aria-expanded={open}
-        aria-controls={listId}
+        aria-expanded={listOpen}
+        aria-controls={listOpen ? listId : undefined}
         aria-autocomplete="list"
         autoComplete="off"
         onChange={(e) => { onChange(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
       />
-      {open && shown.length > 0 && (
+      {listOpen && (
         <ul className="lp-list" id={listId} role="listbox">
           {shown.map((o, i) => (
             <li key={o.label} role="option" aria-selected={i === active}>

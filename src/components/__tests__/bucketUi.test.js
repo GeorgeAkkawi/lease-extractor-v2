@@ -103,6 +103,11 @@ describe('CamSection — buckets + the not-billed group', () => {
     expect(box.value).toBe('Koi pond dredging');
     // Nothing matches, so no list stands between the landlord and the ＋ button.
     expect(screen.queryByRole('listbox')).toBeNull();
+    // …and the box does not CLAIM one either. Announcing "expanded" with nothing rendered
+    // sends a screen-reader user hunting for a list that does not exist — and this is the
+    // state every brand-new bucket name passes through, so it is the common case.
+    expect(box.getAttribute('aria-expanded')).toBe('false');
+    expect(box.getAttribute('aria-controls')).toBeNull();
   });
 
   // Slice 2's chips: three states on one seeded property — two buckets riding Amlak's

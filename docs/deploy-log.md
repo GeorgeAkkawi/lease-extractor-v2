@@ -1,6 +1,7 @@
 ## 2026-08-18 (4) — The picker stops being the browser's, and Sam Nails' August is one cheque again
 
-**Cloudflare version:** `2e85934b-e19f-4b8f-984d-dc3135998c30` · 2,009 tests, 189 files
+**Cloudflare version:** `c8376cb8-8013-406c-acb2-4490830cd12c` · 2,009 tests, 189 files
+(supersedes `2e85934b`, deployed an hour earlier without the `aria-expanded` fix below)
 
 George, on the round that shipped two hours earlier: *"i still dont see the undo button and the
 mechanism for choosing a CAM item from the drop down list is really bad. i clicked in and it just
@@ -70,6 +71,30 @@ than repointed. It only ever proved a `<datalist>` node existed, which stayed tr
 browser drew it, i.e. it would have passed throughout the exact complaint. Three behaviour tests
 replaced it: opens on focus with categories, filters and picks, and lets an unmatched new name
 through untouched.
+
+### Driven in a browser, and the one thing it found
+
+Verified in true demo mode against the real DOM (rects and computed styles, not eyeballing).
+**The scroll test is the one that mattered**, since it is the literal complaint:
+
+| | input `top` | `.lp-list` `top` |
+|---|---|---|
+| before `scrollBy(0, 200)` | 332.6 | 374.6 |
+| after | 132.6 | 174.6 |
+
+Both moved by exactly 200px, the 4px gap held, the list stayed open — it travels as part of the
+input's own box instead of being placed by the browser. Anchoring, category column, filter, arrow
+keys, Enter, click-away and free-text all confirmed; no console errors.
+
+**It found one real fault, in the new code:** `aria-expanded` stayed `"true"` when the filter matched
+nothing and no listbox rendered. That is not an edge case — it is the state **every brand-new bucket
+name passes through**, and it tells a screen-reader user to go hunting for a list that does not
+exist. `aria-expanded` and `aria-controls` now derive from the same `listOpen` that renders the
+listbox, so the three cannot disagree, and `bucketUi` pins it.
+
+⚠ Verifying this required moving **`.env.production`** aside as well as `.env.local` — the committed
+production file also carries the Supabase keys, so Vite kept building a live app from it. Both were
+restored and checksummed afterwards. Worth knowing before the next demo-mode check.
 
 ### Now redundant
 
