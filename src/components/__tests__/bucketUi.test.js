@@ -56,9 +56,53 @@ describe('CamSection — buckets + the not-billed group', () => {
     // start billing back to every tenant on the property, and this is what catches it.
     expect(screen.getByText('CAM total')).toBeTruthy();
     expect(screen.getByText('$18,000.00')).toBeTruthy();
-    // The add form offers the not-billed choice + the bucket datalist.
+    // The add form offers the not-billed choice + the remembered-label picker.
     expect(screen.getByText('not billed')).toBeTruthy();
-    expect(document.getElementById('cam-bucket-list')).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Expense name' })).toBeTruthy();
+  });
+
+  // The picker that replaced the native <datalist> (2026-08-18). Asserted by BEHAVIOUR, not
+  // by an element id: the old test only proved a <datalist> node existed, which stayed true
+  // however badly the browser drew it — the very thing George was complaining about.
+  it('offers remembered labels on focus, each with the category it will file under', async () => {
+    withProviders(<CamSection propId="prop-1" year={Y} expense={{ taxes_total: 25000, cam_total: 18000, roof_total: 4000 }} />);
+    await waitFor(() => expect(screen.getByText('CAM total')).toBeTruthy());
+    const box = screen.getByRole('combobox', { name: 'Expense name' });
+
+    // Shut until asked for — the field is a text box first.
+    expect(screen.queryByRole('listbox')).toBeNull();
+    fireEvent.focus(box);
+    const listbox = await screen.findByRole('listbox');
+    expect(listbox).toBeTruthy();
+
+    // A label already used on this property is offered, carrying the category the chip
+    // beside its bucket shows — one `categoryFor`, not two guesses.
+    const opts = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(opts.some((t) => t.includes('Landscaping'))).toBe(true);
+    expect(opts.some((t) => t.includes('Landscaping') && /maintenance/i.test(t))).toBe(true);
+
+    // Typing filters, and picking fills the box.
+    fireEvent.change(box, { target: { value: 'snow' } });
+    const filtered = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(filtered.some((t) => t.includes('Snow removal'))).toBe(true);
+    expect(filtered.some((t) => t.includes('Landscaping'))).toBe(false);
+    const snowOpt = screen.getAllByRole('option').find((o) => o.textContent.includes('Snow removal'));
+    fireEvent.mouseDown(snowOpt.querySelector('button') || snowOpt);
+    expect(box.value).toBe('Snow removal');
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  // ⚠ FREE TEXT SURVIVES. The offered list is derived from use, so a name nobody has typed
+  // before is the normal case for a new bucket — not an error state.
+  it('lets a brand-new name be typed straight through, with no match offered', async () => {
+    withProviders(<CamSection propId="prop-1" year={Y} expense={{ taxes_total: 25000, cam_total: 18000, roof_total: 4000 }} />);
+    await waitFor(() => expect(screen.getByText('CAM total')).toBeTruthy());
+    const box = screen.getByRole('combobox', { name: 'Expense name' });
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: 'Koi pond dredging' } });
+    expect(box.value).toBe('Koi pond dredging');
+    // Nothing matches, so no list stands between the landlord and the ＋ button.
+    expect(screen.queryByRole('listbox')).toBeNull();
   });
 
   // Slice 2's chips: three states on one seeded property — two buckets riding Amlak's

@@ -48,7 +48,9 @@ describe('CAM entry — a management fee is a percentage', () => {
     expect(screen.getByText('5% of $144,000.00 base rent')).toBeTruthy();
     expect(screen.getByText('$25,200.00')).toBeTruthy(); // CAM total 18,000 + 7,200
     // …and it carries the tax line it files under, as Amlak's default (dashed, not chosen).
-    const chip = screen.getByText('Management fees');
+    // Scoped to the chip: since 2026-08-18 the label picker also names the category a
+    // label will file under, so the bare text is legitimately on the page twice.
+    const chip = screen.getAllByText('Management fees').find((n) => n.className.includes('cat-chip'));
     expect(chip.className).toContain('cat-chip');
     expect(chip.className).toContain('derived');
   });

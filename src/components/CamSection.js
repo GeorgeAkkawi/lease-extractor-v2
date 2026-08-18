@@ -4,6 +4,7 @@ import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, 
 import { settleBillingChange } from '../lib/invalidate';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
 import { categoryFor, categoryLabel, bucketKey } from '../lib/expenseCategories';
+import LabelPicker from './LabelPicker';
 import TaxCategorySelect from './TaxCategorySelect';
 import { money, fmtShortDate } from '../lib/format';
 import MutationError from './MutationError';
@@ -203,6 +204,10 @@ export default function CamSection({ propId, year, expense }) {
     return [...m.values()];
   };
   const bucketLabels = [...new Set([...items.map((it) => String(it.label || '').trim()).filter(Boolean), ...CAM_KEYWORD_LABELS, FEE_LABEL])].sort();
+  // ⚠ The category is RESOLVED HERE, through the same `categoryFor` the chip beside each
+  // bucket uses — not a second guess at what a name means. The picker showing one category
+  // while the chip below showed another is the §3 drift in miniature, on one screen.
+  const bucketOptions = bucketLabels.map((l) => ({ label: l, category: categoryLabel(categoryFor(l, buckets).category) }));
 
   // The bucket's tax category, shown once per bucket (on its first line) and editable
   // in place. Three states, and the third is the whole point of this slice: a bucket
@@ -368,10 +373,14 @@ export default function CamSection({ propId, year, expense }) {
           too cluttered … reduce the noise there"). */}
       <form className="cam-add" onSubmit={(e) => { e.preventDefault(); if (label.trim()) add.mutate(); }}>
         <div className="cam-add-line">
-          <input className="cam-input" placeholder="e.g. Landscaping" value={label} onChange={(e) => setLabel(e.target.value)} list="cam-bucket-list" />
-          <datalist id="cam-bucket-list">
-            {bucketLabels.map((l) => <option key={l} value={l} />)}
-          </datalist>
+          <LabelPicker
+            id="cam-bucket"
+            value={label}
+            onChange={setLabel}
+            options={bucketOptions}
+            placeholder="e.g. Landscaping"
+            ariaLabel="Expense name"
+          />
           {pctMode ? (
             <div className="cam-amt"><span className="cam-pre">%</span><input className="cam-input num" type="number" step="any" placeholder="5" value={pct} onChange={(e) => setPct(e.target.value)} /></div>
           ) : (

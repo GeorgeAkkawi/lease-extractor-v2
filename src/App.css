@@ -688,6 +688,26 @@ select.cat-select{font-size:11px;margin-top:3px;padding:3px 22px 3px 6px;max-wid
    entry fields keep those columns — lining up with the table they feed — and the two
    switches move to a line of their own, where the percentage read-out can sit beside
    them instead of floating below the form as a loose paragraph. */
+/* The remembered-label typeahead (LabelPicker). It replaced a native <datalist>, which the
+   browser drew and the browser positioned — so it looked like nothing else on the page and
+   floated free of the field it belonged to (George, 2026-08-18). This one is ours: anchored
+   to the input by an absolutely-positioned list inside a relative wrapper, so it stays on the
+   field through any scroll, and painted in the same panel/shadow language as .corp-flyout. */
+.lp-wrap{position:relative}
+.lp-list{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:40;
+  margin:0;padding:4px;list-style:none;max-height:248px;overflow-y:auto;
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow)}
+.lp-opt{display:flex;align-items:baseline;justify-content:space-between;gap:12px;width:100%;
+  padding:7px 9px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;
+  font-family:inherit;font-size:13px;color:var(--ink);text-align:left;cursor:pointer}
+/* Hover and keyboard share ONE highlighted state — the mouse sets `active` on enter, so the
+   row under the pointer is the row Enter picks. Two separate highlights on one list is how a
+   picker ends up committing a different row than the one that looks chosen. */
+.lp-opt.active{background:var(--accent-soft)}
+.lp-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lp-cat{flex:none;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.lp-cat.none{font-style:italic;letter-spacing:.04em;text-transform:none;color:var(--faint)}
 .cam-add{margin-top:10px}
 .cam-add-line{display:grid;grid-template-columns:1fr 170px 132px 34px;gap:14px;align-items:center}
 .cam-add-opts{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-top:9px}

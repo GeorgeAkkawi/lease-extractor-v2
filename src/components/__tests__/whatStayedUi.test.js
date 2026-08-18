@@ -107,7 +107,12 @@ describe('recording owner money where it now lives', () => {
     fireEvent.click(within(screen.getByText('not billed').closest('label')).getByRole('checkbox'));
     fireEvent.click(screen.getByTitle('Add expense item'));
 
-    await waitFor(() => expect(screen.getByText('Yazin Akkawi')).toBeTruthy());
+    // Scoped past the label picker: in a browser, the pointerdown on ＋ shuts it, but
+    // fireEvent.click raises no pointer event, so its options stay rendered here and the
+    // newly-added name is legitimately on the page twice.
+    await waitFor(() => expect(
+      screen.getAllByText('Yazin Akkawi').some((n) => !n.closest('[role="option"]'))
+    ).toBe(true));
     const after = await getExpenseRecord('prop-1', Y);
     expect(after.cam_total).toBe(before.cam.cam_total);
     expect((await getTenantShares('prop-1', Y)).map((s) => s.total_due))

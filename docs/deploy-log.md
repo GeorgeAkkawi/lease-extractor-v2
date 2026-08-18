@@ -1,3 +1,87 @@
+## 2026-08-18 (4) — The picker stops being the browser's, and Sam Nails' August is one cheque again
+
+**Cloudflare version:** `2e85934b-e19f-4b8f-984d-dc3135998c30` · 2,009 tests, 189 files
+
+George, on the round that shipped two hours earlier: *"i still dont see the undo button and the
+mechanism for choosing a CAM item from the drop down list is really bad. i clicked in and it just
+popped up a really generic looking list that stuck to the page and moved up and down with it."*
+
+### The undo button was right to be absent, and that is not a good enough answer
+
+Measured before touching anything: **zero payments created in the previous three hours, zero rows
+with `split_from` set.** No roll had been made since `0101` landed, so there was nothing linked for
+the buttons to attach to — the mechanism was working and had nothing to work on. The only roll in
+the database was the Sam Nails $100, made during the migration window and carrying no link.
+
+Technically correct, useless in the hand. George: *"no need just fix it for me take the 100 from
+september and put it back on august as the same format as the july box"* — so it was merged by hand
+rather than made undoable and left for him to click.
+
+**The pair was proven, not inferred from shape.** Both rows share `import_hash` `v1-aac97ed1-69`,
+the same `import_id`, note, lease and `paid_date`, so they came from one bank line — and July sits
+beside them as a single **$4,518** row from the identical monthly ACH, which is the "same format"
+George was pointing at.
+
+**Checked before deleting anything:** `statement_lines` had one row for that line — $4,518,
+disposition `rent`, `ref_kind` `payment` — pointing at the **August parent**, not the $100 child. So
+the delete orphaned nothing, and the merge in fact **repaired a mismatch**: the line claimed $4,518
+while the row it referenced held $4,418.
+
+```
+period_month 7 → $4,518     period_month 8 → $4,518     (September's $100: gone)
+```
+
+The invoice is untouched: 4,418 + 100 = 4,518, the same sum against the same invoice.
+
+### The picker
+
+It was a native `<datalist>` — drawn by the browser, positioned by the browser, which is exactly why
+it looked like nothing else on the page and drifted instead of staying on its field. Replaced with
+**`LabelPicker`** (`src/components/LabelPicker.js`), one component rather than markup inlined into
+`CamSection`, because the next surface that wants remembered labels must import it instead of
+growing a second datalist (§3).
+
+- Anchored: `.lp-list` absolute inside a relative `.lp-wrap`, painted in `.corp-flyout`'s panel and
+  shadow language.
+- **Each row names the category that label will file under** — resolved through the *same*
+  `categoryFor` the chip beside each bucket uses, never a second guess. Two answers to "what is this"
+  on one screen is §3 in miniature.
+- **Hover and keyboard share ONE highlight.** The mouse sets `active` on enter, so the row under the
+  pointer is the row Enter commits. Two independent highlights is how a picker fires a different row
+  than the one that looks chosen.
+- **Enter only steals the key when a row is genuinely highlighted**, otherwise it falls through and
+  submits the form — the fast path is type-the-name-and-Enter, and a picker that swallowed it would
+  make every new label need a mouse.
+- ⚠ **Free text is the point, not a fallback.** The offered list is derived from use
+  (`bucketLabels`), never a table, so a name nobody has typed is the normal case for a new bucket.
+  Selecting only fills the box, so nothing downstream can tell a pick from a keystroke.
+
+### The two tests that went red, and why that was the right kind of red
+
+`expenseEntryUi` and `whatStayedUi` both failed on `getByText` finding **two** matches — the picker
+now legitimately prints a category name and a just-added label that already existed elsewhere on the
+page. Both were scoped rather than the behaviour changed. The `whatStayedUi` one is worth naming:
+clicking ＋ raises a `pointerdown` that shuts the list in a real browser, but `fireEvent.click`
+raises no pointer event, so jsdom keeps the options mounted. The test was wrong about the DOM, not
+the app.
+
+The old `bucketUi` assertion — `document.getElementById('cam-bucket-list')` — was deleted rather
+than repointed. It only ever proved a `<datalist>` node existed, which stayed true however badly the
+browser drew it, i.e. it would have passed throughout the exact complaint. Three behaviour tests
+replaced it: opens on focus with categories, filters and picks, and lets an unmatched new name
+through untouched.
+
+### Now redundant
+
+- **The `<datalist>` and its `cam-bucket-list` id** — gone; `LabelPicker` replaces it.
+- **`bucketLabels` as a bare string array** — still computed, but now only feeds `bucketOptions`,
+  which carries the category alongside. If nothing else takes the bare list, the two should collapse
+  into one.
+- **The old `bucketUi` datalist assertion** — deleted, per above.
+- ⚠ **`carryMonthShortfall` ("send shortages to the next month") still has no undo of any kind** —
+  the mirror of the feature this round finished. Not touched, and not bundled in: flagged for
+  George's call.
+
 ## 2026-08-18 (3) — The roll-forward undo stops being theoretical
 
 **Cloudflare version:** `7c4057b4-9ae9-4358-8667-306fc16758dc` · 2,007 tests, 189 files
