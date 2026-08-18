@@ -3962,24 +3962,8 @@ export async function splitPayment(id, { amount, toMonth, propertyId = null, yea
   // ⚠ WHICH ROW THIS CAME OUT OF (0101), so the roll can be undone. Stored rather than
   // guessed: the two halves share a date, a method and an import hash, and a merge inferred
   // from those would move a landlord's money onto a month nobody chose.
-  //
-  // ⚠ AND IT FALLS BACK IF THE COLUMN IS NOT THERE YET. Migrations are applied by hand here
-  // (the Management API is not reachable from the build machine), so there is a window between
-  // this shipping and 0101 being run in which the insert would be REJECTED — turning a working
-  // feature into an error for as long as the window lasts. Rolling forward still works without
-  // the link; only the undo is unavailable, and the caller is told which it got.
-  // ⚠ This branch is untestable against the demo mock, which applies no schema and accepts any
-  // column. DELETE IT once 0101 is applied everywhere — it is a migration window, not a design.
-  let created = null;
-  let linked = true;
-  try {
-    created = await one(supabase.from('payments').insert({ ...half, split_from: id }).select().single());
-  } catch (e) {
-    if (!/split_from/i.test(String(e?.message || ''))) throw e;
-    linked = false;
-    created = await one(supabase.from('payments').insert(half).select().single());
-  }
-  return { refused: false, moved: move, remaining: round2(whole - move), toMonth: to, payment: created, linked };
+  const created = await one(supabase.from('payments').insert({ ...half, split_from: id }).select().single());
+  return { refused: false, moved: move, remaining: round2(whole - move), toMonth: to, payment: created };
 }
 
 /**

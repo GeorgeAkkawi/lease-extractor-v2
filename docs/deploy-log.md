@@ -1,3 +1,61 @@
+## 2026-08-18 (3) — The roll-forward undo stops being theoretical
+
+**Cloudflare version:** `7c4057b4-9ae9-4358-8667-306fc16758dc` · 2,007 tests, 189 files
+
+George, asking what the app can already do: *"is there a way to undo a roll forward on the ledger?"*
+
+The honest answer was **no** — not because the undo was unbuilt, but because the column it reads had
+never reached the database. `undoSplitPayment`, the "Send it back" and "Undo" buttons and their two
+refusals all shipped on 2026-08-17 and have been sitting behind a migration that 403'd twice.
+
+### Measured before touching anything
+
+```
+select column_name from information_schema.columns
+where table_name = 'payments' and column_name = 'split_from'   →   []
+```
+
+So `splitPayment` had been taking its documented fallback on every roll since 2026-08-17: insert the
+surplus row **without** the link, return `linked: false`. The roll worked, which is exactly what the
+fallback was for — but the undo buttons key off `split_from`, so they never rendered, and a landlord
+who rolled a surplus had no way back.
+
+### What went out
+
+- **`0101_payment_split_from.sql` applied.** Verified three ways rather than one, because the
+  interesting failure here is a column that exists with the wrong delete rule: `split_from` is
+  `uuid`, nullable; `payments_split_from_idx` is present; and `payments_split_from_fkey` reports
+  `confdeltype = 'n'` — **set null, not cascade**. That last one is the migration's own ⚠: cascading
+  would delete a real deposit because its sibling went away.
+- **The fallback deleted** (`api.js`). The `try/catch`, the `linked` flag and the twelve-line comment
+  that marked itself for deletion are gone; the insert is now a single unguarded call. `linked` was
+  returned to nobody — grepped before removing, `MonthDetailPanel.js` never read it.
+
+No back-fill, and none is possible: nothing was split before the feature existed.
+
+### What this does NOT fix, and the reason it can't
+
+**Every roll performed between 2026-08-17 and today carries `split_from = NULL` and stays
+un-undoable.** The buttons will not appear for them and `undoSplitPayment` refuses them as
+`not_split`. That is the migration window doing precisely what the fallback traded for: a feature
+that worked without a link rather than one that errored.
+
+No sweep can repair them, and that is the same argument `0101` makes for storing the link at all —
+the two halves of a split share a `paid_date`, a `method`, an `import_hash` and a lease, so any
+inference would be a guess, and a wrong guess moves a landlord's money onto a month nobody chose.
+Repairing them means George naming the pairs by hand. The workaround stands in the meantime: **"Move
+this payment"** re-files the split-off row to any month, leaving two rows where there was one —
+invisible to `allocatePayments`, which sums what is tagged to a month and has never cared how many
+rows carry it.
+
+### Now redundant
+
+- **The `linked: false` fallback and the `linked` flag** (`splitPayment`, `api.js`) — deleted here,
+  as its own comment instructed.
+- **The two ⚠ "0101 still not applied" notices** in the 2026-08-18 (2) and 2026-08-17 entries below,
+  and the **"Now redundant"** line in the 2026-08-17 entry reminding us to delete the fallback — all
+  three marked resolved in place rather than rewritten, since each was true when written.
+
 ## 2026-08-18 (2) — The band says the bill, not a second opinion on it
 
 **Cloudflare version:** `0f419cff-c921-42dc-8e9a-9b0e2c6874e3` · 2,007 tests, 189 files
@@ -110,8 +168,8 @@ Each reverted in turn; each went red, then green on restore:
 
 ### Still open
 
-- ⚠ **Migration `0101_payment_split_from.sql` still not applied.** The Management API answered 403
-  yesterday and **works today** — it can be applied on the next word.
+- ~~⚠ **Migration `0101_payment_split_from.sql` still not applied.** The Management API answered 403
+  yesterday and **works today** — it can be applied on the next word.~~ **Applied 2026-08-18 (3).**
 - ⚠ **Revenue is the annual rate, matching the donut**, so it counts a full year for D & D Dental, who
   leave 30 September. The FY 2026 gap against live therefore reads **$11,859** worse than it is.
   Stated here rather than silently corrected, because matching the donut was the explicit ask.
@@ -242,9 +300,10 @@ Each reverted in turn; each went red, then green on restore:
 
 ### Still open
 
-- ⚠ **Migration `0101_payment_split_from.sql` has still not been applied** — the Management API
+- ~~⚠ **Migration `0101_payment_split_from.sql` has still not been applied** — the Management API
   answers 403 (Cloudflare 1010) from this machine. Until it runs, rolling a surplus forward works and
-  cannot be undone, and the `linked: false` fallback in `splitPayment` should be deleted once it lands.
+  cannot be undone, and the `linked: false` fallback in `splitPayment` should be deleted once it lands.~~
+  **Applied 2026-08-18 (3); the fallback is deleted. Rolls made during the window stay un-undoable.**
 - The statement import calls no `resyncPropertyBilling` · `TenantStatement` pinned to the calendar
   year · two `.panel-toggle` copies on `HistoryPage.js` · `PdfSignCanvas` swallows the stale-build
   message · `build.emptyOutDir: false`.
@@ -333,6 +392,7 @@ rather than reading top to bottom. Each entry is self-contained and dated.
 
   - **The `linked: false` fallback in `splitPayment`** — delete it once `0101` is applied. It
     exists only because the migration and the deploy could not go out together.
+    **Done 2026-08-18 (3).**
 
 - **2026-08-17** — **The chooser loses its gate: quick options, one-click roll to the next
   month, and the screen states where the money is.** Cloudflare version
