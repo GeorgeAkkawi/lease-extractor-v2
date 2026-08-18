@@ -173,6 +173,45 @@ export function monthExcess(alloc) {
 export const overpayKey = (leaseId, year, month, amount) =>
   `overpay:${leaseId}:${year}:${month}:${Math.round((Number(amount) || 0) * 100)}`;
 
+// The standing answer — "count any surplus from this tenant as revenue, and stop asking"
+// (George, 2026-08-17: *"there should also be an option to just accept the overpayment as
+// revenue — if the user continues to notice it they can just change the base rent manually."*)
+//
+// ⚠ THE PER-MONTH KEY'S SELF-INVALIDATING PROPERTY IS THE THING THIS TURNS OFF, deliberately.
+// Carrying the cents means a changed surplus re-asks, which is right for a one-off and is
+// exactly the nagging George is objecting to when a tenant simply pays a round figure every
+// month. So this key carries no amount and no month: it is an answer about the TENANT.
+//
+// ⚠ AND IT IS SCOPED TO THE YEAR. A standing answer must not outlive the rent it was about —
+// next January the lease may have stepped, and a surplus then means something new. Everything
+// else here is per-year for the same reason (the workbook, the Ledger, `closeYear`).
+export const overpayAllKey = (leaseId, year) => `overpay_all:${leaseId}:${year}`;
+
+/**
+ * A surplus that keeps happening — which is not an accounting question but a RENT question.
+ *
+ * George's own answer to it: *"if the user continues to notice it they can just change the
+ * base rent manually."* Right, and the app's job is to be the one that notices. A tenant
+ * paying $50 over every month is a lease whose recorded rent is out of date, and no number of
+ * per-month decisions fixes that.
+ *
+ * ⚠ THE MEDIAN, NOT THE MEAN. This prints as "about $X every month"; one odd month — a double
+ * payment, a deposit — would drag an average into a figure that matches nothing on the row.
+ *
+ * `min` is 3 because two is a coincidence: a payment filed on the wrong month produces a
+ * surplus on one and a shortfall on another, and a tenant who rounds up twice has not
+ * established anything.
+ */
+export function recurringSurplus(excess = [], { min = 3 } = {}) {
+  const months = [];
+  for (let i = 0; i < 12; i++) if ((Number(excess?.[i]) || 0) > 0.005) months.push(i + 1);
+  const amounts = months.map((m) => round2(Number(excess[m - 1]) || 0));
+  const total = round2(amounts.reduce((s, n) => s + n, 0));
+  if (months.length < min) return { recurring: false, months, typical: 0, total };
+  const sorted = [...amounts].sort((a, b) => a - b);
+  return { recurring: true, months, typical: sorted[Math.floor(sorted.length / 2)], total };
+}
+
 // Split each month's owed into base | CAM&tax | roof for the cell sub-line.
 //   schedule     — buildLeaseSchedule's map (owed / abated / kind / outsideTerm per month)
 //   factor       — buildLeaseSchedule's invoice-scaling ratio (1 when no scaling ran),

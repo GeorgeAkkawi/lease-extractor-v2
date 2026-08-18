@@ -189,6 +189,10 @@ button.rr-cell.outside{cursor:pointer}
 .rr-collected-sub{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap;font-size:11px;margin-top:1px}
 .rr-credit{color:var(--forest);background:var(--forest-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
 .rr-behind{color:var(--danger);background:#F3E0DB;border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
+/* A surplus on three months or more — a rent that has fallen behind, not an arrears. Gold,
+   because it is "look at this", and never the red `.rr-behind` wears: being paid too much is
+   not a fault of the tenant's. */
+.rr-overpaid{color:var(--gold);background:var(--gold-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap;cursor:help}
 /* The payment difference across the months already paid — the same gold/forest pair the
    month figures use, so the chip and the cells read as one signal. */
 .rr-short{color:var(--gold);background:var(--gold-soft);border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;white-space:nowrap}
@@ -1356,6 +1360,7 @@ tbody tr:last-child td{border-bottom:none}
 .mp-decide{margin-top:10px;padding-top:10px;border-top:1px dashed var(--hair)}
 .mp-decide-lead{margin:0;font-size:12px;line-height:1.5;color:var(--muted)}
 .mp-decide-lead strong{color:var(--ink)}
+.mp-decide-nudge{margin-top:7px;padding:7px 9px;border-radius:var(--radius);background:var(--gold-soft);color:var(--gold-ink,var(--muted))}
 .mp-decide-opts{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-top:9px}
 .mp-decide-opts .btn-sm,.mp-decide-opts select{width:100%;text-align:left}
 .mp-decide select{margin-top:6px;width:100%}

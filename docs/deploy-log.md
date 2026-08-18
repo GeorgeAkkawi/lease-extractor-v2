@@ -12,6 +12,59 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **The standing answer: "anything extra from this tenant is revenue — stop
+  asking", plus the rent question behind it.** Cloudflare version
+  **`56f20afc-acba-4960-9c40-5fcfe9890a9b`** (on top of `e9ed70c0`).
+
+  George: *"there should also be an option to just accept the overpayment as revenue — if the
+  user continues to notice it they can just change the base rent manually."*
+
+  ### The clarification, and why it was worth asking for
+
+  "Accept the overpayment as revenue" had shipped an hour earlier as one of the four per-month
+  answers, so the sentence read three ways: nothing to build · a standing answer · or *reverse
+  the hold-back entirely*, which his words genuinely admit and which would have undone the
+  previous round. He picked the standing answer, and the second half of his sentence is what
+  points at it: **if it keeps happening, that is a rent to change, not a decision to keep
+  making.**
+
+  ### What shipped
+
+  - **`overpayAllKey(leaseId, year)`** (`ledger.js`) — `overpay_all:<lease>:<year>` in
+    `alert_states`. ⚠ **It deliberately carries NO amount and NO month.** The per-month key's
+    self-invalidating property (cents in the key, so a changed surplus re-asks) is right for a
+    one-off and is *precisely* the nagging a tenant who pays a round figure every month would
+    produce. This is an answer about the TENANT.
+  - ⚠ **AND IT IS SCOPED TO THE YEAR.** A standing answer must not outlive the rent it was
+    about — next January the lease may have stepped, and a surplus then means something new.
+    Pinned: a key for `Y − 1` releases nothing in `Y`.
+  - **`recurringSurplus(excess)`** — three months or more, with the **median** amount, not the
+    mean. This prints as "about $X every month"; one odd month (a double payment, a deposit)
+    would drag an average into a figure matching nothing on the row. `min` is 3 because two is a
+    coincidence — a cheque filed on the wrong month makes one surplus and one shortfall.
+  - **The Ledger row** carries `over N mo · check the rent`, gold rather than the red
+    `.rr-behind` wears: being paid too much is not a fault of the tenant's. Its title says to
+    change it on the lease, which is the action George named himself.
+  - **The pop-up** gains the standing option, states the recurrence when it is one, and offers
+    **"Ask me about these again"** to undo it — a decision with no way back is one a landlord is
+    right to distrust.
+  - Both the workbook and the Ledger honour it in one place each, so a single answer clears
+    every month at once, which is the whole point.
+
+  ### Verified
+
+  `npm test` — **1,991 passing, 188 files** (5 new). The standing key settles twelve months at a
+  stroke and holds no amount · a previous year's key releases nothing · the median is what gets
+  printed · through the real Ledger and pop-up: the chip appears with its rent wording, three
+  rung boxes all stop asking after one answer, the confirm says "this year only", and the undo is
+  offered afterwards. **Non-vacuity proved** by disabling the standing answer on the workbook
+  side and the Ledger side in turn — both went red, then green on restore.
+
+  ### Now redundant
+
+  Nothing redundant. The per-month answers all keep their jobs: a one-off surplus is still a
+  one-off, and rolling forward and refunding are unaffected by a standing answer about revenue.
+
 - **2026-08-17** — **An over-payment is not revenue until you say it is.** A surplus on a month
   is held out of the live income figures until the landlord answers for it, with four answers
   including rolling it onto a month they pick — and the mirror for a shortfall. Cloudflare

@@ -21,7 +21,7 @@ import {
   splitPayment, carryMonthShortfall, getPropertyMonthlyRoll, listPayments, listAdjustments,
   recordPayment, ensureInvoice, listAlertStates, upsertAlertState,
 } from '../api';
-import { allocatePayments, monthExcess, overpayKey } from '../ledger';
+import { allocatePayments, monthExcess, overpayKey, overpayAllKey, recurringSurplus } from '../ledger';
 import { adjustmentKindInfo, pnlDestination } from '../adjustments';
 import { buildIncomeExpense, billedRowsFromRoll } from '../incomeExpense';
 import { currentYear } from '../format';
@@ -79,6 +79,60 @@ describe('overpayKey', () => {
     // …and a different month or tenant never collides with it.
     expect(overpayKey('l1', 2026, 4, 850)).not.toBe(overpayKey('l1', 2026, 3, 850));
     expect(overpayKey('l2', 2026, 3, 850)).not.toBe(overpayKey('l1', 2026, 3, 850));
+  });
+});
+
+// ── The standing answer, and the rent question behind it ──────────────────────
+//
+// George, 2026-08-17: *"there should also be an option to just accept the overpayment as
+// revenue — if the user continues to notice it they can just change the base rent manually."*
+
+describe('the standing answer', () => {
+  const twelve = (v) => Array(12).fill(v);
+  const rollOf = (over) => {
+    const schedule = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, {
+      full: 1000, owed: 1000, abated: 0, credit: 0, kind: 'full', outsideTerm: false,
+    }]));
+    return [{
+      lease_id: 'l1', tenant_name: 'T', schedule, factor: 1, camTaxAnnual: 0, roofAnnual: 0,
+      payments: over.map((amt, i) => ({ amount: 1000 + amt, paid_date: `${Y}-01-05`, period_month: i + 1 })),
+    }];
+  };
+
+  it('settles every month at once, without carrying any amount in its key', () => {
+    const roll = rollOf([250, 250, 250, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(billedRowsFromRoll(roll, { collected: true, year: Y }).unapplied).toBeCloseTo(750, 2);
+    // ⚠ ONE KEY, NO CENTS AND NO MONTH — which is exactly the self-invalidating property the
+    // per-month key HAS and this one must not, or a tenant who pays a round figure every month
+    // would be a fresh question every time the figure moved a dollar.
+    // The literal, not the function, so the stored wire format is pinned independently of the
+    // builder — and then the builder is checked against it.
+    const standing = new Set([`overpay_all:l1:${Y}`]);
+    expect(overpayAllKey('l1', Y)).toBe(`overpay_all:l1:${Y}`);
+    const all = billedRowsFromRoll(roll, { collected: true, year: Y, confirmed: standing });
+    expect(all.unapplied).toBe(0);
+    expect(all.unappliedRows).toEqual([]);
+    // The money is where it belongs — on the remainder row, month by month.
+    expect(all.rent[0].byMonth.slice(0, 3)).toEqual([1250, 1250, 1250]);
+  });
+
+  it('is scoped to the year, so it cannot outlive the rent it was about', () => {
+    const roll = rollOf([250, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const lastYear = new Set([`overpay_all:l1:${Y - 1}`]);
+    expect(billedRowsFromRoll(roll, { collected: true, year: Y, confirmed: lastYear }).unapplied)
+      .toBeCloseTo(250, 2);
+  });
+
+  it('notices when a surplus becomes a pattern, and prices it off the median', () => {
+    // Two is a coincidence — a cheque filed on the wrong month makes one of each.
+    expect(recurringSurplus([100, 100, ...twelve(0).slice(2)]).recurring).toBe(false);
+    const run = recurringSurplus([50, 50, 900, 50, ...twelve(0).slice(4)]);
+    expect(run.recurring).toBe(true);
+    expect(run.months).toEqual([1, 2, 3, 4]);
+    // ⚠ THE MEDIAN, NOT THE MEAN. The mean here is $262.50 — a figure matching nothing on the
+    // row — and this line prints as "about $X every month".
+    expect(run.typical).toBe(50);
+    expect(run.total).toBe(1050);
   });
 });
 

@@ -4,7 +4,7 @@ import {
   addAdjustment, carryMonthShortfall, deleteAdjustment, listAlertStates, markMonthPaid,
   splitPayment, updatePayment, upsertAlertState,
 } from '../lib/api';
-import { monthExcess, overpayKey } from '../lib/ledger';
+import { monthExcess, overpayKey, overpayAllKey, recurringSurplus } from '../lib/ledger';
 import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
 import { paintAdjustment } from '../lib/rollPaint';
 import { useModalA11y } from './modalA11y';
@@ -176,14 +176,28 @@ export default function MonthDetailPanel({
   // them — only then should they be written into the live revenue count as money made."* Until
   // this, the panel printed a paragraph explaining that the extra stays here and nothing can be
   // done about it. The paragraph was the symptom; these are the answers.
-  const excess = round2(monthExcess(alloc)[i] || 0);
+  const excessAll = monthExcess(alloc);
+  const excess = round2(excessAll[i] || 0);
   const oKey = overpayKey(row?.lease_id, year, m, excess);
+  const allKey = overpayAllKey(row?.lease_id, year);
   const { data: alertStates } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates });
-  const confirmedRevenue = !!alertStates?.some((s) => s.alert_key === oKey && s.dismissed);
+  const on = (key) => !!alertStates?.some((s) => s.alert_key === key && s.dismissed);
+  // The standing answer wins: once it is on there is nothing left to decide on any month.
+  const alwaysRevenue = on(allKey);
+  const confirmedRevenue = alwaysRevenue || on(oKey);
+  // A surplus that keeps happening is a RENT question, not an accounting one — George's own
+  // answer: *"if the user continues to notice it they can just change the base rent manually."*
+  const run = recurringSurplus(excessAll);
   const settleStates = () => qc.invalidateQueries({ queryKey: ['alertStates'] });
 
   const confirmRevenue = useMutation({
-    mutationFn: () => upsertAlertState({ alert_key: oKey, dismissed: true }),
+    mutationFn: (key) => upsertAlertState({ alert_key: key || oKey, dismissed: true }),
+    onSuccess: settleStates,
+  });
+  // Undoing the standing answer puts every month back to being asked about — which is why it
+  // is offered at all: a decision with no way back is one a landlord is right to distrust.
+  const stopAlways = useMutation({
+    mutationFn: () => upsertAlertState({ alert_key: allKey, dismissed: false }),
     onSuccess: settleStates,
   });
   // Only the SURPLUS moves, never the cheque — see `splitPayment`. The biggest payment on the
@@ -222,7 +236,8 @@ export default function MonthDetailPanel({
   });
 
   const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending
-    || confirmRevenue.isPending || rollForward.isPending || refundIt.isPending || carryShort.isPending;
+    || confirmRevenue.isPending || rollForward.isPending || refundIt.isPending || carryShort.isPending
+    || stopAlways.isPending;
 
   // Moving money between months changes what the grid says about BOTH of them, so it asks
   // first — and the dialog states each side rather than saying "are you sure".
@@ -403,12 +418,39 @@ export default function MonthDetailPanel({
               {excess > 0.05 && (
                 <div className="mp-decide">
                   <p className="mp-decide-lead">
-                    {confirmedRevenue
-                      ? <>You have counted this <strong>{money(excess)}</strong> as {monthName(m)}&rsquo;s revenue.</>
-                      : <><strong>{money(excess)}</strong> more arrived than {monthName(m)} billed. It is in <strong>none</strong> of
-                        your income figures until you say what it is — more money than a month was billed for does not
-                        make that month worth more.</>}
+                    {alwaysRevenue
+                      ? <>Any extra from {row?.tenant_name || 'this tenant'} counts as revenue for {year} — this <strong>{money(excess)}</strong> included.</>
+                      : confirmedRevenue
+                        ? <>You have counted this <strong>{money(excess)}</strong> as {monthName(m)}&rsquo;s revenue.</>
+                        : <><strong>{money(excess)}</strong> more arrived than {monthName(m)} billed. It is in <strong>none</strong> of
+                          your income figures until you say what it is — more money than a month was billed for does not
+                          make that month worth more.</>}
                   </p>
+                  {/* ⚠ THE RENT QUESTION, ASKED ONCE IT IS ACTUALLY A PATTERN. Three months of the
+                      same surplus is not something to keep deciding — it is a recorded rent that
+                      has fallen behind what the tenant actually pays. */}
+                  {run.recurring && (
+                    <p className="mp-decide-lead mp-decide-nudge">
+                      {row?.tenant_name || 'This tenant'} has paid over on <strong>{run.months.length} months</strong> this
+                      year, about <strong>{money(run.typical)}</strong> each time. If that is the real rent, change it on the
+                      lease — no number of month-by-month decisions will keep it right.
+                    </p>
+                  )}
+                  {alwaysRevenue && (
+                    <button className="ghost btn-sm" disabled={busy} onClick={async () => {
+                      const ok = await askConfirm({
+                        title: 'Ask about these again?',
+                        message: `Amlak is counting every surplus from ${row?.tenant_name || 'this tenant'} as revenue for ${year}.`,
+                        implications: [
+                          'Each over-paid month goes back to waiting for your answer, and stays out of your income figures until it gets one.',
+                          'Nothing already counted is taken away — you are only changing what happens from here.',
+                        ],
+                        confirmLabel: 'Ask me again',
+                        tone: 'warn',
+                      });
+                      if (ok) stopAlways.mutate();
+                    }}>Ask me about these again</button>
+                  )}
                   {!deciding && !confirmedRevenue && (
                     <button className="secondary mp-record" disabled={busy} onClick={() => setDeciding(true)}>
                       What is this {money(excess)}?
@@ -430,6 +472,26 @@ export default function MonthDetailPanel({
                         });
                         if (ok) confirmRevenue.mutate();
                       }}>It is {monthName(m)}&rsquo;s revenue</button>
+                      {/* George, 2026-08-17: *"there should also be an option to just accept the
+                          overpayment as revenue — if the user continues to notice it they can just
+                          change the base rent manually."* The per-month answer re-asks whenever the
+                          figure changes, which is right for a one-off and is precisely the nagging
+                          a tenant who simply pays a round number every month would produce. */}
+                      <button className="ghost btn-sm" disabled={busy} onClick={async () => {
+                        const ok = await askConfirm({
+                          title: `Count anything extra from ${row?.tenant_name || 'this tenant'} as revenue?`,
+                          message: `For ${year}, every month where more arrives than was billed counts it straight away — starting with this ${money(excess)}.`,
+                          implications: [
+                            'Amlak stops asking about their over-payments, and stops holding them out of your income figures.',
+                            'It applies to this year only — next year asks again, because the rent may have changed by then.',
+                            'If it keeps happening, the rent on file is probably out of date; change it on the lease and the surplus disappears.',
+                            'You can turn this back off from any of their months.',
+                          ],
+                          confirmLabel: 'Count it all as revenue',
+                          tone: 'warn',
+                        });
+                        if (ok) confirmRevenue.mutate(allKey);
+                      }}>Anything extra from {row?.tenant_name || 'this tenant'} is revenue — stop asking</button>
                       {/* Only the surplus moves. `Move this payment` above still re-files a whole
                           cheque that was filed against the wrong month — a different question. */}
                       {biggestPay && (

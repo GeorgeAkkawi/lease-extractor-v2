@@ -27,7 +27,7 @@ import {
   localDateIso,
   getLeaseSort, discardDocument,
 } from '../lib/api';
-import { allocatePayments, componentizeSchedule, escalationFollowThrough, escalationStepMonths, ledgerRowSummary, monthClosedForLogging, monthExcess, overpayKey, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
+import { allocatePayments, componentizeSchedule, escalationFollowThrough, escalationStepMonths, ledgerRowSummary, monthClosedForLogging, monthExcess, overpayAllKey, overpayKey, recurringSurplus, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
 import { sortTenantRows } from '../lib/leaseSort';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
@@ -839,6 +839,8 @@ export default function LedgerPage() {
       // what it is. Undecided, it is in NONE of the live income figures (incomeExpense.js) —
       // so the box has to be the thing that says so, or the money is withheld invisibly.
       const excess = monthExcess(alloc);
+      // A surplus on three months or more is a RENT question, not an accounting one.
+      const surplusRun = recurringSurplus(excess);
       // Did the money follow the raise? Same allocation the boxes paint from, so the
       // verdict and the row's own `short $X` chip can never disagree.
       const followUp = escalationFollowThrough({ year, owedByMonth: r.schedule, allocation: alloc, steps, comp, today });
@@ -858,7 +860,7 @@ export default function LedgerPage() {
         .reduce((s, a) => round2(s + (Number(a.amount) || 0)), 0);
       // Any settlement row at all — what makes an undo worth offering on this row.
       const settlementRows = adjRows.filter(isSettlementRow);
-      return { r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows, excess };
+      return { r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows, excess, surplusRun };
     }),
     { mode: tenantSort.mode, dir: tenantSort.dir, pick: (d) => d.r }
   );
@@ -995,7 +997,7 @@ export default function LedgerPage() {
               </tr>
             </thead>
             <tbody>
-              {derived.map(({ r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows, excess }) => {
+              {derived.map(({ r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows, excess, surplusRun }) => {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
                 const rate = pct(summary.collected, summary.projected);
                 const stepSet = new Set(steps.map((s) => s.month));
@@ -1171,7 +1173,10 @@ export default function LedgerPage() {
                           // held back invisibly — the one failure this whole change could cause.
                           // `off` already tints the box gold either way; this adds the ASK.
                           const surplus = round2(excess?.[i] || 0);
+                          // The standing answer ("anything extra from this tenant is revenue")
+                          // settles every month at once — that is what it is for.
                           const awaiting = surplus > 0.05
+                            && !confirmedOverpay.has(overpayAllKey(r.lease_id, year))
                             && !confirmedOverpay.has(overpayKey(r.lease_id, year, m, surplus));
                           return (
                             <td key={m}>
@@ -1245,6 +1250,18 @@ export default function LedgerPage() {
                         <VarianceChip variance={summary.variance} />
                         {summary.credit > 0.05 && <span className="rr-credit" title="Collected more than projected — owed back to the tenant">credit {money(summary.credit)}</span>}
                         {summary.monthsBehind > 0 && <span className="rr-behind" title="Months that have ENDED with nothing collected. The month still running is never counted — its bank statement hasn't arrived yet.">{summary.monthsBehind} mo behind</span>}
+                        {/* ⚠ THE RENT QUESTION, ON THE ROW WHERE THE RENT IS. George,
+                            2026-08-17: *"if the user continues to notice it they can just
+                            change the base rent manually."* Right — and the app's job is to
+                            be the one that notices. Three months of the same surplus is a
+                            recorded rent that has fallen behind what the tenant actually
+                            pays, and no number of per-month decisions fixes that. */}
+                        {surplusRun.recurring && (
+                          <span className="rr-overpaid"
+                            title={`Paid over on ${surplusRun.months.length} months this year, about ${money(surplusRun.typical)} each time. If that is the real rent, change it on the lease — open the tenant above.`}>
+                            over {surplusRun.months.length} mo · check the rent
+                          </span>
+                        )}
                       </div>
                       {/* The stored bill and the lease no longer agree. Nothing here guesses
                           why — a rent step that came due overnight, an expense figure that

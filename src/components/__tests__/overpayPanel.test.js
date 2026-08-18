@@ -79,7 +79,9 @@ describe('an over-paid month asks what the surplus is', () => {
 
     fireEvent.click(within(panel).getByRole('button', { name: /What is this \$1,750\.00\?/ }));
     // All three answers, plus leaving it — which is a legitimate one and must be offered.
-    expect(within(panel).getByRole('button', { name: /revenue/ })).toBeTruthy();
+    // ⚠ Anchored, because "…is revenue — stop asking" is a DIFFERENT answer sitting beside it.
+    expect(within(panel).getByRole('button', { name: /^It is .+revenue$/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /is revenue — stop asking$/ })).toBeTruthy();
     expect(within(panel).getByRole('button', { name: /Refund it/ })).toBeTruthy();
     expect(within(panel).getByRole('button', { name: /Leave it for now/ })).toBeTruthy();
     expect(within(panel).getByRole('option', { name: /Roll \$1,750\.00 forward to…/ })).toBeTruthy();
@@ -102,7 +104,7 @@ describe('an over-paid month asks what the surplus is', () => {
     fireEvent.doubleClick(cell);
     const panel = await screen.findByRole('dialog');
     fireEvent.click(within(panel).getByRole('button', { name: /What is this \$900\.00\?/ }));
-    fireEvent.click(within(panel).getByRole('button', { name: /revenue/ }));
+    fireEvent.click(within(panel).getByRole('button', { name: /^It is .+revenue$/ }));
     // The confirm names where the money lands before it moves — never a bare "are you sure".
     const confirm = await screen.findByText(/Count \$900\.00 as/);
     expect(confirm).toBeTruthy();
@@ -112,6 +114,52 @@ describe('an over-paid month asks what the surplus is', () => {
     await waitFor(() => {
       expect(within(screen.getByRole('dialog')).getByText(/You have counted this/)).toBeTruthy();
     });
+    cleanup();
+  });
+});
+
+// ⚠ THE ANSWER THAT STOPS THE ASKING (George, 2026-08-17: *"there should also be an option to
+// just accept the overpayment as revenue — if the user continues to notice it they can just
+// change the base rent manually."*). The per-month answer re-asks whenever the figure moves,
+// which is right for a one-off and is exactly the nagging a tenant who pays a round number
+// every month would produce.
+describe('the standing answer settles every month at once', () => {
+  it('stops the boxes asking, says the rent may be stale, and can be turned back off', async () => {
+    // Three months over — enough to be a pattern rather than a coincidence.
+    await overpay(1, 300);
+    await overpay(2, 300);
+    await overpay(3, 300);
+    renderLedger();
+    await screen.findByText('Northwind Books');
+
+    // The row says the rent question out loud, on the row where the rent is.
+    const chip = await waitFor(() => {
+      const found = document.querySelector('.rr-overpaid');
+      expect(found).toBeTruthy();
+      return found;
+    });
+    expect(chip.textContent).toMatch(/over \d+ mo/);
+    expect(chip.getAttribute('title')).toMatch(/change it on the lease/);
+
+    const before = document.querySelectorAll('.rr-cell.awaiting').length;
+    expect(before).toBeGreaterThanOrEqual(3);
+
+    fireEvent.doubleClick(document.querySelector('.rr-cell.awaiting'));
+    const panel = await screen.findByRole('dialog');
+    expect(within(panel).getByText(/has paid over on/)).toBeTruthy();
+    fireEvent.click(within(panel).getByRole('button', { name: /What is this/ }));
+    fireEvent.click(within(panel).getByRole('button', { name: /is revenue — stop asking/ }));
+    await screen.findByText(/Count anything extra from/);
+    // It says it is this year only — a standing answer must not outlive the rent it was about.
+    expect(screen.getByText(/this year only/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Count it all as revenue/ }));
+
+    // Every box stops asking, not just the one that was open.
+    await waitFor(() => {
+      expect(document.querySelectorAll('.rr-cell.awaiting').length).toBe(0);
+    });
+    // …and it can be undone, or it is a decision a landlord is right to distrust.
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: /Ask me about these again/ })).toBeTruthy();
     cleanup();
   });
 });

@@ -60,7 +60,7 @@ import {
 import { propertyStandings } from './settle';
 import { recoverabilityRows, absorbedFromItems } from './recoverability';
 import { summarizeOtherIncome } from './otherIncome';
-import { componentizeSchedule, allocatePayments, monthExcess, overpayKey } from './ledger';
+import { componentizeSchedule, allocatePayments, monthExcess, overpayKey, overpayAllKey } from './ledger';
 import { inTermByLease } from './leaseSchedule';
 import { adjustmentsForPnlRow, adjustmentKindRows, adjustmentMarks } from './adjustments';
 
@@ -180,13 +180,17 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
     if (collected) {
       const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments, adjustments: r.adjustments });
       const excess = monthExcess(alloc);
+      // The standing answer, read ONCE per lease: "any surplus from this tenant is revenue".
+      // It settles every month at a stroke, which is the whole point of it.
+      const alwaysRevenue = !!confirmed?.has(overpayAllKey(r.lease_id, year));
       for (let i = 0; i < 12; i++) {
         const owedM = round2(alloc.owed[i]);
         // ⚠ WHAT THIS MONTH'S CASH IS ALLOWED TO COUNT AS. A surplus the landlord has
         // confirmed is revenue counts here exactly as it did before; an unanswered one is
         // held out and named on its own line rather than quietly inflating a month.
         const surplus = round2(excess[i]);
-        const held = surplus > 0.005 && !confirmed?.has(overpayKey(r.lease_id, year, i + 1, surplus))
+        const held = surplus > 0.005 && !alwaysRevenue
+          && !confirmed?.has(overpayKey(r.lease_id, year, i + 1, surplus))
           ? surplus
           : 0;
         if (held > 0.005) {
