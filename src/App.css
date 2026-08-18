@@ -1357,6 +1357,10 @@ tbody tr:last-child td{border-bottom:none}
 /* "What is this difference?" — the choices that replaced the paragraph explaining why there
    weren't any. Stacked, not a row: each one is a sentence-long decision about money, and
    three buttons side by side reads as a toolbar. */
+/* Where a payment came from, or where part of it went — printed on the payment itself, so a
+   rolled-forward half is never mistaken for a cheque the tenant sent for this month. */
+.mp-rolled{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:5px;padding:4px 7px;border-radius:var(--radius);background:var(--panel-2);font-size:11px;color:var(--muted)}
+.mp-rolled .btn-sm{flex:none}
 .mp-decide{margin-top:10px;padding-top:10px;border-top:1px dashed var(--hair)}
 .mp-decide-lead{margin:0;font-size:12px;line-height:1.5;color:var(--muted)}
 .mp-decide-lead strong{color:var(--ink)}

@@ -3864,7 +3864,7 @@ export async function splitPayment(id, { amount, toMonth, propertyId = null, yea
   }
   const owner = await ownerId();
   await one(supabase.from('payments').update({ amount: round2(whole - move) }).eq('id', id).select().single());
-  const created = await one(supabase.from('payments').insert({
+  const half = {
     invoice_id: src.invoice_id,
     lease_id: src.lease_id,
     amount: move,
@@ -3876,8 +3876,79 @@ export async function splitPayment(id, { amount, toMonth, propertyId = null, yea
     import_id: src.import_id ?? null,
     import_hash: src.import_hash ?? null,
     owner_id: owner,
-  }).select().single());
-  return { refused: false, moved: move, remaining: round2(whole - move), toMonth: to, payment: created };
+  };
+  // ⚠ WHICH ROW THIS CAME OUT OF (0101), so the roll can be undone. Stored rather than
+  // guessed: the two halves share a date, a method and an import hash, and a merge inferred
+  // from those would move a landlord's money onto a month nobody chose.
+  //
+  // ⚠ AND IT FALLS BACK IF THE COLUMN IS NOT THERE YET. Migrations are applied by hand here
+  // (the Management API is not reachable from the build machine), so there is a window between
+  // this shipping and 0101 being run in which the insert would be REJECTED — turning a working
+  // feature into an error for as long as the window lasts. Rolling forward still works without
+  // the link; only the undo is unavailable, and the caller is told which it got.
+  // ⚠ This branch is untestable against the demo mock, which applies no schema and accepts any
+  // column. DELETE IT once 0101 is applied everywhere — it is a migration window, not a design.
+  let created = null;
+  let linked = true;
+  try {
+    created = await one(supabase.from('payments').insert({ ...half, split_from: id }).select().single());
+  } catch (e) {
+    if (!/split_from/i.test(String(e?.message || ''))) throw e;
+    linked = false;
+    created = await one(supabase.from('payments').insert(half).select().single());
+  }
+  return { refused: false, moved: move, remaining: round2(whole - move), toMonth: to, payment: created, linked };
+}
+
+/**
+ * Put a rolled-forward surplus back where it came from.
+ *
+ * George, 2026-08-17: *"need a way to undo a roll forward."* The reverse of `splitPayment`:
+ * the amount goes back onto the row it was split out of and this row is deleted, which
+ * restores the exact state before the roll — one payment, one month, one figure.
+ *
+ * ⚠ IT MERGES, IT DOES NOT RE-TAG. Simply moving this row back to the parent's month would
+ * leave two rows where there was one; every figure downstream would agree (`allocatePayments`
+ * sums what is tagged to a month and has never counted rows), but the payment list on the
+ * month panel and the bank tie-out would carry a split that no longer exists, and a second
+ * undo would have nothing to undo.
+ *
+ * ⚠ IT FOLLOWS THE PARENT, NOT THE ORIGINAL MONTH. If the parent cheque has since been
+ * re-filed onto a different month, that is where the money belongs — the landlord moved it
+ * there deliberately. The confirm names the month it is about to land on rather than assuming
+ * the reader remembers.
+ *
+ * Refuses rather than guessing: a row that was never split, a parent that has since been
+ * deleted (`on delete set null`, so this row survives its sibling — it is real money), or a
+ * closed year.
+ */
+export async function undoSplitPayment(id, { propertyId = null, year = null } = {}) {
+  if (!id) return { refused: true, reason: 'incomplete', message: 'Pick a payment to merge back.' };
+  const child = await one(supabase.from('payments').select('*').eq('id', id).single());
+  if (!child) return { refused: true, reason: 'missing', message: 'That payment no longer exists.' };
+  if (!child.split_from) {
+    return { refused: true, reason: 'not_split', message: 'This payment was recorded on its own, not rolled here from another month. Use “Move this payment” to re-file it.' };
+  }
+  if (propertyId && year) {
+    const lock = await yearLockState(propertyId, Number(year));
+    if (lock === 'closed') {
+      return { refused: true, reason: 'closed', message: `FY ${year} is closed. Reopen it first, or record the correction in an open year.` };
+    }
+    if (lock === 'unknown') {
+      return { refused: true, reason: 'lock_unknown', message: `Couldn’t check whether FY ${year} is closed, so nothing was changed. Check your connection and try again.` };
+    }
+  }
+  const parent = await one(supabase.from('payments').select('*').eq('id', child.split_from).single()).catch(() => null);
+  if (!parent) {
+    return {
+      refused: true, reason: 'orphan',
+      message: 'The payment this was rolled out of has since been deleted, so there is nothing to merge it back into. This money did reach the bank — use “Move this payment” to file it wherever it belongs.',
+    };
+  }
+  const merged = round2((Number(parent.amount) || 0) + (Number(child.amount) || 0));
+  await one(supabase.from('payments').update({ amount: merged }).eq('id', parent.id).select().single());
+  await rows(supabase.from('payments').delete().eq('id', child.id));
+  return { refused: false, merged, toMonth: parent.period_month == null ? null : Number(parent.period_month), payment: { ...parent, amount: merged } };
 }
 
 // ---- Monthly rent tracker ---------------------------------------------------

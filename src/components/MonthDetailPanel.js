@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   addAdjustment, carryMonthShortfall, deleteAdjustment, listAlertStates, markMonthPaid,
-  splitPayment, updatePayment, upsertAlertState,
+  splitPayment, undoSplitPayment, updatePayment, upsertAlertState,
 } from '../lib/api';
 import { monthExcess, overpayKey, overpayAllKey, recurringSurplus } from '../lib/ledger';
 import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
@@ -220,6 +220,14 @@ export default function MonthDetailPanel({
     },
     onSuccess: () => { settle(); settleStates(); },
   });
+  const undoRoll = useMutation({
+    mutationFn: async (childId) => {
+      const res = await undoSplitPayment(childId, { propertyId, year });
+      if (res?.refused) throw new Error(res.message);
+      return res;
+    },
+    onSuccess: () => { settlePay(); settleStates(); },
+  });
   const carryShort = useMutation({
     mutationFn: async (toMonth) => {
       const res = await carryMonthShortfall({
@@ -233,7 +241,7 @@ export default function MonthDetailPanel({
 
   const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending
     || confirmRevenue.isPending || rollForward.isPending || refundIt.isPending || carryShort.isPending
-    || stopAlways.isPending;
+    || stopAlways.isPending || undoRoll.isPending;
 
   // Moving money between months changes what the grid says about BOTH of them, so it asks
   // first — and the dialog states each side rather than saying "are you sure".
@@ -243,6 +251,32 @@ export default function MonthDetailPanel({
   // does not move FORWARD from this month, it fills each month's remaining need from JANUARY
   // (allocatePayments) — and "spread" is not a word anybody uses about a cheque. What the
   // action does is untie the payment from a month; the implications still state the rest.
+  // Where a rolled payment came FROM: the month its parent row is tagged to. Read off the
+  // lease's own payments, which this panel already holds — no query, and it follows the parent
+  // if the parent has since been re-filed, because that is where the money now belongs.
+  const payById = new Map((row?.payments || []).map((p) => [p.id, p]));
+  const rolledFrom = (p) => {
+    const parent = p?.split_from ? payById.get(p.split_from) : null;
+    return parent?.period_month ? Number(parent.period_month) : null;
+  };
+  // …and what was rolled OUT of a payment, for the month it left.
+  const rolledOut = (p) => (row?.payments || []).filter((c) => c.split_from === p.id && Number(c.period_month) !== m);
+
+  async function askUndoRoll(child, backTo) {
+    const ok = await askConfirm({
+      title: `Send ${money(child.amount)} back to ${monthName(backTo)}?`,
+      message: `${money(child.amount)} was rolled out of a payment on ${monthName(backTo)} ${year} and tagged to ${monthName(child.period_month)}.`,
+      implications: [
+        `${monthName(backTo)} takes it back — the two halves become one payment again, exactly as before the roll.`,
+        `${monthName(child.period_month)} goes back to needing that ${money(child.amount)}.`,
+        `If ${monthName(backTo)} then holds more than it billed, it asks what the extra is — which is where you started.`,
+      ],
+      confirmLabel: `Send it back to ${monthName(backTo)}`,
+      tone: 'warn',
+    });
+    if (ok) undoRoll.mutate(child.id);
+  }
+
   // ⚠ ONE CONFIRM FOR BOTH WAYS OF ROLLING IT — the one-click "Roll to {next}" and the picker
   // for any other month. Two copies of a dialog that names two months and a figure is precisely
   // how one of them ends up naming the wrong one.
@@ -389,6 +423,29 @@ export default function MonthDetailPanel({
                     </span>
                     <b>{money(p.amount)}</b>
                   </div>
+                  {/* ⚠ MONEY THAT ARRIVED SOMEWHERE ELSE SAYS SO, AND OFFERS THE WAY BACK
+                      (George, 2026-08-17: *"need a way to undo a roll forward"*). Without this
+                      the row is indistinguishable from a cheque the tenant actually sent for
+                      this month, and the only route back was "Move this payment" — a generic
+                      control the landlord would have to already know to reach for, and which
+                      leaves two rows where there was one. */}
+                  {rolledFrom(p) && (
+                    <div className="mp-rolled">
+                      <span>Rolled here from {monthName(rolledFrom(p))}</span>
+                      <button className="ghost btn-sm" disabled={busy}
+                        onClick={() => askUndoRoll(p, rolledFrom(p))}>Send it back</button>
+                    </div>
+                  )}
+                  {/* …and the same offer on the month it LEFT, which is where the landlord did
+                      it and therefore where they look to take it back. One function, one
+                      confirm, two surfaces — exactly as "Move this payment" already works. */}
+                  {rolledOut(p).map((child) => (
+                    <div className="mp-rolled" key={child.id}>
+                      <span>{money(child.amount)} of this rolled to {monthName(child.period_month)}</span>
+                      <button className="ghost btn-sm" disabled={busy}
+                        onClick={() => askUndoRoll(child, m)}>Undo</button>
+                    </div>
+                  ))}
                   {/* Re-file it, rather than delete-and-retype. The select resets to its
                       placeholder every render because the payment's CURRENT month is the
                       month this panel is showing — there is nothing for it to display. */}
@@ -661,7 +718,7 @@ export default function MonthDetailPanel({
           {refused && <p className="note-msg danger mp-foot-msg">{refused}</p>}
           {/* The four new writes throw their own refusal message (a closed year, a split that
               would swallow the whole cheque), so they belong here rather than failing silently. */}
-          <MutationError of={[removeAdj, recordGap, movePay, confirmRevenue, rollForward, refundIt, carryShort]} />
+          <MutationError of={[removeAdj, recordGap, movePay, confirmRevenue, rollForward, refundIt, carryShort, undoRoll]} />
           <div className="modal-actions">
             {Math.abs(preview) > 0 ? (
               <span className="muted mp-preview">

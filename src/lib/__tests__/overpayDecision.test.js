@@ -19,7 +19,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   splitPayment, carryMonthShortfall, getPropertyMonthlyRoll, listPayments, listAdjustments,
-  recordPayment, ensureInvoice, listAlertStates, upsertAlertState,
+  recordPayment, deletePayment, ensureInvoice, listAlertStates, upsertAlertState,
+  undoSplitPayment,
 } from '../api';
 import { allocatePayments, monthExcess, overpayKey, overpayAllKey, recurringSurplus } from '../ledger';
 import { adjustmentKindInfo, pnlDestination } from '../adjustments';
@@ -221,6 +222,81 @@ describe('splitPayment — the surplus moves, not the cheque', () => {
     expect(await carryMonthShortfall({
       leaseId: 'lease-2', propertyId: 'prop-1', year: Y, fromMonth: 2, toMonth: 3, amount: 100,
     })).toMatchObject({ refused: true, reason: 'closed' });
+  });
+});
+
+// ── undoSplitPayment ──────────────────────────────────────────────────────────
+//
+// George, 2026-08-17: *"need a way to undo a roll forward."*
+
+describe('undoSplitPayment — putting a rolled surplus back', () => {
+  it('merges the two halves into one row again, exactly as before the roll', async () => {
+    const inv = await ensureInvoice('lease-3', 'prop-2', Y);
+    const row0 = await rowFor('prop-2', 'lease-3');
+    const augOwed = round2(Number(row0.schedule[8].owed) || 0);
+    const pay = await recordPayment({
+      invoice_id: inv.id, lease_id: 'lease-3', amount: round2(augOwed + 1400),
+      paid_date: `${Y}-08-06`, method: 'ach', note: 'August rent', period_month: 8, source: 'manual',
+    });
+    const rolled = await splitPayment(pay.id, { amount: 1400, toMonth: 9, propertyId: 'prop-2', year: Y });
+    expect(rolled.refused).toBeFalsy();
+    // ⚠ THE LINK IS STORED (0101), not inferred from the shared date and method — a merge
+    // guessed from those would move a landlord's money onto a month nobody chose.
+    expect(rolled.payment.split_from).toBe(pay.id);
+
+    const back = await undoSplitPayment(rolled.payment.id, { propertyId: 'prop-2', year: Y });
+    expect(back.refused).toBeFalsy();
+    expect(back.toMonth).toBe(8);
+
+    const after = await listPayments(inv.id);
+    // ⚠ ONE ROW, NOT TWO. Re-tagging would agree with every figure downstream and still leave
+    // a split that no longer exists on the payment list — and nothing for a second undo to undo.
+    expect(after.find((p) => p.id === rolled.payment.id)).toBeUndefined();
+    const merged = after.find((p) => p.id === pay.id);
+    expect(merged.amount).toBeCloseTo(round2(augOwed + 1400), 2);
+    expect(merged.note).toBe('August rent');
+    expect(merged.source).toBe('manual');
+
+    // And the months are back where they started: August over by 1,400, September untouched.
+    const rebuilt = await rowFor('prop-2', 'lease-3');
+    const a = allocFor(rebuilt);
+    expect(monthExcess(a)[7]).toBeCloseTo(1400, 2);
+    expect(a.received[8]).toBe(0);
+  });
+
+  it('refuses a payment that was never rolled, and says what to use instead', async () => {
+    const inv = await ensureInvoice('lease-3', 'prop-2', Y);
+    const plain = await recordPayment({
+      invoice_id: inv.id, lease_id: 'lease-3', amount: 100, paid_date: `${Y}-11-02`,
+      method: 'check', period_month: 11, source: 'manual',
+    });
+    const res = await undoSplitPayment(plain.id, { propertyId: 'prop-2', year: Y });
+    expect(res).toMatchObject({ refused: true, reason: 'not_split' });
+    expect(res.message).toContain('Move this payment');
+    expect((await listPayments(inv.id)).some((p) => p.id === plain.id)).toBe(true);
+  });
+
+  // ⚠ THE ORPHAN. `on delete set null` (0101) rather than cascade, because this half is REAL
+  // MONEY that reached the bank — deleting a deposit because its sibling went away is the exact
+  // fault the bank tie-out found on Pershing Plaza in July.
+  it('refuses when the row it came from has been deleted, and says the money is still real', async () => {
+    const inv = await ensureInvoice('lease-3', 'prop-2', Y);
+    const row0 = await rowFor('prop-2', 'lease-3');
+    const decOwed = round2(Number(row0.schedule[12].owed) || 0);
+    const pay = await recordPayment({
+      invoice_id: inv.id, lease_id: 'lease-3', amount: round2(decOwed + 600),
+      paid_date: `${Y}-12-02`, method: 'check', period_month: 12, source: 'manual',
+    });
+    const rolled = await splitPayment(pay.id, { amount: 600, toMonth: 11, propertyId: 'prop-2', year: Y });
+    expect(rolled.refused).toBeFalsy();
+    await deletePayment(pay.id);
+
+    const res = await undoSplitPayment(rolled.payment.id, { propertyId: 'prop-2', year: Y });
+    expect(res.refused).toBe(true);
+    expect(res.reason).toBe('orphan');
+    expect(res.message).toContain('did reach the bank');
+    // The orphan itself survives — it is money, not a loose end to tidy away.
+    expect((await listPayments(inv.id)).some((p) => p.id === rolled.payment.id)).toBe(true);
   });
 });
 

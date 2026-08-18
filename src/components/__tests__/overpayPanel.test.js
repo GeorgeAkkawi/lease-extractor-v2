@@ -121,6 +121,54 @@ describe('an over-paid month asks what the surplus is', () => {
   });
 });
 
+// ⚠ RUNS BEFORE THE STANDING-ANSWER TEST BELOW, deliberately: that one turns "any surplus from
+// this tenant is revenue" ON for the rest of the file, and no box rings after it.
+describe('a roll forward can be taken back', () => {
+  it('rolls with one click, says where the money came from, and sends it back', async () => {
+    await overpay(5, 1200);
+    renderLedger();
+    await screen.findByText('Northwind Books');
+    const cell = await waitFor(() => {
+      const found = [...document.querySelectorAll('.rr-cell.awaiting')]
+        .find((el) => /\$1,200\.00 not yet applied/.test(el.getAttribute('aria-label') || ''));
+      expect(found).toBeTruthy();
+      return found;
+    });
+
+    // Roll it to the next month — one click, not a dropdown of twelve.
+    fireEvent.doubleClick(cell);
+    let panel = await screen.findByRole('dialog');
+    fireEvent.click(within(panel).getByRole('button', { name: /^Roll to June$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Roll it to June/ }));
+
+    // ⚠ THE MONTH IT LEFT SAYS SO TOO, which is where the landlord did it and therefore where
+    // they look to take it back.
+    await waitFor(() => {
+      expect(within(screen.getByRole('dialog')).getByText(/rolled to June/)).toBeTruthy();
+    });
+    panel = screen.getByRole('dialog');
+    // Nothing is left to answer on May — it now holds exactly what it billed.
+    expect(within(panel).queryByRole('button', { name: /^Revenue for / })).toBeNull();
+
+    // Step forward to June: the money is there, and it says it did not come from the tenant.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Next month' }));
+    await waitFor(() => {
+      expect(within(screen.getByRole('dialog')).getByText(/Rolled here from May/)).toBeTruthy();
+    });
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Send it back/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Send it back to May/ }));
+
+    // Back to one payment on May, over by 1,200 again — exactly where it started.
+    // ⚠ Waited for by its OWN figure: April is still ringing from the first test in this file,
+    // so "some cell is awaiting" would have passed before the undo had landed at all.
+    await waitFor(() => {
+      expect([...document.querySelectorAll('.rr-cell.awaiting')]
+        .some((el) => /\$1,200\.00 not yet applied/.test(el.getAttribute('aria-label') || ''))).toBe(true);
+    });
+    cleanup();
+  });
+});
+
 // ⚠ THE ANSWER THAT STOPS THE ASKING (George, 2026-08-17: *"there should also be an option to
 // just accept the overpayment as revenue — if the user continues to notice it they can just
 // change the base rent manually."*). The per-month answer re-asks whenever the figure moves,

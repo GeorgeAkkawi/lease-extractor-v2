@@ -12,6 +12,77 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **Undo a roll forward** — the two halves merge back into one payment, and
+  both months say so. Cloudflare version **`d961ce4b-939a-45aa-ad3e-94d32be1526f`**
+  (on top of `a0210a43`). ⚠ **Migration `0101` still needs running by hand — see below.**
+
+  George: *"need a way to undo a roll forward."*
+
+  ### Migration 0101 — `payments.split_from`
+
+  Rolling a surplus forward makes one payment row into two, and nothing recorded WHICH first.
+  ⚠ **Stored, not inferred**, for the same reason `payments.source` (0088) and
+  `signature_envelopes.declined_at` (0096) are columns: the two halves share a `paid_date`, a
+  `method`, an `import_hash` and a lease, so a merge could be guessed from those — and a wrong
+  guess moves a landlord's money onto a month nobody chose. There is no tolerable failure rate
+  for that.
+
+  ⚠ **`on delete set null`, NOT cascade.** If the parent is deleted (an un-ticked month, an
+  Undo) the child is still real money that reached the bank; cascading would delete a deposit
+  because its sibling went away — the exact shape of the fault the tie-out found on Pershing
+  Plaza in July. Orphaned, it stops offering to merge and says why. No back-fill: nothing was
+  ever split before the feature existed.
+
+  ### `undoSplitPayment` (`api.js`)
+
+  ⚠ **IT MERGES, IT DOES NOT RE-TAG.** Moving the row back to the parent's month would leave two
+  rows where there was one — every figure downstream would agree (`allocatePayments` sums what
+  is tagged to a month and has never counted rows), but the payment list and the bank tie-out
+  would carry a split that no longer exists, and a second undo would have nothing to undo.
+
+  ⚠ **It follows the PARENT, not the original month.** If the parent cheque has since been
+  re-filed, that is where the money belongs — the landlord put it there. The confirm names the
+  month it is about to land on rather than assuming the reader remembers.
+
+  Refuses: a row that was never split (and says to use "Move this payment"), an orphan (and says
+  the money did reach the bank), a closed year.
+
+  ### Both months carry the offer
+
+  On the month it landed on: *"Rolled here from May · Send it back"* — without which the row is
+  indistinguishable from a cheque the tenant actually sent for that month. And on the month it
+  LEFT: *"$1,200.00 of this rolled to June · Undo"*, because that is where the landlord did it
+  and therefore where they look to take it back. One function, one confirm, two surfaces —
+  exactly how "Move this payment" already works.
+
+  ### ⚠ THE MIGRATION IS NOT APPLIED — and the code degrades rather than breaking
+
+  The Supabase Management API answers **403 (Cloudflare 1010)** from this machine, as it did on
+  2026-08-06. So `0101` is committed and **must be run by hand**. Shipping the insert unguarded
+  would have turned a WORKING feature into an error for the whole window: Postgres rejects an
+  insert naming a column that does not exist.
+
+  So `splitPayment` writes the link, and on a failure mentioning `split_from` retries without it
+  and returns `linked: false`. Rolling forward keeps working; only the undo is unavailable until
+  the column lands. ⚠ **That branch is untestable against the demo mock** (it applies no schema
+  and accepts any column) and is marked in the source for **deletion once 0101 is applied** — it
+  is a migration window, not a design.
+
+  ### Verified
+
+  `npm test` — **1,995 passing, 188 files** (4 new). Against the real write path: the split
+  stores its parent, the undo merges the halves into ONE row keeping the note and `source`, the
+  months return to exactly their pre-roll state, a never-rolled payment is refused by name, and a
+  deleted parent leaves the orphan alive with a message saying the money is real. Through the
+  real Ledger: roll with one click, both months show their line, send it back, and the box rings
+  again with the same figure. **Non-vacuity proved** by dropping the stored link — three tests
+  went red, then green on restore.
+
+  ### Now redundant
+
+  - **The `linked: false` fallback in `splitPayment`** — delete it once `0101` is applied. It
+    exists only because the migration and the deploy could not go out together.
+
 - **2026-08-17** — **The chooser loses its gate: quick options, one-click roll to the next
   month, and the screen states where the money is.** Cloudflare version
   **`a0210a43-8167-4f42-9557-cd3dfd28cfe4`** (on top of `56f20afc`).
