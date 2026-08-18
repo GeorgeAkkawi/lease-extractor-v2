@@ -166,6 +166,34 @@ const uncollected = (pen, s) => {
   if (credit > 0.005) totLine(pen, indent('and held for tenants who are ahead'), -credit);
 };
 
+/**
+ * Cash that arrived beyond what its month billed and has not been answered for.
+ *
+ * ⚠ AN ANNOTATION, IN NO TOTAL — the same rule `uncollected` follows, for the opposite
+ * reason. That figure is money earned and not received; this is money received and not yet
+ * earned by any month. George, 2026-08-17: *"those shortage and overpayments shouldnt be
+ * recorded live until the user confirms them."* Printing it below the total rather than
+ * inside it is the whole instruction.
+ *
+ * ⚠ AND IT SAYS WHERE TO GO. A figure withheld from a sheet with no route to release it is
+ * indistinguishable from one the app lost.
+ */
+const unappliedLine = (pen, amount, rows = []) => {
+  const held = round2(amount || 0);
+  if (!(held > 0.005)) return;
+  totLine(pen, indent('received, and not yet applied to any month — awaiting your decision'), held);
+  for (const r of rows) {
+    totLine(pen, indent(`    ${r.label} · ${MONTHS[r.month - 1]}`), round2(r.amount));
+  }
+  pen.note(
+    'This money reached the bank and is in none of the figures above. More arriving than a month was billed for '
+    + 'does not make that month worth more — it may have been meant for a later one. Open that month on the Ledger '
+    + 'and say what it is: this month\'s revenue, rolled forward onto a month you pick, or refunded. It joins the '
+    + 'figures above the moment you do.',
+    { height: 30 },
+  );
+};
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 function addSummary(wb, pkg, corporationName, now) {
   const ws = xlsxSheet(wb, 'Summary', WIDTHS, { freeze: 0 });
@@ -229,6 +257,8 @@ function addSummary(wb, pkg, corporationName, now) {
   totLine(pen, 'Less what you spent', -t.spent);
   totLine(pen, 'What the year left', t.net, { bold: true, bg: P.SUMMARY_BG });
   uncollected(pen, t);
+  // The whole company's held cash, named per tenant-month on the property sheets below.
+  unappliedLine(pen, t.unapplied);
   pen.skip();
 
   // ⚠ THESE ROWS ARE `grossNet`, NOT `net`, and the heading has to say which. They are the
@@ -488,6 +518,7 @@ function addProperty(wb, p, year, used, basis) {
   totLine(pen, 'Less what you spent', -p.expenseTotals.spent);
   totLine(pen, 'What the year left', p.net, { bold: true, bg: P.SUMMARY_BG });
   uncollected(pen, p.standings.totals);
+  unappliedLine(pen, p.unapplied, p.unappliedRows);
   // ⚠ THE RECONCILIATION AN ACCOUNTANT WILL CHECK. It has to be arithmetic they can
   // follow on the page, not a claim — so the terms are BUILT (`noiBridge`, incomeExpense.js)
   // and this only renders them. Written as a sentence it was wrong twice: missing

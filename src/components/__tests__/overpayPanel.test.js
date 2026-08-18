@@ -1,0 +1,142 @@
+// The month pop-up's answer to "what is this surplus?", driven through the REAL Ledger.
+//
+// George, 2026-08-17: *"those shortage and overpayments shouldnt be recorded live until the
+// user confirms them … i want under or over payments highlighted."*
+//
+// ⚠ THE ARITHMETIC IS PINNED ELSEWHERE (overpayDecision.test.js, against the real write
+// paths). What this file exists for is the glue nothing else covers, and it is the half that
+// would fail silently: the live workbook now WITHHOLDS money from revenue, and the only route
+// to release it is this panel. A held figure with no working way to answer for it is worse
+// than the behaviour it replaced — the landlord's money would simply be missing.
+//
+// ⚠ prop-2, because the demo seed carries a `financial_snapshots` row for prop-1's CURRENT
+// year — that property is CLOSED and every write refuses, correctly.
+import { describe, it, expect } from 'vitest';
+import { render, screen, waitFor, fireEvent, cleanup, within } from '@testing-library/react';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ChromeProvider } from '../../context/ChromeContext';
+import { ConfirmProvider } from '../ConfirmDialog';
+import LedgerPage from '../../pages/LedgerPage';
+import { ensureInvoice, recordPayment, getPropertyMonthlyRoll } from '../../lib/api';
+import { currentYear } from '../../lib/format';
+
+const Y = currentYear();
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+function renderLedger() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter initialEntries={['/financials/corp-2/prop-2/ledger']}>
+      <QueryClientProvider client={qc}>
+        <ChromeProvider>
+          <ConfirmProvider>
+            <Routes>
+              <Route path="/financials/:corpId/:propId/ledger" element={<LedgerPage />} />
+            </Routes>
+          </ConfirmProvider>
+        </ChromeProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** Over-pay one month of Northwind Books (lease-3) by a known figure. */
+async function overpay(month, surplus) {
+  const inv = await ensureInvoice('lease-3', 'prop-2', Y);
+  const row = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-3');
+  const owed = round2(Number(row.schedule[month].owed) || 0);
+  expect(owed, 'the month must bill something, or the whole cheque is surplus').toBeGreaterThan(0);
+  await recordPayment({
+    invoice_id: inv.id, lease_id: 'lease-3', amount: round2(owed + surplus),
+    paid_date: `${Y}-${String(month).padStart(2, '0')}-04`, method: 'check',
+    period_month: month, source: 'manual',
+  });
+  return owed;
+}
+
+describe('an over-paid month asks what the surplus is', () => {
+  it('rings the box, and the pop-up offers the three answers instead of a paragraph', async () => {
+    await overpay(4, 1750);
+    renderLedger();
+    await screen.findByText('Northwind Books');
+
+    // ⚠ THE BOX IS THE THING THAT SAYS SO. The money is being withheld from the live income
+    // figures; if the grid looked like any other settled month, it would be withheld invisibly.
+    const cell = await waitFor(() => {
+      const found = document.querySelector('.rr-cell.awaiting');
+      expect(found).toBeTruthy();
+      return found;
+    });
+    expect(cell.getAttribute('aria-label')).toMatch(/not yet applied/);
+
+    fireEvent.doubleClick(cell);
+    const panel = await screen.findByRole('dialog');
+    // The paragraph that used to explain why nothing could be done is gone…
+    expect(within(panel).queryByText(/does not move to another month by itself/)).toBeNull();
+    // …and the figure is named as being in none of the income.
+    expect(within(panel).getByText(/more arrived than/)).toBeTruthy();
+
+    fireEvent.click(within(panel).getByRole('button', { name: /What is this \$1,750\.00\?/ }));
+    // All three answers, plus leaving it — which is a legitimate one and must be offered.
+    expect(within(panel).getByRole('button', { name: /revenue/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /Refund it/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /Leave it for now/ })).toBeTruthy();
+    expect(within(panel).getByRole('option', { name: /Roll \$1,750\.00 forward to…/ })).toBeTruthy();
+    cleanup();
+  });
+
+  // ⚠ THE ROUND TRIP THAT MATTERS: answering must actually clear the ring, or the landlord
+  // answers the same question forever and the money never reaches the sheet.
+  it('counts it as revenue when told to, and the box stops asking', async () => {
+    await overpay(7, 900);
+    renderLedger();
+    await screen.findByText('Northwind Books');
+    const cell = await waitFor(() => {
+      const found = [...document.querySelectorAll('.rr-cell.awaiting')]
+        .find((el) => /\$900\.00 not yet applied/.test(el.getAttribute('aria-label') || ''));
+      expect(found).toBeTruthy();
+      return found;
+    });
+
+    fireEvent.doubleClick(cell);
+    const panel = await screen.findByRole('dialog');
+    fireEvent.click(within(panel).getByRole('button', { name: /What is this \$900\.00\?/ }));
+    fireEvent.click(within(panel).getByRole('button', { name: /revenue/ }));
+    // The confirm names where the money lands before it moves — never a bare "are you sure".
+    const confirm = await screen.findByText(/Count \$900\.00 as/);
+    expect(confirm).toBeTruthy();
+    expect(screen.getByText(/Money in › Rent|under Money in/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Count it as revenue/ }));
+
+    await waitFor(() => {
+      expect(within(screen.getByRole('dialog')).getByText(/You have counted this/)).toBeTruthy();
+    });
+    cleanup();
+  });
+});
+
+describe('a short month can be billed on another one', () => {
+  it('offers the mirror of rolling forward, and names both months before writing', async () => {
+    renderLedger();
+    await screen.findByText('Northwind Books');
+    // Northwind Books bills every month and the seed pays none of them, so any untouched
+    // month is short. September is clear of the months the tests above wrote to.
+    const short = await waitFor(() => {
+      const found = [...document.querySelectorAll('.rr-cell')]
+        .find((el) => /Sep .* (due|overdue)/.test(el.getAttribute('aria-label') || ''));
+      expect(found).toBeTruthy();
+      return found;
+    });
+    fireEvent.doubleClick(short);
+    const panel = await screen.findByRole('dialog');
+    // The two ways to close a short month sit together: record the money, or bill it elsewhere.
+    expect(within(panel).getByRole('button', { name: /Record .* received/ })).toBeTruthy();
+    const picker = within(panel).getByText(/Bill .* on another month…/);
+    expect(picker.tagName).toBe('OPTION');
+    // …and every other month is offered as a destination, this one excluded.
+    expect(within(panel).getByRole('option', { name: 'Jan' })).toBeTruthy();
+    expect(within(panel).queryByRole('option', { name: 'Sep' })).toBeNull();
+    cleanup();
+  });
+});

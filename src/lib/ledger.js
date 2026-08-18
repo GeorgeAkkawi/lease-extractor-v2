@@ -122,6 +122,57 @@ export function allocatePayments({ owedByMonth, payments = [], adjustments = nul
   return { owed, coverage, tagged, poolDraw, received, settled, states, credit: round2(pool), totalPaid };
 }
 
+// ---- Money that arrived and no bill accounts for ---------------------------
+//
+// George, 2026-08-17: *"those shortage and overpayments shouldnt be recorded live until the
+// user confirms them — only then should they be written into the live revenue count as money
+// made. because if theres an overpayment one month a user might want to roll it forward to
+// the next month."*
+//
+// ⚠ THIS READS `allocatePayments`, IT DOES NOT CHANGE IT. The no-cap / no-rollover rule up
+// there is load-bearing for the grid, `closeYear`, `reconciliationData` and the alerts, and
+// it is right: a tag settles its month at whatever arrived, because the landlord said that
+// cheque was for that month. What was missing is that the SURPLUS then had nowhere to be —
+// it raises no `credit` (only an untagged lump pools), never reaches `inCredit`, and is
+// invisible to `settleTenantBalance`. So the live income-and-expenses sheet counted it as
+// that month's revenue with nobody ever asked.
+//
+// ⚠ A MONTH THE LEASE BILLS NOTHING FOR COUNTS AS ENTIRELY UNAPPLIED ('unbilled', above).
+// Money tagged to a month outside the term or fully abated is cash no bill accounts for,
+// which is the same question in a starker form — not a special case to wave through.
+//
+// The `settled` guard is belt-and-braces and says why: an UNSETTLED month draws only from
+// the pool, and `poolDraw` is capped at that month's remaining need, so it can never exceed
+// what was owed. Only a tag can overshoot.
+//
+// Returns a length-12 array; $0 on every month that behaves.
+export function monthExcess(alloc) {
+  const owed = alloc?.owed || Array(12).fill(0);
+  const received = alloc?.received || Array(12).fill(0);
+  const settled = alloc?.settled || Array(12).fill(false);
+  return Array.from({ length: 12 }, (_, i) => {
+    if (!settled[i]) return 0;
+    const o = Math.max(0, round2(Number(owed[i]) || 0));
+    const r = round2(Number(received[i]) || 0);
+    return r > o + 0.005 ? round2(r - o) : 0;
+  });
+}
+
+// The landlord's answer to "what is this surplus?", when the answer is "it is this month's
+// revenue" — the one choice of the four that moves no money and therefore records itself
+// nowhere else. Kept in `alert_states` (0028), the generic keyed decision store `rentDupKey`
+// and InsuranceVault already use for exactly this shape of question.
+//
+// ⚠ THE CENTS ARE IN THE KEY ON PURPOSE. If more money later lands on the month the key
+// changes, the old answer no longer matches, and the app asks again — the same
+// self-invalidating property `rentDupKey` gets from carrying the date. A decision about
+// $850 must never stand silently for $950.
+//
+// ⚠ AND IT IS KEYED BY MONTH, NOT BY PAYMENT. Two cheques on one month produce one surplus
+// attributable to neither, so a flag on a `payments` row could not express it.
+export const overpayKey = (leaseId, year, month, amount) =>
+  `overpay:${leaseId}:${year}:${month}:${Math.round((Number(amount) || 0) * 100)}`;
+
 // Split each month's owed into base | CAM&tax | roof for the cell sub-line.
 //   schedule     — buildLeaseSchedule's map (owed / abated / kind / outsideTerm per month)
 //   factor       — buildLeaseSchedule's invoice-scaling ratio (1 when no scaling ran),

@@ -12,6 +12,116 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **An over-payment is not revenue until you say it is.** A surplus on a month
+  is held out of the live income figures until the landlord answers for it, with four answers
+  including rolling it onto a month they pick — and the mirror for a shortfall. Cloudflare
+  version **`e9ed70c0-6be0-4b58-8338-c54d58a8b821`** (on top of `5cd75c19`).
+
+  George opened with *"the excel sheets should have color coded boxes for any under or over
+  payments, rent escalations, or any abnormal numbers in trends"* and then corrected it:
+
+  > *"what i meant was those shortage and overpayments shouldnt be recorded live until the user
+  > confirms them — only then should they be written into the live revenue count as money made.
+  > because if theres an overpayment one month a user might want to roll it forward to the next
+  > month (this should be an option) i want under or over payments highlighted. and when it goes
+  > live it should update so actually dont do any color coding just make sure my logic is there"*
+
+  On the trend flags: *"nevermind this this is shown in ledger already."* On which workbooks:
+  *"neither."* **So no colour-coding shipped, in any workbook.** Answered in the follow-up: only
+  the OVER side needs confirming (a short month stays cash, blank when nothing arrived — his
+  2026-08-17 rule), roll-forward goes onto a month you pick, and *"also should be an option to
+  send shortages to overcharge the next month."*
+
+  ### The defect underneath the ask
+
+  `allocatePayments` settles a tagged month at whatever arrived, with **no cap and no rollover**
+  — deliberately, because the landlord said that cheque was for that month. But the surplus then
+  had nowhere to be: it raises no `credit` (only an untagged lump pools), never reaches
+  `inCredit`, and is invisible to `settleTenantBalance`. The live basis shipped that morning put
+  it straight into that month's Rent row. Money counted as March revenue that may have been
+  meant for April, with nobody ever asked.
+
+  The only place it surfaced was `ledgerRowSummary.variance` and a paragraph in the month pop-up
+  **explaining that nothing could be done about it**.
+
+  ### What shipped
+
+  - **`monthExcess(alloc)`** (`ledger.js`) — the surplus per month, read off the allocation.
+    ⚠ **`allocatePayments` ITSELF DID NOT MOVE**: it is a §2 choke point feeding the grid,
+    `closeYear`, `reconciliationData` and the alerts. A month the lease bills nothing for counts
+    as entirely unapplied — the same question in a starker form, not a case to wave through.
+  - **The hold-back** (`incomeExpense.js`) — a month's cash is applied only up to what it billed;
+    the rest lands on `unapplied` / `unappliedRows` and reaches no row, no total and no flagless
+    silence. ⚠ **The cash invariant gained a third term**: `rows + credit + unapplied === what
+    arrived`, and the existing test is what caught the change.
+  - **The decision store** — `alert_states` (0028), key `overpay:<lease>:<year>:<month>:<cents>`.
+    ⚠ **The cents are in the key on purpose**: more money arriving changes the key, so the app
+    asks again. The same self-invalidating property `rentDupKey` gets from carrying its date. And
+    it is keyed by MONTH, not by payment — two cheques on one month produce one surplus
+    attributable to neither, which a flag on a `payments` row could not express.
+  - **`splitPayment`** (`api.js`) — moves the surplus, not the cheque. ⚠ Copies `source`
+    **explicitly** (0088: unstated, it is `'system'` live and `undefined` in demo and the guard
+    reads the two oppositely), and `import_id` / `import_hash` so the bank tie-out still balances
+    (it sums the books side by import, not row by row). Refuses a closed year, a month outside
+    1–12, and moving the WHOLE payment — which is `updatePayment`'s job and leaves no zero row.
+  - **`carryMonthShortfall`** (`api.js`) + the new **`carry`** adjustment kind — a credit on the
+    short month and a charge on the target, written in ONE call. ⚠ **`pnlRow: 'rent'`, not null,
+    and that is the whole accounting decision**: `opening` is null because a balance crossing a
+    YEAR was another year's income; this crosses a month inside one year, so the pair must cancel
+    in the annual total and move only the month the revenue is billed in. Given a null `pnlRow`
+    every carry would quietly delete its own revenue. `manual: false`, for the reason the Slice-4
+    kinds already give — half a pair loses the money outright. `SETTLEMENT_KINDS` is an allowlist,
+    so `isSettlementRow` does not pick it up and a year full of carries never reports itself as
+    "carried forward".
+  - **The month pop-up** — the four answers, each behind `useConfirm` naming both months and
+    where the money lands. **Leaving it is offered as an answer**, because it is one.
+  - **The Ledger box** — a ring on a surplus nobody has answered for. ⚠ Money withheld from the
+    income figures with nothing on screen saying so is the one failure this change could cause:
+    it would be indistinguishable from the app losing it. `.off` already tinted the box gold
+    either way; this adds the ASK, and the hover card says the figure is in none of your income.
+  - **The workbook** — one line under Total collected, itemized per tenant-month on the property
+    sheets, plus a flag naming the total and pointing at the Ledger. Printed BELOW the total and
+    inside no figure, exactly as `uncollected` does for the arrears side. **No fills, no tints.**
+
+  ### Files
+
+  `src/lib/ledger.js` · `src/lib/incomeExpense.js` · `src/lib/incomeExpenseExcel.js` ·
+  `src/lib/api.js` · `src/lib/adjustments.js` · `src/components/MonthDetailPanel.js` ·
+  `src/pages/LedgerPage.js` · `src/App.css` ·
+  `src/lib/__tests__/{overpayDecision,incomeExpense}.test.js` ·
+  `src/components/__tests__/overpayPanel.test.js`.
+
+  ### Verified
+
+  `npm test` — **1,987 passing, 188 files** (two new files, 16 new tests). Against the real write
+  paths on the demo store: the split moves only the excess and both halves keep `source` and the
+  import behind them · the carry writes both sides and they sum to zero · the surplus is out of
+  every figure, named in a flag, and released by the exact key the panel writes · a stale key for
+  a different amount does not release it · closed-year refusals on both writes. Through the real
+  Ledger and the real pop-up: the ring appears, the paragraph is gone, the three answers plus
+  "leave it" are offered, and answering clears the ask.
+
+  **Non-vacuity proved on all four claims** — the hold-back, the ring, the `source` copy and the
+  pairing were each reverted in turn; every one went red, then green on restore.
+
+  ⚠ **Two fixture traps found the hard way, both now written into the tests.** The demo seed
+  carries a `financial_snapshots` row for **prop-1's CURRENT year**, so that property is CLOSED
+  and every write against it refuses — correctly, which means a test written there proves the
+  guard and nothing else. And **lease-4's May bills $0**, so a cheque tagged to it is entirely
+  surplus and `splitPayment` rightly refuses it as the whole payment.
+
+  ### Now redundant
+
+  - **The MonthDetailPanel paragraph** *"This month is settled at what arrived, so the extra stays
+    on {month} — it does not move to another month by itself…"* — **removed**. Prose that existed
+    only because the screen could not do the thing; it can now.
+  - ⚠ **PROPOSED, NOT DONE — "Move this payment…" on an over-paid month.** It re-files the WHOLE
+    cheque onto a month it only partly belongs to, which is now the worse of two routes. It stays
+    genuinely useful for a payment filed against the wrong month, so it was left alone.
+  - ⚠ **PROPOSED, NOT DONE — the untie dialog's *"anything still left over after December shows
+    as a credit owed back"* line.** Still true, but it now describes the third-best of four
+    routes; worth re-reading now that the choices exist.
+
 - **2026-08-17** — **Follow-up to the two-bases round: the redundant flag reduced to the cause
   actually present, and four defects found reviewing it.** Cloudflare version
   **`5cd75c19-4733-4921-ac96-7117b931e4f7`** (on top of `df15adfa`).

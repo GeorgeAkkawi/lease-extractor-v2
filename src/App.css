@@ -145,6 +145,11 @@ button.rr-cell.abated{cursor:pointer}
    is the SAME gold as ◐ / — / ↓, because it means the same thing on all of them — look at
    this — and the glyph says which kind of look. Still deliberately not a third palette. */
 .rr-cell.paid.off{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
+/* A surplus nobody has answered for yet. `.off` already turns the box gold for any month
+   that came in above or below its bill; this says the money is being HELD OUT of the live
+   income figures until the landlord says what it is. A ring rather than another fill —
+   the box is already gold, and a second colour on top would just read as a brighter gold. */
+.rr-cell.paid.awaiting{box-shadow:0 0 0 2px var(--gold-soft),0 0 0 3px var(--gold)}
 /* Money recorded FOR a month this lease bills nothing for — a new tenant's first
    deposits, or an abated month. It settles no charge, so it can't be a ✓; it says so
    instead of quietly drifting onto the next month the lease does bill. */
@@ -1345,6 +1350,15 @@ tbody tr:last-child td{border-bottom:none}
 .mp-move{display:flex;align-items:center;gap:4px;padding:3px 0 4px}
 .mp-move select{font-size:11px;padding:3px 6px;min-width:0;flex:1;color:var(--ink)}
 .mp-record{margin-top:10px}
+/* "What is this difference?" — the choices that replaced the paragraph explaining why there
+   weren't any. Stacked, not a row: each one is a sentence-long decision about money, and
+   three buttons side by side reads as a toolbar. */
+.mp-decide{margin-top:10px;padding-top:10px;border-top:1px dashed var(--hair)}
+.mp-decide-lead{margin:0;font-size:12px;line-height:1.5;color:var(--muted)}
+.mp-decide-lead strong{color:var(--ink)}
+.mp-decide-opts{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-top:9px}
+.mp-decide-opts .btn-sm,.mp-decide-opts select{width:100%;text-align:left}
+.mp-decide select{margin-top:6px;width:100%}
 .mp-note{font-size:12px;line-height:1.55;margin:0 0 10px}
 .mp-note-tight{margin:8px 0 0}
 /* "The bill itself was different" is an ACTION, not a fourth list — so it reads as a card

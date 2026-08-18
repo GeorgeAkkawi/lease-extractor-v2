@@ -20,7 +20,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, flags, shapeProperty, noiBridge } from '../incomeExpense';
 import { getPropertyMonthlyRoll, createEscalation, deleteEscalation } from '../api';
-import { allocatePayments } from '../ledger';
+import { allocatePayments, overpayKey } from '../ledger';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -529,12 +529,18 @@ describe('projected vs live', () => {
     for (const propId of ['prop-1', 'prop-2']) {
       const roll = await getPropertyMonthlyRoll(propId, Y);
       expect(roll.length).toBeGreaterThan(0);
-      const c = billedRowsFromRoll(roll, { collected: true });
+      const c = billedRowsFromRoll(roll, { collected: true, year: Y });
       for (const r of roll) {
         const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments, adjustments: r.adjustments });
         const mine = ['rent', 'camTax', 'roof', 'charges', 'carried']
           .reduce((s, g) => s + (c[g].find((x) => x.lease_id === r.lease_id)?.total || 0), 0);
-        expect(mine, `${r.tenant_name} on ${propId}`).toBeCloseTo(alloc.totalPaid, 2);
+        // ⚠ THE THIRD TERM (2026-08-17). A surplus awaiting the landlord's answer is real cash
+        // held out of every row, so the invariant is rows + credit + unapplied === what arrived.
+        // The demo seed has no tagged over-payment, so this reads as before on it — which is
+        // exactly why the held-back case is pinned on a fixture of its own below.
+        const held = (c.unappliedRows || []).filter((u) => u.lease_id === r.lease_id)
+          .reduce((s, u) => s + u.amount, 0);
+        expect(mine + held, `${r.tenant_name} on ${propId}`).toBeCloseTo(alloc.totalPaid, 2);
       }
     }
   });
@@ -628,25 +634,50 @@ describe('projected vs live', () => {
   // a nearly-free month gives a scale factor in the thousands, and an uncapped split would print
   // an invented six-figure CAM & tax against an equally invented negative rent — a month whose
   // total is right and whose every row is nonsense.
-  it('never invents a component when more arrived than the month billed', () => {
-    // January bills $400 — $100 roof, $200 CAM & tax, $100 base — and a $5,000 cheque is tagged
-    // to it. Uncapped, the split would read CAM & tax $2,500 and roof $1,250 for a month billed
-    // $200 and $100.
+  // ⚠ THE HOLD-BACK AND THE CAP, ON ONE MONTH. January bills $400 — $100 roof, $200 CAM & tax,
+  // $100 base — and a $5,000 cheque is tagged to it. Two separate things must be true: no
+  // component may exceed what was billed (uncapped, the split read CAM & tax $2,500 for a month
+  // billed $200), and the $4,600 surplus must reach no row at all until it is answered for.
+  const overpaidRoll = () => {
     const schedule = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, {
       full: i === 0 ? 400 : 0, owed: i === 0 ? 400 : 0, abated: 0, credit: 0, kind: 'full', outsideTerm: i !== 0,
     }]));
-    const all = billedRowsFromRoll([{
+    return [{
       lease_id: 'l1', tenant_name: 'T', schedule, factor: 1, camTaxAnnual: 2400, roofAnnual: 1200,
       payments: [{ amount: 5000, paid_date: `${Y}-01-05`, period_month: 1 }],
-    }], { collected: true });
-    // No component exceeds what that month actually billed…
+    }];
+  };
+  const cashOf = (all) => round2(['rent', 'camTax', 'roof', 'charges', 'carried']
+    .reduce((s, g) => s + (all[g][0]?.total || 0), 0));
+
+  it('holds a surplus out of every row until it is answered for, and caps the split', () => {
+    const all = billedRowsFromRoll(overpaidRoll(), { collected: true, year: Y });
+    // The month counts exactly what it billed — no more, and no component above its own.
     expect(all.camTax[0].byMonth[0]).toBeCloseTo(200, 2);
     expect(all.roof[0].byMonth[0]).toBeCloseTo(100, 2);
-    // …the unattributable excess lands on the remainder row rather than being spread…
+    expect(all.rent[0].byMonth[0]).toBeCloseTo(100, 2);
+    expect(cashOf(all)).toBeCloseTo(400, 2);
+    // …and the $4,600 is named, not lost.
+    expect(all.unapplied).toBeCloseTo(4600, 2);
+    expect(all.unappliedRows).toEqual([{ lease_id: 'l1', label: 'T', month: 1, amount: 4600 }]);
+    // ⚠ THE CASH INVARIANT, NOW IN THREE TERMS. Nothing invented, nothing lost.
+    expect(cashOf(all) + all.creditTotal + all.unapplied).toBeCloseTo(5000, 2);
+  });
+
+  it('lets the surplus into the month once confirmed, and only for that exact figure', () => {
+    const confirmed = new Set([overpayKey('l1', Y, 1, 4600)]);
+    const all = billedRowsFromRoll(overpaidRoll(), { collected: true, year: Y, confirmed });
+    expect(all.unapplied).toBe(0);
+    expect(all.unappliedRows).toEqual([]);
+    // It lands on rent — the remainder row — because no other component can claim it.
     expect(all.rent[0].byMonth[0]).toBeCloseTo(4700, 2);
-    // …and the cash still adds up to the cent, which is the invariant the cap must not break.
-    const total = ['rent', 'camTax', 'roof', 'charges', 'carried'].reduce((s, g) => s + all[g][0].total, 0);
-    expect(total).toBeCloseTo(5000, 2);
+    expect(cashOf(all)).toBeCloseTo(5000, 2);
+
+    // ⚠ AND THE ANSWER IS TO A FIGURE, NOT TO A MONTH. A key for a different amount does not
+    // release this one — which is what stops a decision about $850 standing for $950.
+    const stale = new Set([overpayKey('l1', Y, 1, 4500)]);
+    expect(billedRowsFromRoll(overpaidRoll(), { collected: true, year: Y, confirmed: stale }).unapplied)
+      .toBeCloseTo(4600, 2);
   });
 
   // George's own case, and the demo seed already is it: City Dental bills $9,150 a month, pays

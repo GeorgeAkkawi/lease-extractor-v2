@@ -3816,6 +3816,70 @@ export const updatePayment = (id, patch = {}) =>
       .eq('id', id).select().single()
   );
 
+/**
+ * Move PART of a payment onto another month — the surplus, not the cheque.
+ *
+ * George, 2026-08-17: *"if theres an overpayment one month a user might want to roll it
+ * forward to the next month (this should be an option)."* `updatePayment` above re-files the
+ * WHOLE row, which is right for a cheque filed against the wrong month and wrong for a cheque
+ * that genuinely covered this month and part of the next. So the row is split: the original
+ * keeps what its month was owed, and the remainder becomes its own row on the month the
+ * landlord picked.
+ *
+ * ⚠ `source` IS COPIED EXPLICITLY, NEVER LEFT TO THE COLUMN DEFAULT (0088). Postgres would
+ * fill 'system' while the demo mock — which applies no defaults — leaves it undefined, and the
+ * re-stamp guard reads undefined as NOT system: the two behave oppositely and only the demo
+ * side is ever tested. Copying it also keeps the halves of one real cheque telling the same
+ * story about where the money came from.
+ *
+ * ⚠ `import_id` / `import_hash` ARE COPIED SO THE BANK TIE-OUT STILL BALANCES. It reads the
+ * books side by `import_id` and SUMS (`getBankTieOut`), so two rows totalling the statement
+ * line tie exactly as one did. Dropping them would make the split-off half look hand-entered
+ * and report the statement as short by that amount.
+ *
+ * Refuses rather than writing a nonsense row: a closed year, an amount that is not strictly
+ * inside the payment, or a month outside 1–12.
+ */
+export async function splitPayment(id, { amount, toMonth, propertyId = null, year = null } = {}) {
+  const move = round2(Number(amount) || 0);
+  const to = Number(toMonth);
+  if (!id || !(move > 0)) return { refused: true, reason: 'zero', message: 'Enter an amount to move.' };
+  if (!(to >= 1 && to <= 12)) return { refused: true, reason: 'month', message: 'Pick a month to move it to.' };
+  if (propertyId && year) {
+    const lock = await yearLockState(propertyId, Number(year));
+    if (lock === 'closed') {
+      return { refused: true, reason: 'closed', message: `FY ${year} is closed. Reopen it first, or record the correction in an open year.` };
+    }
+    if (lock === 'unknown') {
+      return { refused: true, reason: 'lock_unknown', message: `Couldn’t check whether FY ${year} is closed, so nothing was changed. Check your connection and try again.` };
+    }
+  }
+  const src = await one(supabase.from('payments').select('*').eq('id', id).single());
+  if (!src) return { refused: true, reason: 'missing', message: 'That payment no longer exists.' };
+  const whole = round2(Number(src.amount) || 0);
+  // ⚠ STRICTLY INSIDE. Moving the whole amount is `updatePayment`'s job and leaves no
+  // zero-amount ghost behind; moving more than arrived would invent money.
+  if (move >= whole - 0.005) {
+    return { refused: true, reason: 'whole', message: 'That is the whole payment — use “Move this payment” to re-file it instead of splitting it.' };
+  }
+  const owner = await ownerId();
+  await one(supabase.from('payments').update({ amount: round2(whole - move) }).eq('id', id).select().single());
+  const created = await one(supabase.from('payments').insert({
+    invoice_id: src.invoice_id,
+    lease_id: src.lease_id,
+    amount: move,
+    paid_date: src.paid_date,
+    method: src.method,
+    note: src.note,
+    period_month: to,
+    source: src.source || 'manual',
+    import_id: src.import_id ?? null,
+    import_hash: src.import_hash ?? null,
+    owner_id: owner,
+  }).select().single());
+  return { refused: false, moved: move, remaining: round2(whole - move), toMonth: to, payment: created };
+}
+
 // ---- Monthly rent tracker ---------------------------------------------------
 // The per-lease 12-box grid and the property rent roll are a friendly MONTHLY
 // layer over the SAME annual invoices/payments. "Month paid" = one payment row
@@ -4327,6 +4391,84 @@ export async function addAdjustment({ leaseId, propertyId, year, month, kind, am
     meta: { month: m, kind, amount: amt },
   });
   return { row };
+}
+
+/**
+ * Move a month's unpaid amount onto a later month's bill.
+ *
+ * George, 2026-08-17: *"also should be an option to send shortages to overcharge the next
+ * month."* The mirror of rolling a surplus forward, and the reason it is one function rather
+ * than two `addAdjustment` calls is the same reason the Slice-4 kinds are `manual: false`:
+ * it is TWO ROWS AND WRITING ONLY ONE LOSES THE MONEY. The credit clears the short month (so
+ * it stops reading as arrears) and the charge lands on the target (so the tenant is billed
+ * it there). Offered as free-text charges, a landlord writes the half that clears March and
+ * never the half that bills April, and nobody ever finds out.
+ *
+ * ⚠ BOTH ROWS ARE `pnlRow: 'rent'`, so they cancel in the year's income and move only the
+ * MONTH the revenue is billed in. That is the correct accounting: the year earned the same
+ * money either way. Using `opening` (pnlRow null) instead would take it out of the year's
+ * income altogether — right for a balance crossing a year boundary, wrong for one crossing a
+ * month inside it.
+ *
+ * ⚠ IT DOES NOT SPREAD. `settleTenantBalance` lays a year-end figure across every month with
+ * headroom; this puts one month's shortfall on one month the landlord named. Both rows are
+ * checked against the same non-negative rule `addAdjustment` applies, so a carry can never
+ * push a month's bill below zero.
+ */
+export async function carryMonthShortfall({ leaseId, propertyId, year, fromMonth, toMonth, amount, memo = null }) {
+  const y = Number(year);
+  const from = Number(fromMonth);
+  const to = Number(toMonth);
+  const amt = round2(Number(amount) || 0);
+  if (!leaseId || !propertyId || !(y > 0) || !(from >= 1 && from <= 12) || !(to >= 1 && to <= 12)) {
+    return { refused: true, reason: 'incomplete', message: 'Pick a month to move it to.' };
+  }
+  if (from === to) {
+    return { refused: true, reason: 'same_month', message: 'That is the same month — pick a different one to move it to.' };
+  }
+  if (!(amt > 0)) return { refused: true, reason: 'zero', message: 'There is nothing outstanding on that month to move.' };
+
+  const [lock, sched, existing] = await Promise.all([
+    yearLockState(propertyId, y),
+    scheduledOwedFor(leaseId, y),
+    listAdjustments({ leaseId, year: y }),
+  ]);
+  if (lock === 'closed') {
+    return { refused: true, reason: 'closed', message: `FY ${y} is closed. Reopen it first, or record the correction in an open year.` };
+  }
+  if (lock === 'unknown') {
+    return { refused: true, reason: 'lock_unknown', message: `Couldn’t check whether FY ${y} is closed, so nothing was changed. Check your connection and try again.` };
+  }
+  // The same guard addAdjustment makes, applied to the side that goes DOWN: a credit larger
+  // than the month's bill makes owed negative, which reads as "unbilled" everywhere
+  // downstream and silently drops the excess out of the year total.
+  const already = monthlyAdjustments(existing);
+  const scheduled = round2(Number(sched?.schedule?.[from]?.owed) || 0);
+  const after = round2(scheduled + already[from - 1] - amt);
+  if (after < -0.005) {
+    return {
+      refused: true, reason: 'negative',
+      message: `${monthName(from)} only bills ${money(round2(scheduled + already[from - 1]))}, so there is not that much on it to move.`,
+    };
+  }
+  const owner = await ownerId();
+  const note = memo || `Moved from ${monthName(from)}`;
+  const rows2 = await rows(
+    supabase.from('lease_adjustments').insert([
+      { owner_id: owner, lease_id: leaseId, property_id: propertyId, year: y, month: from, kind: 'carry', amount: round2(-amt), memo: `Moved to ${monthName(to)}` },
+      { owner_id: owner, lease_id: leaseId, property_id: propertyId, year: y, month: to, kind: 'carry', amount: amt, memo: note },
+    ]).select()
+  );
+  await resyncLeaseBilling(leaseId, propertyId, y).catch(() => null);
+  await logHistoryEvent({
+    property_id: propertyId,
+    lease_id: leaseId,
+    type: 'lease_adjusted',
+    tenant_name: sched?.share?.tenant_name || null,
+    description: `Moved to another month — ${money(amt)} from ${monthName(from)} onto ${monthName(to)} ${y}`,
+    meta: { from, to, amount: amt, kind: 'carry' },
+  });
+  return { refused: false, rows: rows2 || [], amount: amt, fromMonth: from, toMonth: to };
 }
 
 // ── Slice 4: settling a year-end balance ──────────────────────────────────────

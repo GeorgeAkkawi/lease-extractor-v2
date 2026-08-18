@@ -1,6 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { addAdjustment, deleteAdjustment, markMonthPaid, updatePayment } from '../lib/api';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  addAdjustment, carryMonthShortfall, deleteAdjustment, listAlertStates, markMonthPaid,
+  splitPayment, updatePayment, upsertAlertState,
+} from '../lib/api';
+import { monthExcess, overpayKey } from '../lib/ledger';
 import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
 import { paintAdjustment } from '../lib/rollPaint';
 import { useModalA11y } from './modalA11y';
@@ -46,6 +50,10 @@ export default function MonthDetailPanel({
   // Which payment is being re-filed. The month picker is a second control on a row that
   // already carries a date, a note and an amount, so it stays behind a link until asked for.
   const [movingId, setMovingId] = useState(null);
+  // Whether the "what is this difference?" chooser is open. Behind a button rather than always
+  // on screen: on a month that behaves there is nothing to decide, and four choices printed
+  // under every settled month would teach the landlord to stop reading them.
+  const [deciding, setDeciding] = useState(false);
 
   const m = Number(month);
   const i = m - 1;
@@ -162,7 +170,59 @@ export default function MonthDetailPanel({
     onSuccess: () => { setMovingId(null); settlePay(); },
   });
 
-  const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending;
+  // ── The surplus, and what it is (2026-08-17) ────────────────────────────────────────
+  //
+  // George: *"those shortage and overpayments shouldnt be recorded live until the user confirms
+  // them — only then should they be written into the live revenue count as money made."* Until
+  // this, the panel printed a paragraph explaining that the extra stays here and nothing can be
+  // done about it. The paragraph was the symptom; these are the answers.
+  const excess = round2(monthExcess(alloc)[i] || 0);
+  const oKey = overpayKey(row?.lease_id, year, m, excess);
+  const { data: alertStates } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates });
+  const confirmedRevenue = !!alertStates?.some((s) => s.alert_key === oKey && s.dismissed);
+  const settleStates = () => qc.invalidateQueries({ queryKey: ['alertStates'] });
+
+  const confirmRevenue = useMutation({
+    mutationFn: () => upsertAlertState({ alert_key: oKey, dismissed: true }),
+    onSuccess: settleStates,
+  });
+  // Only the SURPLUS moves, never the cheque — see `splitPayment`. The biggest payment on the
+  // month carries it, which is the only one that can be short of the excess on a single-cheque
+  // month and is the right one to take it from on any other.
+  const biggestPay = monthPayments.reduce((a, p) => ((Number(p?.amount) || 0) > (Number(a?.amount) || 0) ? p : a), null);
+  const rollForward = useMutation({
+    mutationFn: async (toMonth) => {
+      const res = await splitPayment(biggestPay?.id, { amount: excess, toMonth, propertyId, year });
+      if (res?.refused) throw new Error(res.message);
+      // The surplus is no longer a surplus, so the answer that would have released it is stale.
+      return res;
+    },
+    onSuccess: () => { setDeciding(false); settlePay(); settleStates(); },
+  });
+  const refundIt = useMutation({
+    mutationFn: async () => {
+      const res = await addAdjustment({
+        leaseId: row?.lease_id, propertyId, year, month: m, kind: 'refund', amount: excess,
+        memo: `Overpayment returned — ${monthName(m)}`,
+      });
+      if (res?.refused) throw new Error(res.message);
+      return res;
+    },
+    onSuccess: () => { setDeciding(false); settle(); settleStates(); },
+  });
+  const carryShort = useMutation({
+    mutationFn: async (toMonth) => {
+      const res = await carryMonthShortfall({
+        leaseId: row?.lease_id, propertyId, year, fromMonth: m, toMonth, amount: shortfall,
+      });
+      if (res?.refused) throw new Error(res.message);
+      return res;
+    },
+    onSuccess: () => { setDeciding(false); settle(); },
+  });
+
+  const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending
+    || confirmRevenue.isPending || rollForward.isPending || refundIt.isPending || carryShort.isPending;
 
   // Moving money between months changes what the grid says about BOTH of them, so it asks
   // first — and the dialog states each side rather than saying "are you sure".
@@ -337,23 +397,109 @@ export default function MonthDetailPanel({
                 <span>{shortfall > 0.05 ? 'Still owed' : shortfall < -0.05 ? 'Paid over' : 'Settled'}</span>
                 <b>{money(Math.abs(shortfall))}</b>
               </div>
-              {/* George, 2026-08-13: "if a tenant is over paying where does that go and how
-                  does it show". It goes NOWHERE on its own, and that is worth saying: a
-                  payment tied to a month settles that month at whatever arrived and does
-                  not roll forward (allocatePayments). So the extra sits here until the
-                  landlord moves it. The two honest destinations are both above. */}
-              {shortfall < -0.05 && (
-                <p className="muted mp-note mp-note-tight">
-                  This month is settled at what arrived, so the extra <strong>stays on {monthName(m)}</strong> —
-                  it does not move to another month by itself. Use <em>Move this payment</em> above to put it on
-                  the month it was for, or untie it, and it pays off the oldest months still owing — any true
-                  remainder then shows as a credit owed back.
-                </p>
+              {/* ⚠ THE PARAGRAPH THAT USED TO LIVE HERE IS GONE (2026-08-17). It explained, at
+                  length, that the extra stays on this month and does not move by itself — prose
+                  that existed only because the screen could not do the thing. It can now. */}
+              {excess > 0.05 && (
+                <div className="mp-decide">
+                  <p className="mp-decide-lead">
+                    {confirmedRevenue
+                      ? <>You have counted this <strong>{money(excess)}</strong> as {monthName(m)}&rsquo;s revenue.</>
+                      : <><strong>{money(excess)}</strong> more arrived than {monthName(m)} billed. It is in <strong>none</strong> of
+                        your income figures until you say what it is — more money than a month was billed for does not
+                        make that month worth more.</>}
+                  </p>
+                  {!deciding && !confirmedRevenue && (
+                    <button className="secondary mp-record" disabled={busy} onClick={() => setDeciding(true)}>
+                      What is this {money(excess)}?
+                    </button>
+                  )}
+                  {deciding && (
+                    <div className="mp-decide-opts">
+                      <button className="ghost btn-sm" disabled={busy} onClick={async () => {
+                        const ok = await askConfirm({
+                          title: `Count ${money(excess)} as ${monthName(m)}’s revenue?`,
+                          message: `${money(excess)} arrived on ${monthName(m)} ${year} beyond the ${money(owed)} it billed.`,
+                          implications: [
+                            `${monthName(m)} counts ${money(round2(received))} instead of ${money(owed)} on the live income and expenses.`,
+                            'It lands under Money in › Rent — no other line can claim it, because no bill asked for it.',
+                            'No payment moves and no bill changes. You are answering what the money was for.',
+                          ],
+                          confirmLabel: 'Count it as revenue',
+                          tone: 'warn',
+                        });
+                        if (ok) confirmRevenue.mutate();
+                      }}>It is {monthName(m)}&rsquo;s revenue</button>
+                      {/* Only the surplus moves. `Move this payment` above still re-files a whole
+                          cheque that was filed against the wrong month — a different question. */}
+                      {biggestPay && (
+                        <select className="text-input" value="" disabled={busy} onChange={async (e) => {
+                          const to = Number(e.target.value);
+                          if (!to) return;
+                          const ok = await askConfirm({
+                            title: `Roll ${money(excess)} forward to ${monthName(to)}?`,
+                            message: `The ${money(biggestPay.amount)} received on ${biggestPay.paid_date || 'an unrecorded date'} covered ${monthName(m)} and ${money(excess)} more.`,
+                            implications: [
+                              `${monthName(to)} receives ${money(excess)} — its box shows the money and it needs that much less.`,
+                              `${monthName(m)} keeps exactly the ${money(owed)} it billed.`,
+                              'The payment is split, not re-filed: same date, same method, same bank statement behind both halves.',
+                            ],
+                            confirmLabel: `Roll it to ${monthName(to)}`,
+                            tone: 'warn',
+                          });
+                          if (ok) rollForward.mutate(to);
+                        }}>
+                          <option value="">Roll {money(excess)} forward to…</option>
+                          {MONTHS.map((nm, mi) => (mi + 1 === m ? null : <option key={nm} value={mi + 1}>{nm}</option>))}
+                        </select>
+                      )}
+                      <button className="ghost btn-sm" disabled={busy} onClick={async () => {
+                        const ok = await askConfirm({
+                          title: `Record a ${money(excess)} refund?`,
+                          message: `${money(excess)} was received on ${monthName(m)} ${year} beyond what it billed.`,
+                          implications: [
+                            'It was never income, so giving it back is not a cost — it clears the credit and nothing else.',
+                            `${monthName(m)}'s bill goes up by ${money(excess)}, which is what consumes the overpayment.`,
+                            'Pay the tenant outside the app; this records that you did.',
+                          ],
+                          confirmLabel: 'Record the refund',
+                          tone: 'warn',
+                        });
+                        if (ok) refundIt.mutate();
+                      }}>Refund it</button>
+                      <button className="ghost btn-sm" disabled={busy} onClick={() => setDeciding(false)}>Leave it for now</button>
+                    </div>
+                  )}
+                </div>
               )}
               {shortfall > 0.05 && (
-                <button className="secondary mp-record" disabled={busy} onClick={() => recordGap.mutate()}>
-                  Record {money(shortfall)} received
-                </button>
+                <div className="mp-decide">
+                  <button className="secondary mp-record" disabled={busy} onClick={() => recordGap.mutate()}>
+                    Record {money(shortfall)} received
+                  </button>
+                  {/* George, 2026-08-17: *"also should be an option to send shortages to
+                      overcharge the next month."* The mirror of rolling a surplus forward. */}
+                  <select className="text-input" value="" disabled={busy} onChange={async (e) => {
+                    const to = Number(e.target.value);
+                    if (!to) return;
+                    const ok = await askConfirm({
+                      title: `Bill ${money(shortfall)} on ${monthName(to)} instead?`,
+                      message: `${monthName(m)} ${year} billed ${money(owed)} and ${money(received)} arrived.`,
+                      implications: [
+                        `${monthName(to)} bills ${money(shortfall)} more, so the tenant owes it there.`,
+                        `${monthName(m)} stops reading as short — it is settled at what actually came in.`,
+                        `The year's income does not change: ${pnlDestination('carry').section} › ${pnlDestination('carry').row} is credited on ${monthName(m)} and charged on ${monthName(to)}.`,
+                        'Both entries are written together — one without the other would lose the money.',
+                      ],
+                      confirmLabel: `Bill it on ${monthName(to)}`,
+                      tone: 'warn',
+                    });
+                    if (ok) carryShort.mutate(to);
+                  }}>
+                    <option value="">Bill {money(shortfall)} on another month…</option>
+                    {MONTHS.map((nm, mi) => (mi + 1 === m ? null : <option key={nm} value={mi + 1}>{nm}</option>))}
+                  </select>
+                </div>
               )}
               {/* ⚠ "Undo this month" USED TO LIVE HERE and has moved to the grid, where a
                   single click on the box takes the month back and a double-click opens this
@@ -436,7 +582,9 @@ export default function MonthDetailPanel({
             it back. It clears the moment the next one is typed. */}
         <div className="modal-foot">
           {refused && <p className="note-msg danger mp-foot-msg">{refused}</p>}
-          <MutationError of={[removeAdj, recordGap, movePay]} />
+          {/* The four new writes throw their own refusal message (a closed year, a split that
+              would swallow the whole cheque), so they belong here rather than failing silently. */}
+          <MutationError of={[removeAdj, recordGap, movePay, confirmRevenue, rollForward, refundIt, carryShort]} />
           <div className="modal-actions">
             {Math.abs(preview) > 0 ? (
               <span className="muted mp-preview">

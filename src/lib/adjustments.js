@@ -102,6 +102,30 @@ export const ADJUSTMENT_KINDS = [
     offsetsCamTax: false,
     hint: 'Money you have agreed not to collect — a concession, a goodwill credit.',
   },
+  // ── Moving a month's bill onto another month (2026-08-17) ───────────────────────────
+  //
+  // George: *"also should be an option to send shortages to overcharge the next month."*
+  // Written only in pairs by `carryMonthShortfall` — a credit on the short month and a charge
+  // on the target — which is why it is `manual: false`. Offered in the month picker, a
+  // landlord could write the half that clears March and never the half that bills April, and
+  // the money would simply be gone.
+  //
+  // ⚠ `pnlRow: 'rent'` AND NOT null, WHICH IS THE WHOLE ACCOUNTING DECISION. `opening` is null
+  // because a balance crossing a YEAR boundary was another year's income. This crosses a month
+  // inside one year: the year earned exactly the same money either way, so the pair must cancel
+  // in the annual total and move only the month the revenue is billed in. Give it a null
+  // `pnlRow` and every carry would quietly delete its own revenue from the workbook.
+  {
+    key: 'carry',
+    label: 'Moved to another month',
+    short: 'Moved',
+    pnlRow: 'rent',
+    dir: 'both',
+    grossOk: true,
+    offsetsCamTax: false,
+    manual: false,
+    hint: 'Part of one month’s bill moved onto another month — a credit on the month it left, a charge on the month it landed on.',
+  },
   // ── Slice 4: the three kinds a SETTLEMENT writes ────────────────────────────────────
   //
   // ⚠ `manual: false` keeps all three off the month panel's picker. They are not things to

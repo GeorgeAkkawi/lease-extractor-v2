@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useParams, Navigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
@@ -14,6 +14,7 @@ import {
   listUnplacedLines,
   listDecidedLines,
   getBankTieOut,
+  listAlertStates,
   settleTenantBalance,
   undoSettlement,
   listOtherIncome,
@@ -26,7 +27,7 @@ import {
   localDateIso,
   getLeaseSort, discardDocument,
 } from '../lib/api';
-import { allocatePayments, componentizeSchedule, escalationFollowThrough, escalationStepMonths, ledgerRowSummary, monthClosedForLogging, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
+import { allocatePayments, componentizeSchedule, escalationFollowThrough, escalationStepMonths, ledgerRowSummary, monthClosedForLogging, monthExcess, overpayKey, representativeMonth, snapshotCollectionSummary } from '../lib/ledger';
 import { sortTenantRows } from '../lib/leaseSort';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
 import { useFeatures } from '../lib/features';
@@ -816,6 +817,15 @@ export default function LedgerPage() {
   const isCurrentFy = year === curY;
   const throughM = year < curY ? 12 : (isCurrentFy ? curM : 0);
 
+  // Which surpluses the landlord has already answered for. One cached read shared with the
+  // month panel (`['alertStates']`), which is also what makes the box repaint the moment the
+  // answer is given.
+  const { data: alertStateRows } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates });
+  const confirmedOverpay = useMemo(
+    () => new Set((alertStateRows || []).filter((s) => s?.dismissed).map((s) => String(s.alert_key))),
+    [alertStateRows],
+  );
+
   // Derive each row's allocation / components / summary ONCE per render, then order
   // the tenants by the shared sort preference (name / size / rent / suite).
   const tenantSort = leaseSort.tenants || {};
@@ -825,6 +835,10 @@ export default function LedgerPage() {
       const comp = componentizeSchedule({ schedule: r.schedule, factor: r.factor, camTaxAnnual: r.camTaxAnnual, roofAnnual: r.roofAnnual, camTaxByMonth: r.camTaxByMonth, roofByMonth: r.roofByMonth, adjustments: r.adjustments });
       const summary = ledgerRowSummary({ year, owedByMonth: r.schedule, allocation: alloc, today });
       const steps = escalationStepMonths({ schedule: r.schedule, comp });
+      // Money that arrived beyond what the month billed, and whether the landlord has said
+      // what it is. Undecided, it is in NONE of the live income figures (incomeExpense.js) —
+      // so the box has to be the thing that says so, or the money is withheld invisibly.
+      const excess = monthExcess(alloc);
       // Did the money follow the raise? Same allocation the boxes paint from, so the
       // verdict and the row's own `short $X` chip can never disagree.
       const followUp = escalationFollowThrough({ year, owedByMonth: r.schedule, allocation: alloc, steps, comp, today });
@@ -844,7 +858,7 @@ export default function LedgerPage() {
         .reduce((s, a) => round2(s + (Number(a.amount) || 0)), 0);
       // Any settlement row at all — what makes an undo worth offering on this row.
       const settlementRows = adjRows.filter(isSettlementRow);
-      return { r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows };
+      return { r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows, excess };
     }),
     { mode: tenantSort.mode, dir: tenantSort.dir, pick: (d) => d.r }
   );
@@ -981,7 +995,7 @@ export default function LedgerPage() {
               </tr>
             </thead>
             <tbody>
-              {derived.map(({ r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows }) => {
+              {derived.map(({ r, alloc, comp, summary, steps, followUp, standing, carriedIn, settlementRows, excess }) => {
                 const heldOver = (r.lease_termination_date && r.lease_termination_date < todayIso) || r.is_active === false;
                 const rate = pct(summary.collected, summary.projected);
                 const stepSet = new Set(steps.map((s) => s.month));
@@ -1152,14 +1166,23 @@ export default function LedgerPage() {
                           // stays, so "paid = paid" still reads; gold is the same
                           // "look at this" gold the other states already use.
                           const off = Math.abs(diff) > 0.5;
+                          // ⚠ A SURPLUS NOBODY HAS ANSWERED FOR IS BEING WITHHELD FROM THE LIVE
+                          // INCOME FIGURES (2026-08-17), so the box must say so or the money is
+                          // held back invisibly — the one failure this whole change could cause.
+                          // `off` already tints the box gold either way; this adds the ASK.
+                          const surplus = round2(excess?.[i] || 0);
+                          const awaiting = surplus > 0.05
+                            && !confirmedOverpay.has(overpayKey(r.lease_id, year, m, surplus));
                           return (
                             <td key={m}>
-                              <Tip as="button" type="button" className={`rr-cell paid${off ? ' off' : ''}${s?.abated ? ' abated' : ''}${stepCls}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
+                              <Tip as="button" type="button" className={`rr-cell paid${off ? ' off' : ''}${awaiting ? ' awaiting' : ''}${s?.abated ? ' abated' : ''}${stepCls}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
                                 onClick={cellClick(takeBack)} onDoubleClick={open}
-                                aria-label={`${ml} paid — ${money(receivedM)} received of ${money(owedM)} billed`}
+                                aria-label={`${ml} paid — ${money(receivedM)} received of ${money(owedM)} billed${awaiting ? `, ${money(surplus)} not yet applied` : ''}`}
                                 content={card({
                                   settled: true,
-                                  action: 'Click to take this month back · double-click to open it',
+                                  action: awaiting
+                                    ? `${money(surplus)} more than this month billed is in none of your income figures — double-click to say what it is`
+                                    : 'Click to take this month back · double-click to open it',
                                 })}>
                                 {adjMark}✓<span className="rr-amt">{money0(receivedM)}</span>
                               </Tip>

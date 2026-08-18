@@ -55,12 +55,12 @@
 import {
   listProperties, listExpenseBuckets, listCamLineItems, listTaxLineItems,
   listRoofLineItems, getExpenseRecord, getTenantShares, getPropertyTotals, listOtherIncome,
-  getPropertyMonthlyRoll, listEscalationsByLeases,
+  getPropertyMonthlyRoll, listEscalationsByLeases, listAlertStates,
 } from './api';
 import { propertyStandings } from './settle';
 import { recoverabilityRows, absorbedFromItems } from './recoverability';
 import { summarizeOtherIncome } from './otherIncome';
-import { componentizeSchedule, allocatePayments } from './ledger';
+import { componentizeSchedule, allocatePayments, monthExcess, overpayKey } from './ledger';
 import { inTermByLease } from './leaseSchedule';
 import { adjustmentsForPnlRow, adjustmentKindRows, adjustmentMarks } from './adjustments';
 
@@ -115,11 +115,20 @@ export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', '
  *   • `marks` are dropped: a tint means "a charge was posted on this month and its figure is
  *     inside the amount shown", which is a statement about the BILL. On a cash row it would be
  *     false.
+ *   • **A SURPLUS IS NOT REVENUE UNTIL THE LANDLORD SAYS IT IS** (2026-08-17). More money
+ *     arriving than the month billed does not make that month worth more — it may have been
+ *     meant for the next one. So a month's cash is applied only up to what it billed; the
+ *     rest is held on `unapplied` and counted in nothing until a `confirmed` key covers it.
+ *     See `monthExcess` / `overpayKey` (ledger.js) for why it is keyed by month and carries
+ *     its own cents. The SHORT side needs no such holding: it cannot overstate revenue, and
+ *     a blank month is what George asked for on 2026-08-17.
  */
-export function billedRowsFromRoll(roll = [], { collected = false } = {}) {
+export function billedRowsFromRoll(roll = [], { collected = false, year = null, confirmed = null } = {}) {
   const groups = { rent: [], camTax: [], roof: [], charges: [], carried: [] };
   let tieOut = 0;
   let creditTotal = 0;
+  let unapplied = 0;
+  const unappliedRows = [];
   // ⚠ WHAT THE SHEET SAYS AND WHAT THE INVOICE SAYS ARE TWO DIFFERENT THINGS, and only one
   // of them is in the tenant's hands. These rows are built UP from each lease's current
   // terms; a stored invoice is a frozen copy that does not rebuild itself (CLAUDE.md §1).
@@ -170,9 +179,21 @@ export function billedRowsFromRoll(roll = [], { collected = false } = {}) {
     let credit = 0;
     if (collected) {
       const alloc = allocatePayments({ owedByMonth: r.schedule, payments: r.payments, adjustments: r.adjustments });
+      const excess = monthExcess(alloc);
       for (let i = 0; i < 12; i++) {
         const owedM = round2(alloc.owed[i]);
-        const got = round2(alloc.received[i]);
+        // ⚠ WHAT THIS MONTH'S CASH IS ALLOWED TO COUNT AS. A surplus the landlord has
+        // confirmed is revenue counts here exactly as it did before; an unanswered one is
+        // held out and named on its own line rather than quietly inflating a month.
+        const surplus = round2(excess[i]);
+        const held = surplus > 0.005 && !confirmed?.has(overpayKey(r.lease_id, year, i + 1, surplus))
+          ? surplus
+          : 0;
+        if (held > 0.005) {
+          unapplied = round2(unapplied + held);
+          unappliedRows.push({ lease_id: r.lease_id, label, month: i + 1, amount: held });
+        }
+        const got = round2(round2(alloc.received[i]) - held);
         if (owedM > 0.005) {
           // Rent is the REMAINDER so the four parts sum to the cash exactly — the same reason
           // componentizeSchedule makes base the remainder. Scaling all five independently
@@ -223,7 +244,11 @@ export function billedRowsFromRoll(roll = [], { collected = false } = {}) {
   const byTotal = (a, b) => b.total - a.total || a.label.localeCompare(b.label);
   for (const k of Object.keys(groups)) groups[k].sort(byTotal);
   drifted.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || a.label.localeCompare(b.label));
-  return { ...groups, tieOut: round2(tieOut), creditTotal, drifted, driftTotal: round2(drifted.reduce((s, d) => s + d.amount, 0)) };
+  unappliedRows.sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label) || a.month - b.month);
+  return {
+    ...groups, tieOut: round2(tieOut), creditTotal, unapplied, unappliedRows,
+    drifted, driftTotal: round2(drifted.reduce((s, d) => s + d.amount, 0)),
+  };
 }
 
 /**
@@ -300,7 +325,7 @@ export function noiBridge({ noi = 0, net = 0, recovered = 0, otherIncome = 0, ab
  * distribution is not a cost of the building (see `isOwnerCategory`), and
  * `recoverabilityRows` has already split it out.
  */
-export function shapeProperty({ property, year, totals, items, shares, expense, buckets, income, roll, escByLease = {}, basis = 'projected' }) {
+export function shapeProperty({ property, year, totals, items, shares, expense, buckets, income, roll, escByLease = {}, basis = 'projected', confirmed = null }) {
   const live = basis === 'live';
   const inc = summarizeOtherIncome(income, year);
   // ⚠ The term weighting is passed, not defaulted, and it is the SAME call the "What it
@@ -317,7 +342,7 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   // are statements about what was BILLED — they mean nothing measured against cash, and
   // dropping them on the live basis would hide a real fault from whoever downloaded that copy.
   const billed = billedRowsFromRoll(roll);
-  const shown = live ? billedRowsFromRoll(roll, { collected: true }) : billed;
+  const shown = live ? billedRowsFromRoll(roll, { collected: true, year, confirmed }) : billed;
   const rentRows = shown.rent;
   const rentByMonth = groupByMonth(shown.rent);
   const rent = groupTotal(shown.rent);
@@ -332,6 +357,11 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
   // Money a tenant paid beyond the whole year's bills. Real cash, no month — see
   // `billedRowsFromRoll`. Always 0 on the projected basis.
   const tenantCredit = round2(shown.creditTotal);
+  // Cash that arrived and no bill accounts for, still waiting on the landlord's answer. In
+  // NO total on this sheet — that is the whole point — and stated on its own line so that
+  // leaving it undecided is a visible state rather than a silent one.
+  const unapplied = round2(shown.unapplied || 0);
+  const unappliedRows = shown.unappliedRows || [];
   // How much of the projected rent comes from steps that have not taken effect yet — the whole
   // reason the projected basis exists, and the one figure a reader has to be told about it.
   const projectedAhead = round2((roll || []).reduce((s, r) => s + num(r?.projectedAhead), 0));
@@ -442,6 +472,10 @@ export function shapeProperty({ property, year, totals, items, shares, expense, 
     rentCorrections,
     // Cash paid beyond the year's bills, with no month to sit in (live basis only).
     tenantCredit,
+    // Cash that arrived on a month beyond what it billed and has not been answered for.
+    // Counted in nothing here; the Ledger is where it is decided (live basis only).
+    unapplied,
+    unappliedRows,
     // The leases whose ISSUED invoice no longer matches these rows, and by how much.
     invoiceDrifted: billed.drifted,
     invoiceDriftTotal: billed.driftTotal,
@@ -551,6 +585,7 @@ export function consolidate(properties = []) {
       distributions: round2(t.distributions + p.distributionsTotal),
       projectedAhead: round2(t.projectedAhead + p.projectedAhead),
       tenantCredit: round2(t.tenantCredit + p.tenantCredit),
+      unapplied: round2(t.unapplied + p.unapplied),
       rentByMonth: add12(t.rentByMonth, p.rentByMonth),
       incomeByMonth: add12(t.incomeByMonth, p.incomeByMonth),
       inByMonth: add12(t.inByMonth, p.inByMonth),
@@ -563,7 +598,7 @@ export function consolidate(properties = []) {
     {
       rent: 0, camTaxBilled: 0, roofBilled: 0, charges: 0, carried: 0, trueUp: 0, billedTotal: 0, earned: 0,
       otherIncome: 0, revenue: 0, spent: 0, recovered: 0, netCost: 0, grossNet: 0, net: 0, distributions: 0,
-      owed: 0, inCredit: 0, projectedAhead: 0, tenantCredit: 0,
+      owed: 0, inCredit: 0, projectedAhead: 0, tenantCredit: 0, unapplied: 0,
       rentByMonth: zero12(), camTaxByMonth: zero12(), roofByMonth: zero12(), chargesByMonth: zero12(),
       carriedByMonth: zero12(),
       incomeByMonth: zero12(), inByMonth: zero12(), outByMonth: zero12(), netByMonth: zero12(),
@@ -666,6 +701,19 @@ export function flags(properties = [], { basis = null } = {}) {
       + 'for them and no tenant has been asked to pay one. They apply from the month of the step, not the whole year.');
   }
 
+  // ⚠ THE MONEY THIS SHEET IS DELIBERATELY NOT COUNTING, named in dollars and told where to
+  // go and answer for it. A figure held out of revenue with nothing said about it is worse
+  // than one counted wrongly: the landlord has no way to know it exists, and "leave it" —
+  // which is a legitimate answer — would look identical to "the app lost it".
+  const held = round2(properties.reduce((s, p) => s + (p.unapplied || 0), 0));
+  if (live && held > 0.005) {
+    const n = properties.reduce((s, p) => s + (p.unappliedRows?.length || 0), 0);
+    const who = properties.flatMap((p) => (p.unappliedRows || []).map((r) => `${r.label} ${MONTHS[r.month - 1]} ${dollars(r.amount)}`)).join(' · ');
+    out.push(`${dollars(held)} arrived on ${n} month${n === 1 ? '' : 's'} beyond what that month billed, and is in NONE of the figures above — `
+      + `${who}. More money than a month was billed for does not make that month worth more; it may have been meant for a later one. `
+      + 'Open the month on the Ledger and say what it is — this month\'s revenue, rolled forward to a month you pick, or refunded — and it moves.');
+  }
+
   // ⚠ AND THE CASH THAT HAS NO MONTH. A tenant who paid more than the whole year's bills leaves
   // money the allocation cannot put in a month — real dollars that would otherwise fall off a
   // sheet meant to equal the bank. It sits in "No date" and this is what says so.
@@ -743,6 +791,14 @@ export function flags(properties = [], { basis = null } = {}) {
  *  just looked at the page downloads from cache. */
 export async function buildIncomeExpense(corporationId, year, { basis = 'projected' } = {}) {
   const [props, buckets] = await Promise.all([listProperties(corporationId), listExpenseBuckets()]);
+  // ⚠ ONE READ FOR THE WHOLE WORKBOOK, and only on the basis that can use it. `alert_states`
+  // is the owner's entire keyed-decision store, so fetching it per property would be the same
+  // rows N times. It fails soft to "nothing confirmed": a surplus held out and named is the
+  // safe direction, where a surplus counted because a read failed is money asserted on no
+  // authority at all.
+  const confirmed = basis === 'live'
+    ? new Set(((await listAlertStates().catch(() => [])) || []).filter((s) => s?.dismissed).map((s) => String(s.alert_key)))
+    : null;
   const properties = await Promise.all(
     (props || []).map(async (property) => {
       const [totals, camItems, taxItems, roofItems, expense, shares, income, roll] = await Promise.all([
@@ -774,7 +830,7 @@ export async function buildIncomeExpense(corporationId, year, { basis = 'project
         ? await listEscalationsByLeases((shares || []).map((s) => s.lease_id))
         : {};
       return shapeProperty({
-        property, year, totals, shares, expense, buckets, income, roll, escByLease, basis,
+        property, year, totals, shares, expense, buckets, income, roll, escByLease, basis, confirmed,
         items: [...(taxItems || []), ...(camItems || []), ...(roofItems || [])],
       });
     })
