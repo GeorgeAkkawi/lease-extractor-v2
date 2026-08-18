@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, listCollectedByProperty, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
+import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
+import { listBasisByProperty } from '../lib/portfolioBasis';
 import { buildAlerts, alertKey, toAlertStates, SNOOZE_OPTIONS, alertUrgency, compareUrgencyKeys, URGENCY_TIER, isLongPast, notificationKey, notificationSnoozed } from '../lib/alerts';
 import { groupFeed, rowSubject } from '../lib/notifyTypes';
 import { resolveLeadDays } from '../lib/notifyPrefs';
@@ -13,6 +14,8 @@ import NotificationEmailModal from '../components/NotificationEmailModal';
 import { useConfirm } from '../components/ConfirmDialog';
 import { PageSkeleton } from '../components/Skeleton';
 import PortfolioCharts from '../components/PortfolioCharts';
+import BasisBand from '../components/BasisBand';
+import { projectedVsLive, portfolioBasis } from '../lib/portfolioCharts';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 
 // Portfolio overview — the landlord's one-glance home: rent roll, occupancy,
@@ -50,13 +53,37 @@ export default function DashboardPage() {
     queryFn: () => listPropertyTotalsByYear(propIds, year),
     enabled: !!index,
   });
-  // The cash twin of those totals — rent collected on the Ledger and expenses carrying a
-  // payment date on or before today, per property, in one round-trip. Feeds the second
-  // trio of bars on "What each property keeps"; invalidated by settleBillingChange
-  // alongside the ledger keys, so recording a payment moves the chart.
-  const { data: collectedByProp } = useQuery({
-    queryKey: ['portfolioCollected', year, propIds.length],
-    queryFn: () => listCollectedByProperty(propIds, year),
+  // The same server-synced decision store buildAlerts filters against, read here on its own
+  // so a STORED notification can be snoozed too — a notification is a row, not a computed
+  // alert, so "remind me next week" has nowhere else to live.
+  //
+  // ⚠ IT IS ALSO WHAT DECIDES WHETHER AN OVER-PAYMENT IS REVENUE (2026-08-17), which is why
+  // the basis query below waits on it rather than fetching its own copy: the Ledger, the
+  // month panel and this page all read one cached `['alertStates']`, so answering a surplus
+  // there repaints the live counter here without a second round-trip.
+  const { data: stateRows = [] } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates, ...LIVE_QUERY });
+  const notifStates = toAlertStates(stateRows);
+  const confirmedOverpay = useMemo(
+    () => new Set((stateRows || []).filter((s) => s?.dismissed).map((s) => String(s.alert_key))),
+    [stateRows],
+  );
+
+  // The live counter (2026-08-18). Both bases per property, through the SAME functions the
+  // Income-and-expenses workbook is built from — so "Projected revenue" here and the
+  // projected workbook's total are one figure with two renderers rather than two
+  // implementations that drift (CLAUDE.md §3). Feeds the headline band and the paired bars.
+  //
+  // ⚠ THE CONFIRMED SET IS IN THE KEY, not just the argument. An unanswered surplus is held
+  // OUT of the live figure; answering it on the Ledger writes an `alert_states` row, and
+  // without that fingerprint here the band would keep serving the withheld figure from cache
+  // — the landlord would answer and watch nothing happen.
+  const overpayFingerprint = useMemo(
+    () => [...confirmedOverpay].filter((k) => k.startsWith('overpay')).sort().join('|'),
+    [confirmedOverpay],
+  );
+  const { data: basisByProp } = useQuery({
+    queryKey: ['portfolioBasis', year, propIds.length, overpayFingerprint],
+    queryFn: () => listBasisByProperty(propIds, year, { confirmed: confirmedOverpay }),
     enabled: !!index,
   });
   // The landlord's per-type notification lead times ("notify me N ahead"). Folded into
@@ -81,11 +108,6 @@ export default function DashboardPage() {
     ...LIVE_QUERY,
   });
   const { data: notifications = [] } = useQuery({ queryKey: ['notifications'], queryFn: listNotifications, ...LIVE_QUERY });
-  // The same server-synced dismiss/snooze store buildAlerts filters against, read here on
-  // its own so a STORED notification can be snoozed too — a notification is a row, not a
-  // computed alert, so "remind me next week" has nowhere else to live.
-  const { data: stateRows = [] } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates, ...LIVE_QUERY });
-  const notifStates = toAlertStates(stateRows);
 
   // Hold the page until the portfolio data is in, so the metrics/tables appear
   // fully formed rather than counting up from zero on first load.
@@ -214,6 +236,23 @@ export default function DashboardPage() {
   const buildingSf = totalsList.reduce((s, t) => s + (Number(t.building_sf) || 0), 0);
   const occupancy = buildingSf > 0 ? Math.round((leasedSf / buildingSf) * 100) : null;
 
+  // The headline band's three pairs, summed from the SAME rows the paired bars are drawn
+  // from — so the band can never sit a cent away from the panel beneath it.
+  const basisRows = projectedVsLive(properties, totalsByProp, basisByProp);
+  const bandTotals = basisRows.length ? portfolioBasis(basisRows) : null;
+  // Where each caveat sends the landlord: the property carrying the MOST of it. A caveat
+  // that names a figure and then can't say where to fix it is a complaint, not a prompt —
+  // and with one property that link is simply the right one anyway.
+  const worstBy = (key) => basisRows.reduce((best, r) => (r[key] > (best?.[key] || 0) ? r : best), null);
+  const hrefFor = (row, tab) => {
+    const p = row ? properties.find((x) => x.id === row.id) : null;
+    return p ? `/financials/${p.corporation_id}/${p.id}${tab}` : null;
+  };
+  // ⚠ The Ledger tab is hidden when the module is off (FinancialsTabs.js), so the link has
+  // to be too — pointing a landlord at a tab that isn't there is the worst version of §7.
+  const ledgerHref = isFeatureOn(enabledFeatures, 'ledger') ? hrefFor(worstBy('unapplied'), '/ledger') : null;
+  const financialsHref = hrefFor(worstBy('undatedExpenses'), '');
+
   // Which blocks to render, per the landlord's Display settings.
   const showCharts = show('portfolio_charts');
   const showAlerts = show('alerts');
@@ -257,7 +296,13 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} collectedByProp={collectedByProp} leases={leases} year={year} />}
+      {/* ⚠ ABOVE the chart band, not inside it — George, 2026-08-18: *"that should be way
+          more prominent in the overview page graphs."* It is the sentence the four panels
+          below elaborate on, and it shares their one Display-settings switch rather than
+          taking a second, which would let a landlord hide half of one idea. */}
+      {showCharts && <BasisBand totals={bandTotals} year={year} ledgerHref={ledgerHref} financialsHref={financialsHref} />}
+
+      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} basisByProp={basisByProp} leases={leases} year={year} />}
 
       {nothingShown && (
         <div className="panel">

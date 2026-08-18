@@ -7,7 +7,7 @@
 // its parent, and in jsdom every element is 0×0 — so no SVG is ever drawn. Assert the
 // panel titles and legends (real DOM, rendered regardless), never chart geometry.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import DashboardPage from '../DashboardPage';
@@ -44,7 +44,7 @@ describe('Overview — portfolio charts', () => {
     // ended in May and it's still in place, so the demo always carries a "Now" bucket —
     // and the foot has to explain it rather than leave a bar labelled "Now" to guesswork.
     expect(screen.getByText(/already past its end date/)).toBeTruthy();
-    expect(screen.getByText('What each property keeps')).toBeTruthy();
+    expect(screen.getByText('Projected vs live, by property')).toBeTruthy();
     // The donut's centre caption — and now the ONLY place the rent roll is stated, since
     // the metric card that repeated it came off the page.
     expect(screen.getAllByText('Annual rent roll').length).toBe(1);
@@ -53,54 +53,94 @@ describe('Overview — portfolio charts', () => {
     // a percentage over one filled track per property.
     expect(container.querySelector('.occ-figure').textContent).toMatch(/^\d+%$/);
     expect(container.querySelectorAll('.occ-row').length).toBeGreaterThan(0);
-    // The Revenue/Expenses/NOI triad, in a panel that now spans the whole band.
-    expect(screen.getByText('Revenue')).toBeTruthy();
-    expect(screen.getByText('NOI')).toBeTruthy();
     expect(container.querySelector('.chart-panel.wide')).toBeTruthy();
     // …and it says which "expenses" it means. A bar labelled only "Expenses" can't tell a
     // landlord whether it's the actuals he entered or the CAM & tax estimates he bills —
     // two genuinely different figures, the gap between them being the year-end true-up.
-    expect(screen.getByText(/actual property taxes, CAM and roof/i)).toBeTruthy();
-    expect(screen.getByText(/not the CAM & tax estimates billed to tenants/i)).toBeTruthy();
+    expect(screen.getByText(/actual property taxes,\s+CAM and roof entered on each/i)).toBeTruthy();
   });
 
-  // George, 2026-08-03: "all we need i think is just the year to date collected revenue"
-  // — one extra bar on "What each property keeps", taken from the Ledger.
-  it('draws the collected bar beside Revenue and names it in the legend', async () => {
+  // George, 2026-08-18: *"there should be a live counter as well … and any over or
+  // undercharges only counts towards live count."*
+  it('pairs every projected bar with its live twin, in bar order', async () => {
     const { container } = renderDash();
-    await waitFor(() => expect(screen.getByText('What each property keeps')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Projected vs live, by property')).toBeTruthy());
     // The legend has to read in BAR order, or a reader cannot map a swatch to the column
-    // under it — and "Collected so far" has to sit SECOND, next to the Revenue it belongs
-    // to, not tacked on the end where it reads as a fourth unrelated measure.
+    // under it — and each live entry has to sit NEXT TO the projected one it belongs to,
+    // not grouped at the end where the pairing stops reading.
     const legend = await waitFor(() => {
       const el = container.querySelector('.chart-panel.wide .chart-legend');
       expect(el).toBeTruthy();
       return el;
     });
     expect([...legend.querySelectorAll('.sw')].map((s) => s.parentElement.textContent.trim()))
-      .toEqual(['Revenue', 'Collected so far', 'Expenses', 'NOI']);
-    // The four-bar layout carries the class one media query needs to drop its figures on a
-    // phone; without it the three-bar layout would lose its labels too.
-    expect(container.querySelector('.chart-panel.wide.has-collected')).toBeTruthy();
+      .toEqual(['Projected revenue', 'Live revenue', 'Projected expenses', 'Live expenses']);
+    // The four-bar layout carries the class its two media queries need to drop the bar
+    // figures where they'd collide.
+    expect(container.querySelector('.chart-panel.wide.has-live')).toBeTruthy();
   });
 
-  // ⚠ THE ONE THAT MATTERS. On the demo seed Maple Plaza reads Revenue $144,000 against
-  // $100,300 collected, which invites exactly the wrong reading — "70% collected" — when the
-  // two count different money. The foot has to make both halves of the correction explicit:
-  // where the figure comes from, and why it can read above the bar beside it.
-  it('says the collected figure is all-in, so it is not a share of Revenue', async () => {
+  // ⚠ THE ONE THAT MATTERS, and the reason the panel was rebuilt. It used to put
+  // base-rent-only Revenue beside all-in Collected and then apologise for it in two
+  // paragraphs. Both halves of each pair now count the same dollars, so the foot states the
+  // sources instead of excusing a mismatch.
+  it('says what each side is built from, and no longer apologises for the pair', async () => {
     const { container } = renderDash();
-    await waitFor(() => expect(screen.getByText('What each property keeps')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Projected vs live, by property')).toBeTruthy());
     const foot = await waitFor(() => {
       const lines = [...container.querySelectorAll('.chart-panel.wide .chart-foot-line')];
       expect(lines.length).toBe(2);
       return lines.map((n) => n.textContent).join(' ');
     });
-    expect(foot).toMatch(/payments recorded against this year’s invoices/i);
-    expect(foot).toMatch(/straight off the Ledger/i);
-    expect(foot).toMatch(/all-in/i);
-    expect(foot).toMatch(/includes the CAM & tax your tenants reimburse/i);
-    expect(foot).toMatch(/not a share of the Revenue bar and can read above it/i);
+    expect(foot).toMatch(/a step dated later this year that hasn’t taken effect yet/i);
+    expect(foot).toMatch(/money the Ledger says arrived, and\s+costs carrying a payment date/i);
+    expect(foot).toMatch(/count the same\s+dollars/i);
+    // The apology is gone with the mismatch that caused it.
+    expect(foot).not.toMatch(/not a share of the Revenue bar/i);
+  });
+
+  // George: *"that should be way more prominent in the overview page graphs."* The band is
+  // the headline the four panels below elaborate on, so it sits above them.
+  it('heads the page with the three projected-vs-live pairs', async () => {
+    const { container } = renderDash();
+    const band = await waitFor(() => {
+      const el = container.querySelector('.basis-band');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    expect(within(band).getByText(/projected vs live/i)).toBeTruthy();
+    expect([...band.querySelectorAll('.basis-col-label')].map((n) => n.textContent))
+      .toEqual(['Revenue', 'Expenses', 'What’s left']);
+    // Both readings of each measure, named — a bare pair of numbers cannot say which is which.
+    expect(band.querySelectorAll('.basis-fig').length).toBe(6);
+    expect(within(band).getAllByText('projected').length).toBe(3);
+    expect(within(band).getAllByText('live').length).toBe(3);
+    // It is the headline, so it comes BEFORE the panels it introduces.
+    const charts = container.querySelector('.chart-band');
+    expect(band.compareDocumentPosition(charts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // ⚠ THE FIGURE THAT WOULD OTHERWISE MAKE A CHEAP YEAR OUT OF A MISSING DATE. The demo's
+  // property taxes are entered as one flat figure with no line items at all, so most of the
+  // portfolio's costs carry no payment date — and Live expenses reads far under Projected
+  // for that reason alone. Left unsaid, that gap reads as money saved.
+  it('names the undated costs rather than letting them read as unspent', async () => {
+    const { container } = renderDash();
+    const band = await waitFor(() => {
+      const el = container.querySelector('.basis-band');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    const caveat = await waitFor(() => {
+      const el = band.querySelector('.basis-caveat');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    expect(caveat.textContent).toMatch(/carry no payment date/i);
+    expect(caveat.textContent).toMatch(/in no Live figure/i);
+    // …and it links to where the date gets entered, rather than naming a figure and
+    // leaving the landlord to find it.
+    expect(within(caveat).getByRole('link').getAttribute('href')).toMatch(/^\/financials\/[^/]+\/[^/]+$/);
   });
 
   it('no longer draws the three metric cards — the charts say all three better', async () => {
@@ -121,11 +161,14 @@ describe('Overview — portfolio charts', () => {
     expect(screen.getByText('Lease endings')).toBeTruthy();
   });
 
-  it('disappears entirely when the landlord hides the widget', async () => {
+  // One switch, not two: the band is the headline of the same idea the panels below
+  // elaborate, and a second key would let a landlord hide half of it.
+  it('disappears entirely when the landlord hides the widget, band included', async () => {
     await setHiddenWidgets(['portfolio_charts']);
-    renderDash();
+    const { container } = renderDash();
     await waitFor(() => expect(screen.getByText('Overview')).toBeTruthy());
     await waitFor(() => expect(screen.queryByText('Where the rent comes from')).toBeNull());
+    expect(container.querySelector('.basis-band')).toBeNull();
   });
 });
 

@@ -16,7 +16,7 @@
 // termination alert covers the same leases on the same lead, is clickable to the lease,
 // and now has a column of its own — the table was saying it twice.
 export const DASHBOARD_WIDGETS = [
-  { key: 'portfolio_charts', label: 'Portfolio charts',     hint: 'Where the rent comes from, how much space is leased, when leases come up for renewal, and what each property keeps.' },
+  { key: 'portfolio_charts', label: 'Portfolio charts',     hint: 'Projected vs live for the year, where the rent comes from, how much space is leased, and when leases come up for renewal.' },
   { key: 'alerts',      label: 'Alerts & notifications',    hint: 'Reminders, renewal prompts, and key-date alerts.' },
 ];
 

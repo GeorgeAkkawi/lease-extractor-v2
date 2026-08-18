@@ -1,3 +1,133 @@
+## 2026-08-18 — Projected vs live, on the Overview
+
+**Cloudflare version:** `981aceeb-8184-4b72-94ea-72777a8b98ee` · 2,019 tests, 189 files
+
+George: *"this should also update what youve collected so far graph so we can see the end of year
+difference between projected and live. weve built thi software around projected but there should be
+a live counter as well. and any over or undercharges only counts towards live count. as a matter of
+fact that should be way more prominent in the overview page graphs … then do the same with the
+expenses. any anyway that says projected revenue should say that and projected expenses which come
+from the base rent and cam and tax estimates - the live counter comes from the ledger and the bank
+statements and live expenses."*
+
+### The defect underneath the ask
+
+The Overview already drew a cash bar, and the panel had to print a paragraph apologising for it:
+
+- **Revenue** was `v_property_totals.total_revenue` = `sum(effective_rent)` — base rent only,
+  **applied steps only** (0049 / 0054). It counted none of the CAM & tax tenants reimburse and was
+  blind to a rent step dated later in the year.
+- **Collected so far** was all-in cash off the Ledger.
+- Two different measures standing side by side, inviting the one reading they cannot support. On the
+  demo that is $144,000 against $100,300 — "70% collected", of nothing.
+
+So the pair was rebuilt as **one measure read twice**, which is what makes an end-of-year difference
+mean anything at all.
+
+### What went out
+
+**`src/lib/portfolioBasis.js` (new)** — `listBasisByProperty(propertyIds, year, { confirmed })`.
+One `getPropertyMonthlyRoll(pid, year, { includeScheduled: true })` per property, then **both passes
+of `billedRowsFromRoll`** — the workbook's own two bases. Plus one bulk expense read.
+
+⚠ **It calls the workbook's functions rather than re-deriving them**, so "Projected revenue" on the
+Overview and the projected workbook's own total are one figure with two renderers. `portfolioBasis.test.js`
+asserts the equality to the cent on both bases; drop any of the five bill components from the sum and
+it goes red (measured — see Non-vacuity).
+
+⚠ **The live pass gets `contractedRoll(roll)`** — the projection stripped back off. `monthExcess`
+decides "more arrived than was billed" against `alloc.owed`, and nobody has been billed for an
+un-swept step; measured against the projection a real surplus shrinks or vanishes and the hold-back
+that keeps an unanswered over-payment out of live revenue **silently stops working**. `contractedRoll`
+went from module-private to exported for this, for the same reason `propertyStandings` already had it.
+
+**`listExpenseSpendByProperty` (`api.js`)** — one bulk `cam_line_items` read, returning `toDate`
+(payment date ≤ today) and `dated` (any payment date).
+
+⚠ It mirrors the totals' own rules exactly — `billable is not false` for `kind='cam'` (syncCamTotal),
+every row for tax and roof (syncKindTotal) — or part of the projected-vs-live gap would be an
+artefact of the filter rather than a fact about the year.
+
+⚠ **`dated` is returned beside `toDate` so the undated remainder can be NAMED.** `paid_date` is
+nullable and never backfilled (0074): a kind entered as one flat figure has no line items at all,
+and a contract-derived CAM row never carries a day. On the demo that is $26,000 of $129,000 — left
+unsaid, Live expenses reads as a cheap year. The band and the hover both state it and link to where
+it gets fixed.
+
+**`BasisBand.js` (new)** — full-width headline **above** the chart band (George: *"way more
+prominent"*): Revenue · Expenses · What's left, each with both readings, a track and the signed gap.
+Under it, only when non-zero, the two caveats — undated costs, and cash awaiting an answer — each
+linking to the property carrying the most of it. Gated by the existing `portfolio_charts` key, not a
+new one: a second switch would let a landlord hide half of one idea.
+
+⚠ **"What's left" is not NOI** and the band says so — this revenue is all-in, NOI's is base rent
+only, the same gap the property page's "What actually stayed" strip exists to explain.
+
+**"What each property keeps" → "Projected vs live, by property"** — four bars, each projected bar
+touching its live twin: Projected revenue · Live revenue · Projected expenses · Live expenses. NOI
+drops off the bars (the band carries what's left; the hover still quotes NOI). **Still four bars**, so
+the measured label-collision work carries over unchanged — `.has-collected` renamed `.has-live` in its
+two media queries. All four now always draw: a live $0 against a projection is the reading, not an
+empty frame.
+
+**Relabels** — `Revenue` / `Expenses` → **Projected** revenue / expenses on the Financials property
+cards, and `Revenue (annualized)` / `Total expenses` → **Projected** on the property Performance
+cards. HistoryPage deliberately untouched: those are closed years read from snapshots — actuals, not
+projections.
+
+**Invalidation** — `['portfolioBasis']` added to `settleBillingChange` and `settleStatementImport`.
+
+⚠ **And a pre-existing fault fixed with it:** `settlePaymentChange` invalidated **neither**
+`portfolioCollected` nor the new key. A payment is the one thing that set exists for and precisely
+what those reads count, so recording a cheque moved the Ledger and left the Overview quoting
+yesterday's figure. Both are in it now. That is drift-by-omission sitting inside the file written to
+prevent it.
+
+### Non-vacuity
+
+Each reverted in turn; each went red, then green on restore:
+
+- live pass handed the **projected** roll → the surplus-vs-billed test fails (only bites on a lease
+  with an un-swept step, which is why it lives on prop-1 and not beside the prop-2 one)
+- **`billable`** filter removed → the not-billed CAM line starts counting
+- **`paid_date ≤ today`** bound removed → a future-dated cost counts as spent
+- **each of the five bill components** dropped from the sum → the workbook equality fails. ⚠ Two of
+  them (`charges`, `carried`) are **$0 on the seed**, so the pin passed over them until a fee and an
+  opening balance were posted in the test. Found by probing, not by reading.
+
+### Files
+
+`src/lib/portfolioBasis.js` (new) · `src/components/BasisBand.js` (new) ·
+`src/lib/__tests__/portfolioBasis.test.js` (new) · `src/lib/api.js` · `src/lib/incomeExpense.js` ·
+`src/lib/portfolioCharts.js` · `src/components/PortfolioCharts.js` · `src/pages/DashboardPage.js` ·
+`src/lib/invalidate.js` · `src/components/ImportStatementButton.js` ·
+`src/pages/FinancialsPropertiesPage.js` · `src/pages/PropertyFinancialsPage.js` ·
+`src/lib/dashboardWidgets.js` · `src/App.css` · `src/lib/__tests__/portfolioCharts.test.js` ·
+`src/pages/__tests__/dashboardOverview.test.js` · `src/components/__tests__/chartTooltips.test.js`
+
+### Now redundant
+
+- **The two-line apology under the old panel** — *"it is not a share of the Revenue bar and can read
+  above it."* Prose that existed because the two bars measured different money. **Gone with it.**
+- **`revenueExpensesNoi` + `hasCollectedBars` (`portfolioCharts.js`)** — no callers left. Kept for
+  now with their tests: `listCollectedByProperty` still backs them and George may want the old triad
+  somewhere. **Proposal, not a deletion.**
+- **`listCollectedByProperty` (`api.js`) and its `['portfolioCollected']` key** — its `collected` is a
+  subset of what the live pass derives and its `billed` is the *issued invoice*, which the projected
+  pass supersedes. Still the only figure that ties to the Ledger's own Collected column, so it stays
+  until George says otherwise. **Proposal.**
+- Carried forward, still awaiting George's call: **"Move this payment…" on an over-paid month** ·
+  **the untie dialog's credit-owed-back sentence**.
+
+### Still open
+
+- ⚠ **Migration `0101_payment_split_from.sql` has still not been applied** — the Management API
+  answers 403 (Cloudflare 1010) from this machine. Until it runs, rolling a surplus forward works and
+  cannot be undone, and the `linked: false` fallback in `splitPayment` should be deleted once it lands.
+- The statement import calls no `resyncPropertyBilling` · `TenantStatement` pinned to the calendar
+  year · two `.panel-toggle` copies on `HistoryPage.js` · `PdfSignCanvas` swallows the stale-build
+  message · `build.emptyOutDir: false`.
+
 # Amlak — deployment log
 
 Every round that went live, newest at the top: what changed, the files, the Cloudflare

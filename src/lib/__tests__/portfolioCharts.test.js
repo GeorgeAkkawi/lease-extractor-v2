@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   revenueByProperty, occupancyByProperty, portfolioOccupancy, revenueExpensesNoi, rentRollover,
-  tenantMix, hasCollectedBars, kfmt, shortName, DONUT_PALETTE,
+  tenantMix, hasCollectedBars, projectedVsLive, portfolioBasis, kfmt, shortName, DONUT_PALETTE,
 } from '../portfolioCharts';
 
 const PROPS = [
@@ -209,6 +209,132 @@ describe('revenueExpensesNoi — rent collected so far', () => {
     expect(maple).toMatchObject({ Collected: 0, billedYtd: 0, hasCollected: false });
     // …and its on-paper figures are untouched by the empty read.
     expect(maple).toMatchObject({ Revenue: 120000, Expenses: 45000, NOI: 75000 });
+  });
+});
+
+// Projected vs live — the pair that replaced Revenue-beside-Collected (2026-08-18).
+//
+// ⚠ WHAT THE OLD SHAPER GOT WRONG AND THIS ONE MUST NOT. `revenueExpensesNoi` put
+// base-rent-only Revenue next to all-in Collected, so the second could legitimately read
+// above the first and the panel had to apologise for it in prose. Here BOTH halves of each
+// pair count the same dollars — the projected side from the lease schedule, the live side
+// from cash — so the gap between them is a fact about the year rather than about the
+// measures.
+describe('projectedVsLive', () => {
+  const BASIS = {
+    p1: { projectedRevenue: 201000, liveRevenue: 100300, unapplied: 1750, spentToDate: 19000, spentDated: 30000 },
+    p2: { projectedRevenue: 360000, liveRevenue: 0, unapplied: 0, spentToDate: 70000, spentDated: 70000 },
+  };
+
+  it('pairs each measure with its own live reading, and derives both bottom lines', () => {
+    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
+    expect(maple).toMatchObject({
+      'Projected revenue': 201000,
+      'Live revenue': 100300,
+      'Projected expenses': 45000,
+      'Live expenses': 19000,
+      projectedNet: 156000,
+      liveNet: 81300,
+    });
+  });
+
+  // ⚠ THE FIGURE THAT WOULD OTHERWISE TURN A MISSING DATE INTO A CHEAP YEAR. `paid_date` is
+  // nullable and never backfilled (0074) — a kind entered as one flat total has no lines at
+  // all — so the difference between the stored total and what carries a date is real money
+  // sitting in Projected and in no Live figure. It has to be carried, or the panel reports
+  // an underspend that never happened.
+  it('names the costs carrying no payment date rather than dropping them', () => {
+    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
+    expect(maple.undatedExpenses).toBe(15000);  // 45,000 entered − 30,000 with a date
+    // A property whose every cost is dated has nothing to say about it.
+    const oak = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Oak Center');
+    expect(oak.undatedExpenses).toBe(0);
+  });
+
+  it('never reports a negative undated figure when the lines outrun a stale total', () => {
+    const over = { p1: { ...BASIS.p1, spentDated: 90000 } };
+    const maple = projectedVsLive(PROPS, TOTALS, over).find((d) => d.name === 'Maple Plaza');
+    expect(maple.undatedExpenses).toBe(0);
+  });
+
+  it('carries the unanswered surplus, which is in neither revenue figure', () => {
+    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
+    expect(maple.unapplied).toBe(1750);
+    // …and it is genuinely OUT of live revenue, not folded in behind the scenes.
+    expect(maple['Live revenue']).toBe(100300);
+  });
+
+  it('quotes NOI beside its own bottom lines, because they are different measures', () => {
+    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
+    expect(maple.noi).toBe(75000);
+    // NOI counts base rent only; projectedNet counts the CAM & tax tenants reimburse too.
+    expect(maple.projectedNet).toBeGreaterThan(maple.noi);
+  });
+
+  // The band renders before the roll read lands, so a row has to be able to say "not yet"
+  // rather than assert that nothing has been collected all year.
+  it('marks a row as still loading when no basis has arrived for it', () => {
+    const rows = projectedVsLive(PROPS, TOTALS, null);
+    expect(rows.every((r) => r.loading)).toBe(true);
+    expect(rows.every((r) => r['Live revenue'] === 0)).toBe(true);
+    expect(projectedVsLive(PROPS, TOTALS, BASIS).every((r) => r.loading)).toBe(false);
+  });
+
+  it('drops a property with nothing on any of the four measures, and sorts by projection', () => {
+    const out = projectedVsLive(PROPS, TOTALS, BASIS);
+    expect(out.map((d) => d.name)).toEqual(['Oak Center', 'Maple Plaza']);
+  });
+
+  it('degrades to an empty list, never a throw', () => {
+    expect(projectedVsLive(null, null, null)).toEqual([]);
+    expect(projectedVsLive(PROPS, {}, BASIS)).toEqual([]);
+  });
+});
+
+describe('portfolioBasis — the headline band', () => {
+  const ROWS = projectedVsLive(PROPS, TOTALS, {
+    p1: { projectedRevenue: 201000, liveRevenue: 100300, unapplied: 1750, spentToDate: 19000, spentDated: 30000 },
+    p2: { projectedRevenue: 360000, liveRevenue: 90000, unapplied: 0, spentToDate: 70000, spentDated: 70000 },
+  });
+
+  // ⚠ SUMMED FROM THE ROWS THE BARS ARE DRAWN FROM, never re-derived — otherwise the band
+  // and the panel beneath it could sit a cent (or a property) apart on the same screen.
+  it('ties to the sum of the bars beneath it', () => {
+    const t = portfolioBasis(ROWS);
+    expect(t.revenue.projected).toBe(561000);
+    expect(t.revenue.live).toBe(190300);
+    expect(t.expenses.projected).toBe(115000);
+    expect(t.expenses.live).toBe(89000);
+    expect(t.net.projected).toBe(446000);
+    expect(t.net.live).toBe(101300);
+  });
+
+  it('states the gap as a signed figure, so nobody has to subtract to find it', () => {
+    const t = portfolioBasis(ROWS);
+    expect(t.revenue.delta).toBe(-370700);
+    expect(t.expenses.delta).toBe(-26000);
+    expect(t.net.delta).toBe(-344700);
+  });
+
+  it('carries both caveats up to the headline, summed across the portfolio', () => {
+    const t = portfolioBasis(ROWS);
+    expect(t.undatedExpenses).toBe(15000);
+    expect(t.unapplied).toBe(1750);
+  });
+
+  // ⚠ NULL, NOT ZERO. "0% in" against a year that bills nothing is a fabricated accusation,
+  // and the track drawn from it would be an empty bar shaped like a finding.
+  it('has no share at all when nothing is projected', () => {
+    const nothing = portfolioBasis([{ 'Projected revenue': 0, 'Live revenue': 0, 'Projected expenses': 0, 'Live expenses': 0 }]);
+    expect(nothing.revenue.share).toBeNull();
+    expect(nothing.expenses.share).toBeNull();
+    expect(portfolioBasis(ROWS).revenue.share).toBeCloseTo(190300 / 561000, 6);
+  });
+
+  it('degrades to zeros, never a throw', () => {
+    const t = portfolioBasis([]);
+    expect(t.revenue).toMatchObject({ projected: 0, live: 0, delta: 0, share: null });
+    expect(portfolioBasis(null).net.projected).toBe(0);
   });
 });
 

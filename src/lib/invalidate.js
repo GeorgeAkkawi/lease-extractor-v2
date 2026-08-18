@@ -46,6 +46,9 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
     // The Overview's "so far this year" bars — collected + expenses paid to date, per
     // property. It reads the same invoices/payments this just moved.
     ['portfolioCollected'],
+    // The Overview's projected-vs-live band and paired bars. A billed figure moving is the
+    // PROJECTED half of every pair there, and it rebuilds from the same lease schedule.
+    ['portfolioBasis'],
     ['alerts'],
   ];
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });
@@ -70,6 +73,14 @@ export function settlePaymentChange(qc, { propertyId } = {}) {
     ['monthlyRent'],
     ['invoices'],
     ['payments'],
+    // ⚠ THE OVERVIEW'S CASH FIGURES, MISSING HERE UNTIL 2026-08-18. A payment is the ONE
+    // thing this set exists for and it is precisely what those two reads count — so
+    // recording a cheque moved the Ledger and left the Overview quoting yesterday's figure
+    // until something else happened to invalidate it. That is the drift-by-omission this
+    // whole file exists to prevent, sitting in the file itself: `settleBillingChange`
+    // carries both keys, and the fast path split off from it without them.
+    ['portfolioCollected'],
+    ['portfolioBasis'],
   ];
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });
 }

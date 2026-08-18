@@ -1012,6 +1012,37 @@ tbody tr:last-child td{border-bottom:none}
    where the empty space sits, and which property keeps what it earns. Each panel is
    the app's own paper card with a top hairline rule, so the band reads as part of the
    Overview rather than a dashboard bolted on. */
+/* The Overview's headline — what FY Y is contracted to do against what has actually
+   happened (2026-08-18). It sits ABOVE the chart band rather than inside it because it is
+   the sentence those four panels elaborate on, and because George asked for it to be "way
+   more prominent". Same panel chrome as a chart-panel so the two read as one family. */
+.basis-band{background:var(--panel);border:1px solid var(--border);border-top:2px solid var(--border);border-radius:var(--radius);padding:18px 20px 14px;box-shadow:var(--shadow);margin-bottom:16px}
+.basis-band-head{display:flex;flex-direction:column;gap:3px;margin-bottom:16px;padding-bottom:11px;border-bottom:1px solid var(--hair)}
+.basis-band-head strong{font-family:var(--display);font-size:19px;font-weight:600;line-height:1.15}
+/* Three equal columns that fold to one on a narrow window. auto-fit rather than a fixed
+   count: at two-up the third column would sit alone under a pair and read as a footnote to
+   it rather than as the third of three. */
+.basis-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:18px 26px}
+.basis-col{min-width:0}
+.basis-col-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:700;margin-bottom:8px}
+.basis-figs{display:flex;flex-direction:column;gap:2px}
+.basis-fig{display:flex;align-items:baseline;gap:7px;min-width:0}
+.basis-sw{width:9px;height:9px;border-radius:2px;flex:none;align-self:center}
+/* Serif and tabular, so the two figures of a pair line up digit for digit — the comparison
+   is the whole point and proportional numerals break it. */
+.basis-amt{font-family:var(--display);font-size:23px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums}
+.basis-amt.live{font-size:23px}
+.basis-cap{font-size:9px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:700}
+.basis-track{height:5px;border-radius:3px;background:var(--hair);overflow:hidden;margin:10px 0 7px}
+.basis-track > span{display:block;height:100%;border-radius:3px;transition:width .25s ease}
+.basis-delta{font-size:12px;font-variant-numeric:tabular-nums}
+.basis-delta b{font-weight:600}
+.basis-foot{font-size:11px;color:var(--muted);margin-top:14px;padding-top:11px;border-top:1px solid var(--hair);line-height:1.45}
+/* A caveat is a figure the band is NOT counting, so it must not read as one of the three
+   above it — gold is this app's "look here" and the rule marks it as an aside. */
+.basis-caveat{border-left:2px solid var(--gold);padding-left:9px}
+.basis-band.is-loading .basis-amt.live{color:var(--muted)}
+
 .chart-band{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:28px}
 .chart-panel{background:var(--panel);border:1px solid var(--border);border-top:2px solid var(--border);border-radius:var(--radius);padding:18px 20px 12px;box-shadow:var(--shadow);min-width:0;display:flex;flex-direction:column}
 .chart-panel-head{display:flex;flex-direction:column;gap:3px;margin-bottom:14px;padding-bottom:11px;border-bottom:1px solid var(--hair)}
@@ -1037,7 +1068,7 @@ tbody tr:last-child td{border-bottom:none}
    at 420px. Drop them for THAT layout only (the three-bar one still fits) and let the
    hover panel carry every figure. */
 @media (max-width:720px){
-  .chart-panel.wide.has-collected .bar-label{display:none}
+  .chart-panel.wide.has-live .bar-label{display:none}
 }
 /* Four bars × three or more properties is the combination that runs out of room first:
    what matters is the width ONE property gets, not the viewport, so this breakpoint is
@@ -1045,7 +1076,7 @@ tbody tr:last-child td{border-bottom:none}
    a 283px per-property slot clears its labels by 9px, and three properties clear that at
    1440 but not in a narrowed window. */
 @media (max-width:1200px){
-  .chart-panel.wide.has-collected.dense .bar-label{display:none}
+  .chart-panel.wide.has-live.dense .bar-label{display:none}
 }
 /* Hover panels, replacing recharts' default box on both bar charts. The default sorted
    its rows ALPHABETICALLY (itemSorter:'name'), which read as Expenses · NOI · Revenue —

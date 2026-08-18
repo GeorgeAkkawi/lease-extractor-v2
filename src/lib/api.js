@@ -3703,6 +3703,52 @@ export async function listCollectedByProperty(propertyIds, year) {
   return out;
 }
 
+// ---- What has actually LEFT the bank, per property, in ONE round-trip -------------
+// The expense half of the Overview's projected-vs-live band (2026-08-18). Projected
+// expenses are `taxes_total + cam_total + roof_total` straight off v_property_totals; this
+// is the cash twin — the itemized lines carrying a payment date on or before today, which
+// is what a bank-statement import stamps on every line it writes (0074).
+//
+// ⚠ IT MUST COUNT THE SAME LINES THE TOTALS DO, or the pair is measured two ways and the
+// gap between them is partly an artefact of the filter. `syncCamTotal` sums
+// `billable is not false` for kind='cam'; `syncKindTotal` sums every row for 'tax' and
+// 'roof' (the billable axis is a CAM idea — a tax bill and a roof invoice recover through
+// their own rules). Both rules are mirrored below.
+//
+// ⚠ `dated` IS RETURNED BESIDE `toDate` SO THE UNDATED REMAINDER CAN BE NAMED. `paid_date`
+// is nullable and never backfilled: a kind entered as one flat figure has no lines at all,
+// a contract-derived CAM row never carries a day, and on the demo seed that is most of one
+// property's costs. Reporting only what is dated would let a year read as though it had
+// been cheap — so the caller subtracts `dated` from the stored total and states the
+// difference (CLAUDE.md §3, the "No date" rule).
+//
+// `select('*')` on purpose: mockClient's builder ignores column lists, so a narrowed
+// select is right in the demo and wrong on every live click.
+export async function listExpenseSpendByProperty(propertyIds, year, todayIso = localDateIso()) {
+  const ids = [...new Set((propertyIds || []).filter(Boolean))];
+  if (ids.length === 0) return {};
+  const all = await rows(
+    supabase.from('cam_line_items').select('*').in('property_id', ids).eq('year', year)
+  );
+  const today = String(todayIso || '').slice(0, 10);
+  const out = {};
+  for (const it of all || []) {
+    if (!it?.property_id) continue;
+    const kind = it.kind || 'cam';
+    // The CAM total's own rule. A cost the landlord entered and chose to absorb is in
+    // neither figure here, exactly as it is in neither `cam_total` nor NOI — including an
+    // owner distribution, which is a non-billable line and is not the building's money.
+    if (kind === 'cam' && it.billable === false) continue;
+    const amount = Number(it.amount) || 0;
+    const r = (out[it.property_id] ||= { toDate: 0, dated: 0 });
+    const paid = it.paid_date ? String(it.paid_date).slice(0, 10) : null;
+    if (!paid) continue;
+    r.dated = round2(r.dated + amount);
+    if (paid <= today) r.toDate = round2(r.toDate + amount);
+  }
+  return out;
+}
+
 export const getTenantShares = (propertyId, year) =>
   rows(
     supabase.from('v_tenant_shares').select('*').eq('property_id', propertyId).eq('year', year)

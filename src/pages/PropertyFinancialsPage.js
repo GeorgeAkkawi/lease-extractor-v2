@@ -181,8 +181,8 @@ export default function PropertyFinancialsPage() {
       <div className="metric-group">
         <div className="fin-subhead">Performance · FY {year}</div>
         <div className="metrics">
-          <StatCard label="Revenue (annualized)" main={money(revenue)} footValue={totalSf ? psf(revenue / totalSf) : '—'} footCap="per leased sq ft" />
-          <StatCard label="Total expenses" main={money(totalExp)} footValue={totalSf ? psf(totalExp / totalSf) : '—'} footCap="per leased sq ft" />
+          <StatCard label="Projected revenue (annualized)" main={money(revenue)} footValue={totalSf ? psf(revenue / totalSf) : '—'} footCap="per leased sq ft" />
+          <StatCard label="Projected expenses" main={money(totalExp)} footValue={totalSf ? psf(totalExp / totalSf) : '—'} footCap="per leased sq ft" />
           <StatCard label="Net operating income" main={money(noi)} footValue={margin != null ? `${margin}%` : '—'} footCap="operating margin" />
         </div>
       </div>

@@ -264,8 +264,15 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
  * uncollected at year end" on a sheet the landlord may well send them. Nobody has been billed
  * for it. `getPropertyMonthlyRoll` attaches `contractedSchedule` only when it was asked to
  * project, so on every other path this is the identity.
+ *
+ * ⚠ EXPORTED SINCE 2026-08-18 for a second caller with the same problem stated differently.
+ * The Overview's live counter (`portfolioBasis.js`) reads ONE projected roll and runs both
+ * passes off it, and `monthExcess` decides "more arrived than was billed" against
+ * `alloc.owed`. Handed a projected month, a real surplus measures smaller or vanishes — so
+ * the hold-back that keeps an unanswered over-payment out of live revenue would quietly stop
+ * working, which is the opposite of the fault above and the same cause.
  */
-const contractedRoll = (roll = []) => (roll || []).map((r) => (r?.contractedSchedule
+export const contractedRoll = (roll = []) => (roll || []).map((r) => (r?.contractedSchedule
   ? { ...r, schedule: r.contractedSchedule, factor: r.contractedFactor ?? r.factor }
   : r));
 

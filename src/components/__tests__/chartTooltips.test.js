@@ -51,19 +51,29 @@ describe('RolloverTip — which leases are in this bar', () => {
   });
 });
 
-describe('PerformanceTip — Revenue · Expenses · NOI, in that order', () => {
-  const row = { name: 'Maple Plaza', Revenue: 120000, Expenses: 45000, NOI: 75000, taxes: 25000, cam: 18000, roof: 2000 };
+describe('PerformanceTip — two pairs, each in bar order', () => {
+  const row = {
+    name: 'Maple Plaza',
+    'Projected revenue': 201000, 'Live revenue': 100300,
+    'Projected expenses': 45000, 'Live expenses': 19000,
+    projectedNet: 156000, liveNet: 81300,
+    undatedExpenses: 0, unapplied: 0,
+    taxes: 25000, cam: 18000, roof: 2000, noi: 99000,
+  };
 
-  it('lists the three series in declared order, not alphabetically', () => {
-    // The bug this replaces: recharts' Tooltip defaults to itemSorter:'name', which
-    // rendered Expenses · NOI · Revenue — reading as though NOI came out of expenses.
+  // The bug this guards: recharts' Tooltip defaults to itemSorter:'name', which would sort
+  // the four series ALPHABETICALLY and split BOTH pairs apart — the one thing a panel about
+  // pairing must not do.
+  it('keeps each live figure directly under the projected one it belongs to', () => {
     const { container } = render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" />);
     const names = [...container.querySelectorAll('.chart-tip-name')].map((n) => n.textContent);
-    expect(names.slice(0, 2)).toEqual(['Revenue', 'Expenses']);
-    expect(names[names.length - 1]).toBe('NOI');
+    expect(names.slice(0, 2)).toEqual(['Projected revenue', 'Live revenue']);
+    expect(names.indexOf('Live revenue')).toBeLessThan(names.indexOf('Projected expenses'));
+    expect(names.indexOf('Projected expenses')).toBeLessThan(names.indexOf('Live expenses'));
+    expect(screen.getByText('$100,300.00')).toBeTruthy();
   });
 
-  it('breaks the Expenses figure into the actual taxes, CAM and roof it summed', () => {
+  it('breaks the projected expenses into the actual taxes, CAM and roof they summed', () => {
     render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" />);
     expect(screen.getByText('Property taxes')).toBeTruthy();
     expect(screen.getByText('CAM / maintenance')).toBeTruthy();
@@ -76,52 +86,40 @@ describe('PerformanceTip — Revenue · Expenses · NOI, in that order', () => {
     render(<PerformanceTip active payload={[{ payload: { ...row, roof: 0 } }]} label="Maple Plaza" />);
     expect(screen.queryByText('Roof')).toBeNull();
     cleanup();
-    render(<PerformanceTip active payload={[{ payload: { name: 'Elm Court', Revenue: 9000, Expenses: 0, NOI: 9000, taxes: 0, cam: 0, roof: 0 } }]} label="Elm Court" />);
+    render(<PerformanceTip active payload={[{ payload: { ...row, taxes: 0, cam: 0, roof: 0 } }]} label="Elm Court" />);
     expect(screen.getByText(/No expenses entered for this year/)).toBeTruthy();
+  });
+
+  // ⚠ BOTH BOTTOM LINES, AND THE ONE THEY ARE NOT. "What's left" counts the CAM & tax
+  // tenants reimburse and NOI does not, so a panel printing only the first would leave a
+  // landlord unable to reconcile it with the figure on his own property page.
+  it('prints what is left on each basis, and quotes NOI as the different measure it is', () => {
+    const { container } = render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" year={2026} />);
+    const names = [...container.querySelectorAll('.chart-tip-name')].map((n) => n.textContent);
+    expect(names).toContain('What\u2019s left \u00b7 projected');
+    expect(names).toContain('What\u2019s left \u00b7 live');
+    expect(names[names.length - 1]).toBe('NOI (base rent only)');
+    expect(screen.getByText('$99,000.00')).toBeTruthy();
+  });
+
+  // ⚠ THE TWO FIGURES THAT WOULD OTHERWISE MAKE THE BARS LIE. An undated cost has not been
+  // shown to be unspent, and a surplus nobody has answered for is in NEITHER revenue figure
+  // — a hover that showed the bars and not these would be most convincing when most wrong.
+  it('names the undated costs and the unanswered surplus when there are any', () => {
+    render(<PerformanceTip active payload={[{ payload: { ...row, undatedExpenses: 26000, unapplied: 1750 } }]} label="Maple Plaza" />);
+    expect(screen.getByText(/\$26,000\.00 carries no payment date/)).toBeTruthy();
+    expect(screen.getByText(/\+\$1,750\.00 awaiting your answer/)).toBeTruthy();
+  });
+
+  it('says neither when there is nothing to say — an aside about $0 is noise', () => {
+    render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" />);
+    expect(screen.queryByText(/carries no payment date/)).toBeNull();
+    expect(screen.queryByText(/awaiting your answer/)).toBeNull();
   });
 
   it('renders nothing when inactive', () => {
     const { container } = render(<PerformanceTip active={false} payload={[{ payload: row }]} label="Maple Plaza" />);
     expect(container.firstChild).toBeNull();
-  });
-
-  // The collected bar's figure is the one that needs context: it is not a share of the
-  // Revenue bar it stands beside, so the hover has to say what it IS a share of and why
-  // it can read higher.
-  describe('with the rent collected so far', () => {
-    const withCollected = { ...row, Collected: 60000, billedYtd: 120000 };
-
-    it('puts Collected directly under Revenue, ahead of Expenses and NOI', () => {
-      const { container } = render(<PerformanceTip active payload={[{ payload: withCollected }]} label="Maple Plaza" year={2026} />);
-      const names = [...container.querySelectorAll('.chart-tip-name')].map((n) => n.textContent);
-      expect(names.indexOf('Revenue')).toBeLessThan(names.indexOf('Collected so far'));
-      expect(names.indexOf('Collected so far')).toBeLessThan(names.indexOf('Expenses'));
-      expect(names.indexOf('Collected so far')).toBeLessThan(names.indexOf('NOI'));
-      expect(screen.getByText('$60,000.00')).toBeTruthy();
-    });
-
-    // ⚠ The assertion this block exists for. "$60,000" against a "$120,000" Revenue bar
-    // invites exactly the wrong reading — 50% collected — when the two count different
-    // money. Both halves of the correction have to be on the panel.
-    it('names what the figure is a share OF, and says it is all-in', () => {
-      render(<PerformanceTip active payload={[{ payload: withCollected }]} label="Maple Plaza" year={2026} />);
-      expect(screen.getByText('of $120,000.00 billed')).toBeTruthy();
-      expect(screen.getByText(/incl\. reimbursed CAM & tax/)).toBeTruthy();
-    });
-
-    it('says so plainly when nothing has been billed yet', () => {
-      render(<PerformanceTip active payload={[{ payload: { ...withCollected, Collected: 0, billedYtd: 0 } }]} label="Maple Plaza" year={2026} />);
-      expect(screen.getByText('nothing billed yet this year')).toBeTruthy();
-      // …and doesn't explain an all-in figure that is zero.
-      expect(screen.queryByText(/incl\. reimbursed/)).toBeNull();
-    });
-
-    it('draws nothing extra when the row carries no collected read', () => {
-      const { container } = render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" year={2026} />);
-      const names = [...container.querySelectorAll('.chart-tip-name')].map((n) => n.textContent);
-      expect(names).not.toContain('Collected so far');
-      expect(screen.queryByText(/billed/)).toBeNull();
-    });
   });
 });
 

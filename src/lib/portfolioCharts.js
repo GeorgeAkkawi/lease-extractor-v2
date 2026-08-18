@@ -21,11 +21,15 @@ export const CHART_SERIES = {
   vacant: '#D8D2C3',    // warm paper-grey — reads as "nothing here", never as a figure
 };
 
-// Rent collected so far, drawn beside the Revenue bar it belongs to. THE SAME OLIVE, one
-// tint lighter — deliberately not a fourth colour: the pairing IS the point, and an
-// unrelated hue would read as a fourth unrelated measure rather than the same one, so far.
-// Already in DONUT_PALETTE, so nothing new enters the app's palette.
-export const CHART_COLLECTED = '#9AA77E';
+// The LIVE ink for each measure — drawn beside the projected bar it belongs to. Each is
+// THE SAME HUE AS ITS TWIN, one tint lighter, and deliberately not a new colour: the
+// pairing IS the point, and an unrelated hue would read as an unrelated measure rather
+// than the same one, so far. Both are already in DONUT_PALETTE, so nothing new enters the
+// app's palette.
+export const CHART_LIVE = {
+  revenue: '#9AA77E',   // olive, lighter
+  expenses: '#C09A55',  // chart gold, lighter
+};
 
 // Ramp for the revenue donut: olive → forest → gold → their soft tints. Ordered so the
 // biggest earner takes the deepest ink and the tail fades, which is how a reader's eye
@@ -48,6 +52,7 @@ export const ROLLOVER_RAMP = ['#94661B', '#B08A46', '#9A9152', '#7C8B5A', '#5C6B
 export const kfmt = (v) => (v == null || isNaN(v) ? '' : Math.abs(v) >= 1000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v)}`);
 
 const num = (n) => Number(n) || 0;
+const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 
 // Property name lookup that survives a property the totals map doesn't cover.
 const nameFor = (p) => p?.name || 'Untitled property';
@@ -242,6 +247,107 @@ export function revenueExpensesNoi(properties, totalsByProp, collectedByProp = n
 // Is there anything collected to draw at all? False when not a dollar has come in — a flat
 // zero bar against every property would say nothing and cost the other three their width.
 export const hasCollectedBars = (rows) => (rows || []).some((r) => r.hasCollected);
+
+// ---- Projected vs live (2026-08-18) ----------------------------------------------
+// George: *"weve built thi software around projected but there should be a live counter as
+// well … and any over or undercharges only counts towards live count."*
+//
+// ⚠ THE POINT IS THAT THE TWO SIDES ARE THE SAME MEASURE, which `revenueExpensesNoi` above
+// could not manage: its Revenue is `total_revenue` (base rent only, applied steps only) and
+// its Collected is all-in cash, so the panel had to print a paragraph explaining that the
+// second could legitimately read above the first. Here both sides of each pair count the
+// same dollars, and the gap between them is the whole message.
+//
+//   Projected revenue  — `listBasisByProperty`: what the leases contract for the year,
+//                        all-in, twelve months, INCLUDING a rent step dated later this year
+//                        that has not been swept into base_rent yet.
+//   Live revenue       — cash the Ledger says arrived, all-in, with an unanswered
+//                        over-payment withheld until the landlord says what it is.
+//   Projected expenses — `taxes_total + cam_total + roof_total`, the year's costs as entered.
+//   Live expenses      — the itemized lines carrying a payment date on or before today.
+//
+// ⚠ `undatedExpenses` IS A REAL FIGURE, NOT A ROUNDING BUCKET, and it is the one thing that
+// can make Live expenses lie. `paid_date` is nullable and never backfilled (0074): a kind
+// entered as one flat total has no lines at all, and a contract-derived CAM row never carries
+// a day. Without it stated, a year with undated costs reads as though it had been cheap. It
+// is carried on every row so the band can name it and link to where it gets fixed — the same
+// discipline as the workbook's "No date" column (CLAUDE.md §3).
+//
+// A property the totals view doesn't cover is dropped rather than fabricated as zeros, and a
+// property with nothing on either side of either pair is dropped too — an empty row costs the
+// others their width and says nothing.
+export function projectedVsLive(properties, totalsByProp, basisByProp = null) {
+  return (properties || [])
+    .map((p) => {
+      const t = totalsByProp?.[p.id];
+      if (!t) return null;
+      const b = basisByProp?.[p.id] || null;
+      const taxes = num(t.taxes_total);
+      const cam = num(t.cam_total);
+      const roof = num(t.roof_total);
+      const projectedExpenses = round2(taxes + cam + roof);
+      const projectedRevenue = round2(num(b?.projectedRevenue));
+      const liveRevenue = round2(num(b?.liveRevenue));
+      const liveExpenses = round2(num(b?.spentToDate));
+      if (projectedRevenue === 0 && projectedExpenses === 0 && liveRevenue === 0 && liveExpenses === 0) return null;
+      return {
+        id: p.id,
+        name: nameFor(p),
+        'Projected revenue': projectedRevenue,
+        'Live revenue': liveRevenue,
+        'Projected expenses': projectedExpenses,
+        'Live expenses': liveExpenses,
+        projectedNet: round2(projectedRevenue - projectedExpenses),
+        liveNet: round2(liveRevenue - liveExpenses),
+        // Entered costs with no payment date — in Projected, in no Live figure, and named
+        // rather than dropped. Clamped at zero: itemized lines can briefly exceed a stored
+        // total, and a negative "undated" would be a nonsense figure on a panel.
+        undatedExpenses: Math.max(0, round2(projectedExpenses - num(b?.spentDated))),
+        // Cash beyond what a month billed, still waiting on the landlord's answer on the
+        // Ledger. In NO figure here — that is the whole point of it.
+        unapplied: round2(num(b?.unapplied)),
+        // The expense components, so the tooltip can show its working — a bar labelled only
+        // "Expenses" can't tell a landlord which of the two kinds of expense it is.
+        taxes, cam, roof,
+        // Quoted on hover so this panel and the property pages stay reconcilable. NOI is not
+        // a smaller `projectedNet`: it counts base rent only, where this counts the CAM & tax
+        // tenants reimburse as well.
+        noi: num(t.noi),
+        loading: !b,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b['Projected revenue'] - a['Projected revenue'] || a.name.localeCompare(b.name));
+}
+
+// The three headline pairs the band prints, SUMMED FROM THE ROUNDED property rows so the
+// band can never sit a cent away from the bars beneath it — the same rule `consolidate`
+// keeps for the workbook's Summary sheet.
+//
+// `share` is live over projected, and it is null rather than 0 when nothing is projected:
+// "0% collected" against a year that bills nothing is a fabricated accusation, and a track
+// drawn from it would be a filled bar shaped like a finding.
+export function portfolioBasis(rows = []) {
+  const sum = (key) => round2((rows || []).reduce((s, r) => s + num(r[key]), 0));
+  const pair = (projected, live) => ({
+    projected, live,
+    delta: round2(live - projected),
+    share: projected > 0 ? live / projected : null,
+  });
+  const revenue = pair(sum('Projected revenue'), sum('Live revenue'));
+  const expenses = pair(sum('Projected expenses'), sum('Live expenses'));
+  return {
+    revenue,
+    expenses,
+    // What's left, on each basis. ⚠ NOT NOI — this revenue is all-in and NOI's is base rent
+    // only, which is the same gap the property page's "What actually stayed" strip exists to
+    // explain. The band says so rather than letting two bottom lines sit unreconciled.
+    net: pair(round2(revenue.projected - expenses.projected), round2(revenue.live - expenses.live)),
+    undatedExpenses: sum('undatedExpenses'),
+    unapplied: sum('unapplied'),
+    loading: (rows || []).some((r) => r.loading),
+  };
+}
 
 // A long property name in a legend or axis tick pushes the chart out of shape; the
 // tooltip still carries the full name.
