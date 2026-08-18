@@ -3,8 +3,8 @@ import {
   CartesianGrid, LabelList,
 } from 'recharts';
 import {
-  revenueByProperty, occupancyByProperty, portfolioOccupancy, projectedVsLive, rentRollover,
-  CHART_SERIES, CHART_LIVE, DONUT_PALETTE, ROLLOVER_RAMP, kfmt, shortName,
+  revenueByProperty, occupancyByProperty, portfolioOccupancy, rentRollover,
+  DONUT_PALETTE, ROLLOVER_RAMP, kfmt, shortName,
 } from '../lib/portfolioCharts';
 import { money, money0, sf } from '../lib/format';
 import { localDateIso } from '../lib/api';
@@ -16,16 +16,21 @@ import { localDateIso } from '../lib/api';
 // render and always agrees with the property pages it sums.
 //
 // Each panel earns its place by answering a question a figure alone can't: WHERE the rent
-// comes from (concentration by tenant), HOW MUCH space sits empty, WHEN the rent comes up
-// for renewal (concentration in time), and WHICH property actually keeps what it earns.
+// comes from (concentration by tenant), HOW MUCH space sits empty, and WHEN the rent comes
+// up for renewal (concentration in time).
 // A panel with nothing to say hides itself rather than drawing an empty frame.
-export default function PortfolioCharts({ properties = [], totalsByProp = {}, basisByProp = null, leases = [], year }) {
+//
+// ⚠ THE FOURTH PANEL CAME OFF ON 2026-08-18, at George's word (*"we can take out the bar
+// graph projected vs live"*). It drew each property's year twice over — projected against
+// live, four bars apiece — and the band above this now says the same thing for the portfolio
+// in three pairs of figures. Two answers to one question is the drift this codebase spends
+// most of its comments avoiding, and the band is the one that reconciles with the donut.
+export default function PortfolioCharts({ properties = [], totalsByProp = {}, leases = [], year }) {
   const revenue = revenueByProperty(properties, totalsByProp);
   const space = occupancyByProperty(properties, totalsByProp);
-  const performance = projectedVsLive(properties, totalsByProp, basisByProp);
   const rollover = rentRollover(leases, localDateIso());
 
-  if (!revenue.length && !space.length && !performance.length && !rollover.length) return null;
+  if (!revenue.length && !space.length && !rollover.length) return null;
 
   const revenueTotal = revenue.reduce((s, d) => s + d.value, 0);
   const topShare = revenueTotal > 0 && revenue.length ? Math.round((revenue[0].value / revenueTotal) * 100) : null;
@@ -54,14 +59,6 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, ba
     hasNow ? '“Now” is rent already past its end date — a tenant holding over.' : null,
     'At today’s rent, not a forecast.',
   ].filter(Boolean).join(' ');
-
-  // ⚠ ALL FOUR BARS ALWAYS DRAW NOW, where the old collected bar hid itself when nothing had
-  // come in. On a panel whose subject IS the comparison, a live bar sitting at zero against a
-  // projected one is the reading, not an empty frame — hiding it would answer "how are we
-  // doing against plan?" by removing the half that says badly.
-  const barLabel = (key) => (performance.length <= 6
-    ? <LabelList dataKey={key} position="top" formatter={kfmt} className="bar-label" />
-    : null);
 
   return (
     <div className="chart-band">
@@ -162,89 +159,6 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, ba
         </ChartPanel>
       )}
 
-      {/* Full width: two PAIRS of bars per property, each carrying its own figure. At a
-          third of the band the labels would collide — and this is the comparison the other
-          three panels lead up to, so it earns the room. */}
-      {performance.length > 0 && (
-        <ChartPanel
-          title="Projected vs live, by property"
-          caption={`FY ${year} · rent and costs, contracted against actual`}
-          wide
-          /* ⚠ Whether the bar figures fit depends on the room ONE property gets, which is
-             the plot width divided by the number of properties — so a viewport-only media
-             query is the wrong instrument, and labelling every bar collided at exactly
-             this panel's 3-property width last round. Measured on the deployed demo: a
-             283px per-property slot still clears its labels by 9px, and three properties
-             at 1440 get ~339px. `dense` marks the case that can fall under that — three or
-             more properties in a narrowed window — so the media query below drops the
-             figures there and nowhere else. The hover panel carries all four regardless.
-             Still four bars after the 2026-08-18 rebuild, so the measurement holds. */
-          className={['has-live', performance.length >= 3 ? 'dense' : ''].filter(Boolean).join(' ')}
-        >
-          {/* Named in BAR order, so the reader can map each swatch to the column under it —
-              and PAIRED in that order too, so the legend reads the way the bars group. */}
-          <div className="chart-legend">
-            <span><span className="sw" style={{ background: CHART_SERIES.revenue }} /> Projected revenue</span>
-            <span><span className="sw" style={{ background: CHART_LIVE.revenue }} /> Live revenue</span>
-            <span><span className="sw" style={{ background: CHART_SERIES.expenses }} /> Projected expenses</span>
-            <span><span className="sw" style={{ background: CHART_LIVE.expenses }} /> Live expenses</span>
-          </div>
-          <ResponsiveContainer width="100%" height={220}>
-            {/* ⚠ THE PAIR ONLY READS IF THE TWO BARS TOUCH, and recharts will not do that on
-                its own: it divides the property's band by the number of series and then
-                CENTRES each bar in its slot, so a maxBarSize small enough to fit four
-                scatters them across the band with a hole wherever a figure is $0 — four
-                loose columns instead of two pairs, which is the one thing this panel must
-                not look like. Narrowing the band (barCategoryGap) and closing the gap
-                between bars is what pulls each projected bar against its live twin; the
-                size cap is then only a ceiling for a portfolio with one or two properties. */}
-            <BarChart
-              data={performance}
-              margin={{ top: 16, right: 4, left: -8, bottom: 0 }}
-              barCategoryGap="24%"
-              barGap={2}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(27,24,19,.1)" vertical={false} />
-              <XAxis dataKey="name" tickFormatter={(v) => shortName(v, 16)} tick={{ fontSize: 10 }} interval={0} />
-              <YAxis tickFormatter={kfmt} tick={{ fontSize: 10 }} />
-              {/* Custom content, for two reasons: recharts' Tooltip defaults to
-                  itemSorter:'name', which would sort the four series ALPHABETICALLY and
-                  split both pairs; and the expense rows have to show the actual
-                  taxes/CAM/roof they're made of. */}
-              <Tooltip content={<PerformanceTip year={year} />} cursor={{ fill: 'rgba(27,24,19,.05)' }} />
-              {/* Each live bar is declared IMMEDIATELY after the projected one it belongs to,
-                  never grouped at the end: it is the same measure with what actually
-                  happened, and the two only read as one thing twice if they stand together. */}
-              <Bar dataKey="Projected revenue" fill={CHART_SERIES.revenue} isAnimationActive={false} maxBarSize={50}>
-                {barLabel('Projected revenue')}
-              </Bar>
-              <Bar dataKey="Live revenue" fill={CHART_LIVE.revenue} isAnimationActive={false} maxBarSize={50}>
-                {barLabel('Live revenue')}
-              </Bar>
-              <Bar dataKey="Projected expenses" fill={CHART_SERIES.expenses} isAnimationActive={false} maxBarSize={50}>
-                {barLabel('Projected expenses')}
-              </Bar>
-              <Bar dataKey="Live expenses" fill={CHART_LIVE.expenses} isAnimationActive={false} maxBarSize={50}>
-                {barLabel('Live expenses')}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-          <div className="chart-foot">
-            <p className="chart-foot-line">
-              <b>Projected</b> is what FY {year} is contracted to do — the rent the leases
-              oblige (including a step dated later this year that hasn’t taken effect yet)
-              plus the CAM &amp; tax billed at estimate, against the actual property taxes,
-              CAM and roof entered on each property’s Expense entry.
-            </p>
-            <p className="chart-foot-line">
-              <b>Live</b> is what has actually happened: money the Ledger says arrived, and
-              costs carrying a payment date. Both halves of each pair count the same
-              dollars, so the gap between them is the whole reading. Hover a property for
-              its figures, what’s left on each basis, and the costs still undated.
-            </p>
-          </div>
-        </ChartPanel>
-      )}
     </div>
   );
 }
@@ -280,62 +194,9 @@ export function RolloverTip({ active, payload }) {
   );
 }
 
-// The two pairs in BAR order, with the projected expenses broken into the actual figures
-// they were summed from, what's left on each basis, and the two caveats that would otherwise
-// make a figure here lie. Exported for the same reason as RolloverTip.
-export function PerformanceTip({ active, payload, label, year }) {
-  const d = active && payload?.length ? payload[0].payload : null;
-  if (!d) return null;
-  const parts = [
-    ['Property taxes', d.taxes],
-    ['CAM / maintenance', d.cam],
-    ['Roof', d.roof],
-  ].filter(([, v]) => v > 0);
+function ChartPanel({ title, caption, children }) {
   return (
-    <div className="chart-tip">
-      <div className="chart-tip-head">{label}{year ? <span className="muted"> · FY {year}</span> : null}</div>
-      <ul className="chart-tip-list">
-        <li><span className="sw" style={{ background: CHART_SERIES.revenue }} /><span className="chart-tip-name">Projected revenue</span><span className="chart-tip-val">{money(d['Projected revenue'])}</span></li>
-        <li><span className="sw" style={{ background: CHART_LIVE.revenue }} /><span className="chart-tip-name">Live revenue</span><span className="chart-tip-val">{money(d['Live revenue'])}</span></li>
-        {/* Cash that arrived beyond what a month billed. In NEITHER figure above until the
-            landlord answers for it on the Ledger — so if it isn't named here, a reader would
-            have no way to tell a short year from an unanswered one. */}
-        {d.unapplied > 0.5 && (
-          <li className="chart-tip-part">
-            <span className="chart-tip-name">+{money(d.unapplied)} awaiting your answer</span>
-          </li>
-        )}
-        <li><span className="sw" style={{ background: CHART_SERIES.expenses }} /><span className="chart-tip-name">Projected expenses</span><span className="chart-tip-val">{money(d['Projected expenses'])}</span></li>
-        {parts.map(([name, v]) => (
-          <li key={name} className="chart-tip-part">
-            <span className="chart-tip-name">{name}</span><span className="chart-tip-val">{money(v)}</span>
-          </li>
-        ))}
-        {parts.length === 0 && <li className="chart-tip-part muted">No expenses entered for this year</li>}
-        <li><span className="sw" style={{ background: CHART_LIVE.expenses }} /><span className="chart-tip-name">Live expenses</span><span className="chart-tip-val">{money(d['Live expenses'])}</span></li>
-        {/* ⚠ THE ONE THING THAT MAKES "Live expenses" READ AS A CHEAP YEAR. An undated cost
-            has not been shown to be unspent — it has been shown to have no day on it. */}
-        {d.undatedExpenses > 0.5 && (
-          <li className="chart-tip-part">
-            <span className="chart-tip-name">{money(d.undatedExpenses)} carries no payment date</span>
-          </li>
-        )}
-        <li><span className="sw" style={{ background: CHART_SERIES.noi }} /><span className="chart-tip-name">What’s left · projected</span><span className="chart-tip-val">{money(d.projectedNet)}</span></li>
-        <li><span className="sw" style={{ background: CHART_SERIES.noi }} /><span className="chart-tip-name">What’s left · live</span><span className="chart-tip-val">{money(d.liveNet)}</span></li>
-        {/* Quoted last so the panel stays reconcilable with the property pages. NOI counts
-            base rent only, where everything above counts the CAM & tax tenants reimburse —
-            the same gap "What actually stayed" explains there. */}
-        <li className="chart-tip-part">
-          <span className="chart-tip-name">NOI (base rent only)</span><span className="chart-tip-val">{money(d.noi)}</span>
-        </li>
-      </ul>
-    </div>
-  );
-}
-
-function ChartPanel({ title, caption, wide, className = '', children }) {
-  return (
-    <div className={`chart-panel${wide ? ' wide' : ''}${className ? ` ${className}` : ''}`}>
+    <div className="chart-panel">
       <div className="chart-panel-head">
         <strong>{title}</strong>
         {caption && <span className="chart-cap">{caption}</span>}

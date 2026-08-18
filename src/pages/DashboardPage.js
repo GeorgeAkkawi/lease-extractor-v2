@@ -15,7 +15,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 import { PageSkeleton } from '../components/Skeleton';
 import PortfolioCharts from '../components/PortfolioCharts';
 import BasisBand from '../components/BasisBand';
-import { projectedVsLive, portfolioBasis } from '../lib/portfolioCharts';
+import { basisRows, portfolioBasis } from '../lib/portfolioCharts';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 
 // Portfolio overview — the landlord's one-glance home: rent roll, occupancy,
@@ -68,10 +68,10 @@ export default function DashboardPage() {
     [stateRows],
   );
 
-  // The live counter (2026-08-18). Both bases per property, through the SAME functions the
-  // Income-and-expenses workbook is built from — so "Projected revenue" here and the
-  // projected workbook's total are one figure with two renderers rather than two
-  // implementations that drift (CLAUDE.md §3). Feeds the headline band and the paired bars.
+  // The live half of the band (2026-08-18). Only the LIVE side needs this: projected Revenue
+  // is `total_revenue` — already in `totalsByProp` above, and the same figure the donut sums —
+  // and projected CAM & tax comes from `billedComponents` inside the loader. What needs a roll
+  // read is cash, because cash has to be apportioned across the months it was billed against.
   //
   // ⚠ THE CONFIRMED SET IS IN THE KEY, not just the argument. An unanswered surplus is held
   // OUT of the live figure; answering it on the Ledger writes an `alert_states` row, and
@@ -236,14 +236,15 @@ export default function DashboardPage() {
   const buildingSf = totalsList.reduce((s, t) => s + (Number(t.building_sf) || 0), 0);
   const occupancy = buildingSf > 0 ? Math.round((leasedSf / buildingSf) * 100) : null;
 
-  // The headline band's three pairs, summed from the SAME rows the paired bars are drawn
-  // from — so the band can never sit a cent away from the panel beneath it.
-  const basisRows = projectedVsLive(properties, totalsByProp, basisByProp);
-  const bandTotals = basisRows.length ? portfolioBasis(basisRows) : null;
+  // The headline band's three pairs. Revenue comes straight off `total_revenue`, which is
+  // the SAME figure `revenueByProperty` sums for the donut below — that identity is the
+  // whole point of the rebuild and is asserted in portfolioBasis.test.js.
+  const bandRows = basisRows(properties, totalsByProp, basisByProp);
+  const bandTotals = bandRows.length ? portfolioBasis(bandRows) : null;
   // Where each caveat sends the landlord: the property carrying the MOST of it. A caveat
   // that names a figure and then can't say where to fix it is a complaint, not a prompt —
   // and with one property that link is simply the right one anyway.
-  const worstBy = (key) => basisRows.reduce((best, r) => (r[key] > (best?.[key] || 0) ? r : best), null);
+  const worstBy = (key) => bandRows.reduce((best, r) => (r[key] > (best?.[key] || 0) ? r : best), null);
   const hrefFor = (row, tab) => {
     const p = row ? properties.find((x) => x.id === row.id) : null;
     return p ? `/financials/${p.corporation_id}/${p.id}${tab}` : null;
@@ -251,7 +252,7 @@ export default function DashboardPage() {
   // ⚠ The Ledger tab is hidden when the module is off (FinancialsTabs.js), so the link has
   // to be too — pointing a landlord at a tab that isn't there is the worst version of §7.
   const ledgerHref = isFeatureOn(enabledFeatures, 'ledger') ? hrefFor(worstBy('unapplied'), '/ledger') : null;
-  const financialsHref = hrefFor(worstBy('undatedExpenses'), '');
+  const incomeHref = hrefFor(worstBy('otherLive'), '');
 
   // Which blocks to render, per the landlord's Display settings.
   const showCharts = show('portfolio_charts');
@@ -300,9 +301,9 @@ export default function DashboardPage() {
           more prominent in the overview page graphs."* It is the sentence the four panels
           below elaborate on, and it shares their one Display-settings switch rather than
           taking a second, which would let a landlord hide half of one idea. */}
-      {showCharts && <BasisBand totals={bandTotals} year={year} ledgerHref={ledgerHref} financialsHref={financialsHref} />}
+      {showCharts && <BasisBand totals={bandTotals} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />}
 
-      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} basisByProp={basisByProp} leases={leases} year={year} />}
+      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} leases={leases} year={year} />}
 
       {nothingShown && (
         <div className="panel">

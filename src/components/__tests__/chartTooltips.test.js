@@ -1,4 +1,8 @@
-// The two hover panels on the Overview's bar charts.
+// The hover panels on the Overview's charts.
+//
+// ⚠ `PerformanceTip` was tested here until 2026-08-18 and went with its panel — the
+// per-property projected-vs-live bars George asked to take out. The band above the chart
+// band says the same thing for the portfolio, in figures rather than four bars apiece.
 //
 // They are tested directly because they CANNOT be tested through the page: recharts'
 // ResponsiveContainer measures its parent, every element is 0×0 in jsdom, so no chart is
@@ -6,7 +10,7 @@
 // with either of these throwing.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import { RolloverTip, PerformanceTip } from '../PortfolioCharts';
+import { RolloverTip } from '../PortfolioCharts';
 import { TenantMixTip } from '../PropertyMixDonut';
 
 beforeEach(() => cleanup());
@@ -48,78 +52,6 @@ describe('RolloverTip — which leases are in this bar', () => {
     expect(container.firstChild).toBeNull();
     const { container: c2 } = render(<RolloverTip active payload={[]} />);
     expect(c2.firstChild).toBeNull();
-  });
-});
-
-describe('PerformanceTip — two pairs, each in bar order', () => {
-  const row = {
-    name: 'Maple Plaza',
-    'Projected revenue': 201000, 'Live revenue': 100300,
-    'Projected expenses': 45000, 'Live expenses': 19000,
-    projectedNet: 156000, liveNet: 81300,
-    undatedExpenses: 0, unapplied: 0,
-    taxes: 25000, cam: 18000, roof: 2000, noi: 99000,
-  };
-
-  // The bug this guards: recharts' Tooltip defaults to itemSorter:'name', which would sort
-  // the four series ALPHABETICALLY and split BOTH pairs apart — the one thing a panel about
-  // pairing must not do.
-  it('keeps each live figure directly under the projected one it belongs to', () => {
-    const { container } = render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" />);
-    const names = [...container.querySelectorAll('.chart-tip-name')].map((n) => n.textContent);
-    expect(names.slice(0, 2)).toEqual(['Projected revenue', 'Live revenue']);
-    expect(names.indexOf('Live revenue')).toBeLessThan(names.indexOf('Projected expenses'));
-    expect(names.indexOf('Projected expenses')).toBeLessThan(names.indexOf('Live expenses'));
-    expect(screen.getByText('$100,300.00')).toBeTruthy();
-  });
-
-  it('breaks the projected expenses into the actual taxes, CAM and roof they summed', () => {
-    render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" />);
-    expect(screen.getByText('Property taxes')).toBeTruthy();
-    expect(screen.getByText('CAM / maintenance')).toBeTruthy();
-    expect(screen.getByText('Roof')).toBeTruthy();
-    expect(screen.getByText('$25,000.00')).toBeTruthy();
-    expect(screen.getByText('$18,000.00')).toBeTruthy();
-  });
-
-  it('omits a component that is zero, and says so when there are none at all', () => {
-    render(<PerformanceTip active payload={[{ payload: { ...row, roof: 0 } }]} label="Maple Plaza" />);
-    expect(screen.queryByText('Roof')).toBeNull();
-    cleanup();
-    render(<PerformanceTip active payload={[{ payload: { ...row, taxes: 0, cam: 0, roof: 0 } }]} label="Elm Court" />);
-    expect(screen.getByText(/No expenses entered for this year/)).toBeTruthy();
-  });
-
-  // ⚠ BOTH BOTTOM LINES, AND THE ONE THEY ARE NOT. "What's left" counts the CAM & tax
-  // tenants reimburse and NOI does not, so a panel printing only the first would leave a
-  // landlord unable to reconcile it with the figure on his own property page.
-  it('prints what is left on each basis, and quotes NOI as the different measure it is', () => {
-    const { container } = render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" year={2026} />);
-    const names = [...container.querySelectorAll('.chart-tip-name')].map((n) => n.textContent);
-    expect(names).toContain('What\u2019s left \u00b7 projected');
-    expect(names).toContain('What\u2019s left \u00b7 live');
-    expect(names[names.length - 1]).toBe('NOI (base rent only)');
-    expect(screen.getByText('$99,000.00')).toBeTruthy();
-  });
-
-  // ⚠ THE TWO FIGURES THAT WOULD OTHERWISE MAKE THE BARS LIE. An undated cost has not been
-  // shown to be unspent, and a surplus nobody has answered for is in NEITHER revenue figure
-  // — a hover that showed the bars and not these would be most convincing when most wrong.
-  it('names the undated costs and the unanswered surplus when there are any', () => {
-    render(<PerformanceTip active payload={[{ payload: { ...row, undatedExpenses: 26000, unapplied: 1750 } }]} label="Maple Plaza" />);
-    expect(screen.getByText(/\$26,000\.00 carries no payment date/)).toBeTruthy();
-    expect(screen.getByText(/\+\$1,750\.00 awaiting your answer/)).toBeTruthy();
-  });
-
-  it('says neither when there is nothing to say — an aside about $0 is noise', () => {
-    render(<PerformanceTip active payload={[{ payload: row }]} label="Maple Plaza" />);
-    expect(screen.queryByText(/carries no payment date/)).toBeNull();
-    expect(screen.queryByText(/awaiting your answer/)).toBeNull();
-  });
-
-  it('renders nothing when inactive', () => {
-    const { container } = render(<PerformanceTip active={false} payload={[{ payload: row }]} label="Maple Plaza" />);
-    expect(container.firstChild).toBeNull();
   });
 });
 

@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   revenueByProperty, occupancyByProperty, portfolioOccupancy, revenueExpensesNoi, rentRollover,
-  tenantMix, hasCollectedBars, projectedVsLive, portfolioBasis, kfmt, shortName, DONUT_PALETTE,
+  tenantMix, hasCollectedBars, basisRows, portfolioBasis, kfmt, shortName, DONUT_PALETTE,
 } from '../portfolioCharts';
 
 const PROPS = [
@@ -212,129 +212,119 @@ describe('revenueExpensesNoi — rent collected so far', () => {
   });
 });
 
-// Projected vs live — the pair that replaced Revenue-beside-Collected (2026-08-18).
+// The Overview band — the BILL, read twice (2026-08-18).
 //
-// ⚠ WHAT THE OLD SHAPER GOT WRONG AND THIS ONE MUST NOT. `revenueExpensesNoi` put
-// base-rent-only Revenue next to all-in Collected, so the second could legitimately read
-// above the first and the panel had to apologise for it in prose. Here BOTH halves of each
-// pair count the same dollars — the projected side from the lease schedule, the live side
-// from cash — so the gap between them is a fact about the year rather than about the
-// measures.
-describe('projectedVsLive', () => {
+// ⚠ WHAT THE FIRST ATTEMPT GOT WRONG, and the reason these columns are what they are. It made
+// projected revenue ALL-IN and prorated, which read $1,155,141 on George's portfolio while the
+// donut on the same screen said $1,032,564 for the same year. His question was the right one:
+// *"where is this coming from."* Revenue is now `total_revenue` — literally the figure
+// `revenueByProperty` sums for the donut — so the two agree to the cent, and the test below
+// asserts that identity rather than leaving it to hold by luck.
+describe('basisRows', () => {
   const BASIS = {
-    p1: { projectedRevenue: 201000, liveRevenue: 100300, unapplied: 1750, spentToDate: 19000, spentDated: 30000 },
-    p2: { projectedRevenue: 360000, liveRevenue: 0, unapplied: 0, spentToDate: 70000, spentDated: 70000 },
+    p1: { rentLive: 60000, camTaxLive: 12000, chargesLive: 0, chargesProjected: 0, otherLive: 1800, camTaxProjected: 40000, unapplied: 1750 },
+    p2: { rentLive: 90000, camTaxLive: 0, chargesLive: 0, chargesProjected: 0, otherLive: 0, camTaxProjected: 0, unapplied: 0 },
   };
 
-  it('pairs each measure with its own live reading, and derives both bottom lines', () => {
-    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
+  // ⚠ THE PIN THAT CLOSES GEORGE'S COMPLAINT. If anyone ever makes Revenue "smarter" here —
+  // prorating it, adding the estimate back, projecting a rent step — this goes red before the
+  // two figures can disagree on screen again.
+  it('takes Revenue from the very figure the donut sums, so the two cannot disagree', () => {
+    const rows = basisRows(PROPS, TOTALS, BASIS);
+    const donut = revenueByProperty(PROPS, TOTALS);
+    for (const d of donut) {
+      expect(rows.find((r) => r.id === d.id).rentProjected).toBe(d.value);
+    }
+    const bandTotal = portfolioBasis(rows).rent.projected;
+    expect(bandTotal).toBe(donut.reduce((s, d) => s + d.value, 0));
+  });
+
+  it('bills CAM & tax at the estimate, and adds the two columns into Total', () => {
+    const maple = basisRows(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
     expect(maple).toMatchObject({
-      'Projected revenue': 201000,
-      'Live revenue': 100300,
-      'Projected expenses': 45000,
-      'Live expenses': 19000,
-      projectedNet: 156000,
-      liveNet: 81300,
+      rentProjected: 120000,
+      camTaxProjected: 40000,
+      rentLive: 60000,
+      camTaxLive: 12000,
     });
+    // Total projected is the two columns beside it — that is why it replaced "what's left".
+    expect(maple.totalProjected).toBe(160000);
   });
 
-  // ⚠ THE FIGURE THAT WOULD OTHERWISE TURN A MISSING DATE INTO A CHEAP YEAR. `paid_date` is
-  // nullable and never backfilled (0074) — a kind entered as one flat total has no lines at
-  // all — so the difference between the stored total and what carries a date is real money
-  // sitting in Projected and in no Live figure. It has to be carried, or the panel reports
-  // an underspend that never happened.
-  it('names the costs carrying no payment date rather than dropping them', () => {
-    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
-    expect(maple.undatedExpenses).toBe(15000);  // 45,000 entered − 30,000 with a date
-    // A property whose every cost is dated has nothing to say about it.
-    const oak = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Oak Center');
-    expect(oak.undatedExpenses).toBe(0);
+  // ⚠ GEORGE'S OWN QUESTION: *"what happens when a landlord has other sources of income."*
+  // It rides no invoice and nothing forecasts it, so it can only be live — but Total live has
+  // to equal the bank, so it goes IN there and is named separately rather than dropped.
+  it('puts other income in Total live and in no projection', () => {
+    const maple = basisRows(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
+    expect(maple.otherLive).toBe(1800);
+    expect(maple.totalLive).toBe(73800);          // 60,000 + 12,000 + 1,800
+    expect(maple.totalProjected).toBe(160000);    // untouched by it
+    // And the band carries it up as its own figure, so the foot can say where Total grew.
+    expect(portfolioBasis(basisRows(PROPS, TOTALS, BASIS)).otherIncome).toBe(1800);
   });
 
-  it('never reports a negative undated figure when the lines outrun a stale total', () => {
-    const over = { p1: { ...BASIS.p1, spentDated: 90000 } };
-    const maple = projectedVsLive(PROPS, TOTALS, over).find((d) => d.name === 'Maple Plaza');
-    expect(maple.undatedExpenses).toBe(0);
-  });
-
-  it('carries the unanswered surplus, which is in neither revenue figure', () => {
-    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
+  it('carries the unanswered surplus, which is in none of the three columns', () => {
+    const maple = basisRows(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
     expect(maple.unapplied).toBe(1750);
-    // …and it is genuinely OUT of live revenue, not folded in behind the scenes.
-    expect(maple['Live revenue']).toBe(100300);
-  });
-
-  it('quotes NOI beside its own bottom lines, because they are different measures', () => {
-    const maple = projectedVsLive(PROPS, TOTALS, BASIS).find((d) => d.name === 'Maple Plaza');
-    expect(maple.noi).toBe(75000);
-    // NOI counts base rent only; projectedNet counts the CAM & tax tenants reimburse too.
-    expect(maple.projectedNet).toBeGreaterThan(maple.noi);
+    expect(maple.totalLive).toBe(73800);
   });
 
   // The band renders before the roll read lands, so a row has to be able to say "not yet"
-  // rather than assert that nothing has been collected all year.
+  // rather than assert that nothing has come in all year.
   it('marks a row as still loading when no basis has arrived for it', () => {
-    const rows = projectedVsLive(PROPS, TOTALS, null);
+    const rows = basisRows(PROPS, TOTALS, null);
     expect(rows.every((r) => r.loading)).toBe(true);
-    expect(rows.every((r) => r['Live revenue'] === 0)).toBe(true);
-    expect(projectedVsLive(PROPS, TOTALS, BASIS).every((r) => r.loading)).toBe(false);
+    // …but the PROJECTED side is already right, because it never needed the roll.
+    expect(rows.find((r) => r.name === 'Maple Plaza').rentProjected).toBe(120000);
+    expect(basisRows(PROPS, TOTALS, BASIS).every((r) => r.loading)).toBe(false);
   });
 
-  it('drops a property with nothing on any of the four measures, and sorts by projection', () => {
-    const out = projectedVsLive(PROPS, TOTALS, BASIS);
-    expect(out.map((d) => d.name)).toEqual(['Oak Center', 'Maple Plaza']);
+  it('drops a property with nothing on any measure, and sorts by projected rent', () => {
+    expect(basisRows(PROPS, TOTALS, BASIS).map((d) => d.name)).toEqual(['Oak Center', 'Maple Plaza']);
   });
 
   it('degrades to an empty list, never a throw', () => {
-    expect(projectedVsLive(null, null, null)).toEqual([]);
-    expect(projectedVsLive(PROPS, {}, BASIS)).toEqual([]);
+    expect(basisRows(null, null, null)).toEqual([]);
+    expect(basisRows(PROPS, {}, BASIS)).toEqual([]);
   });
 });
 
 describe('portfolioBasis — the headline band', () => {
-  const ROWS = projectedVsLive(PROPS, TOTALS, {
-    p1: { projectedRevenue: 201000, liveRevenue: 100300, unapplied: 1750, spentToDate: 19000, spentDated: 30000 },
-    p2: { projectedRevenue: 360000, liveRevenue: 90000, unapplied: 0, spentToDate: 70000, spentDated: 70000 },
+  const ROWS = basisRows(PROPS, TOTALS, {
+    p1: { rentLive: 60000, camTaxLive: 12000, chargesLive: 0, chargesProjected: 0, otherLive: 1800, camTaxProjected: 40000, unapplied: 1750 },
+    p2: { rentLive: 90000, camTaxLive: 0, chargesLive: 0, chargesProjected: 0, otherLive: 0, camTaxProjected: 0, unapplied: 0 },
   });
 
-  // ⚠ SUMMED FROM THE ROWS THE BARS ARE DRAWN FROM, never re-derived — otherwise the band
-  // and the panel beneath it could sit a cent (or a property) apart on the same screen.
-  it('ties to the sum of the bars beneath it', () => {
+  // ⚠ SUMMED FROM THE ROWS, never re-derived — otherwise the band and anything built from the
+  // same rows could sit a cent, or a property, apart on one screen.
+  it('ties to the rows it was built from', () => {
     const t = portfolioBasis(ROWS);
-    expect(t.revenue.projected).toBe(561000);
-    expect(t.revenue.live).toBe(190300);
-    expect(t.expenses.projected).toBe(115000);
-    expect(t.expenses.live).toBe(89000);
-    expect(t.net.projected).toBe(446000);
-    expect(t.net.live).toBe(101300);
+    expect(t.rent).toMatchObject({ projected: 420000, live: 150000 });
+    expect(t.camTax).toMatchObject({ projected: 40000, live: 12000 });
+    expect(t.total).toMatchObject({ projected: 460000, live: 163800 });
+    // Total is Revenue + Expenses on the projected side, exactly.
+    expect(t.total.projected).toBe(t.rent.projected + t.camTax.projected);
   });
 
   it('states the gap as a signed figure, so nobody has to subtract to find it', () => {
     const t = portfolioBasis(ROWS);
-    expect(t.revenue.delta).toBe(-370700);
-    expect(t.expenses.delta).toBe(-26000);
-    expect(t.net.delta).toBe(-344700);
-  });
-
-  it('carries both caveats up to the headline, summed across the portfolio', () => {
-    const t = portfolioBasis(ROWS);
-    expect(t.undatedExpenses).toBe(15000);
-    expect(t.unapplied).toBe(1750);
+    expect(t.rent.delta).toBe(-270000);
+    expect(t.camTax.delta).toBe(-28000);
+    expect(t.total.delta).toBe(-296200);
   });
 
   // ⚠ NULL, NOT ZERO. "0% in" against a year that bills nothing is a fabricated accusation,
   // and the track drawn from it would be an empty bar shaped like a finding.
   it('has no share at all when nothing is projected', () => {
-    const nothing = portfolioBasis([{ 'Projected revenue': 0, 'Live revenue': 0, 'Projected expenses': 0, 'Live expenses': 0 }]);
-    expect(nothing.revenue.share).toBeNull();
-    expect(nothing.expenses.share).toBeNull();
-    expect(portfolioBasis(ROWS).revenue.share).toBeCloseTo(190300 / 561000, 6);
+    const nothing = portfolioBasis([{ rentProjected: 0, rentLive: 0, camTaxProjected: 0, camTaxLive: 0, totalProjected: 0, totalLive: 0 }]);
+    expect(nothing.rent.share).toBeNull();
+    expect(nothing.total.share).toBeNull();
+    expect(portfolioBasis(ROWS).rent.share).toBeCloseTo(150000 / 420000, 6);
   });
 
   it('degrades to zeros, never a throw', () => {
-    const t = portfolioBasis([]);
-    expect(t.revenue).toMatchObject({ projected: 0, live: 0, delta: 0, share: null });
-    expect(portfolioBasis(null).net.projected).toBe(0);
+    expect(portfolioBasis([]).rent).toMatchObject({ projected: 0, live: 0, delta: 0, share: null });
+    expect(portfolioBasis(null).total.projected).toBe(0);
   });
 });
 

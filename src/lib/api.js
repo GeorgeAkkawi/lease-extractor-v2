@@ -3749,6 +3749,42 @@ export async function listExpenseSpendByProperty(propertyIds, year, todayIso = l
   return out;
 }
 
+// ---- Two bulk reads for the Overview's band, one round-trip each ------------------
+// Both are the plural of a per-property read the app already makes, and both hand their
+// rows to the SAME pure function the single-property screens use — `billedComponents` for
+// the shares, `summarizeOtherIncome` for the income. Nothing here interprets a figure.
+//
+// `select('*')` on purpose: mockClient's builder ignores column lists, so a narrowed select
+// is right in the demo and wrong on every live click (CLAUDE.md §3).
+export async function listTenantSharesByProperties(propertyIds, year) {
+  const ids = [...new Set((propertyIds || []).filter(Boolean))];
+  if (ids.length === 0) return {};
+  const all = await rows(
+    supabase.from('v_tenant_shares').select('*').in('property_id', ids).eq('year', year)
+  );
+  const byProp = {};
+  for (const s of all || []) if (s?.property_id) (byProp[s.property_id] ||= []).push(s);
+  return byProp;
+}
+
+// ⚠ THE YEAR RULE IS `listOtherIncome`'s, COPIED EXACTLY: a row with a NULL year belongs to
+// every year (it is income nobody dated to one), and any other row belongs only to its own.
+// Filtering `.eq('year', year)` in SQL instead would silently drop the undated rows — real
+// money, and precisely the money a landlord is least likely to have entered carefully.
+export async function listOtherIncomeByProperties(propertyIds, year = null) {
+  const ids = [...new Set((propertyIds || []).filter(Boolean))];
+  if (ids.length === 0) return {};
+  const all = await rows(supabase.from('other_income').select('*').in('property_id', ids));
+  const y = Number(year);
+  const byProp = {};
+  for (const r of all || []) {
+    if (!r?.property_id) continue;
+    if (y && !(r.year == null || Number(r.year) === y)) continue;
+    (byProp[r.property_id] ||= []).push(r);
+  }
+  return byProp;
+}
+
 export const getTenantShares = (propertyId, year) =>
   rows(
     supabase.from('v_tenant_shares').select('*').eq('property_id', propertyId).eq('year', year)

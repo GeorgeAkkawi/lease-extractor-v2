@@ -72,7 +72,7 @@ function FinPropCard({ property, year, mode, to, pf }) {
       <div className="prop-addr muted">{property.address || 'No address'}</div>
       <div className="fin-mini">
         <div><span className="muted">Projected revenue</span><b className="pos">{money(totals?.total_revenue ?? 0)}</b></div>
-        <div><span className="muted">Projected expenses</span><b className="neg">{expenses == null ? '—' : money(expenses)}</b></div>
+        <div><span className="muted">Expenses</span><b className="neg">{expenses == null ? '—' : money(expenses)}</b></div>
         <div><span className="muted">Tax / SF</span><b>{psf(totals?.tax_psf)}</b></div>
         <div><span className="muted">CAM / SF</span><b>{psf(totals?.cam_psf)}</b></div>
       </div>

@@ -1,3 +1,124 @@
+## 2026-08-18 (2) — The band says the bill, not a second opinion on it
+
+**Cloudflare version:** `0f419cff-c921-42dc-8e9a-9b0e2c6874e3` · 2,007 tests, 189 files
+
+George, an hour after the first band shipped: *"why is the projected 800k (where is this coming from)
+and the ovreview pie chart says its only like 700k (where is this coming from)"*.
+
+### He was right, and here is the measurement
+
+Read from production, FY 2026:
+
+| | Source | Figure |
+|---|---|---|
+| Donut centre, "Annual rent roll" | `v_property_totals.total_revenue` = Σ `effective_rent` | **$1,032,564** |
+| Band "projected" (as shipped) | base rent **+ estimated CAM & tax**, prorated to term | **$1,155,141** |
+
+$122,577 apart — Pershing Plaza's **$148,809 of estimated CAM** less **$26,231** of proration (D & D
+Dental ends 30 Sep, Infinite Mobile starts 1 Jul). 401 S Main and Joliet carry no estimates at all,
+so they read identically either way. Two headline figures, one screen, neither labelled and nothing
+reconciling them — the §3 fault in its plainest form, shipped by the very round that was meant to
+fix a case of it.
+
+### The redefinition, and why it is better than what it replaces
+
+> *"projected revenue should be just base rent · projected expenses is the estimated cam and tax —
+> then there should be a total collumn instead of the whats left and we can take out the bar graph
+> projected vs live"* … *"no projected revenue should be the base rent, but a question i have is what
+> happens when a landlord has other sources of income"*
+
+The three columns are now **the invoice's own structure** — base rent, plus the CAM & tax billed at
+estimate, equals what the tenant is charged:
+
+| | Projected | Live |
+|---|---|---|
+| **Revenue** *(base rent)* | `total_revenue` — **the donut's own figure** | rent collected |
+| **Expenses** *(CAM & tax billed)* | Σ `billedComponents(share).camTax + roof` | CAM & tax collected |
+| **Total** *(what tenants are charged)* | the two above + posted fees/credits | + other income |
+
+You replace a subtraction ("what's left") with an addition ("Total") only when the columns genuinely
+add — and these do. That also retires the NOI-reconciliation paragraph the old third column needed:
+there is nothing left to reconcile.
+
+**Verified on production after deploy:** band Revenue **$1,032,563.60**, donut **$1,032,563.60**.
+Projected Expenses $161,322.49, Total $1,193,886.09.
+
+### The answer to his question
+
+**Other income** (`other_income`, 0078 — parking, storage, a write-in category) rides no invoice, and
+**the app forecasts none of it**. So it can only land on the live side. Total live must equal the
+bank, so it goes IN there — and it is **named on its own line**, because a Total that silently
+outgrew the two columns above it would be the same unexplained figure all over again. Production has
+zero rows in `other_income` today; the day the first parking payment is entered, the band already
+knows what to do with it.
+
+### What went out
+
+- **`portfolioBasis.js` rewritten.** `includeScheduled` is gone — the projected side no longer touches
+  the roll at all. Projected CAM & tax comes from one bulk `v_tenant_shares` read through
+  **`billedComponents`** (the §2 choke point the invoice and Ledger price from), other income from one
+  bulk read through **`summarizeOtherIncome`**. Only the LIVE side needs a roll, because only cash
+  needs allocating. **One query cheaper than what it replaces.**
+- **`listTenantSharesByProperties` / `listOtherIncomeByProperties` (`api.js`)** — the plural of two
+  per-property reads. ⚠ The income one copies `listOtherIncome`'s year rule exactly: a **NULL year
+  belongs to every year**, so filtering `.eq('year', …)` in SQL would silently drop undated income —
+  real money, and the money least likely to have been entered carefully. Pinned by a test.
+- **`projectedVsLive` → `basisRows`**, reshaped to the three columns; `portfolioBasis` follows.
+- **`contractedRoll` reverted to module-private** in `incomeExpense.js`. It was exported yesterday
+  because the live pass ran off a projected roll; with no projection on the roll it is the identity,
+  and a dead export invites someone to think it is load-bearing there.
+- **The per-property bar panel is deleted** — the wide `ChartPanel`, `PerformanceTip`, the
+  `.chart-panel.wide` rule and both `.has-live` media queries. The chart band is three panels again.
+- **Two relabels reverted:** `total_expenses` is the ACTUAL costs entered, which under the new
+  vocabulary is not a projection — `PropertyFinancialsPage` back to **Total expenses**,
+  `FinancialsPropertiesPage` to **Expenses**. **Projected revenue** stays on both; that one is
+  genuinely base rent.
+
+### Non-vacuity
+
+Each reverted in turn; each went red, then green on restore:
+
+- estimate preference dropped (actual share instead of `billedComponents`) → 1 test
+- other income dropped from Total live → 4
+- surplus hold-back dropped → 2
+- roll read WITH `includeScheduled` → 2 (the hold-back stops holding: a surplus priced against a rent
+  step nobody has been charged for shrinks or vanishes)
+- **Revenue made "smarter" than the view → 7.** That is the pin that closes this complaint: it now
+  breaks in CI before the band and the donut can disagree on screen again.
+
+### Files
+
+`src/lib/portfolioBasis.js` · `src/lib/portfolioCharts.js` · `src/components/BasisBand.js` ·
+`src/components/PortfolioCharts.js` · `src/pages/DashboardPage.js` · `src/lib/api.js` ·
+`src/lib/incomeExpense.js` · `src/App.css` · `src/pages/PropertyFinancialsPage.js` ·
+`src/pages/FinancialsPropertiesPage.js` · `src/lib/__tests__/portfolioBasis.test.js` ·
+`src/lib/__tests__/portfolioCharts.test.js` · `src/pages/__tests__/dashboardOverview.test.js` ·
+`src/components/__tests__/chartTooltips.test.js`
+
+### Now redundant
+
+- **`listExpenseSpendByProperty` (`api.js`)** and its `spentToDate` / `spentDated` / undated-costs
+  line — shipped this morning for a "live expenses" column this round replaces. **Nothing reads it.**
+  Kept with its tests pending George's word; recommend deleting.
+- **`revenueExpensesNoi` + `hasCollectedBars` (`portfolioCharts.js`)** — their last caller was the bar
+  panel just deleted. Same recommendation.
+- **`listCollectedByProperty` + the `['portfolioCollected']` key** — no reader left either.
+- **`CHART_LIVE.expenses`** — still used by the band's Expenses column, so it stays; `CHART_SERIES.noi`
+  now serves the Total column rather than an NOI bar.
+- Carried forward, still awaiting George's call: **"Move this payment…" on an over-paid month** · **the
+  untie dialog's credit-owed-back sentence**.
+
+### Still open
+
+- ⚠ **Migration `0101_payment_split_from.sql` still not applied.** The Management API answered 403
+  yesterday and **works today** — it can be applied on the next word.
+- ⚠ **Revenue is the annual rate, matching the donut**, so it counts a full year for D & D Dental, who
+  leave 30 September. The FY 2026 gap against live therefore reads **$11,859** worse than it is.
+  Stated here rather than silently corrected, because matching the donut was the explicit ask.
+- The statement import calls no `resyncPropertyBilling` · `TenantStatement` pinned to the calendar
+  year · two `.panel-toggle` copies on `HistoryPage.js` · `PdfSignCanvas` swallows the stale-build
+  message · `build.emptyOutDir: false`.
+
 ## 2026-08-18 — Projected vs live, on the Overview
 
 **Cloudflare version:** `981aceeb-8184-4b72-94ea-72777a8b98ee` · 2,019 tests, 189 files

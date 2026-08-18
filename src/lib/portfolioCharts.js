@@ -248,85 +248,76 @@ export function revenueExpensesNoi(properties, totalsByProp, collectedByProp = n
 // zero bar against every property would say nothing and cost the other three their width.
 export const hasCollectedBars = (rows) => (rows || []).some((r) => r.hasCollected);
 
-// ---- Projected vs live (2026-08-18) ----------------------------------------------
-// George: *"weve built thi software around projected but there should be a live counter as
-// well … and any over or undercharges only counts towards live count."*
+// ---- The Overview band: the BILL, read twice (2026-08-18) -------------------------
 //
-// ⚠ THE POINT IS THAT THE TWO SIDES ARE THE SAME MEASURE, which `revenueExpensesNoi` above
-// could not manage: its Revenue is `total_revenue` (base rent only, applied steps only) and
-// its Collected is all-in cash, so the panel had to print a paragraph explaining that the
-// second could legitimately read above the first. Here both sides of each pair count the
-// same dollars, and the gap between them is the whole message.
+// George, having caught the first attempt: *"projected revenue should be just base rent ·
+// projected expenses is the estimated cam and tax — then there should be a total collumn
+// instead of the whats left."*
 //
-//   Projected revenue  — `listBasisByProperty`: what the leases contract for the year,
-//                        all-in, twelve months, INCLUDING a rent step dated later this year
-//                        that has not been swept into base_rent yet.
-//   Live revenue       — cash the Ledger says arrived, all-in, with an unanswered
-//                        over-payment withheld until the landlord says what it is.
-//   Projected expenses — `taxes_total + cam_total + roof_total`, the year's costs as entered.
-//   Live expenses      — the itemized lines carrying a payment date on or before today.
+// ⚠ WHY THE FIRST ATTEMPT WAS WRONG, because these three columns are the correction. It made
+// projected revenue all-in — base rent plus the CAM & tax estimate, prorated to term — which
+// put $1,155,141 on the band while the donut above it said $1,032,564 for the same portfolio
+// and the same year. Both defensible, neither labelled, and the first question anyone would
+// ask was the one George asked: *"where is this coming from."*
 //
-// ⚠ `undatedExpenses` IS A REAL FIGURE, NOT A ROUNDING BUCKET, and it is the one thing that
-// can make Live expenses lie. `paid_date` is nullable and never backfilled (0074): a kind
-// entered as one flat total has no lines at all, and a contract-derived CAM row never carries
-// a day. Without it stated, a year with undated costs reads as though it had been cheap. It
-// is carried on every row so the band can name it and link to where it gets fixed — the same
-// discipline as the workbook's "No date" column (CLAUDE.md §3).
+//   Revenue   = `total_revenue`, THE DONUT'S OWN FIGURE. Base rent, nothing else, so the two
+//               agree to the cent and there is nothing left to explain.
+//   Expenses  = the CAM, tax and roof this year's leases bill AT ESTIMATE.
+//   Total     = the two together — what the tenant is actually charged, plus any fee or credit
+//               posted on a bill.
 //
-// A property the totals view doesn't cover is dropped rather than fabricated as zeros, and a
-// property with nothing on either side of either pair is dropped too — an empty row costs the
-// others their width and says nothing.
-export function projectedVsLive(properties, totalsByProp, basisByProp = null) {
+// You replace a subtraction ("what's left") with an addition ("Total") only when the columns
+// genuinely add, and these do: they are the two halves of one invoice. That also retires the
+// NOI reconciliation the old third column needed — there is nothing left to reconcile.
+//
+// ⚠ `otherLive` HAS NO PROJECTED TWIN, and that is George's own question answered rather than
+// dodged (*"what happens when a landlord has other sources of income"*). `other_income` (0078)
+// is recorded as it arrives and the app forecasts none of it, so it can only land on the live
+// side. It rides INTO Total live — Total must equal the bank — and is named on its own line,
+// because a Total that silently outgrew the two columns above it would be the same
+// unexplained-figure fault all over again.
+export function basisRows(properties, totalsByProp, basisByProp = null) {
   return (properties || [])
     .map((p) => {
       const t = totalsByProp?.[p.id];
       if (!t) return null;
       const b = basisByProp?.[p.id] || null;
-      const taxes = num(t.taxes_total);
-      const cam = num(t.cam_total);
-      const roof = num(t.roof_total);
-      const projectedExpenses = round2(taxes + cam + roof);
-      const projectedRevenue = round2(num(b?.projectedRevenue));
-      const liveRevenue = round2(num(b?.liveRevenue));
-      const liveExpenses = round2(num(b?.spentToDate));
-      if (projectedRevenue === 0 && projectedExpenses === 0 && liveRevenue === 0 && liveExpenses === 0) return null;
+      const rentProjected = round2(num(t.total_revenue));
+      const rentLive = round2(num(b?.rentLive));
+      const camTaxProjected = round2(num(b?.camTaxProjected));
+      const camTaxLive = round2(num(b?.camTaxLive));
+      const chargesProjected = round2(num(b?.chargesProjected));
+      const chargesLive = round2(num(b?.chargesLive));
+      const otherLive = round2(num(b?.otherLive));
+      if (rentProjected === 0 && camTaxProjected === 0 && rentLive === 0 && camTaxLive === 0 && otherLive === 0) return null;
       return {
         id: p.id,
         name: nameFor(p),
-        'Projected revenue': projectedRevenue,
-        'Live revenue': liveRevenue,
-        'Projected expenses': projectedExpenses,
-        'Live expenses': liveExpenses,
-        projectedNet: round2(projectedRevenue - projectedExpenses),
-        liveNet: round2(liveRevenue - liveExpenses),
-        // Entered costs with no payment date — in Projected, in no Live figure, and named
-        // rather than dropped. Clamped at zero: itemized lines can briefly exceed a stored
-        // total, and a negative "undated" would be a nonsense figure on a panel.
-        undatedExpenses: Math.max(0, round2(projectedExpenses - num(b?.spentDated))),
+        rentProjected,
+        rentLive,
+        camTaxProjected,
+        camTaxLive,
+        chargesProjected,
+        chargesLive,
+        otherLive,
+        totalProjected: round2(rentProjected + camTaxProjected + chargesProjected),
+        totalLive: round2(rentLive + camTaxLive + chargesLive + otherLive),
         // Cash beyond what a month billed, still waiting on the landlord's answer on the
         // Ledger. In NO figure here — that is the whole point of it.
         unapplied: round2(num(b?.unapplied)),
-        // The expense components, so the tooltip can show its working — a bar labelled only
-        // "Expenses" can't tell a landlord which of the two kinds of expense it is.
-        taxes, cam, roof,
-        // Quoted on hover so this panel and the property pages stay reconcilable. NOI is not
-        // a smaller `projectedNet`: it counts base rent only, where this counts the CAM & tax
-        // tenants reimburse as well.
-        noi: num(t.noi),
         loading: !b,
       };
     })
     .filter(Boolean)
-    .sort((a, b) => b['Projected revenue'] - a['Projected revenue'] || a.name.localeCompare(b.name));
+    .sort((a, b) => b.rentProjected - a.rentProjected || a.name.localeCompare(b.name));
 }
 
-// The three headline pairs the band prints, SUMMED FROM THE ROUNDED property rows so the
-// band can never sit a cent away from the bars beneath it — the same rule `consolidate`
-// keeps for the workbook's Summary sheet.
+// The three pairs the band prints, SUMMED FROM THE ROUNDED property rows so the band can never
+// sit a cent away from the figures it was built from.
 //
 // `share` is live over projected, and it is null rather than 0 when nothing is projected:
-// "0% collected" against a year that bills nothing is a fabricated accusation, and a track
-// drawn from it would be a filled bar shaped like a finding.
+// "0% in" against a year that bills nothing is a fabricated accusation, and the track drawn
+// from it would be an empty bar shaped like a finding.
 export function portfolioBasis(rows = []) {
   const sum = (key) => round2((rows || []).reduce((s, r) => s + num(r[key]), 0));
   const pair = (projected, live) => ({
@@ -334,16 +325,12 @@ export function portfolioBasis(rows = []) {
     delta: round2(live - projected),
     share: projected > 0 ? live / projected : null,
   });
-  const revenue = pair(sum('Projected revenue'), sum('Live revenue'));
-  const expenses = pair(sum('Projected expenses'), sum('Live expenses'));
   return {
-    revenue,
-    expenses,
-    // What's left, on each basis. ⚠ NOT NOI — this revenue is all-in and NOI's is base rent
-    // only, which is the same gap the property page's "What actually stayed" strip exists to
-    // explain. The band says so rather than letting two bottom lines sit unreconciled.
-    net: pair(round2(revenue.projected - expenses.projected), round2(revenue.live - expenses.live)),
-    undatedExpenses: sum('undatedExpenses'),
+    rent: pair(sum('rentProjected'), sum('rentLive')),
+    camTax: pair(sum('camTaxProjected'), sum('camTaxLive')),
+    total: pair(sum('totalProjected'), sum('totalLive')),
+    // Named separately because it is inside Total live and inside no projection.
+    otherIncome: sum('otherLive'),
     unapplied: sum('unapplied'),
     loading: (rows || []).some((r) => r.loading),
   };
