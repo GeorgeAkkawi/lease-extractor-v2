@@ -12,6 +12,62 @@ demand.
 **Reading it:** grep for the feature you're touching (`grep -n "reconcile" docs/deploy-log.md`)
 rather than reading top to bottom. Each entry is self-contained and dated.
 
+- **2026-08-17** — **The chooser loses its gate: quick options, one-click roll to the next
+  month, and the screen states where the money is.** Cloudflare version
+  **`a0210a43-8167-4f42-9557-cd3dfd28cfe4`** (on top of `56f20afc`).
+
+  George: *"i shouldnt have to click what is this 100 there should just be quick options. also
+  there isnt an option to redeem the overcharge for just one month - and once i accept it will
+  hit live revenue correct?"*
+
+  ### The gate
+
+  The four answers sat behind a **"What is this $X?"** button so they would not crowd every
+  settled month. That reasoning was wrong: a month WITH a surplus is exactly the month that has
+  something to answer, and making the landlord ask to be asked is a click that buys nothing. The
+  options are now on screen the moment the month is opened, laid out as **short wrapped buttons**
+  rather than a stacked list of sentences — the detail was always in the confirm dialog, which is
+  where a decision about money belongs.
+
+  Labels went with it: `Revenue for {Mon}` · `Revenue always` · `Roll to {next}` · `Roll to…` ·
+  `Refund`.
+
+  ### "there isnt an option to redeem the overcharge for just one month"
+
+  Read as **accept just this month** versus the standing **accept always** — the one-month answer
+  existed but was behind the very click he was objecting to, and its label (*"It is April's
+  revenue"*) did not read as the counterpart to *"…stop asking"*. Both now sit side by side and
+  say which is which, and the per-month confirm states **"This month only. Every other month
+  still asks."**
+
+  ⚠ A **one-click "Roll to {next month}"** joined the picker, because rolling forward to the next
+  month is the case George named in the first place and choosing it from a dropdown of twelve was
+  the same click problem in a different control. Both routes go through **one** `askRoll`
+  confirm — two copies of a dialog naming two months and a figure is how one of them ends up
+  naming the wrong one.
+
+  ### "once i accept it will hit live revenue correct?"
+
+  Yes — and the screen should never have left him to ask. It now says so in both states: *"This
+  $X counts as April's revenue and is in your live income and expenses now"*, and before
+  answering, *"…it is in them the moment you do."* The per-month confirm says **"straight away"**.
+
+  ### Now redundant
+
+  - **"Leave it for now"** — **removed**. It only ever existed as a way out of the chooser; with
+    no chooser, leaving it is not clicking, and a button for doing nothing invites the reading
+    that not clicking does something else.
+  - **The `deciding` state** and its three `setDeciding(false)` calls in the mutation handlers —
+    removed with the gate.
+  - **The stacked full-width `.mp-decide-opts` rule** — replaced by the wrapped layout; it stacks
+    only under 420px now.
+
+  ### Verified
+
+  `npm test` — **1,991 passing, 188 files**. The panel test now asserts the *absence* of the gate
+  and of "Leave it for now", the presence of all five quick options including `Roll to May`, and
+  that the panel states the money is in the live figures after accepting.
+
 - **2026-08-17** — **The standing answer: "anything extra from this tenant is revenue — stop
   asking", plus the rent question behind it.** Cloudflare version
   **`56f20afc-acba-4960-9c40-5fcfe9890a9b`** (on top of `e9ed70c0`).

@@ -50,10 +50,6 @@ export default function MonthDetailPanel({
   // Which payment is being re-filed. The month picker is a second control on a row that
   // already carries a date, a note and an amount, so it stays behind a link until asked for.
   const [movingId, setMovingId] = useState(null);
-  // Whether the "what is this difference?" chooser is open. Behind a button rather than always
-  // on screen: on a month that behaves there is nothing to decide, and four choices printed
-  // under every settled month would teach the landlord to stop reading them.
-  const [deciding, setDeciding] = useState(false);
 
   const m = Number(month);
   const i = m - 1;
@@ -211,7 +207,7 @@ export default function MonthDetailPanel({
       // The surplus is no longer a surplus, so the answer that would have released it is stale.
       return res;
     },
-    onSuccess: () => { setDeciding(false); settlePay(); settleStates(); },
+    onSuccess: () => { settlePay(); settleStates(); },
   });
   const refundIt = useMutation({
     mutationFn: async () => {
@@ -222,7 +218,7 @@ export default function MonthDetailPanel({
       if (res?.refused) throw new Error(res.message);
       return res;
     },
-    onSuccess: () => { setDeciding(false); settle(); settleStates(); },
+    onSuccess: () => { settle(); settleStates(); },
   });
   const carryShort = useMutation({
     mutationFn: async (toMonth) => {
@@ -232,7 +228,7 @@ export default function MonthDetailPanel({
       if (res?.refused) throw new Error(res.message);
       return res;
     },
-    onSuccess: () => { setDeciding(false); settle(); },
+    onSuccess: () => { settle(); },
   });
 
   const busy = post.isPending || removeAdj.isPending || recordGap.isPending || movePay.isPending
@@ -247,6 +243,24 @@ export default function MonthDetailPanel({
   // does not move FORWARD from this month, it fills each month's remaining need from JANUARY
   // (allocatePayments) — and "spread" is not a word anybody uses about a cheque. What the
   // action does is untie the payment from a month; the implications still state the rest.
+  // ⚠ ONE CONFIRM FOR BOTH WAYS OF ROLLING IT — the one-click "Roll to {next}" and the picker
+  // for any other month. Two copies of a dialog that names two months and a figure is precisely
+  // how one of them ends up naming the wrong one.
+  async function askRoll(to) {
+    const ok = await askConfirm({
+      title: `Roll ${money(excess)} forward to ${monthName(to)}?`,
+      message: `The ${money(biggestPay?.amount)} received on ${biggestPay?.paid_date || 'an unrecorded date'} covered ${monthName(m)} and ${money(excess)} more.`,
+      implications: [
+        `${monthName(to)} receives ${money(excess)} — its box shows the money and it needs that much less.`,
+        `${monthName(m)} keeps exactly the ${money(owed)} it billed.`,
+        'The payment is split, not re-filed: same date, same method, same bank statement behind both halves.',
+      ],
+      confirmLabel: `Roll it to ${monthName(to)}`,
+      tone: 'warn',
+    });
+    if (ok) rollForward.mutate(to);
+  }
+
   async function askMove(p, raw) {
     const amt = money(Number(p.amount) || 0);
     if (raw === '') {
@@ -418,13 +432,17 @@ export default function MonthDetailPanel({
               {excess > 0.05 && (
                 <div className="mp-decide">
                   <p className="mp-decide-lead">
+                    {/* ⚠ IT SAYS WHERE THE MONEY IS, IN BOTH STATES. George asked it outright —
+                        *"once i accept it will hit live revenue correct?"* — which is a question
+                        the screen should never have left him to ask. */}
                     {alwaysRevenue
-                      ? <>Any extra from {row?.tenant_name || 'this tenant'} counts as revenue for {year} — this <strong>{money(excess)}</strong> included.</>
+                      ? <>Any extra from {row?.tenant_name || 'this tenant'} counts as revenue for {year} — this <strong>{money(excess)}</strong> included.
+                        It is in your live income and expenses now.</>
                       : confirmedRevenue
-                        ? <>You have counted this <strong>{money(excess)}</strong> as {monthName(m)}&rsquo;s revenue.</>
+                        ? <>This <strong>{money(excess)}</strong> counts as {monthName(m)}&rsquo;s revenue and is in your live income
+                          and expenses now.</>
                         : <><strong>{money(excess)}</strong> more arrived than {monthName(m)} billed. It is in <strong>none</strong> of
-                          your income figures until you say what it is — more money than a month was billed for does not
-                          make that month worth more.</>}
+                          your income figures until you pick one — and it is in them the moment you do.</>}
                   </p>
                   {/* ⚠ THE RENT QUESTION, ASKED ONCE IT IS ACTUALLY A PATTERN. Three months of the
                       same surplus is not something to keep deciding — it is a recorded rent that
@@ -451,27 +469,31 @@ export default function MonthDetailPanel({
                       if (ok) stopAlways.mutate();
                     }}>Ask me about these again</button>
                   )}
-                  {!deciding && !confirmedRevenue && (
-                    <button className="secondary mp-record" disabled={busy} onClick={() => setDeciding(true)}>
-                      What is this {money(excess)}?
-                    </button>
-                  )}
-                  {deciding && (
+                  {/* ⚠ NO GATE. George, 2026-08-17: *"i shouldnt have to click what is this 100
+                      there should just be quick options."* The chooser sat behind a "What is this
+                      $X?" button so the four answers would not crowd every settled month — but a
+                      month WITH a surplus is exactly the month that has something to answer, and
+                      making the landlord ask to be asked is a click that buys nothing.
+                      "Leave it for now" went with it: with nothing to open, leaving it is not
+                      clicking, and a button for doing nothing was only ever a way out of the
+                      chooser. The labels are short because the confirm dialog carries the detail. */}
+                  {!confirmedRevenue && (
                     <div className="mp-decide-opts">
-                      <button className="ghost btn-sm" disabled={busy} onClick={async () => {
+                      <button className="secondary btn-sm" disabled={busy} onClick={async () => {
                         const ok = await askConfirm({
                           title: `Count ${money(excess)} as ${monthName(m)}’s revenue?`,
                           message: `${money(excess)} arrived on ${monthName(m)} ${year} beyond the ${money(owed)} it billed.`,
                           implications: [
-                            `${monthName(m)} counts ${money(round2(received))} instead of ${money(owed)} on the live income and expenses.`,
+                            `${monthName(m)} counts ${money(round2(received))} instead of ${money(owed)} on the live income and expenses, straight away.`,
                             'It lands under Money in › Rent — no other line can claim it, because no bill asked for it.',
+                            'This month only. Every other month still asks.',
                             'No payment moves and no bill changes. You are answering what the money was for.',
                           ],
                           confirmLabel: 'Count it as revenue',
                           tone: 'warn',
                         });
                         if (ok) confirmRevenue.mutate();
-                      }}>It is {monthName(m)}&rsquo;s revenue</button>
+                      }}>Revenue for {monthName(m)}</button>
                       {/* George, 2026-08-17: *"there should also be an option to just accept the
                           overpayment as revenue — if the user continues to notice it they can just
                           change the base rent manually."* The per-month answer re-asks whenever the
@@ -491,27 +513,21 @@ export default function MonthDetailPanel({
                           tone: 'warn',
                         });
                         if (ok) confirmRevenue.mutate(allKey);
-                      }}>Anything extra from {row?.tenant_name || 'this tenant'} is revenue — stop asking</button>
-                      {/* Only the surplus moves. `Move this payment` above still re-files a whole
-                          cheque that was filed against the wrong month — a different question. */}
+                      }}>Revenue always</button>
+                      {/* ⚠ Only the surplus moves. `Move this payment` above still re-files a WHOLE
+                          cheque filed against the wrong month — a different question.
+                          The next month is one click because it is the case George named
+                          ("roll it forward to the next month"); the picker stays for the rest. */}
+                      {biggestPay && m < 12 && (
+                        <button className="ghost btn-sm" disabled={busy} onClick={() => askRoll(m + 1)}>
+                          Roll to {monthName(m + 1)}
+                        </button>
+                      )}
                       {biggestPay && (
-                        <select className="text-input" value="" disabled={busy} onChange={async (e) => {
-                          const to = Number(e.target.value);
-                          if (!to) return;
-                          const ok = await askConfirm({
-                            title: `Roll ${money(excess)} forward to ${monthName(to)}?`,
-                            message: `The ${money(biggestPay.amount)} received on ${biggestPay.paid_date || 'an unrecorded date'} covered ${monthName(m)} and ${money(excess)} more.`,
-                            implications: [
-                              `${monthName(to)} receives ${money(excess)} — its box shows the money and it needs that much less.`,
-                              `${monthName(m)} keeps exactly the ${money(owed)} it billed.`,
-                              'The payment is split, not re-filed: same date, same method, same bank statement behind both halves.',
-                            ],
-                            confirmLabel: `Roll it to ${monthName(to)}`,
-                            tone: 'warn',
-                          });
-                          if (ok) rollForward.mutate(to);
-                        }}>
-                          <option value="">Roll {money(excess)} forward to…</option>
+                        <select className="text-input mp-decide-pick" value="" disabled={busy}
+                          aria-label={`Roll ${money(excess)} forward to another month`}
+                          onChange={(e) => { const to = Number(e.target.value); if (to) askRoll(to); }}>
+                          <option value="">Roll to…</option>
                           {MONTHS.map((nm, mi) => (mi + 1 === m ? null : <option key={nm} value={mi + 1}>{nm}</option>))}
                         </select>
                       )}
@@ -528,8 +544,7 @@ export default function MonthDetailPanel({
                           tone: 'warn',
                         });
                         if (ok) refundIt.mutate();
-                      }}>Refund it</button>
-                      <button className="ghost btn-sm" disabled={busy} onClick={() => setDeciding(false)}>Leave it for now</button>
+                      }}>Refund</button>
                     </div>
                   )}
                 </div>

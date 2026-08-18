@@ -1361,9 +1361,17 @@ tbody tr:last-child td{border-bottom:none}
 .mp-decide-lead{margin:0;font-size:12px;line-height:1.5;color:var(--muted)}
 .mp-decide-lead strong{color:var(--ink)}
 .mp-decide-nudge{margin-top:7px;padding:7px 9px;border-radius:var(--radius);background:var(--gold-soft);color:var(--gold-ink,var(--muted))}
-.mp-decide-opts{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-top:9px}
-.mp-decide-opts .btn-sm,.mp-decide-opts select{width:100%;text-align:left}
-.mp-decide select{margin-top:6px;width:100%}
+/* ⚠ QUICK OPTIONS, WRAPPED — not a stacked list of sentences (George, 2026-08-17: *"i shouldnt
+   have to click what is this 100 there should just be quick options"*). They stack full-width
+   only when the panel is too narrow to lay them out. The detail lives in the confirm dialog,
+   which is where a decision about money belongs anyway. */
+.mp-decide-opts{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:9px}
+.mp-decide-opts .btn-sm{white-space:nowrap}
+.mp-decide-pick{padding:3px 22px 3px 8px;font-size:11px;height:26px;background-position:right 6px center;background-size:8px 5px}
+@media (max-width:420px){
+  .mp-decide-opts{flex-direction:column;align-items:stretch}
+  .mp-decide-opts .btn-sm,.mp-decide-pick{width:100%;text-align:left}
+}
 .mp-note{font-size:12px;line-height:1.55;margin:0 0 10px}
 .mp-note-tight{margin:8px 0 0}
 /* "The bill itself was different" is an ACTION, not a fourth list — so it reads as a card

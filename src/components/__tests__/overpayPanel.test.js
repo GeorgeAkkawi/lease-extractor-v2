@@ -77,14 +77,17 @@ describe('an over-paid month asks what the surplus is', () => {
     // …and the figure is named as being in none of the income.
     expect(within(panel).getByText(/more arrived than/)).toBeTruthy();
 
-    fireEvent.click(within(panel).getByRole('button', { name: /What is this \$1,750\.00\?/ }));
-    // All three answers, plus leaving it — which is a legitimate one and must be offered.
-    // ⚠ Anchored, because "…is revenue — stop asking" is a DIFFERENT answer sitting beside it.
-    expect(within(panel).getByRole('button', { name: /^It is .+revenue$/ })).toBeTruthy();
-    expect(within(panel).getByRole('button', { name: /is revenue — stop asking$/ })).toBeTruthy();
-    expect(within(panel).getByRole('button', { name: /Refund it/ })).toBeTruthy();
-    expect(within(panel).getByRole('button', { name: /Leave it for now/ })).toBeTruthy();
-    expect(within(panel).getByRole('option', { name: /Roll \$1,750\.00 forward to…/ })).toBeTruthy();
+    // ⚠ NO GATE — every answer is there the moment the month is opened (George: *"i shouldnt
+    // have to click what is this 100 there should just be quick options"*).
+    expect(within(panel).queryByRole('button', { name: /What is this/ })).toBeNull();
+    expect(within(panel).getByRole('button', { name: /^Revenue for /   })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /^Revenue always$/ })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: /^Refund$/ })).toBeTruthy();
+    // The next month is one click; every other month is in the picker beside it.
+    expect(within(panel).getByRole('button', { name: /^Roll to May$/ })).toBeTruthy();
+    expect(within(panel).getByRole('combobox', { name: /Roll \$1,750\.00 forward to another month/ })).toBeTruthy();
+    // Leaving it is not clicking, so there is no button for doing nothing.
+    expect(within(panel).queryByRole('button', { name: /Leave it for now/ })).toBeNull();
     cleanup();
   });
 
@@ -103,16 +106,16 @@ describe('an over-paid month asks what the surplus is', () => {
 
     fireEvent.doubleClick(cell);
     const panel = await screen.findByRole('dialog');
-    fireEvent.click(within(panel).getByRole('button', { name: /What is this \$900\.00\?/ }));
-    fireEvent.click(within(panel).getByRole('button', { name: /^It is .+revenue$/ }));
+    fireEvent.click(within(panel).getByRole('button', { name: /^Revenue for / }));
     // The confirm names where the money lands before it moves — never a bare "are you sure".
     const confirm = await screen.findByText(/Count \$900\.00 as/);
     expect(confirm).toBeTruthy();
     expect(screen.getByText(/Money in › Rent|under Money in/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Count it as revenue/ }));
 
+    // ⚠ AND IT SAYS THE MONEY IS IN THE LIVE FIGURES NOW — George asked that outright.
     await waitFor(() => {
-      expect(within(screen.getByRole('dialog')).getByText(/You have counted this/)).toBeTruthy();
+      expect(within(screen.getByRole('dialog')).getByText(/is in your live income/)).toBeTruthy();
     });
     cleanup();
   });
@@ -147,8 +150,7 @@ describe('the standing answer settles every month at once', () => {
     fireEvent.doubleClick(document.querySelector('.rr-cell.awaiting'));
     const panel = await screen.findByRole('dialog');
     expect(within(panel).getByText(/has paid over on/)).toBeTruthy();
-    fireEvent.click(within(panel).getByRole('button', { name: /What is this/ }));
-    fireEvent.click(within(panel).getByRole('button', { name: /is revenue — stop asking/ }));
+    fireEvent.click(within(panel).getByRole('button', { name: /^Revenue always$/ }));
     await screen.findByText(/Count anything extra from/);
     // It says it is this year only — a standing answer must not outlive the rent it was about.
     expect(screen.getByText(/this year only/)).toBeTruthy();
