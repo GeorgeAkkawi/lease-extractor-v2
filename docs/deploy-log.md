@@ -40,6 +40,19 @@ un-undoable.** The buttons will not appear for them and `undoSplitPayment` refus
 `not_split`. That is the migration window doing precisely what the fallback traded for: a feature
 that worked without a link rather than one that errored.
 
+**Measured: there is exactly one, and it is identifiable with certainty.** Seven payments were
+created since 2026-08-17; one pair shares a `lease_id`, a `paid_date`, a **note** and — decisively —
+an **`import_hash` (`v1-aac97ed1-69`)**, so both rows came from a single bank line:
+
+| Row | Amount | Month | Created |
+|---|---|---|---|
+| parent | **$4,418** | August | 2026-08-17 15:02 |
+| child | **$100** | September | 2026-08-18 00:43 |
+
+Sam Nails at **Pershing Plaza** — a $4,518 ACH with $100 rolled to September. Note this was
+identified for *reporting*, not repaired: the shared `import_hash` makes it certain here, but that is
+a property of this pair, not a rule, and nothing was written on the strength of it.
+
 No sweep can repair them, and that is the same argument `0101` makes for storing the link at all —
 the two halves of a split share a `paid_date`, a `method`, an `import_hash` and a lease, so any
 inference would be a guess, and a wrong guess moves a landlord's money onto a month nobody chose.
