@@ -25,12 +25,22 @@ import { localDateIso } from '../lib/api';
 // live, four bars apiece — and the band above this now says the same thing for the portfolio
 // in three pairs of figures. Two answers to one question is the drift this codebase spends
 // most of its comments avoiding, and the band is the one that reconciles with the donut.
-export default function PortfolioCharts({ properties = [], totalsByProp = {}, leases = [], year }) {
-  const revenue = revenueByProperty(properties, totalsByProp);
+// ⚠ THE DONUT NOW WAITS FOR THE LEDGER ROLL (2026-08-18 (3)). It used to sum
+// `v_property_totals.total_revenue`, which arrives with the page; it now sums the same
+// `rentProjected` the band above it prints, so that a raise with a date is priced from the month
+// it takes effect. That figure needs each lease's schedule, which lands a beat later — so the
+// panel draws a loading ring and keeps its frame rather than popping into existence, and it never
+// paints the view's figure first and revises it.
+export default function PortfolioCharts({ properties = [], totalsByProp = {}, basisByProp = null, leases = [], year }) {
+  const revenue = revenueByProperty(properties, totalsByProp, basisByProp);
   const space = occupancyByProperty(properties, totalsByProp);
   const rollover = rentRollover(leases, localDateIso());
 
-  if (!revenue.length && !space.length && !rollover.length) return null;
+  // "Not yet" and "nothing" are different answers. A property with a year to report is one the
+  // totals view already knows about, so the frame can be reserved before its rent is derived.
+  const revenueLoading = !basisByProp && (properties || []).some((p) => Number(totalsByProp?.[p.id]?.total_revenue) > 0);
+
+  if (!revenue.length && !revenueLoading && !space.length && !rollover.length) return null;
 
   const revenueTotal = revenue.reduce((s, d) => s + d.value, 0);
   const topShare = revenueTotal > 0 && revenue.length ? Math.round((revenue[0].value / revenueTotal) * 100) : null;
@@ -62,29 +72,35 @@ export default function PortfolioCharts({ properties = [], totalsByProp = {}, le
 
   return (
     <div className="chart-band">
-      {revenue.length > 0 && (
+      {(revenue.length > 0 || revenueLoading) && (
         <ChartPanel
           title="Where the rent comes from"
           caption={topShare != null && revenue.length > 1
             ? `${shortName(revenue[0].name, 24)} is ${topShare}% of the roll`
             : `FY ${year}`}
         >
-          <div className="donut-wrap">
+          <div className={`donut-wrap${revenueLoading ? ' is-loading' : ''}`}>
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
                 <Pie
-                  data={revenue} dataKey="value" nameKey="name"
+                  data={revenueLoading ? [{ id: 'wait', name: 'Reading the leases', value: 1 }] : revenue}
+                  dataKey="value" nameKey="name"
                   innerRadius="62%" outerRadius="92%" paddingAngle={revenue.length > 1 ? 1.5 : 0}
                   stroke="var(--panel)" strokeWidth={2} isAnimationActive={false}
                 >
-                  {revenue.map((d, i) => <Cell key={d.id} fill={DONUT_PALETTE[i % DONUT_PALETTE.length]} />)}
+                  {revenueLoading
+                    ? <Cell key="wait" fill="var(--line)" />
+                    : revenue.map((d, i) => <Cell key={d.id} fill={DONUT_PALETTE[i % DONUT_PALETTE.length]} />)}
                 </Pie>
-                <Tooltip formatter={(v, n) => [money(v), n]} />
+                {!revenueLoading && <Tooltip formatter={(v, n) => [money(v), n]} />}
               </PieChart>
             </ResponsiveContainer>
             <div className="donut-center" aria-hidden="true">
-              <div className="donut-figure">{money0(revenueTotal)}</div>
-              <div className="donut-cap">Annual rent roll</div>
+              {/* An em dash, not $0. The rent is being derived, and a zero would be a reading. */}
+              <div className="donut-figure">{revenueLoading ? '—' : money0(revenueTotal)}</div>
+              {/* Not "Annual rent roll" any more: it is no longer an annual RATE. This is the year
+                  as the leases schedule it — each raise from the month it takes effect. */}
+              <div className="donut-cap">{revenueLoading ? 'reading the leases…' : `Rent roll · FY ${year}`}</div>
             </div>
           </div>
           <div className="chart-legend wrap">

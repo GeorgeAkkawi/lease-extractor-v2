@@ -137,22 +137,6 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
   // IN has to know how much of the cash answers to no bill, or it reads as a bill that was
   // overpaid (`yearBridge`).
   let unbilled = 0;
-  // ⚠ THE TWO REASONS A SCHEDULE DIFFERS FROM THE ANNUAL RATE, SPLIT — because they are not the
-  // same fact and a landlord acts on them differently. `total_revenue` is `sum(effective_rent)`,
-  // one RATE per lease applied to the whole year; these months come from the lease's own
-  // schedule. It can differ two ways:
-  //   • a rent STEP took effect mid-year — the months before it are billed at the old rate,
-  //     while the view quotes the new one for all twelve. Nothing is wrong; the raise simply
-  //     has a date (George, 2026-08-04).
-  //   • the TENANCY ran only part of the year — the view does not prorate, the schedule does.
-  // Shipped as one line saying only the second, which on George's own portfolio named a cause
-  // that was not there while the real one (four applied 2026 steps) went unmentioned. That is
-  // exactly the fault the `flags()` rewrite fixed on 2026-08-17.
-  //
-  // Accumulated UNROUNDED against an unrounded twelfth, so twelve of them come back to the
-  // annual rate exactly rather than a cent short — a cent here prints as "not accounted for".
-  let rentStepEffect = 0;
-  let rentPartYear = 0;
   // ⚠ WHAT THE SHEET SAYS AND WHAT THE INVOICE SAYS ARE TWO DIFFERENT THINGS, and only one
   // of them is in the tenant's hands. These rows are built UP from each lease's current
   // terms; a stored invoice is a frozen copy that does not rebuild itself (CLAUDE.md §1).
@@ -260,20 +244,14 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
     groups.roof.push(mk('roof', null));
     groups.charges.push(mk('charges', adjustmentMarks(adjRows, 'charges')));
     groups.carried.push(mk('carried', adjustmentMarks(adjRows, null)));
-    // The old formula, kept for the tie-out only — and now also split into WHY it differs.
-    // ⚠ The out-of-term flag is read off the SAME schedule `tieComp` was built from, never off
-    // `r.schedule`: on a projected roll those are two different arrays and the split would
-    // attribute a month the tie-out never counted.
-    const tieSched = r?.contractedSchedule || r?.schedule || null;
-    const twelfth = num(r.base_rent) / 12;
+    // The year as the lease actually contracts to bill it, month by month — every applied step
+    // dated to its own month, an out-of-term month zero. Since 2026-08-18 (3) this is not only
+    // the workbook's tie-out figure: it is the LEAD HALF of the Overview's projected Revenue
+    // (`portfolioBasis` adds `projectedAhead` to it), which is what stopped that band quoting an
+    // unprorated annual rate for a year whose raises have dates.
     for (let i = 0; i < 12; i++) {
       const c = tieComp?.[i + 1];
-      const billedM = c ? round2(num(c.base) + (r.gross ? num(c.camTax) + num(c.roof) : 0)) : 0;
-      if (c) tieOut = round2(tieOut + billedM);
-      // `componentizeSchedule` zeroes an out-of-term month outright, so its whole twelfth is
-      // the part-year effect and the step effect for that month is not a statement about rent.
-      if (!tieSched?.[i + 1] || tieSched[i + 1].outsideTerm) rentPartYear -= twelfth;
-      else rentStepEffect += billedM - twelfth;
+      if (c) tieOut = round2(tieOut + round2(num(c.base) + (r.gross ? num(c.camTax) + num(c.roof) : 0)));
     }
     // `drift` is already measured on the roll (`invoiceDrift`, api.js) — schedule less the
     // stored invoice total. Positive = the sheet is ahead of the bill.
@@ -286,7 +264,6 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
   unappliedRows.sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label) || a.month - b.month);
   return {
     ...groups, tieOut: round2(tieOut), creditTotal, unapplied, unappliedRows, unbilled,
-    rentStepEffect: round2(rentStepEffect), rentPartYear: round2(rentPartYear),
     drifted, driftTotal: round2(drifted.reduce((s, d) => s + d.amount, 0)),
   };
 }
@@ -300,8 +277,16 @@ export function billedRowsFromRoll(roll = [], { collected = false, year = null, 
  * uncollected at year end" on a sheet the landlord may well send them. Nobody has been billed
  * for it. `getPropertyMonthlyRoll` attaches `contractedSchedule` only when it was asked to
  * project, so on every other path this is the identity.
+ *
+ * ⚠ EXPORTED SINCE 2026-08-18 (3), FOR ONE CALLER AND ONE REASON. `portfolioBasis` now reads the
+ * roll WITH `includeScheduled` — it needs `projectedAhead` for the band's projected Revenue — and
+ * every other figure it takes off that roll (the cash allocation, the arrears, the surplus
+ * hold-back) must go on being measured against the bill. Wrapping there is what keeps them
+ * byte-identical to the un-projected read they used to come from. Anything else that reaches for
+ * a projected roll owes the same wrap; that is why this is a shared function rather than a line
+ * of `.map` at the call site.
  */
-const contractedRoll = (roll = []) => (roll || []).map((r) => (r?.contractedSchedule
+export const contractedRoll = (roll = []) => (roll || []).map((r) => (r?.contractedSchedule
   ? { ...r, schedule: r.contractedSchedule, factor: r.contractedFactor ?? r.factor }
   : r));
 

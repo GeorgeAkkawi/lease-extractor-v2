@@ -19,7 +19,7 @@
 // ⚠ WHICH TERMS ARE MEASURED AND WHICH ARE THE REMAINDER, because the difference decides what
 // `unexplained` can catch:
 //
-//   MEASURED, from an independent source — `basis` (the JS schedule against the SQL view),
+//   MEASURED, from an independent source — `ahead` (the roll's own `projectedAhead`),
 //   `grossCarve` (the rows' own flag), `corrections` (`adjustmentsForPnlRow`), `credit` and
 //   `unbilled` (the allocator). Revenue's five therefore over-determine `rentPosted`, and when
 //   they stop agreeing with it the gap prints as `unexplained`. That is the real check here.
@@ -135,19 +135,21 @@ export function yearBridge(rows = [], { year = null } = {}) {
   // settles no bill (`tenantCredit`, `unbilled`) is added back BEFORE the subtraction, so it is
   // named on its own line instead of quietly making the arrears figure look smaller.
   const rentArrears = (r) => -(num(r.rentPosted) + num(r.tenantCredit) + num(r.unbilled) - num(r.rentLive));
-  // ⚠ THE BASIS GAP IS THREE FACTS, NOT ONE, and shipping it as one named a cause that was not
-  // there. On George's own portfolio the whole of it was mid-year rent steps — Infinite Mobile
-  // −$3,504, Sam Nails −$271, Ricki's-Lyons −$182, Vape Store −$351 — under a sentence about
-  // part-year tenancies, of which there were none. The two are now measured apart in
-  // `billedRowsFromRoll`, and what neither explains stays as the twin check it always was.
-  const rentBasisRest = (r) => num(r.rentScheduled) - num(r.rentProjected) - num(r.rentStepEffect) - num(r.rentPartYear);
+  // ⚠ THREE TERMS CAME OFF HERE ON 2026-08-18 (3), AND NOT BECAUSE THEY WERE WRONG. `rentStep`,
+  // `partYear` and `basis` between them explained why an unprorated annual rate differed from the
+  // leases' own months — and George's answer to being shown that was the right one: *"we should
+  // make rent projections part of the projected rent because we know what those numbers are so
+  // that shouldn't be a discrepancy."* Projected Revenue IS those months now, so there is nothing
+  // for the three to explain. What survives is the ONE fact the schedule genuinely cannot bill
+  // yet: a step the leases have scheduled that no invoice carries.
+  //
+  // ⚠ AND IT IS A TERM, NOT A CAVEAT, because it is inside projected. A landlord reading "$3,368
+  // short" is owed the sentence saying $3,368 of the projection is a raise nobody has been asked
+  // to pay — otherwise it reads as rent someone is withholding.
   const revenue = measure('revenue', 'Revenue', 'base rent', col(list, 'rentProjected'), col(list, 'rentLive'), [
     term('arrears', 'rent billed and not yet in', list, rentArrears),
-    term('rentStep', 'a rent step that took effect part-way through the year — the months before it are billed at the old rate, while the Financials page quotes the new one for all twelve', list,
-      (r) => num(r.rentStepEffect)),
-    term('partYear', 'a tenancy that ran only part of the year — billed only for the months it ran, while the Financials page quotes a full annual rate that is not prorated', list,
-      (r) => num(r.rentPartYear)),
-    term('basis', 'the annual rate the Financials page quotes, against these leases’ own month-by-month schedule', list, rentBasisRest),
+    term('ahead', 'a rent step your leases schedule for this year that has not taken effect yet — it is counted in the projection because the lease says it, but no invoice carries it and no tenant has been asked to pay it', list,
+      (r) => -num(r.projectedAhead)),
     term('grossCarve', 'a gross lease’s CAM & tax, which its flat rent already covers — counted under Expenses instead of twice', list,
       (r) => -num(r.grossCarve)),
     term('corrections', 'base-rent corrections posted on tenants’ bills', list, (r) => num(r.rentCorrections)),
@@ -190,6 +192,17 @@ export function yearBridge(rows = [], { year = null } = {}) {
       (r) => num(r.unapplied), { link: 'ledger', action: 'Answer it on the Ledger' }),
     term('invoiceDrift', 'the invoices you actually issued differ from what these leases now say — an issued bill is frozen and does not follow a later change', list,
       (r) => num(r.driftTotal), { link: 'ledger', action: 'The Ledger offers Rebuild' }),
+    // ⚠ THE OTHER SCREEN'S FIGURE, NAMED HERE SO NOBODY HAS TO FIND IT BY FLIPPING BETWEEN TWO
+    // TABS (2026-08-18 (3)). Revenue above is the leases' own months; the Financials page's
+    // "Projected revenue (annualized)" is still `sum(effective_rent)`, an annual RATE — the view
+    // was deliberately left alone because NOI, every closed-year snapshot, History's YoY cards
+    // and the % management fee that WRITES tenant invoices all read it. So the two genuinely
+    // differ, by the dating of this year's raises and by a term nobody prorates, and George's
+    // standing complaint is about unexplained figures, not about there being two questions.
+    //
+    // It is also what is left of the `effective_rent` ↔ `buildLeaseSchedule` twin check (§3):
+    // Revenue used to BE the view, so agreeing with it was free. Now the gap is printed instead.
+    twinCheck(list),
   ].filter(Boolean);
 
   const measures = [revenue, expenses, total];
@@ -204,6 +217,20 @@ export function yearBridge(rows = [], { year = null } = {}) {
     // panel needs to tell "checked and clean" apart from "nothing has been logged".
     clean: measures.every((m) => !m.terms.some((t) => t.unexplained)),
   };
+}
+
+/**
+ * The Financials page's annual rate against this band's month-by-month reading of the same year.
+ *
+ * Held to a whole dollar for the reason `TERM_FLOOR` exists: twelfths round, and a two-cent gap
+ * given a sentence of explanation is the *"−$0.01 · the estimate is an annual figure"* line
+ * George met on 2026-08-18 and was right to query.
+ */
+function twinCheck(list) {
+  const t = term('annualRate', 'the annual rate the Financials page quotes for this year — every lease at today’s rent for all twelve months, which neither dates a raise to the month it lands nor shortens a part-year tenancy. This band prices the months your leases actually bill', list,
+    (r) => num(r.rentAnnualRate) - num(r.rentProjected),
+    { action: 'Both are right — they answer different questions' });
+  return t && Math.abs(t.amount) >= TERM_FLOOR ? t : null;
 }
 
 /** `Your leases bill $X and $Y has come in — $Z short. Most of it is …` */

@@ -14,7 +14,7 @@
 // So the three columns are now the INVOICE'S OWN STRUCTURE, which is the one shape a landlord
 // already reads without being taught:
 //
-//   Revenue   base rent            ← `v_property_totals.total_revenue`, THE PIE'S OWN FIGURE
+//   Revenue   base rent            ← the leases' own schedules, AND THE PIE'S OWN FIGURE
 //   Expenses  CAM & tax at estimate← `billedComponents`, what the invoice bills
 //   Total     the two together     ← what the tenant is charged
 //
@@ -22,17 +22,24 @@
 // genuinely add — and these do, because they are the two halves of one bill. It also retires
 // the NOI reconciliation the old third column needed: there is nothing left to reconcile.
 //
-// ⚠ THE PROJECTED SIDE NO LONGER TOUCHES THE ROLL. Revenue comes from the view the pie already
-// reads, and the CAM & tax estimate from one bulk `v_tenant_shares` read through
+// ⚠ REVENUE MOVED OFF THE VIEW ON 2026-08-18 (3), and the identity with the donut survived the
+// move because the DONUT MOVED WITH IT. George: *"we should make rent projections part of the
+// projected rent because we know what those numbers are so that shouldn't be a discrepancy."*
+// `total_revenue` is `sum(effective_rent)` — an annual RATE — so it counted a July raise as
+// though it had run since January and could not see a raise still scheduled. Both showed on the
+// band as a gap the landlord was asked to account for; neither was one. Revenue is now the year
+// the leases contract to bill, each step dated to its own month, plus the months a scheduled
+// step will re-price. The view is untouched and everything else still reads it.
+//
+// The CAM & tax estimate still comes from one bulk `v_tenant_shares` read through
 // `billedComponents` — a §2 choke point, the same function the invoice and the Ledger price
-// from, so the band cannot quote a different bill from the bill. Only the LIVE side needs the
-// roll, because only cash needs allocating.
+// from, so the band cannot quote a different bill from the bill.
 //
 // Nothing here writes.
 import {
   getPropertyMonthlyRoll, listTenantSharesByProperties, listOtherIncomeByProperties,
 } from './api';
-import { billedRowsFromRoll } from './incomeExpense';
+import { billedRowsFromRoll, contractedRoll } from './incomeExpense';
 import { billedComponents } from './reconciliation';
 import { summarizeOtherIncome } from './otherIncome';
 import { adjustmentsForPnlRow } from './adjustments';
@@ -64,6 +71,7 @@ const allAdjRows = (roll = []) => (roll || []).flatMap((r) => r?.adjustmentRows 
  * holds money OUT: a surplus counted because a read failed is income asserted on no authority.
  *
  * Returns per property:
+ *   rentProjected    the base rent this year's leases contract to bill, month by month
  *   camTaxProjected  the CAM, tax and roof this year's leases bill at estimate
  *   rentLive         base rent actually collected
  *   camTaxLive       CAM, tax and roof actually collected
@@ -91,11 +99,28 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
       // a §2 choke point. Re-deriving them cheaply here would be a second implementation of the
       // Ledger's own grid.
       //
-      // ⚠ AND WITHOUT `includeScheduled`. Cash is apportioned across what the tenant was
-      // actually BILLED; a rent step nobody has been charged for would move real money onto a
-      // row it never touched, and would hide a genuine over-payment by raising the month's
-      // owed above it.
-      const roll = await getPropertyMonthlyRoll(id, year);
+      // ⚠ AND WITH `includeScheduled`, WHICH IS NEW AND IS NOT A LICENCE TO PROJECT ANYTHING
+      // ELSE (2026-08-18 (3)). George: *"we should make rent projections part of the projected
+      // rent because we know what those numbers are so that shouldn't be a discrepancy."* The
+      // flag buys exactly ONE figure — `projectedAhead`, the rent a scheduled-but-unswept step
+      // adds — and every other reading below must go on being measured against the BILL:
+      //
+      //   • cash is apportioned across what the tenant was actually charged. Price a month
+      //     against a step nobody has been billed for and a real over-payment shrinks or
+      //     disappears, and the surplus hold-back silently stops holding anything
+      //     (`portfolioBasis.test.js` pins this and is the assertion to watch).
+      //   • `tenantStanding` reads the schedule to decide who is BEHIND — a projected roll turns
+      //     a future raise into arrears in a figure a landlord may well send a tenant.
+      //
+      // So the projected roll is unwrapped exactly once, for its one number, and `contractedRoll`
+      // puts the bill back for everything else.
+      const projectedRoll = await getPropertyMonthlyRoll(id, year, { includeScheduled: true });
+      const roll = contractedRoll(projectedRoll);
+      // The rent this year's leases contract to bill that no invoice can carry yet: a step with a
+      // 2026 effective date that the nightly sweep has not reached. Read straight off the roll —
+      // `annual − contracted.annual` from ONE lease built twice with only `includeScheduled`
+      // differing (`api.js`), so the delta is the rent step and nothing else.
+      const projectedAhead = round2((projectedRoll || []).reduce((s, r) => s + num(r?.projectedAhead), 0));
       const live = billedRowsFromRoll(roll, { collected: true, year, confirmed });
       // The same roll read a second time, as POSTED rather than as paid. Free — both passes
       // are pure over rows already in hand — and it is the only source for the fees and
@@ -117,12 +142,30 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
         // that is the whole reason the bridge lives beside the band rather than deriving a
         // second reading of the same year somewhere else (CLAUDE.md §2).
         //
-        // What the leases contract to bill, at their own rates — the like-for-like comparable
-        // to `total_revenue` and the JS half of that twin.
+        // ── THE BAND'S PROJECTED REVENUE, and since 2026-08-18 (3) it is DERIVED HERE rather
+        // than taken from `v_property_totals.total_revenue`.
+        //
+        // `total_revenue` is `sum(effective_rent)` — one annual RATE per lease, applied flat to
+        // all twelve months. It therefore priced a raise that landed in July as though it had
+        // run since January (−$4,307.31 on George's own FY 2026) and could not see a raise still
+        // scheduled at all (+$3,368.06). Both were printed on the band as a difference the
+        // landlord was asked to explain, and neither was one: the leases say exactly what each
+        // month bills.
+        //
+        //   rentProjected = tieOut          the year as contracted, each applied step dated
+        //                 + projectedAhead  the months a scheduled step will re-price
+        //
+        // ⚠ THE VIEW ITSELF IS UNTOUCHED, deliberately. NOI, every `financial_snapshots` row
+        // already written, the Financials page's "Projected revenue (annualized)", History's YoY
+        // cards and `syncRentPctCamItems` (which WRITES — a % management fee re-struck from
+        // `total_revenue`) all still read it and none of them moved. `rentAnnualRate` below
+        // carries the view's figure through so the bridge can state the remaining gap between
+        // the two screens instead of leaving a landlord to find it.
+        rentProjected: round2(num(posted.tieOut) + projectedAhead),
+        projectedAhead,
+        // What the leases contract to bill, at their own rates — still the JS half of the
+        // `effective_rent` twin, and now also the lead term of the figure above.
         rentScheduled: round2(posted.tieOut),
-        // …and the two reasons it differs from the annual rate, measured apart.
-        rentStepEffect: round2(posted.rentStepEffect),
-        rentPartYear: round2(posted.rentPartYear),
         // What the Rent row actually posts, and what CAM & tax actually posts.
         rentPosted: groupTotal(posted.rent),
         camTaxPosted: round2(groupTotal(posted.camTax) + groupTotal(posted.roof)),

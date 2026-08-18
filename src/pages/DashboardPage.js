@@ -237,9 +237,12 @@ export default function DashboardPage() {
   const buildingSf = totalsList.reduce((s, t) => s + (Number(t.building_sf) || 0), 0);
   const occupancy = buildingSf > 0 ? Math.round((leasedSf / buildingSf) * 100) : null;
 
-  // The headline band's three pairs. Revenue comes straight off `total_revenue`, which is
-  // the SAME figure `revenueByProperty` sums for the donut below — that identity is the
-  // whole point of the rebuild and is asserted in portfolioBasis.test.js.
+  // The headline band's three pairs. Revenue is the year the leases contract to bill — every
+  // applied step dated to its own month, plus the months a scheduled step will re-price — and it
+  // is the SAME `rentProjected` `revenueByProperty` sums for the donut below. That identity is
+  // the whole point of the rebuild and is asserted in portfolioCharts.test.js; it is also why
+  // `basisByProp` now goes to BOTH, rather than the band deriving one figure and the donut
+  // reading a view (2026-08-18 (3)).
   const bandRows = basisRows(properties, totalsByProp, basisByProp);
   const bandTotals = bandRows.length ? portfolioBasis(bandRows) : null;
   // …and WHY the two readings differ, from the same rows. Nothing is read for this: the causes
@@ -309,7 +312,7 @@ export default function DashboardPage() {
           taking a second, which would let a landlord hide half of one idea. */}
       {showCharts && <BasisBand totals={bandTotals} bridge={bandBridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />}
 
-      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} leases={leases} year={year} />}
+      {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} basisByProp={basisByProp} leases={leases} year={year} />}
 
       {nothingShown && (
         <div className="panel">

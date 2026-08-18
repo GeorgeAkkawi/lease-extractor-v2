@@ -45,7 +45,11 @@ describe('Overview — portfolio charts', () => {
     // and the foot has to explain it rather than leave a bar labelled "Now" to guesswork.
     expect(screen.getByText(/already past its end date/)).toBeTruthy();
     // The donut's centre caption — and the ONLY place the rent roll is stated.
-    expect(screen.getAllByText('Annual rent roll').length).toBe(1);
+    // ⚠ NOT "Annual rent roll" SINCE 2026-08-18 (3). It is no longer an annual RATE: the donut
+    // sums the leases' own months, each raise from the date it takes effect, which is why the
+    // caption now names the fiscal year instead of claiming to be a yearly figure.
+    await waitFor(() => expect(screen.getAllByText(/^Rent roll · FY \d{4}$/).length).toBe(1));
+    expect(screen.queryByText('Annual rent roll')).toBeNull();
     expect(screen.getAllByText(/Maple Plaza/).length).toBeGreaterThan(0);
     // The occupancy headline replaces the old stacked bars (and their unlabelled axis):
     // a percentage over one filled track per property.
@@ -67,17 +71,37 @@ describe('Overview — portfolio charts', () => {
   // ⚠ THE ONE THAT MATTERS, and the complaint it closes. The band used to put an all-in,
   // prorated projection above a donut showing base rent at the annual rate — two headline
   // figures on one screen, $122,577 apart on George's portfolio, with nothing saying why.
-  // Revenue now comes from the very figure the donut sums.
+  // Revenue comes from the very figure the donut sums.
+  //
+  // ⚠ AND IT SURVIVED THE FIGURE ITSELF CHANGING (2026-08-18 (3)). Both sides moved off
+  // `total_revenue` together, onto the leases' own months. What is pinned here is not which
+  // figure it is — it is that ONE figure reaches both places on this screen.
   it('quotes the same rent as the donut beneath it, to the cent', async () => {
     const { container } = renderDash();
-    const band = await waitFor(() => {
-      const el = container.querySelector('.basis-band');
-      expect(el).toBeTruthy();
-      return el;
+    // Waiting for the FIGURE, not just the frame: both now derive from the Ledger roll, so a
+    // waitFor that stops at the first `.basis-band` can read a loading dash against a $0 column
+    // and pass on nothing at all.
+    const donut = await waitFor(() => {
+      const el = container.querySelector('.donut-figure');
+      expect(el?.textContent.trim()).toMatch(/^\$[\d,]+$/);
+      return el.textContent.trim();
     });
-    const donut = container.querySelector('.donut-figure').textContent.trim();
+    const band = container.querySelector('.basis-band');
+    expect(band).toBeTruthy();
     const revenueProjected = band.querySelector('.basis-col .basis-amt').textContent.trim();
     expect(revenueProjected).toBe(donut);
+  });
+
+  // ⚠ "NOT YET" IS NOT "$0" (2026-08-18 (3)). The donut used to draw from a view that arrives
+  // with the page; it now waits on the Ledger roll. Painting `total_revenue` in the meantime
+  // would state one answer and revise it to another a beat later — the same two-figures fault
+  // the band exists to have closed, spread over time instead of across the screen.
+  it('says it is still reading rather than drawing a zero', async () => {
+    const { container } = renderDash();
+    await waitFor(() => expect(screen.getByText('Where the rent comes from')).toBeTruthy());
+    const figure = container.querySelector('.donut-figure').textContent.trim();
+    expect(figure === '—' || /^\$[\d,]+$/.test(figure)).toBe(true);
+    expect(figure).not.toBe('$0');
   });
 
   // George: *"there should be a total collumn instead of the whats left."*

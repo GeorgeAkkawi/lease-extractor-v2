@@ -1,3 +1,141 @@
+## 2026-08-18 (7) — Projected rent is the year the leases contract, not an annual rate
+
+**Cloudflare version:** `7428e32a-d78b-4fcf-8d1d-9fd670eea2d5` · 2,008 tests / 190 files green.
+
+George, having been shown the −$4,307.31 basis line on his own Overview an hour earlier:
+*"i think we should make rent projections part of the projected rent because we know what those
+numbers are so that shouldnt be a discrepancy."* Asked where it should land, he chose
+**band + donut together**.
+
+### What was actually wrong
+
+The Overview's projected Revenue was `v_property_totals.total_revenue` = `Σ effective_rent` — an
+annual **rate**. It prices every lease at today's rent for all twelve months, so it:
+
+- counted a raise that landed in **July** as though it had run since January, and
+- could not see a raise the leases have **scheduled** but the nightly sweep has not applied.
+
+Both showed on the band as a difference the landlord was asked to account for. Neither was one:
+the leases say exactly what each month bills. Priced on FY 2026 production (read-only, 3
+properties / 15 leases, `total_revenue` $1,032,563.60):
+
+| | Effect |
+|---|---|
+| Applied mid-year steps — Infinite Mobile −$3,504, Sam Nails −$271, Ricki's-Lyons −$182, Vape Store −$351 | **−$4,307.31** |
+| Scheduled steps — Busey Bank 1 Sep, Eye 2 Eye 31 Oct | **+$3,368.06** |
+| **Net move on projected Revenue** | **≈ −$939** |
+
+### The new figure
+
+Per property, off the roll that was already being read:
+
+```
+rentProjected = posted.tieOut      the year as contracted, each applied step dated to its month
+              + projectedAhead     the months a scheduled step will re-price
+```
+
+Both halves already existed. `projectedAhead` is `annual − contracted.annual` from **one** lease
+built twice (`api.js:5155`) with only `includeScheduled` differing, so the delta is the rent step
+and nothing else.
+
+### ⚠ This is a deliberate reversal of 2026-08-18 (2), and the reason is measured
+
+That round pulled the roll **out** of the projected side after George asked *"why is the projected
+800k … and the pie chart says its only like 700k."* That gap was **$122,577** and almost all of it
+was the CAM & tax estimate being folded into Revenue. This change is base rent only, moves it by
+**$939**, and **the donut moves with it** — so the identity that round bought is not spent. The CI
+test that named "projecting a rent step" as the thing it existed to block has been rewritten to
+pin the *identity* rather than the figure it happened to be, with the reversal recorded in it.
+
+### ⚠ `v_property_totals` / `effective_rent` were NOT touched
+
+Deliberately, and this is the load-bearing half of the change. Still reading the view, all
+unmoved: NOI · every `financial_snapshots` row already written · the Financials page's "Projected
+revenue (annualized)" · History's YoY cards · the Ask facts · and **`syncRentPctCamItems`
+(`api.js:3579`), which WRITES** — a management fee stored as a % of rent is re-struck from
+`total_revenue` and calls `resyncPropertyBilling`, so moving the view would have silently
+re-issued tenant invoices.
+
+### The bridge got smaller, and gained the cross-screen sentence
+
+`rentStep`, `partYear` and the leftover `basis` term explained a gap that no longer exists; all
+three came off. One term replaces them, and it is a **term** not a caveat because it is inside
+projected:
+
+> **−$3,368.06** a rent step your leases schedule for this year that has not taken effect yet —
+> counted in the projection because the lease says it, but no invoice carries it and no tenant
+> has been asked to pay it.
+
+**A new caveat states the other screen's figure** (`twinCheck`, `yearBridge.js`). Because the view
+was left alone, the Financials page still quotes an annual rate — so the two genuinely differ, and
+the bridge says by how much rather than leaving a landlord to find it by flipping tabs. It is also
+what is left of the `effective_rent` ↔ `buildLeaseSchedule` twin check (CLAUDE.md §3): Revenue used
+to **be** the view, so agreeing with it was free; the gap is now printed instead. Held to a whole
+dollar by the same `TERM_FLOOR` that keeps −$0.01 out of the terms.
+
+### Files
+
+| File | Change |
+|---|---|
+| `src/lib/incomeExpense.js` | `contractedRoll` **exported** (one caller, stated why). `rentStepEffect` / `rentPartYear` removed with their comment; the tie loop is `tieOut` only again |
+| `src/lib/portfolioBasis.js` | Reads the roll **once with `includeScheduled`** and immediately wraps it in `contractedRoll` for every other reading. Returns `rentProjected` + `projectedAhead` |
+| `src/lib/portfolioCharts.js` | `revenueByProperty` takes the basis map (donut). `basisRows` takes Revenue from it and carries `rentAnnualRate` (drawn nowhere) for the caveat |
+| `src/components/PortfolioCharts.js` | `basisByProp` prop; loading ring; caption `Annual rent roll` → `Rent roll · FY {year}` |
+| `src/pages/DashboardPage.js` | Passes `basisByProp` to `PortfolioCharts` |
+| `src/lib/yearBridge.js` | Three terms out, `ahead` in, `twinCheck` caveat added |
+| `src/components/BasisBand.js` | Foot sentence now true — and says a not-yet-effective raise is counted and named below |
+| `src/App.css` | `.donut-wrap.is-loading` (2 rules) |
+
+### ⚠ The assertion that proves the wrapping worked
+
+`portfolioBasis.test.js` — *"measures the surplus against what was BILLED, not against a
+projection"* — is green. If it ever goes red, the projection has reached the cash allocation and a
+real over-payment is being hidden. `incomeExpense.test.js`, `effectiveRentEra.test.js` and
+`expenseEntry.test.js` (the management-fee basis) all pass **untouched**, which is what proves the
+view was not disturbed.
+
+### Through the user's hands
+
+1. **Getting in** — nothing arrives; same queries, one flag.
+2. **Before the click** — no button; nothing paid or destructive.
+3. **The price** — no new read. One extra pure `buildLeaseSchedule` per lease.
+4. **During** — the donut holds its frame with a flat ring and reads **—**, not $0; the band's
+   Revenue column fills in with it.
+5. **After** — projected Revenue ≈ −$939; the bridge loses two lines, gains one, and gains the
+   cross-screen caveat.
+6. **Where do I look** — same place; band and donut agree to the cent.
+7. **Can you see it** — same `portfolio_charts` widget gate. No `features.js` key, no migration,
+   no backfill.
+8. **What next** — nothing to act on: a scheduled step is information, not a task.
+9. **When it goes wrong** — a failed roll read holds the loading state; it never paints a
+   half-projected figure.
+10. **The second time** — recomputed on view; nothing stored, nothing to go stale.
+
+### Not done — George's call, separately
+
+- **A lease that ENDS mid-year is still counted for twelve months.** D & D Dental leaves 30 Sep, so
+  projected carries **$11,859** of rent they will not pay — nearly 3× the discrepancy this removes.
+  Deliberate today: nothing prorates a term end anywhere, because a tenant may hold over and the
+  app cannot know. Fixing it touches `buildLeaseSchedule`, the Ledger grid and issued invoices. It
+  could instead be **named as a caveat line** for a fraction of the work.
+
+### Now redundant
+
+- **`revenueExpensesNoi`** (`portfolioCharts.js:223`) — exported, covered by ~60 lines of tests, and
+  **rendered nowhere** since the projected-vs-live bars came off on 2026-08-18 (2). It reads
+  `total_revenue` and `noi`, so it is now also the one place a third rent figure could reappear on
+  this screen. Proposed for deletion with its tests.
+- **`listStatementLinesForYear`** (`api.js`) — still no production reader since the bank tie-out
+  came off this morning.
+- **`rentScheduled`** (`portfolioBasis.js` → `basisRows`) — no longer read by any term; it survives
+  only as the lead half of `rentProjected` and as evidence in a test. Either give it a reader or
+  fold it into `rentProjected` at source.
+- **`effectiveRentEra.test.js`'s opening line** — *"Regression for the Overview 'Annual rent roll' ≠
+  property-card revenue bug"*. The test itself is still right and still guards the view; the caption
+  it names no longer exists. One comment line to repoint.
+
+---
+
 ## 2026-08-18 (6) — Name the cause that is actually there (again), and stop narrating pennies
 
 **Cloudflare version:** `ab0119d4-7da7-4066-9c19-e8c534385f81` · 2,004 tests / 190 files green.

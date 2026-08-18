@@ -30,18 +30,31 @@ const cleanup = [];
 afterEach(async () => { while (cleanup.length) await cleanup.pop()(); });
 
 describe('listBasisByProperty — the bill, read twice', () => {
-  // ⚠ THE PIN THAT CLOSES GEORGE'S COMPLAINT. The band's projected Revenue and the donut's
-  // rent roll must be ONE figure. The loader deliberately returns no `rentProjected` at all —
-  // `basisRows` takes it straight from `v_property_totals`, which is what makes the identity
-  // structural rather than a coincidence two functions have to keep agreeing on. This asserts
-  // the loader has not quietly grown its own rent figure to disagree with.
-  it('derives no rent projection of its own — that comes from the view the donut reads', async () => {
+  // ⚠ INVERTED ON 2026-08-18 (3), AND THE REASON IS THE WHOLE CHANGE. This test used to assert
+  // that the loader derived NO rent projection — that `basisRows` took it straight from
+  // `v_property_totals`, which made the band-vs-donut identity structural. George's answer to
+  // being shown the resulting difference was to remove the difference instead:
+  // *"we should make rent projections part of the projected rent because we know what those
+  // numbers are so that shouldn't be a discrepancy."* `sum(effective_rent)` is one annual RATE
+  // per lease across all twelve months, so it dated no applied raise and could not see a
+  // scheduled one. The loader now derives the year from the leases' own schedules, and the
+  // identity survives because THE DONUT READS THIS SAME FIGURE — see `portfolioCharts.test.js`.
+  it('derives the year from the leases’ own months, not the view’s annual rate', async () => {
     const basis = await listBasisByProperty(['prop-1'], Y);
-    expect(basis['prop-1'].rentProjected).toBeUndefined();
-    expect(basis['prop-1'].totalProjected).toBeUndefined();
-    // …and the figure that IS available is a real one, not an empty shape.
     const totals = await getPropertyTotals('prop-1', Y);
-    expect(Number(totals.total_revenue)).toBeGreaterThan(0);
+    expect(Number(totals.total_revenue), 'the seed must bill rent, or this proves nothing').toBeGreaterThan(0);
+    expect(basis['prop-1'].rentProjected).toBeGreaterThan(0);
+    // The two halves, both stated: the contracted year plus the months a scheduled step will
+    // re-price. The demo seeds one unswept step (esc-1, +3% on Bright Coffee), so the second
+    // half is real here rather than a zero that would let the addition go untested.
+    expect(basis['prop-1'].projectedAhead).toBeGreaterThan(0);
+    expect(basis['prop-1'].rentProjected)
+      .toBe(round2(basis['prop-1'].rentScheduled + basis['prop-1'].projectedAhead));
+    // …and it is genuinely NOT the view. If these ever coincide the assertion above stops
+    // distinguishing anything, which is the failure mode that matters.
+    expect(basis['prop-1'].rentProjected).not.toBe(round2(Number(totals.total_revenue)));
+    // Total is still assembled by `basisRows`, not here.
+    expect(basis['prop-1'].totalProjected).toBeUndefined();
   });
 
   // ⚠ `billedComponents` IS THE SINGLE RULE for "estimate where one is set, actual share where

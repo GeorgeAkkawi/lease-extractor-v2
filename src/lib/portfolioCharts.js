@@ -57,12 +57,25 @@ const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 // Property name lookup that survives a property the totals map doesn't cover.
 const nameFor = (p) => p?.name || 'Untitled property';
 
-// Annual rent roll per property, biggest first — the donut.
+// The year's rent roll per property, biggest first — the donut.
 // Zero-revenue properties are dropped: a 0% slice is invisible but still claims a
 // legend entry and a colour, which makes the chart harder to read, not richer.
-export function revenueByProperty(properties, totalsByProp) {
+//
+// ⚠ IT READS THE SAME `rentProjected` THE BAND DOES, and that is the whole reason it takes a
+// third argument (2026-08-18 (3)). It used to sum `v_property_totals.total_revenue` and so did
+// the band — an identity that held because both quoted one view. When George asked for scheduled
+// rent steps to be inside the projection, the only way to keep that identity STRUCTURAL rather
+// than a coincidence two functions have to keep agreeing on was to move both onto one figure.
+//
+// ⚠ AND IT RETURNS NOTHING UNTIL THE BASIS LANDS — no fallback to the view. A fallback would
+// paint $1,032,564, then revise it to $1,031,625 a beat later: two answers to one question, in
+// sequence rather than side by side, which is the same fault this band exists to have fixed.
+// `PortfolioCharts` draws a loading ring for that beat instead.
+export function revenueByProperty(properties, totalsByProp, basisByProp = null) {
+  if (!basisByProp) return [];
   const out = (properties || [])
-    .map((p) => ({ id: p.id, name: nameFor(p), value: num(totalsByProp?.[p.id]?.total_revenue) }))
+    .filter((p) => totalsByProp?.[p.id])
+    .map((p) => ({ id: p.id, name: nameFor(p), value: round2(num(basisByProp?.[p.id]?.rentProjected)) }))
     .filter((d) => d.value > 0)
     .sort((a, b) => b.value - a.value);
   return out;
@@ -260,11 +273,20 @@ export const hasCollectedBars = (rows) => (rows || []).some((r) => r.hasCollecte
 // and the same year. Both defensible, neither labelled, and the first question anyone would
 // ask was the one George asked: *"where is this coming from."*
 //
-//   Revenue   = `total_revenue`, THE DONUT'S OWN FIGURE. Base rent, nothing else, so the two
-//               agree to the cent and there is nothing left to explain.
+//   Revenue   = base rent as the LEASES SCHEDULE IT, and THE DONUT'S OWN FIGURE — the donut
+//               reads the identical `rentProjected`, so the two agree to the cent.
 //   Expenses  = the CAM, tax and roof this year's leases bill AT ESTIMATE.
 //   Total     = the two together — what the tenant is actually charged, plus any fee or credit
 //               posted on a bill.
+//
+// ⚠ REVENUE STOPPED BEING `total_revenue` ON 2026-08-18 (3), and the identity above is why the
+// donut had to move in the same commit. George: *"we should make rent projections part of the
+// projected rent because we know what those numbers are so that shouldn't be a discrepancy."*
+// `total_revenue` is an annual RATE (`sum(effective_rent)`) that neither dates an applied step
+// nor sees a scheduled one, so it printed a difference the landlord was asked to explain when
+// nothing was actually wrong. `rentAnnualRate` below still carries the view's figure — not to
+// draw, but so `yearBridge` can state what the Financials page will quote and by how much it
+// differs, rather than leaving someone to find that gap by flipping between two screens.
 //
 // You replace a subtraction ("what's left") with an addition ("Total") only when the columns
 // genuinely add, and these do: they are the two halves of one invoice. That also retires the
@@ -282,7 +304,8 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
       const t = totalsByProp?.[p.id];
       if (!t) return null;
       const b = basisByProp?.[p.id] || null;
-      const rentProjected = round2(num(t.total_revenue));
+      const rentProjected = round2(num(b?.rentProjected));
+      const rentAnnualRate = round2(num(t.total_revenue));
       const rentLive = round2(num(b?.rentLive));
       const camTaxProjected = round2(num(b?.camTaxProjected));
       const camTaxLive = round2(num(b?.camTaxLive));
@@ -298,7 +321,14 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
       // exactly this. Invisible on the demo seed, which has no gross lease — see
       // `yearBridge.test.js`, which flips one on purpose.
       const grossCarve = round2(num(b?.grossCarve));
-      if (rentProjected === 0 && camTaxProjected === 0 && rentLive === 0 && camTaxLive === 0 && otherLive === 0) return null;
+      // ⚠ THE PRESENCE TEST STILL READS THE VIEW, and only the presence test. Since Revenue moved
+      // off `total_revenue` a still-loading row has zeroes everywhere, so a test over the figures
+      // alone would drop every property until the roll landed — the band would vanish and come
+      // back rather than fill in. `rentAnnualRate` answers "does this property have a year at
+      // all" without putting the view's figure on screen.
+      const anything = rentAnnualRate !== 0 || rentProjected !== 0 || camTaxProjected !== 0
+        || rentLive !== 0 || camTaxLive !== 0 || otherLive !== 0;
+      if (!anything) return null;
       return {
         id: p.id,
         name: nameFor(p),
@@ -315,8 +345,12 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
         // already computed by `listBasisByProperty`; none costs a read.
         grossCarve,
         rentScheduled: round2(num(b?.rentScheduled)),
-        rentStepEffect: round2(num(b?.rentStepEffect)),
-        rentPartYear: round2(num(b?.rentPartYear)),
+        projectedAhead: round2(num(b?.projectedAhead)),
+        // The view's annual rate — in NO column, drawn nowhere. It is here so the bridge can say
+        // what the Financials page will quote and by how much the two differ, which also keeps
+        // the `effective_rent` ↔ `buildLeaseSchedule` twin check (CLAUDE.md §3) alive now that
+        // Revenue no longer compares itself to the view by simply being it.
+        rentAnnualRate,
         rentPosted: round2(num(b?.rentPosted)),
         camTaxPosted: round2(num(b?.camTaxPosted)),
         rentCorrections: round2(num(b?.rentCorrections)),

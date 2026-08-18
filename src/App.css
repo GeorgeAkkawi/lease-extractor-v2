@@ -1078,6 +1078,12 @@ tbody tr:last-child td{border-bottom:none}
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;text-align:center;padding:0 12px}
 .donut-figure{font-family:var(--display);font-size:26px;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
 .donut-cap{font-size:9px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:700;margin-top:5px}
+/* The donut waits on the Ledger roll since 2026-08-18 (3) — it sums the leases' own months, not
+   the annual rate the totals view carries. One flat ring in the rule colour holds the frame so
+   the panel fills in rather than popping into existence, and the centre reads an em dash: a $0
+   there would be a reading, and this is the absence of one. */
+.donut-wrap.is-loading{opacity:.55}
+.donut-wrap.is-loading .donut-figure{color:var(--muted)}
 .chart-foot{font-size:11px;color:var(--muted);margin:9px 0 2px;line-height:1.45}
 /* The performance panel's foot becomes two sentences once a second basis is on the chart
    — one per idea, so the reader can stop after the one they needed. */

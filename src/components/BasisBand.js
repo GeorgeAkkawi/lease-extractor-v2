@@ -13,10 +13,17 @@ import BasisBridge from './BasisBridge';
 // for the same portfolio and the same year. Both figures were defensible; neither said which
 // it was; and George's first question was exactly the right one: *"where is this coming from."*
 //
-// So Revenue is now `total_revenue` — THE DONUT'S OWN FIGURE — and the two agree to the cent.
-// Expenses is the CAM & tax the leases bill at estimate. Total is the two together, which is
-// what the tenant is actually charged. A subtraction ("what's left") becomes an addition only
-// when the columns genuinely add, and these do: they are the two halves of one invoice.
+// So Revenue is THE DONUT'S OWN FIGURE and the two agree to the cent. Expenses is the CAM & tax
+// the leases bill at estimate. Total is the two together, which is what the tenant is actually
+// charged. A subtraction ("what's left") becomes an addition only when the columns genuinely add,
+// and these do: they are the two halves of one invoice.
+//
+// ⚠ WHAT THAT SHARED FIGURE IS CHANGED ON 2026-08-18 (3), AND THE DONUT CHANGED WITH IT. Both
+// used to read `v_property_totals.total_revenue`; both now read `rentProjected` — the leases'
+// own months, each applied raise dated, plus a raise scheduled for later this year. George:
+// *"we should make rent projections part of the projected rent because we know what those
+// numbers are so that shouldn't be a discrepancy."* Moving one and not the other would have
+// re-opened the exact gap this band was built to close, which is why it was never an option.
 //
 // ⚠ AND THE ONE FIGURE THAT IS IN TOTAL AND IN NO COLUMN ABOVE IT IS NAMED. Other income
 // (0078 — parking, storage, a write-in) rides no invoice and the app forecasts none of it, so
@@ -73,8 +80,10 @@ export default function BasisBand({ totals, bridge = null, year, ledgerHref = nu
 
       <div className="basis-foot">
         <p className="chart-foot-line">
-          <b>Projected</b> is the year as your leases bill it — base rent, plus the CAM, tax and
-          roof you charge at estimate. It is the same rent the donut below sums.{' '}
+          <b>Projected</b> is the year as your leases bill it — base rent month by month, each
+          raise from the date it takes effect, plus the CAM, tax and roof you charge at estimate.
+          A raise your leases schedule for later this year is counted, and named below.{' '}
+          It is the same rent the donut sums.{' '}
           <b>Live</b> is what has actually arrived, straight off the Ledger.
         </p>
         <BasisBridge bridge={bridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />
