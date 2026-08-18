@@ -32,6 +32,14 @@
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 const DUST = 0.005;
+// ⚠ A CAUSE WORTH NAMING IS WORTH AT LEAST A DOLLAR. Terms are computed to the cent and must
+// still ADD to the cent, but a one-cent term printed with a full sentence of explanation is
+// noise wearing a finding's clothes — and George met exactly that: "−$0.01 · the estimate is an
+// annual figure, and the bill spreads it only across the months a tenant is in term", which is
+// the rounding of a twelfth, not a fact about his year. Anything under a dollar is folded into
+// the measure's REMAINDER term (the one that is already "whatever is left"), so nothing is
+// dropped, the printed lines still sum to the live figure exactly, and no penny gets a sentence.
+const TERM_FLOOR = 1;
 
 /** Sum one field across the property rows. */
 const col = (rows, key) => round2((rows || []).reduce((s, r) => s + num(r[key]), 0));
@@ -55,9 +63,34 @@ function term(key, label, rows, amountOf, extra = {}) {
   return { key, label, amount, rows: evidence, ...extra };
 }
 
-/** Assemble a measure from its terms, appending the catch-all if anything is left over. */
-function measure(key, label, sub, projected, live, terms) {
-  const kept = terms.filter(Boolean);
+/** Assemble a measure from its terms, appending the catch-all if anything is left over.
+ *
+ * `remainder` names the term that already IS the leftover for this measure — arrears on the two
+ * component measures. Sub-dollar terms are folded there rather than printed or dropped. */
+function measure(key, label, sub, projected, live, terms, remainder = null) {
+  let kept = terms.filter(Boolean);
+  const home = kept.find((t) => t.key === remainder);
+  if (home) {
+    const tiny = kept.filter((t) => t !== home && Math.abs(t.amount) < TERM_FLOOR);
+    if (tiny.length) {
+      // ⚠ FOLD THE EVIDENCE, NOT JUST THE TOTAL. Moving the amount alone leaves a term whose
+      // named properties no longer add up to the figure beside them — a landlord checking the
+      // one thing this panel exists to let them check would find it off by the fold.
+      const byId = new Map(home.rows.map((r) => [r.id, { ...r }]));
+      for (const t of tiny) {
+        for (const r of t.rows) {
+          const at = byId.get(r.id);
+          if (at) at.amount = round2(at.amount + r.amount);
+          else byId.set(r.id, { ...r });
+        }
+      }
+      home.rows = [...byId.values()]
+        .filter((r) => Math.abs(r.amount) > DUST)
+        .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || a.label.localeCompare(b.label));
+      home.amount = round2([...byId.values()].reduce((n, r) => n + r.amount, 0));
+      kept = kept.filter((t) => !tiny.includes(t));
+    }
+  }
   const stated = round2(kept.reduce((s, t) => s + t.amount, projected));
   const residual = round2(live - stated);
   if (Math.abs(residual) > DUST) {
@@ -102,16 +135,25 @@ export function yearBridge(rows = [], { year = null } = {}) {
   // settles no bill (`tenantCredit`, `unbilled`) is added back BEFORE the subtraction, so it is
   // named on its own line instead of quietly making the arrears figure look smaller.
   const rentArrears = (r) => -(num(r.rentPosted) + num(r.tenantCredit) + num(r.unbilled) - num(r.rentLive));
+  // ⚠ THE BASIS GAP IS THREE FACTS, NOT ONE, and shipping it as one named a cause that was not
+  // there. On George's own portfolio the whole of it was mid-year rent steps — Infinite Mobile
+  // −$3,504, Sam Nails −$271, Ricki's-Lyons −$182, Vape Store −$351 — under a sentence about
+  // part-year tenancies, of which there were none. The two are now measured apart in
+  // `billedRowsFromRoll`, and what neither explains stays as the twin check it always was.
+  const rentBasisRest = (r) => num(r.rentScheduled) - num(r.rentProjected) - num(r.rentStepEffect) - num(r.rentPartYear);
   const revenue = measure('revenue', 'Revenue', 'base rent', col(list, 'rentProjected'), col(list, 'rentLive'), [
     term('arrears', 'rent billed and not yet in', list, rentArrears),
-    term('basis', 'the annual rate the Financials page quotes, against these leases’ own month-by-month schedule — a tenancy that began or ended part-way through the year is counted only from the month it ran', list,
-      (r) => num(r.rentScheduled) - num(r.rentProjected)),
+    term('rentStep', 'a rent step that took effect part-way through the year — the months before it are billed at the old rate, while the Financials page quotes the new one for all twelve', list,
+      (r) => num(r.rentStepEffect)),
+    term('partYear', 'a tenancy that ran only part of the year — billed only for the months it ran, while the Financials page quotes a full annual rate that is not prorated', list,
+      (r) => num(r.rentPartYear)),
+    term('basis', 'the annual rate the Financials page quotes, against these leases’ own month-by-month schedule', list, rentBasisRest),
     term('grossCarve', 'a gross lease’s CAM & tax, which its flat rent already covers — counted under Expenses instead of twice', list,
       (r) => -num(r.grossCarve)),
     term('corrections', 'base-rent corrections posted on tenants’ bills', list, (r) => num(r.rentCorrections)),
     term('credit', 'paid beyond the whole year’s bills, so there is no month left to settle', list, (r) => num(r.tenantCredit)),
     term('unbilled', 'cash on a month the lease bills nothing for — before a term started, after it ended, or a free month', list, (r) => num(r.unbilled)),
-  ]);
+  ], 'arrears');
 
   // ── Expenses ─────────────────────────────────────────────────────────────────────────────
   const camTaxProration = (r) => num(r.camTaxPosted) - num(r.camTaxCorrections) - num(r.camTaxProjected);
@@ -120,7 +162,7 @@ export function yearBridge(rows = [], { year = null } = {}) {
     term('arrears', 'CAM & tax billed and not yet in', list, camTaxArrears),
     term('proration', 'the estimate is an annual figure, and the bill spreads it only across the months a tenant is in term', list, camTaxProration),
     term('corrections', 'CAM & tax corrections posted on tenants’ bills', list, (r) => num(r.camTaxCorrections)),
-  ]);
+  ], 'arrears');
 
   // ── Total ────────────────────────────────────────────────────────────────────────────────
   //
@@ -136,7 +178,7 @@ export function yearBridge(rows = [], { year = null } = {}) {
     term('grossCarve', 'a gross lease’s CAM & tax, counted once here rather than in both columns above', list, (r) => num(r.grossCarve)),
     term('otherIncome', 'other income — parking, storage, a write-in. It rides no invoice and the app forecasts none of it, so it can only land on the live side', list,
       (r) => num(r.otherLive), { link: 'income' }),
-  ]);
+  ], 'revenue');
 
   // ── In no column at all ──────────────────────────────────────────────────────────────────
   //

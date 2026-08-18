@@ -202,6 +202,93 @@ describe('a gross lease is charged once, not twice', () => {
   });
 });
 
+// ── Naming the cause that is actually there ───────────────────────────────────────────────
+//
+// ⚠ WHY THIS BLOCK EXISTS. The basis gap shipped as ONE term whose sentence said "a tenancy
+// that began or ended part-way through the year". On George's live portfolio the whole of it
+// was mid-year rent STEPS — Infinite Mobile −$3,504, Sam Nails −$271, Ricki's-Lyons −$182,
+// Vape Store −$351 — and he had no part-year tenancy at either property. A confident sentence
+// naming an absent cause is worse than no sentence: it sends a landlord looking for a lease
+// that does not exist. Same fault, same fix, as the `flags()` rewrite of 2026-08-17.
+describe('the two reasons a schedule differs from the annual rate', () => {
+  // The seed's own case: Sunrise Yoga commences 1 July, so Oak Center bills six months against
+  // a full annual rate. That is a part-year TENANCY and must be named as one.
+  it('calls a mid-year tenancy a tenancy, and raises no rent-step line', async () => {
+    const { bridge } = await bridgeFor(['prop-1', 'prop-2']);
+    const revenue = bridge.measures.find((m) => m.key === 'revenue');
+    const partYear = revenue.terms.find((t) => t.key === 'partYear');
+    expect(partYear, 'the seed has a mid-year commencement and must name it').toBeTruthy();
+    expect(partYear.label).toMatch(/ran only part of the year/);
+    expect(partYear.rows.map((r) => r.label)).toEqual(['Oak Center']);
+    // No applied mid-year step on the seed — the one escalation it carries is unswept, and the
+    // tie-out is measured on the CONTRACTED schedule precisely so a step nobody has been billed
+    // for raises nothing here.
+    expect(revenue.terms.some((t) => t.key === 'rentStep')).toBe(false);
+    // …and the leftover twin check stays silent: the two named halves account for all of it.
+    expect(revenue.terms.some((t) => t.key === 'basis')).toBe(false);
+    expect(stated(revenue)).toBeCloseTo(revenue.live, 2);
+  });
+
+  // George's shape, as a pure input: a full-year tenancy whose rent rose in July, so the first
+  // six months bill the old rate while `total_revenue` quotes the new one for all twelve.
+  it('calls a mid-year rent step a rent step, and raises no tenancy line', () => {
+    const row = {
+      id: 'p', name: 'Pershing Plaza',
+      rentProjected: 28745.04, rentLive: 28745.04,
+      rentScheduled: 25241.04, rentStepEffect: -3504, rentPartYear: 0,
+      rentPosted: 25241.04, grossCarve: 0, rentCorrections: 0, tenantCredit: 0, unbilled: 0,
+      camTaxProjected: 0, camTaxLive: 0, camTaxPosted: 0, camTaxCorrections: 0,
+      chargesProjected: 0, chargesLive: 0, otherLive: 0, unapplied: 0, driftTotal: 0,
+      totalProjected: 28745.04, totalLive: 28745.04,
+    };
+    const revenue = yearBridge([row], { year: Y }).measures.find((m) => m.key === 'revenue');
+    const step = revenue.terms.find((t) => t.key === 'rentStep');
+    expect(step).toBeTruthy();
+    expect(step.amount).toBeCloseTo(-3504, 2);
+    expect(step.label).toMatch(/rent step that took effect part-way through the year/);
+    expect(step.label).not.toMatch(/tenancy/);
+    expect(revenue.terms.some((t) => t.key === 'partYear')).toBe(false);
+    expect(stated(revenue)).toBeCloseTo(revenue.live, 2);
+  });
+});
+
+// ⚠ A PENNY IS NOT A CAUSE. George, reading his live Overview: *"and this −$0.01 · the estimate
+// is an annual figure, and the bill spreads it only across the months a tenant is in term"* —
+// which is the rounding of an annual figure into twelfths, not a fact about his year. It must
+// still be COUNTED (the printed lines have to sum to the live figure) but never NAMED.
+describe('sub-dollar rounding is absorbed, not narrated', () => {
+  const withProration = (cents) => ({
+    id: 'p', name: 'Maple Plaza',
+    rentProjected: 0, rentLive: 0, rentScheduled: 0, rentStepEffect: 0, rentPartYear: 0,
+    rentPosted: 0, grossCarve: 0, rentCorrections: 0, tenantCredit: 0, unbilled: 0,
+    camTaxProjected: 10000, camTaxLive: 6000, camTaxPosted: round2(10000 + cents),
+    camTaxCorrections: 0, chargesProjected: 0, chargesLive: 0, otherLive: 0,
+    unapplied: 0, driftTotal: 0, totalProjected: 10000, totalLive: 6000,
+  });
+
+  it('folds a one-cent proration into arrears rather than giving it a sentence', () => {
+    const m = yearBridge([withProration(-0.01)], { year: Y }).measures.find((x) => x.key === 'expenses');
+    expect(m.terms.some((t) => t.key === 'proration')).toBe(false);
+    expect(m.terms.some((t) => t.unexplained)).toBe(false);
+    expect(m.terms.map((t) => t.key)).toEqual(['arrears']);
+    // Absorbed, never dropped — the measure still lands on its live figure to the cent…
+    expect(stated(m)).toBeCloseTo(m.live, 2);
+    // …and the property named under it still adds to the figure printed beside it, which is the
+    // one thing a landlord can actually check by eye.
+    const arrears = m.terms[0];
+    expect(round2(arrears.rows.reduce((s, r) => s + r.amount, 0))).toBeCloseTo(arrears.amount, 2);
+  });
+
+  it('still names a proration that is worth naming', () => {
+    const m = yearBridge([withProration(-5833.39)], { year: Y }).measures.find((x) => x.key === 'expenses');
+    const pro = m.terms.find((t) => t.key === 'proration');
+    expect(pro).toBeTruthy();
+    expect(pro.amount).toBeCloseTo(-5833.39, 2);
+    expect(stated(m)).toBeCloseTo(m.live, 2);
+  });
+});
+
+
 describe('the headline', () => {
   it('quotes the two figures, the gap and the cause behind most of it', async () => {
     const { bridge } = await bridgeFor(['prop-1', 'prop-2']);

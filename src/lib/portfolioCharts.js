@@ -315,6 +315,8 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
         // already computed by `listBasisByProperty`; none costs a read.
         grossCarve,
         rentScheduled: round2(num(b?.rentScheduled)),
+        rentStepEffect: round2(num(b?.rentStepEffect)),
+        rentPartYear: round2(num(b?.rentPartYear)),
         rentPosted: round2(num(b?.rentPosted)),
         camTaxPosted: round2(num(b?.camTaxPosted)),
         rentCorrections: round2(num(b?.rentCorrections)),

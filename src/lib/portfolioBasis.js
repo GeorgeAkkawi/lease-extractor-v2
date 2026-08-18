@@ -120,6 +120,9 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
         // What the leases contract to bill, at their own rates — the like-for-like comparable
         // to `total_revenue` and the JS half of that twin.
         rentScheduled: round2(posted.tieOut),
+        // …and the two reasons it differs from the annual rate, measured apart.
+        rentStepEffect: round2(posted.rentStepEffect),
+        rentPartYear: round2(posted.rentPartYear),
         // What the Rent row actually posts, and what CAM & tax actually posts.
         rentPosted: groupTotal(posted.rent),
         camTaxPosted: round2(groupTotal(posted.camTax) + groupTotal(posted.roof)),

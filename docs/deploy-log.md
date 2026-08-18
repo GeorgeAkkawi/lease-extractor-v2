@@ -1,3 +1,79 @@
+## 2026-08-18 (6) — Name the cause that is actually there (again), and stop narrating pennies
+
+**Cloudflare version:** `ab0119d4-7da7-4066-9c19-e8c534385f81` · 2,004 tests / 190 files green.
+
+George, reading the bridge shipped an hour earlier on his LIVE portfolio: *"what is this
+referring to: −$4,307.31 · the annual rate the Financials page quotes … a tenancy that began or
+ended part-way through the year … Pershing Plaza $3,956.23 · Joliet $351.08 — and this −$0.01 ·
+the estimate is an annual figure…"*
+
+Both were faults in (5), and both were found only because he asked.
+
+### 1. The basis term named a cause that was not there
+
+Diagnosed against production, read-only, rather than guessed. Every cent of the $4,307.31 is
+**applied mid-year rent escalations** — and neither property has a part-year tenancy at all:
+
+| Lease | Step | Old rate → new | Months at old rate | Effect |
+|---|---|---|---|---|
+| Infinite Mobile Inc. (Pershing) | 2026-07-01 | 21,737.04 → 28,745.04 | Jan–Jun | −3,504.00 |
+| Sam Nails (Pershing) | 2026-06-01 | 32,472.96 → 33,122.40 | Jan–May | −270.60 |
+| Ricki's-Lyons (Pershing) | 2026-05-01 | 27,248.16 → 27,793.08 | Jan–Apr | −181.64 |
+| Vape Store (Joliet) | 2026-05-01 | 35,109.12 → 36,162.36 | Jan–Apr | −351.08 |
+
+Pershing −3,956.24 · Joliet −351.08 · total −4,307.32, against the −4,307.31 on screen — one cent
+of rounding, itself fixed below. (Eye 2 Eye's 2026-10-31 step is `scheduled`, contributes zero,
+and correctly so: the tie-out is measured on the CONTRACTED schedule precisely so a step nobody
+has been billed for raises nothing here.)
+
+**Nothing was arithmetically wrong — the sentence was.** `total_revenue` is `sum(effective_rent)`,
+one RATE per lease across all twelve months; the schedule bills the old rate up to the step and
+the new one after (George, 2026-08-04: a change to a billed figure has a DATE). That is a rent
+step, not a part-year tenancy, and a landlord reading the shipped sentence would have gone hunting
+for a lease that does not exist. **This is the same fault as `flags()` on 2026-08-17 and the same
+fix** — measure the causes, name only those present.
+
+`billedRowsFromRoll` now measures the two apart in the tie loop it was already walking:
+`rentStepEffect` (months IN term, schedule against a twelfth of the annual rate) and
+`rentPartYear` (months the schedule zeroes as out-of-term). Whatever neither explains stays as
+the `basis` term, which is the JS↔SQL twin check it always was and is silent on both properties.
+
+⚠ **Two details that would each have put a cent in "not accounted for":** the twelfth is
+accumulated **unrounded** so twelve of them return the annual rate exactly; and the out-of-term
+flag is read off the **same schedule `tieComp` was built from** (`contractedSchedule || schedule`),
+never off `r.schedule` — on a projected roll those are different arrays and the split would
+attribute a month the tie-out never counted.
+
+### 2. A penny got a sentence
+
+The −$0.01 was `camTaxPosted − camTaxCorrections − camTaxProjected`: an annual CAM & tax figure
+split into twelve rounded monthly ones and re-summed. Real, and not a fact about anyone's year.
+
+`TERM_FLOOR = 1`. Terms are still computed to the cent and must still ADD to the cent, but
+anything under a dollar is folded into the measure's **remainder** term — arrears on Revenue and
+Expenses, the rent gap on Total — so nothing is dropped, the printed lines still sum to the live
+figure exactly, and no penny gets an explanation.
+
+⚠ **THE FOLD MOVES THE EVIDENCE, NOT JUST THE TOTAL.** The first version moved the amount alone,
+leaving a term whose named properties no longer added to the figure beside them — off by the
+fold, on the one thing this panel exists to let a landlord check by eye. Rows are now merged by
+property id, re-filtered and re-sorted, and a test asserts the rows still sum to their term.
+
+### Files
+
+`incomeExpense.js` (the split, measured in the existing tie loop) · `portfolioBasis.js` /
+`portfolioCharts.js` (carried through) · `yearBridge.js` (three terms where there was one;
+`TERM_FLOOR`; the evidence-preserving fold) · `yearBridge.test.js` (+4: the seed's real
+part-year tenancy names a tenancy and raises no step line; George's shape as a pure input names
+a step and raises no tenancy line; a one-cent proration is absorbed with its evidence intact; a
+material one is still named).
+
+### Now redundant
+
+**Nothing redundant.** Both changes replace wording and thresholds inside terms added the same
+day; no older surface said either of these things, and nothing else in the app explains a
+projected-vs-live gap.
+
 ## 2026-08-18 (5) — The bank tie-out retired, and the band made to explain itself
 
 **Cloudflare version:** `18e129aa-2144-42a6-adf6-eac214116737` · 2,000 tests / 190 files green.
