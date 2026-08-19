@@ -9,7 +9,7 @@ import { reconcileFigures, billedComponents, monthlyEstimates } from './reconcil
 import { buildLeaseSchedule, owedByMonthForInvoice, inTermMonths } from './leaseSchedule';
 import {
   allocatePayments, ledgerRowSummary, componentizeSchedule, escalationStepMonths,
-  escalationFollowThrough, unloggedMonths, missingOnImportedMonths,
+  escalationFollowThrough, unloggedMonths, missingOnImportedMonths, STEP_FLOOR,
 } from './ledger';
 import { priorRentBefore, computeEscalatedRent, monthlyBases } from './escalations';
 import { resolveCurrentTerm, cmpRenewal } from './leaseTerm';
@@ -5545,7 +5545,12 @@ async function computeLedgerAlerts(leases, escalations, abatements, leadDays) {
           .filter((e) => e.status === 'applied' && String(e.effective_date || '').slice(0, 4) === String(year))
           .map((e) => Number(String(e.effective_date).slice(5, 7)))
           .filter((m) => m >= 2 && m <= 12)
-          .filter((m) => row.owed[m - 1] > 0 && row.owed[m - 2] > 0 && row.owed[m - 1] > row.owed[m - 2] + 0.02)
+          // ⚠ STEP_FLOOR, the Ledger's own floor — not a cents tolerance. This owed array is
+          // scaled to the STORED invoice, whose reconcile-to-bill penny-fold lands on the
+          // last in-term month; a 2¢ bound here was the same class of guard the Ledger
+          // outgrew on 2026-08-18 ("Four cents is not a raise"). A real raise clears a
+          // dollar; a fold never does.
+          .filter((m) => row.owed[m - 1] > 0 && row.owed[m - 2] > 0 && row.owed[m - 1] >= row.owed[m - 2] + STEP_FLOOR)
           .sort((a, b) => a - b)
           .map((m) => ({ month: m }));
         if (!steps.length) continue;

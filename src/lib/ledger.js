@@ -310,7 +310,12 @@ export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, r
 // ⚠ THIS ALSO CLEARS THE ROW CHIP AND THE FOLLOW-UP VERDICT, because `escalationFollowThrough`
 // is fed THESE steps — so a fold could not only announce a phantom raise, it could then judge a
 // tenant against it. One guard, one place; do not add a second threshold downstream.
-const STEP_FLOOR = 1;
+//
+// Exported since 2026-08-18 (13): `computeLedgerAlerts` (api.js) must confirm a step through
+// its OWN owed array (scaled to the stored invoice, which has its own penny-fold onto the last
+// in-term month) — and it still carried the 2¢ tolerance this floor replaced. One constant,
+// both detectors; a second number is the second threshold this comment forbids.
+export const STEP_FLOOR = 1;
 
 export function escalationStepMonths({ schedule, comp } = {}) {
   if (!schedule || !comp) return [];

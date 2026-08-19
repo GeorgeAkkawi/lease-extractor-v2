@@ -4,7 +4,7 @@
 // makes that read as the intended raise, not a mismatch). Pure, derived from the same
 // {schedule, comp} the boxes are painted from, so a cue from it can never disagree.
 import { describe, it, expect } from 'vitest';
-import { escalationStepMonths } from '../ledger';
+import { escalationStepMonths, STEP_FLOOR } from '../ledger';
 
 // Build {schedule, comp} from a 12-length per-month base array, mirroring
 // buildLeaseSchedule (owed/outsideTerm/abated) + componentizeSchedule (base/camTax/roof).
@@ -128,5 +128,13 @@ describe('escalationStepMonths', () => {
   it('handles missing input without throwing', () => {
     expect(escalationStepMonths({})).toEqual([]);
     expect(escalationStepMonths()).toEqual([]);
+  });
+
+  // ⚠ ONE FLOOR, BOTH DETECTORS (2026-08-18 (13)). `computeLedgerAlerts` (api.js) confirms a
+  // step through its own invoice-scaled owed array — which carries its own penny-fold — and
+  // it imports THIS constant rather than keeping the 2¢ tolerance the December fold beat.
+  // The export is the guarantee; if the floor ever moves, both guards move together.
+  it('exports the dollar floor the dashboard alert path shares', () => {
+    expect(STEP_FLOOR).toBe(1);
   });
 });

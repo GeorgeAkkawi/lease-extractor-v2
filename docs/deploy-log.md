@@ -1,3 +1,62 @@
+## 2026-08-18 (14) — Ledger sweep: four defects, every line followed
+
+**Cloudflare version:** `2cf9f1a9-be09-4137-972c-52694886a5db` · 2,015 tests / 191 files green.
+
+George: *"now focus on the ledger and everything that it touches follow all lines there and
+fix."* The whole surface was read before the first edit — `ledger.js`, `LedgerPage.js`,
+`MonthDetailPanel.js`, `rollPaint.js`, `invalidate.js`, and the api.js write paths
+(`markMonthPaid` + both bulk markers, `unmarkMonthPaid`→`releaseStatementLine`,
+`updatePayment`, `splitPayment`/`undoSplitPayment`, `computeLedgerAlerts`) plus
+`tenantStanding`. The arithmetic held everywhere; all four defects were in the seams:
+
+1. **Marking two months inside one 260ms window silently lost the first click**
+   (`LedgerPage.js`). `tapRef` holds ONE pending tap and every entry point resolved a prior
+   tap with `cancelTap()` — so ticking along a row reverted the first ✓ and never sent its
+   write, on the grid whose own comment promises "parallel marks work". The rule is now
+   **yield-by-key**: our own cell's pending tap is a double-click being taken back (cancel);
+   a DIFFERENT cell's is a decision already made (flush — its write fires immediately).
+   `tap()`/`tapToggle()`/`openMonth()` all resolve through one `yieldTap(key)`.
+2. **Double-clicking an open-on-click cell flashed the pop-up open and shut.** The design
+   note at the tap machinery always said a single-click open "waits the same window" (the
+   scrim otherwise catches the double-click's second click and closes the panel) — and the
+   four open-on-click cell types (out-of-term, abated/settled-zero, lump-covered, partial)
+   never had the wait: `cellClick(open)` opened on click one. They now go through
+   `openTap = tap(open, key)`; the comment stops lying.
+3. **Filing a bank line as rent left the Overview band stale.** `place.onSuccess` carried a
+   hand-rolled list (`rollKey, invoices, payments, …`) that predated `settlePaymentChange`
+   growing `['portfolioBasis']`/`['monthlyRent']` — §6's drift-by-omission, on the page that
+   states the rule twice. It now calls the named set and keeps only what the set lacks
+   (`invoicesForProperty` + the expense/income keys).
+4. **The dashboard's escalation guard still carried the 2¢ tolerance the Ledger outgrew this
+   morning.** `computeLedgerAlerts` confirmed a step with `> prev + 0.02` over the
+   invoice-scaled owed array — which has its own reconcile-to-bill penny-fold onto the last
+   in-term month. `STEP_FLOOR` is now exported from `ledger.js` and both detectors read the
+   one constant (`>= prev + STEP_FLOOR`, same semantics as the grid's).
+
+**Pinned:** new `src/pages/__tests__/ledgerGrid.test.js` drives the REAL page against the
+demo seed with fake timers — two cells clicked in one window both record; a same-cell
+double-click still cancels and opens the month; an open-on-click cell waits the window.
+**Verified against the pre-fix page:** tests 1 and 3 fail on the old code, test 2 passes —
+the pins catch exactly the bugs and nothing else. Plus a `STEP_FLOOR` export pin in
+`ledgerEscalationStep.test.js`.
+
+**Audited and clean, for the record:** allocation invariants (tag/pool/coverage, the 0082
+adjustment cap) · componentizeSchedule's base-as-remainder and free-month rules ·
+`monthsBehind` vs `owesToDate` · `tenantStanding`'s closed-month accusation rule · the
+surplus hold-out and both overpay keys · `escalationFollowThrough` verdicts · source
+stamping on every payment writer (0088) · `unmarkMonthPaid` → `releaseStatementLine` (the
+confirm's "goes back to Money not yet placed" promise holds) · split/undo-split provenance ·
+`rollPaint` parity · the Decided panel's undo rules · all three Ledger alerts' gates.
+
+**Files:** `src/pages/LedgerPage.js` · `src/lib/ledger.js` · `src/lib/api.js` · tests:
+`ledgerGrid.test.js` (new), `ledgerEscalationStep.test.js`.
+
+**Not bundled in (George's call):** `markAll`/`catchUp` still confirm via bare
+`window.confirm` — the page's only two dialogs not on ConfirmDialog · a rent line's default
+month on the unplaced panel reads the bank date's month without checking its year.
+
+**Now redundant:** `collectionSeries` (`ledger.js`) — no UI reader (History imports only
+`snapshotCollectionSummary`); only its own test reads it. Proposed for deletion, not taken.
 ## 2026-08-18 (13) — `listCollectedByProperty` goes, with its whole tail
 
 **Cloudflare version:** `197d09cb-4882-4917-931a-728561c8474f` · 2,011 tests / 190 files green.

@@ -354,12 +354,13 @@ export default function LedgerPage() {
       qc.invalidateQueries({ queryKey: ['corpDistributions'] });
       qc.invalidateQueries({ queryKey: ['otherIncome'] });
       qc.invalidateQueries({ queryKey: ['depositLines'] });
-      // ⚠ A PAYMENT MOVES THE GRID ITSELF, which no other destination does. The roll carries
-      // the payments the cells and the Collected column are painted from, so without this the
-      // money lands and the month it settles goes on reading as unpaid until a reload.
-      qc.invalidateQueries({ queryKey: rollKey });
-      qc.invalidateQueries({ queryKey: ['invoices'] });
-      qc.invalidateQueries({ queryKey: ['payments'] });
+      // ⚠ A PAYMENT MOVES THE GRID ITSELF, which no other destination does — and everything
+      // a payment moves goes through the NAMED set (§6), never a list here. The hand-rolled
+      // list this replaces predated `settlePaymentChange` growing `['portfolioBasis']` and
+      // `['monthlyRent']`, so filing a bank line as rent repainted the grid and left the
+      // Overview band quoting yesterday's live figure — the drift-by-omission the named
+      // sets exist to prevent, on the page that states that rule twice.
+      settle();
       qc.invalidateQueries({ queryKey: ['invoicesForProperty'] });
       // ⚠ A BILLABLE expense is the one destination that moves a tenant's bill, so it needs the
       // named set for "a billed figure moved" rather than the list above. `placeUnplacedLine`
@@ -684,6 +685,8 @@ export default function LedgerPage() {
   const TAP_MS = 260;
   const tapRef = useRef(null);
 
+  // Take a pending tap BACK without firing it — the double-click path. Only ever right for
+  // the cell the double-click landed on: taking back another cell's tap is losing a click.
   const cancelTap = () => {
     const t = tapRef.current;
     if (!t) return;
@@ -695,27 +698,49 @@ export default function LedgerPage() {
     }
   };
 
-  // A single click that does something after the double-click window has passed.
-  const tap = (fn) => {
-    cancelTap();
+  // Commit a pending tap NOW. `tapRef` holds one tap, so touching a second cell inside the
+  // first cell's window has to resolve the first — and the resolution is to fire it, not to
+  // take it back: its window existed only to catch a double-click on ITS OWN cell.
+  const flushTap = () => {
+    const t = tapRef.current;
+    if (!t) return;
+    tapRef.current = null;
+    clearTimeout(t.id);
+    t.fire();
+  };
+
+  // ⚠ THE RULE THAT KEEPS FAST MARKING HONEST. Every tap entry point resolves any pending
+  // tap through this: our own cell's pending tap is a double-click being taken back
+  // (cancel); a DIFFERENT cell's is a decision already made (flush). It used to be
+  // `cancelTap()` unconditionally — so ticking two months within the 260ms window silently
+  // reverted the first ✓ and never sent its write, on the grid whose own comment promises
+  // "parallel marks work". No error, no record, just a click that didn't count.
+  const yieldTap = (key) => {
+    const t = tapRef.current;
+    if (!t) return;
+    if (t.key === key) cancelTap(); else flushTap();
+  };
+
+  // A single click that does something after the double-click window has passed. `key` names
+  // the cell so a click elsewhere flushes this rather than cancelling it.
+  const tap = (fn, key) => {
+    yieldTap(key);
     const id = setTimeout(() => { tapRef.current = null; fn(); }, TAP_MS);
-    tapRef.current = { id, paint: false };
+    tapRef.current = { id, key, paint: false, fire: fn };
   };
 
   const tapToggle = ({ leaseId, month, action, amount }) => {
-    cancelTap();
     const key = cellKey(leaseId, month);
+    yieldTap(key);
     const prev = qc.getQueryData(rollKey);
     qc.setQueryData(rollKey, (old) => paint(old, leaseId, month, action, amount));
     setPendingCells((s) => new Set(s).add(key));
-    const id = setTimeout(() => {
-      tapRef.current = null;
-      cellMut.mutate({ leaseId, month, action, amount, prePainted: true, prev });
-    }, TAP_MS);
-    tapRef.current = { id, key, prev, paint: true };
+    const fire = () => cellMut.mutate({ leaseId, month, action, amount, prePainted: true, prev });
+    const id = setTimeout(() => { tapRef.current = null; fire(); }, TAP_MS);
+    tapRef.current = { id, key, prev, paint: true, fire };
   };
 
-  const openMonth = (leaseId, month) => { cancelTap(); setEditing({ leaseId, month }); };
+  const openMonth = (leaseId, month) => { yieldTap(cellKey(leaseId, month)); setEditing({ leaseId, month }); };
 
   // ⚠ ONE CLICK MUST NOT SILENTLY DELETE A BANK PAYMENT. `unmarkMonthPaid` removes every
   // payment tagged to the month — and where one came from an imported statement, that is a
@@ -1064,9 +1089,16 @@ export default function LedgerPage() {
                       );
                       const takeBack = () => {
                         if (pending) return;
-                        if (unmarkNeedsAsk(tagged)) tap(() => askUnmark(r, m, tagged));
+                        if (unmarkNeedsAsk(tagged)) tap(() => askUnmark(r, m, tagged), cellKey(r.lease_id, m));
                         else tapToggle({ leaseId: r.lease_id, month: m, action: 'unmark' });
                       };
+                      // ⚠ A SINGLE-CLICK OPEN WAITS THE SAME WINDOW AS EVERYTHING ELSE. The
+                      // pop-up's scrim is full-screen, so a panel opened on the FIRST click
+                      // catches the second click of a double-click on itself and closes —
+                      // the design note above always said this wait existed, and until
+                      // 2026-08-18 the four open-on-click cells didn't have it: double-
+                      // clicking a lump-covered month flashed the panel open and shut.
+                      const openTap = () => tap(open, cellKey(r.lease_id, m));
 
                       if (state === 'unbilled') {
                         return (
@@ -1084,7 +1116,7 @@ export default function LedgerPage() {
                         return (
                           <td key={m}>
                             <Tip as="button" type="button" className="rr-cell outside"
-                              onClick={cellClick(open)} onDoubleClick={open}
+                              onClick={cellClick(openTap)} onDoubleClick={open}
                               content={card({ outside: true, action: 'Click to open this month' })}
                               aria-label={`${ml} — before this lease began`}>—</Tip>
                           </td>
@@ -1109,7 +1141,7 @@ export default function LedgerPage() {
                         return (
                           <td key={m}>
                             <Tip as="button" type="button" className={`rr-cell ${forgiven ? 'settled-off' : 'abated'}`}
-                              onClick={cellClick(open)} onDoubleClick={open}
+                              onClick={cellClick(openTap)} onDoubleClick={open}
                               aria-label={`${ml} — ${forgiven ? 'settled, not billed' : 'base rent abated'}`}
                               content={(
                                 <>
@@ -1175,7 +1207,7 @@ export default function LedgerPage() {
                         return (
                           <td key={m}>
                             <Tip as="button" type="button" className={`rr-cell paid pool${stepCls}${adjCls}${pending ? ' is-pending' : ''}`}
-                              onClick={cellClick(open)} onDoubleClick={open}
+                              onClick={cellClick(openTap)} onDoubleClick={open}
                               aria-label={`${ml} — ${money(receivedM)} drawn from a lump payment`}
                               content={card({ lump: true, action: 'Click to open this month' })}>
                               {adjMark}✓<span className="rr-amt">{money0(receivedM)}</span>
@@ -1190,7 +1222,7 @@ export default function LedgerPage() {
                         return (
                           <td key={m}>
                             <Tip as="button" type="button" className={`rr-cell partial${stepCls}${adjCls}${pending ? ' is-pending' : ''}`}
-                              onClick={cellClick(open)} onDoubleClick={open}
+                              onClick={cellClick(openTap)} onDoubleClick={open}
                               aria-label={`${ml} — part covered, ${money(gap)} still owing`}
                               content={card({ lump: true, action: `Click to open this month and record the remaining ${money(gap)}` })}>
                               {adjMark}◐
