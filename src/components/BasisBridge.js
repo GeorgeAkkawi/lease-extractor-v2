@@ -114,8 +114,27 @@ function MeasureBlock({ m, linkFor }) {
   );
 }
 
-/** `Pershing Plaza $31,000 · Cedar Court $17,200` — the properties behind one cause. */
-const evidence = (rows = []) => rows.map((r) => `${r.label} ${money(Math.abs(r.amount))}`).join(' · ');
+/**
+ * `Pershing Plaza $31,000 · Cedar Court $17,200` — the properties behind one cause.
+ *
+ * ⚠ A ROW THAT PULLS THE OTHER WAY MUST SHOW ITS SIGN (George, 2026-08-18: *"tell me where that
+ * figure comes from '3,977.85'"* — a figure the app never printed). The annual-rate caveat on his
+ * FY 2026 read `$939.25 · Pershing Plaza $3,956.23 · 401 S Main $3,038.60 · Joliet $21.62`, every
+ * row stripped to its absolute value. 401 S Main is **−$3,038.60** — it is the only property whose
+ * scheduled rent runs AHEAD of the annual rate — so the three do net to $939.25, but nothing on
+ * the line said so. Read as printed, the two that agree sum to $3,977.85 and the headline looks
+ * like it came from nowhere.
+ *
+ * Signs appear only when the rows are MIXED. Where every property pulls the same way as the
+ * headline — the common case, and every arrears line — a column of identical minus signs adds
+ * nothing and costs the line its readability.
+ */
+function evidence(rows = []) {
+  const mixed = rows.some((r) => r.amount < 0) && rows.some((r) => r.amount > 0);
+  return rows
+    .map((r) => `${r.label} ${mixed ? (r.amount < 0 ? '−' : '+') : ''}${money(Math.abs(r.amount))}`)
+    .join(' · ');
+}
 
 /** The one sentence the folded panel carries. */
 function summaryLine({ projected, live, delta, direction, cause }) {

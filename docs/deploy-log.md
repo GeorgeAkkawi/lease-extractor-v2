@@ -1,3 +1,63 @@
+## 2026-08-18 (9) — A property pulling the other way was printed without its minus sign
+
+**Cloudflare version:** `b3818de9-e5ac-485a-bb29-4061436dfa69` · 2,013 tests / 191 files green.
+
+George: *"tell me where that figure comes from '3,977.85' on the what the difference is."*
+
+**The app never printed $3,977.85.** He derived it, correctly, from a line that could not be read
+any other way. The annual-rate caveat on his FY 2026 rendered:
+
+> **$939.25** the annual rate the Financials page quotes … — Pershing Plaza $3,956.23 ·
+> 401 S Main $3,038.60 · Joliet $21.62
+
+`evidence()` printed every row through `money(Math.abs(r.amount))`. 401 S Main is really
+**−$3,038.60** — the one property whose scheduled rent runs AHEAD of the annual rate, because of
+the Busey Bank step due 1 September. The three genuinely net to $939.25. Nothing on the line said
+so, so the two rows that agreed summed to **$3,956.23 + $21.62 = $3,977.85** and the headline read
+as invented.
+
+### The fix
+
+`evidence()` (`src/components/BasisBridge.js`) signs the rows **when they are mixed** — every row
+gets an explicit `+` or `−` — and leaves them unsigned when they all pull the same way as the
+headline. A column of identical minus signs under an arrears line states nothing and costs the
+line its readability; that shape was never the confusing one.
+
+This is the same duty `yearBridge`'s sub-dollar fold already keeps on the data side: when a term
+absorbs another, it moves the **evidence** and not just the amount, *"because a landlord checking
+the one thing this panel exists to let them check would find it off by the fold"*. The display had
+the same duty and was not keeping it.
+
+### Verified against the live portfolio, not the seed
+
+Every figure that panel can print for FY 2023–2027 was reconstructed from production (read-only)
+through the real `buildLeaseSchedule` / `billedRowsFromRoll` / `yearBridge`, and $3,977.85 appears
+in no term and no caveat in any year — which is what identified it as a reading of the line rather
+than a figure in it. FY 2026 prints exactly: Revenue `arrears −$684,444.45` + `ahead −$3,368.06`;
+Expenses `arrears −$58,151.64`; caveats `unapplied $200.00` and `annualRate $939.25`.
+
+### Files
+
+`src/components/BasisBridge.js` · `src/components/__tests__/basisBridgeEvidence.test.js` (NEW —
+George's three properties to the cent, the unsigned case, and the single-property case that must
+still name nobody).
+
+### Also corrected in this round
+
+**The 2026-08-18 (8) entry named the wrong penny-fold.** It attributed December's four cents to
+`buildLeaseSchedule`'s invoice-scaling fold. That fold never runs on the Ledger's roll — no
+`invoiceTotal` is passed, so `factor` is 1. The one that fires is `monthlyScheduleForYear`'s
+(`abatement.js`), capped at 12¢. The entry, the `escalationStepMonths` comment and the test comment
+now say so. The fix and every figure were unaffected — but a comment that names the wrong mechanism
+is how the next person sets the next threshold against the wrong bound.
+
+### Now redundant
+
+- **Nothing redundant.** `evidence()` was corrected in place; it has two callers (a term's rows and
+  a caveat's rows) and both wanted the same rule, which is why it stayed one function.
+
+---
+
 ## 2026-08-18 (8) — A four-cent rounding fold was being announced as a rent raise
 
 **Cloudflare version:** `e7d1ee1e-f95e-4fe1-a86d-35bacdcca267` · 2,010 tests / 190 files green.
@@ -9,8 +69,8 @@ December — the December **cell** was four cents bigger, and the detector calle
 ### The chain, end to end
 
 ```
-buildLeaseSchedule   rounds each month to the cent, then folds the year's leftover onto the
-                     LAST in-term month so the twelve sum to the issued invoice exactly
+monthlyScheduleForYear  rounds each month to the cent, then folds the year's leftover onto the
+(`abatement.js`)        LAST in-term month so the twelve sum to the year exactly
         └─→ December's `owed` carries the whole fold
 componentizeSchedule base is the REMAINDER (owed − camTax − roof − adj)
         └─→ December's BASE is higher by exactly the fold
@@ -26,14 +86,19 @@ Reproduced against FY 2026 production figures, both leases at Pershing Plaza:
 | Infinite Mobile Inc. | $36,096.04 | $2,395.42 (Jul–Nov) | $2,395.46 | **4¢** |
 
 The old guard was `curBase > prevBase + 0.02`, and its comment called it "cents-safe". **The fold is
-twice that.** A detector whose tolerance is smaller than the rounding it has to survive will fire
+twice that.**
+
+⚠ **Corrected 2026-08-18 (9): it is `abatement.js`'s fold, not the invoice one.** This entry first
+named `buildLeaseSchedule`'s invoice-scaling penny-fold. That fold never runs here — the Ledger's
+roll passes no `invoiceTotal` (the schedule builds UP from the data, George 2026-07-21), so
+`factor` is 1 on both leases. The fold that fires is `monthlyScheduleForYear`'s own, capped at 12¢.
+The fix and every figure below are unchanged; the bound the floor has to clear is that 12¢ guard. A detector whose tolerance is smaller than the rounding it has to survive will fire
 eventually — it just needed a year whose rent did not divide evenly into twelve.
 
 ### The fix
 
 `STEP_FLOOR = 1` in `escalationStepMonths` (`src/lib/ledger.js`). The floor has to clear the fold,
-and the fold is bounded by the rounding of twelve months (~6¢) — not by any figure a landlord
-types. A dollar a month clears it by an order of magnitude and is still far below the smallest
+and the fold is bounded by `abatement.js`'s 12¢ guard — not by any figure a landlord types. A dollar a month clears it by an order of magnitude and is still far below the smallest
 raise anyone writes into a lease.
 
 **One guard, one place.** `escalationFollowThrough` is fed THESE steps, so the fold could not only

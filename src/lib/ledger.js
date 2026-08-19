@@ -289,17 +289,23 @@ export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, r
 // *"why does it say there are rent escalations for beauty and barber and infinite mobile on the
 // ledger in december when there isnt"*). It was `+ 0.02`, called "cents-safe", and it was not:
 //
-//   `buildLeaseSchedule` rounds each month to the cent and then folds the year's leftover onto
-//   the LAST in-term month so the twelve sum to the issued invoice exactly. `componentizeSchedule`
-//   derives base as the REMAINDER, so the whole fold lands on December's base. On George's own
-//   FY 2026 the fold is FOUR CENTS on both leases — beauty and barber $2,650.08 → $2,650.12,
-//   Infinite Mobile $2,395.42 → $2,395.46 — twice the old tolerance, so December was announced as
-//   a rent escalation on two leases that have none. Neither has an escalation row dated December;
-//   nothing in the data was wrong, the detector was.
+//   `monthlyScheduleForYear` (`abatement.js`) divides the year across its months, rounds each to
+//   the cent, and folds the leftover onto the LAST in-term month so the twelve sum to the year
+//   exactly. `componentizeSchedule` derives base as the REMAINDER, so the whole fold lands on
+//   December's base. On George's own FY 2026 the fold is FOUR CENTS on both leases — beauty and
+//   barber $2,650.08 → $2,650.12, Infinite Mobile $2,395.42 → $2,395.46 — twice the old tolerance,
+//   so December was announced as a rent escalation on two leases that have none. Neither has an
+//   escalation row dated December; nothing in the data was wrong, the detector was.
+//
+// ⚠ IT IS THAT FOLD, NOT THE INVOICE ONE, and the difference matters to anyone reasoning about
+// the bound. `buildLeaseSchedule` has a second penny-fold for scaling to an issued invoice, but
+// the Ledger's roll passes NO `invoiceTotal` (`api.js` — the schedule builds UP from the data,
+// George 2026-07-21), so `factor` is 1 and that fold never runs here. The one that does is capped
+// at 12¢ by `abatement.js`'s own guard.
 //
 // A rent raise is never a few cents a month. The floor has to clear the fold, and the fold is
-// bounded by the rounding of twelve months (~6¢), not by any figure a landlord types. A dollar
-// clears it by an order of magnitude and is still far below the smallest real step.
+// bounded by that 12¢ guard — not by any figure a landlord types. A dollar clears it and is still
+// far below the smallest real step.
 //
 // ⚠ THIS ALSO CLEARS THE ROW CHIP AND THE FOLLOW-UP VERDICT, because `escalationFollowThrough`
 // is fed THESE steps — so a fold could not only announce a phantom raise, it could then judge a

@@ -57,11 +57,13 @@ describe('escalationStepMonths', () => {
   // infinite mobile on the ledger in december when there isnt"* — and there wasn't. Neither
   // lease has an escalation row dated December; the December CELL was four cents bigger.
   //
-  // `buildLeaseSchedule` rounds each month to the cent and folds the year's leftover onto the
-  // LAST in-term month so the twelve sum to the issued invoice exactly; `componentizeSchedule`
-  // derives base as the REMAINDER, so the fold lands entirely on December's base. The old guard
-  // was `> prevBase + 0.02`, described as cents-safe — the fold is 4¢, twice that. A detector
-  // whose tolerance is smaller than the rounding it has to survive will always fire eventually.
+  // `monthlyScheduleForYear` (`abatement.js`) rounds each month to the cent and folds the year's
+  // leftover onto the LAST in-term month so the twelve sum to the year exactly;
+  // `componentizeSchedule` derives base as the REMAINDER, so the fold lands entirely on December's
+  // base. The old guard was `> prevBase + 0.02`, described as cents-safe — the fold is 4¢, twice
+  // that. A detector whose tolerance is smaller than the rounding it has to survive will always
+  // fire eventually. (Not the invoice-scaling fold: the Ledger's roll passes no `invoiceTotal`,
+  // so `factor` is 1 and that one never runs.)
   //
   // Both figures below are the real ones off FY 2026 production.
   it('does NOT call December’s penny-fold a rent step', () => {
