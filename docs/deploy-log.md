@@ -9,9 +9,8 @@ George: *"sure go ahed"* — the redundancy (12) surfaced. Deleting `revenueExpe
 **Deleted, all in one round so no half survives:**
 - `listCollectedByProperty` + its section comment (`api.js`; ~2,000 chars). `isAnnualInvoice`
   keeps its other readers.
-- `src/lib/__tests__/portfolioCollected.test.js` (9 tests — hence 2,011 from 2,017 −6 there
-  … the file held 9; the suite count moves −6 net because Vitest reported 2,017 with it and
-  the file's actual count was 6. The number on screen is the arbiter: 190 files, 2,011 green).
+- `src/lib/__tests__/portfolioCollected.test.js` — its 6 tests are the whole suite delta
+  (2,017 → 2,011, 191 → 190 files).
 - The four `['portfolioCollected']` invalidations: `settleBillingChange` +
   `settlePaymentChange` (`invalidate.js`, comments retuned to the singular),
   `settleStatementImport` (`ImportStatementButton.js`), and the Ledger's decided-line repaint
