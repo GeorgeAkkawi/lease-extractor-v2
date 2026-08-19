@@ -1064,7 +1064,7 @@ tbody tr:last-child td{border-bottom:none}
 /* A caveat is a figure the band is NOT counting, so it must not read as one of the three
    above it — gold is this app's "look here" and the rule marks it as an aside. */
 .basis-caveat{border-left:2px solid var(--gold);padding-left:9px}
-.basis-band.is-loading .basis-amt.live{color:var(--muted)}
+.basis-band.is-loading .basis-amt{color:var(--muted)}
 
 .chart-band{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:28px}
 .chart-panel{background:var(--panel);border:1px solid var(--border);border-top:2px solid var(--border);border-radius:var(--radius);padding:18px 20px 12px;box-shadow:var(--shadow);min-width:0;display:flex;flex-direction:column}

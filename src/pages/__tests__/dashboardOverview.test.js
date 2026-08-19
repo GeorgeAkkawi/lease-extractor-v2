@@ -104,6 +104,23 @@ describe('Overview — portfolio charts', () => {
     expect(figure).not.toBe('$0');
   });
 
+  // …and the same rule binds the band's PROJECTED column, which moved onto the same roll in the
+  // same change. It printed $0 for the beat the roll takes — the exact fault the donut assertion
+  // above forbids, one box higher on the same screen. The live figure has always worn the dash.
+  it('the band wears a dash, not $0, while the roll is read', async () => {
+    const { container } = renderDash();
+    const band = await waitFor(() => {
+      const el = container.querySelector('.basis-band');
+      expect(el).toBeTruthy();
+      return el;
+    });
+    for (const amt of band.querySelectorAll('.basis-amt')) {
+      const figure = amt.textContent.trim();
+      expect(figure === '—' || /^\$[\d,]+$/.test(figure)).toBe(true);
+      expect(figure).not.toBe('$0');
+    }
+  });
+
   // George: *"there should be a total collumn instead of the whats left."*
   it('heads the page with Revenue, Expenses and Total, each read twice', async () => {
     const { container } = renderDash();

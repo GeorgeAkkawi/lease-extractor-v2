@@ -1,3 +1,67 @@
+## 2026-08-18 (11) — Bug sweep of the panel: four found, four fixed
+
+**Cloudflare version:** `ce8cad8e-c429-43e6-93f1-d6eee0fe2e07` · 2,022 tests / 191 files green.
+
+George: *"find any bugs or glitches or bad logic and fix. offer any recomendations as well."*
+Swept this task's own surface — the band, the bridge, and the two loaders behind them. The
+closure algebra checked out exactly (Revenue: `tieOut = rentPosted + grossCarve − corrections`,
+verified against `billedRowsFromRoll`; Expenses and Total close by construction). Four defects,
+all display/wording layer, none in a stored figure:
+
+1. **The projected column flashed `$0` while the Ledger roll loads** (`BasisBand.js`). Since
+   Revenue moved off the view — (3), this morning — projected waits on the same
+   `listBasisByProperty` read as live, but only live wore the loading dash. Every Overview open
+   painted "Revenue $0 projected" and revised it a beat later — the exact fault
+   `dashboardOverview.test.js` already forbids for the donut ("NOT YET IS NOT $0"), one box
+   higher on the same screen. Both columns now wear the dash; `.is-loading` mute in `App.css`
+   widened from `.basis-amt.live` to `.basis-amt`. New DOM pin walks every `.basis-amt`.
+2. **A cause contributed by ONE property never named it** (`BasisBridge.js`). The evidence guard
+   was `rows.length > 1`, which conflates "one contributor" with "one-property portfolio" — they
+   are opposites. This is why George had to ask *"be more specific on that 329 that remains…
+   which rent step??"*: the panel knew the ahead line was all Joliet and said nothing.
+   `yearBridge` now returns `multi` (portfolio has >1 property) and the component names a lone
+   contributor whenever `multi` — terms and caveats both. A one-property portfolio still names
+   nothing (the existing pin holds, reworded). New pin: lone contributor in a two-property
+   portfolio is named.
+3. **The headline could caption a gap with a cause pulling the other way** (`yearBridge.js`).
+   `headlineFor` picked the biggest term by |amount| with no sign check, so a year running
+   AHEAD (other income landed) would read *"$10,000 ahead — mostly rent for months that have
+   not come round yet"* — two claims contradicting each other in one sentence. Causes are now
+   filtered to those pulling the delta's own way; when nothing does, the gap is stated plainly
+   with no "mostly". New pin: an ahead year with only negative timing terms gets `cause: null`.
+4. **The band's foot claimed "most of the gap is simply months still to come" unconditionally**
+   (`BasisBand.js`). True in August; flatly false in an arrears-heavy December — and the bridge
+   directly below now MEASURES that split and says "mostly …" only when it is so. The clause is
+   §3-rule prose (a sentence that exists because the screen couldn't say it — and now the screen
+   says it): trimmed to "counted through Aug 18".
+
+**Checked and clean, for the record:** the timing-split closure on all three measures ·
+`monthsDueThrough` boundaries · the sub-dollar fold (moves evidence with amounts) · the
+`futurePart`/credit interaction (credit is undated, rides no month, has its own term) · the
+prepayment path (a tagged future month shrinks notDueYet, never pastDue) · `STEP_FLOOR` ·
+`contractedRoll`'s wrap · no leftover readers of `rentAnnualRate`/`twinCheck`.
+
+**Known bad logic deliberately NOT bundled in (George's standing call, restated):**
+- A lease ending mid-year is still projected for twelve months — confirmed at the mechanism:
+  `getPropertyMonthlyRoll` passes `buildLeaseSchedule` `leaseStart` and **no termination date**,
+  so D & D Dental (out 30 Sep) carries ~$11,859 of never-to-be-billed rent inside "not due yet",
+  and projected ≠ live at year end for exactly that lease — the one shape George's design
+  statement says should not exist. Not free: the schedule is a §2 choke point (Ledger grid,
+  invoices, standings, `draft-invoice` twin all read it). Needs its own plan.
+- The Financials page still quotes today's rent × 12 as "Projected revenue (annualized)";
+  nothing on screen reconciles the two pages since the caveat came off. The fix is that page's
+  caption/figure only — never the stored view.
+
+**Files:** `src/lib/yearBridge.js` · `src/components/BasisBridge.js` · `src/components/BasisBand.js`
+· `src/App.css` · tests: `yearBridge.test.js`, `basisBridgeEvidence.test.js`,
+`dashboardOverview.test.js`.
+
+**Now redundant:** the foot's "so most of the gap is simply months still to come" clause
+(removed — the bridge measures it). Still on the table from (10), unchosen: `rentScheduled`
+(no reader beyond feeding `rentProjected`'s lead half), `revenueExpensesNoi` (exported, rendered
+nowhere), the foot's "It is the same rent the donut sums" sentence (third phrasing in three
+rounds — left in place pending George's word).
+
 ## 2026-08-18 (10) — The gap splits at today, and the annual-rate caveat comes off
 
 **Cloudflare version:** `d098cce2-1a10-4518-94ea-2dcc7917b7fe` · 2,019 tests / 191 files green.

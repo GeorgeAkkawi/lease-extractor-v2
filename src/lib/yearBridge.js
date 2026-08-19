@@ -67,8 +67,11 @@ function term(key, label, rows, amountOf, extra = {}) {
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || a.label.localeCompare(b.label));
   const amount = round2(evidence.reduce((s, e) => s + e.amount, 0));
   if (Math.abs(amount) <= DUST) return null;
-  // One property is not a list. Naming it in the term's own line reads better than a trailing
-  // chip repeating the only name there is, and the component uses this to decide.
+  // The rows always ride along; whether they PRINT is the component's call, made from `multi`
+  // below — in a one-property portfolio the name is the whole portfolio and repeating it is
+  // noise, while in a portfolio of several the lone contributor's name IS the answer (George,
+  // 2026-08-18: *"be more specific on that 329"* — the panel knew it was one property and
+  // said nothing).
   return { key, label, amount, rows: evidence, ...extra };
 }
 
@@ -219,6 +222,9 @@ export function yearBridge(rows = [], { year = null } = {}) {
     year,
     measures,
     caveats,
+    // Whether this portfolio has more than one property — the component's one input for
+    // deciding when a cause's property rows are information and when they are repetition.
+    multi: list.length > 1,
     // The one sentence the folded panel shows. Computed here so the panel and anything else
     // that ever quotes it cannot drift apart.
     headline: headlineFor(total, measures),
@@ -237,10 +243,16 @@ function headlineFor(total, measures) {
   }
   // The biggest single CAUSE, taken from Revenue and Expenses rather than Total — Total's lines
   // are gaps, and "most of it is the rent gap" tells a landlord nothing they cannot already see.
+  //
+  // ⚠ ONLY A CAUSE PULLING THE SAME WAY AS THE GAP MAY CAPTION IT. Terms are signed, and a year
+  // that runs AHEAD (other income, a confirmed surplus) still carries big negative timing terms —
+  // "$10,000 ahead, mostly rent for months that have not come round yet" is two claims that
+  // contradict each other in one sentence. When nothing pulls the gap's own way, say the gap
+  // plainly and let the lines below explain it.
   const causes = measures
     .filter((m) => m.key !== 'total')
     .flatMap((m) => m.terms)
-    .filter((t) => !t.unexplained);
+    .filter((t) => !t.unexplained && (t.amount < 0) === (delta < 0));
   const cause = causes.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))[0] || null;
   return {
     projected,

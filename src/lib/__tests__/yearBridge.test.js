@@ -380,4 +380,26 @@ describe('the headline', () => {
     // A cause is only claimed when it really is most of the gap — never as decoration.
     if (h.cause) expect(Math.abs(h.cause.amount)).toBeGreaterThanOrEqual(Math.abs(h.delta) * 0.5);
   });
+
+  // ⚠ A CAUSE MUST PULL THE GAP'S OWN WAY. A year running AHEAD (other income landed) still
+  // carries big negative timing terms on Revenue, and the biggest term used to caption the
+  // headline regardless of direction — "$10,000 ahead, mostly rent for months that have not
+  // come round yet" is two claims contradicting each other in one sentence.
+  it('never captions an ahead year with a cause pulling the other way', () => {
+    const ahead = {
+      id: 'p', name: 'Pershing Plaza',
+      rentProjected: 120000, rentLive: 60000, rentScheduled: 120000, projectedAhead: 0,
+      rentNotDue: 50000, camTaxNotDue: 0,
+      rentPosted: 120000, grossCarve: 0, rentCorrections: 0, tenantCredit: 0, unbilled: 0,
+      camTaxProjected: 0, camTaxLive: 0, camTaxPosted: 0, camTaxCorrections: 0,
+      chargesProjected: 0, chargesLive: 0, otherLive: 70000, unapplied: 0, driftTotal: 0,
+      totalProjected: 120000, totalLive: 130000,
+    };
+    const h = yearBridge([ahead], { year: Y }).headline;
+    expect(h.direction).toBe('ahead');
+    expect(h.delta).toBeCloseTo(10000, 2);
+    // The only causes on the component measures pull DOWN (−$50,000 not due, −$10,000 past
+    // due); neither may explain a gap that points up. Plain "$10,000 ahead" is the honest line.
+    expect(h.cause).toBeNull();
+  });
 });

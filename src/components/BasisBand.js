@@ -97,7 +97,11 @@ export default function BasisBand({ totals, bridge = null, year, ledgerHref = nu
           A raise your leases schedule for later this year is counted, and named below.{' '}
           It is the same rent the donut sums.{' '}
           <b>Live</b> is what has actually arrived, straight off the Ledger
-          {asOf ? <> — counted through <b>{asOf}</b>, so most of the gap is simply months still to come</> : null}.
+          {/* The date and nothing more. This sentence used to add "so most of the gap is simply
+              months still to come" — usually true in August and flatly false in an arrears-heavy
+              December. The bridge below MEASURES that split and says "mostly …" only when it is
+              so; a blanket claim above it was the prose §3 warns about. */}
+          {asOf ? <> — counted through <b>{asOf}</b></> : null}.
         </p>
         <BasisBridge bridge={bridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />
       </div>
@@ -124,7 +128,11 @@ function BasisCol({ label, sub, pair, ink, liveInk, loading }) {
       <div className="basis-figs">
         <div className="basis-fig">
           <span className="basis-sw" style={{ background: ink }} />
-          <span className="basis-amt">{money0(projected)}</span>
+          {/* ⚠ "NOT YET" IS NOT "$0" — the donut's own rule (dashboardOverview.test.js), and
+              since Revenue moved off the view (2026-08-18 (3)) it binds this column too: both
+              readings now wait on the Ledger roll, so an ungated figure here paints $0 and
+              revises it a beat later. The live figure beside it has always worn this dash. */}
+          <span className="basis-amt">{loading ? '—' : money0(projected)}</span>
           <span className="basis-cap">projected</span>
         </div>
         <div className="basis-fig">

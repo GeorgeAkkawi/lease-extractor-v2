@@ -81,12 +81,26 @@ describe('the properties behind a cause', () => {
     expect(text).not.toContain('+$4,000.00');
   });
 
-  // One property is not a list: its name is already the whole answer, and a trailing chip
-  // repeating it is noise. Unchanged by the signing — pinned so it stays that way.
-  it('names no properties at all when there is only one', () => {
+  // A one-PROPERTY portfolio is different: its name is already the whole answer, and a trailing
+  // chip repeating it is noise. Unchanged by the signing — pinned so it stays that way.
+  it('names no properties at all when the portfolio is one property', () => {
     const bridge = yearBridge([row('p1', 'Pershing Plaza', 300000, 4000)], { year: Y });
     const text = openTerms(bridge);
     expect(text).toContain('$4,000.00');
     expect(screen.queryByText(/Pershing Plaza/)).toBeNull();
+  });
+
+  // ⚠ BUT A LONE CONTRIBUTOR IN A PORTFOLIO OF SEVERAL IS NAMED (George, 2026-08-18: *"be more
+  // specific on that 329 that remains in the revenue difference which rent step??"* — one
+  // property's lone rent step, and the panel knew which property and said nothing). The old
+  // `rows.length > 1` guard treated "one contributor" and "one property" as the same case; they
+  // are opposites — when other properties exist, the name IS the answer.
+  it('names the lone contributor when the portfolio has other properties', () => {
+    const bridge = yearBridge([
+      row('p1', 'Pershing Plaza', 300000, 4000),
+      row('p2', 'Joliet', 350000, 0),
+    ], { year: Y });
+    const text = openTerms(bridge);
+    expect(text).toContain('Pershing Plaza $4,000.00');
   });
 });

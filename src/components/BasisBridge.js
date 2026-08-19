@@ -17,8 +17,13 @@ import { money } from '../lib/format';
 // second answer to the question the band above it is already answering (CLAUDE.md §3).
 export default function BasisBridge({ bridge, year, ledgerHref = null, incomeHref = null }) {
   if (!bridge || !bridge.headline) return null;
-  const { headline, measures, caveats } = bridge;
+  const { headline, measures, caveats, multi } = bridge;
   const linkFor = (key) => (key === 'ledger' ? ledgerHref : key === 'income' ? incomeHref : null);
+  // When to print the property rows behind a cause: in a portfolio of several, always — a cause
+  // contributed by ONE property is exactly when the name is the answer (George, 2026-08-18: *"be
+  // more specific on that 329"*, a figure that was one property's lone rent step). In a
+  // one-property portfolio, never: the only name there is is the portfolio itself.
+  const named = (rows) => rows.length > (multi ? 0 : 1);
 
   return (
     <Panel
@@ -33,7 +38,7 @@ export default function BasisBridge({ bridge, year, ledgerHref = null, incomeHre
     >
       <div className="basis-bridge-body">
         {measures.map((m) => (
-          <MeasureBlock key={m.key} m={m} linkFor={linkFor} />
+          <MeasureBlock key={m.key} m={m} linkFor={linkFor} named={named} />
         ))}
 
         {caveats.length > 0 && (
@@ -47,7 +52,7 @@ export default function BasisBridge({ bridge, year, ledgerHref = null, incomeHre
               return (
                 <p key={c.key} className="chart-foot-line basis-caveat">
                   <b>{money(Math.abs(c.amount))}</b> {c.label}
-                  {c.rows.length > 1 && <span className="basis-term-rows"> — {evidence(c.rows)}</span>}
+                  {named(c.rows) && <span className="basis-term-rows"> — {evidence(c.rows)}</span>}
                   {'. '}
                   {href ? <Link to={href}>{c.action}</Link> : c.action}.
                 </p>
@@ -60,7 +65,7 @@ export default function BasisBridge({ bridge, year, ledgerHref = null, incomeHre
   );
 }
 
-function MeasureBlock({ m, linkFor }) {
+function MeasureBlock({ m, linkFor, named }) {
   const pctLabel = m.share == null ? null : Math.round(m.share * 100);
   return (
     <div className="basis-bridge-measure">
@@ -100,9 +105,9 @@ function MeasureBlock({ m, linkFor }) {
                 </span>
                 <span className="basis-term-label">
                   {t.label}
-                  {/* One property is not a list — its name is already the only answer, so a
-                      trailing chip repeating it is noise. Named from two upwards. */}
-                  {t.rows.length > 1 && <span className="basis-term-rows">{evidence(t.rows)}</span>}
+                  {/* `named` — see the top of the file: a lone contributor is named in a
+                      multi-property portfolio and never in a one-property one. */}
+                  {named(t.rows) && <span className="basis-term-rows">{evidence(t.rows)}</span>}
                   {href && <> · <Link to={href}>see where it came from</Link></>}
                 </span>
               </li>
