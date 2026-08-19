@@ -98,6 +98,10 @@ export default function ImportStatementButton({ onReady }) {
         parsed: { transactions: gate.transactions, skippedLines: gate.skippedLines, warnings: [] },
         pdfLane: true,
       });
+    } catch (e) {
+      // Without this the only sign of a failure was the button quietly ceasing to say
+      // "Reading…" — the message belongs on screen like every other read's does.
+      setErr(e?.message || 'Could not open the sample statement.');
     } finally {
       setBusy(false);
     }
@@ -197,12 +201,22 @@ export function settleStatementImport(qc) {
   qc.invalidateQueries({ queryKey: ['expenseRecord'] });
   qc.invalidateQueries({ queryKey: ['camLineItems'] });
   qc.invalidateQueries({ queryKey: ['taxLineItems'] });
+  // ⚠ The roof twin, missing until 2026-08-19 while its cam and tax siblings sat right
+  // here: the importer writes `type: 'roof'` lines (addRoofLineItem), which the Roof
+  // section and the recoverability table read under this key. Without it an imported
+  // roof repair — and an undo of one — went on showing the pre-import list.
+  qc.invalidateQueries({ queryKey: ['roofLineItems'] });
   qc.invalidateQueries({ queryKey: ['corpRollups'] });
   // The projected-vs-live band, which an import moves on BOTH sides at once: deposits are
   // its live revenue, and an imported expense line is the only kind that always arrives
   // with a payment date, which is what its live expense figure counts.
   qc.invalidateQueries({ queryKey: ['portfolioBasis'] });
   qc.invalidateQueries({ queryKey: ['historyEvents'] });
+  // An import books the payments the three Ledger alerts are computed FROM
+  // (statement_reminder / missing_payment / escalation_short), and its estimate branch
+  // moves billed figures outright — so the dashboard bell must not go on accusing a
+  // tenant whose statement just settled them. settleBillingChange carries this for less.
+  qc.invalidateQueries({ queryKey: ['alerts'] });
   qc.invalidateQueries({ queryKey: ['statementImports'] });
   qc.invalidateQueries({ queryKey: ['statementContext'] });
   // An import records every line it read, and an undo takes them away with it (0076

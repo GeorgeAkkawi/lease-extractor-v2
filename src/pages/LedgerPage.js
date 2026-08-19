@@ -878,19 +878,43 @@ export default function LedgerPage() {
   // repaints automatically after a post).
   const editingRow = editing ? derived.find(({ r }) => r.lease_id === editing.leaseId) : null;
 
-  const markAll = (m) => {
+  // ⚠ THE APP'S OWN CONFIRM, not window.confirm — these were the page's last two bare
+  // browser dialogs (2026-08-18 (15)). The difference is not styling: a bulk mark is the
+  // biggest single write this grid can make, and the native box could not say what it was
+  // about to do, what it prices the months at, or how to take one back.
+  const markAll = async (m) => {
     const unpaid = derived.filter(({ alloc }) => round2(alloc.owed[m - 1] - alloc.coverage[m - 1]) > 0.05).length;
     if (unpaid === 0) { setNote(`Everyone is already covered for ${MONTHS[m - 1]}.`); return; }
-    if (window.confirm(`Mark ${MONTHS[m - 1]} ${year} paid for all ${unpaid} tenant${unpaid === 1 ? '' : 's'} who haven't yet?`)) {
-      allMut.mutate(m);
-    }
+    const ok = await askConfirm({
+      title: `Mark ${MONTHS[m - 1]} paid for ${unpaid} tenant${unpaid === 1 ? '' : 's'}?`,
+      message: `Every tenant still owing on ${MONTHS[m - 1]} ${year} is recorded as paid.`,
+      implications: [
+        'Each month is recorded at what that tenant still owes — priced off their own lease, so a partly-covered month is topped up by its gap only.',
+        'Tenants already covered, out of term or rent-free are skipped.',
+        'These are app-priced marks: if a billed figure later changes, they follow it. Money off a bank statement is recorded by importing the statement instead.',
+        'One click on any box takes that month back.',
+      ],
+      confirmLabel: `Mark ${MONTHS[m - 1]} paid`,
+      tone: 'default',
+    });
+    if (ok) allMut.mutate(m);
   };
-  const catchUp = () => {
+  const catchUp = async () => {
     if (!throughM) return;
     const months = Array.from({ length: throughM }, (_, i) => i + 1);
-    if (window.confirm(`Mark rent paid for every tenant through ${MONTHS[throughM - 1]} ${year} (only what they still owe)?`)) {
-      catchUpAll.mutate(months);
-    }
+    const ok = await askConfirm({
+      title: `Mark everyone paid through ${MONTHS[throughM - 1]}?`,
+      message: `Every unpaid month that has come due — January through ${MONTHS[throughM - 1]} ${year} — is recorded as paid, for every tenant.`,
+      implications: [
+        'Each month is recorded at what that tenant still owes on it — never more than its own bill.',
+        'Months already covered, out of term or rent-free are skipped.',
+        'These are app-priced marks: if a billed figure later changes, they follow it. Money off a bank statement is recorded by importing the statement instead.',
+        'One click on any box takes a month back.',
+      ],
+      confirmLabel: `Mark paid through ${MONTHS[throughM - 1]}`,
+      tone: 'default',
+    });
+    if (ok) catchUpAll.mutate(months);
   };
   const behindTotal = derived.reduce((acc, { summary }) => acc + summary.monthsBehind, 0);
   const totalCollected = derived.reduce((s, { summary }) => s + summary.collected, 0);
@@ -1457,9 +1481,15 @@ export default function LedgerPage() {
                           if (v === NEW_INCOME) { setNamingIncome(l.id); setIncomeDraft(''); return; }
                           // Rent asks a second question — which month — so it opens the month
                           // box rather than going straight to a confirm. The default is the day
-                          // the bank printed, the same rule the import matcher starts from.
+                          // the bank printed, the same rule the import matcher starts from —
+                          // ⚠ but only when the bank date falls in the YEAR on screen. A
+                          // December statement can carry a January line: defaulting that to
+                          // "January" of the viewed FY would quietly file next year's rent
+                          // eleven months early. A line from another year defaults to the
+                          // untagged lump instead, and the landlord picks.
                           if (v.startsWith('rent:')) {
-                            const m = Number(String(l.txn_date || '').slice(5, 7));
+                            const sameYear = String(l.txn_date || '').slice(0, 4) === String(year);
+                            const m = sameYear ? Number(String(l.txn_date).slice(5, 7)) : 0;
                             setRentPick((p) => ({ ...p, [l.id]: { leaseId: v.slice(5), month: m >= 1 && m <= 12 ? m : null } }));
                             return;
                           }

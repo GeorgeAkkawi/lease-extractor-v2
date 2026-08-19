@@ -418,6 +418,12 @@ describe('a settlement names its other end, and can be taken back whole', () => 
     // sign, would call the year that PAID the balance the year that RECEIVED it.
     expect(here.every((a) => !isBroughtForward(a))).toBe(true);
     expect(isBroughtForward(there[0])).toBe(true);
+    // ⚠ AND THE KIND IS PART OF THE TEST. The phrase is printed on screen for the landlord
+    // to read, so it can be typed straight into a manual fee's memo — and the Ledger runs
+    // EVERY adjustment row through this predicate to total what was carried in. Without the
+    // kind guard an ordinary charge counted as last year's balance arriving.
+    expect(isBroughtForward({ kind: 'fee', memo: there[0].memo })).toBe(false);
+    expect(isBroughtForward({ kind: 'credit', memo: 'Brought forward from FY 2025' })).toBe(false);
     expect(here.every(isSettlementRow) && isSettlementRow(there[0])).toBe(true);
   });
 

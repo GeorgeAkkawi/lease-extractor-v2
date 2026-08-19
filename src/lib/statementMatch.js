@@ -231,19 +231,33 @@ export function classifyWithdrawal(description, tenants = []) {
     // than posing as a decision they made (the round-6 judgement, carried forward).
     if (re.test(desc)) return { ...out, confidence: 'high' };
   }
-  if (/(^| )(TAX|TAXES|COUNTY|TREASURER|ASSESSOR)( |$)/.test(desc)) {
+  // The words that mean a tax bill and nothing else. TREASURER and ASSESSOR name the
+  // office; TAX names the thing.
+  if (/(^| )(TAX|TAXES|TREASURER|ASSESSOR)( |$)/.test(desc)) {
     return { kind: 'expense_tax', confidence: 'high' };
   }
   if (desc.includes('ROOF')) return { kind: 'expense_roof', confidence: 'high' };
-  for (const [kw, label] of CAM_KEYWORDS) {
-    if (desc.includes(kw)) return { kind: 'expense_cam', label, confidence: 'high' };
-  }
-  // Money OUT to a tenant's name — likely a refund/credit paid to them; that flow
-  // lives in the reconciliation "Mark refunded" action, not here.
+  // ⚠ MONEY OUT TO A TENANT IS CHECKED BEFORE THE CAM VOCABULARY, not after it. The
+  // threshold is 0.99 — effectively the tenant's own name — and running it last meant a
+  // refund cheque to "Sunset Cleaners" hit the CLEAN stem in the table below and got
+  // pre-ticked as a cleaning expense: the refund suggestion could never fire for any
+  // tenant whose name contains a CAM word.
   for (const t of tenants) {
     if (tenantNameScore(description, t.tenant_name) >= 0.99) {
       return { kind: 'ignore', reason: `looks like money paid TO ${t.tenant_name} — record refunds via the reconciliation's "Mark refunded"`, confidence: 'medium' };
     }
+  }
+  for (const [kw, label] of CAM_KEYWORDS) {
+    if (desc.includes(kw)) return { kind: 'expense_cam', label, confidence: 'high' };
+  }
+  // ⚠ BARE "COUNTY" COMES AFTER THE CAM TABLE, not before it. A county is who a tax is
+  // paid to AND who runs the water main: "COOK COUNTY TREASURER" is caught above by the
+  // word TREASURER, while "COUNTY WIDE LANDSCAPING" and "DUPAGE COUNTY PUBLIC WORKS"
+  // used to file as property tax at high confidence — pre-ticked, and property tax is
+  // billed straight through to tenants via v_tenant_shares. Anything the CAM vocabulary
+  // recognizes is a service; only what it doesn't falls back to the county reading.
+  if (/(^| )COUNTY( |$)/.test(desc)) {
+    return { kind: 'expense_tax', confidence: 'high' };
   }
   return { kind: 'ignore', reason: 'unrecognized — money out is never booked without your say-so', confidence: 'none' };
 }

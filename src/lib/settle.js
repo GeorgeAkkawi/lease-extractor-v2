@@ -316,7 +316,14 @@ export const broughtForwardMemo = (fromYear) => `${BROUGHT_PREFIX}${Number(fromY
 /** Is this adjustment a balance that arrived from the year before? The Ledger's row chip and
  *  the month panel both ask; neither re-derives the answer. */
 export const isBroughtForward = (adj) =>
-  String(adj?.memo || '').startsWith(BROUGHT_PREFIX);
+  // ⚠ THE KIND IS PART OF THE TEST. The memo is what separates the two `opening` rows a
+  // year can hold — but only among rows that ARE settlements. A landlord typing a memo
+  // on a manual fee or credit can copy this phrase straight off their own screen, and
+  // the Ledger's `carriedIn` filters every adjustment row through this predicate: an
+  // ordinary charge would then be counted as money carried in from last year and chipped
+  // as an automated carry that never ran. `settleTenantBalance` writes the carry as an
+  // `opening` row, and nothing else does.
+  adj?.kind === 'opening' && String(adj?.memo || '').startsWith(BROUGHT_PREFIX);
 
 /** The kinds only `settleTenantBalance` ever writes — none is offered in the manual picker
  *  (`adjustmentKindsFor` filters `manual !== false`). A row of one of these kinds on a

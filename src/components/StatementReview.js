@@ -130,6 +130,14 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
     const list = matched.rows.map((row, i) => {
       const ov = overrides[i] || {};
       const pick = ov.pick != null ? resolvePick(ov.pick) : null;
+      const handPicked = ov.pick != null;
+      // A saved rule IS the landlord's decision — made once on the Learned payees
+      // panel rather than on this line — so a rule-matched row counts as picked when
+      // they haven't overridden it here. Only `ignore` and `transfer` read `picked` at
+      // all (dispositions.js), and a rule can only ever target tenant / expense_* /
+      // ignore, so this changes exactly one thing: "always ignore this payee" now
+      // records as a decision instead of nagging from Money-not-yet-placed forever.
+      const ruleDecided = !handPicked && row.confidence === 'rule';
       const kind = pick ? pick.kind : row.kind === 'unmatched' ? 'ignore' : row.kind;
       const label = pick ? pick.label || null : row.label || null;
       const leaseId = pick ? pick.lease_id : row.candidate?.lease_id || null;
@@ -154,6 +162,13 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       // no month by definition, so they never carry one — which is also what keeps
       // them out of the estimate-derivation and the ledger's coverage arithmetic.
       const finalMonth = (toRecon || kind === 'other_income' || kind === 'deposit_held') ? null : month;
+      // ⚠ THE YEAR THE MONEY BOOKS TO. A month tag says "December" and nothing else, so
+      // on a statement that straddles a year end — Dec 20 – Jan 19 is an ordinary bank
+      // cycle — retagging a January-dated line to "Dec" meant December of the JANUARY
+      // year: eleven months into the future, with the December that was actually paid
+      // left open and firing `missing_payment`. The year now travels with the choice;
+      // untouched, it is still the line's own date, which is what it always was.
+      const bookYear = ov.year !== undefined && ov.year !== '' ? Number(ov.year) : Number(row.year);
       const defaultChecked = row.checked && !row.txn.needsReview;
       const checked = ov.checked !== undefined ? ov.checked : defaultChecked;
       // An ignored/unresolved line writes nothing, whatever the checkbox says.
@@ -179,21 +194,42 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const alreadyPaid = !!(kind === 'tenant' && tenant && finalMonth && !toRecon
         && Number((tenant.owed || [])[finalMonth - 1]) > 0
         && Number((tenant.coverage || [])[finalMonth - 1]) >= Number(tenant.owed[finalMonth - 1]) - 0.05);
-      const isChecked = writable && checked && !(alreadyPaid && ov.checked === undefined);
+      // ⚠ A MONTH THAT BILLS NOTHING is the one case `depositProjectionDelta` returns
+      // null for (`owed <= DUST`) — i.e. every warning on this row stands down at
+      // exactly the moment 100% of the deposit is misplaced. A tag settles its own
+      // month at whatever arrived and never rolls forward, so money tagged to a month
+      // owing $0 covers no open gap: the tenant goes on reading behind while the
+      // payment sits where nothing was due. Commonest via a learned payee rule, which
+      // ticks on the pattern alone and carries the line's own calendar month — so a
+      // final cheque dated just past the lease end arrives pre-ticked onto July of a
+      // term that ended in June. Untick it by default, exactly as an already-paid
+      // month is unticked, and say why on the row.
+      const unbilledMonth = !!(kind === 'tenant' && tenant && finalMonth && !toRecon
+        && Number((tenant.owed || [])[finalMonth - 1] || 0) <= 0.01);
+      const isChecked = writable && checked && !((alreadyPaid || unbilledMonth) && ov.checked === undefined);
       return {
-        row, i, kind, label, category, leaseId, tenant, toRecon, month: finalMonth,
+        row, i, kind, label, category, leaseId, tenant, toRecon, month: finalMonth, bookYear,
         checked: isChecked,
         // WHO a distribution went to — typed on the row when the bank named a payee. A
         // cheque never does (the machine-readable line is number, date, ref, amount; the
         // name is handwriting on the image), so this is usually blank and the BUCKET
         // ends up named after the payee instead, which is where it is edited afterwards.
         party: ov.party || '',
-        ai: !!ov.ai, picked: ov.pick != null,
-        monthPicked: ov.month !== undefined, mismatch, alreadyPaid,
+        // ⚠ A LEARNED RULE IS A PICK — made once, on the Learned payees panel, instead
+        // of on this line. "Always ignore this payee" is a real rule target, and
+        // without this it resolved to `unclassified`: the row said "Ignore" on screen
+        // and then nagged from Money-not-yet-placed after every future import, forever.
+        ai: !!ov.ai, picked: handPicked || ruleDecided,
+        monthPicked: ov.month !== undefined, mismatch, alreadyPaid, unbilledMonth,
+        // Whether this line's money belongs to the fiscal year whose ledger is on
+        // screen. Every guard above (owed, coverage, the projection) is built from
+        // `year`'s roll only, so on an off-year line they are answers about the wrong
+        // year — named here so the screen can say so instead of quoting them silently.
+        offYear: Number(row.year) !== Number(year),
         // Slice 4a — what Save will record about this line in the audit table, whether
         // or not it writes any money. Derived here so the footer's counts and the row
         // itself can never disagree with what actually gets stored.
-        disposition: dispositionForRow({ checked: isChecked, kind, picked: ov.pick != null, duplicate: row.duplicate }),
+        disposition: dispositionForRow({ checked: isChecked, kind, picked: handPicked || ruleDecided, duplicate: row.duplicate }),
         ignoreReason: ov.reason || (row.duplicate ? 'duplicate' : null),
       };
     });
@@ -282,10 +318,17 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         if (!target || !label) continue;
         const billable = s.billable !== false;
         if (!bucketOptions.some((b) => b.label.toLowerCase() === label.toLowerCase())) adds.push({ label, billable });
-        patch[target.i] = { ...overrides[target.i], pick: billable ? `cam:${label}` : `other:${label}`, ai: true };
+        patch[target.i] = { pick: billable ? `cam:${label}` : `other:${label}`, ai: true };
       }
       if (adds.length) setSessionBuckets((s) => [...s, ...adds]);
-      setOverrides((o) => ({ ...o, ...patch }));
+      // ⚠ MERGE INSIDE THE UPDATER, not from the `overrides` this closure captured before
+      // the await. The call takes a second or two, and a month set or a box ticked while
+      // it runs would be thrown away by a spread of the pre-call snapshot.
+      setOverrides((o) => {
+        const next = { ...o };
+        for (const [i, add] of Object.entries(patch)) next[i] = { ...o[i], ...add };
+        return next;
+      });
     } catch (e) {
       setAiErr(e?.message || 'Could not get suggestions — sort the lines by hand instead.');
     } finally {
@@ -305,7 +348,13 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   );
   // Rows carrying an AI suggestion that hasn't been accepted yet — "✓ Accept N AI
   // matches" is the bulk tick, so a 20-line statement isn't 20 clicks.
-  const aiPending = useMemo(() => resolved.filter((r) => r.ai && !r.checked && !r.row.duplicate), [resolved]);
+  // Same rule as "Accept all confident": the already-paid and bills-nothing guards are
+  // not swept up by a bulk tick — an AI name match says who paid, never that the month
+  // it landed on is still open.
+  const aiPending = useMemo(
+    () => resolved.filter((r) => r.ai && !r.checked && !r.row.duplicate && !r.alreadyPaid && !r.unbilledMonth),
+    [resolved]
+  );
   const acceptAllAi = () => {
     const patch = {};
     aiPending.forEach((r) => { patch[r.i] = { ...overrides[r.i], checked: true }; });
@@ -325,9 +374,14 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         const target = unmatchedDeposits.find((r) => r.i === Number(s.index));
         const leaseId = String(s.lease_id || '');
         if (!target || !leaseId || !validIds.has(leaseId)) continue; // guard hallucinated ids
-        patch[target.i] = { ...overrides[target.i], pick: `lease:${leaseId}`, ai: true }; // UNCHECKED — needs the user's tick
+        patch[target.i] = { pick: `lease:${leaseId}`, ai: true }; // UNCHECKED — needs the user's tick
       }
-      setOverrides((o) => ({ ...o, ...patch }));
+      // Merged inside the updater — see the note in suggestBuckets.
+      setOverrides((o) => {
+        const next = { ...o };
+        for (const [i, add] of Object.entries(patch)) next[i] = { ...o[i], ...add };
+        return next;
+      });
     } catch (e) {
       setAiErr(e?.message || 'Could not suggest tenants — pick them by hand instead.');
     } finally {
@@ -384,7 +438,12 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const derived = deriveEstimateFromDeposit(r.row.txn.amount, r.tenant, r.month);
       if (!derived) continue;
       const prev = byLease.get(r.tenant.lease_id);
-      if (!prev || r.month >= prev.month) {
+      // ⚠ ORDER BY (YEAR, MONTH), never month alone. A statement that straddles a year
+      // end (Dec 20 – Jan 19 is an ordinary bank cycle) made `1 >= 12` false, so the
+      // OLDER December figure beat the newer January one — the exact inverse of the
+      // rule stated above, on the one statement where a step-up is most likely.
+      const newer = !prev || r.row.year > prev.year || (r.row.year === prev.year && r.month >= prev.month);
+      if (newer) {
         byLease.set(r.tenant.lease_id, { lease_id: r.tenant.lease_id, tenant: r.tenant, month: r.month, deposit: r.row.txn.amount, year: r.row.year, derived });
       }
     }
@@ -420,14 +479,18 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       const entries = [];
       // Estimate writes go FIRST so the year's billing resyncs to base + the new estimate
       // before the deposits book — then each deposit settles its month exactly.
+      // ⚠ THE YEAR IS THE DEPOSIT'S OWN, not the page's. The figure was read out of a
+      // specific deposit, and that deposit books to `r.row.year` a few lines below — so
+      // stamping the viewed FY here re-priced one year off a deposit that settled a
+      // different one, and left the year the money actually landed in unresynced.
       const estEntries = estToApply.map((s) => ({
-        type: 'estimate', lease_id: s.lease_id, property_id: s.tenant.property_id, year, est_cam_annual: s.derived.annual,
+        type: 'estimate', lease_id: s.lease_id, property_id: s.tenant.property_id, year: s.year || year, est_cam_annual: s.derived.annual,
       }));
       for (const r of resolved) {
         if (!r.checked) continue;
         if (r.kind === 'tenant' && r.tenant) {
           entries.push({
-            type: 'payment', lease_id: r.tenant.lease_id, property_id: r.tenant.property_id, year: r.row.year,
+            type: 'payment', lease_id: r.tenant.lease_id, property_id: r.tenant.property_id, year: r.bookYear,
             amount: r.row.txn.amount, date: r.row.txn.date, description: r.row.txn.description,
             period_month: r.month || null, reconInvoiceId: r.toRecon ? r.tenant.reconInvoiceId : null, hash: r.row.hash,
           });
@@ -534,6 +597,11 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   const rows = resolved;
   // One collapsible section per statement month (each line's own date decides its month).
   const monthGroups = buildMonthGroups(rows);
+  // Which fiscal years this statement's own lines fall in. Normally one; a bank cycle
+  // that straddles a year end gives two, and that is the only case where the month tag
+  // has to name a year to mean anything.
+  const stmtYears = [...new Set(rows.map((r) => Number(r.row.year)))].filter((y) => y).sort((a, b) => a - b);
+  const offYears = stmtYears.filter((y) => y !== Number(year));
   const dupes = rows.filter((r) => r.row.duplicate);
 
   // Footer summary of exactly what Save writes.
@@ -548,15 +616,37 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   // Now they are counted apart: left out ON PURPOSE, versus not placed at all.
   const leftOut = completeness.ignored;
   const alreadyPaidCount = rows.filter((r) => r.alreadyPaid && !r.checked && !r.row.duplicate).length;
-  const nothingTicked = willPay.length === 0 && willExpense.length === 0;
+  // ⚠ AND THE ONES THAT ARE TICKED. The warning above counted only unticked rows, so the
+  // moment a bulk button (or the landlord) ticked one, the sentence describing the danger
+  // disappeared — the screen went quiet at exactly the point it had something to say.
+  const alreadyPaidTicked = rows.filter((r) => r.alreadyPaid && r.checked && !r.row.duplicate).length;
+  const unbilledTicked = rows.filter((r) => r.unbilledMonth && r.checked && !r.row.duplicate).length;
+  // ⚠ SAVE IS ENABLED BY A DECISION, not by rent-or-expense. An owner draw, a late fee
+  // and a security deposit are all ticked, writable lines this test never counted — so a
+  // statement whose one actionable line was a late fee could not be saved AT ALL, and an
+  // all-ignored / all-transfer statement wrote no `statement_lines` rows while the note
+  // beside the disabled button promised "every line this statement showed is on record".
+  // A line filed as ignored or transferred writes no money on purpose; the disposition
+  // IS the record (0076), which is exactly why it has to be saveable.
+  const willWrite = rows.filter((r) => r.checked);
+  const decidedOnly = rows.filter((r) => !r.checked && !r.row.duplicate
+    && (r.disposition === 'ignored' || r.disposition === 'transfer'));
+  const nothingTicked = willWrite.length === 0 && decidedOnly.length === 0;
   const reconciledCount = (recons || []).length;
   const closedYearLines = rows.filter((r) => r.checked && closedYears.has(r.row.year));
   const propName = (id) => ctx.properties.find((p) => p.id === id)?.name || '…';
 
+  // ⚠ A BULK TICK MUST NOT OVERRIDE THE TWO ROW GUARDS. Both are expressed as "unticked
+  // unless the landlord says otherwise" (`ov.checked === undefined`), so setting checked
+  // on every confident row force-ticked exactly the rows the guards had held back — a
+  // learned payee whose month was already marked paid by hand got booked twice by one
+  // click, which is the double-record case the row guard exists to stop. They stay
+  // individually tickable; what they lose is being swept up silently.
+  const bulkEligible = (r) => !r.row.duplicate && !r.alreadyPaid && !r.unbilledMonth;
   const acceptAllConfident = () => {
     const patch = {};
     rows.forEach((r) => {
-      if (!r.row.duplicate && (r.row.confidence === 'high' || r.row.confidence === 'rule') && !r.row.txn.needsReview) patch[r.i] = { ...overrides[r.i], checked: true };
+      if (bulkEligible(r) && (r.row.confidence === 'high' || r.row.confidence === 'rule') && !r.row.txn.needsReview) patch[r.i] = { ...overrides[r.i], checked: true };
     });
     setOverrides((o) => ({ ...o, ...patch }));
   };
@@ -635,11 +725,11 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
 
       {monthGroups.map((g) => (
         <MonthGroup key={g.key} g={g} defaultOpen={monthGroups.length === 1 || g.needsReview > 0}>
-          <Group title={`Money in · ${g.moneyIn.length}`} rows={g.moneyIn} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} onDraftLetter={draftShortfallLetter} payeeOf={payeeOf} />
-          <Group title={`Money out · ${g.moneyOut.length}`} rows={g.moneyOut} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} payeeOf={payeeOf} />
+          <Group title={`Money in · ${g.moneyIn.length}`} rows={g.moneyIn} ctx={ctx} year={year} stmtYears={stmtYears} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} onDraftLetter={draftShortfallLetter} payeeOf={payeeOf} />
+          <Group title={`Money out · ${g.moneyOut.length}`} rows={g.moneyOut} ctx={ctx} year={year} stmtYears={stmtYears} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} payeeOf={payeeOf} />
         </MonthGroup>
       ))}
-      {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} payeeOf={payeeOf} />}
+      {dupes.length > 0 && <DupeGroup rows={dupes} ctx={ctx} year={year} stmtYears={stmtYears} closedYears={closedYears} setOv={setOv} buckets={bucketOptions} onNewBucket={addSessionBucket} payeeOf={payeeOf} />}
       {parsed.skippedLines.length > 0 && <SkippedGroup skipped={parsed.skippedLines} />}
 
       {(estimateSuggestions.length > 0 || grossDeposits.length > 0) && (
@@ -700,6 +790,38 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
         {closedYearLines.length > 0 && (
           <div className="note-msg warn">
             {closedYearLines.length} line{closedYearLines.length === 1 ? '' : 's'} fall in a closed fiscal year — they import normally, but that year's History snapshot is stale until you close it again.
+          </div>
+        )}
+        {/* ⚠ THE LEDGER ON SCREEN IS ONE YEAR'S. Every guard on every row — what a month
+            owes, what it is already covered by, what the projection says — is built from
+            the viewed FY's roll, while each line books into the year its own date falls
+            in. Importing December's statement in January (the commonest time to do it) is
+            therefore matched against the wrong year's rent. The money still lands in the
+            right year; what can be wrong is the advice printed next to it, so say so
+            rather than quoting it silently. */}
+        {offYears.length > 0 && (
+          <div className="note-msg warn">
+            {offYears.length === 1
+              ? `Some of these lines are dated ${offYears[0]}, but the ledger on screen is ${year}.`
+              : `Some of these lines fall outside ${year}.`}{' '}
+            They import into their own year correctly — but the “already paid”, “≠ projected” and
+            month suggestions beside them are worked out against <strong>{year}</strong>'s rent.
+            Switch the Ledger's year to {offYears[0]} to review those lines against the schedule they belong to.
+          </div>
+        )}
+        {alreadyPaidTicked > 0 && (
+          <div className="note-msg danger">
+            {alreadyPaidTicked} ticked line{alreadyPaidTicked === 1 ? ' is' : 's are'} about to settle a month
+            that is <strong>already recorded as paid</strong> — saving now records that rent twice. Untick
+            {alreadyPaidTicked === 1 ? ' it' : ' them'} unless the tenant genuinely paid the month more than once.
+          </div>
+        )}
+        {unbilledTicked > 0 && (
+          <div className="note-msg warn">
+            {unbilledTicked} ticked line{unbilledTicked === 1 ? ' is' : 's are'} tagged to a month that
+            <strong> bills nothing</strong> — a tagged payment settles its own month and never rolls forward, so
+            that money would sit where nothing is due while the tenant still reads behind. Set the month to
+            <strong> — (lump)</strong> to let the ledger apply it to the months actually owed.
           </div>
         )}
         {alreadyPaidCount > 0 && (
@@ -879,7 +1001,7 @@ function HeadRow() {
   );
 }
 
-function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, buckets, onNewBucket, onDraftLetter, payeeOf }) {
+function Group({ title, rows, ctx, year, stmtYears, closedYears, expenseProp, setOv, buckets, onNewBucket, onDraftLetter, payeeOf }) {
   if (!rows.length) return null;
   return (
     <div className="stmt-group">
@@ -888,7 +1010,7 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, bucket
         <table className="stmt-table">
           <HeadRow />
           <tbody>
-            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} onDraftLetter={onDraftLetter} payeeOf={payeeOf} />)}
+            {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} stmtYears={stmtYears} closedYears={closedYears} expenseProp={expenseProp} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} onDraftLetter={onDraftLetter} payeeOf={payeeOf} />)}
           </tbody>
         </table>
       </div>
@@ -896,7 +1018,7 @@ function Group({ title, rows, ctx, year, closedYears, expenseProp, setOv, bucket
   );
 }
 
-function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = [], onNewBucket, onDraftLetter, payeeOf, dupe = false }) {
+function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, setOv, buckets = [], onNewBucket, onDraftLetter, payeeOf, dupe = false }) {
   const { row } = r;
   const txn = row.txn;
   const isIn = txn.direction === 'in';
@@ -1237,8 +1359,18 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             {' '}If one of them was for a different month, change <strong>Month</strong> →.
           </div>
         )}
-        {r.row.collision && !r.alreadyPaid && (
+        {r.row.collision && !r.alreadyPaid && !r.unbilledMonth && (
           <div className="note-msg warn" style={{ marginTop: 4 }}>possibly already recorded by hand — left unchecked</div>
+        )}
+        {/* The row's own words for the guard that holds it back. Without them the box is
+            simply unticked and the landlord ticks it again, which is how a guard becomes
+            a nuisance instead of a protection. */}
+        {r.unbilledMonth && (
+          <div className="note-msg warn" style={{ marginTop: 4 }}>
+            {MONTH_NAMES[r.month - 1]} {r.bookYear} bills this tenant nothing — a payment tagged to it settles
+            nothing and never rolls forward. Leave it as <strong>— (lump)</strong> and the ledger applies it to
+            the months still owed, or pick the month this money was really for.
+          </div>
         )}
       </td>
       <td>
@@ -1264,15 +1396,43 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
             <span className="badge info" title="Matches this tenant's open reconciliation true-up — records against that invoice, no month">true-up</span>
           ) : (
             <>
-              <select
-                className="text-input"
-                value={r.month ?? ''}
-                title="Which month's rent this deposit pays — filled in from the date the bank printed on this line, so a May statement records May. Change it whenever the money was for a different month; your choice always wins. “— (lump)” leaves it untagged, and the ledger spreads it across the months still owed."
-                onChange={(e) => setOv(r.i, { month: e.target.value })}
-              >
-                <option value="">— (lump)</option>
-                {MONTH_NAMES.map((nm, mi) => <option key={nm} value={mi + 1}>{nm.slice(0, 3)}</option>)}
-              </select>
+              {/* ⚠ WHEN THE STATEMENT STRADDLES A YEAR END the month has to name its year,
+                  because "Dec" alone meant December of whichever year the BANK printed on
+                  this line — so correcting a January-dated cheque to "Dec" booked it
+                  eleven months forward and left the December it paid reading unpaid. A
+                  single-year statement is untouched: the same twelve short labels. */}
+              {stmtYears.length > 1 ? (
+                <select
+                  className="text-input"
+                  value={r.month ? `${r.bookYear}-${r.month}` : ''}
+                  title="Which month's rent this deposit pays. This statement crosses a year end, so each month names its year — pick the one the money was actually for. “— (lump)” leaves it untagged, and the ledger spreads it across the months still owed."
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) { setOv(r.i, { month: '', year: '' }); return; }
+                    const [yy, mm] = v.split('-');
+                    setOv(r.i, { month: mm, year: yy });
+                  }}
+                >
+                  <option value="">— (lump)</option>
+                  {stmtYears.map((sy) => (
+                    <optgroup key={sy} label={String(sy)}>
+                      {MONTH_NAMES.map((nm, mi) => (
+                        <option key={`${sy}-${mi + 1}`} value={`${sy}-${mi + 1}`}>{nm.slice(0, 3)} {sy}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  className="text-input"
+                  value={r.month ?? ''}
+                  title="Which month's rent this deposit pays — filled in from the date the bank printed on this line, so a May statement records May. Change it whenever the money was for a different month; your choice always wins. “— (lump)” leaves it untagged, and the ledger spreads it across the months still owed."
+                  onChange={(e) => setOv(r.i, { month: e.target.value })}
+                >
+                  <option value="">— (lump)</option>
+                  {MONTH_NAMES.map((nm, mi) => <option key={nm} value={mi + 1}>{nm.slice(0, 3)}</option>)}
+                </select>
+              )}
               {/* A check big enough to cover several months, the whole year, or an open
                   true-up is deliberately left untagged — say so, otherwise an empty
                   month box reads as something that failed to fill in. */}
@@ -1322,7 +1482,7 @@ function ReviewRow({ r, ctx, year, closedYears, expenseProp, setOv, buckets = []
   );
 }
 
-function DupeGroup({ rows, ctx, year, closedYears, setOv, buckets, onNewBucket, payeeOf }) {
+function DupeGroup({ rows, ctx, year, stmtYears, closedYears, setOv, buckets, onNewBucket, payeeOf }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="stmt-group">
@@ -1334,7 +1494,7 @@ function DupeGroup({ rows, ctx, year, closedYears, setOv, buckets, onNewBucket, 
           <table className="stmt-table">
             <HeadRow />
             <tbody>
-              {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} closedYears={closedYears} expenseProp={null} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} payeeOf={payeeOf} dupe />)}
+              {rows.map((r) => <ReviewRow key={r.i} r={r} ctx={ctx} year={year} stmtYears={stmtYears} closedYears={closedYears} expenseProp={null} setOv={setOv} buckets={buckets} onNewBucket={onNewBucket} payeeOf={payeeOf} dupe />)}
             </tbody>
           </table>
         </div>

@@ -481,18 +481,6 @@ export function snapshotCollectionSummary(snap) {
   };
 }
 
-// The YoY series for the History chart/table: [{ year, projected, collected,
-// rate }], oldest first, skipping snapshots with no collection data.
-export function collectionSeries(snaps) {
-  return (snaps || [])
-    .map((s) => {
-      const sum = snapshotCollectionSummary(s);
-      return sum ? { year: Number(s.year), ...sum } : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.year - b.year);
-}
-
 export function ledgerRowSummary({ year, owedByMonth, allocation, today = new Date(), dust = 0.05 } = {}) {
   const owed = owedArray(owedByMonth);
   const alloc = allocation || allocatePayments({ owedByMonth: owed, payments: [] });

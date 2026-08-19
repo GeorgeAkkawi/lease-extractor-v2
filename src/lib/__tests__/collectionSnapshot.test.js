@@ -8,7 +8,7 @@
 // $4,000 untagged partial = $20,416.66 collected.
 import { describe, it, expect } from 'vitest';
 import { closeYear } from '../api';
-import { snapshotCollectionSummary, collectionSeries } from '../ledger';
+import { snapshotCollectionSummary } from '../ledger';
 import { currentYear } from '../format';
 
 const Y = currentYear();
@@ -33,7 +33,7 @@ describe('closeYear — the frozen collection picture', () => {
     expect(dental.square_footage).toBe(3000);
   });
 
-  it('the property summary + YoY series read back; key-less snapshots are skipped, never NaN', async () => {
+  it('the property summary reads back; key-less snapshots are null, never NaN', async () => {
     const snap = await closeYear('prop-1', Y);
     const sum = snapshotCollectionSummary(snap);
     expect(sum.projected).toBe(187800); // 78,000 + 109,800
@@ -42,12 +42,7 @@ describe('closeYear — the frozen collection picture', () => {
     // A pre-ledger snapshot (no collection keys) → null summary.
     expect(snapshotCollectionSummary({ breakdown: [{ tenant: 'Old Co', base_rent: 1 }] })).toBe(null);
     expect(snapshotCollectionSummary(null)).toBe(null);
-    const series = collectionSeries([
-      { year: Y, breakdown: snap.breakdown },
-      { year: Y - 2, breakdown: [] },                       // pre-ledger — skipped
-      { year: Y - 1, breakdown: [{ tenant: 'T', projected: 100, collected: 96 }] },
-    ]);
-    expect(series.map((s) => s.year)).toEqual([Y - 1, Y]); // sorted, key-less skipped
-    expect(series[0].rate).toBeCloseTo(0.96, 5);
+    // (`collectionSeries`, the YoY roll-up once pinned here, was deleted 2026-08-18 (15) —
+    // no screen ever read it; History reads `snapshotCollectionSummary` per snapshot.)
   });
 });

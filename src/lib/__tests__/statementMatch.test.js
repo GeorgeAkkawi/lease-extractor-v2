@@ -287,6 +287,30 @@ describe('withdrawal keyword table', () => {
     expect(classifyWithdrawal('ABC ROOFING CO ROOF REPAIR')).toMatchObject({ kind: 'expense_roof' });
     expect(classifyWithdrawal('GREENLEAF LANDSCAPING INV 88')).toMatchObject({ kind: 'expense_cam', label: 'Landscaping' });
     expect(classifyWithdrawal('SNOW PLOW SERVICES')).toMatchObject({ kind: 'expense_cam', label: 'Snow removal' });
+  });
+
+  // ⚠ A COUNTY IS WHO A TAX IS PAID TO AND WHO RUNS THE WATER MAIN. The bare word used to
+  // resolve `expense_tax` at high confidence BEFORE the CAM vocabulary was consulted — and
+  // a high-confidence money-out line is PRE-TICKED, so a landscaping bill got saved as
+  // property tax, which is billed straight through to tenants via v_tenant_shares.
+  it('a county SERVICE is not a county TAX', () => {
+    expect(classifyWithdrawal('COOK COUNTY TREASURER PROP TAX')).toMatchObject({ kind: 'expense_tax' });
+    expect(classifyWithdrawal('DUPAGE COUNTY TREASURER')).toMatchObject({ kind: 'expense_tax' });
+    // …but anything the CAM vocabulary recognizes is a service the county sold you.
+    expect(classifyWithdrawal('COUNTY WIDE LANDSCAPING')).toMatchObject({ kind: 'expense_cam', label: 'Landscaping' });
+    // Nothing recognizable either way still reads as the county's bill.
+    expect(classifyWithdrawal('KANE COUNTY 4471')).toMatchObject({ kind: 'expense_tax' });
+  });
+
+  // The refund suggestion ran LAST, after the CAM keyword table — so it could never fire
+  // for a tenant whose name happens to contain a CAM word, which is most cleaning,
+  // landscaping and plumbing tenants.
+  it('money out to a tenant whose name carries a CAM word still reads as a refund', () => {
+    const tenants = [{ lease_id: 'l1', tenant_name: 'Sunset Cleaners' }];
+    expect(classifyWithdrawal('SUNSET CLEANERS', tenants)).toMatchObject({ kind: 'ignore' });
+    expect(classifyWithdrawal('SUNSET CLEANERS', tenants).reason).toMatch(/paid TO Sunset Cleaners/);
+    // With no such tenant it is an ordinary cleaning expense, exactly as before.
+    expect(classifyWithdrawal('SUNSET CLEANERS')).toMatchObject({ kind: 'expense_cam' });
     // Debt has no home in Amlak until Slice 6, so a mortgage still suggests ignore —
     // and the reason now SAYS that rather than implying the line doesn't matter.
     const mort = classifyWithdrawal('CHASE MORTGAGE PMT');

@@ -1,3 +1,167 @@
+## 2026-08-19 (15) — Ledger sweep, round two: the statement pipeline
+
+**Cloudflare version:** `5bf519ca-63a3-48b4-a121-7f9d4f9365f4` · 2,023 tests / 192 files green.
+
+Continuation of (14) — the Ledger's own surface was clean, so this round followed the
+lines OUT of it: the bank-statement import that feeds it, the matcher that classifies a
+line, and the settle helpers the grid reads back. Two read-only audits ran over
+`StatementReview.js` + `ImportStatementButton.js` and `statementMatch.js` /
+`dispositions.js` / `deposits.js` / `settle.js`; every finding was re-verified in the code
+by hand before anything was touched, and the ones that did not survive that re-read were
+dropped.
+
+### The year seam — three faults, one root
+
+The review screen matches a statement against ONE year's ledger (the year the Ledger tab
+is showing) while each line books into the year its own date falls in. Everything below
+lives in that gap.
+
+- **The month tag now names its year on a statement that crosses a year end.** "Dec"
+  meant December of whichever year the bank printed on that line, so correcting a
+  January-dated cheque to "Dec" booked December **of the January year** — eleven months
+  forward — while the December it actually paid stayed open and fired `missing_payment`.
+  The row now carries `bookYear`; the select shows year-qualified options (`Dec 2025`,
+  `Jan 2026`) **only** when the statement really spans two years, so an ordinary
+  single-year import is byte-identical to before. `StatementReview.js`.
+- **A CAM & tax estimate read from a deposit now stamps the DEPOSIT's year.** It stamped
+  the page's, so a January deposit reviewed on the old FY re-priced the wrong year off it
+  and left the year the money landed in unresynced. The suggestion already carried its own
+  `year` and nothing read it. Same fix, same file: the "keep the latest month" compare now
+  orders by (year, month) — `1 >= 12` is false, so a Dec/Jan statement was keeping the
+  OLDER December figure, the exact inverse of the rule its own comment states.
+- **An off-year statement says so.** The money lands in the right year; what is computed
+  against the wrong one is the ADVICE beside it — "already paid", "≠ projected", the
+  suggested month. Rather than quote those silently, the screen now names the gap and
+  says to switch the Ledger's year. (Importing December's statement in January is the
+  commonest time this happens.)
+
+### Guards that stood down at the wrong moment
+
+- **A deposit tagged to a month that bills nothing is held back and explains itself.**
+  `depositProjectionDelta` returns null when `owed <= DUST` — i.e. every warning on the
+  row goes quiet at exactly the moment 100% of the deposit is misplaced. A tagged payment
+  settles its own month and never rolls forward, so that money sits where nothing is due
+  while the tenant goes on reading behind. Commonest via a learned payee rule, which ticks
+  on the pattern alone and carries the line's own calendar month — a final cheque dated
+  just past a lease end arrived **pre-ticked** onto a month of a term that had finished.
+- **The two bulk buttons no longer override the row guards.** "✓ Accept all confident" and
+  "✓ Accept N AI matches" set `checked: true` on every eligible row, and both guards are
+  expressed as *unticked unless the landlord says otherwise* — so one click force-ticked
+  precisely the rows they had held back. A learned payee whose month was already marked
+  paid by hand got booked twice. They stay individually tickable; what they lose is being
+  swept up silently.
+- **…and the already-paid warning no longer disappears when the danger arrives.** It
+  counted only UNTICKED rows, so the sentence describing the risk vanished the moment a
+  row was ticked. A ticked already-paid line now raises a red warning of its own, and a
+  ticked bills-nothing line an amber one.
+
+### Save could not record a whole class of statement
+
+`nothingTicked` counted rent and expenses only. An owner draw, a late fee and a security
+deposit are all ticked, writable lines it never counted — so **a statement whose one
+actionable line was a late fee could not be saved at all**, and an all-ignored /
+all-transfer statement wrote no `statement_lines` rows while the completeness note beside
+the dead button promised "every line this statement showed is on record". Save is now
+enabled by a **decision**: any ticked writable row, or any line deliberately filed as
+ignored or transferred (which write no money — the disposition IS the record, 0076).
+
+**And a learned "always ignore this payee" now counts as that decision.** It resolved to
+`unclassified`: the row said *Ignore* on screen and then nagged from **Money not yet
+placed** after every future import, forever. A rule is a pick — made once on the Learned
+payees panel instead of on this line.
+
+### The classifier, and one predicate
+
+- **A county is who a tax is paid to and who runs the water main.** The bare word `COUNTY`
+  resolved `expense_tax` at high confidence *before* the CAM vocabulary was consulted, and
+  a high-confidence money-out line is pre-ticked — so "COUNTY WIDE LANDSCAPING" saved as
+  property tax, which bills straight through to tenants via `v_tenant_shares`. `TAX` /
+  `TREASURER` / `ASSESSOR` still win first (so "Cook County Treasurer" is unchanged); bare
+  `COUNTY` now falls in behind the CAM table.
+- **Money out to a tenant is checked before the CAM vocabulary, not after it.** At a 0.99
+  name threshold the refund suggestion could never fire for a tenant whose name contains a
+  CAM word — a cheque to "Sunset Cleaners" pre-ticked as a cleaning expense.
+- **`isBroughtForward` now tests the kind as well as the memo.** The Ledger runs *every*
+  adjustment row through it to total what was carried in from last year, and the phrase is
+  printed on screen for the landlord to copy into a manual fee's memo. `settleTenantBalance`
+  writes the carry as an `opening` row; nothing else does.
+
+### Invalidation — two omissions in the hand-maintained set
+
+`settleStatementImport` (`ImportStatementButton.js`) gained **`['roofLineItems']`** — the
+importer writes `type: 'roof'` lines and its cam and tax twins were both already there, so
+an imported roof repair (and an undo of one) left the Roof section and the recoverability
+table showing the pre-import list — and **`['alerts']`**, since an import books the very
+payments the three Ledger alerts are computed from and its estimate branch moves billed
+figures outright. §6's drift-by-omission, twice, in the one set that is still hand-rolled.
+
+### Also in this round (the (14) plan's "not bundled in")
+
+- **`markAll` / `catchUp` use the app's ConfirmDialog**, not bare `window.confirm` — the
+  last two dialogs on the Ledger that didn't. They now state the implications: each month
+  is recorded at what that tenant still owes, the marks are app-priced, and one click on
+  any box takes a month back.
+- **A bank line from another year no longer defaults to a wrong month.** The rent-pick
+  dialog took its default month from the line's date regardless of year, so a
+  January-dated line on a December statement defaulted to month 1 of the viewed FY.
+- **Two small correctness fixes on the AI helpers:** both suggestion handlers merged from
+  an `overrides` snapshot captured *before* the await, so a month set or a box ticked
+  during the 1–3s call was silently reverted when the suggestions landed; and
+  `openSampleStatement` had a `try/finally` with no `catch`, so a failure showed nothing
+  at all — just a button that stopped saying "Reading…".
+
+### Files
+
+`src/components/StatementReview.js` · `src/components/ImportStatementButton.js` ·
+`src/lib/statementMatch.js` · `src/lib/settle.js` · `src/pages/LedgerPage.js` ·
+`src/lib/ledger.js` · `src/components/__tests__/statementReviewYearBoundary.test.js`
+(new — 6 pins) · `src/lib/__tests__/statementMatch.test.js` ·
+`src/lib/__tests__/settleBalance.test.js` · `src/lib/__tests__/collectionSnapshot.test.js`
+
+Every new pin was run against the **pre-fix** source first (`git stash`): all 8 new
+assertions failed there and pass here, so none of them is pinning behaviour that already
+worked.
+
+### Audited and clean — for the record
+
+The api.js money writers were read line by line this round and none needed changing:
+`addAdjustment`, `carryMonthShortfall`, `settleTenantBalance` / `undoSettlement` (the
+two-year carry discipline is exact), `closeYear`'s post-settlement re-read,
+`placeUnplacedLine`, `applyStatementImport` / `undoStatementImport` (delta discipline,
+`source` stated on every writer, `import_hash` dedupe covering expense / income / deposit
+lines through the applied records), and the mark/unmark family. On the lib side
+`settleChoicesFor`, `monthCapacity`, `spreadAcrossMonths`, `refundMonth`, `settledAs`,
+`lineCompleteness` and `depositReconciliation` traced clean against their callers.
+
+### Deliberately NOT changed
+
+- **The statement-import `resyncYearBillingToEstimate` calls.** CLAUDE.md §1 already flags
+  these two as the estimate saves that skip no closed year while being *inferred from a
+  bank deposit* rather than typed. Still George's call; nothing about it moved this round.
+- **The review's guards are still computed from one year's roll.** Fixing that properly
+  means fetching the ledger context per year the statement covers. This round makes the
+  limitation visible and stops the booking hazard; the second year's context is a separate
+  piece of work.
+
+### Now redundant
+
+- **`collectionSeries`** (`ledger.js`) — **deleted this round** (proposed in (14), no UI
+  reader; HistoryPage imports only `snapshotCollectionSummary`), with its assertions
+  removed from `collectionSnapshot.test.js`.
+- **`OWN_NAME_TARGETS`** (`statementMatch.js:148,167`) — the own-name exemption it
+  implements can never fire: no reachable code builds a `transfer` / `owner_draw` /
+  `owner_contribution` / `entity_cost` rule target. `owner_contribution` and `entity_cost`
+  are retired vocabulary nothing produces at all. Propose: delete the set and its branch,
+  **or** decide the opposite — that a monthly owner-draw payee SHOULD be learnable, which
+  is what the comment assumes and what would make the code live again. George's pick.
+- **`draftRules`** (`StatementReview.js:100-113`) — gated entirely on `ov.always`, which
+  nothing has set since the "Always" column was removed. The documented "fix one garbled
+  payee, fix the whole file" behaviour it describes does not currently exist. Propose:
+  delete it, or restore the behaviour deliberately.
+- **The `.stmt-monthhint` "covers several months" hint** is now one of three sentences a
+  month cell can carry; not redundant yet, but if a fourth is ever added the cell needs a
+  single explainer rather than a stack. Noted, not proposed.
+
 ## 2026-08-18 (14) — Ledger sweep: four defects, every line followed
 
 **Cloudflare version:** `2cf9f1a9-be09-4137-972c-52694886a5db` · 2,015 tests / 191 files green.
