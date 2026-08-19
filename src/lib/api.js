@@ -3666,42 +3666,6 @@ export async function listPropertyTotalsByYear(propertyIds, year) {
   return byProp;
 }
 
-// ---- Rent collected so far this year, per property, in ONE round-trip -------------
-// The Overview's performance panel states what FY {year} comes to ON PAPER — contract
-// rent from the leases, and the expense totals entered on each Expense entry. This is the
-// one figure that says how much of it has actually ARRIVED.
-//
-//   collected — every dollar recorded against the year's ANNUAL invoices. Deliberately
-//               the same filter getYearInvoice uses (non-void, kind 'annual', a missing
-//               kind reading annual), so this IS the Ledger tab's Collected column summed
-//               across the property's tenants and the two can never name two figures for
-//               the same property on the same day. A reconciliation true-up is therefore
-//               excluded — it is real money, but it is not on that column.
-//   billed    — those same invoices' totals, so a caller can say "of $X billed" and the
-//               figure has something to be a share of.
-//
-// Read-only; no schema, no expense side. Whether a given expense has been PAID is a
-// separate question with its own honesty problem (an undated line must never be given an
-// invented date, and nothing may be spread evenly across the months to fill the gap) —
-// deliberately not answered here.
-export async function listCollectedByProperty(propertyIds, year) {
-  const ids = [...new Set((propertyIds || []).filter(Boolean))];
-  if (ids.length === 0) return {};
-  const invAll = await rows(
-    supabase.from('v_invoice_balances')
-      .select('property_id,kind,status,total_amount,amount_paid')
-      .in('property_id', ids).eq('year', year)
-  );
-  const out = {};
-  for (const i of invAll || []) {
-    if (!i?.property_id || i.status === 'void' || !isAnnualInvoice(i)) continue;
-    const r = (out[i.property_id] ||= { collected: 0, billed: 0 });
-    r.collected = round2(r.collected + (Number(i.amount_paid) || 0));
-    r.billed = round2(r.billed + (Number(i.total_amount) || 0));
-  }
-  return out;
-}
-
 // ---- What has actually LEFT the bank, per property, in ONE round-trip -------------
 // The expense half of the Overview's projected-vs-live band (2026-08-18). Projected
 // expenses are `taxes_total + cam_total + roof_total` straight off v_property_totals; this

@@ -1,3 +1,30 @@
+## 2026-08-18 (13) — `listCollectedByProperty` goes, with its whole tail
+
+**Cloudflare version:** `197d09cb-4882-4917-931a-728561c8474f` · 2,011 tests / 190 files green.
+
+George: *"sure go ahed"* — the redundancy (12) surfaced. Deleting `revenueExpensesNoi` orphaned
+`listCollectedByProperty` (`api.js`): its last reader was the retired collected bar, and the
+`['portfolioCollected']` key family it fed was invalidated in four places and queried in none.
+
+**Deleted, all in one round so no half survives:**
+- `listCollectedByProperty` + its section comment (`api.js`; ~2,000 chars). `isAnnualInvoice`
+  keeps its other readers.
+- `src/lib/__tests__/portfolioCollected.test.js` (9 tests — hence 2,011 from 2,017 −6 there
+  … the file held 9; the suite count moves −6 net because Vitest reported 2,017 with it and
+  the file's actual count was 6. The number on screen is the arbiter: 190 files, 2,011 green).
+- The four `['portfolioCollected']` invalidations: `settleBillingChange` +
+  `settlePaymentChange` (`invalidate.js`, comments retuned to the singular),
+  `settleStatementImport` (`ImportStatementButton.js`), and the Ledger's decided-line repaint
+  (`LedgerPage.js:364`).
+
+**Left standing on purpose:** the history comment in `AddendumEditor.js` naming
+`portfolioCollected` among the keys its old hand-rolled list had drifted away from — that is a
+true statement about the past and the reason the named sets exist; deleting the name would
+delete the lesson.
+
+**Now redundant:** nothing further — this WAS the redundancy round. (The expense-side twin
+`listExpensesPaidByProperty`-style reader beside it in `api.js` still has its band reader and
+stays.)
 ## 2026-08-18 (12) — The after-term slice gets its own sentence; "projected" becomes one word
 
 **Cloudflare version:** `220a8134-63c4-41b9-8746-ed75849ed610` · 2,017 tests / 191 files green.

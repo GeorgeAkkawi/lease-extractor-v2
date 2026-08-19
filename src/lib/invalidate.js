@@ -43,9 +43,6 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
     ['statementContext'],
     // Roll-ups and anything that reads an invoice balance.
     ['corpRollups'],
-    // The Overview's "so far this year" bars — collected + expenses paid to date, per
-    // property. It reads the same invoices/payments this just moved.
-    ['portfolioCollected'],
     // The Overview's projected-vs-live band and paired bars. A billed figure moving is the
     // PROJECTED half of every pair there, and it rebuilds from the same lease schedule.
     ['portfolioBasis'],
@@ -78,8 +75,7 @@ export function settlePaymentChange(qc, { propertyId } = {}) {
     // recording a cheque moved the Ledger and left the Overview quoting yesterday's figure
     // until something else happened to invalidate it. That is the drift-by-omission this
     // whole file exists to prevent, sitting in the file itself: `settleBillingChange`
-    // carries both keys, and the fast path split off from it without them.
-    ['portfolioCollected'],
+    // carries this key, and the fast path split off from it without it.
     ['portfolioBasis'],
   ];
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });

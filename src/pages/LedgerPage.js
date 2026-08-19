@@ -361,7 +361,6 @@ export default function LedgerPage() {
       qc.invalidateQueries({ queryKey: ['invoices'] });
       qc.invalidateQueries({ queryKey: ['payments'] });
       qc.invalidateQueries({ queryKey: ['invoicesForProperty'] });
-      qc.invalidateQueries({ queryKey: ['portfolioCollected'] });
       // ⚠ A BILLABLE expense is the one destination that moves a tenant's bill, so it needs the
       // named set for "a billed figure moved" rather than the list above. `placeUnplacedLine`
       // already ran `resyncPropertyBilling`; this is the repaint that follows it (CLAUDE.md §6).

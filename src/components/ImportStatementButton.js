@@ -198,12 +198,9 @@ export function settleStatementImport(qc) {
   qc.invalidateQueries({ queryKey: ['camLineItems'] });
   qc.invalidateQueries({ queryKey: ['taxLineItems'] });
   qc.invalidateQueries({ queryKey: ['corpRollups'] });
-  // The Overview's "so far this year" bars — an import books both halves of them at
-  // once: tenant deposits (collected) and dated expense lines (paid).
-  qc.invalidateQueries({ queryKey: ['portfolioCollected'] });
-  // …and the projected-vs-live band, which an import moves on BOTH sides for the same
-  // reason: deposits are its live revenue, and an imported expense line is the only kind
-  // that always arrives with a payment date, which is what its live expense figure counts.
+  // The projected-vs-live band, which an import moves on BOTH sides at once: deposits are
+  // its live revenue, and an imported expense line is the only kind that always arrives
+  // with a payment date, which is what its live expense figure counts.
   qc.invalidateQueries({ queryKey: ['portfolioBasis'] });
   qc.invalidateQueries({ queryKey: ['historyEvents'] });
   qc.invalidateQueries({ queryKey: ['statementImports'] });
