@@ -282,8 +282,30 @@ export function componentizeSchedule({ schedule, factor = 1, camTaxAnnual = 0, r
 //     - skip if m or m-1 is outsideTerm (a mid-year lease START is not a raise — its
 //       prior month is out-of-term, base 0) or abated (an abatement ENDING shows base
 //       0 → X, also not a raise),
-//     - require prevBase > 0 and curBase > prevBase + 0.02 (increases only, cents-safe).
+//     - require prevBase > 0 and a rise of at least STEP_FLOOR.
 //   Normally length 1 (escalations are annual); returns all when a lease steps twice.
+//
+// ⚠ THE FLOOR IS A DOLLAR, NOT TWO CENTS, AND THE REASON IS STRUCTURAL (George, 2026-08-18:
+// *"why does it say there are rent escalations for beauty and barber and infinite mobile on the
+// ledger in december when there isnt"*). It was `+ 0.02`, called "cents-safe", and it was not:
+//
+//   `buildLeaseSchedule` rounds each month to the cent and then folds the year's leftover onto
+//   the LAST in-term month so the twelve sum to the issued invoice exactly. `componentizeSchedule`
+//   derives base as the REMAINDER, so the whole fold lands on December's base. On George's own
+//   FY 2026 the fold is FOUR CENTS on both leases — beauty and barber $2,650.08 → $2,650.12,
+//   Infinite Mobile $2,395.42 → $2,395.46 — twice the old tolerance, so December was announced as
+//   a rent escalation on two leases that have none. Neither has an escalation row dated December;
+//   nothing in the data was wrong, the detector was.
+//
+// A rent raise is never a few cents a month. The floor has to clear the fold, and the fold is
+// bounded by the rounding of twelve months (~6¢), not by any figure a landlord types. A dollar
+// clears it by an order of magnitude and is still far below the smallest real step.
+//
+// ⚠ THIS ALSO CLEARS THE ROW CHIP AND THE FOLLOW-UP VERDICT, because `escalationFollowThrough`
+// is fed THESE steps — so a fold could not only announce a phantom raise, it could then judge a
+// tenant against it. One guard, one place; do not add a second threshold downstream.
+const STEP_FLOOR = 1;
+
 export function escalationStepMonths({ schedule, comp } = {}) {
   if (!schedule || !comp) return [];
   const out = [];
@@ -294,7 +316,7 @@ export function escalationStepMonths({ schedule, comp } = {}) {
     if (cur.abated || prev.abated) continue;
     const curBase = round2(Number(comp[m]?.base) || 0);
     const prevBase = round2(Number(comp[m - 1]?.base) || 0);
-    if (prevBase > 0 && curBase > prevBase + 0.02) {
+    if (prevBase > 0 && curBase - prevBase >= STEP_FLOOR) {
       out.push({ month: m, owed: round2(Number(cur.owed) || 0), base: curBase, prevBase });
     }
   }

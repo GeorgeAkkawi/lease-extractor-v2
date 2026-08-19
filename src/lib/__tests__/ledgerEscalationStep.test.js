@@ -52,6 +52,42 @@ describe('escalationStepMonths', () => {
     expect(escalationStepMonths({ schedule, comp })).toEqual([]);
   });
 
+  // ⚠ THE ONE THAT SHIPPED WRONG, and it announced a raise on two real leases that have none.
+  // George, 2026-08-18: *"why does it say there are rent escalations for beauty and barber and
+  // infinite mobile on the ledger in december when there isnt"* — and there wasn't. Neither
+  // lease has an escalation row dated December; the December CELL was four cents bigger.
+  //
+  // `buildLeaseSchedule` rounds each month to the cent and folds the year's leftover onto the
+  // LAST in-term month so the twelve sum to the issued invoice exactly; `componentizeSchedule`
+  // derives base as the REMAINDER, so the fold lands entirely on December's base. The old guard
+  // was `> prevBase + 0.02`, described as cents-safe — the fold is 4¢, twice that. A detector
+  // whose tolerance is smaller than the rounding it has to survive will always fire eventually.
+  //
+  // Both figures below are the real ones off FY 2026 production.
+  it('does NOT call December’s penny-fold a rent step', () => {
+    // beauty and barber shop — $45,001 invoice over twelve $3,750.08 months, 4¢ left over.
+    const bb = build([...Array(11).fill(2650.08), 2650.12], { camTax: 1100 });
+    expect(escalationStepMonths(bb)).toEqual([]);
+
+    // Infinite Mobile — a REAL 1 July step, and the same 4¢ fold on December. The July step
+    // must survive; only the fold may be ignored, or the fix has broken the feature.
+    const im = build(
+      [...Array(6).fill(1811.42), ...Array(5).fill(2395.42), 2395.46],
+      { camTax: 904.58 }
+    );
+    expect(months(escalationStepMonths(im))).toEqual([7]);
+  });
+
+  // The floor has to clear the rounding of twelve months and nothing more. A dollar a month is
+  // already far below the smallest raise anyone writes into a lease — but it is a threshold, so
+  // it is pinned rather than left to be re-guessed.
+  it('flags a raise of a dollar a month, and ignores anything under it', () => {
+    const under = build([...Array(6).fill(2000), ...Array(6).fill(2000.99)], { camTax: 500 });
+    expect(escalationStepMonths(under)).toEqual([]);
+    const at = build([...Array(6).fill(2000), ...Array(6).fill(2001)], { camTax: 500 });
+    expect(months(escalationStepMonths(at))).toEqual([7]);
+  });
+
   it('does NOT flag a mid-year lease start (prior month out of term, base 0 → X)', () => {
     // Jul-start tenant: Jan–Jun outside term, then a flat $3,000 base Jul–Dec.
     const { schedule, comp } = build(

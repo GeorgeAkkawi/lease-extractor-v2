@@ -1,3 +1,68 @@
+## 2026-08-18 (8) — A four-cent rounding fold was being announced as a rent raise
+
+**Cloudflare version:** `e7d1ee1e-f95e-4fe1-a86d-35bacdcca267` · 2,010 tests / 190 files green.
+
+George: *"why does it say there are rent escalations for beauty and barber and infinite mobile on
+the ledger in december when there isnt."* There weren't. Neither lease has an escalation row dated
+December — the December **cell** was four cents bigger, and the detector called that a raise.
+
+### The chain, end to end
+
+```
+buildLeaseSchedule   rounds each month to the cent, then folds the year's leftover onto the
+                     LAST in-term month so the twelve sum to the issued invoice exactly
+        └─→ December's `owed` carries the whole fold
+componentizeSchedule base is the REMAINDER (owed − camTax − roof − adj)
+        └─→ December's BASE is higher by exactly the fold
+escalationStepMonths flagged any month whose base rose by more than $0.02
+        └─→ "↗ A scheduled rent escalation lands on this month"
+```
+
+Reproduced against FY 2026 production figures, both leases at Pershing Plaza:
+
+| Lease | Invoice | Jan–Nov base | Dec base | Fold |
+|---|---|---|---|---|
+| beauty and barber shop | $45,001.00 | $2,650.08 | $2,650.12 | **4¢** |
+| Infinite Mobile Inc. | $36,096.04 | $2,395.42 (Jul–Nov) | $2,395.46 | **4¢** |
+
+The old guard was `curBase > prevBase + 0.02`, and its comment called it "cents-safe". **The fold is
+twice that.** A detector whose tolerance is smaller than the rounding it has to survive will fire
+eventually — it just needed a year whose rent did not divide evenly into twelve.
+
+### The fix
+
+`STEP_FLOOR = 1` in `escalationStepMonths` (`src/lib/ledger.js`). The floor has to clear the fold,
+and the fold is bounded by the rounding of twelve months (~6¢) — not by any figure a landlord
+types. A dollar a month clears it by an order of magnitude and is still far below the smallest
+raise anyone writes into a lease.
+
+**One guard, one place.** `escalationFollowThrough` is fed THESE steps, so the fold could not only
+announce a phantom raise, it could then judge a tenant's payments against it. Both clear together;
+a second threshold downstream would be the §3 drift.
+
+Verified after the change: beauty and barber flags **nothing**; Infinite Mobile flags **July only**
+— its real 1 July step, $1,811.42 → $2,395.42.
+
+### Not affected, checked
+
+- **The dashboard `escalation_short` alert** takes its step month from the applied
+  `rent_escalations` row, not from this function, so it never raised the phantom (CLAUDE.md §4).
+- **`statementMatch.js`** consumes `steps` and gets the same correction for free.
+- **The money is untouched.** December genuinely owes the extra four cents — that is what makes the
+  year tie to the invoice. Only the *label* was wrong.
+
+### Files
+
+`src/lib/ledger.js` · `src/lib/__tests__/ledgerEscalationStep.test.js` (+2 tests: the real
+four-cent fold on both leases, and the floor itself pinned at a dollar).
+
+### Now redundant
+
+- **Nothing redundant.** The guard was replaced in place; no second copy existed, and the comment
+  that called `0.02` "cents-safe" was rewritten rather than left to assert something untrue.
+
+---
+
 ## 2026-08-18 (7) — Projected rent is the year the leases contract, not an annual rate
 
 **Cloudflare version:** `7428e32a-d78b-4fcf-8d1d-9fd670eea2d5` · 2,008 tests / 190 files green.
