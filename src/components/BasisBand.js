@@ -95,7 +95,10 @@ export default function BasisBand({ totals, bridge = null, year, ledgerHref = nu
           <b>Projected</b> is the whole year as your leases bill it — base rent month by month, each
           raise from the date it takes effect, plus the CAM, tax and roof you charge at estimate.
           A raise your leases schedule for later this year is counted, and named below.{' '}
-          It is the same rent the donut sums.{' '}
+          {/* No "same rent as the donut" sentence — third phrasing in three rounds, retired at
+              George's word (2026-08-18 (12)). The identity is structural (one `rentProjected`
+              reaches both) and pinned in dashboardOverview.test.js; prose restating a
+              guarantee the code enforces is the §3 drift risk with none of the payoff. */}
           <b>Live</b> is what has actually arrived, straight off the Ledger
           {/* The date and nothing more. This sentence used to add "so most of the gap is simply
               months still to come" — usually true in August and flatly false in an arrears-heavy

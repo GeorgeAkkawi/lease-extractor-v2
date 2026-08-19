@@ -209,57 +209,10 @@ export function tenantMix(property, leases) {
   }));
 }
 
-// Revenue / expenses / NOI per property — the grouped bars, the same triad the History
-// page charts across years. Expenses are summed from the three stored components rather
-// than read from a total column, matching how HistoryPage computes them.
-//
-// Those three components are the ACTUAL figures entered on the property's Expense entry
-// (expense_records.taxes_total / cam_total / roof_total) — never the CAM & tax ESTIMATES
-// billed to tenants, which live per-lease on est_cam_annual / est_tax_annual and are a
-// different quantity entirely (they're usually higher; the gap IS the year-end true-up).
-// They're carried onto each row so the tooltip can show its working, because a bar
-// labelled only "Expenses" can't tell the landlord which of the two it is.
-// ⚠ THE FOURTH BAR, and the one thing about it that must be said out loud. `collectedByProp`
-// (listCollectedByProperty) adds `Collected` — the rent actually received against this
-// year's invoices — beside the Revenue bar it belongs to.
-//
-// It is NOT a fraction of Revenue, and treating it as one is the trap:
-//   • Collected is ALL-IN — it carries the CAM & tax the tenants reimburse — while
-//     Revenue is `total_revenue` = Σ effective_rent, contract BASE RENT only. So a
-//     property collecting well can legitimately read ABOVE its Revenue bar (the same
-//     asymmetry as round 14's NOI flag: v_property_totals counts none of the
-//     reimbursement). The panel states the reason rather than clamping the figure.
-//   • `billedYtd` rides along so the tooltip can say what it is a share OF — the invoices
-//     actually issued — which is the honest denominator.
-// `hasCollected` is per-property so the caller can hide the bar portfolio-wide rather than
-// draw an empty one against every property.
-export function revenueExpensesNoi(properties, totalsByProp, collectedByProp = null) {
-  return (properties || [])
-    .map((p) => {
-      const t = totalsByProp?.[p.id];
-      if (!t) return null;
-      const taxes = num(t.taxes_total);
-      const cam = num(t.cam_total);
-      const roof = num(t.roof_total);
-      const revenue = num(t.total_revenue);
-      const expenses = taxes + cam + roof;
-      if (revenue === 0 && expenses === 0) return null;
-      const row = { id: p.id, name: nameFor(p), Revenue: revenue, Expenses: expenses, NOI: num(t.noi), taxes, cam, roof };
-      if (collectedByProp) {
-        const y = collectedByProp[p.id] || {};
-        row.Collected = num(y.collected);
-        row.billedYtd = num(y.billed);
-        row.hasCollected = row.Collected > 0;
-      }
-      return row;
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.Revenue - a.Revenue);
-}
-
-// Is there anything collected to draw at all? False when not a dollar has come in — a flat
-// zero bar against every property would say nothing and cost the other three their width.
-export const hasCollectedBars = (rows) => (rows || []).some((r) => r.hasCollected);
+// (`revenueExpensesNoi` and `hasCollectedBars` lived here until 2026-08-18 (12) — the grouped
+// bars George retired ("we can take out the bar graph projected vs live") kept their data
+// shaper exported for a round with no reader left. Gone at his word; the band above answers
+// the same question with the leases' own months.)
 
 // ---- The Overview band: the BILL, read twice (2026-08-18) -------------------------
 //
@@ -342,12 +295,15 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
         // The causes of the two gaps, carried through untouched for `yearBridge`. Each was
         // already computed by `listBasisByProperty`; none costs a read.
         grossCarve,
-        rentScheduled: round2(num(b?.rentScheduled)),
         projectedAhead: round2(num(b?.projectedAhead)),
         // The timing split — the part of each gap that is simply months not yet come round.
         // Measured in `listBasisByProperty` off the same rows as everything else here.
         rentNotDue: round2(num(b?.rentNotDue)),
         camTaxNotDue: round2(num(b?.camTaxNotDue)),
+        // …and the slice billed past a lease's own end date — real while the tenant stays,
+        // never arriving if they left. Its own line in the bridge, never inside "not due yet".
+        rentAfterTerm: round2(num(b?.rentAfterTerm)),
+        camTaxAfterTerm: round2(num(b?.camTaxAfterTerm)),
         rentPosted: round2(num(b?.rentPosted)),
         camTaxPosted: round2(num(b?.camTaxPosted)),
         rentCorrections: round2(num(b?.rentCorrections)),

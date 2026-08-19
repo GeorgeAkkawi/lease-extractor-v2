@@ -14,12 +14,13 @@
 // unanswered over-payment (in no column until the landlord says so) and other income (in
 // Total live and in no projection, which is George's own follow-up question answered).
 import { describe, it, expect, afterEach } from 'vitest';
-import { listBasisByProperty, monthsDueThrough } from '../portfolioBasis';
+import { listBasisByProperty, monthsDueThrough, afterTermStart } from '../portfolioBasis';
 import { buildIncomeExpense } from '../incomeExpense';
 import { billedComponents } from '../reconciliation';
 import {
   getPropertyTotals, getTenantShares, ensureInvoice, recordPayment, deletePayment,
   upsertAlertState, getPropertyMonthlyRoll, addOtherIncomeEntry, deleteOtherIncomeEntry,
+  updateLease,
 } from '../api';
 import { overpayKey } from '../ledger';
 import { currentYear } from '../format';
@@ -120,14 +121,24 @@ describe('the timing split the loader measures', () => {
   // The identity that makes `rentNotDue` a SPLIT of the gap rather than a third figure: the
   // whole future bill less any prepayment, and never more than the gap plus prepaid cash.
   it('measures the future months of the bill, net of anything already paid onto them', async () => {
-    const basis = (await listBasisByProperty(['prop-1'], Y))['prop-1'];
-    // Mid-year on the demo seed there are always future months billed and unpaid.
-    expect(basis.rentNotDue).toBeGreaterThan(0);
-    expect(basis.camTaxNotDue).toBeGreaterThan(0);
-    // The not-due slice can never exceed what has not arrived: notDue ≤ posted − live would be
-    // violated exactly when the split double-counts a month.
-    expect(basis.rentNotDue).toBeLessThanOrEqual(round2(basis.rentPosted - basis.rentLive) + 0.01);
-    expect(basis.camTaxNotDue).toBeLessThanOrEqual(round2(basis.camTaxPosted - basis.camTaxLive) + 0.01);
+    const basis = await listBasisByProperty(['prop-1', 'prop-2'], Y);
+    const p1 = basis['prop-1'];
+    const p2 = basis['prop-2'];
+    // Mid-year there are always future months billed and unpaid — on prop-2, whose leases run
+    // on. ⚠ NOT on prop-1, and that is the point of the split: Bright Coffee is prepaid for the
+    // whole year and City Dental's term is UP, so prop-1's entire unpaid future is the
+    // AFTER-TERM slice — conditional on the holdover staying, never the calendar's certainty.
+    expect(p2.rentNotDue).toBeGreaterThan(0);
+    expect(p2.camTaxNotDue).toBeGreaterThan(0);
+    expect(p1.rentAfterTerm).toBeGreaterThan(0);
+    // Neither slice family can exceed what has not arrived: violated exactly when the split
+    // double-counts a month.
+    for (const b of [p1, p2]) {
+      expect(round2(b.rentNotDue + b.rentAfterTerm))
+        .toBeLessThanOrEqual(round2(b.rentPosted - b.rentLive) + 0.01);
+      expect(round2(b.camTaxNotDue + b.camTaxAfterTerm))
+        .toBeLessThanOrEqual(round2(b.camTaxPosted - b.camTaxLive) + 0.01);
+    }
   });
 
   // Cash tagged onto a FUTURE month is prepayment: it shrinks the not-due slice (that month is
@@ -145,14 +156,57 @@ describe('the timing split the loader measures', () => {
     cleanup.push(() => deletePayment(pay.id));
 
     const after = (await listBasisByProperty(['prop-2'], Y))['prop-2'];
-    const notDue = (b) => round2(b.rentNotDue + b.camTaxNotDue);
-    expect(notDue(after)).toBe(round2(notDue(before) - 500));
-    // The past-due remainder is (posted − live) − notDue; both moved by the same $500, so the
-    // derived past-due is unchanged — December's cheque says nothing about August's rent.
+    // ⚠ SUMMED WITH THE AFTER-TERM SLICE, deliberately. lease-3's own term runs out `soon`
+    // (~3 weeks from whenever the suite runs), so December usually sits PAST it — the $500
+    // then comes out of `rentAfterTerm`, not `rentNotDue`. Which of the two absorbs it is the
+    // calendar's business on any given run date; what this pins is that a future month's
+    // cheque comes out of the future family WHOLE, and never touches the past-due remainder.
+    const future = (b) => round2(
+      b.rentNotDue + b.camTaxNotDue + b.rentAfterTerm + b.camTaxAfterTerm
+    );
+    expect(future(after)).toBe(round2(future(before) - 500));
+    // The past-due remainder is (posted − live) − the future family; both moved by the same
+    // $500, so the derived past-due is unchanged — December's cheque says nothing about
+    // August's rent.
     const pastDue = (b) => round2(
-      (b.rentPosted + b.camTaxPosted) - (b.rentLive + b.camTaxLive) - notDue(b)
+      (b.rentPosted + b.camTaxPosted) - (b.rentLive + b.camTaxLive) - future(b)
     );
     expect(pastDue(after)).toBe(pastDue(before));
+  });
+});
+
+describe('the after-term slice — billed past a lease’s own end', () => {
+  // Pure boundary pins, date-independent. Month granularity mirrors the term's un-prorated
+  // end (`monthlyScheduleForYear` zeroes months before the tenancy and never after): a term
+  // ending mid-month keeps its whole month.
+  it('names the first month past the end date, keeping a partial month whole', () => {
+    expect(afterTermStart(2026, '2026-09-30')).toBe(10);
+    expect(afterTermStart(2026, '2026-09-15')).toBe(10); // September stays whole
+    expect(afterTermStart(2026, '2026-01-31')).toBe(2);
+    expect(afterTermStart(2026, '2026-12-15')).toBe(13); // no month begins after it
+    expect(afterTermStart(2026, '2025-06-30')).toBe(1);  // ended before the year began
+    expect(afterTermStart(2026, '2027-03-01')).toBe(13);
+    expect(afterTermStart(2026, null)).toBe(13);
+    expect(afterTermStart(2026, 'garbage')).toBe(13);    // an unreadable end claims nothing
+  });
+
+  // ⚠ CARVED OUT OF "NOT DUE YET", NEVER ADDED BESIDE IT. Ending a lease's term mid-year must
+  // move its remaining bill from the calendar's certain line into the conditional one — the
+  // schedule itself keeps billing (the holdover rule: a tenant past term end keeps owing until
+  // removed), so `rentPosted` and `rentProjected` must NOT move.
+  it('ending a term moves the remaining bill into after-term and out of not-due', async () => {
+    const before = (await listBasisByProperty(['prop-2'], Y))['prop-2'];
+    // Sunrise Yoga runs to Y+3 and has paid nothing on the seed — end its term in August and
+    // its September-through-December bill must change SENTENCE, not size.
+    await updateLease('lease-4', { lease_termination_date: `${Y}-08-31` });
+    cleanup.push(() => updateLease('lease-4', { lease_termination_date: `${Y + 3}-06-30` }));
+
+    const after = (await listBasisByProperty(['prop-2'], Y))['prop-2'];
+    expect(after.rentAfterTerm).toBeGreaterThan(before.rentAfterTerm);
+    expect(after.rentNotDue).toBeLessThanOrEqual(before.rentNotDue);
+    // The holdover rule holds: the BILL did not shrink — only the naming moved.
+    expect(after.rentPosted).toBe(before.rentPosted);
+    expect(after.rentProjected).toBe(before.rentProjected);
   });
 });
 

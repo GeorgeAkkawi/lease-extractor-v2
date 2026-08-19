@@ -71,7 +71,10 @@ function FinPropCard({ property, year, mode, to, pf }) {
       <div className="prop-card-head"><strong>{property.name}</strong></div>
       <div className="prop-addr muted">{property.address || 'No address'}</div>
       <div className="fin-mini">
-        <div><span className="muted">Projected revenue</span><b className="pos">{money(totals?.total_revenue ?? 0)}</b></div>
+        {/* The annual rate, and named as such — "projected" is the Overview's word for the
+            dated schedule, and one word meaning two figures is how George met a $4k gap
+            nobody could explain (2026-08-18 (12)). */}
+        <div><span className="muted">Revenue at today's rates</span><b className="pos">{money(totals?.total_revenue ?? 0)}</b></div>
         <div><span className="muted">Expenses</span><b className="neg">{expenses == null ? '—' : money(expenses)}</b></div>
         <div><span className="muted">Tax / SF</span><b>{psf(totals?.tax_psf)}</b></div>
         <div><span className="muted">CAM / SF</span><b>{psf(totals?.cam_psf)}</b></div>

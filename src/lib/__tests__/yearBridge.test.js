@@ -320,6 +320,32 @@ describe('the gap splits at today', () => {
     expect(stated(aheadRev)).toBeCloseTo(0, 2);
   });
 
+  // ⚠ THE AFTER-TERM SLICE IS CARVED OUT OF "NOT DUE YET", NEVER ADDED BESIDE IT (2026-08-18
+  // (12)). The bill deliberately runs past a lease's own end date — the holdover rule — so the
+  // slice is real money in the projection; what changed is its sentence: conditional on the
+  // tenant staying, never the calendar's certainty. At year end it is the line that explains a
+  // projection the live counter never reached because a tenant left.
+  it('gives rent past a lease’s own end its own conditional line', () => {
+    const withEnd = { ...midYear, rentNotDue: 38000, rentAfterTerm: 12000 };
+    const revenue = yearBridge([withEnd], { year: Y }).measures.find((m) => m.key === 'revenue');
+    const after = revenue.terms.find((t) => t.key === 'afterTerm');
+    expect(after).toBeTruthy();
+    expect(after.amount).toBeCloseTo(-12000, 2);
+    // Both branches of the condition, stated in the one sentence.
+    expect(after.label).toMatch(/term is up/);
+    expect(after.label).toMatch(/never pays it/);
+    // The tenants' share is untouched by the carve: still $70,000 due, $60,000 in.
+    expect(revenue.terms.find((t) => t.key === 'pastDue').amount).toBeCloseTo(-10000, 2);
+    expect(revenue.terms.some((t) => t.unexplained)).toBe(false);
+    expect(stated(revenue)).toBeCloseTo(revenue.live, 2);
+    // …and moving a dollar between the calendar's line and the conditional one never moves
+    // the measure's own gap.
+    const shifted = yearBridge([{ ...withEnd, rentNotDue: 37999, rentAfterTerm: 12001 }], { year: Y })
+      .measures.find((m) => m.key === 'revenue');
+    expect(shifted.delta).toBeCloseTo(revenue.delta, 2);
+    expect(stated(shifted)).toBeCloseTo(shifted.live, 2);
+  });
+
   // ⚠ pastDue IS A REMAINDER, so a wrong rentNotDue still closes and only the LABELS lie. This
   // is the assertion that catches that: the split must respond to the data, not just sum to it.
   it('moves a dollar between the two lines when the boundary moves, never out of the total', () => {

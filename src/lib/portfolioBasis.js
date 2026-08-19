@@ -79,13 +79,50 @@ export function monthsDueThrough(year, todayIso) {
   return tm;
 }
 
-/** Σ of the months AFTER the due boundary across one group's rows — the not-yet-due slice.
- *  `byMonth` is on every row of both passes (`billedRowsFromRoll`); nothing is re-derived. */
-const futurePart = (groupLists, due) => round2(
+/**
+ * The first month of `year` that begins AFTER a lease's own end date — 1..12, or 13 when the
+ * term covers (or outlives, or never stated) the year. Month granularity matches the term's
+ * own un-prorated end (`monthlyScheduleForYear` zeroes months before the tenancy and never
+ * after — deliberate, the holdover rule): a term ending 15 Sep keeps all of September.
+ *
+ * ⚠ THIS DOES NOT SHORTEN ANY SCHEDULE. The bill keeps running past the end date on purpose —
+ * a holdover tenant keeps owing until removed, a decision taken once, reversed never (see the
+ * deploy log: "a lease past its end date is NOT a fault"). What this feeds is the BRIDGE's
+ * honesty: the slice of the projection sitting past a lease's own end is real only if the
+ * tenant stays, and a panel that files it under "not due yet" states a certainty nobody has.
+ */
+export function afterTermStart(year, termIso) {
+  const t = String(termIso || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return 13;
+  for (let m = 1; m <= 12; m++) {
+    if (`${year}-${String(m).padStart(2, '0')}-01` > t) return m;
+  }
+  return 13;
+}
+
+/** Σ of the months from the due boundary UP TO each lease's own end — the not-yet-due slice.
+ *  `byMonth` is on every row of both passes (`billedRowsFromRoll`); nothing is re-derived.
+ *  Months past a lease's end are excluded here and measured by `afterPart` instead: rent the
+ *  calendar has not reached is CERTAIN, rent past the term is conditional on the tenant
+ *  staying, and one line must not claim both. */
+const futurePart = (groupLists, due, afterByLease) => round2(
+  groupLists.reduce((s, rows) => s + (rows || []).reduce((n, r) => {
+    const bm = r?.byMonth || [];
+    const cap = Math.min(12, (afterByLease?.get(r.lease_id) ?? 13) - 1);
+    let t = 0;
+    for (let i = due; i < cap; i++) t += num(bm[i]);
+    return n + t;
+  }, 0), 0)
+);
+
+/** Σ of the months past each lease's own end — past AND future months both, because the app
+ *  cannot tell a holdover in possession from a tenant who left (recording the departure is a
+ *  missing feature, not a schedule fault). Paid holdover months net to zero here. */
+const afterPart = (groupLists, afterByLease) => round2(
   groupLists.reduce((s, rows) => s + (rows || []).reduce((n, r) => {
     const bm = r?.byMonth || [];
     let t = 0;
-    for (let i = due; i < 12; i++) t += num(bm[i]);
+    for (let i = (afterByLease?.get(r.lease_id) ?? 13) - 1; i < 12; i++) t += num(bm[i]);
     return n + t;
   }, 0), 0)
 );
@@ -108,6 +145,8 @@ const futurePart = (groupLists, due) => round2(
  *   unapplied        arrived beyond what a month billed, still waiting on an answer
  *   rentNotDue /     the part of each gap sitting in months that have not come round yet —
  *   camTaxNotDue     the timing half of "projected vs live", measured, never inferred
+ *   rentAfterTerm /  the slice billed past a lease's own end date — in the bill on purpose
+ *   camTaxAfterTerm  (holdover keeps owing) but conditional on the tenant staying
  *
  * ⚠ THERE IS NO `otherProjected`, AND ITS ABSENCE IS THE ANSWER TO GEORGE'S QUESTION (*"what
  * happens when a landlord has other sources of income"*). `other_income` (0078) is recorded as
@@ -154,6 +193,11 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
       // `annual − contracted.annual` from ONE lease built twice with only `includeScheduled`
       // differing (`api.js`), so the delta is the rent step and nothing else.
       const projectedAhead = round2((projectedRoll || []).reduce((s, r) => s + num(r?.projectedAhead), 0));
+      // Where each lease's own term runs out, month-granular — the roll rows already carry
+      // `lease_termination_date` (the view appends it; the mock mirrors it, mockClient:141).
+      const afterByLease = new Map(
+        (roll || []).map((r) => [r.lease_id, afterTermStart(year, r.lease_termination_date)])
+      );
       const live = billedRowsFromRoll(roll, { collected: true, year, confirmed });
       // The same roll read a second time, as POSTED rather than as paid. Free — both passes
       // are pure over rows already in hand — and it is the only source for the fees and
@@ -201,12 +245,24 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
         // honest gap is TIMING, and the bridge owes it in two lines, not one lump that reads as
         // arrears: the part of the gap sitting in months that have not come round yet, per
         // measure. Both passes carry `byMonth` on every row already; this is two array sums.
-        rentNotDue: round2(futurePart([posted.rent], due) - futurePart([live.rent], due)),
+        rentNotDue: round2(futurePart([posted.rent], due, afterByLease) - futurePart([live.rent], due, afterByLease)),
         camTaxNotDue: round2(
-          futurePart([posted.camTax, posted.roof], due) - futurePart([live.camTax, live.roof], due)
+          futurePart([posted.camTax, posted.roof], due, afterByLease)
+          - futurePart([live.camTax, live.roof], due, afterByLease)
+        ),
+        // ── THE AFTER-TERM SLICE (2026-08-18 (12)). The bill runs past a lease's own end on
+        // purpose — the holdover rule — so this money IS billed and IS in the projection. But
+        // it is the one part of the year that is conditional (a tenant who stays keeps owing
+        // it; one who leaves never pays it), and the bridge owes it its own sentence instead
+        // of filing it under "not due yet" as though the calendar alone would deliver it.
+        rentAfterTerm: round2(afterPart([posted.rent], afterByLease) - afterPart([live.rent], afterByLease)),
+        camTaxAfterTerm: round2(
+          afterPart([posted.camTax, posted.roof], afterByLease)
+          - afterPart([live.camTax, live.roof], afterByLease)
         ),
         // What the leases contract to bill, at their own rates — still the JS half of the
-        // `effective_rent` twin, and now also the lead term of the figure above.
+        // `effective_rent` twin, and the lead half of `rentProjected` above (the test pin
+        // `rentProjected === rentScheduled + projectedAhead` reads it; no screen does).
         rentScheduled: round2(posted.tieOut),
         // What the Rent row actually posts, and what CAM & tax actually posts.
         rentPosted: groupTotal(posted.rent),

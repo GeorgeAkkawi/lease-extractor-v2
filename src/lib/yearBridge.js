@@ -28,8 +28,9 @@
 // `unexplained` can catch:
 //
 //   MEASURED, from an independent source — `notDueYet` (the rows' own month arrays, either side
-//   of today), `ahead` (the roll's own `projectedAhead`), `grossCarve` (the rows' own flag),
-//   `corrections` (`adjustmentsForPnlRow`), `credit` and `unbilled` (the allocator). Revenue's
+//   of today), `afterTerm` (the same arrays past each lease's own end date), `ahead` (the
+//   roll's own `projectedAhead`), `grossCarve` (the rows' own flag), `corrections`
+//   (`adjustmentsForPnlRow`), `credit` and `unbilled` (the allocator). Revenue's
 //   terms therefore over-determine `rentPosted`, and when they stop agreeing with it the gap
 //   prints as `unexplained`. That is the real check here.
 //
@@ -153,7 +154,7 @@ export function yearBridge(rows = [], { year = null } = {}) {
   //
   // The running month counts as DUE — rent falls due on the 1st (George, 2026-08-13, the
   // `owesToDate` reading; `monthsDueThrough`, portfolioBasis.js, is the one place that decides).
-  const rentPastDue = (r) => -(num(r.rentPosted) + num(r.tenantCredit) + num(r.unbilled) - num(r.rentLive)) + num(r.rentNotDue);
+  const rentPastDue = (r) => -(num(r.rentPosted) + num(r.tenantCredit) + num(r.unbilled) - num(r.rentLive)) + num(r.rentNotDue) + num(r.rentAfterTerm);
   // ⚠ `ahead` IS A TERM, NOT A CAVEAT, because it is inside projected — and it is the one line
   // that is NOT pure timing: the projection counts a raise the leases schedule for later this
   // year, and the issued invoice will not carry it until it lands. A landlord reading the gap is
@@ -161,6 +162,14 @@ export function yearBridge(rows = [], { year = null } = {}) {
   const revenue = measure('revenue', 'Revenue', 'base rent', col(list, 'rentProjected'), col(list, 'rentLive'), [
     term('notDueYet', 'rent for months that have not come round yet — the leases bill it later this year, so it is not late, it is just not due', list,
       (r) => -num(r.rentNotDue)),
+    // ⚠ CARVED OUT OF "NOT DUE YET" ON PURPOSE (2026-08-18 (12)). The bill runs past a lease's
+    // own end date — the holdover rule, decided once and kept ("a lease past its end date is
+    // NOT a fault") — so this slice is genuinely billed and genuinely in the projection. But it
+    // is the ONE part of the year that is conditional, and filing it under the calendar's line
+    // claimed a certainty nobody has. At year end this is the term that explains a projection
+    // the live counter never reached because a tenant left.
+    term('afterTerm', 'rent billed for months after a lease’s own term is up — a tenant who stays on keeps owing it; a tenant who leaves never pays it', list,
+      (r) => -num(r.rentAfterTerm)),
     term('pastDue', 'rent already due and not yet in — this month and the months before it', list,
       rentPastDue, { link: 'ledger' }),
     term('ahead', 'a rent raise your leases schedule for later this year — the projection counts it because the lease says it, but no invoice includes it yet and no tenant has been asked to pay it', list,
@@ -174,10 +183,12 @@ export function yearBridge(rows = [], { year = null } = {}) {
 
   // ── Expenses ─────────────────────────────────────────────────────────────────────────────
   const camTaxProration = (r) => num(r.camTaxPosted) - num(r.camTaxCorrections) - num(r.camTaxProjected);
-  const camTaxPastDue = (r) => -(num(r.camTaxPosted) - num(r.camTaxLive)) + num(r.camTaxNotDue);
+  const camTaxPastDue = (r) => -(num(r.camTaxPosted) - num(r.camTaxLive)) + num(r.camTaxNotDue) + num(r.camTaxAfterTerm);
   const expenses = measure('expenses', 'Expenses', 'CAM & tax billed', col(list, 'camTaxProjected'), col(list, 'camTaxLive'), [
     term('notDueYet', 'CAM & tax for months that have not come round yet — billed later this year', list,
       (r) => -num(r.camTaxNotDue)),
+    term('afterTerm', 'CAM & tax billed for months after a lease’s own term is up — owed only while the tenant stays on', list,
+      (r) => -num(r.camTaxAfterTerm)),
     term('pastDue', 'CAM & tax already due and not yet in — this month and the months before it', list,
       camTaxPastDue, { link: 'ledger' }),
     term('proration', 'the estimate is an annual figure, and the bill spreads it only across the months a tenant is in term', list, camTaxProration),

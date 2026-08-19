@@ -1,3 +1,74 @@
+## 2026-08-18 (12) — The after-term slice gets its own sentence; "projected" becomes one word
+
+**Cloudflare version:** `220a8134-63c4-41b9-8746-ed75849ed610` · 2,017 tests / 191 files green.
+
+George: *"yeah fix all of those recommendations"* — the three left open by (11).
+
+### 1. A lease ending mid-year — the fix that respects the fix that was withdrawn
+
+⚠ **The schedule was NOT touched, and the log is why.** The obvious cut — zero months after
+`lease_termination_date` — was proposed, approved and then **withdrawn** in an earlier round
+("a lease past its end date is NOT a fault… It is deliberate and it stays"): a holdover tenant
+keeps owing until removed, the end of term is un-prorated on both sides equally, and zeroing it
+would shrink `owedByMonth` under every frozen invoice at once. That decision stands; recording
+that a tenant actually LEFT is still the missing feature.
+
+What was wrong was the **sentence**: the projection's after-term slice sat inside "not due yet",
+which claims the calendar alone will deliver it. It is the one part of the year that is
+conditional. So the bridge now carries a fourth timing term, on Revenue and Expenses both:
+
+> **−$X** rent billed for months after a lease's own term is up — a tenant who stays on keeps
+> owing it; a tenant who leaves never pays it
+
+- `afterTermStart(year, termIso)` (`portfolioBasis.js`) — first month of the year beginning
+  after the lease's end; month-granular to mirror the un-prorated end (a term ending 15 Sep
+  keeps all of September). `futurePart` now caps at it; new `afterPart` sums past it — **past
+  AND future months both**, because the app cannot tell a holdover from a leaver, and an unpaid
+  post-term month is this sentence, not an accusation. A paid holdover month nets to zero.
+- Carried as `rentAfterTerm` / `camTaxAfterTerm` through `basisRows`; `pastDue` remainder
+  formulas add them back so every measure still closes to the cent.
+- **On the demo seed this is exact:** Northwind's post-term Oct–Dec = $31,250.00 moved from
+  not-due to after-term to the cent; City Dental's holdover ($49,000 unpaid Jun–Dec) now reads
+  as conditional rather than "not late, just not due".
+- At year end, this is the line that explains a projection the live counter never reached
+  because a tenant left — George's invariant ("projected and live should be the same exact
+  number at the end of the year") holding by *explanation* where the billing model deliberately
+  keeps the months billed.
+
+### 2. "Projected" now means ONE thing
+
+The Financials pages stop calling the annual rate "Projected revenue":
+- `PropertyFinancialsPage` — the card is now **"Revenue at today's rates (annualized)"**; its
+  figure stays `total_revenue` (NOI and the margin beside it are that view's arithmetic). A
+  `note` under it reconciles to the Overview whenever a mid-year raise makes them differ:
+  "The Overview projects $X — same leases, with each raise counted from the month it lands."
+  Fed by `listBasisByProperty([propId], year)` under `['portfolioBasis', 'one', propId, year]`
+  — the ONE loader that derives it, keyed inside the family `settleBillingChange` already
+  invalidates. The view is untouched.
+- `FinancialsPropertiesPage` — the card label likewise **"Revenue at today's rates"**.
+
+### 3. The deletions George picked from (10)/(11)
+
+- **`revenueExpensesNoi` + `hasCollectedBars`** (`portfolioCharts.js`) — deleted with their
+  six tests; the grouped bars they fed were retired at George's word and no reader remained.
+- **The band's "It is the same rent the donut sums" sentence** — deleted; the identity is
+  structural (one `rentProjected` reaches both) and pinned in `dashboardOverview.test.js`.
+- **`rentScheduled`** — the `basisRows` carry (dead in UI) is gone. ⚠ The loader FIELD stays:
+  the pin `rentProjected === rentScheduled + projectedAhead` (`portfolioBasis.test.js`) reads
+  it, and that assertion is the one place the addition is held together. Said here so the
+  partial deletion is a decision, not an oversight.
+
+**Files:** `src/lib/portfolioBasis.js` · `src/lib/yearBridge.js` · `src/lib/portfolioCharts.js`
+· `src/pages/PropertyFinancialsPage.js` · `src/pages/FinancialsPropertiesPage.js` ·
+`src/components/BasisBand.js` · tests: `portfolioBasis.test.js`, `yearBridge.test.js`,
+`portfolioCharts.test.js`.
+
+**Now redundant:**
+- **`listCollectedByProperty`** (`api.js:3687`) + its test file (`portfolioCollected.test.js`)
+  + the `['portfolioCollected']` invalidations (4 sites) — its last reader was
+  `revenueExpensesNoi`'s collected bar, deleted above. Propose deleting all three together.
+- The seed comment "an escalation ~3 weeks out" now also carries Northwind's after-term months
+  on the Overview bridge — a demo behavior worth knowing about, nothing to delete.
 ## 2026-08-18 (11) — Bug sweep of the panel: four found, four fixed
 
 **Cloudflare version:** `ce8cad8e-c429-43e6-93f1-d6eee0fe2e07` · 2,022 tests / 191 files green.

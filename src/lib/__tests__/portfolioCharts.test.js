@@ -3,8 +3,8 @@
 // disagreement could creep in. Each is pure, so each is pinned here.
 import { describe, it, expect } from 'vitest';
 import {
-  revenueByProperty, occupancyByProperty, portfolioOccupancy, revenueExpensesNoi, rentRollover,
-  tenantMix, hasCollectedBars, basisRows, portfolioBasis, kfmt, shortName, DONUT_PALETTE,
+  revenueByProperty, occupancyByProperty, portfolioOccupancy, rentRollover,
+  tenantMix, basisRows, portfolioBasis, kfmt, shortName, DONUT_PALETTE,
 } from '../portfolioCharts';
 
 const PROPS = [
@@ -166,76 +166,10 @@ describe('rentRollover', () => {
   });
 });
 
-describe('revenueExpensesNoi', () => {
-  it('sums expenses from the three stored components, matching the History page', () => {
-    const maple = revenueExpensesNoi(PROPS, TOTALS).find((d) => d.name === 'Maple Plaza');
-    expect(maple).toMatchObject({ Revenue: 120000, Expenses: 45000, NOI: 75000 });
-  });
+// (The two `revenueExpensesNoi` describes lived here until 2026-08-18 (12), when the shaper
+// itself was deleted — the grouped bars it fed were retired at George's word and no reader
+// remained.)
 
-  it('drops a property with nothing to show and sorts by revenue', () => {
-    const out = revenueExpensesNoi(PROPS, TOTALS);
-    expect(out.map((d) => d.name)).toEqual(['Oak Center', 'Maple Plaza']);
-  });
-
-  it('carries the ACTUAL taxes/CAM/roof it summed, so the hover can show its working', () => {
-    // The bar is the landlord's entered expenses (expense_records), never the per-lease
-    // CAM & tax ESTIMATES billed to tenants — a distinct, usually larger figure. Carrying
-    // the three parts is what lets the tooltip prove which one is on screen.
-    const maple = revenueExpensesNoi(PROPS, TOTALS).find((d) => d.name === 'Maple Plaza');
-    expect(maple).toMatchObject({ taxes: 25000, cam: 18000, roof: 2000 });
-    expect(maple.taxes + maple.cam + maple.roof).toBe(maple.Expenses);
-  });
-
-  it('adds NO collected field when there is nothing to add — byte-identical', () => {
-    // The third argument is optional and must stay so: every existing caller (and the
-    // panel's own three-bar mode) reads exactly the shape it always did.
-    const before = revenueExpensesNoi(PROPS, TOTALS);
-    expect(before[0].Collected).toBeUndefined();
-    expect(before[0].hasCollected).toBeUndefined();
-    expect(hasCollectedBars(before)).toBe(false);
-  });
-});
-
-// The fourth bar: the rent that has actually arrived, beside the Revenue it belongs to.
-describe('revenueExpensesNoi — rent collected so far', () => {
-  const COLLECTED = {
-    p1: { collected: 60000, billed: 120000 },
-    p2: { collected: 0, billed: 0 },
-  };
-
-  it('adds the collected figure and leaves the three on-paper ones untouched', () => {
-    const maple = revenueExpensesNoi(PROPS, TOTALS, COLLECTED).find((d) => d.name === 'Maple Plaza');
-    expect(maple).toMatchObject({ Revenue: 120000, Expenses: 45000, NOI: 75000 });
-    expect(maple).toMatchObject({ Collected: 60000, billedYtd: 120000, hasCollected: true });
-  });
-
-  it('draws the bar only when something has actually come in', () => {
-    expect(hasCollectedBars(revenueExpensesNoi(PROPS, TOTALS, COLLECTED))).toBe(true);
-    const nothing = { p1: { collected: 0, billed: 0 } };
-    expect(hasCollectedBars(revenueExpensesNoi(PROPS, TOTALS, nothing))).toBe(false);
-    // Billed but not paid is still nothing collected — an invoice raised is not money in.
-    const billedOnly = { p1: { collected: 0, billed: 90000 } };
-    expect(hasCollectedBars(revenueExpensesNoi(PROPS, TOTALS, billedOnly))).toBe(false);
-  });
-
-  // ⚠ THE ONE THAT MATTERS. Collected is ALL-IN — it carries the CAM & tax the tenants
-  // reimburse — while Revenue is contract base rent only. So a well-collected property
-  // legitimately reads ABOVE its Revenue bar. Silently capping it would make the chart lie
-  // to protect a figure (v_property_totals, round 14) that is itself incomplete.
-  it('lets Collected exceed Revenue without clamping — the two count different money', () => {
-    const rich = { p1: { collected: 145000, billed: 145000 } };
-    const maple = revenueExpensesNoi(PROPS, TOTALS, rich).find((d) => d.name === 'Maple Plaza');
-    expect(maple.Collected).toBe(145000);
-    expect(maple.Collected).toBeGreaterThan(maple.Revenue);
-  });
-
-  it('a property the read knows nothing about still renders, with zeros', () => {
-    const maple = revenueExpensesNoi(PROPS, TOTALS, {}).find((d) => d.name === 'Maple Plaza');
-    expect(maple).toMatchObject({ Collected: 0, billedYtd: 0, hasCollected: false });
-    // …and its on-paper figures are untouched by the empty read.
-    expect(maple).toMatchObject({ Revenue: 120000, Expenses: 45000, NOI: 75000 });
-  });
-});
 
 // The Overview band — the BILL, read twice (2026-08-18).
 //

@@ -11,6 +11,7 @@ import {
   setRoofSeparate,
   getTenantShares,
 } from '../lib/api';
+import { listBasisByProperty } from '../lib/portfolioBasis';
 import { showRoof, roofOffered } from '../lib/roofDisplay';
 import { useConfirm } from '../components/ConfirmDialog';
 import { useChrome, usePageChrome } from '../context/ChromeContext';
@@ -43,6 +44,18 @@ export default function PropertyFinancialsPage() {
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
   const { data: totals } = useQuery({ queryKey: ['propertyTotals', propId, year], queryFn: () => getPropertyTotals(propId, year), placeholderData: keepPreviousData });
+  // The Overview's projected Revenue for THIS property — the leases' own months, each raise
+  // dated, via the ONE loader that derives it (portfolioBasis; a second derivation here is the
+  // §3 drift that had two screens quoting different projections all along). Keyed under the
+  // `portfolioBasis` family so `settleBillingChange` repaints it with everything else. Used
+  // only for the reconciling note under the revenue card — the card's own figure stays the
+  // view's, because NOI and the margin beside it are the view's arithmetic.
+  const { data: basisForNote } = useQuery({
+    queryKey: ['portfolioBasis', 'one', propId, year],
+    queryFn: () => listBasisByProperty([propId], year),
+    placeholderData: keepPreviousData,
+  });
+  const scheduleRent = basisForNote?.[propId]?.rentProjected;
   const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year), placeholderData: keepPreviousData });
   usePageChrome([
     { label: 'Financials', to: '/financials' },
@@ -181,7 +194,25 @@ export default function PropertyFinancialsPage() {
       <div className="metric-group">
         <div className="fin-subhead">Performance · FY {year}</div>
         <div className="metrics">
-          <StatCard label="Projected revenue (annualized)" main={money(revenue)} footValue={totalSf ? psf(revenue / totalSf) : '—'} footCap="per leased sq ft" />
+          {/* ⚠ "Projected" is the OVERVIEW's word now, and it means the dated schedule. This
+              card is the annual RATE — every lease at today's rent for all twelve months
+              (`v_property_totals.total_revenue`, which NOI and the margin beside it are built
+              from, so the figure stays). The label says which question it answers, and the
+              note reconciles it to the Overview whenever a mid-year raise makes them differ —
+              the reconciliation George asked after three times, on the screen instead of in
+              an explanation (2026-08-18 (12)). */}
+          <StatCard
+            label="Revenue at today's rates (annualized)"
+            main={money(revenue)}
+            footValue={totalSf ? psf(revenue / totalSf) : '—'}
+            footCap="per leased sq ft"
+            note={scheduleRent != null && Math.abs(scheduleRent - revenue) > 1 ? (
+              <span>
+                The Overview projects <strong>{money(scheduleRent)}</strong> — same leases, with
+                each raise counted from the month it lands rather than all year.
+              </span>
+            ) : null}
+          />
           <StatCard label="Total expenses" main={money(totalExp)} footValue={totalSf ? psf(totalExp / totalSf) : '—'} footCap="per leased sq ft" />
           <StatCard label="Net operating income" main={money(noi)} footValue={margin != null ? `${margin}%` : '—'} footCap="operating margin" />
         </div>
