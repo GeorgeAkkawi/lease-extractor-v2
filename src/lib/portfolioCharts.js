@@ -284,9 +284,8 @@ export const hasCollectedBars = (rows) => (rows || []).some((r) => r.hasCollecte
 // projected rent because we know what those numbers are so that shouldn't be a discrepancy."*
 // `total_revenue` is an annual RATE (`sum(effective_rent)`) that neither dates an applied step
 // nor sees a scheduled one, so it printed a difference the landlord was asked to explain when
-// nothing was actually wrong. `rentAnnualRate` below still carries the view's figure — not to
-// draw, but so `yearBridge` can state what the Financials page will quote and by how much it
-// differs, rather than leaving someone to find that gap by flipping between two screens.
+// nothing was actually wrong. The view's figure is read below for ONE purpose — knowing a
+// property has a year at all while its roll is still loading — and reaches no row and no screen.
 //
 // You replace a subtraction ("what's left") with an addition ("Total") only when the columns
 // genuinely add, and these do: they are the two halves of one invoice. That also retires the
@@ -305,7 +304,6 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
       if (!t) return null;
       const b = basisByProp?.[p.id] || null;
       const rentProjected = round2(num(b?.rentProjected));
-      const rentAnnualRate = round2(num(t.total_revenue));
       const rentLive = round2(num(b?.rentLive));
       const camTaxProjected = round2(num(b?.camTaxProjected));
       const camTaxLive = round2(num(b?.camTaxLive));
@@ -324,10 +322,10 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
       // ⚠ THE PRESENCE TEST STILL READS THE VIEW, and only the presence test. Since Revenue moved
       // off `total_revenue` a still-loading row has zeroes everywhere, so a test over the figures
       // alone would drop every property until the roll landed — the band would vanish and come
-      // back rather than fill in. `rentAnnualRate` answers "does this property have a year at
-      // all" without putting the view's figure on screen.
-      const anything = rentAnnualRate !== 0 || rentProjected !== 0 || camTaxProjected !== 0
-        || rentLive !== 0 || camTaxLive !== 0 || otherLive !== 0;
+      // back rather than fill in. The view answers "does this property have a year at all"
+      // without its figure reaching any row field or any screen.
+      const anything = round2(num(t.total_revenue)) !== 0 || rentProjected !== 0
+        || camTaxProjected !== 0 || rentLive !== 0 || camTaxLive !== 0 || otherLive !== 0;
       if (!anything) return null;
       return {
         id: p.id,
@@ -346,11 +344,10 @@ export function basisRows(properties, totalsByProp, basisByProp = null) {
         grossCarve,
         rentScheduled: round2(num(b?.rentScheduled)),
         projectedAhead: round2(num(b?.projectedAhead)),
-        // The view's annual rate — in NO column, drawn nowhere. It is here so the bridge can say
-        // what the Financials page will quote and by how much the two differ, which also keeps
-        // the `effective_rent` ↔ `buildLeaseSchedule` twin check (CLAUDE.md §3) alive now that
-        // Revenue no longer compares itself to the view by simply being it.
-        rentAnnualRate,
+        // The timing split — the part of each gap that is simply months not yet come round.
+        // Measured in `listBasisByProperty` off the same rows as everything else here.
+        rentNotDue: round2(num(b?.rentNotDue)),
+        camTaxNotDue: round2(num(b?.camTaxNotDue)),
         rentPosted: round2(num(b?.rentPosted)),
         camTaxPosted: round2(num(b?.camTaxPosted)),
         rentCorrections: round2(num(b?.rentCorrections)),

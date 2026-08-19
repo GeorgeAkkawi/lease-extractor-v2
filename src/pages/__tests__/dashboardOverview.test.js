@@ -197,14 +197,20 @@ describe('Overview — where the difference is', () => {
     expect([...bridge.querySelectorAll('.basis-bridge-measure .basis-col-sub')].map((n) => n.textContent))
       .toEqual(['base rent', 'CAM & tax billed', 'what tenants are charged']);
 
-    // Every cause is a signed dollar figure with a sentence, and the demo seed has arrears.
+    // Every cause is a signed dollar figure with a sentence, and the demo seed mid-year has
+    // both halves of the timing split — future months on every lease, and unpaid due months.
     const terms = [...bridge.querySelectorAll('.basis-bridge-terms li')];
     expect(terms.length).toBeGreaterThan(0);
     for (const li of terms) {
       expect(li.querySelector('.basis-term-amt').textContent).toMatch(/^[+−]\$[\d,]+\.\d\d$/);
       expect(li.querySelector('.basis-term-label').textContent.trim().length).toBeGreaterThan(10);
     }
-    expect(bridge.textContent).toMatch(/rent billed and not yet in/);
+    // ⚠ THE SPLIT GEORGE ASKED FOR (2026-08-18): the calendar's share of the gap and the
+    // tenants' share, apart — never one lump wearing an arrears sentence over months that
+    // simply have not come round.
+    expect(bridge.textContent).toMatch(/not come round yet/);
+    expect(bridge.textContent).toMatch(/already due and not yet in/);
+    expect(bridge.textContent).not.toMatch(/rent billed and not yet in/);
     // ⚠ AND NOTHING IT CANNOT ACCOUNT FOR. The catch-all is real, so its absence on a clean
     // seed is the assertion — a bridge that always prints one has stopped meaning anything.
     expect(bridge.querySelector('.is-unexplained')).toBeNull();

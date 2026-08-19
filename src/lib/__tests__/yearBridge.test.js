@@ -228,7 +228,7 @@ describe('rent the leases schedule but no invoice carries', () => {
     expect(ahead, 'the seed carries a scheduled step and must name it').toBeTruthy();
     // Signed the way the measure reads — it pushes live BELOW projected, so it is negative.
     expect(ahead.amount).toBeLessThan(0);
-    expect(ahead.label).toMatch(/has not taken effect yet/);
+    expect(ahead.label).toMatch(/schedule for later this year/);
     expect(ahead.label).toMatch(/no tenant has been asked to pay it/);
     // The three retired terms must not come back under their old names.
     for (const gone of ['rentStep', 'partYear', 'basis']) {
@@ -243,10 +243,10 @@ describe('rent the leases schedule but no invoice carries', () => {
     const row = {
       id: 'p', name: 'Pershing Plaza',
       rentProjected: 28745.04, rentLive: 25241.04,
-      projectedAhead: 3504, rentAnnualRate: 25241.04,
+      projectedAhead: 3504, rentNotDue: 0,
       rentScheduled: 25241.04,
       rentPosted: 25241.04, grossCarve: 0, rentCorrections: 0, tenantCredit: 0, unbilled: 0,
-      camTaxProjected: 0, camTaxLive: 0, camTaxPosted: 0, camTaxCorrections: 0,
+      camTaxProjected: 0, camTaxLive: 0, camTaxPosted: 0, camTaxCorrections: 0, camTaxNotDue: 0,
       chargesProjected: 0, chargesLive: 0, otherLive: 0, unapplied: 0, driftTotal: 0,
       totalProjected: 28745.04, totalLive: 25241.04,
     };
@@ -254,51 +254,81 @@ describe('rent the leases schedule but no invoice carries', () => {
     const ahead = revenue.terms.find((t) => t.key === 'ahead');
     expect(ahead).toBeTruthy();
     expect(ahead.amount).toBeCloseTo(-3504, 2);
-    // The whole gap, with nothing left over and no arrears invented on top of it.
+    // The whole gap, with nothing left over and no past-due invented on top of it.
     expect(revenue.terms.some((t) => t.unexplained)).toBe(false);
     expect(revenue.terms.map((t) => t.key)).toEqual(['ahead']);
     expect(stated(revenue)).toBeCloseTo(revenue.live, 2);
   });
 });
 
-// ── The other screen's figure, stated rather than left to be found ────────────────────────
+// ── The timing split ──────────────────────────────────────────────────────────────────────
 //
-// ⚠ THE VIEW WAS DELIBERATELY LEFT ALONE. `v_property_totals.total_revenue` still feeds NOI,
-// every closed-year snapshot already written, History's YoY cards, the Ask facts and
-// `syncRentPctCamItems` — which WRITES tenant invoices when a management fee is a % of rent. So
-// the Financials page goes on quoting an annual rate while the Overview prices the months, and
-// the two genuinely differ. George's standing complaint is about figures nobody explains, not
-// about there being two questions, so the bridge says what the other screen will say.
-describe('the annual rate the other screen quotes', () => {
-  const base = {
+// George, 2026-08-18: *"the projected and live should be the same exact number at the end of the
+// year … one is a projected count taken from the ledgers figures of what should be charged which
+// we know. the other (live) is just a running counter taken from the bank statements as the year
+// goes along."* So mid-year the gap is mostly TIMING, and the panel owes it as two lines: months
+// that have not come round yet, and months that are genuinely due and unpaid. The one lump this
+// replaces ("rent billed and not yet in") wore an arrears sentence over September-to-December
+// rent — an accusation the calendar was responsible for, not any tenant.
+describe('the gap splits at today', () => {
+  // A year mid-flight, as pure input: $120,000 billed across the year, $70,000 due so far,
+  // $60,000 of it in. rentNotDue (the future months' bill less any prepayment) is $50,000.
+  const midYear = {
     id: 'p', name: 'Pershing Plaza',
-    rentProjected: 25241.04, rentLive: 25241.04, projectedAhead: 0, rentScheduled: 25241.04,
-    rentPosted: 25241.04, grossCarve: 0, rentCorrections: 0, tenantCredit: 0, unbilled: 0,
+    rentProjected: 120000, rentLive: 60000, rentScheduled: 120000, projectedAhead: 0,
+    rentNotDue: 50000, camTaxNotDue: 0,
+    rentPosted: 120000, grossCarve: 0, rentCorrections: 0, tenantCredit: 0, unbilled: 0,
     camTaxProjected: 0, camTaxLive: 0, camTaxPosted: 0, camTaxCorrections: 0,
     chargesProjected: 0, chargesLive: 0, otherLive: 0, unapplied: 0, driftTotal: 0,
-    totalProjected: 25241.04, totalLive: 25241.04,
+    totalProjected: 120000, totalLive: 60000,
   };
 
-  it('states the gap as a caveat, in no column and in no term', () => {
-    const bridge = yearBridge([{ ...base, rentAnnualRate: 28745.04 }], { year: Y });
-    const c = bridge.caveats.find((x) => x.key === 'annualRate');
-    expect(c).toBeTruthy();
-    expect(c.amount).toBeCloseTo(3504, 2);
-    expect(c.label).toMatch(/all twelve months/);
-    expect(c.action).toMatch(/different questions/);
-    // A caveat, never a term — it explains no part of the projected-vs-live gap.
-    const revenue = bridge.measures.find((m) => m.key === 'revenue');
-    expect(revenue.terms.some((t) => t.key === 'annualRate')).toBe(false);
+  it('names not-due-yet and past-due apart, and they close to the cent', () => {
+    const revenue = yearBridge([midYear], { year: Y }).measures.find((m) => m.key === 'revenue');
+    const notDue = revenue.terms.find((t) => t.key === 'notDueYet');
+    const pastDue = revenue.terms.find((t) => t.key === 'pastDue');
+    // The calendar's share, worded as the calendar's — not late, just not due.
+    expect(notDue).toBeTruthy();
+    expect(notDue.amount).toBeCloseTo(-50000, 2);
+    expect(notDue.label).toMatch(/not come round yet/);
+    expect(notDue.label).toMatch(/not late/);
+    // The tenants' share: $70,000 due, $60,000 in.
+    expect(pastDue).toBeTruthy();
+    expect(pastDue.amount).toBeCloseTo(-10000, 2);
+    expect(pastDue.label).toMatch(/already due/);
+    // The actionable half is the one with somewhere to go.
+    expect(pastDue.link).toBe('ledger');
+    expect(notDue.link).toBeUndefined();
+    expect(revenue.terms.some((t) => t.unexplained)).toBe(false);
     expect(stated(revenue)).toBeCloseTo(revenue.live, 2);
   });
 
-  // ⚠ A PENNY IS NOT A CROSS-SCREEN DISCREPANCY. Twelfths round; the same floor that keeps
-  // −$0.01 out of the terms keeps it out of here.
-  it('says nothing when the two agree, or differ by rounding', () => {
-    expect(yearBridge([{ ...base, rentAnnualRate: 25241.04 }], { year: Y })
-      .caveats.some((c) => c.key === 'annualRate')).toBe(false);
-    expect(yearBridge([{ ...base, rentAnnualRate: 25241.42 }], { year: Y })
-      .caveats.some((c) => c.key === 'annualRate')).toBe(false);
+  // ⚠ THE BOUNDARY CASES ARE PINNED WITHOUT DEPENDING ON TODAY. `rentNotDue` is data here; what
+  // this asserts is that the bridge never invents a "not due" line for a year with no future
+  // months, and never a "past due" line for a year that has not started. The date arithmetic
+  // itself is `monthsDueThrough`, pinned in portfolioBasis.test.js.
+  it('a finished year is all past due, a year not started is all not-due-yet', () => {
+    const done = { ...midYear, rentNotDue: 0 };
+    const doneRev = yearBridge([done], { year: Y - 1 }).measures.find((m) => m.key === 'revenue');
+    expect(doneRev.terms.map((t) => t.key)).toEqual(['pastDue']);
+    expect(doneRev.terms[0].amount).toBeCloseTo(-60000, 2);
+
+    const ahead = { ...midYear, rentLive: 0, rentNotDue: 120000, totalLive: 0 };
+    const aheadRev = yearBridge([ahead], { year: Y + 1 }).measures.find((m) => m.key === 'revenue');
+    expect(aheadRev.terms.map((t) => t.key)).toEqual(['notDueYet']);
+    expect(aheadRev.terms[0].amount).toBeCloseTo(-120000, 2);
+    expect(stated(aheadRev)).toBeCloseTo(0, 2);
+  });
+
+  // ⚠ pastDue IS A REMAINDER, so a wrong rentNotDue still closes and only the LABELS lie. This
+  // is the assertion that catches that: the split must respond to the data, not just sum to it.
+  it('moves a dollar between the two lines when the boundary moves, never out of the total', () => {
+    const a = yearBridge([midYear], { year: Y }).measures.find((m) => m.key === 'revenue');
+    const b = yearBridge([{ ...midYear, rentNotDue: 50001 }], { year: Y }).measures.find((m) => m.key === 'revenue');
+    const get = (m, k) => m.terms.find((t) => t.key === k)?.amount || 0;
+    expect(get(b, 'notDueYet') - get(a, 'notDueYet')).toBeCloseTo(-1, 2);
+    expect(get(b, 'pastDue') - get(a, 'pastDue')).toBeCloseTo(1, 2);
+    expect(b.delta).toBeCloseTo(a.delta, 2);
   });
 });
 
@@ -309,24 +339,25 @@ describe('the annual rate the other screen quotes', () => {
 describe('sub-dollar rounding is absorbed, not narrated', () => {
   const withProration = (cents) => ({
     id: 'p', name: 'Maple Plaza',
-    rentProjected: 0, rentLive: 0, rentScheduled: 0, projectedAhead: 0, rentAnnualRate: 0,
+    rentProjected: 0, rentLive: 0, rentScheduled: 0, projectedAhead: 0,
+    rentNotDue: 0, camTaxNotDue: 0,
     rentPosted: 0, grossCarve: 0, rentCorrections: 0, tenantCredit: 0, unbilled: 0,
     camTaxProjected: 10000, camTaxLive: 6000, camTaxPosted: round2(10000 + cents),
     camTaxCorrections: 0, chargesProjected: 0, chargesLive: 0, otherLive: 0,
     unapplied: 0, driftTotal: 0, totalProjected: 10000, totalLive: 6000,
   });
 
-  it('folds a one-cent proration into arrears rather than giving it a sentence', () => {
+  it('folds a one-cent proration into past-due rather than giving it a sentence', () => {
     const m = yearBridge([withProration(-0.01)], { year: Y }).measures.find((x) => x.key === 'expenses');
     expect(m.terms.some((t) => t.key === 'proration')).toBe(false);
     expect(m.terms.some((t) => t.unexplained)).toBe(false);
-    expect(m.terms.map((t) => t.key)).toEqual(['arrears']);
+    expect(m.terms.map((t) => t.key)).toEqual(['pastDue']);
     // Absorbed, never dropped — the measure still lands on its live figure to the cent…
     expect(stated(m)).toBeCloseTo(m.live, 2);
     // …and the property named under it still adds to the figure printed beside it, which is the
     // one thing a landlord can actually check by eye.
-    const arrears = m.terms[0];
-    expect(round2(arrears.rows.reduce((s, r) => s + r.amount, 0))).toBeCloseTo(arrears.amount, 2);
+    const pastDue = m.terms[0];
+    expect(round2(pastDue.rows.reduce((s, r) => s + r.amount, 0))).toBeCloseTo(pastDue.amount, 2);
   });
 
   it('still names a proration that is worth naming', () => {

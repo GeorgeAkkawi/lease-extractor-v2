@@ -16,18 +16,27 @@
 // second reading of "what this year billed" beside the first is how two boxes on one screen come
 // to quote different dollars for the same year.
 //
+// ⚠ THE SHAPE IS GEORGE'S OWN DESIGN STATEMENT (2026-08-18): *"the projected and live should be
+// the same exact number at the end of the year, the only difference should be if there are any
+// additional charges that come in. one is a projected count taken from the ledgers figures of
+// what should be charged which we know. the other (live) is just a running counter taken from the
+// bank statements as the year goes along."* Mid-year, then, the only honest gap is TIMING — and
+// the first thing each measure says is which part of its gap is simply months that have not come
+// round yet, before anything that reads like a problem.
+//
 // ⚠ WHICH TERMS ARE MEASURED AND WHICH ARE THE REMAINDER, because the difference decides what
 // `unexplained` can catch:
 //
-//   MEASURED, from an independent source — `ahead` (the roll's own `projectedAhead`),
-//   `grossCarve` (the rows' own flag), `corrections` (`adjustmentsForPnlRow`), `credit` and
-//   `unbilled` (the allocator). Revenue's five therefore over-determine `rentPosted`, and when
-//   they stop agreeing with it the gap prints as `unexplained`. That is the real check here.
+//   MEASURED, from an independent source — `notDueYet` (the rows' own month arrays, either side
+//   of today), `ahead` (the roll's own `projectedAhead`), `grossCarve` (the rows' own flag),
+//   `corrections` (`adjustmentsForPnlRow`), `credit` and `unbilled` (the allocator). Revenue's
+//   terms therefore over-determine `rentPosted`, and when they stop agreeing with it the gap
+//   prints as `unexplained`. That is the real check here.
 //
-//   THE REMAINDER — `arrears` on Revenue and Expenses, and `proration` on Expenses. Nothing in
-//   the app measures "billed and not yet in" a second way, so these are what is left after the
-//   measured terms. Expenses and Total therefore close by construction and their `unexplained`
-//   only ever catches an arithmetic slip. Said out loud rather than implied, because a
+//   THE REMAINDER — `pastDue` on Revenue and Expenses. Nothing in the app measures "due and not
+//   paid" a second way at this level, so it is what is left after the measured terms — which is
+//   also why a wrong `notDueYet` cannot hide: it would push `pastDue` visibly wrong the other
+//   way on a screen the Ledger contradicts. Said out loud rather than implied, because a
 //   catch-all that cannot catch anything is worse than none: it reads as a guarantee.
 const num = (v) => Number(v) || 0;
 const round2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -131,40 +140,46 @@ export function yearBridge(rows = [], { year = null } = {}) {
 
   // ── Revenue ──────────────────────────────────────────────────────────────────────────────
   //
-  // `arrears` is the remainder, and it is written to make what it absorbs explicit: cash that
-  // settles no bill (`tenantCredit`, `unbilled`) is added back BEFORE the subtraction, so it is
-  // named on its own line instead of quietly making the arrears figure look smaller.
-  const rentArrears = (r) => -(num(r.rentPosted) + num(r.tenantCredit) + num(r.unbilled) - num(r.rentLive));
-  // ⚠ THREE TERMS CAME OFF HERE ON 2026-08-18 (3), AND NOT BECAUSE THEY WERE WRONG. `rentStep`,
-  // `partYear` and `basis` between them explained why an unprorated annual rate differed from the
-  // leases' own months — and George's answer to being shown that was the right one: *"we should
-  // make rent projections part of the projected rent because we know what those numbers are so
-  // that shouldn't be a discrepancy."* Projected Revenue IS those months now, so there is nothing
-  // for the three to explain. What survives is the ONE fact the schedule genuinely cannot bill
-  // yet: a step the leases have scheduled that no invoice carries.
+  // The gap splits at TODAY. `notDueYet` is measured (the rows' own month arrays, summed past
+  // the due boundary); `pastDue` is the remainder — the old arrears figure less the not-yet-due
+  // part — written to make what it absorbs explicit: cash that settles no bill (`tenantCredit`,
+  // `unbilled`) is added back BEFORE the subtraction, so it is named on its own line instead of
+  // quietly making the past-due figure look smaller. On 18 August the lump this replaces was
+  // mostly September-through-December rent wearing an arrears sentence — an accusation the
+  // calendar, not any tenant, was responsible for.
   //
-  // ⚠ AND IT IS A TERM, NOT A CAVEAT, because it is inside projected. A landlord reading "$3,368
-  // short" is owed the sentence saying $3,368 of the projection is a raise nobody has been asked
-  // to pay — otherwise it reads as rent someone is withholding.
+  // The running month counts as DUE — rent falls due on the 1st (George, 2026-08-13, the
+  // `owesToDate` reading; `monthsDueThrough`, portfolioBasis.js, is the one place that decides).
+  const rentPastDue = (r) => -(num(r.rentPosted) + num(r.tenantCredit) + num(r.unbilled) - num(r.rentLive)) + num(r.rentNotDue);
+  // ⚠ `ahead` IS A TERM, NOT A CAVEAT, because it is inside projected — and it is the one line
+  // that is NOT pure timing: the projection counts a raise the leases schedule for later this
+  // year, and the issued invoice will not carry it until it lands. A landlord reading the gap is
+  // owed the sentence saying that slice is a raise nobody has been asked to pay yet.
   const revenue = measure('revenue', 'Revenue', 'base rent', col(list, 'rentProjected'), col(list, 'rentLive'), [
-    term('arrears', 'rent billed and not yet in', list, rentArrears),
-    term('ahead', 'a rent step your leases schedule for this year that has not taken effect yet — it is counted in the projection because the lease says it, but no invoice carries it and no tenant has been asked to pay it', list,
+    term('notDueYet', 'rent for months that have not come round yet — the leases bill it later this year, so it is not late, it is just not due', list,
+      (r) => -num(r.rentNotDue)),
+    term('pastDue', 'rent already due and not yet in — this month and the months before it', list,
+      rentPastDue, { link: 'ledger' }),
+    term('ahead', 'a rent raise your leases schedule for later this year — the projection counts it because the lease says it, but no invoice includes it yet and no tenant has been asked to pay it', list,
       (r) => -num(r.projectedAhead)),
     term('grossCarve', 'a gross lease’s CAM & tax, which its flat rent already covers — counted under Expenses instead of twice', list,
       (r) => -num(r.grossCarve)),
     term('corrections', 'base-rent corrections posted on tenants’ bills', list, (r) => num(r.rentCorrections)),
     term('credit', 'paid beyond the whole year’s bills, so there is no month left to settle', list, (r) => num(r.tenantCredit)),
     term('unbilled', 'cash on a month the lease bills nothing for — before a term started, after it ended, or a free month', list, (r) => num(r.unbilled)),
-  ], 'arrears');
+  ], 'pastDue');
 
   // ── Expenses ─────────────────────────────────────────────────────────────────────────────
   const camTaxProration = (r) => num(r.camTaxPosted) - num(r.camTaxCorrections) - num(r.camTaxProjected);
-  const camTaxArrears = (r) => -(num(r.camTaxPosted) - num(r.camTaxLive));
+  const camTaxPastDue = (r) => -(num(r.camTaxPosted) - num(r.camTaxLive)) + num(r.camTaxNotDue);
   const expenses = measure('expenses', 'Expenses', 'CAM & tax billed', col(list, 'camTaxProjected'), col(list, 'camTaxLive'), [
-    term('arrears', 'CAM & tax billed and not yet in', list, camTaxArrears),
+    term('notDueYet', 'CAM & tax for months that have not come round yet — billed later this year', list,
+      (r) => -num(r.camTaxNotDue)),
+    term('pastDue', 'CAM & tax already due and not yet in — this month and the months before it', list,
+      camTaxPastDue, { link: 'ledger' }),
     term('proration', 'the estimate is an annual figure, and the bill spreads it only across the months a tenant is in term', list, camTaxProration),
     term('corrections', 'CAM & tax corrections posted on tenants’ bills', list, (r) => num(r.camTaxCorrections)),
-  ], 'arrears');
+  ], 'pastDue');
 
   // ── Total ────────────────────────────────────────────────────────────────────────────────
   //
@@ -187,22 +202,16 @@ export function yearBridge(rows = [], { year = null } = {}) {
   // These are NOT terms, and the distinction is the whole reason they are listed separately: a
   // term explains the gap, a caveat is money the gap does not know about. Each asks the landlord
   // to go and do something, which is why each carries somewhere to go.
+  // ⚠ NO `annualRate` CAVEAT ANY MORE (2026-08-18 (10)). For one afternoon this list also
+  // compared the band to the Financials page's "Projected revenue (annualized)" — a THIRD number,
+  // in neither column, answering a question George never asked. He asked what it meant three
+  // times; that was the answer about the caveat, and it came off. If the two screens are ever to
+  // agree, the fix is on the Financials page's caption, not a footnote here.
   const caveats = [
     term('unapplied', 'arrived beyond what those months billed, and is counted in nothing above until you say what it is', list,
       (r) => num(r.unapplied), { link: 'ledger', action: 'Answer it on the Ledger' }),
     term('invoiceDrift', 'the invoices you actually issued differ from what these leases now say — an issued bill is frozen and does not follow a later change', list,
       (r) => num(r.driftTotal), { link: 'ledger', action: 'The Ledger offers Rebuild' }),
-    // ⚠ THE OTHER SCREEN'S FIGURE, NAMED HERE SO NOBODY HAS TO FIND IT BY FLIPPING BETWEEN TWO
-    // TABS (2026-08-18 (3)). Revenue above is the leases' own months; the Financials page's
-    // "Projected revenue (annualized)" is still `sum(effective_rent)`, an annual RATE — the view
-    // was deliberately left alone because NOI, every closed-year snapshot, History's YoY cards
-    // and the % management fee that WRITES tenant invoices all read it. So the two genuinely
-    // differ, by the dating of this year's raises and by a term nobody prorates, and George's
-    // standing complaint is about unexplained figures, not about there being two questions.
-    //
-    // It is also what is left of the `effective_rent` ↔ `buildLeaseSchedule` twin check (§3):
-    // Revenue used to BE the view, so agreeing with it was free. Now the gap is printed instead.
-    twinCheck(list),
   ].filter(Boolean);
 
   const measures = [revenue, expenses, total];
@@ -217,20 +226,6 @@ export function yearBridge(rows = [], { year = null } = {}) {
     // panel needs to tell "checked and clean" apart from "nothing has been logged".
     clean: measures.every((m) => !m.terms.some((t) => t.unexplained)),
   };
-}
-
-/**
- * The Financials page's annual rate against this band's month-by-month reading of the same year.
- *
- * Held to a whole dollar for the reason `TERM_FLOOR` exists: twelfths round, and a two-cent gap
- * given a sentence of explanation is the *"−$0.01 · the estimate is an annual figure"* line
- * George met on 2026-08-18 and was right to query.
- */
-function twinCheck(list) {
-  const t = term('annualRate', 'the annual rate the Financials page quotes for this year — every lease at today’s rent for all twelve months, which neither dates a raise to the month it lands nor shortens a part-year tenancy. This band prices the months your leases actually bill', list,
-    (r) => num(r.rentAnnualRate) - num(r.rentProjected),
-    { action: 'Both are right — they answer different questions' });
-  return t && Math.abs(t.amount) >= TERM_FLOOR ? t : null;
 }
 
 /** `Your leases bill $X and $Y has come in — $Z short. Most of it is …` */

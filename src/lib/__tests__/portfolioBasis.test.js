@@ -14,7 +14,7 @@
 // unanswered over-payment (in no column until the landlord says so) and other income (in
 // Total live and in no projection, which is George's own follow-up question answered).
 import { describe, it, expect, afterEach } from 'vitest';
-import { listBasisByProperty } from '../portfolioBasis';
+import { listBasisByProperty, monthsDueThrough } from '../portfolioBasis';
 import { buildIncomeExpense } from '../incomeExpense';
 import { billedComponents } from '../reconciliation';
 import {
@@ -86,6 +86,73 @@ describe('listBasisByProperty — the bill, read twice', () => {
   it('is empty rather than fabricated when asked for nothing', async () => {
     expect(await listBasisByProperty([], Y)).toEqual({});
     expect(await listBasisByProperty(null, Y)).toEqual({});
+  });
+});
+
+// ── The due boundary (George, 2026-08-18) ─────────────────────────────────────────────────
+//
+// *"the projected and live should be the same exact number at the end of the year"* — so the
+// bridge splits each gap at TODAY, and this is the one function that decides which months are
+// due. Pinned against fixed dates so the boundary holds without depending on when the suite
+// runs; the running month counts as DUE because rent falls due on the 1st (the `owesToDate`
+// reading, 2026-08-13 — what waits for month-end is the accusation, and the band is a balance).
+describe('monthsDueThrough — which months have come round', () => {
+  it('counts the running month as due, and future months as not', () => {
+    expect(monthsDueThrough(2026, '2026-08-18')).toBe(8);
+    expect(monthsDueThrough(2026, '2026-01-01')).toBe(1);   // Jan 1: January is already due
+    expect(monthsDueThrough(2026, '2026-12-31')).toBe(12);
+  });
+
+  it('a finished year is all due; a year not started is none of it', () => {
+    expect(monthsDueThrough(2025, '2026-08-18')).toBe(12);
+    expect(monthsDueThrough(2027, '2026-08-18')).toBe(0);
+  });
+
+  // An unreadable today must never HIDE money as "not due" — all-due is the reading that keeps
+  // the past-due line honest, because overstating "not due yet" is the silent failure.
+  it('falls back to all-due when today cannot be read', () => {
+    expect(monthsDueThrough(2026, null)).toBe(12);
+    expect(monthsDueThrough(2026, 'garbage')).toBe(12);
+  });
+});
+
+describe('the timing split the loader measures', () => {
+  // The identity that makes `rentNotDue` a SPLIT of the gap rather than a third figure: the
+  // whole future bill less any prepayment, and never more than the gap plus prepaid cash.
+  it('measures the future months of the bill, net of anything already paid onto them', async () => {
+    const basis = (await listBasisByProperty(['prop-1'], Y))['prop-1'];
+    // Mid-year on the demo seed there are always future months billed and unpaid.
+    expect(basis.rentNotDue).toBeGreaterThan(0);
+    expect(basis.camTaxNotDue).toBeGreaterThan(0);
+    // The not-due slice can never exceed what has not arrived: notDue ≤ posted − live would be
+    // violated exactly when the split double-counts a month.
+    expect(basis.rentNotDue).toBeLessThanOrEqual(round2(basis.rentPosted - basis.rentLive) + 0.01);
+    expect(basis.camTaxNotDue).toBeLessThanOrEqual(round2(basis.camTaxPosted - basis.camTaxLive) + 0.01);
+  });
+
+  // Cash tagged onto a FUTURE month is prepayment: it shrinks the not-due slice (that month is
+  // partly settled early), and it must not shrink the past-due remainder the bridge derives.
+  // Asserted over rent + CAM & tax TOGETHER because a tagged month's cash is split across the
+  // bill's components by the allocator (rent is the remainder) — the split between the two rows
+  // is the allocator's business; what this pins is that the $500 lands in "not due" whole.
+  it('a prepaid future month comes out of not-due, never out of past-due', async () => {
+    const before = (await listBasisByProperty(['prop-2'], Y))['prop-2'];
+    const inv = await ensureInvoice('lease-3', 'prop-2', Y);
+    const pay = await recordPayment({
+      invoice_id: inv.id, lease_id: 'lease-3', amount: 500,
+      paid_date: `${Y}-08-10`, method: 'check', period_month: 12, source: 'manual',
+    });
+    cleanup.push(() => deletePayment(pay.id));
+
+    const after = (await listBasisByProperty(['prop-2'], Y))['prop-2'];
+    const notDue = (b) => round2(b.rentNotDue + b.camTaxNotDue);
+    expect(notDue(after)).toBe(round2(notDue(before) - 500));
+    // The past-due remainder is (posted − live) − notDue; both moved by the same $500, so the
+    // derived past-due is unchanged — December's cheque says nothing about August's rent.
+    const pastDue = (b) => round2(
+      (b.rentPosted + b.camTaxPosted) - (b.rentLive + b.camTaxLive) - notDue(b)
+    );
+    expect(pastDue(after)).toBe(pastDue(before));
   });
 });
 

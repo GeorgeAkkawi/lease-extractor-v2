@@ -1,8 +1,118 @@
+## 2026-08-18 (10) — The gap splits at today, and the annual-rate caveat comes off
+
+**Cloudflare version:** `d098cce2-1a10-4518-94ea-2dcc7917b7fe` · 2,019 tests / 191 files green.
+
+George, rejecting the panel's whole framing:
+
+> *"the way we do it is wrong — the projected and live should be the same exact number at the end
+> of the year, the only difference should be if there are any additional charges that come in. one
+> is a projected count taken from the ledgers figures of what should be charged which we know. the
+> other (live) is just a running counter taken from the bank statements as the year goes along."*
+
+He is describing the design, and mid-year the only honest gap between those two is **timing**. The
+panel instead printed one lump — "rent billed and not yet in" — which on 18 August is mostly
+September-to-December rent wearing an arrears sentence, beside a caveat comparing the band to a
+**third** number on the Financials page that he had to ask about three times.
+
+### What changed
+
+**Each measure's gap now splits at today, into the calendar's share and the tenants' share:**
+
+> **−$X** rent for months that have not come round yet — not late, just not due
+> **−$Y** rent already due and not yet in — this month and the months before it *(links to the Ledger)*
+
+- `notDueYet` is **measured** — both `billedRowsFromRoll` passes already carry `byMonth` on every
+  row, so it is two array sums past the due boundary. No new query, no new read.
+- `pastDue` is the **remainder** — the old arrears formula less the not-due part — so every measure
+  still closes to the cent and a slip still prints as `unexplained`. A test pins that moving the
+  boundary moves a dollar *between* the two lines and never out of the total.
+- The boundary is one exported function, `monthsDueThrough` (`portfolioBasis.js`), reading
+  `localDateIso()`. The **running month counts as due** — rent falls due on the 1st (the
+  `owesToDate` reading, 2026-08-13; what waits for month-end is the accusation, and this is a
+  balance). A year wholly past is all due; wholly ahead, none; an unreadable today falls back to
+  all-due, because overstating "not due yet" is the silent failure.
+- The band's foot now says what live is measured **to** — "counted through Aug 18" — on the running
+  year only.
+- **The `annualRate` caveat is deleted** (`twinCheck`, added 2026-08-18 (3) on my own initiative,
+  never in an approved plan). It compared this band to the Financials page's annualized figure —
+  a third number answering a question nobody asked. `rentAnnualRate` left `basisRows` with it; the
+  view is still read for the presence test only, and a test now asserts the field is gone.
+- `ahead` stays, reworded (*"a rent raise your leases schedule for later this year…"*) — the one
+  term that is NOT pure timing, since an issued invoice will not carry the raise until rebuilt.
+
+### ⚠ The correction riding with this — my reads merged two accounts
+
+Every production figure I published earlier today came through Supabase's **Management API, which
+runs as project owner and bypasses RLS** — so "the portfolio" was George's account **plus the other
+private-beta account**. 401 S Main / DT Naperville is not his. Corrections placed into entries (7)
+and (9), which stay in the log wrong-and-annotated rather than quietly rewritten:
+
+| Published | Correct (George's account) |
+|---|---|
+| Scheduled steps +$3,368.06 (Busey Bank + Eye 2 Eye) | **+$329.46** — Eye 2 Eye alone |
+| Net move on projected Revenue ≈ −$939 | **≈ −$3,978** |
+| "The caveat should read $939.25, your $3,977.85 was two of three rows" | **$3,977.85 was correct on his screen** — the third row was another account's building |
+
+The app itself was never affected — it reads under RLS and separates the accounts. The fault was
+entirely in how I queried. **Standing rule: every Management-API read must be scoped by
+`owner_id`.**
+
+### Files
+
+`src/lib/portfolioBasis.js` (`monthsDueThrough`, `futurePart`, `rentNotDue`/`camTaxNotDue`) ·
+`src/lib/portfolioCharts.js` (carries the split; `rentAnnualRate` gone) · `src/lib/yearBridge.js`
+(the split terms; `twinCheck` deleted) · `src/components/BasisBand.js` (counted-through date) ·
+tests: `yearBridge.test.js`, `portfolioBasis.test.js`, `portfolioCharts.test.js`,
+`basisBridgeEvidence.test.js` (mixed-sign rule re-pinned on `corrections`, a term that still
+exists), `dashboardOverview.test.js`.
+
+### Through the user's hands
+
+1. **Getting in** — nothing arrives; same reads.
+2. **Before the click** — no button, nothing paid or destructive.
+3. **The price** — no new query; two array sums per property.
+4. **During** — unchanged; the panel still waits for the live side.
+5. **After** — one lump becomes two plain lines; one caveat disappears; the band dates its live figure.
+6. **Where do I look** — same panel; `pastDue` links to the Ledger.
+7. **Can he see it** — same `portfolio_charts` gate; no migration, no backfill.
+8. **What next** — `pastDue` is the actionable half and carries the link; `notDueYet` is information.
+9. **When it goes wrong** — a measure that stops closing still prints `unexplained`.
+10. **The second time** — recomputed on view; nothing stored.
+
+### Not bundled in — George's call
+
+- **The Financials page still quotes today's rent × 12** ("Projected revenue (annualized)"). With
+  the caveat gone nothing reconciles the two screens; the honest fix is that page's on-screen
+  caption/figure (never the stored view — NOI, snapshots and the % management fee that writes
+  invoices read it).
+- **A lease ending mid-year is still projected for twelve months** — D & D Dental leaves 30 Sep
+  carrying $11,859 of rent that will never be billed, now sitting inside `notDueYet`.
+
+### Now redundant
+
+- **`rentScheduled`** (`portfolioBasis.js` → `basisRows`) — no term reads it since (10); it
+  survives only as the lead half of `rentProjected` and in one test's arithmetic.
+- **`revenueExpensesNoi`** (`portfolioCharts.js`) — still exported, still rendered nowhere.
+- **The band's foot sentence** *"It is the same rent the donut sums"* — third phrasing in three
+  rounds; if the donut caption ever names the band instead, both halves of the sentence go.
+
+---
+
 ## 2026-08-18 (9) — A property pulling the other way was printed without its minus sign
 
 **Cloudflare version:** `b3818de9-e5ac-485a-bb29-4061436dfa69` · 2,013 tests / 191 files green.
 
 George: *"tell me where that figure comes from '3,977.85' on the what the difference is."*
+
+> ⚠ **Corrected 2026-08-18 (10): this entry's arithmetic merged two accounts.** The reads behind
+> it went through Supabase's Management API, which runs as project owner and **bypasses RLS** — so
+> "the portfolio" below is George's account PLUS the other private-beta account. **401 S Main /
+> DT Naperville is not George's.** On his own data the caveat's rows were Pershing Plaza $3,956.23
+> and Joliet $21.62 only; **$3,977.85 was the correct total on his screen**, not a mis-reading,
+> and the "$939.25" this entry says it should have been is a cross-account figure that should
+> never have existed. The signing fix below was still right (mixed-sign rows must show signs) but
+> the motivating example was wrong. Rule going forward: **every Management-API read must be scoped
+> by `owner_id`.** The app itself was never affected — it reads under RLS.
 
 **The app never printed $3,977.85.** He derived it, correctly, from a line that could not be read
 any other way. The annual-rate caveat on his FY 2026 rendered:
@@ -131,6 +241,12 @@ four-cent fold on both leases, and the floor itself pinned at a dollar).
 ## 2026-08-18 (7) — Projected rent is the year the leases contract, not an annual rate
 
 **Cloudflare version:** `7428e32a-d78b-4fcf-8d1d-9fd670eea2d5` · 2,008 tests / 190 files green.
+
+> ⚠ **Corrected 2026-08-18 (10): the pricing table below merged two accounts** (Management API,
+> RLS bypassed — see (10)). Busey Bank / 401 S Main belongs to the other private-beta account.
+> On George's own portfolio: scheduled steps add **+$329.46** (Eye 2 Eye alone), and the net move
+> on projected Revenue was **≈ −$3,978**, not −$939. The change itself was account-safe — the app
+> derives per property under RLS — only this entry's published figures were wrong.
 
 George, having been shown the −$4,307.31 basis line on his own Overview an hour earlier:
 *"i think we should make rent projections part of the projected rent because we know what those

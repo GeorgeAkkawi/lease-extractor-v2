@@ -23,8 +23,8 @@ const TOTALS = {
 // leases schedule for later this year, which the view cannot see at all). Fixtures where the two
 // agreed would let a regression back to `total_revenue` pass every assertion below.
 const BASIS = {
-  p1: { rentProjected: 118000, projectedAhead: 0, rentLive: 60000, camTaxLive: 12000, chargesLive: 0, chargesProjected: 0, otherLive: 1800, camTaxProjected: 40000, unapplied: 1750 },
-  p2: { rentProjected: 303000, projectedAhead: 3000, rentLive: 90000, camTaxLive: 0, chargesLive: 0, chargesProjected: 0, otherLive: 0, camTaxProjected: 0, unapplied: 0 },
+  p1: { rentProjected: 118000, projectedAhead: 0, rentNotDue: 39000, camTaxNotDue: 13000, rentLive: 60000, camTaxLive: 12000, chargesLive: 0, chargesProjected: 0, otherLive: 1800, camTaxProjected: 40000, unapplied: 1750 },
+  p2: { rentProjected: 303000, projectedAhead: 3000, rentNotDue: 101000, camTaxNotDue: 0, rentLive: 90000, camTaxLive: 0, chargesLive: 0, chargesProjected: 0, otherLive: 0, camTaxProjected: 0, unapplied: 0 },
 };
 
 describe('revenueByProperty', () => {
@@ -280,9 +280,14 @@ describe('basisRows', () => {
     });
     // Total projected is the two columns beside it — that is why it replaced "what's left".
     expect(maple.totalProjected).toBe(158000);
-    // The view's own figure is carried, drawn nowhere, so the bridge can state the gap between
-    // this screen and the Financials page instead of leaving it to be found.
-    expect(maple.rentAnnualRate).toBe(120000);
+    // The timing split rides through for the bridge — the loader measured it, this only carries.
+    expect(maple.rentNotDue).toBe(39000);
+    expect(maple.camTaxNotDue).toBe(13000);
+    // ⚠ And the view's figure is on NO field of the row (2026-08-18 (10)) — it was carried for
+    // one afternoon as `rentAnnualRate` to feed a caveat comparing this band to the Financials
+    // page, a third number George had to ask about three times. The view is read for presence
+    // only; a field here is how it would find its way back onto a screen.
+    expect(maple.rentAnnualRate).toBeUndefined();
   });
 
   // ⚠ GEORGE'S OWN QUESTION: *"what happens when a landlord has other sources of income."*

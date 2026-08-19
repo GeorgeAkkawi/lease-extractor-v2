@@ -1,5 +1,6 @@
 import { money, money0 } from '../lib/format';
 import { CHART_SERIES, CHART_LIVE } from '../lib/portfolioCharts';
+import { localDateIso } from '../lib/api';
 import BasisBridge from './BasisBridge';
 
 // The Overview's headline: the year's BILL, and what has actually come in against it.
@@ -44,6 +45,17 @@ export default function BasisBand({ totals, bridge = null, year, ledgerHref = nu
   // Nothing billed and nothing in — a band of dashes claiming to be a reading.
   if (!loading && total.projected === 0 && total.live === 0) return null;
 
+  // What "live" is counted THROUGH, said on the band itself (George, 2026-08-18: live *"is just
+  // a running counter taken from the bank statements as the year goes along"*). Projected is the
+  // whole year; live is the year so far — without the date, the gap between them reads as rent
+  // nobody paid rather than months that have not happened. Only the running year needs it: a
+  // past year's live side IS the whole year, and a date there would imply it might still move.
+  const todayIso = localDateIso();
+  const running = Number(String(todayIso).slice(0, 4)) === Number(year);
+  const asOf = running
+    ? new Date(`${todayIso}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : null;
+
   return (
     <div className={`basis-band${loading ? ' is-loading' : ''}`}>
       <div className="basis-band-head">
@@ -80,11 +92,12 @@ export default function BasisBand({ totals, bridge = null, year, ledgerHref = nu
 
       <div className="basis-foot">
         <p className="chart-foot-line">
-          <b>Projected</b> is the year as your leases bill it — base rent month by month, each
+          <b>Projected</b> is the whole year as your leases bill it — base rent month by month, each
           raise from the date it takes effect, plus the CAM, tax and roof you charge at estimate.
           A raise your leases schedule for later this year is counted, and named below.{' '}
           It is the same rent the donut sums.{' '}
-          <b>Live</b> is what has actually arrived, straight off the Ledger.
+          <b>Live</b> is what has actually arrived, straight off the Ledger
+          {asOf ? <> — counted through <b>{asOf}</b>, so most of the gap is simply months still to come</> : null}.
         </p>
         <BasisBridge bridge={bridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />
       </div>

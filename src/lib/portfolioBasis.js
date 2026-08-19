@@ -37,7 +37,7 @@
 //
 // Nothing here writes.
 import {
-  getPropertyMonthlyRoll, listTenantSharesByProperties, listOtherIncomeByProperties,
+  getPropertyMonthlyRoll, listTenantSharesByProperties, listOtherIncomeByProperties, localDateIso,
 } from './api';
 import { billedRowsFromRoll, contractedRoll } from './incomeExpense';
 import { billedComponents } from './reconciliation';
@@ -63,6 +63,34 @@ const grossPart = (...groupLists) => round2(
 const allAdjRows = (roll = []) => (roll || []).flatMap((r) => r?.adjustmentRows || []);
 
 /**
+ * How many of a fiscal year's months are DUE as of `todayIso` — the boundary the band's timing
+ * split reads. Rent falls due on the 1st, so the running month counts (George, 2026-08-13 — the
+ * same reading `owesToDate` keeps; what waits for month-end is the *accusation*, and the band is
+ * a balance, not an accusation). A year wholly past is all due; a year wholly ahead, none.
+ *
+ * Exported for its tests: the boundary must be pinned without depending on what today is.
+ */
+export function monthsDueThrough(year, todayIso) {
+  const ty = Number(String(todayIso || '').slice(0, 4));
+  const tm = Number(String(todayIso || '').slice(5, 7));
+  if (!(ty > 0) || !(tm >= 1)) return 12; // an unreadable today never hides money as "not due"
+  if (Number(year) < ty) return 12;
+  if (Number(year) > ty) return 0;
+  return tm;
+}
+
+/** Σ of the months AFTER the due boundary across one group's rows — the not-yet-due slice.
+ *  `byMonth` is on every row of both passes (`billedRowsFromRoll`); nothing is re-derived. */
+const futurePart = (groupLists, due) => round2(
+  groupLists.reduce((s, rows) => s + (rows || []).reduce((n, r) => {
+    const bm = r?.byMonth || [];
+    let t = 0;
+    for (let i = due; i < 12; i++) t += num(bm[i]);
+    return n + t;
+  }, 0), 0)
+);
+
+/**
  * Both readings of the bill for every property, keyed by id.
  *
  * `confirmed` is the owner's keyed-decision store (`alert_states`, filtered to dismissed) —
@@ -78,6 +106,8 @@ const allAdjRows = (roll = []) => (roll || []).flatMap((r) => r?.adjustmentRows 
  *   chargesLive      fees and credits collected; `chargesProjected` is what was posted
  *   otherLive        income that rides no invoice — parking, storage, a write-in category
  *   unapplied        arrived beyond what a month billed, still waiting on an answer
+ *   rentNotDue /     the part of each gap sitting in months that have not come round yet —
+ *   camTaxNotDue     the timing half of "projected vs live", measured, never inferred
  *
  * ⚠ THERE IS NO `otherProjected`, AND ITS ABSENCE IS THE ANSWER TO GEORGE'S QUESTION (*"what
  * happens when a landlord has other sources of income"*). `other_income` (0078) is recorded as
@@ -88,6 +118,9 @@ const allAdjRows = (roll = []) => (roll || []).flatMap((r) => r?.adjustmentRows 
 export async function listBasisByProperty(propertyIds, year, { confirmed = null } = {}) {
   const ids = [...new Set((propertyIds || []).filter(Boolean))];
   if (ids.length === 0) return {};
+  // The due boundary for the timing split, read once — `localDateIso` is the JS half of the
+  // `app_today()` twin (CLAUDE.md §3), the same "today" every other date decision uses.
+  const due = monthsDueThrough(year, localDateIso());
 
   const [sharesByProp, incomeByProp, perProperty] = await Promise.all([
     listTenantSharesByProperties(ids, year),
@@ -158,11 +191,20 @@ export async function listBasisByProperty(propertyIds, year, { confirmed = null 
         // ⚠ THE VIEW ITSELF IS UNTOUCHED, deliberately. NOI, every `financial_snapshots` row
         // already written, the Financials page's "Projected revenue (annualized)", History's YoY
         // cards and `syncRentPctCamItems` (which WRITES — a % management fee re-struck from
-        // `total_revenue`) all still read it and none of them moved. `rentAnnualRate` below
-        // carries the view's figure through so the bridge can state the remaining gap between
-        // the two screens instead of leaving a landlord to find it.
+        // `total_revenue`) all still read it and none of them moved.
         rentProjected: round2(num(posted.tieOut) + projectedAhead),
         projectedAhead,
+        // ── THE TIMING SPLIT (George, 2026-08-18): *"the projected and live should be the same
+        // exact number at the end of the year … one is a projected count taken from the ledgers
+        // figures of what should be charged which we know. the other (live) is just a running
+        // counter taken from the bank statements as the year goes along."* So mid-year the only
+        // honest gap is TIMING, and the bridge owes it in two lines, not one lump that reads as
+        // arrears: the part of the gap sitting in months that have not come round yet, per
+        // measure. Both passes carry `byMonth` on every row already; this is two array sums.
+        rentNotDue: round2(futurePart([posted.rent], due) - futurePart([live.rent], due)),
+        camTaxNotDue: round2(
+          futurePart([posted.camTax, posted.roof], due) - futurePart([live.camTax, live.roof], due)
+        ),
         // What the leases contract to bill, at their own rates — still the JS half of the
         // `effective_rent` twin, and now also the lead term of the figure above.
         rentScheduled: round2(posted.tieOut),
