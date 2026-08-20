@@ -14,6 +14,7 @@ import LeaseTypeChip from '../components/LeaseTypeChip';
 import { downloadRentRollXlsx } from '../lib/rentRollExcel';
 import ReviewLeasesButton, { ReviewResults } from '../components/ReviewLeasesButton';
 import { money, psf, sf, fmtDate, approx } from '../lib/format';
+import SelectMenu from '../components/SelectMenu';
 
 const CURRENT_YEAR = new Date().getFullYear();
 
@@ -188,7 +189,7 @@ export default function LeasesPage() {
         <div className="lease-sortbar">
           <label>
             <span className="muted">Sort by</span>
-            <select
+            <SelectMenu
               className="text-input"
               value={mode}
               onChange={(e) => saveSort.mutate({ mode: e.target.value })}
@@ -196,7 +197,7 @@ export default function LeasesPage() {
               {LEASE_SORTS.map((s) => (
                 <option key={s.key} value={s.key}>{s.label}</option>
               ))}
-            </select>
+            </SelectMenu>
           </label>
           {mode !== 'custom' && (
             <button

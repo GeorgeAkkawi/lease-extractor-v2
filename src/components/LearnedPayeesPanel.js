@@ -6,6 +6,7 @@ import { resolvePick } from './StatementReview';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
 import { useOptimisticRemove } from './useOptimisticRemove';
+import SelectMenu from './SelectMenu';
 
 // The learned-payee memory, editable. Every checked tenant deposit teaches a
 // "always match {payee} → {tenant}" rule (StatementReview save), and an expense line
@@ -147,7 +148,7 @@ function RuleTargetSelect({ rule, leases, buckets, tenantName, disabled, onChang
   const billable = buckets.filter((b) => b.billable);
   const other = buckets.filter((b) => !b.billable);
   return (
-    <select className="text-input" style={{ maxWidth: 230 }} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+    <SelectMenu className="text-input" style={{ maxWidth: 230 }} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
       {isTenant ? (
         <>
           <optgroup label="Tenant">
@@ -173,7 +174,7 @@ function RuleTargetSelect({ rule, leases, buckets, tenantName, disabled, onChang
           <option value="ignore">Ignore</option>
         </>
       )}
-    </select>
+    </SelectMenu>
   );
 }
 

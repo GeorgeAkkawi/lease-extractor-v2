@@ -1,4 +1,5 @@
 import { currentYear } from '../lib/format';
+import SelectMenu from './SelectMenu';
 
 export default function YearSelector({ year, setYear, span = 6 }) {
   const now = currentYear();
@@ -7,13 +8,13 @@ export default function YearSelector({ year, setYear, span = 6 }) {
   return (
     <div className="field" style={{ maxWidth: 160, marginBottom: 0 }}>
       <label>Year</label>
-      <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
+      <SelectMenu value={year} onChange={(e) => setYear(Number(e.target.value))}>
         {years.map((y) => (
           <option key={y} value={y}>
             {y}
           </option>
         ))}
-      </select>
+      </SelectMenu>
     </div>
   );
 }

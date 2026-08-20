@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listCustomCategories, createCustomCategory } from '../lib/api';
 import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
+import SelectMenu from './SelectMenu';
 
 // The one control that picks a tax category — and the one that can MINT one (0099).
 //
@@ -81,7 +82,7 @@ export default function TaxCategorySelect({
   }
 
   return (
-    <select
+    <SelectMenu
       className={className}
       style={style}
       autoFocus={autoFocus}
@@ -103,6 +104,6 @@ export default function TaxCategorySelect({
         </optgroup>
       )}
       <option value="__new__">＋ New category…</option>
-    </select>
+    </SelectMenu>
   );
 }

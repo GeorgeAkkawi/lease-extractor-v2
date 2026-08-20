@@ -7,6 +7,7 @@ import { toAlertStates } from '../lib/alerts';
 import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import SelectMenu from './SelectMenu';
 
 // Lists, adds & removes rent escalations. New rent is computed BY CODE (no AI).
 // New escalations are 'scheduled' until accepted on the recommendation card.
@@ -270,12 +271,12 @@ export default function EscalationScheduleEditor({ lease }) {
       <form className="row" onSubmit={(e) => { e.preventDefault(); if (date && value !== '') add.mutate(); }} style={{ alignItems: 'flex-end' }}>
         <label className="form-field" style={{ marginBottom: 0, maxWidth: 150 }}>
           <span>Type</span>
-          <select className="text-input" value={type} onChange={(e) => setType(e.target.value)}>
+          <SelectMenu className="text-input" value={type} onChange={(e) => setType(e.target.value)}>
             <option value="percent">Percent</option>
             <option value="fixed">Fixed $ step</option>
             <option value="cpi">CPI — enter resolved %</option>
             <option value="manual">Manual new rent</option>
-          </select>
+          </SelectMenu>
         </label>
         <label className="form-field" style={{ marginBottom: 0, maxWidth: 150 }}>
           <span>{type === 'manual' ? 'New rent' : type === 'fixed' ? '$ amount' : '%'}</span>

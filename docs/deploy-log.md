@@ -1,3 +1,118 @@
+## 2026-08-20 (1) — The billed decision becomes a tick, and every dropdown loses its OS menu
+
+**Cloudflare version:** `0e22f95c-2790-4659-85c9-0d191280073a` · 2,031 tests / 193 files green.
+
+George, on the statement review: *"for money in money out sections specifically money out after bank
+statement is read there should be a billed to tenant check box instead of the drop down being
+specifically mentioning if the item selected is billed to tenants or not. I dont like the native
+design for that drop down selection either. also the formatting is weird - the undo ignore button is
+in a bad place when its there. the undo ignore button does nothing just take it out."* Asked how wide
+the dropdown change should go, he chose **every dropdown in the app**.
+
+- **The billed/not-billed decision is now a TICK, not an optgroup heading.** Money out's Record-as
+  menu was split into *"CAM buckets — billed to tenants"* and *"Not billed to tenants"*, which made a
+  heading carry a decision, put the same bucket in a different place depending on a flag saved
+  somewhere else, and hid the answer until the menu was open. It is now **one flat "Expense bucket"
+  group** — every bucket once — with **`☑ Billed to tenants`** under the menu, stating its own
+  consequence (*"goes into CAM — tenants pay a share"* / *"tracked for your records only"*).
+  ⚠ **The pick vocabulary is unchanged**: the tick flips `cam:<label>` ⇄ `other:<label>`, the exact
+  two strings the two groups produced, so `resolvePick`, the draft-rule writer,
+  `applyStatementImport` and the `billable` column all see byte-identical input. Nothing below the
+  component knows the control changed shape.
+  - **No tick on property taxes or roof** (their own recoverable kinds, not CAM buckets) and **none
+    on an owner distribution** — `billable: false` is what keeps a landlord's draw out of `cam_total`
+    and off every tenant's invoice (§1). Structural, never a tick someone can flip. Pinned.
+  - **The general line keeps BOTH its old picks** rather than unifying them: `expense_cam` files as
+    *"Imported expense"* and `other:Other` as *"Other"*, so collapsing them would rename buckets that
+    already exist on Financials. One option, two values, same labels as before.
+  - **One TOTAL guard replaces two per-group ones.** The old code injected the row's own label into
+    whichever optgroup it was missing from. There are now three ways to hold a value no option
+    carries — an unknown bucket, a bucket saved as billed but ticked OFF on this line, and the
+    reverse — and a select whose value matches no option renders **blank over a pick that was really
+    made**. The guard tests the *value*, so it catches all three and anything added later.
+
+- **↩ Undo ignore is gone, and George was right that it did nothing.** It cleared the override, which
+  falls back to `row.kind` — and on any money-out line the matcher did not recognize that is
+  `unmatched`, mapped one line later to `'ignore'`. Same state, same button still showing. It only
+  ever moved a line the matcher had already classified, which is exactly the line the old test fed
+  it (`GREENLEAF LANDSCAPING`), and why the hole survived. **But it did do one real thing** — clear
+  the `checked: false` that ✕ Ignore writes — so **re-picking a destination now clears it too**,
+  scoped to leaving `ignore`. Without that, un-ignoring put a row back in play visually while it
+  stayed out of the import: the silent-loss shape the completeness tie-out exists to end.
+
+- **The cell stack was re-ordered.** The matcher's own explanation now prints directly under the menu
+  it explains (it used to sit *below* the ✕ Ignore button, two controls further down), and ✕ Ignore
+  moved to the bottom, past the transfer/distribution controls — an exit belongs after the row's own
+  fields, not wedged between two pickers. The standing *"tracked for your records — not billed to
+  tenants"* remark is gone; it is the tick's unticked caption now.
+
+- **NEW `src/components/SelectMenu.js` — a `<select>` that keeps its element and loses its OS menu.**
+  All **44** selects across 23 files were converted. The closed face has been ours since App.css:1755;
+  what was never ours is the list that opens, which macOS draws itself — the same complaint that
+  retired the `<datalist>` two days ago (`LabelPicker`).
+  - ⚠ **It replaces the MENU, not the CONTROL.** The real `<select>` still renders, still holds the
+    value, still has focus; its popup is suppressed (`preventDefault` on mousedown) and ours is
+    painted in its place. That keeps the trade App.css:1755 records — real keyboard behaviour, real
+    screen-reader behaviour, real form semantics — and meant **every existing test that fires
+    `change` at a select still drives the control it always drove**. A from-scratch listbox would
+    have had to re-earn all four.
+  - ⚠ **Focus never leaves the select**, and that is load-bearing: `TaxCategorySelect` and
+    `IncomeCategorySelect` are handed an `onBlur` that CLOSES the inline editor around them, so a
+    menu that took focus (a filter box, a focusable list) would close the editor out from under the
+    click choosing a value. Options commit on `mousedown` with the default prevented — LabelPicker's
+    rule, for the same reason. That is also why there is **no type-to-filter**: the native control
+    keeps its own type-ahead, and the painted list follows the value it lands on.
+  - ⚠ **The keyboard is not intercepted while the menu is shut** — a keyboard or screen-reader user
+    gets the native control untouched. Only once it is open do Escape/Enter/Tab mean "close".
+  - Portalled to `<body>` at `position: fixed` for Tip.js's reason: `.table-wrap` is `overflow-x:auto`
+    and a box with overflow on one axis computes `auto` on the other, so a menu positioned inside the
+    row is clipped on both. Sized to its content, floored at the trigger width, with the left edge
+    corrected in a second pass once the real width is known.
+
+- **Three bugs the unit tests could not have found, all caught in the browser:**
+  1. **The menu opened EMPTY on the statement review.** Its option list is a branch —
+     `{isIn ? (<>…</>) : (<>…</>)}` — so the select's only child is a **Fragment**, and `readRows`
+     walked straight past it. Nothing threw and nothing logged; the control simply stopped offering
+     anything. A test harness naturally writes its options out flat, which is why it passed.
+  2. **A long menu opened and shut in the same frame.** Bringing the current row into view used
+     `scrollIntoView`, which scrolls every scrollable **ancestor** — and on a `position: fixed`
+     element that means the DOCUMENT — which the capture-phase scroll listener correctly read as the
+     page moving under a pinned menu. The FY picker (6 rows, no scrolling) looked perfect while the
+     32-row expense picker was unusable. Now it sets `scrollTop` directly, and the listener ignores
+     scrolls originating inside the menu.
+  3. **Every row rendered in CAPS.** `.sm-opt` is a `<button>` and inherited the app's button face
+     (App.css:41: uppercase, .1em tracking, weight 600), so *"Landscaping — GreenScape"* came back as
+     *"LANDSCAPING — GREENSCAPE"*. **`.lp-opt` had carried the same bug since LabelPicker shipped on
+     2026-08-18** — found only because the two lists were finally side by side. Reset on the shared
+     selector so a third picker cannot inherit it again.
+
+- **The "one tick per row" rule was narrowed, not dropped.** Three tests asserted exactly one
+  checkbox per row — the *"Always"* column George couldn't make sense of. What that protected was the
+  **tick column**: an unnamed box beside the include box. The billed tick sits inside the Record-as
+  cell and is labelled, so the assertions are now scoped to the first cell, and a money-in row still
+  has exactly one box in total.
+
+- **Files:** `src/components/SelectMenu.js` (new) · `src/components/__tests__/selectMenu.test.js`
+  (new, 6 tests) · `src/components/StatementReview.js` · `src/App.css` · the 22 other files holding a
+  `<select>` (mechanical rename) · `statementReviewSave/Ui/Mismatch.test.js`.
+
+**Now redundant** (proposed — George picks):
+- **`docs/`-level:** nothing.
+- The `.stmt-table select.text-input` sizing rule (App.css:259) and the `.stmt-table select.text-input`
+  entry in the compact-chevron list (App.css:1788) now style **only the For-month picker**, since
+  Record-as and the ignore-reason picker are menus. Still correct, but the names no longer describe
+  what they reach.
+- **`LearnedPayeesPanel.js:181`** — a comment still says *"for the `<select>`"*; the control is a
+  `SelectMenu` now.
+- The whole of **App.css:1755's** long note about the OS drawing the opened menu is now only half
+  true: it still describes the date picker's calendar popup, but the select popup it was written
+  about is no longer native.
+- **`.sm-list` / `.lp-list` are two names for one surface.** They already share a rule block; if a
+  third picker ever appears, the pair should become one class rather than three.
+
+**Not touched:** the `billable is not false` predicate in `syncCamTotal`, `resolvePick`,
+`applyStatementImport`, and every SQL view — the tick writes the same column the optgroups did.
+
 ## 2026-08-19 (15) — Ledger sweep, round two: the statement pipeline
 
 **Cloudflare version:** `5bf519ca-63a3-48b4-a121-7f9d4f9365f4` · 2,023 tests / 192 files green.

@@ -258,6 +258,17 @@ button.rr-cell.outside{cursor:pointer}
 .stmt-table td.stmt-desc{min-width:200px;max-width:340px;white-space:normal;overflow-wrap:anywhere;line-height:1.4}
 .stmt-table select.text-input{font-size:12.5px;padding:4px 6px;max-width:230px}
 tr.stmt-off td{opacity:.55}
+/* ⚠ THE TICK STATES ITS OWN CONSEQUENCE. It replaced two optgroup headings ("CAM buckets —
+   billed to tenants" / "Not billed to tenants"), which had the answer hidden inside a menu
+   that had to be opened to read it. A bare "Billed to tenants" checkbox would only have
+   moved the words, so the line under it says what each side DOES — and it is the same
+   sentence the row used to print on its own for a not-billed pick, now attached to the
+   control that decides it instead of floating below as a separate remark. */
+.stmt-billed{display:grid;grid-template-columns:auto 1fr;gap:0 6px;align-items:center;
+  max-width:252px;margin-top:5px;cursor:pointer;font-size:11.5px;color:var(--ink)}
+.stmt-billed input{margin:0}
+.stmt-billed>span:first-of-type{font-weight:600}
+.stmt-billed-say{grid-column:2;font-size:10.5px;line-height:1.35;color:var(--muted)}
 .stmt-footer{margin-top:16px;border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:8px}
 /* A deposit whose amount doesn't match what the ledger projects for its month: a small
    amber, wrapping chip (never the nowrap uppercase .badge, which would overflow the
@@ -694,13 +705,42 @@ select.cat-select{font-size:11px;margin-top:3px;padding:3px 22px 3px 6px;max-wid
    to the input by an absolutely-positioned list inside a relative wrapper, so it stays on the
    field through any scroll, and painted in the same panel/shadow language as .corp-flyout. */
 .lp-wrap{position:relative}
-.lp-list{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:40;
-  margin:0;padding:4px;list-style:none;max-height:248px;overflow-y:auto;
+/* ⚠ ONE SURFACE, TWO PICKERS. The typeahead (LabelPicker) and the select menu (SelectMenu)
+   are different controls with the same job on screen, and a second panel/shadow/padding
+   recipe is how they end up looking like two apps. The surface is declared once here; only
+   the positioning differs, because one is anchored inside its wrapper and the other is
+   portalled to <body> to escape .table-wrap's scroller (see SelectMenu.js). */
+.lp-list,.sm-list{margin:0;padding:4px;list-style:none;overflow-y:auto;overscroll-behavior:contain;
   background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
   box-shadow:var(--shadow)}
+.lp-list{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:40;max-height:248px}
+.sm-list{position:fixed;z-index:60}
+/* ⚠ BOTH LISTS ARE MADE OF <button>, so both inherit the app's button face — uppercase,
+   .1em tracking, weight 600 (App.css:41). On a row of CHROME that is right; on a row that
+   prints something the landlord TYPED it is not, because "Landscaping — GreenScape" came
+   back as "LANDSCAPING — GREENSCAPE" and a picker must show a name as it was entered. The
+   reset lives on the shared selector so a third picker cannot inherit the bug again.
+   (.lp-opt had carried it since LabelPicker shipped on 2026-08-18 — found 08-20 when the
+   select menu grew the same list and the two were compared side by side.) */
+.lp-opt,.sm-opt{text-transform:none;letter-spacing:normal;font-weight:400}
 .lp-opt{display:flex;align-items:baseline;justify-content:space-between;gap:12px;width:100%;
   padding:7px 9px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;
   font-family:inherit;font-size:13px;color:var(--ink);text-align:left;cursor:pointer}
+/* A group heading is a LABEL, never a row — it must not look pickable, because in a native
+   menu an optgroup label is the one line you cannot click. */
+.sm-group{padding:8px 9px 3px;font-family:var(--ui);font-size:9.5px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--faint);font-weight:700}
+.sm-group:first-child{padding-top:3px}
+.sm-opt{display:flex;align-items:baseline;gap:7px;width:100%;
+  padding:6px 9px;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;
+  font-family:inherit;font-size:13px;color:var(--ink);text-align:left;cursor:pointer}
+.sm-opt:hover:not(:disabled){background:var(--accent-soft)}
+.sm-opt.on{font-weight:600}
+.sm-opt.off{color:var(--faint);cursor:default}
+/* The tick keeps its column whether or not it is showing, so the labels stay on one left
+   edge — a list that re-indents as the selection moves is a list that looks like it moved. */
+.sm-mark{flex:none;width:11px;color:var(--accent);font-size:11px;line-height:1}
+.sm-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Hover and keyboard share ONE highlighted state — the mouse sets `active` on enter, so the
    row under the pointer is the row Enter picks. Two separate highlights on one list is how a
    picker ends up committing a different row than the one that looks chosen. */

@@ -21,6 +21,7 @@ import DocumentsList from './DocumentsList';
 import { money, fmtDate, currentYear } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
+import SelectMenu from './SelectMenu';
 
 const TYPES = [['landscaping', 'Landscaping'], ['snow_removal', 'Snow removal'], ['security', 'Security'], ['other', 'Other']];
 const FREQ = [['annual', 'per year'], ['monthly', 'per month'], ['one-time', 'one-time']];
@@ -514,32 +515,32 @@ function ContractFactsForm({ c, steps, busy, onSave, onCancel }) {
   return (
     <div>
       <div className="field-grid" style={{ marginBottom: 14 }}>
-        <label className="form-field" style={{ marginBottom: 0 }}><span>Type</span><select className="text-input" value={f.service_type} onChange={set('service_type')}>{TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        <label className="form-field" style={{ marginBottom: 0 }}><span>Type</span><SelectMenu className="text-input" value={f.service_type} onChange={set('service_type')}>{TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</SelectMenu></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Vendor</span><input className="text-input" value={f.vendor} onChange={set('vendor')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Vendor email</span><input className="text-input" type="email" placeholder="for renewal reminders" value={f.vendor_email} onChange={set('vendor_email')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Amount ($)</span><input className="text-input num" type="number" step="any" value={f.amount} onChange={set('amount')} /></label>
-        <label className="form-field" style={{ marginBottom: 0 }}><span>Frequency</span><select className="text-input" value={f.frequency} onChange={set('frequency')}>{FREQ.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
+        <label className="form-field" style={{ marginBottom: 0 }}><span>Frequency</span><SelectMenu className="text-input" value={f.frequency} onChange={set('frequency')}>{FREQ.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</SelectMenu></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Escalation %/yr</span><input className="text-input num" type="number" step="any" placeholder="e.g. 3" value={f.escalation_pct} onChange={set('escalation_pct')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Start</span><input className="text-input" type="date" value={f.start_date} onChange={set('start_date')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>End</span><input className="text-input" type="date" value={f.end_date} onChange={set('end_date')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}>
           <span>Renews itself?</span>
-          <select className="text-input" value={f.auto_renew} onChange={set('auto_renew')}>
+          <SelectMenu className="text-input" value={f.auto_renew} onChange={set('auto_renew')}>
             <option value="">Not stated</option>
             <option value="yes">Yes — unless cancelled</option>
             <option value="no">No — ends at the term</option>
-          </select>
+          </SelectMenu>
         </label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Notice (days)</span><input className="text-input num" type="number" step="1" placeholder="e.g. 30" value={f.notice_days} onChange={set('notice_days')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Notice due by</span><input className="text-input" type="date" value={f.notice_by_date} onChange={set('notice_by_date')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}><span>Renewal term (months)</span><input className="text-input num" type="number" step="1" placeholder="e.g. 12" value={f.renewal_term_months} onChange={set('renewal_term_months')} /></label>
         <label className="form-field" style={{ marginBottom: 0 }}>
           <span>You as additional insured</span>
-          <select className="text-input" value={f.additional_insured} onChange={set('additional_insured')}>
+          <SelectMenu className="text-input" value={f.additional_insured} onChange={set('additional_insured')}>
             <option value="">Not stated</option>
             <option value="yes">Yes — the contract requires it</option>
             <option value="no">No — not required</option>
-          </select>
+          </SelectMenu>
         </label>
       </div>
 

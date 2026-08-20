@@ -18,6 +18,7 @@ import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
 import MutationError from './MutationError';
 import { useOptimisticRemove } from './useOptimisticRemove';
+import SelectMenu from './SelectMenu';
 
 // One notice, every tenant of one property. Opened from the Announcements pill on a
 // property card, next to Insurance.
@@ -387,9 +388,9 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
             <label className="form-field" style={{ maxWidth: '100%' }}>
               <span>Send from</span>
               {senderEmails.length ? (
-                <select className="text-input" value={from} onChange={(e) => setFrom(e.target.value)}>
+                <SelectMenu className="text-input" value={from} onChange={(e) => setFrom(e.target.value)}>
                   {senderEmails.map((em) => <option key={em} value={em}>{em}</option>)}
-                </select>
+                </SelectMenu>
               ) : (
                 <input className="text-input" type="email" value={from} onChange={(e) => setFrom(e.target.value)} placeholder="your@email.com" />
               )}

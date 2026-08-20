@@ -4,6 +4,7 @@ import { listSenderEmails } from '../lib/api';
 import { gmailComposeUrl, mailtoUrl, openCompose } from '../lib/email';
 import { useModalA11y } from './modalA11y';
 import SendNowButton from './SendNowButton';
+import SelectMenu from './SelectMenu';
 
 // The ready-to-send tenant email a renewal/escalation notification carries. Lets the
 // landlord pick the sending account + recipient and "Send now" (delivered directly)
@@ -50,9 +51,9 @@ export default function NotificationEmailModal({ notif, onClose, onSent, onSend 
           <label className="form-field" style={{ maxWidth: '100%' }}>
             <span>Send from</span>
             {senderEmails.length ? (
-              <select className="text-input" value={from} onChange={(e) => setFrom(e.target.value)}>
+              <SelectMenu className="text-input" value={from} onChange={(e) => setFrom(e.target.value)}>
                 {senderEmails.map((em) => <option key={em} value={em}>{em}</option>)}
-              </select>
+              </SelectMenu>
             ) : (
               <input className="text-input" type="email" value={from} onChange={(e) => setFrom(e.target.value)} placeholder="your@email.com" />
             )}

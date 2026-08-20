@@ -8,6 +8,7 @@ import MutationError from './MutationError';
 import Panel from './Panel';
 import { useConfirm } from './ConfirmDialog';
 import { useOptimisticRemove } from './useOptimisticRemove';
+import SelectMenu from './SelectMenu';
 
 // Slice 4c — income the property really received that is not tenant rent.
 //
@@ -137,10 +138,10 @@ export default function OtherIncomeSection({ propId, year }) {
           <input className="text-input" style={{ maxWidth: 190 }} placeholder="What it was (optional)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
           <input className="text-input" style={{ maxWidth: 130 }} type="number" step="0.01" placeholder="Amount" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
           <input className="text-input" style={{ maxWidth: 150, minWidth: 0 }} type="date" value={form.txn_date} onChange={(e) => setForm({ ...form, txn_date: e.target.value })} />
-          <select className="text-input" style={{ maxWidth: 190 }} value={form.lease_id} onChange={(e) => setForm({ ...form, lease_id: e.target.value })}>
+          <SelectMenu className="text-input" style={{ maxWidth: 190 }} value={form.lease_id} onChange={(e) => setForm({ ...form, lease_id: e.target.value })}>
             <option value="">From no particular tenant</option>
             {leases.map((l) => <option key={l.id} value={l.id}>{l.tenant_name}</option>)}
-          </select>
+          </SelectMenu>
           <button type="button" className="btn-sm" disabled={!(Number(form.amount) > 0) || add.isPending} onClick={() => add.mutate(form)}>Add</button>
           <span className="muted" style={{ fontSize: 11 }}>{incomeCategoryInfo(form.category).hint}</span>
         </div>

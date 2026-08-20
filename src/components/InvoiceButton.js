@@ -7,6 +7,7 @@ import { buildInvoice } from '../lib/invoiceTemplate';
 import { money } from '../lib/format';
 import { useModalA11y } from './modalA11y';
 import SendNowButton from './SendNowButton';
+import SelectMenu from './SelectMenu';
 
 // Builds a tenant invoice: the draft-invoice Edge Function returns the figures
 // (computed server-side from the views), and the shared template renders one
@@ -109,9 +110,9 @@ export default function InvoiceButton({ share }) {
                     <label className="form-field" style={{ flex: 1, marginBottom: 12 }}>
                       <span>Send from</span>
                       {senderEmails.length ? (
-                        <select className="text-input" value={from} onChange={(e) => setFrom(e.target.value)}>
+                        <SelectMenu className="text-input" value={from} onChange={(e) => setFrom(e.target.value)}>
                           {senderEmails.map((em) => <option key={em} value={em}>{em}</option>)}
-                        </select>
+                        </SelectMenu>
                       ) : (
                         <input className="text-input" type="email" value={from} onChange={(e) => setFrom(e.target.value)} placeholder="your@email.com" />
                       )}

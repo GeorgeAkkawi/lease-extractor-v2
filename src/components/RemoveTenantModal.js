@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { archiveLease } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
+import SelectMenu from './SelectMenu';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -40,10 +41,10 @@ export default function RemoveTenantModal({ lease, onClose, onDone }) {
           </p>
           <label className="form-field" style={{ maxWidth: '100%' }}>
             <span>Outcome</span>
-            <select className="text-input" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <SelectMenu className="text-input" value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="Terminated">Terminated</option>
               <option value="Vacated">Vacated (lease ended / did not renew)</option>
-            </select>
+            </SelectMenu>
           </label>
           <label className="form-field" style={{ maxWidth: 220 }}>
             <span>Effective date</span>

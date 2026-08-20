@@ -7,6 +7,7 @@ import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
 import { useOptimisticRemove } from './useOptimisticRemove';
+import SelectMenu from './SelectMenu';
 
 // Lists, adds & removes rent-abatement windows (free / reduced BASE rent for a stretch
 // of the term). The base rent itself is never changed — a window just credits those
@@ -130,11 +131,11 @@ export default function AbatementEditor({ lease }) {
         </label>
         <label className="form-field" style={{ marginBottom: 0, maxWidth: 160 }}>
           <span>Type</span>
-          <select className="text-input" value={kind} onChange={(e) => setKind(e.target.value)}>
+          <SelectMenu className="text-input" value={kind} onChange={(e) => setKind(e.target.value)}>
             <option value="free">Free (no base rent)</option>
             <option value="percent">Reduced by %</option>
             <option value="amount">Reduced to fixed $/mo</option>
-          </select>
+          </SelectMenu>
         </label>
         {kind !== 'free' && (
           <label className="form-field" style={{ marginBottom: 0, maxWidth: 140 }}>

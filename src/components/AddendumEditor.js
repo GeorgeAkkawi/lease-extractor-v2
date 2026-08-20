@@ -12,6 +12,7 @@ import SendForSignatureModal from './SendForSignatureModal';
 import { FilePickerZone } from './FileDrop';
 import { useOptimisticRemove } from './useOptimisticRemove';
 import MutationError from './MutationError';
+import SelectMenu from './SelectMenu';
 
 // "Addendums & riders" — a tracked amendment per lease that ALSO pushes its changes
 // into the lease via applyAddendum. The AI reads the document and LEADS: it pre-fills
@@ -553,10 +554,10 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
                           <tr key={i}>
                             <td><input className="text-input" type="date" value={s.effective_date} onChange={setStep(i, 'effective_date')} /></td>
                             <td>
-                              <select className="text-input" value={s.escalation_type || 'manual'} onChange={setStep(i, 'escalation_type')}>
+                              <SelectMenu className="text-input" value={s.escalation_type || 'manual'} onChange={setStep(i, 'escalation_type')}>
                                 <option value="manual">Amount ($/yr)</option>
                                 <option value="percent">+% per step</option>
-                              </select>
+                              </SelectMenu>
                             </td>
                             {/* A percent step has no dollar figure of its own — it's priced from the
                                 rent in effect just before it, when the addendum is applied. */}
@@ -669,11 +670,11 @@ export default function AddendumEditor({ leaseId, leaseInactive, squareFootage, 
                   <label className="form-field" style={{ marginBottom: 0 }}><span>Starts</span><input className="text-input" type="date" value={form.ab_start} onChange={set('ab_start')} /></label>
                   <label className="form-field" style={{ marginBottom: 0 }}><span>For (months)</span><input className="text-input num" type="number" min="1" step="1" placeholder="e.g. 8" value={form.ab_months} onChange={set('ab_months')} /></label>
                   <label className="form-field" style={{ marginBottom: 0 }}><span>Type</span>
-                    <select className="text-input" value={form.ab_kind} onChange={set('ab_kind')}>
+                    <SelectMenu className="text-input" value={form.ab_kind} onChange={set('ab_kind')}>
                       <option value="free">Free (no base rent)</option>
                       <option value="percent">Reduced by %</option>
                       <option value="amount">Reduced to fixed $/mo</option>
-                    </select>
+                    </SelectMenu>
                   </label>
                   {form.ab_kind !== 'free' && (
                     <label className="form-field" style={{ marginBottom: 0 }}><span>{form.ab_kind === 'percent' ? '% abated' : 'Reduced $/mo'}</span><input className="text-input num" type="number" step="any" value={form.ab_value} onChange={set('ab_value')} /></label>

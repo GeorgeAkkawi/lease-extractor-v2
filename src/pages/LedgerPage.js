@@ -49,6 +49,7 @@ import Tip, { TipTitle, TipRow, TipRule, TipNote, TipAction } from '../component
 import { adjustmentsForMonth, adjustmentKindInfo, pnlDestinationLine } from '../lib/adjustments';
 import { incomeCategoriesInUse, incomeCategoryLabel, customCategoryKey } from '../lib/otherIncome';
 import { EXPENSE_CATEGORIES } from '../lib/expenseCategories';
+import SelectMenu from '../components/SelectMenu';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -1332,7 +1333,7 @@ export default function LedgerPage() {
                           {/* The same shape as the unplaced panel's "Record as…" — a pick that
                               confirms before it writes. Leaving it open needs no entry: it is
                               what happens when nothing is chosen. */}
-                          <select
+                          <SelectMenu
                             className="text-input" style={{ maxWidth: 150, fontSize: 11 }}
                             value="" disabled={settleUp.isPending}
                             onChange={(e) => { if (e.target.value) askSettle(standing, e.target.value); }}
@@ -1342,7 +1343,7 @@ export default function LedgerPage() {
                             {settleChoicesFor(standing).filter((c) => c.ok && c.key !== 'leave').map((c) => (
                               <option key={c.key} value={c.key}>{c.label}</option>
                             ))}
-                          </select>
+                          </SelectMenu>
                         </div>
                       )}
                       {/* ⚠ THE OTHER END OF A CARRY-FORWARD, NAMED. Without this, January of the
@@ -1471,7 +1472,7 @@ export default function LedgerPage() {
                           <button type="button" className="ghost btn-sm" onClick={() => { setNamingIncome(null); setIncomeDraft(''); }}>Cancel</button>
                         </div>
                       ) : null}
-                      <select
+                      <SelectMenu
                         className="text-input"
                         value=""
                         disabled={place.isPending}
@@ -1559,7 +1560,7 @@ export default function LedgerPage() {
                           </optgroup>
                         )}
                         <option value="transfer">Transfer between my own accounts</option>
-                      </select>
+                      </SelectMenu>
                       {/* ⚠ THE MONTH IS ITS OWN STEP, and it is the point of the request. A
                           cheque that cleared in March can be April's rent, and a tenant can pay
                           twice in one month — so the month defaults to the day the bank printed
@@ -1569,7 +1570,7 @@ export default function LedgerPage() {
                       {rentPick[l.id] && (
                         <span className="line-step">
                           <span className="muted" style={{ fontSize: 11 }}>for</span>
-                          <select
+                          <SelectMenu
                             className="text-input" style={{ maxWidth: 92 }}
                             value={rentPick[l.id].month ?? ''}
                             onChange={(e) => setRentPick((p) => ({ ...p, [l.id]: { ...p[l.id], month: e.target.value === '' ? null : Number(e.target.value) } }))}
@@ -1577,7 +1578,7 @@ export default function LedgerPage() {
                           >
                             <option value="">— (lump)</option>
                             {MONTHS.map((nm, mi) => <option key={nm} value={mi + 1}>{nm}</option>)}
-                          </select>
+                          </SelectMenu>
                           <button type="button" className="ghost btn-sm" disabled={place.isPending}
                             onClick={() => askPlaceRent(l, rentPick[l.id])}>Record</button>
                           <button type="button" className="icon-btn" aria-label="Cancel"
@@ -1591,7 +1592,7 @@ export default function LedgerPage() {
                           go up — never a silent default. */}
                       {expensePick[l.id] && (
                         <span className="line-step">
-                          <select
+                          <SelectMenu
                             className="text-input"
                             value={expensePick[l.id].billable ? 'yes' : 'no'}
                             onChange={(e) => setExpensePick((p) => ({ ...p, [l.id]: { ...p[l.id], billable: e.target.value === 'yes' } }))}
@@ -1599,14 +1600,14 @@ export default function LedgerPage() {
                           >
                             <option value="no">you absorb it</option>
                             <option value="yes">bill it to tenants as CAM</option>
-                          </select>
+                          </SelectMenu>
                           <button type="button" className="ghost btn-sm" disabled={place.isPending}
                             onClick={() => askPlaceExpense(l, expensePick[l.id])}>Record</button>
                           <button type="button" className="icon-btn" aria-label="Cancel"
                             onClick={() => setExpensePick((p) => { const n = { ...p }; delete n[l.id]; return n; })}>✕</button>
                         </span>
                       )}
-                      <select
+                      <SelectMenu
                         className="text-input"
                         value=""
                         disabled={leaveOut.isPending}
@@ -1615,7 +1616,7 @@ export default function LedgerPage() {
                       >
                         <option value="">Leave it out…</option>
                         {IGNORE_REASONS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
-                      </select>
+                      </SelectMenu>
                     </td>
                   </tr>
                 ))}

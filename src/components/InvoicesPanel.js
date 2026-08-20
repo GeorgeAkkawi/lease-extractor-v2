@@ -5,6 +5,7 @@ import { money, fmtDate } from '../lib/format';
 import MutationError from './MutationError';
 import { useConfirm } from './ConfirmDialog';
 import { useOptimisticRemove } from './useOptimisticRemove';
+import SelectMenu from './SelectMenu';
 
 // Per-lease invoices & payments: each invoice with its derived balance + status, a
 // "record payment" form (partial payments supported), and the payment history. Invoices
@@ -202,17 +203,17 @@ function PaymentBlock({ inv, onRefresh, onRemove }) {
           {monthTaggable && (
             <label className="form-field" style={{ marginBottom: 0, maxWidth: 150 }} title="Optional — which month's rent this payment is for. Leave blank for a lump/partial payment; the Ledger fills the earliest months first.">
               <span>For month</span>
-              <select className="text-input" value={form.period_month} onChange={set('period_month')}>
+              <SelectMenu className="text-input" value={form.period_month} onChange={set('period_month')}>
                 <option value="">— (lump)</option>
                 {MONTH_NAMES.map((name, i) => <option key={name} value={i + 1}>{name}</option>)}
-              </select>
+              </SelectMenu>
             </label>
           )}
           <label className="form-field" style={{ marginBottom: 0, maxWidth: 130 }}><span>Method</span>
-            <select className="text-input" value={form.method} onChange={set('method')}>
+            <SelectMenu className="text-input" value={form.method} onChange={set('method')}>
               <option value="check">Check</option><option value="ach">ACH</option><option value="wire">Wire</option>
               <option value="card">Card</option><option value="cash">Cash</option><option value="other">Other</option>
-            </select>
+            </SelectMenu>
           </label>
           <label className="form-field" style={{ marginBottom: 0, maxWidth: 200 }}><span>Note</span><input className="text-input" value={form.note} onChange={set('note')} /></label>
           <button type="submit" disabled={form.amount === '' || add.isPending}>+ Record payment</button>

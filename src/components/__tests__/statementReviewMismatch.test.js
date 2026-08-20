@@ -42,12 +42,14 @@ describe('StatementReview — rent mismatch + auto-learn', () => {
     renderReview();
     await waitFor(() => expect(screen.getByText(/Money in · 1/)).toBeTruthy());
 
-    // Every row has exactly ONE tick — include. Payees are remembered automatically,
-    // so there's no second "Always" box to understand (George: "i dont understand the
-    // always collumn").
+    // Every row has exactly ONE tick in the include column. Payees are remembered
+    // automatically, so there's no second "Always" box to understand (George: "i dont
+    // understand the always collumn"). An expense's billed tick sits in the Record-as cell
+    // and is labelled — the column is what had to stay unambiguous.
+    expect(depRow().querySelector('td').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
     expect(depRow().querySelectorAll('input[type=checkbox]')).toHaveLength(1);
     const expRow = screen.getByText('GREENLEAF LANDSCAPING INV 88').closest('tr');
-    expect(expRow.querySelectorAll('input[type=checkbox]')).toHaveLength(1);
+    expect(expRow.querySelector('td').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
 
     // Tag the deposit to April (owed $9,150) → the mismatch chip + Draft letter appear.
     const monthSelect = depRow().querySelectorAll('select')[1]; // [Record as, For month]

@@ -5,6 +5,7 @@ import { PURPOSE, EXPIRY_CHOICES, DEFAULT_EXPIRY_DAYS, expiryFromNow, CONTRACT_P
 import { useModalA11y } from './modalA11y';
 import { useConfirm } from './ConfirmDialog';
 import { FilePickerZone } from './FileDrop';
+import SelectMenu from './SelectMenu';
 
 // Drop a document in and send it out for signature. George, 2026-08-04: *"theres no need for
 // the software to create a doc — just make there a place for the user to drop it in so they
@@ -246,14 +247,14 @@ export default function SendForSignatureModal({
             <>
               <label className="form-field" style={{ marginTop: 14 }}>
                 <span>Which contract is this for?</span>
-                <select className="text-input" value={contractId}
+                <SelectMenu className="text-input" value={contractId}
                   onChange={(e) => chooseContract(e.target.value)}>
                   <option value="">Choose the contract…</option>
                   {contracts.map((c) => (
                     <option key={c.id} value={c.id}>{c.name || c.vendor || 'Contract'}</option>
                   ))}
                   <option value={NEW_CONTRACT}>A new contract…</option>
-                </select>
+                </SelectMenu>
               </label>
               {isNewContract ? (
                 <>
@@ -279,9 +280,9 @@ export default function SendForSignatureModal({
             <>
               <label className="form-field" style={{ marginTop: 14 }}>
                 <span>What is this document?</span>
-                <select className="text-input" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
+                <SelectMenu className="text-input" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
                   {PURPOSE.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-                </select>
+                </SelectMenu>
               </label>
               <p className="muted" style={{ fontSize: 12, marginTop: -8, marginBottom: 14 }}>
                 {PURPOSE.find((p) => p.key === purpose)?.hint}
@@ -320,9 +321,9 @@ export default function SendForSignatureModal({
 
           <label className="form-field" style={{ maxWidth: 200 }}>
             <span>Link expires after</span>
-            <select className="text-input" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            <SelectMenu className="text-input" value={days} onChange={(e) => setDays(Number(e.target.value))}>
               {EXPIRY_CHOICES.map((c) => <option key={c.days} value={c.days}>{c.label}</option>)}
-            </select>
+            </SelectMenu>
           </label>
 
           {err && <p className="note-msg danger">{err}</p>}

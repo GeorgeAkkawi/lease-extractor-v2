@@ -107,10 +107,25 @@ describe('StatementReview — reading the lines', () => {
         .toEqual(['Import', 'Date', 'Description', 'Amount', 'Record as', 'For month · editable', 'Match']);
     }
 
-    // One tick per row — include. Deposits and expenses alike remember their payee by
-    // being saved, so the "Always" column George couldn't make sense of is gone.
+    // ONE TICK IN THE IMPORT COLUMN — include, and nothing else. Deposits and expenses alike
+    // remember their payee by being saved, so the "Always" column George couldn't make sense
+    // of is gone. Scoped to the first cell rather than the whole row since 2026-08-20: a
+    // money-out expense now carries a second, LABELLED tick inside the Record-as cell, and
+    // what that rule was protecting was the tick COLUMN — an unnamed box beside the include
+    // box, which is the thing that could not be read.
+    for (const desc of ['CHECK 1044 CITY DENTAL PC', 'SNOW REMOVAL SERVICE']) {
+      expect(rowFor(desc).querySelector('td').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
+    }
+    // A deposit has no second decision to make, so it still has exactly one box in total.
     expect(rowFor('CHECK 1044 CITY DENTAL PC').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
-    expect(rowFor('SNOW REMOVAL SERVICE').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
+    // The expense's second one is the billed decision — and it says which side it is on
+    // without opening anything, which is the whole reason it stopped being an optgroup label.
+    const snow = rowFor('SNOW REMOVAL SERVICE');
+    const billed = snow.querySelector('.stmt-billed');
+    expect(billed).toBeTruthy();
+    expect(billed.textContent).toMatch(/Billed to tenants/);
+    expect(billed.querySelector('input[type=checkbox]').checked).toBe(true);
+    expect(billed.textContent).toMatch(/goes into CAM/);
   });
 
   it('dates a deposit from the statement, and never argues with a month you choose', async () => {

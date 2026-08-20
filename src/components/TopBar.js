@@ -1,6 +1,7 @@
 import { useChrome } from '../context/ChromeContext';
 import Breadcrumb from './Breadcrumb';
 import { currentYear } from '../lib/format';
+import SelectMenu from './SelectMenu';
 
 export default function TopBar() {
   const { crumbs, year, setYear, yearVisible } = useChrome();
@@ -15,11 +16,11 @@ export default function TopBar() {
         {yearVisible && (
           <div className="year-sel">
             <span>FY</span>
-            <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
+            <SelectMenu value={year} onChange={(e) => setYear(Number(e.target.value))}>
               {years.map((y) => (
                 <option key={y} value={y}>{y}</option>
               ))}
-            </select>
+            </SelectMenu>
           </div>
         )}
       </div>

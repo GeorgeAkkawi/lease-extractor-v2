@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getLeaseSort, setLeaseSort } from '../lib/api';
 import { TENANT_SORTS } from '../lib/leaseSort';
+import SelectMenu from './SelectMenu';
 
 // The sort control shared by the Rent Ledger and the per-tenant breakdown — one
 // persisted preference (user_preferences.lease_sort.tenants) so both surfaces stay in
@@ -32,7 +33,7 @@ export default function TenantSortBar() {
     <div className="lease-sortbar">
       <label>
         <span className="muted">Sort by</span>
-        <select
+        <SelectMenu
           className="text-input"
           value={mode}
           onChange={(e) => save.mutate({ mode: e.target.value, dir })}
@@ -40,7 +41,7 @@ export default function TenantSortBar() {
           {TENANT_SORTS.map((s) => (
             <option key={s.key} value={s.key}>{s.label}</option>
           ))}
-        </select>
+        </SelectMenu>
       </label>
       <button
         type="button"

@@ -104,18 +104,82 @@ describe('StatementReview — the affordances around Save', () => {
     expect(screen.getByText(/Suggest tenants/)).toBeTruthy();
   });
 
-  it('money out has a one-click ✕ Ignore that undoes itself', async () => {
+  it('money out has a one-click ✕ Ignore, and the menu is the way back', async () => {
     renderReview([{ date: `${Y}-05-15`, description: 'GREENLEAF LANDSCAPING INV 88', amount: 450, direction: 'out', balance: null, line: 1 }]);
     await waitFor(() => expect(screen.getByText(/Money out · 1/)).toBeTruthy());
     const row = () => rowFor('GREENLEAF LANDSCAPING INV 88');
+    const pick = () => row().querySelectorAll('select')[0];
     expect(row().className).not.toContain('stmt-off');
+    expect(pick().value).toBe('cam:Landscaping');
 
     fireEvent.click(within(row()).getByText('✕ Ignore'));
     await waitFor(() => expect(row().className).toContain('stmt-off'));
-    expect(row().querySelectorAll('select')[0].value).toBe('ignore');
+    expect(pick().value).toBe('ignore');
 
-    fireEvent.click(within(row()).getByText('↩ Undo ignore'));
+    // ⚠ NO ↩ UNDO IGNORE (2026-08-20). It cleared the override, which falls back to
+    // `row.kind` — and on a money-out line the matcher did not recognize that is
+    // `unmatched`, mapped straight back to `'ignore'`. Same state, same button. The only
+    // reason it appeared to work is that this test used to feed it a line the matcher HAD
+    // classified, which is the minority case. Re-picking is the undo, and it is one click.
+    expect(within(row()).queryByText('↩ Undo ignore')).toBe(null);
+    // ⚠ AND IT COMES BACK TICKED. ✕ Ignore unticks as part of ignoring; if that untick
+    // outlived the pick, the row would read as in-play while staying out of the import.
+    fireEvent.change(pick(), { target: { value: 'cam:Landscaping' } });
     await waitFor(() => expect(row().className).not.toContain('stmt-off'));
+    expect(pick().value).toBe('cam:Landscaping');
+    expect(row().querySelector('input[type=checkbox]').checked).toBe(true);
+  });
+
+  it('the billed tick flips the same pick between CAM and not-billed, and says which', async () => {
+    renderReview([{ date: `${Y}-05-15`, description: 'GREENLEAF LANDSCAPING INV 88', amount: 450, direction: 'out', balance: null, line: 1 }]);
+    await waitFor(() => expect(screen.getByText(/Money out · 1/)).toBeTruthy());
+    const row = () => rowFor('GREENLEAF LANDSCAPING INV 88');
+    const pick = () => row().querySelectorAll('select')[0];
+    const tick = () => row().querySelector('.stmt-billed input[type=checkbox]');
+
+    // The bucket is saved as billable, so the row arrives on the CAM side and says so.
+    expect(pick().value).toBe('cam:Landscaping');
+    expect(tick().checked).toBe(true);
+    expect(row().querySelector('.stmt-billed').textContent).toMatch(/goes into CAM/);
+
+    // Untick → the SAME bucket, the other side. This is the pick string the "Not billed to
+    // tenants" optgroup used to produce, so nothing below the component can tell the
+    // difference — and the row now states the consequence instead of a heading implying it.
+    fireEvent.click(tick());
+    await waitFor(() => expect(pick().value).toBe('other:Landscaping'));
+    expect(tick().checked).toBe(false);
+    expect(row().querySelector('.stmt-billed').textContent).toMatch(/tracked for your records only/);
+    // ⚠ AND THE OPTION IS STILL THERE TO MATCH IT. The shared bucket list says Landscaping
+    // is billable, so the menu offers `cam:Landscaping`; without the total guard the select
+    // would hold a value no option carries and render BLANK over a pick that was made.
+    expect([...pick().options].some((o) => o.value === 'other:Landscaping')).toBe(true);
+
+    // Back again, and the label survives the round trip.
+    fireEvent.click(tick());
+    await waitFor(() => expect(pick().value).toBe('cam:Landscaping'));
+  });
+
+  it('taxes, roof, a distribution and an ignored line are never offered the billed tick', async () => {
+    renderReview([
+      { date: `${Y}-05-15`, description: 'GREENLEAF LANDSCAPING INV 88', amount: 450, direction: 'out', balance: null, line: 1 },
+      { date: `${Y}-05-16`, description: 'COUNTY PROPERTY TAX PAYMENT', amount: 8000, direction: 'out', balance: null, line: 2 },
+      { date: `${Y}-05-17`, description: 'ZZNOTHING RECOGNIZES THIS 771', amount: 62, direction: 'out', balance: null, line: 3 },
+    ]);
+    await waitFor(() => expect(screen.getByText(/Money out · 3/)).toBeTruthy());
+    // A bucket gets it…
+    expect(rowFor('GREENLEAF LANDSCAPING INV 88').querySelector('.stmt-billed')).toBeTruthy();
+    // …property tax does not: it is its own recoverable kind, not a CAM bucket.
+    expect(rowFor('COUNTY PROPERTY TAX PAYMENT').querySelector('.stmt-billed')).toBe(null);
+    // …and neither does an unrecognized line, which resolves to Ignore and bills nothing.
+    expect(rowFor('ZZNOTHING RECOGNIZES THIS 771').querySelector('.stmt-billed')).toBe(null);
+
+    // ⚠ A DISTRIBUTION MUST NEVER BE TICKABLE. `billable: false` is what keeps a landlord's
+    // draw out of cam_total and off every tenant's invoice (CLAUDE.md §1) — it is structural,
+    // and a tick that could flip it would put the owner's money on a tenant's bill.
+    const draw = () => rowFor('ZZNOTHING RECOGNIZES THIS 771');
+    fireEvent.change(draw().querySelectorAll('select')[0], { target: { value: 'owner_draw' } });
+    await waitFor(() => expect(within(draw()).getByText(/will not appear in NOI/)).toBeTruthy());
+    expect(draw().querySelector('.stmt-billed')).toBe(null);
   });
 
   it('a line about to be recorded says which payee it will remember — and there is no second tick', async () => {
@@ -125,11 +189,13 @@ describe('StatementReview — the affordances around Save', () => {
       { date: `${Y}-05-15`, description: 'GREENLEAF LANDSCAPING INV 88', amount: 450, direction: 'out', balance: null, line: 3 },
     ]);
     await waitFor(() => expect(screen.getByText(/Money in · 2/)).toBeTruthy());
-    // Seven columns, one tick each: the "Always" column George couldn't make sense of
-    // is gone, and remembering happens by saving.
+    // Seven columns, and ONE tick in the include column: the "Always" column George couldn't
+    // make sense of is gone, and remembering happens by saving. (Scoped to the first cell
+    // since 2026-08-20 — a money-out expense carries a labelled billed tick in its Record-as
+    // cell, which is a decision about the destination, not a second "record this".)
     for (const tr of document.querySelectorAll('.stmt-table tbody tr')) {
       expect(tr.querySelectorAll('td')).toHaveLength(7);
-      expect(tr.querySelectorAll('input[type=checkbox]')).toHaveLength(1);
+      expect(tr.querySelector('td').querySelectorAll('input[type=checkbox]')).toHaveLength(1);
     }
     // The recognized deposit is ticked, so it names what it teaches; a line nothing
     // recognizes teaches nothing and says nothing.

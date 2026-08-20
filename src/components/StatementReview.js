@@ -23,6 +23,7 @@ import { DEMO_MODE } from '../lib/supabaseClient';
 import { money, money0, money4, fmtDate } from '../lib/format';
 import EmailComposeModal from './EmailComposeModal';
 import MutationError from './MutationError';
+import SelectMenu from './SelectMenu';
 
 // The full-page statement review — a 40–100-line table doesn't belong in a modal.
 // Every line the parser produced is here in one of three groups (Money in ·
@@ -707,9 +708,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
       <div className="stmt-propline">
         <label>
           Expenses will be recorded on:{' '}
-          <select className="text-input" value={expenseProp} onChange={(e) => setExpensePropPick(e.target.value)} style={{ maxWidth: 240, display: 'inline-block' }}>
+          <SelectMenu className="text-input" value={expenseProp} onChange={(e) => setExpensePropPick(e.target.value)} style={{ maxWidth: 240, display: 'inline-block' }}>
             {ctx.properties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+          </SelectMenu>
         </label>
         {remembered && !expensePropPick && (
           <span className="muted" style={{ fontSize: 12 }}>Account {accountHint} — last imported into {propName(remembered)}</span>
@@ -1064,10 +1065,48 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
     : ctx.tenants;
   // Make sure the row's CURRENT label always appears in its optgroup, even when
   // it isn't (yet) one of the shared buckets.
-  const billableBuckets = [...buckets.filter((b) => b.billable)];
-  const otherBuckets = [...buckets.filter((b) => !b.billable)];
-  if (r.kind === 'expense_cam' && r.label && !billableBuckets.some((b) => b.label.toLowerCase() === r.label.toLowerCase())) billableBuckets.unshift({ label: r.label, billable: true });
-  if (r.kind === 'expense_other' && r.label && !otherBuckets.some((b) => b.label.toLowerCase() === r.label.toLowerCase())) otherBuckets.unshift({ label: r.label, billable: false });
+  // ⚠ ONE FLAT LIST, AND THE BILLED DECISION IS A TICK BESIDE IT (George, 2026-08-20:
+  // *"there should be a billed to tenant check box instead of the drop down … mentioning if
+  // the item selected is billed to tenants or not"*). It used to be two optgroups — "CAM
+  // buckets — billed to tenants" and "Not billed to tenants" — which made a heading carry a
+  // decision, put the same bucket in a different place depending on a flag saved elsewhere,
+  // and gave the landlord no way to see the answer without opening the menu.
+  //
+  // ⚠ THE PICK VOCABULARY IS UNCHANGED. The tick flips `cam:<label>` ⇄ `other:<label>`, the
+  // exact two strings the two groups produced, so resolvePick, the draft-rule writer,
+  // applyStatementImport and the `billable` column all see byte-identical input. Nothing
+  // below this component knows the control changed shape.
+  // Which destinations the tick applies to: a named bucket, or the general no-bucket line.
+  // NOT taxes or roof — those are their own recoverable kinds, not CAM buckets — and NOT a
+  // distribution, whose `billable: false` is structural and load-bearing (CLAUDE.md §1: it
+  // is the one predicate keeping a landlord's draw off a tenant's invoice).
+  const billedTickable = r.kind === 'expense_cam' || r.kind === 'expense_other';
+  const billedNow = r.kind === 'expense_cam';
+  // ⚠ THE GENERAL LINE KEEPS BOTH ITS OLD PICKS rather than unifying them, because the two
+  // write DIFFERENT labels — `expense_cam` files as "Imported expense" and `other:Other` as
+  // "Other". Collapsing them would rename buckets that already exist on Financials.
+  const pickIsGeneral = (r.kind === 'expense_cam' && !r.label)
+    || (r.kind === 'expense_other' && (r.label || 'Other').toLowerCase() === 'other');
+  const generalValue = billedTickable && !billedNow ? 'other:Other' : 'expense_cam';
+  const setBilled = (next) => {
+    // The general line has no bucket name to carry across; every other pick keeps its label
+    // and only changes sides.
+    if (pickIsGeneral) { setOv(r.i, { pick: next ? 'expense_cam' : 'other:Other' }); return; }
+    setOv(r.i, { pick: `${next ? 'cam' : 'other'}:${r.label}` });
+  };
+  // Each bucket once, on whichever side its saved flag says — which is what the two
+  // optgroups encoded, minus the heading that used to announce it.
+  const bucketOpts = buckets.map((b) => ({ value: `${b.billable ? 'cam' : 'other'}:${b.label}`, label: b.label }));
+  if (!bucketOpts.some((o) => o.value === generalValue)) bucketOpts.push({ value: generalValue, label: 'No bucket — general' });
+  // ⚠ ONE TOTAL GUARD, NOT ONE PER BRANCH. A select whose value matches no option renders
+  // BLANK over a pick that was really made, and there are now three ways to land there: a
+  // bucket the shared list has never heard of, a bucket saved as billed that this line has
+  // ticked OFF (so the list offers `cam:X` while the row holds `other:X`), and the reverse.
+  // Testing the value itself catches all three and anything added later; testing the label,
+  // as the two `unshift`s used to, catches only the first.
+  if (billedTickable && !bucketOpts.some((o) => o.value === pickValue)) {
+    bucketOpts.unshift({ value: pickValue, label: r.label || 'Other' });
+  }
   const confirmNewBucket = () => {
     const label = newName.trim();
     if (!label) return;
@@ -1105,7 +1144,7 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
       </td>
       <td className="num">{money(txn.amount)}</td>
       <td>
-        <select
+        <SelectMenu
           className="text-input"
           value={pickValue}
           onChange={(e) => {
@@ -1113,7 +1152,20 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
             // Its money-in twin (2026-08-13): name a kind of other income the six
             // built-ins don't cover, exactly as ＋ New bucket… does for an expense.
             if (e.target.value === '__new_income') { setNamingIncome(true); return; }
-            setOv(r.i, { pick: e.target.value || 'ignore' });
+            // ⚠ UN-IGNORING MUST ALSO RESTORE THE TICK. ✕ Ignore writes `checked: false`
+            // alongside the pick, because an ignored line is not being recorded — but that
+            // untick was PART of ignoring, not a separate decision the landlord made about
+            // this row. Leaving it behind meant re-picking a real destination put the line
+            // back in play visually while it stayed excluded from the import, which is the
+            // same silent-loss shape the completeness tie-out exists to end. Clearing it
+            // hands the row back to its default (`checked: undefined`), exactly as the old
+            // ↩ Undo ignore did — the one thing that button really did do.
+            // Scoped to leaving `ignore`, so a row the landlord unticked by hand and then
+            // re-bucketed stays unticked.
+            const next = e.target.value || 'ignore';
+            setOv(r.i, r.kind === 'ignore' && next !== 'ignore'
+              ? { pick: next, checked: undefined, reason: undefined }
+              : { pick: next });
           }}
         >
           {isIn ? (
@@ -1184,13 +1236,8 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
             <>
               <option value="expense_tax">Property taxes</option>
               <option value="expense_roof">Roof expense</option>
-              <optgroup label="CAM buckets — billed to tenants">
-                {billableBuckets.map((b) => <option key={b.label} value={`cam:${b.label}`}>{b.label}</option>)}
-                <option value="expense_cam">CAM — general</option>
-              </optgroup>
-              <optgroup label="Not billed to tenants">
-                {otherBuckets.map((b) => <option key={b.label} value={`other:${b.label}`}>{b.label}</option>)}
-                {!otherBuckets.some((b) => b.label.toLowerCase() === 'other') && <option value="other:Other">Other — not billed</option>}
+              <optgroup label="Expense bucket">
+                {bucketOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </optgroup>
               <option value="__new">＋ New bucket…</option>
               {/* Money the owner took OUT. It writes a not-billed expense line like the
@@ -1205,7 +1252,11 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
               <option value="ignore">Ignore</option>
             </>
           )}
-        </select>
+        </SelectMenu>
+        {/* Why the matcher landed where it did — directly under the menu it is explaining.
+            It used to print BELOW the ✕ Ignore button, so a row read: pick, tick, a button,
+            then the sentence justifying the pick two controls further down. */}
+        {row.reason && <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{row.reason}</div>}
         {namingIncome && (
           <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
             <input
@@ -1255,15 +1306,24 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
             <button type="button" className="ghost btn-sm" onClick={() => { setAddingBucket(false); setNewName(''); }}>Cancel</button>
           </div>
         )}
-        {/* Money out gets a one-click way out of the dropdown — "Ignore" is the last
-            option under two optgroups, which is a long way to travel to say "not an
-            expense". */}
-        {!isIn && (
-          r.kind === 'ignore' ? (
-            <button type="button" className="ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setOv(r.i, { pick: undefined, checked: undefined })} title="Put this line back in play">
-              ↩ Undo ignore
-            </button>
-          ) : null
+        {/* ⚠ THE BILLED DECISION, WHERE THE DECISION IS MADE — and it states its own
+            consequence, because "billable" is a word about the database and "billed to
+            tenants" is a fact about someone's invoice. Only on a bucket-ish pick: taxes and
+            roof are their own recoverable kinds, and a distribution's `billable: false` is
+            structural, never a tick (CLAUDE.md §1).
+            It replaces the two optgroup headings that used to carry this, which meant the
+            answer was invisible until the menu was open and the same bucket moved between
+            two places depending on a flag saved somewhere else. */}
+        {!isIn && billedTickable && (
+          <label className="stmt-billed" title="Ticked, this cost goes into CAM and each tenant is billed their share. Unticked, it is recorded against the property but never reaches a tenant's bill.">
+            <input type="checkbox" checked={billedNow} onChange={(e) => setBilled(e.target.checked)} />
+            <span>Billed to tenants</span>
+            <span className="stmt-billed-say">
+              {/* One line each, because a two-line caption on every expense row grew the
+                  whole table. "not billed to tenants" would just echo the label above it. */}
+              {billedNow ? 'goes into CAM — tenants pay a share' : 'tracked for your records only'}
+            </span>
+          </label>
         )}
         {/* Slice 4a — an exclusion gets to say why, and the reason is stored with the
             line. Offered after the fact, never required: making it mandatory on the way
@@ -1274,7 +1334,7 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
             the landlord confirms it ("Leave it out…"). Picking a reason is the act of
             deciding; on a row they already ignored by hand it just names the why. */}
         {r.kind === 'ignore' && (
-          <select
+          <SelectMenu
             className="text-input" style={{ maxWidth: 190, fontSize: 11, marginTop: 4 }}
             value={r.ignoreReason || ''}
             onChange={(e) => {
@@ -1285,18 +1345,7 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
           >
             <option value="">{r.picked ? 'Why leave it out? (optional)' : 'Leave it out…'}</option>
             {IGNORE_REASONS.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
-          </select>
-        )}
-        {!isIn && (
-          r.kind === 'ignore' ? null : (
-            <button type="button" className="ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setOv(r.i, { pick: 'ignore', checked: false })} title="Not an expense — leave this line out of the ledger entirely">
-              ✕ Ignore
-            </button>
-          )
-        )}
-        {row.reason && <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{row.reason}</div>}
-        {r.kind === 'expense_other' && (
-          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>tracked for your records — not billed to tenants</div>
+          </SelectMenu>
         )}
         {/* A transfer has no tick because it records nothing but itself —
             without this line an unticked row reads as "about to be dropped", which is
@@ -1339,6 +1388,21 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
               money you took out — it will not appear in NOI, in any expense total, or on any tenant’s bill
             </div>
           </>
+        )}
+        {/* One click to say "not an expense", because Ignore is the last option in the menu
+            and that is a long way to travel to say nothing happened.
+            ⚠ THERE IS NO ↩ UNDO IGNORE ANY MORE (George, 2026-08-20: *"the undo ignore
+            button does nothing just take it out"* — and he was right). It cleared the
+            override, which drops the row back to `row.kind`; on any money-out line the
+            matcher did not recognize that is `unmatched`, mapped one line later to
+            `'ignore'`. Same state, same button still showing. It only ever moved a line the
+            matcher had already classified — which is exactly the line the old test fed it,
+            and why the hole survived. Re-picking from the menu is the undo, and with one
+            flat list that is a single click. */}
+        {!isIn && r.kind !== 'ignore' && (
+          <button type="button" className="ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setOv(r.i, { pick: 'ignore', checked: false })} title="Not an expense — leave this line out of the ledger entirely">
+            ✕ Ignore
+          </button>
         )}
         {r.alreadyPaid && !dupe && (
           // ⚠ The commonest cause of this is a tenant paying a month early or late, not a
@@ -1386,10 +1450,10 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
             'unmatched' here matches nothing. A row the landlord explicitly set to Ignore has
             `picked` true and is left alone. */}
         {isIn && r.kind === 'ignore' && !r.picked && (
-          <select className="text-input" value="" disabled
+          <SelectMenu className="text-input" value="" disabled
             title="Pick a tenant on the left and this fills in with the month from the date the bank printed — then change it if the money was for a different month.">
             <option value="">— pick a tenant first</option>
-          </select>
+          </SelectMenu>
         )}
         {isIn && r.kind === 'tenant' && (
           r.toRecon ? (
@@ -1402,7 +1466,7 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
                   eleven months forward and left the December it paid reading unpaid. A
                   single-year statement is untouched: the same twelve short labels. */}
               {stmtYears.length > 1 ? (
-                <select
+                <SelectMenu
                   className="text-input"
                   value={r.month ? `${r.bookYear}-${r.month}` : ''}
                   title="Which month's rent this deposit pays. This statement crosses a year end, so each month names its year — pick the one the money was actually for. “— (lump)” leaves it untagged, and the ledger spreads it across the months still owed."
@@ -1421,9 +1485,9 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
                       ))}
                     </optgroup>
                   ))}
-                </select>
+                </SelectMenu>
               ) : (
-                <select
+                <SelectMenu
                   className="text-input"
                   value={r.month ?? ''}
                   title="Which month's rent this deposit pays — filled in from the date the bank printed on this line, so a May statement records May. Change it whenever the money was for a different month; your choice always wins. “— (lump)” leaves it untagged, and the ledger spreads it across the months still owed."
@@ -1431,7 +1495,7 @@ function ReviewRow({ r, ctx, year, stmtYears = [], closedYears, expenseProp, set
                 >
                   <option value="">— (lump)</option>
                   {MONTH_NAMES.map((nm, mi) => <option key={nm} value={mi + 1}>{nm.slice(0, 3)}</option>)}
-                </select>
+                </SelectMenu>
               )}
               {/* A check big enough to cover several months, the whole year, or an open
                   true-up is deliberately left untagged — say so, otherwise an empty

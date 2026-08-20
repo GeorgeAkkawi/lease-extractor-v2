@@ -15,6 +15,7 @@ import {
   adjustmentKindsFor, adjustmentKindInfo, adjustmentsForMonth, signedAmount, monthName,
   pnlDestination,
 } from '../lib/adjustments';
+import SelectMenu from './SelectMenu';
 
 // One month of one tenant, opened from the Rent Ledger grid — George's "go into months
 // that are under or overpaid and edit … to show the differences".
@@ -451,7 +452,7 @@ export default function MonthDetailPanel({
                       month this panel is showing — there is nothing for it to display. */}
                   {movingId === p.id ? (
                     <div className="mp-move">
-                      <select
+                      <SelectMenu
                         className="text-input"
                         value=""
                         disabled={busy}
@@ -463,7 +464,7 @@ export default function MonthDetailPanel({
                           mi + 1 === m ? null : <option key={nm} value={mi + 1}>to {nm}</option>
                         ))}
                         <option value="">don’t tie it to a month</option>
-                      </select>
+                      </SelectMenu>
                       <button className="ghost btn-sm" disabled={busy} onClick={() => setMovingId(null)}>Cancel</button>
                     </div>
                   ) : (
@@ -581,12 +582,12 @@ export default function MonthDetailPanel({
                         </button>
                       )}
                       {biggestPay && (
-                        <select className="text-input mp-decide-pick" value="" disabled={busy}
+                        <SelectMenu className="text-input mp-decide-pick" value="" disabled={busy}
                           aria-label={`Roll ${money(excess)} forward to another month`}
                           onChange={(e) => { const to = Number(e.target.value); if (to) askRoll(to); }}>
                           <option value="">Roll to…</option>
                           {MONTHS.map((nm, mi) => (mi + 1 === m ? null : <option key={nm} value={mi + 1}>{nm}</option>))}
-                        </select>
+                        </SelectMenu>
                       )}
                       <button className="ghost btn-sm" disabled={busy} onClick={async () => {
                         const ok = await askConfirm({
@@ -613,7 +614,7 @@ export default function MonthDetailPanel({
                   </button>
                   {/* George, 2026-08-17: *"also should be an option to send shortages to
                       overcharge the next month."* The mirror of rolling a surplus forward. */}
-                  <select className="text-input" value="" disabled={busy} onChange={async (e) => {
+                  <SelectMenu className="text-input" value="" disabled={busy} onChange={async (e) => {
                     const to = Number(e.target.value);
                     if (!to) return;
                     const ok = await askConfirm({
@@ -632,7 +633,7 @@ export default function MonthDetailPanel({
                   }}>
                     <option value="">Bill {money(shortfall)} on another month…</option>
                     {MONTHS.map((nm, mi) => (mi + 1 === m ? null : <option key={nm} value={mi + 1}>{nm}</option>))}
-                  </select>
+                  </SelectMenu>
                 </div>
               )}
               {/* ⚠ "Undo this month" USED TO LIVE HERE and has moved to the grid, where a
@@ -662,16 +663,16 @@ export default function MonthDetailPanel({
             <div className="mp-form">
               <label>
                 <span>Kind</span>
-                <select className="text-input" value={kind} onChange={(e) => { setKind(e.target.value); editing(); }} disabled={busy}>
+                <SelectMenu className="text-input" value={kind} onChange={(e) => { setKind(e.target.value); editing(); }} disabled={busy}>
                   {kinds.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
-                </select>
+                </SelectMenu>
               </label>
               <label>
                 <span>Charge or credit</span>
-                <select className="text-input" value={effDir} onChange={(e) => { setDir(e.target.value); editing(); }} disabled={busy || locked}>
+                <SelectMenu className="text-input" value={effDir} onChange={(e) => { setDir(e.target.value); editing(); }} disabled={busy || locked}>
                   <option value="charge">Charge — the tenant owes more</option>
                   <option value="credit">Credit — the tenant owes less</option>
-                </select>
+                </SelectMenu>
               </label>
               <label>
                 <span>Amount</span>

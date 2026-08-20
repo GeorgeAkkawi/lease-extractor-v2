@@ -1,6 +1,7 @@
 import { fmtDate } from '../lib/format';
 import { noticeAnchor, resolveNotice, noticeLeadLabel } from '../lib/renewals';
 import { leadAsUnits } from '../lib/notifyPrefs';
+import SelectMenu from './SelectMenu';
 
 // When notice on a renewal option is due — said the way the lease says it.
 //
@@ -45,12 +46,12 @@ export default function NoticeByField({ win, draft, onChange, autoFocus, default
             value={draft.n} onChange={(e) => set({ n: e.target.value })} />
         )}
         {!dateOnly && (
-          <select className="text-input" aria-label="How the notice deadline is stated"
+          <SelectMenu className="text-input" aria-label="How the notice deadline is stated"
             value={draft.mode} onChange={(e) => set({ mode: e.target.value })}>
             <option value="months">months before</option>
             <option value="days">days before</option>
             <option value="date">on a set date</option>
-          </select>
+          </SelectMenu>
         )}
       </div>
 

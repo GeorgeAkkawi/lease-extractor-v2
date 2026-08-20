@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { incomeCategoriesInUse, customCategoryKey } from '../lib/otherIncome';
+import SelectMenu from './SelectMenu';
 
 // Pick a kind of other income — or name one that doesn't exist yet (George, 2026-08-13:
 // "there should be an option in record as to create a category of other income if they want
@@ -62,7 +63,7 @@ export default function IncomeCategorySelect({
   }
 
   return (
-    <select
+    <SelectMenu
       className={className}
       style={style}
       value={value ?? ''}
@@ -78,6 +79,6 @@ export default function IncomeCategorySelect({
       {placeholder ? <option value="">{placeholder}</option> : null}
       {options.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
       <option value={NEW}>＋ New category…</option>
-    </select>
+    </SelectMenu>
   );
 }
