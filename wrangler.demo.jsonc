@@ -8,6 +8,15 @@
   // Lands at https://amlak-demo.<account-subdomain>.workers.dev
   "name": "amlak-demo",
   "compatibility_date": "2025-06-01",
+  // Custom domain (2026-08-21). The public site's primary call to action points here, so
+  // it can no longer be a workers.dev URL carrying the personal account subdomain
+  // ("akkawigeo-5") on every marketing page. The old URL is kept alive by workers_dev
+  // below — anything already linking it keeps working.
+  "routes": [
+    { "pattern": "demo.amlakre.com", "custom_domain": true }
+  ],
+  // wrangler disables the workers.dev URL by default once "routes" exist; keep it.
+  "workers_dev": true,
   "assets": {
     "directory": "./build-demo",
     "not_found_handling": "single-page-application"

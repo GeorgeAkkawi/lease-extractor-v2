@@ -171,7 +171,11 @@ function CorpCard({ corp, mode, onDocs, counts, rollup, dist, properties = [], p
     <span className="corp-actions">
       <button
         className="corp-edit"
-        title="This corporation's business profile, its annual-report deadline, and the packages you hand your accountant, the IRS or a lender"
+        // ⚠ KEEP THIS IN STEP WITH DocumentsFilingsModal's rows. It promised "the packages
+        // you hand your accountant, the IRS or a lender" for nine days after the tax
+        // package, the 1099 worksheet and the lender package were removed (2026-08-12) —
+        // a tooltip advertising three things the panel behind it no longer opens.
+        title="This corporation's business profile, its annual-report deadline, and the income-and-expenses sheet you hand your accountant or your bank"
         onClick={(e) => { e.stopPropagation(); onDocs(corp); }}
       >
         <DocIcon /> Documents &amp; filings

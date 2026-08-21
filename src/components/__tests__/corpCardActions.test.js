@@ -92,6 +92,21 @@ describe('the panel reaches every one of them', () => {
     }
   });
 
+  // ⚠ THE PANEL WAS GUARDED; THE TOOLTIP THAT DESCRIBES IT WAS NOT — so for nine days
+  // after the three were removed the card still promised "the packages you hand your
+  // accountant, the IRS or a lender" on hover, advertising doors the panel no longer
+  // opens. Found by George on 2026-08-21, not by this file. The two must agree.
+  it('the card tooltip does not promise anything the panel dropped', async () => {
+    await grid('financials');
+    const title = screen
+      .getAllByRole('button', { name: 'Documents & filings' })[0]
+      .getAttribute('title');
+    expect(title).toBeTruthy();
+    expect(title).not.toMatch(/IRS|lender|1099|tax package/i);
+    // and it still names what IS behind it
+    expect(title).toMatch(/income-and-expenses/i);
+  });
+
   // A bare noun says nothing about who it is for. Every row states it.
   it('says in plain words what each one is', async () => {
     const dlg = await openPanel('financials');

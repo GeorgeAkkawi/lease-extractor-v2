@@ -1,3 +1,75 @@
+## 2026-08-21 (3) — demo.amlakre.com, the auth URLs that were never right, and a tooltip nine days stale
+
+**Cloudflare versions:** `amlak` **3e70a07a-19e1-4149-86c6-d6e529f4e50a** · `amlak-site`
+**7ff66b6c-cd59-4d13-8dae-6a4e27b27afa** · `amlak-demo` **babfa810-f317-4b75-bbb9-bd9c93750c67** ·
+2,040 tests / 193 files green (+1).
+
+Three things George asked for after the site went up.
+
+### 1. The demo has a real address
+
+`amlak-demo.akkawigeo-5.workers.dev` was fine as a dev sandbox and wrong as the **primary call to
+action on every marketing page** — it printed the personal Cloudflare account subdomain
+(`akkawigeo-5`) to every visitor. `wrangler.demo.jsonc` gains
+`{ "pattern": "demo.amlakre.com", "custom_domain": true }` plus an explicit `"workers_dev": true`
+(wrangler disables the workers.dev URL by default once routes exist — anything already linking the
+old address keeps working). All **17** links across `site/*.html` repointed.
+
+### 2. ⚠ Supabase Auth URL config was NOT merely missing the new origin — it was wrong
+
+Reading it before writing it is the only reason this was caught:
+
+```
+site_url       : http://localhost:3000      ← production
+uri_allow_list : (empty)
+```
+
+**An empty `uri_allow_list` means only `site_url` is accepted**, so `Login.js`'s
+`resetPasswordForEmail(..., { redirectTo: window.location.origin + '/' })` could never have been
+honoured in production — Supabase would fall back to `site_url` and send people to
+**localhost:3000**. That is not damage from the apex move; it predates it and the move only made it
+visible. Now:
+
+```
+site_url       : https://app.amlakre.com
+uri_allow_list : https://app.amlakre.com/**,https://amlak.akkawigeo-5.workers.dev/**,
+                 http://localhost:*/**,http://127.0.0.1:*/**
+```
+
+Local dev keeps working through the wildcard-port entries (vite picks a free port — the dev server
+has landed on 4178 before now, so enumerating 5173/4173 would have been a trap). `disable_signup`
+re-read as **true**: the private-beta cap is untouched.
+
+### 3. The tax package / 1099 / lender package George saw
+
+**Two separate things wearing one costume, and I got the first one wrong before getting it right.**
+
+- **What he saw in the demo was a stale deployed build.** The demo had not been rebuilt since before
+  2026-08-12, so it still had the three retired rows. Rebuilt and redeployed. ⚠ **Then I re-opened it
+  in a browser holding the old bundle, saw five rows again, and reported that the source was at
+  fault.** It was not: grepping the *served* JavaScript showed zero hits, and a cache-busted load
+  showed the correct three rows. **Check the bytes the host returns, not what a warm browser
+  paints.** Anyone else looking will need a hard refresh for the same reason.
+- **But the hunt turned up a real one.** `CorporationsPage.js:174` — the card button's `title` still
+  read *"…and the packages you hand your accountant, the IRS or a lender"*, describing all three
+  removed exports, live in source, on hover, for nine days. `DocumentsFilingsModal` itself was
+  correct (three rows) and `corpCardActions.test.js` **already asserted the three were gone from the
+  panel** — which is exactly why nobody noticed: the guard covered the panel and not the sentence
+  that advertises it. Rewritten to name what is actually behind it, with a comment tying the two
+  together.
+- **NEW TEST** — `corpCardActions.test.js` now asserts the tooltip mentions no `IRS|lender|1099|tax
+  package` **and** still names the income-and-expenses sheet. Verified it genuinely guards: restoring
+  the old string turns it red, restoring the fix turns it green. A test that has never failed is a
+  test that has never been shown to work.
+
+### Now redundant (proposed — George picks)
+
+- **`amlak-demo.akkawigeo-5.workers.dev`** — nothing links it any more. Kept alive deliberately for
+  anything already sent, but it is now a second address for one thing.
+- **The `title` attribute on the card button** may itself be redundant: the panel it opens states
+  each row's purpose in a plain sentence, which is what the tooltip was compensating for. A tooltip
+  that duplicates the screen behind it is the third item on the redundancy list in CLAUDE.md, and it
+  is the exact reason this one was able to drift unnoticed.
 ## 2026-08-21 (2) — Amlak has a front door: the app moves to app.amlakre.com, the apex becomes a public site
 
 **Cloudflare versions:** `amlak` **f2575b2e-d8b5-4c60-a6b1-f2d3829fae93** (app, now app.amlakre.com
