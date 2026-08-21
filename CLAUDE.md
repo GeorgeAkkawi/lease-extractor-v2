@@ -488,10 +488,35 @@ asked out loud, not that something is always found.
 
 ## Deploying to production
 
-- **Target:** Cloudflare Worker named `amlak` (serves the static `./build` directory).
-- **Live URLs:** https://amlakre.com (primary, custom domain since 2026-07-11) +
-  https://www.amlakre.com + https://amlak.akkawigeo-5.workers.dev (original, kept working).
-- **Steps:** `npm run build` (= `vite build`, outputs `./build`) → `npx wrangler deploy`.
+**There are now TWO Cloudflare Workers, and they own different hostnames** (2026-08-21).
+
+| Worker | Hostnames | Serves | Deploy |
+|---|---|---|---|
+| `amlak` — **the app** | **app.amlakre.com** + amlak.akkawigeo-5.workers.dev | `./build` (the React SPA) | `npm run build` → `npx wrangler deploy` |
+| `amlak-site` — **the public site** | **amlakre.com** + www.amlakre.com | `./site` (static HTML) + `site-worker.js` | `npx wrangler deploy -c wrangler.site.jsonc` (no build step) |
+| `amlak-demo` — **the sandbox** | amlak-demo.akkawigeo-5.workers.dev | `./build-demo` (mock data) | `npx vite build --config vite.demo.config.js --outDir build-demo` → `npx wrangler deploy -c wrangler.demo.jsonc` |
+
+⚠ **A Cloudflare route belongs to exactly ONE Worker.** Putting `amlakre.com` back into
+`wrangler.jsonc` takes the public site down, and vice versa. That is also the rollback: two apex
+routes back on `amlak`, one redeploy, under a minute.
+
+⚠ **`amlakre.com` IS NO LONGER THE APP, and three things depend on knowing that.**
+1. **Signing links** are built as `` `${resolveOrigin(req)}/sign/${token}` `` from the CORS
+   allowlist, whose **first** entry is the fallback. The `ALLOWED_ORIGINS` **secret** is what's
+   live (`CONFIGURED` beats `DEFAULT_ORIGINS` entirely, so editing `_shared/cors.ts` changes
+   nothing until all ~25 importers redeploy) and it lists `https://app.amlakre.com` first.
+2. **`site-worker.js` redirects the app's former paths** — `/sign`, `/leases`, `/financials`,
+   `/history`, `/settings`, `/ask`, `/display`, `/security` — to the app. `/sign/*` is the
+   load-bearing one: envelopes already emailed point at the apex forever.
+3. **`CF_APP_HOSTNAME`** scopes `health-check`'s app-5xx alert to one hostname; it is
+   `app.amlakre.com`. Point it at the apex and the alert watches the marketing site instead.
+
+**The demo sandbox is now load-bearing marketing** — the site's primary call to action links
+straight at it. It is no longer just a dev convenience; don't retire it without replacing the CTA.
+
+⚠ **The site is a SECOND COPY of the app's `:root` design tokens** (`site/site.css` ← `src/App.css:4-16`),
+and only that block. Move the palette or the fonts in the app and move them here in the same commit,
+or the marketing pages and the product it links to stop looking like one company.
   - **Build tooling is now Vite** (migrated off Create React App 2026-07-06). Tests run
     via `npm test` (= `vitest run`). The old `react-scripts build`/`react-scripts test`
     commands no longer exist.
