@@ -1,3 +1,89 @@
+## 2026-08-21 (8) — the diagram's labels became HTML, which is what let the phone stack them
+
+**Deployed:** `amlak-site` version **e44af8bb-e0f9-4d4f-ba54-3b77701f4def** (amlakre.com +
+www.amlakre.com). No app deploy, no Supabase change. 2,045 tests / 194 files green, untouched —
+nothing outside `site/` moved.
+
+The three items left open at the foot of entry (7), all confirmed by George.
+
+### 1. The phone stacks the flow diagram instead of hiding half of it
+
+⚠ **THE FIX WAS STRUCTURAL, NOT A MEDIA QUERY.** The eight labels were `<text>` **inside** the
+SVG, so the only lever on a phone was the SVG's own size — shrink it and the text lands at ~5px,
+floor it and the four **outputs, the entire payoff, sit off the right edge** behind a sideways
+drag nobody makes. Authoring a second portrait SVG would have been a second copy of all eight
+labels, and copies of *copy* go stale exactly the way copies of code do (§3).
+
+So the labels moved **out** of the drawing into two `<ul>`s. Written once, they now lay out two
+completely different ways — pinned to the viewBox grid on a desktop, plain vertical lists with the
+mark between them on a phone. The SVG kept only what is genuinely geometry: wires, dots, hub.
+
+⚠ **`.flow-figure`'s ASPECT RATIO IS NOW A COORDINATE SYSTEM.** Locking the box to the SVG's own
+`1000/480` makes 1% of the box identical to 1% of the viewBox, which is the only reason an HTML
+label at `--y:13.75%` lands on the wire ending at y=66. **The size cap therefore had to move from
+`max-height` to `width`** — capping height would leave the box full-width and letterbox the
+drawing inside it, same box, smaller picture, every label off its own strand. `112.5vh` is
+`54vh × (1000/480)`. Verified at seven widths: all eight labels centre **0px** off their dots.
+
+⚠ **And the four captions had to leave the layout on a phone, not just fade.** Off the pin they
+are no longer overlaid, so three invisible ones were claiming a block of height each. The phone is
+always at the finished stage, so it renders that caption and `display:none`s the rest.
+
+**Free improvement:** the SVG is now `aria-hidden` and the lists are the accessible content. A
+screen reader gets two named groups of four rather than one long `aria-label` sentence.
+
+### 2. The benefit cards lost their glyphs
+
+All four (§ ⚖ ⇄ ↻) were already carrying the four hero cards one screen above — not two of them
+as first reported, **all four**. At 26px in a tinted tile they anchor a small notification card;
+repeated at 22px above a heading they said nothing the heading did not, and the page read as
+though it had eight icons and four ideas. ⚠ **`about.html` keeps its four** (§ ? ⚑ ∑) — those are
+its own and duplicate nothing, so `.card .glyph` is still live CSS.
+
+### 3. The hero note and the closing CTA stopped saying the same three things
+
+Both hang off the same "See it working" button and both claimed *sample portfolio*, *real
+arithmetic* and **"no form, no call"** — the last one verbatim. Repeating an idea between a hero
+and a closing pitch is fine; repeating the phrasing is what reads as careless. The hero note now
+answers only *what happens when I click, right now* — "Opens straight into a sample portfolio.
+Nothing in it is real data." — and the section at the foot of the page makes the case. Asserted:
+zero shared phrases between the two, down from three.
+
+⚠ **The "Keep scrolling" cue was NOT removed, and the flag that proposed it was wrong.** It was
+raised as competing with the hero note for the same downward pull; the two are two sections apart
+and never on screen together. The cue shows only below `p<0.17` — precisely the moment the panel
+latches and a first-time visitor wonders whether the page has frozen — and fades out on its own.
+The real redundancy in that area was the copy overlap above.
+
+### Also fixed while in here
+
+⚠ **TWO THRESHOLDS WERE DECIDING ONE QUESTION, and they disagreed.** `site.js` declined to hide
+anything above `innerHeight * 0.92`, but the observer's `rootMargin:-12%` means an element
+starting past **88%** of the viewport cannot trigger at all. Everything landing in that 4% band
+was hidden by the first rule and then not revealed by the second: `/about` loaded with **39px of a
+heading sitting at opacity 0, on screen**. The cutoff is plain `innerHeight` now — nothing the
+visitor can see is ever hidden. Asserted 0 on every page, with a full scroll-through still
+revealing all of them.
+
+`.flow-figure` also came **out** of the reveal selector: the diagram already has an entrance (the
+scrub), and a fade-and-rise on top of it meant the box was still settling while `--p` was drawing
+into it.
+
+**Files:** `site/index.html` · `site/site.css` · `site/site.js`.
+
+**Verified:** 9 pages 200 live, no console errors; no page-level sideways scroll at 390 / 600 /
+820 / 1024 / 1280 / 1440 / 1600; label-to-wire offset 0px at every pinned width; phone figure no
+longer scrolls internally at all (334px content in a 334px box); script-blocked and
+reduced-motion both still land on the complete diagram with nothing hidden.
+
+**Now redundant** (proposed — George picks):
+- **`.flow-svg` is gone as a class name** — every rule was retargeted to `.flow-wires` /
+  `.flow-figure`. Grepped: no stragglers.
+- **The `.hero::before` and `.flow::before` grid backdrops are still the same 12 lines twice.**
+  Carried over from entry (7); one shared class would do it.
+- **`.mock-doc`, `.mock-chat` and `.mock-flag` have one caller each** (features.html). Not wrong,
+  but they are kit for a kit of one.
+
 ## 2026-08-21 (7) — the site moves now: two more hero cards, and a scroll-scrubbed flow diagram
 
 **Deployed:** `amlak-site` version **b0c83da4-4647-47f8-ac22-7f9dda8e0aa8** (amlakre.com +

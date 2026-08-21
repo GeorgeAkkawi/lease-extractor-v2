@@ -60,9 +60,15 @@
         <a class="btn btn-secondary" href="/features">View features</a>
         <a class="btn btn-secondary" href="/request-access">Request access</a>
       </div>
+      <!-- ⚠ KEEP THIS SHORTER THAN THE CLOSING CTA, AND OUT OF ITS WORDS. Both
+           hang off the same "See it working" button, and until 2026-08-21 both
+           said sample portfolio, real arithmetic and "no form, no call" — the
+           third one verbatim. Repeating an idea between a hero and a closing
+           pitch is fine; repeating the phrasing is what reads as careless. This
+           one answers only "what happens when I click, right now"; the section
+           at the foot of the page makes the case. -->
       <p class="hero-note">
-        <b>No form, no call.</b> Opens a full sample portfolio with working arithmetic —
-        nothing in it touches real data.
+        <b>Opens straight into a sample portfolio.</b> Nothing in it is real data.
       </p>
     </div>
 
@@ -120,30 +126,32 @@
         cells wrong. Amlak's whole design is the opposite of that.
       </p>
     </div>
+    <!-- ⚠ NO GLYPHS ON THESE CARDS. All four (§ ⚖ ⇄ ↻) are already carrying the
+         four hero cards a screen above, where a 26px tinted tile is doing real
+         work anchoring a small notification. Repeated here at 22px above a
+         heading they said nothing the heading did not, and the page read as
+         though it had eight icons and four ideas. about.html's cards keep
+         theirs — those four symbols are its own and duplicate nothing. -->
     <div class="cards">
       <div class="card">
-        <span class="glyph">§</span>
         <h3>It reads the lease</h3>
         <p>Upload the PDF. Amlak pulls the term, the base rent, every escalation step, the
         renewal options and their notice deadlines, the CAM basis and the tenant's share of
         the building — and shows you the clause each one came from.</p>
       </div>
       <div class="card">
-        <span class="glyph">⚖</span>
         <h3>Triple-net, split correctly</h3>
         <p>Pro-rata by square footage, or the override the lease negotiated. Estimates while
         the year runs, actuals when it closes, and a reconciliation that says who owes and
         who's owed — to the cent.</p>
       </div>
       <div class="card">
-        <span class="glyph">⇄</span>
         <h3>Money, matched to a tenant</h3>
         <p>Drop in a bank statement. Amlak reads the deposits, proposes which tenant and
         which month each one settles, and shows you what it couldn't place instead of
         quietly guessing.</p>
       </div>
       <div class="card">
-        <span class="glyph">↻</span>
         <h3>Nothing goes stale</h3>
         <p>Change a building's size, a tax bill or a rent step and every invoice, share and
         total that depended on it is rebuilt — except in a year you've already closed, which
@@ -183,51 +191,74 @@
 
   <div class="flow-track">
     <div class="flow-pin">
-      <div class="flow-figure">
-        <svg class="flow-svg" viewBox="0 0 1000 480" role="img"
-             aria-label="Four inputs — a lease PDF, a bank statement, a tax bill and a service contract — feed into Amlak, which derives the tenant invoice, the rent ledger, the CAM reconciliation and the accountant's workbook.">
+      <!-- ⚠ THE EIGHT LABELS ARE HTML, NOT SVG TEXT, AND THAT IS THE WHOLE POINT.
+           They were `<text>` inside the drawing until 2026-08-21, which meant the
+           only way to fit them on a phone was a sideways scroll that hid the four
+           outputs — the payoff — behind a drag nobody makes. Written once here,
+           they lay out two completely different ways: pinned to the viewBox grid
+           on a desktop, stacked in ordinary flow on a phone. A second phone-shaped
+           SVG would have been a second copy of all eight, and copies of copy go
+           stale exactly the way copies of code do.
 
-          <!-- inputs -->
-          <g class="lbl lead" style="--s:.000"><text x="250" y="60" text-anchor="end">Lease PDF</text><text class="sub" x="250" y="80" text-anchor="end">term, rent, steps, share</text></g>
-          <g class="lbl lead" style="--s:.012"><text x="250" y="176" text-anchor="end">Bank statement</text><text class="sub" x="250" y="196" text-anchor="end">deposits, dated</text></g>
-          <!-- Two sub-lines in one slot: the tax bill swaps to a gold "reassessed in
-               August" at the last stage, so the diagram states which figure moved
-               instead of leaving the reader to infer it from the caption. -->
-          <g class="lbl lead" style="--s:.024"><text x="250" y="292" text-anchor="end">Tax bill</text><text class="sub calm" x="250" y="312" text-anchor="end">the year's actual</text><text class="sub swap" x="250" y="312" text-anchor="end">reassessed in August</text></g>
-          <g class="lbl lead" style="--s:.036"><text x="250" y="408" text-anchor="end">Service contract</text><text class="sub" x="250" y="428" text-anchor="end">landscaping, snow, HVAC</text></g>
+           ⚠ THE PERCENTAGES IN `--y` ARE VIEWBOX COORDINATES. `.flow-figure` is
+           locked to the SVG's own 1000×480 aspect ratio, so 1% of the box IS 1% of
+           the viewBox and a label at `--y:13.75%` sits on the wire that ends at
+           y=66. Break that ratio — cap the box's HEIGHT instead of its width, say —
+           and every label drifts off its own strand.
 
-          <circle class="node-dot lead" style="--s:.000" cx="266" cy="66"  r="4" />
-          <circle class="node-dot lead" style="--s:.012" cx="266" cy="182" r="4" />
-          <circle class="node-dot lit lead" style="--s:.024" cx="266" cy="298" r="4" />
-          <circle class="node-dot lead" style="--s:.036" cx="266" cy="414" r="4" />
+           The SVG is aria-hidden and carries no words now; the lists below are what
+           a screen reader reads, which is a straight improvement on one long
+           aria-label sentence. -->
+      <div class="flow-frame">
+        <div class="flow-figure">
+          <svg class="flow-wires" viewBox="0 0 1000 480" aria-hidden="true" focusable="false">
+            <circle class="node-dot lead" style="--s:.000" cx="266" cy="66"  r="4" />
+            <circle class="node-dot lead" style="--s:.012" cx="266" cy="182" r="4" />
+            <circle class="node-dot lit lead" style="--s:.024" cx="266" cy="298" r="4" />
+            <circle class="node-dot lead" style="--s:.036" cx="266" cy="414" r="4" />
 
-          <path class="wire" style="--s:.02" pathLength="1" d="M266 66  C368 66  372 240 450 240" />
-          <path class="wire" style="--s:.07" pathLength="1" d="M266 182 C368 182 380 240 450 240" />
-          <path class="wire lit" style="--s:.12" pathLength="1" d="M266 298 C368 298 380 240 450 240" />
-          <path class="wire" style="--s:.17" pathLength="1" d="M266 414 C368 414 372 240 450 240" />
+            <path class="wire" style="--s:.02" pathLength="1" d="M266 66  C368 66  372 240 450 240" />
+            <path class="wire" style="--s:.07" pathLength="1" d="M266 182 C368 182 380 240 450 240" />
+            <path class="wire lit" style="--s:.12" pathLength="1" d="M266 298 C368 298 380 240 450 240" />
+            <path class="wire" style="--s:.17" pathLength="1" d="M266 414 C368 414 372 240 450 240" />
 
-          <!-- Amlak -->
-          <g class="hub">
-            <circle cx="500" cy="240" r="48" />
-            <image href="/favicon.svg" x="482" y="222" width="36" height="36" />
-          </g>
+            <g class="hub">
+              <circle cx="500" cy="240" r="48" />
+              <image href="/favicon.svg" x="482" y="222" width="36" height="36" />
+            </g>
 
-          <!-- outputs -->
-          <path class="wire lit" style="--s:.46" pathLength="1" d="M550 240 C628 240 632 66  734 66" />
-          <path class="wire lit" style="--s:.51" pathLength="1" d="M550 240 C628 240 620 182 734 182" />
-          <path class="wire lit" style="--s:.56" pathLength="1" d="M550 240 C628 240 620 298 734 298" />
-          <path class="wire lit" style="--s:.61" pathLength="1" d="M550 240 C628 240 632 414 734 414" />
+            <path class="wire lit" style="--s:.46" pathLength="1" d="M550 240 C628 240 632 66  734 66" />
+            <path class="wire lit" style="--s:.51" pathLength="1" d="M550 240 C628 240 620 182 734 182" />
+            <path class="wire lit" style="--s:.56" pathLength="1" d="M550 240 C628 240 620 298 734 298" />
+            <path class="wire lit" style="--s:.61" pathLength="1" d="M550 240 C628 240 632 414 734 414" />
 
-          <circle class="node-dot lit" style="--s:.56" cx="734" cy="66"  r="4" />
-          <circle class="node-dot lit" style="--s:.61" cx="734" cy="182" r="4" />
-          <circle class="node-dot lit" style="--s:.66" cx="734" cy="298" r="4" />
-          <circle class="node-dot lit" style="--s:.71" cx="734" cy="414" r="4" />
+            <circle class="node-dot lit" style="--s:.56" cx="734" cy="66"  r="4" />
+            <circle class="node-dot lit" style="--s:.61" cx="734" cy="182" r="4" />
+            <circle class="node-dot lit" style="--s:.66" cx="734" cy="298" r="4" />
+            <circle class="node-dot lit" style="--s:.71" cx="734" cy="414" r="4" />
+          </svg>
 
-          <g class="lbl" style="--s:.56"><text x="750" y="60">Tenant invoice</text><text class="sub" x="750" y="80">issued, then frozen</text></g>
-          <g class="lbl" style="--s:.61"><text x="750" y="176">Rent ledger</text><text class="sub" x="750" y="196">twelve months, one row each</text></g>
-          <g class="lbl" style="--s:.66"><text x="750" y="292">CAM reconciliation</text><text class="sub" x="750" y="312">who owes, who's owed</text></g>
-          <g class="lbl" style="--s:.71"><text x="750" y="408">Income &amp; expenses</text><text class="sub" x="750" y="428">the sheet your accountant wants</text></g>
-        </svg>
+          <p class="flow-head">You enter</p>
+          <ul class="flow-side side-in">
+            <li class="lbl lead" style="--s:.000;--y:13.75%"><b>Lease PDF</b><span class="sub">term, rent, steps, share</span></li>
+            <li class="lbl lead" style="--s:.012;--y:37.92%"><b>Bank statement</b><span class="sub">deposits, dated</span></li>
+            <!-- Two sub-lines in one slot: the tax bill swaps to a gold "reassessed in
+                 August" at the last stage, so the diagram states which figure moved
+                 rather than leaving the caption underneath to explain it. -->
+            <li class="lbl lead lit" style="--s:.024;--y:62.08%"><b>Tax bill</b><span class="sub-slot"><span class="sub calm">the year&rsquo;s actual</span><span class="sub swap">reassessed in August</span></span></li>
+            <li class="lbl lead" style="--s:.036;--y:86.25%"><b>Service contract</b><span class="sub">landscaping, snow, HVAC</span></li>
+          </ul>
+
+          <div class="flow-mark" aria-hidden="true"><img src="/favicon.svg" alt="" /></div>
+
+          <p class="flow-head">Amlak derives</p>
+          <ul class="flow-side side-out">
+            <li class="lbl lit" style="--s:.56;--y:13.75%"><b>Tenant invoice</b><span class="sub">issued, then frozen</span></li>
+            <li class="lbl lit" style="--s:.61;--y:37.92%"><b>Rent ledger</b><span class="sub">twelve months, one row each</span></li>
+            <li class="lbl lit" style="--s:.66;--y:62.08%"><b>CAM reconciliation</b><span class="sub">who owes, who&rsquo;s owed</span></li>
+            <li class="lbl lit" style="--s:.71;--y:86.25%"><b>Income &amp; expenses</b><span class="sub">the sheet your accountant wants</span></li>
+          </ul>
+        </div>
       </div>
 
       <div class="flow-caps">

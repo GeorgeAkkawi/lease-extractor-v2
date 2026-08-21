@@ -43,17 +43,26 @@
      ⚠ `.legal-wrap` is excluded deliberately — a privacy policy whose
      paragraphs fade in as you read down it is a policy that is harder to
      read, which is the opposite of why it exists. */
+  // ⚠ NOT `.flow-figure`. The diagram already has an entrance — the scrub —
+  // and a fade-and-rise on top of it fought the pin: the box was still settling
+  // while `--p` was already drawing into it.
   var REVEAL = '.section-head, .cards .card, .feature-copy, .feature-art,' +
-               ' .cta, .tl-item, .cmp-card, .form-card, .flow-figure, .stat-row';
+               ' .cta, .tl-item, .cmp-card, .form-card, .stat-row';
 
   var targets = [];
   Array.prototype.forEach.call(document.querySelectorAll(REVEAL), function (el) {
     if (el.closest('.legal-wrap')) return;
-    // ⚠ ONLY WHAT IS STILL BELOW THE FOLD. Hiding an element that is already
-    // on screen and revealing it on the next frame is a visible flash — the
-    // one bug this pattern always ships with. Anything the visitor can
-    // already see is simply left alone.
-    if (el.getBoundingClientRect().top < window.innerHeight * 0.92) return;
+    // ⚠ ONLY WHAT IS ENTIRELY BELOW THE FOLD. Hiding an element that is already
+    // on screen and revealing it on the next frame is a visible flash — the one
+    // bug this pattern always ships with. Anything the visitor can already see
+    // is simply left alone and never animates.
+    // ⚠ AND THE LINE IS `innerHeight`, NOT A FRACTION OF IT. At 0.92 this
+    // disagreed with the observer below, whose -12% rootMargin means an element
+    // starting past 88% of the viewport cannot trigger at all: everything
+    // landing in that 4% band was hidden by this and then not revealed by that,
+    // so /about loaded with 39px of a heading sitting at opacity 0 on screen.
+    // Two thresholds for one decision is the bug; there is only one now.
+    if (el.getBoundingClientRect().top < window.innerHeight) return;
     el.classList.add('rv');
     targets.push(el);
   });
