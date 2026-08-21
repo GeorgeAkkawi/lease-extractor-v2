@@ -12,11 +12,27 @@ const MIN_PASSWORD = 10;
 // public registration when going public.
 const SIGNUP_OPEN = false;
 
-// Mirror the server-side policy (config.toml: minimum_password_length = 10,
-// password_requirements = lower_upper_letters_digits) so users get instant,
-// specific feedback instead of a generic server rejection. The server remains
-// the source of truth — this is a UX nicety, not the enforcement. Exported so the
-// reset-password page enforces the exact same rule.
+// Mirror the server-side policy so users get instant, specific feedback instead of a
+// generic server rejection. Exported so the reset-password page enforces the same rule.
+//
+// ⚠ THE MIRROR WAS BROKEN ON BOTH HALVES UNTIL 2026-08-21, and config.toml is not the
+// thing to check. config.toml drives LOCAL DEV ONLY (SECURITY.md says so); the live
+// project is configured in the dashboard and had drifted from it in two directions at
+// once: `password_min_length` was **6** while this file said 10, and
+// `password_required_characters` was the symbols preset while this file checks only
+// lower/upper/digit. Both are now aligned — the server minimum was raised to 10, and the
+// character requirement set to the three-group preset this function actually mirrors:
+//     abcdefghijklmnopqrstuvwxyz:ABCDEFGHIJKLMNOPQRSTUVWXYZ:0123456789
+//
+// ⚠ THERE IS NO SAFE SYMBOL OPTION TO MIRROR, which is why symbols are not required.
+// Supabase accepts only four preset values and the sole one with symbols is
+//     ...:0123456789:!@#$%^&*()_+-=[]{};'\:"|<>?,./`~
+// whose symbol set CONTAINS A COLON — the very delimiter of the field — so it parses
+// into FIVE groups, not four, and appears to demand a character from `!@#$…;'\` AND
+// another from `"|<>?,./`~` separately. `Abcdefgh1!` would satisfy the first and fail the
+// second. Custom values are rejected (400: "Invalid option"). So the choice was an
+// unmirrorable requirement or none; none, with a 10-character minimum, is the honest one.
+// If Supabase ever ships a clean symbols preset, add the class HERE in the same change.
 export function passwordProblem(pw) {
   if (pw.length < MIN_PASSWORD) return `Use at least ${MIN_PASSWORD} characters.`;
   if (!/[a-z]/.test(pw)) return 'Include a lowercase letter.';

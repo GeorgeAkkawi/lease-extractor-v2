@@ -1,3 +1,88 @@
+## 2026-08-21 (6) — the password mirror was broken on both halves, and the fix was on the server
+
+**No deploy.** The app bundle hash is unchanged (`index-eUVKcx5n.js` before and after) — the only
+`src/` edit is a comment, which the minifier strips. 2,045 tests / **194** files green (+5, +1).
+
+George asked me to fix the client/server password mismatch. It turned out to be a settings problem,
+not a code problem, and the interesting part is why.
+
+### Both halves of the mirror were wrong, in opposite directions
+
+`passwordProblem()` (`Login.js`) exists to give a specific message instead of a generic server
+rejection (`SECURITY.md` §1). It was mirroring nothing:
+
+| | client (`Login.js`) | live project (before) |
+|---|---|---|
+| Minimum length | 10 | **6** |
+| Character classes | lower, upper, digit | lower, upper, digit, **+ symbols** |
+
+The client was **stricter** on length and **looser** on classes, simultaneously. `config.toml` is not
+the place to check — it drives local dev only, as `SECURITY.md` itself states — and the live
+dashboard had drifted from it.
+
+### ⚠ THE SYMBOL PRESET IS AMBIGUOUS BY CONSTRUCTION — its set contains the delimiter
+
+The obvious fix was to add a symbol check to the client. Reading the actual value first is what
+stopped that:
+
+```
+abcdefghijklmnopqrstuvwxyz:ABCDEFGHIJKLMNOPQRSTUVWXYZ:0123456789:!@#$%^&*()_+-=[]{};'\:"|<>?,./`~
+```
+
+`password_required_characters` is **colon-separated**, and the symbol set **contains a colon**. So it
+parses into **FIVE** groups, not four:
+
+```
+[3] !@#$%^&*()_+-=[]{};'\        [4] "|<>?,./`~
+```
+
+If each group is separately required, `Abcdefgh1!` satisfies [3] and fails [4] — and no client-side
+mirror can sensibly express that. **This could not be verified without changing a real account's
+password, which was not done.**
+
+**And custom values are refused.** `HTTP 400: "Invalid option: expected one of …"` — Supabase accepts
+exactly four presets, and the only one with symbols is the colon-broken one above. An unambiguous
+four-class option does not exist. (⚠ An earlier attempt returned `HTTP 403 / error code: 1010` —
+that was **Cloudflare's WAF** in front of Supabase's API objecting to quotes and angle brackets in
+the payload, not Supabase. Two different refusals that both look like "no".)
+
+### What was actually changed
+
+`password_required_characters` → the three-group preset, which is exactly what `Login.js` checks and
+exactly what `config.toml` documents (`lower_upper_letters_digits`):
+
+```
+abcdefghijklmnopqrstuvwxyz:ABCDEFGHIJKLMNOPQRSTUVWXYZ:0123456789
+```
+
+Together with the minimum raised to 10 in the previous entry, **client and server now agree
+exactly.** ⚠ **This drops the symbol requirement** — a deliberate trade of an unmirrorable rule for
+a mirrorable one. Ten characters across three classes does more work than a fourth class nobody can
+be told about, and a generic rejection the browser could have prevented is the failure this mirror
+exists to stop. **Neither change can affect an existing account**: both are evaluated only on a new
+or changed password.
+
+### NEW `src/pages/__tests__/passwordPolicy.test.js`
+
+The mirror drifted because **nothing asserted it**. Five tests state the server policy as data and
+assert the client agrees. Verified to fail in **both** directions before being kept:
+
+- client minimum drops to 8 → **2 failures**
+- someone adds a symbol check the server lacks → **2 failures** (the inverted mirror: browser
+  refuses what the server would accept)
+
+It cannot reach the live project, so it is also the checklist of what must move if the dashboard
+changes.
+
+### Now redundant (proposed — George picks)
+
+- **`SECURITY.md`'s password paragraph** now says the right thing by accident: it cites
+  `config.toml`, which finally matches live. But it still presents `config.toml` as the authority
+  when the dashboard is, and still describes session limits that **cannot be enabled on the free
+  plan** (`HTTP 402`, previous entry). One footnote fixes both.
+- **`config.toml`'s auth block** is a local-dev fixture that reads like a description of production.
+  Every drift this round and last was invisible because someone (me included, first time) reads it
+  and believes it. A one-line header saying so would have saved two rounds.
 ## 2026-08-21 (5) — support@ verified receiving, a third hero button, and the password floor raised
 
 **Cloudflare version:** `amlak-site` **a431dd43-a4a9-4c57-a5b7-afd567de1af0**. No app change;
