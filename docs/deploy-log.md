@@ -1,3 +1,112 @@
+## 2026-08-21 (4) — the Arabic line fixed, a summary at the top, and a legal section
+
+**Cloudflare version:** `amlak-site` **3a013cb5-7d40-432b-bea3-f2ede009e5f7** ·
+2,040 tests / 193 files green (unchanged — nothing under `src/` moved).
+
+### The About page said the wrong thing, and it was mine
+
+`about.html` read *"أملاك — amlāk, the Arabic plural of **milk**: a holding, something owned."*
+George: *"amlak is not the arabic plural for milk it means properties."* The etymology is gone
+entirely rather than restated — in English "the plural of milk" reads as the dairy word and derails
+the sentence at the exact point the page makes its one point. It now says it is the Arabic word for
+**properties**, which is what the footer of every page has said correctly all along.
+
+### The home page now says what Amlak IS before it says what it does
+
+The old opening paragraph was a narrative — it walked through a sequence. PigJet's hero states the
+category in one sentence, and that is what George asked for. Now:
+
+> Amlak is the lease-and-money platform built exclusively for triple-net commercial property. From
+> reading your leases and splitting CAM to bank-statement matching, rent ledgers, e-signature and
+> year-end reconciliation — all in one place.
+
+Every clause maps to shipped code (`extract-lease`, `v_tenant_shares`, `extract-bank-statement`,
+`ledger.js`, `sign-envelope`, `billedComponents`). The narrative it replaced is not lost — it is
+what the five feature blocks below already say at length.
+
+### Four legal pages: `/privacy` `/terms` `/security` `/support`
+
+Generated from **one shell** (`/tmp` script, not committed) so nav and footer cannot drift between
+them. Support and Contact merged — two pages that both say "email us" drift into one saying a day
+and the other two. Footer gains a **Legal** column on all seven pages; the old **Status** column
+folds into it as a single line.
+
+**Privacy is written from the code, not a template.** It names all four sub-processors and what each
+actually receives, and it does not bury the one that matters: **lease PDFs, addendums, insurance
+certificates and bank statements are sent to Anthropic to be read**. It also states plainly that a
+landlord entering tenant names and emails is putting in personal data about people who are not our
+users. E-signature IP/user-agent retention is explained as deliberate rather than left to be found.
+
+**Terms** are bound to "Amlak" with **no entity and no governing-law clause** — George's explicit
+choice for the beta. The load-bearing paragraph is that Amlak's figures are a tool, not advice, and
+that AI-extracted terms are shown beside their clause *to be checked*.
+
+### ⚠ The security page is shorter than `SECURITY.md`, on purpose — the live project does not match the doc
+
+Every claim was verified against the live project or a migration before being written. Reading the
+live auth config first is the only reason this surfaced:
+
+| | `SECURITY.md` / `config.toml` | **Live project** |
+|---|---|---|
+| Minimum password length | 10 | **6** |
+| Session timebox | 24h | **off (0)** |
+| Inactivity timeout | 8h | **off (0)** |
+| Leaked-password check (HIBP) | "recommended" | **off** |
+| TOTP two-factor | — | on ✔ |
+| Re-auth to change password | on | on ✔ |
+| Public signup | closed | closed ✔ |
+
+`config.toml` drives **local dev only** — `SECURITY.md` says so itself — and the live dashboard was
+never brought up to match. `Login.js` enforces 10 characters in the browser while the server accepts
+6, so the real floor is 6. **None of the four mismatched claims appear on the public page.** What
+appears instead is what is verifiably true (row-level security, `security_invoker` views, private
+per-account storage buckets with type/size limits, TOTP, re-auth, per-account AI rate limits,
+256-bit signing tokens, the audit table) plus an explicit **"What we do not claim"** block: no SOC 2,
+no ISO, no penetration test, no CAPTCHA, no uptime commitment, no bug bounty. A security page that
+overstates is worse than no security page.
+
+**Not fixed here** — raising the live minimum and enabling the session limits changes how George's
+own account behaves daily, and is a security-posture decision, not a website one. Flagged for him.
+
+### Contact address
+
+All `hello@amlakre.com` references became **`support@amlakre.com`** (footer, request-access failure
+fallback, all four legal pages). ⚠ **The mailbox does not exist yet** — see below.
+
+### ⚠ Blocked: Cloudflare Email Routing could not be done from here
+
+`wrangler whoami` reports **`zone (read)`** and no email-routing scope, so the token this session
+holds cannot create routing rules. It needs George in the dashboard (Email → Email Routing on
+`amlakre.com`), or a scoped API token. Until then **`support@amlakre.com` bounces**, and it is now
+printed on four pages including a privacy policy — which is the one document that must have a
+working contact address. Recommended rules:
+
+- `support@amlakre.com` → George's inbox (the published address)
+- `letters@amlakre.com` → George's inbox — **the safety net for the hole below**
+- catch-all → George's inbox
+
+### ⚠ A real hole found while answering "what does letters@ do?"
+
+`letters@amlakre.com` is a **sending identity only** — verified in Resend via `send.amlakre.com` +
+`resend._domainkey`, neither of which creates an inbox. Tenant mail goes out as
+`From: "{business name}" <letters@amlakre.com>` with `Reply-To:` the corporation's `contact_email`,
+so replies reach the landlord and `letters@` never needed to receive anything.
+
+**But `corporations.contact_email` is nullable** (`0009_corp_sender.sql:8`) and every sender does
+`if (reply_to) payload.reply_to = …` (`send-tenant-email/index.ts:100`, `send-announcement:145`).
+For a corporation with no contact email the letter goes out with **no Reply-To at all**, and a
+tenant who hits Reply writes to a mailbox that does not exist. Their reply is lost silently.
+Routing `letters@` catches it; the real fix (require a contact email, or default `reply_to` to the
+account owner) is an app change and is **not** bundled in.
+
+### Now redundant (proposed — George picks)
+
+- **The footer's `Status` column** — already folded in; noted so it is not re-added.
+- **`hello@amlakre.com`** — never had an inbox and now has no references.
+- **`SECURITY.md` is now the source for a public page while being wrong in four places** (the table
+  above) and still describing the front end as *"React (Create React App)"*, which the project left
+  for Vite on 2026-07-06. Either bring the live project up to the document or bring the document
+  down to reality — but they should not disagree while one of them is published.
 ## 2026-08-21 (3) — demo.amlakre.com, the auth URLs that were never right, and a tooltip nine days stale
 
 **Cloudflare versions:** `amlak` **3e70a07a-19e1-4149-86c6-d6e529f4e50a** · `amlak-site`

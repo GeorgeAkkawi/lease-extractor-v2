@@ -4,4 +4,8 @@
   <url><loc>https://amlakre.com/features</loc><priority>0.8</priority></url>
   <url><loc>https://amlakre.com/compare</loc><priority>0.8</priority></url>
   <url><loc>https://amlakre.com/about</loc><priority>0.5</priority></url>
+  <url><loc>https://amlakre.com/support</loc><priority>0.4</priority></url>
+  <url><loc>https://amlakre.com/privacy</loc><priority>0.3</priority></url>
+  <url><loc>https://amlakre.com/terms</loc><priority>0.3</priority></url>
+  <url><loc>https://amlakre.com/security</loc><priority>0.3</priority></url>
 </urlset>
