@@ -1,3 +1,78 @@
+## 2026-08-20 (2) — Three from George: the menu opened at the bottom, the cards overflowed, the draws had no names
+
+**Cloudflare version:** `99fded7f-5deb-4560-b00e-fa38082f6f96` · 2,033 tests / 193 files green.
+
+*"for some reason when i open the drop down it starts at the bottom and i have to scroll up fix
+that. for 401 south main yaz and liana are not shown on the live excel sheet. and the financials
+page formatting is really bad near the top for 401 south main."* Three unrelated faults; all three
+turned out to be reproducible away from 401 S Main once found.
+
+- **1) The menu opened scrolled to the bottom.** `SelectMenu` centred itself on the current row, the
+  way macOS positions a native popup. That is wrong *here* for a reason specific to this app: an
+  unrecognized money-out line's pick is **Ignore**, the LAST option — so the commonest expense row in
+  any statement opened scrolled past all thirty buckets. It now opens at the top: the trigger already
+  prints the current value, so the menu's job is to show the OPTIONS, and the ✓ still marks where the
+  current pick sits. Verified on the live-shaped row (`scrollTop 0`, first row `— pick —`, marked row
+  `Ignore`).
+
+- **2) The Financials page — three faults in one screen, and none of them needed 401 S Main.**
+  Reproduced on the DEMO at 993px:
+  - ⚠ **`repeat(auto-fill, …)` was the bug, and it is one word.** `auto-fill` KEEPS the empty tracks it
+    can fit, so a 993px row held **five** 187px tracks for the **three** cards actually present. The
+    cards never stretched, two thirds of the row sat empty, and `.metric .value` — 32px display type —
+    overflowed a 145px content box. `$144,000.00` on the demo already overflowed by 8px
+    (`scrollWidth 153`); 401 S Main's `$364,629.12` does the same. Now `auto-fit`, which collapses the
+    empty tracks and hands their width to the cards that exist: 3 × 322px, zero overflow.
+  - The track floor rose **180px → 240px** for the same reason — a seven-figure sum needs ~190px of
+    content box — wrapped in `min(100%, 240px)` so a phone doesn't get a track wider than the row.
+    Checked at 420px: one column, no overflow, no sideways page scroll.
+  - ⚠ **`.stat-note` was `white-space: nowrap`.** Right when it was a two-part label/value line; wrong
+    now that it carries the Overview-reconciliation SENTENCE, which ran straight out of the card and
+    **across the two cards beside it** — legible text on top of other text. It wraps; only the figure
+    inside `<strong>` still refuses to break.
+
+- **3) Yaz and Liana — they were on the sheet, in the one place he would not look.** They are not
+  tenants: they are `cam_line_items` labels, `billable: false`, category `distribution` — **owner
+  distributions** of $10,000 and $20,000 taken on 2026-01-06 (the bucket IS the person, §1). Read
+  against production: `recoverabilityRows` files them correctly in `owner` / `ownerTotal`, and the
+  **401 S Main property sheet lists both by name** — verified by building the real workbook from the
+  real figures and unzipping the bytes, on **both** bases.
+  **What was missing is the SUMMARY sheet — the one the workbook opens on** — which printed a single
+  *"Distributions — money you took out $30,000.00"* with nobody's name against it. That is precisely
+  the answer the user-journey rule calls useless: it reports that something happened without saying to
+  whom, and whose draw it was is the only thing being looked for.
+  - New **`consolidateDistributions`** (`incomeExpense.js`) — one row per payee, with the month it left
+    the account, merged **by label across properties** so one person paid from two buildings is one row.
+    Built from the per-property rows, never re-derived from `cam_line_items`, for the reason
+    `consolidateCategories` beside it gives: a second pass would be free to disagree with the property
+    sheets and the two figures would sit four sheets apart in one workbook (§3).
+  - The Summary's block now prints the month grid, a row per person, then the total. `pkg.distributions`
+    is read with a `|| []` default because a **`prebuilt` package cached before this shipped** does not
+    carry the field.
+  - Pinned: payees named and ordered biggest-first, one person merged across two properties, the month
+    carried, an **absorbed cost excluded** (a repair the landlord ate is not a draw), the rows tying to
+    the scalar the total line prints, and `[]` rather than `undefined` when nothing was taken out.
+
+- **Files:** `src/components/SelectMenu.js` · `src/App.css` · `src/lib/incomeExpense.js` ·
+  `src/lib/incomeExpenseExcel.js` · `src/lib/__tests__/incomeExpense.test.js`.
+
+**Now redundant** (proposed — George picks):
+- **The `.metrics` track floor is now stated twice** — 240px in the CSS and, implicitly, in
+  `.metric .value`'s 32px font size. If that font ever changes, the floor is wrong and nothing says so.
+- **`.stat-note`'s `justify-content: space-between`** is left over from the label/value pair it used to
+  be; with one child and `flex-wrap`, it does nothing. Harmless, but it describes a layout that no
+  longer exists.
+- The Summary's distributions block and the property sheet's now render the same idea two ways — the
+  Summary via `consolidateDistributions`, the property sheet by walking `p.distributions[].items`
+  inline. One of them should call the other.
+
+**Read from production, not inferred:** 401 S Main is corporation *DT Naperville*, owner
+`8b62652f…` — **not George's own account** (his is `2efba6de…`, Joliet + Pershing Plaza). Its
+`properties.building_sf` is null (the view falls back to 9,176 leased SF) and its `enabled_features`
+is null, i.e. every module on. Neither is a fault; both are noted because the two accounts have
+diverged and a figure read without scoping by `owner_id` merges them — the standing rule from
+2026-08-18.
+
 ## 2026-08-20 (1) — The billed decision becomes a tick, and every dropdown loses its OS menu
 
 **Cloudflare version:** `0e22f95c-2790-4659-85c9-0d191280073a` · 2,031 tests / 193 files green.

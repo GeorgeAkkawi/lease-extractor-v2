@@ -18,7 +18,7 @@
 //     twin (CLAUDE.md §3) and are meant to agree; if they ever stop, the workbook says so
 //     in dollars rather than disagreeing quietly with the Performance card beside it.
 import { describe, it, expect } from 'vitest';
-import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, flags, shapeProperty, noiBridge } from '../incomeExpense';
+import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, consolidateDistributions, flags, shapeProperty, noiBridge } from '../incomeExpense';
 import { getPropertyMonthlyRoll, createEscalation, deleteEscalation } from '../api';
 import { allocatePayments, overpayKey } from '../ledger';
 import { currentYear } from '../format';
@@ -264,6 +264,68 @@ describe('a corporation’s year, month by month', () => {
 });
 
 // ── The rent row itself ───────────────────────────────────────────────────────
+
+// ── Whose money left the account (George, 2026-08-20) ─────────────────────────────────
+//
+// *"for 401 south main yaz and liana are not shown on the live excel sheet."* They were on
+// the property's own sheet; the SUMMARY — the sheet the workbook opens on — carried one
+// "Distributions — money you took out $30,000.00" and nobody's name. A landlord reading his
+// own draws needs exactly the part that was missing.
+//
+// ⚠ The bucket IS the person (CLAUDE.md §1): a distribution has no table of its own, so the
+// payee is the `cam_line_items` label. Merging by label is therefore merging by person —
+// which is also why two properties that both paid one person must collapse to a single row.
+describe('distributions, named rather than lumped', () => {
+  const shapeWith = (name, lines) => shapeProperty({
+    property: { id: `p-${name}`, name, address: '' },
+    year: Y,
+    totals: { total_revenue: 0, total_expenses: 0, noi: 0, cam_total: 0, taxes_total: 0, roof_total: 0, building_sf: 1000, total_sf: 1000, occupancy: 1 },
+    items: lines,
+    shares: [], expense: { cam_total: 0, taxes_total: 0, roof_total: 0 },
+    buckets: [
+      { label: 'Yaz', billable: false, category: 'distribution' },
+      { label: 'Liana', billable: false, category: 'distribution' },
+      { label: 'Absorbed repair', billable: false, category: 'repairs' },
+    ],
+    income: [], roll: [], escByLease: {}, basis: 'live', confirmed: new Set(),
+  });
+
+  it('names each payee, carries the month, and merges one person across properties', () => {
+    const a = shapeWith('401 S Main', [
+      { kind: 'cam', label: 'Liana', amount: 20000, billable: false, paid_date: `${Y}-01-06` },
+      { kind: 'cam', label: 'Yaz', amount: 10000, billable: false, paid_date: `${Y}-01-06` },
+      // A cost the landlord ATE is not a draw — it belongs to the expense side, and letting
+      // it in here would report an absorbed repair as money he took out.
+      { kind: 'cam', label: 'Absorbed repair', amount: 500, billable: false, paid_date: `${Y}-03-02` },
+    ]);
+    const b = shapeWith('Second building', [
+      { kind: 'cam', label: 'Yaz', amount: 2500, billable: false, paid_date: `${Y}-07-11` },
+    ]);
+
+    const rows = consolidateDistributions([a, b]);
+    // Biggest first: Liana's 20,000 outranks Yaz's 12,500 once both buildings are in.
+    expect(rows.map((r) => r.label)).toEqual(['Liana', 'Yaz']);
+    // One Yaz row, not two — 10,000 at 401 S Main plus 2,500 at the other building.
+    expect(rows.find((r) => r.label === 'Yaz').total).toBe(12500);
+    expect(rows.find((r) => r.label === 'Liana').total).toBe(20000);
+    expect(rows.some((r) => r.label === 'Absorbed repair')).toBe(false);
+
+    // The month it left the account rides along, so the Summary grid can place it.
+    const yaz = rows.find((r) => r.label === 'Yaz');
+    expect(yaz.byMonth[0]).toBe(10000);   // January, 401 S Main
+    expect(yaz.byMonth[6]).toBe(2500);    // July, the other building
+
+    // …and the named rows tie to the scalar the total line prints.
+    const total = rows.reduce((t, r) => t + r.total, 0);
+    expect(total).toBe(a.distributionsTotal + b.distributionsTotal);
+  });
+
+  it('is empty, not undefined, when nothing was taken out', () => {
+    const clean = shapeWith('No draws', [{ kind: 'cam', label: 'Absorbed repair', amount: 500, billable: false, paid_date: `${Y}-03-02` }]);
+    expect(consolidateDistributions([clean])).toEqual([]);
+    expect(consolidateDistributions()).toEqual([]);
+  });
+});
 
 describe('rent, month by month', () => {
   // One month's schedule repeated: the tenant owes $1,000 and $2,400/yr of it is the

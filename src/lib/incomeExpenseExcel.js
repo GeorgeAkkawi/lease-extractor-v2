@@ -289,7 +289,14 @@ function addSummary(wb, pkg, corporationName, now) {
       + 'It is listed because it crossed the bank, and every bank line has to be accounted for somewhere.',
       { height: 26 }
     );
-    totHead(pen, '');
+    // ⚠ BY PERSON, NOT AS A LUMP (George, 2026-08-20: *"yaz and liana are not shown on the
+    // live excel sheet"*). They were on 401 S Main's own sheet; this one — the sheet the
+    // workbook opens on — carried a single $30,000.00 with nobody's name against it. The
+    // bucket IS the person (§1), so one row each, with the month it left the account, and
+    // the total underneath. `pkg.distributions` is defaulted because a `prebuilt` package
+    // cached before this shipped will not carry it.
+    pen.head(head(''), RIGHT);
+    for (const d of pkg.distributions || []) grid(pen, indent(d.label), d);
     totLine(pen, 'Distributions — money you took out', t.distributions);
   }
 

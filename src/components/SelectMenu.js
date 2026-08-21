@@ -147,19 +147,14 @@ export default function SelectMenu({ children, className, disabled, onBlur, valu
     setPos({ ...pos, left, placed: true });
   }, [open, pos]);
 
-  // Bring the current row into view on open. After the position pass, so the list has its
-  // real height by the time we scroll inside it.
-  useLayoutEffect(() => {
-    if (!open || !pos || !listRef.current) return;
-    // ⚠ NOT scrollIntoView. It scrolls every scrollable ANCESTOR as well as the list — and
-    // this list is `position: fixed`, so "bring it into view" moved the DOCUMENT, which the
-    // listener above reads (correctly) as the page shifting under a pinned menu and closes
-    // it. The result was a menu that opened and vanished in the same frame, but only when
-    // it was long enough to need scrolling at all. Setting scrollTop touches this element
-    // and nothing else. The list is the rows' offsetParent because it is positioned.
-    const el = listRef.current.querySelector('.sm-opt.on');
-    if (el) listRef.current.scrollTop = Math.max(0, el.offsetTop - listRef.current.clientHeight / 2 + el.offsetHeight / 2);
-  }, [open, pos]);
+  // ⚠ IT OPENS AT THE TOP OF THE LIST, ON PURPOSE (George, 2026-08-20: *"when i open the
+  // drop down it starts at the bottom and i have to scroll up"*). It used to centre itself
+  // on the current row, the way macOS positions a native popup — and that is wrong here for
+  // a reason specific to this app: an unrecognized money-out line's pick is **Ignore**,
+  // which is the LAST option, so the commonest expense row in a statement opened scrolled
+  // past all 30 buckets to the bottom. The trigger already prints the current value, so the
+  // menu's job is to show the OPTIONS; starting anywhere but the top hides some of them
+  // behind a scroll nobody asked for. The ✓ still marks where the current pick sits.
 
   // A menu pinned to a rect goes stale the moment anything moves under it (Tip.js). Scroll
   // and resize close it rather than leaving it beside the wrong control.

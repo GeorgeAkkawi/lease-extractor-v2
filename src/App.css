@@ -867,7 +867,17 @@ select.cat-select{font-size:11px;margin-top:3px;padding:3px 22px 3px 6px;max-wid
 .empty-line{padding:6px 0;font-size:14px}
 
 /* ---- metrics ---- */
-.metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
+/* ⚠ auto-FIT, NOT auto-FILL, AND THAT ONE WORD WAS THE BUG (George, 2026-08-20: *"the
+   financials page formatting is really bad near the top"*). `auto-fill` KEEPS the empty
+   tracks it can fit, so a 993px row held FIVE 187px tracks for the three cards that were
+   actually there — the cards never stretched, two thirds of the row sat empty, and a
+   $364,629.12 revenue overflowed a 145px content box. `auto-fit` collapses the empty tracks
+   and hands their width to the cards that exist.
+   The floor rose 180px → 240px for the same reason: `.metric .value` is 32px display type
+   with tabular figures, and a seven-figure sum needs about 190px of content box. `min(100%, …)`
+   keeps the track from being wider than the row itself on a phone, which is what a bare 240px
+   minimum would do. */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:14px}
 .metric{background:var(--panel);border:1px solid var(--border);border-top:2px solid var(--border);border-radius:var(--radius);padding:18px 20px}
 .metric .label{color:var(--muted);font-size:9.5px;text-transform:uppercase;letter-spacing:.12em;font-weight:700}
 .metric .value{font-family:var(--display);font-size:32px;font-weight:600;margin-top:8px;font-variant-numeric:tabular-nums;line-height:1}
@@ -1646,8 +1656,13 @@ tbody tr:last-child td{border-bottom:none}
 
 /* secondary line of small stats under a metric card (e.g. roof billed/absorbed):
    one tidy line, the two figures pushed to opposite ends */
-.stat-note{display:flex;justify-content:space-between;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);white-space:nowrap}
-.stat-note strong{font-variant-numeric:tabular-nums;color:var(--ink)}
+/* ⚠ IT WRAPS. This started as a two-part label/value line, where `nowrap` was right; the
+   Overview-reconciliation note that lives here now is a whole SENTENCE, and nowrap sent it
+   straight out of the card and across the two cards beside it — legible text on top of other
+   text, which is what "really bad formatting" looked like. The figure inside still holds
+   together on one line, which is the only part that must never break. */
+.stat-note{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);line-height:1.45}
+.stat-note strong{font-variant-numeric:tabular-nums;color:var(--ink);white-space:nowrap}
 .stat-note .pos{color:var(--forest)}
 
 /* Receivables: the named "who's behind" list + the expandable invoice breakdown.

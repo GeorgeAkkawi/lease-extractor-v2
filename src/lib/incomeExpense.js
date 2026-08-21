@@ -660,6 +660,43 @@ export function consolidateCategories(properties = []) {
   ];
 }
 
+/**
+ * Every distribution across the portfolio, BY PERSON, for the Summary sheet.
+ *
+ * George, 2026-08-20: *"for 401 south main yaz and liana are not shown on the live excel
+ * sheet."* They were on the property's own sheet all along — what the Summary carried was a
+ * single "Distributions — money you took out $30,000.00", and the Summary is the sheet you
+ * land on. A lump sum is exactly the answer CLAUDE.md's user-journey rule calls useless:
+ * it reports that something happened without saying to whom, which is the only thing a
+ * landlord looking at his own draws needs to know.
+ *
+ * ⚠ THE BUCKET IS THE PERSON (§1). A distribution has no table of its own — the payee is
+ * the bucket's LABEL, written by the statement importer's "Paid to" field or renamed on
+ * Financials afterwards. So merging by label IS merging by person, and two properties that
+ * both paid Yaz collapse into one row rather than two identical ones.
+ *
+ * ⚠ Built from the per-property rows, never re-derived from `cam_line_items` — the same
+ * rule `consolidateCategories` above follows. A second pass over the raw lines would be free
+ * to disagree with the property sheets about which dollars are a draw, and the two numbers
+ * would sit four sheets apart in one workbook (§3).
+ */
+export function consolidateDistributions(properties = []) {
+  const byLabel = new Map();
+  for (const p of properties) {
+    for (const d of p.distributions || []) {
+      for (const it of d.items || []) {
+        const key = String(it.label || '').trim() || '—';
+        let e = byLabel.get(key);
+        if (!e) { e = { label: key, total: 0, byMonth: zero12(), undated: 0 }; byLabel.set(key, e); }
+        e.total = round2(e.total + (it.total || 0));
+        e.byMonth = add12(e.byMonth, it.byMonth || zero12());
+        e.undated = round2(e.undated + (it.undated || 0));
+      }
+    }
+  }
+  return [...byLabel.values()].sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+}
+
 const dollars = (n) => `$${round2(n).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 
 /**
@@ -867,6 +904,7 @@ export async function buildIncomeExpense(corporationId, year, { basis = 'project
     properties,
     totals: consolidate(properties),
     categories: consolidateCategories(properties),
+    distributions: consolidateDistributions(properties),
     flags: flags(properties, { basis }),
   };
 }
