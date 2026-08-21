@@ -1,3 +1,8 @@
 # https://www.robotstxt.org/robotstxt.html
+#
+# This is the APPLICATION (app.amlakre.com) — every route behind it needs a session,
+# so there is nothing here to index. Left open, it also competes with the public site
+# at amlakre.com for Amlak's own name in search results. The site ships its own
+# permissive robots.txt (site/robots.txt) and a sitemap.
 User-agent: *
-Disallow:
+Disallow: /

@@ -1,0 +1,407 @@
+/* Amlak — public site.
+   Palette, type and radii are lifted verbatim from the app's "Ivory & Brass-ink"
+   system (src/App.css:4-16) so the marketing pages and the product read as one
+   company, and a visitor who clicks into the live demo lands somewhere that looks
+   like where they just were. If those tokens ever move, move them here too — this
+   is a deliberate second copy of ONLY the :root block, nothing else. */
+:root{
+  --paper:#F1ECE1; --panel:#FBF8F1; --panel-2:#F6F1E6;
+  --ink:#1B1813; --muted:#877F70; --faint:#A89F8E;
+  --border:rgba(27,24,19,.14); --hair:rgba(27,24,19,.10);
+  --accent:#5C6B3C; --accent-soft:#E8EBD9;
+  --forest:#2E4636; --forest-soft:#E0E6DE;
+  --gold:#94661B; --gold-soft:#EFE5CE;
+  --danger:#8E2C22; --danger-soft:#F3E2DF;
+  --radius:3px;
+  --shadow:0 1px 2px rgba(40,30,20,.04),0 12px 30px -18px rgba(40,30,20,.16);
+  --shadow-lift:0 2px 4px rgba(40,30,20,.05),0 28px 60px -30px rgba(40,30,20,.28);
+  --display:'Cormorant Garamond',Georgia,serif;
+  --ui:'Hanken Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --wrap:1160px;
+  --navh:70px;      /* the sticky nav's height — two rows on mobile, see the media query */
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--ui);font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+img{max-width:100%;display:block}
+a{color:inherit}
+
+/* ── shared shell ───────────────────────────────────────────────── */
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 28px}
+.section{padding:96px 0}
+.section.tight{padding:64px 0}
+.section.alt{background:var(--panel-2);border-block:1px solid var(--hair)}
+
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:10.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);background:var(--accent-soft);
+  border-radius:100px;padding:6px 14px;margin:0 0 22px;
+}
+.eyebrow.plain{background:transparent;padding:0;margin-bottom:14px}
+.eyebrow.gold{color:var(--gold);background:var(--gold-soft)}
+
+h1,h2,h3{font-family:var(--display);font-weight:500;margin:0;letter-spacing:-.01em}
+h1{font-size:clamp(42px,6.2vw,74px);line-height:1.02}
+h2{font-size:clamp(32px,4.2vw,48px);line-height:1.08}
+h3{font-size:24px;line-height:1.2}
+.lede{font-size:19px;line-height:1.62;color:var(--muted);max-width:60ch;margin:22px 0 0}
+.section-head{max-width:66ch;margin:0 0 52px}
+.section-head .lede{margin-top:16px}
+.rule{height:1px;background:var(--border);border:0;margin:0}
+
+/* ── buttons ────────────────────────────────────────────────────── */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:9px;
+  font-family:var(--ui);font-size:11.5px;font-weight:700;
+  letter-spacing:.1em;text-transform:uppercase;text-decoration:none;
+  padding:14px 24px;border-radius:var(--radius);border:1px solid transparent;
+  cursor:pointer;transition:filter .14s,background .14s,color .14s,border-color .14s;
+  white-space:nowrap;
+}
+.btn-primary{background:var(--accent);color:#FBF8F1}
+.btn-primary:hover{filter:brightness(1.1)}
+.btn-secondary{background:transparent;color:var(--ink);border-color:var(--ink)}
+.btn-secondary:hover{background:var(--ink);color:var(--panel)}
+.btn-ghost{background:transparent;color:var(--ink);padding:10px 14px;letter-spacing:.08em}
+.btn-ghost:hover{background:var(--accent-soft);color:var(--accent)}
+.btn-sm{padding:10px 18px;font-size:10.5px}
+.btn-arrow{font-size:14px;line-height:1;letter-spacing:0}
+.btn-row{display:flex;flex-wrap:wrap;gap:12px;margin-top:34px}
+
+.textlink{
+  display:inline-flex;align-items:center;gap:7px;color:var(--accent);
+  font-weight:600;font-size:13.5px;text-decoration:none;
+  border-bottom:1px solid transparent;transition:border-color .14s;
+}
+.textlink:hover{border-bottom-color:var(--accent)}
+
+/* ── nav ────────────────────────────────────────────────────────── */
+.nav{
+  position:sticky;top:0;z-index:50;background:rgba(241,236,225,.88);
+  backdrop-filter:saturate(1.4) blur(12px);border-bottom:1px solid var(--hair);
+}
+.nav-in{display:flex;align-items:center;gap:20px;height:var(--navh)}
+.nav-brand{
+  display:flex;align-items:center;gap:11px;text-decoration:none;
+  font-family:var(--display);font-weight:600;font-size:25px;letter-spacing:.02em;
+  margin-right:auto;
+}
+.nav-mark{width:30px;height:30px;border-radius:2px;background:var(--accent);
+  display:grid;place-items:center;overflow:hidden;flex:none}
+.nav-mark img{width:100%;height:100%}
+.nav-links{display:flex;align-items:center;gap:4px}
+.nav-links a{
+  text-decoration:none;font-size:11.5px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink);padding:9px 13px;border-radius:var(--radius);
+  transition:background .14s,color .14s;
+}
+.nav-links a:hover{background:var(--accent-soft);color:var(--accent)}
+.nav-links a[aria-current="page"]{color:var(--accent);background:var(--accent-soft)}
+.nav-cta{display:flex;align-items:center;gap:10px;padding-left:8px}
+
+/* ── hero ───────────────────────────────────────────────────────── */
+.hero{padding:88px 0 0;position:relative;overflow:hidden}
+.hero::before{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(var(--hair) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--hair) 1px,transparent 1px);
+  background-size:64px 64px;
+  mask-image:radial-gradient(120% 78% at 68% 22%,#000 0%,transparent 72%);
+  -webkit-mask-image:radial-gradient(120% 78% at 68% 22%,#000 0%,transparent 72%);
+  opacity:.85;
+}
+.hero-in{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.06fr);
+  gap:56px;align-items:center;padding-bottom:88px}
+.hero h1 em{font-style:italic;color:var(--accent)}
+.hero .lede{font-size:20px;max-width:52ch}
+.hero-note{margin-top:20px;font-size:13px;color:var(--faint);max-width:52ch;line-height:1.55}
+.hero-note b{color:var(--muted);font-weight:600}
+
+/* ── the fake-UI mock kit ───────────────────────────────────────────
+   Every product visual on this site is built here, in HTML and CSS. No
+   screenshots: nothing to re-shoot when a screen changes, nothing to go
+   stale, nothing extra to download. */
+.mock{
+  background:var(--panel);border:1px solid var(--border);border-radius:5px;
+  box-shadow:var(--shadow-lift);overflow:hidden;font-size:12.5px;line-height:1.4;
+}
+.mock.flat{box-shadow:var(--shadow)}
+.mock-chrome{
+  display:flex;align-items:center;gap:7px;padding:9px 12px;
+  background:var(--panel-2);border-bottom:1px solid var(--hair);
+}
+.mock-dot{width:8px;height:8px;border-radius:50%;background:var(--border);flex:none}
+.mock-url{
+  margin-left:8px;font-size:10.5px;color:var(--faint);letter-spacing:.04em;
+  background:var(--paper);border:1px solid var(--hair);border-radius:100px;
+  padding:3px 12px;
+}
+.mock-body{padding:18px}
+.mock-title{
+  font-family:var(--ui);font-size:9.5px;font-weight:700;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 12px;
+}
+.mock-title + .mock-title{margin-top:22px}
+
+.mock-row{
+  display:flex;align-items:center;gap:12px;padding:10px 0;
+  border-bottom:1px solid var(--hair);
+}
+.mock-row:last-child{border-bottom:0}
+.mock-row .grow{flex:1;min-width:0}
+.mock-row .nm{font-weight:600;display:block;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.mock-row .sub{color:var(--faint);font-size:11px;display:block}
+.num{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.num.pos{color:var(--forest)}
+.num.neg{color:var(--danger)}
+
+.pill{
+  font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:3px 9px;border-radius:100px;white-space:nowrap;flex:none;
+}
+.pill.ok{background:var(--forest-soft);color:var(--forest)}
+.pill.warn{background:var(--gold-soft);color:var(--gold)}
+.pill.bad{background:var(--danger-soft);color:var(--danger)}
+.pill.info{background:var(--accent-soft);color:var(--accent)}
+
+.mock-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+  gap:1px;background:var(--hair);border:1px solid var(--hair);border-radius:var(--radius);
+  overflow:hidden;margin-bottom:16px}
+.mock-stat{background:var(--panel);padding:12px 13px}
+.mock-stat .k{font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--faint);display:block}
+.mock-stat .v{font-family:var(--display);font-size:26px;font-weight:600;line-height:1.15;
+  display:block;margin-top:3px;font-variant-numeric:tabular-nums}
+
+.mock-bar{height:6px;border-radius:100px;background:var(--panel-2);overflow:hidden;
+  border:1px solid var(--hair)}
+.mock-bar > i{display:block;height:100%;background:var(--accent)}
+.mock-bar.gold > i{background:var(--gold)}
+
+.mock-months{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-top:4px}
+.mock-months i{height:26px;border-radius:2px;background:var(--forest-soft);
+  border:1px solid var(--hair);display:block}
+.mock-months i.late{background:var(--gold-soft)}
+.mock-months i.due{background:var(--panel-2)}
+.mock-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:10.5px;
+  color:var(--faint)}
+.mock-legend span{display:inline-flex;align-items:center;gap:5px}
+.mock-legend b{width:9px;height:9px;border-radius:2px;display:inline-block;
+  border:1px solid var(--hair)}
+
+.mock-doc{
+  background:var(--panel-2);border:1px solid var(--hair);border-radius:var(--radius);
+  padding:12px 14px;font-size:11.5px;color:var(--muted);line-height:1.55;
+}
+.mock-doc mark{background:var(--gold-soft);color:var(--ink);padding:1px 3px;
+  border-radius:2px;font-weight:600}
+.mock-cite{font-size:10.5px;color:var(--faint);margin-top:8px;display:block}
+
+.mock-chat{display:flex;flex-direction:column;gap:10px}
+.mock-ask,.mock-say{padding:10px 13px;border-radius:var(--radius);max-width:92%}
+.mock-ask{background:var(--panel-2);border:1px solid var(--hair);align-self:flex-end;
+  font-weight:600}
+.mock-say{background:var(--accent-soft);color:var(--forest);align-self:flex-start;
+  line-height:1.5}
+
+.mock-flag{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--hair)}
+.mock-flag:last-child{border-bottom:0}
+.mock-flag .dot{width:7px;height:7px;border-radius:50%;margin-top:7px;flex:none}
+.mock-flag .dot.bad{background:var(--danger)}
+.mock-flag .dot.warn{background:var(--gold)}
+.mock-flag .dot.ok{background:var(--forest)}
+.mock-flag b{display:block;font-weight:600}
+.mock-flag span{color:var(--faint);font-size:11px;line-height:1.45}
+
+/* a card floating over the mock, the way a notification would */
+.mock-stack{position:relative}
+.float{
+  position:absolute;background:var(--panel);border:1px solid var(--border);
+  border-radius:var(--radius);box-shadow:var(--shadow-lift);padding:10px 14px;
+  font-size:11.5px;line-height:1.35;display:flex;align-items:center;gap:10px;
+  max-width:250px;
+}
+.float b{display:block;font-weight:700;font-size:12px}
+.float span{color:var(--faint);font-size:10.5px}
+.float .glyph{
+  width:26px;height:26px;border-radius:var(--radius);flex:none;display:grid;
+  place-items:center;font-size:13px;background:var(--accent-soft);
+}
+.float.tl{top:-56px;left:-24px}
+.float.br{bottom:-20px;right:-18px}
+
+/* ── benefit cards ──────────────────────────────────────────────── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,248px),1fr));gap:1px;
+  background:var(--border);border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden}
+.card{background:var(--panel);padding:30px 26px}
+.card .glyph{font-size:22px;line-height:1;display:block;margin-bottom:16px}
+.card h3{font-size:21px;margin-bottom:9px}
+.card p{margin:0;color:var(--muted);font-size:14.5px;line-height:1.6}
+
+/* ── alternating feature blocks ─────────────────────────────────── */
+.feature{
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.08fr);
+  gap:64px;align-items:center;padding:72px 0;border-top:1px solid var(--hair);
+}
+.feature:first-of-type{border-top:0}
+.feature.flip .feature-copy{order:2}
+.feature.flip .feature-art{order:1}
+.feature h3{font-size:clamp(26px,3vw,34px);font-family:var(--display);margin-bottom:14px}
+.feature p{color:var(--muted);font-size:16px;margin:0}
+.ticks{list-style:none;margin:22px 0 0;padding:0;display:grid;gap:10px}
+.ticks li{display:flex;gap:11px;font-size:14.5px;line-height:1.5}
+.ticks li::before{
+  content:'✓';color:var(--accent);font-weight:700;flex:none;font-size:13px;
+  line-height:1.55;
+}
+.only-here{
+  display:inline-flex;align-items:center;gap:7px;margin-top:20px;font-size:11px;
+  font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);
+  background:var(--gold-soft);border-radius:100px;padding:5px 12px;
+}
+
+/* ── comparison table ───────────────────────────────────────────── */
+.table-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--panel)}
+table.cmp{border-collapse:collapse;width:100%;min-width:720px;font-size:14px}
+table.cmp th,table.cmp td{padding:16px 18px;text-align:left;vertical-align:top;
+  border-bottom:1px solid var(--hair)}
+table.cmp thead th{
+  background:var(--panel-2);font-family:var(--ui);font-size:10.5px;font-weight:700;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+  border-bottom:1px solid var(--border);
+}
+/* ⚠ NO position:sticky HERE, deliberately. .table-scroll sets overflow-x:auto, which
+   makes it a scroll container on BOTH axes for sticky purposes — so a sticky thead
+   resolves against that box, which never scrolls vertically, and simply travels off
+   screen doing nothing. It looked like it worked because the header is on screen when
+   the table starts. Every cell in this table carries its own text label rather than a
+   bare tick, so a reader eight rows down still knows what the cell means without it. */
+table.cmp thead th.us{color:var(--accent)}
+table.cmp tbody th{font-weight:600;font-size:14.5px;width:28%}
+table.cmp tbody th small{display:block;font-weight:400;color:var(--faint);font-size:12px;
+  margin-top:3px;line-height:1.45}
+table.cmp td.us{background:var(--accent-soft)}
+table.cmp tr:last-child th,table.cmp tr:last-child td{border-bottom:0}
+.mark{display:flex;gap:9px;align-items:flex-start;font-size:13.5px;line-height:1.45}
+.mark i{font-style:normal;font-weight:700;flex:none;line-height:1.4}
+.mark.yes i{color:var(--forest)}
+.mark.part i{color:var(--gold)}
+.mark.no i{color:var(--danger)}
+.mark.no span{color:var(--faint)}
+
+.honest{
+  background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--gold);
+  border-radius:var(--radius);padding:26px 30px;
+}
+.honest h3{font-size:22px;margin-bottom:10px}
+.honest p{color:var(--muted);margin:0 0 14px;font-size:15px}
+.honest ul{margin:0;padding-left:20px;color:var(--muted);font-size:14.5px;display:grid;gap:7px}
+
+/* ── timeline (About) ───────────────────────────────────────────── */
+.timeline{display:grid;gap:0;margin-top:8px}
+.tl-item{display:grid;grid-template-columns:120px minmax(0,1fr);gap:32px;
+  padding:30px 0;border-top:1px solid var(--hair)}
+.tl-item:first-child{border-top:0}
+.tl-when{font-family:var(--display);font-size:30px;font-weight:600;color:var(--accent);
+  line-height:1.1}
+.tl-item h3{font-size:22px;margin-bottom:8px}
+.tl-item p{margin:0;color:var(--muted);font-size:15px}
+
+/* ── form ───────────────────────────────────────────────────────── */
+.form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:56px;
+  align-items:start}
+form.access{background:var(--panel);border:1px solid var(--border);
+  border-radius:var(--radius);padding:30px;box-shadow:var(--shadow)}
+.field{display:grid;gap:7px;margin-bottom:18px}
+.field label{font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted)}
+.field input,.field select,.field textarea{
+  font-family:var(--ui);font-size:15px;color:var(--ink);background:var(--panel-2);
+  border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;width:100%;
+}
+.field textarea{resize:vertical;min-height:92px}
+.field input:focus,.field select:focus,.field textarea:focus{
+  outline:2px solid var(--accent);outline-offset:-1px;background:var(--panel)}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.form-note{font-size:12.5px;color:var(--faint);margin:14px 0 0;line-height:1.5}
+.form-msg{border-radius:var(--radius);padding:14px 16px;font-size:14px;line-height:1.55;
+  margin-bottom:18px}
+.form-msg.err{background:var(--danger-soft);color:var(--danger)}
+.form-done{
+  background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);
+  border-radius:var(--radius);padding:30px;box-shadow:var(--shadow);
+}
+.form-done h3{margin-bottom:10px}
+.form-done p{color:var(--muted);margin:0 0 10px;font-size:15px}
+
+/* ── closing CTA ────────────────────────────────────────────────── */
+.cta{background:var(--forest);color:var(--panel);border-radius:var(--radius);
+  padding:66px 56px;text-align:center;box-shadow:var(--shadow-lift)}
+.cta h2{color:var(--panel);max-width:20ch;margin:0 auto}
+.cta p{color:rgba(251,248,241,.72);font-size:17px;max-width:56ch;margin:18px auto 0}
+.cta .btn-row{justify-content:center;margin-top:32px}
+.cta .btn-primary{background:var(--panel);color:var(--forest)}
+.cta .btn-primary:hover{filter:brightness(.94)}
+.cta .btn-secondary{color:var(--panel);border-color:rgba(251,248,241,.45)}
+.cta .btn-secondary:hover{background:var(--panel);color:var(--forest);border-color:var(--panel)}
+
+/* ── footer ─────────────────────────────────────────────────────── */
+.foot{border-top:1px solid var(--border);background:var(--panel-2);padding:56px 0 34px}
+.foot-in{display:grid;grid-template-columns:minmax(0,1.5fr) repeat(3,minmax(0,1fr));gap:40px}
+.foot-brand{display:flex;align-items:center;gap:11px;font-family:var(--display);
+  font-weight:600;font-size:24px;text-decoration:none;margin-bottom:14px}
+.foot p{color:var(--muted);font-size:14px;margin:0;max-width:38ch}
+.foot h4{font-family:var(--ui);font-size:10.5px;font-weight:700;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 14px}
+.foot ul{list-style:none;margin:0;padding:0;display:grid;gap:9px}
+.foot ul a{color:var(--muted);text-decoration:none;font-size:14px}
+.foot ul a:hover{color:var(--accent)}
+.foot-base{margin-top:44px;padding-top:22px;border-top:1px solid var(--hair);
+  display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;
+  font-size:12.5px;color:var(--faint)}
+
+/* ── responsive ─────────────────────────────────────────────────── */
+@media (max-width:900px){
+  .section{padding:64px 0}
+  .hero{padding-top:56px}
+  .hero-in,.feature,.form-grid{grid-template-columns:minmax(0,1fr);gap:40px}
+  .hero-in{padding-bottom:64px}
+  /* the mock goes BELOW the prose, never squashed beside it */
+  .feature.flip .feature-copy{order:1}
+  .feature.flip .feature-art{order:2}
+  .float.tl{top:-46px;left:-6px}
+  .float.br{bottom:-14px;right:-8px}
+  .foot-in{grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}
+  .cta{padding:48px 26px}
+  .tl-item{grid-template-columns:minmax(0,1fr);gap:10px}
+}
+@media (max-width:680px){
+  .wrap{padding:0 20px}
+  /* The three links don't fit beside the brand and both buttons at 390px. They wrap to
+     a second row rather than disappearing — hiding them behind nothing left Features,
+     Compare and About reachable only from the footer, which is not navigation. No
+     hamburger, so no JS on any page and nothing to fail. */
+  :root{--navh:112px}   /* two rows once the links wrap */
+  .nav-in{flex-wrap:wrap;height:auto;gap:10px;padding-top:12px}
+  .nav-links{order:3;width:100%;justify-content:center;gap:2px;
+    border-top:1px solid var(--hair);padding:8px 0 4px;margin-top:2px}
+  .nav-links a{padding:8px 11px;font-size:11px}
+  .nav-cta{padding-left:0}
+  .field-row{grid-template-columns:minmax(0,1fr)}
+  .foot-in{grid-template-columns:minmax(0,1fr)}
+  .float{display:none}
+  .btn{flex:1 1 auto}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{transition:none!important}
+}

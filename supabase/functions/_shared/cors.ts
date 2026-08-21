@@ -14,7 +14,21 @@
 
 // Built-in production origin so a deploy WITHOUT the secret is still locked down
 // (not wide open). Override/extend via the ALLOWED_ORIGINS secret.
+//
+// ⚠ THE APP ORIGIN MUST STAY FIRST, because ALLOWLIST[0] is the fallback resolveOrigin()
+// returns when a request arrives with no Origin or an unrecognised one — and
+// send-for-signature builds the tenant's signing link out of exactly that value
+// (`${resolveOrigin(req)}/sign/${token}`). Put the marketing apex first and a signing
+// link starts pointing at amlakre.com, which since 2026-08-21 is the public site and
+// has no /sign route of its own. (The site worker redirects /sign/* to here so links
+// already sent stay signable, but new links should be born correct.)
+//
+// ⚠ AND THIS FILE IS NOT WHAT'S LIVE. It is imported by ~25 functions (CLAUDE.md §5), so
+// editing it would mean redeploying all 25 to take effect. It does not need to be: the
+// ALLOWED_ORIGINS secret is set in production and CONFIGURED wins over this list
+// entirely. This edit exists so the source agrees with the secret — keep them in step.
 const DEFAULT_ORIGINS = [
+  'https://app.amlakre.com',
   'https://amlakre.com',
   'https://www.amlakre.com',
   'https://amlak.akkawigeo-5.workers.dev',

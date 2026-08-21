@@ -1,3 +1,123 @@
+## 2026-08-21 (2) — Amlak has a front door: the app moves to app.amlakre.com, the apex becomes a public site
+
+**Cloudflare versions:** `amlak` **f2575b2e-d8b5-4c60-a6b1-f2d3829fae93** (app, now app.amlakre.com
+only) · **NEW worker `amlak-site`** **87381756-b58d-4e0e-9681-626ce9c292b2** (amlakre.com +
+www.amlakre.com) · 2,039 tests / 193 files green, unchanged.
+
+George asked me to read **pigjet.com** — a direct competitor pitching the same niche in nearly the
+same words — and plan something like it for Amlak. Their nav is `Features · Compare · Blog · About`
+plus a ghost **Log In** to `app.pigjet.com` and a solid **Get Started**.
+
+**The thing worth stealing was not the design, it was the technique: every product visual on their
+site is fake UI built in HTML and CSS.** No screenshots to re-shoot when a screen changes, nothing
+to go stale, nothing extra to download. The whole `site/` mock kit (`.mock`, `.mock-row`, `.pill`,
+`.mock-months`, `.float`) is that idea in Amlak's own tokens. What we did **not** copy is their
+stock-SaaS blue: the site uses the app's *"Ivory & Brass-ink"* palette from `src/App.css:4-16`
+verbatim, so a visitor who clicks into the demo lands somewhere that looks like where they just were.
+
+**Before this, `amlakre.com` was the app.** `App.js:93` sends every unmatched route to `/leases`,
+which needs a session — so anyone who typed the domain or googled "Amlak" hit a login wall. There
+was nothing to read and nothing for a search engine to index.
+
+### What went out
+
+- **NEW `site/`** — five pages, static HTML, no framework and no build step: Home, Features (ten
+  blocks), Compare, Request access, and a branded 404. One `site.css`. Links are **extensionless**
+  (`/features`, not `/features.html`) because Workers Assets 307s the `.html` form — every nav
+  click was costing a redirect hop until that was fixed.
+- **NEW `site-worker.js` + `wrangler.site.jsonc`** (worker `amlak-site`) — static assets plus the
+  two things an asset can't do.
+- **`wrangler.jsonc`** — the app's routes are now `app.amlakre.com` alone.
+- **`index.html`** `og:url` → the app; **`public/robots.txt`** → `Disallow: /`.
+- **`_shared/cors.ts`** — `app.amlakre.com` added to `DEFAULT_ORIGINS`, **first**.
+
+### ⚠ The chain that had to be followed, and where it nearly broke
+
+**Signing links are built from the CORS allowlist, not from a constant.**
+`send-for-signature/index.ts:240` is `` `${resolveOrigin(req)}/sign/${token}` ``, and `resolveOrigin`
+returns `ALLOWLIST[0]` for any origin it doesn't recognise. Three consequences, all handled:
+
+1. **`ALLOWED_ORIGINS` was ALREADY SET in production** (since 2026-07-11) — and `CONFIGURED` wins
+   over `DEFAULT_ORIGINS` **entirely**, so editing the file would have changed nothing while
+   `app.amlakre.com` sat outside the allowlist. Set to
+   `https://app.amlakre.com,https://amlakre.com,https://www.amlakre.com,https://amlak.akkawigeo-5.workers.dev`
+   — **app first, because index 0 is the fallback a new signing link is born with.** The source edit
+   is documentary only; **the 25 importers (§5) did NOT need redeploying**, because the secret
+   overrides them.
+2. **Every envelope already sent points at `amlakre.com/sign/<token>`** and those emails are old
+   forever. `site-worker.js` 302s `/sign/*` (and `/leases`, `/financials`, `/history`, `/settings`,
+   `/ask`, `/display`, `/security`) to the app. **Verified live:** `amlakre.com/sign/some-real-token`
+   → `302 → app.amlakre.com/sign/some-real-token`.
+3. **`CF_APP_HOSTNAME` was pointing at the apex.** `health-check/index.ts:222` scopes the "real
+   server errors on the live app" alert to that one hostname — left alone it would have watched the
+   *marketing site* and stopped noticing app 5xx entirely. Set to `app.amlakre.com`.
+
+Password resets needed nothing: `Login.js` uses `window.location.origin`, which self-heals.
+⚠ **Supabase Auth → Site URL / Redirect URLs is dashboard config and does NOT self-heal** —
+`https://app.amlakre.com/**` must be added there; see *Still to do*.
+
+### The request-access form — a Worker, deliberately not an edge function
+
+Signup stays closed (`Login.js:13` `SIGNUP_OPEN = false`, `enable_signup=false`, the cap trigger in
+`0031`). The form raises a lead and creates nothing, so this is clear of the "going public" gate.
+
+`POST /api/request-access` is handled by the site worker itself and emails George from the verified
+`letters@amlakre.com` with `reply_to` set to the requester. **Why not a Supabase function:** it
+would be the project's *second* unauthenticated endpoint, and `_shared/ratelimit.ts:18` 401s without
+a JWT so it could not throttle it — `sign-envelope` had to hand-roll `clientIp`/`flooded` for exactly
+that reason. Handling it here avoids a new public endpoint, a second copy of that throttle, a CORS
+entry and a migration. Honeypot + a per-IP flood guard; **`RESEND_API_KEY` and `LEAD_TO` are both
+secrets, not vars — this repo is public.**
+
+⚠ **Email-only means no durable record.** Delete the email and the lead is gone. Fine while the
+pipeline is one inbox; a table is a small later add.
+
+### Three things found by testing rather than assumed
+
+- **`position:sticky` on the compare table's `thead` never worked.** `.table-scroll` sets
+  `overflow-x:auto`, which makes it a scroll container on **both** axes for sticky purposes, so the
+  header resolved against a box that never scrolls vertically and simply travelled off screen. It
+  *looked* fine because the header is on screen when the table starts. Removed, with the reason
+  recorded in the CSS; every cell carries its own text label, so nothing is lost eight rows down.
+- **The mobile nav hid Features/Compare/About behind nothing** — `display:none` under 680px left
+  them reachable only from the footer, which is not navigation. They now wrap to a second row
+  (`--navh` 70 → 112) with no hamburger and therefore no JS on any page.
+- **A 500 on the 404 page right after deploy was the rollout, not a bug** — 12 consecutive hits
+  after settling returned 404, 8/8 on the home page, 6/6 on the sign redirect.
+
+`wrangler dev` rewriting `app.amlakre.com` → `app.localhost:8899` in a `Location` header is also a
+**dev-server artifact, not a code fault** — proved with a scratch worker: a redirect to an unrelated
+host (`app.example.org`) came through untouched, one under a configured route domain did not.
+
+### Deploy order (a Cloudflare route belongs to exactly one Worker)
+
+app + apex + www on `amlak` → deploy → wait for `app.amlakre.com` TLS (~10s) → set the two Supabase
+secrets → drop the apex from `amlak` → deploy → immediately deploy `amlak-site`. **Rollback** is
+putting the two apex routes back in `wrangler.jsonc` and redeploying: one command, under a minute.
+
+### Still to do — needs George
+
+- ⚠ **Supabase Auth → URL Configuration:** add `https://app.amlakre.com/**` to Redirect URLs and set
+  Site URL. Until then, password-reset links bounce. **This is the one outstanding item that breaks
+  something.**
+- ⚠ **`hello@amlakre.com` cannot receive mail.** `dig MX amlakre.com` is empty — Resend is verified
+  for *sending* via `send.amlakre.com` + `resend._domainkey`, which is a different thing. The footer
+  Contact link and the form's failure fallback both point at an inbox that doesn't exist. Cloudflare
+  Email Routing (free, no MX conflict since the apex has none) forwarding `hello@` → George's inbox
+  closes it. **Not done unasked: it is a DNS change and a choice of destination inbox.**
+- **No years on the About timeline** — it runs 01/02/03 rather than inventing dates.
+
+### Now redundant (proposed — George picks)
+
+- **`design-system/foundations.html`** — its tokens are a *different palette* (`--accent:#2f6df6`
+  blue, `--bg:#f6f7f9`) from the one the app has shipped for months. A stale handoff artifact, and
+  building anything off the wrong one of the two is the mistake it invites. Re-point or delete.
+- **`index.html`'s `og:image` / twitter card** — still fine, but the app is no longer Amlak's public
+  face; every link preview for the brand should now come from the site's per-page tags.
+- **The `demo-env` + `wrangler.demo.jsonc` sandbox is now load-bearing marketing**, not a dev
+  convenience — the hero's primary CTA points at it. Worth saying out loud so nobody retires it.
+- **Nothing else redundant** — the site is additive; no app feature was replaced.
+
 ## 2026-08-21 (1) — NOI is struck before the reimbursement, and the page now says so
 
 **Cloudflare version:** `157ec5e4-41b6-4e01-8daf-7c4c55e40d55` · 2,039 tests / 193 files green.

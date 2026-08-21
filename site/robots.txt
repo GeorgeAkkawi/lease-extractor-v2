@@ -1,0 +1,7 @@
+# The public site. The application lives at app.amlakre.com and is deliberately
+# not indexed (see public/robots.txt in the app build).
+User-agent: *
+Allow: /
+Disallow: /request-access
+
+Sitemap: https://amlakre.com/sitemap.xml

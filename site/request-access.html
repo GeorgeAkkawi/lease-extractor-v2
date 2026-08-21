@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Request access — Amlak</title>
+<meta name="description" content="Amlak is in private beta and accounts are issued by request. Tell us about your portfolio, or skip the form entirely and open the live demo." />
+<link rel="canonical" href="https://amlakre.com/request-access" />
+<meta name="robots" content="noindex" />
+<meta name="theme-color" content="#5C6B3C" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://amlakre.com/request-access" />
+<meta property="og:title" content="Request access — Amlak" />
+<meta property="og:description" content="Private beta. Accounts by request — or skip the form and open the live demo." />
+<meta property="og:image" content="https://amlakre.com/og.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="https://amlakre.com/og.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,500&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/site.css" />
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="nav-brand" href="/"><span class="nav-mark"><img src="/favicon.svg" alt="" /></span>Amlak</a>
+    <nav class="nav-links">
+      <a href="/features">Features</a>
+      <a href="/compare">Compare</a>
+      <a href="/about">About</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="https://app.amlakre.com">Log in</a>
+      <a class="btn btn-primary btn-sm" href="https://amlak-demo.akkawigeo-5.workers.dev">Live demo</a>
+    </div>
+  </div>
+</header>
+
+<main>
+<section class="section" style="padding-top:72px">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Private beta</span>
+      <h2>Try it first. The form can wait.</h2>
+      <p class="lede">
+        You don't need an account, a form or a call to see whether Amlak is any good — the
+        demo is the real application running on a sample portfolio. Open that first. If you
+        want an account after, this is where you ask for one.
+      </p>
+      <div class="btn-row">
+        <a class="btn btn-primary" href="https://amlak-demo.akkawigeo-5.workers.dev">Open the live demo <span class="btn-arrow">→</span></a>
+      </div>
+    </div>
+
+    <hr class="rule" style="margin:8px 0 56px" />
+
+    <div class="form-grid">
+      <div>
+        <h3 style="font-size:30px;margin-bottom:14px">Ask for an account</h3>
+        <p style="color:var(--muted);margin:0 0 26px">
+          Amlak is deliberately small right now — accounts are issued by hand rather than by
+          signup, so that the people using it can still shape it. Tell us a little about what
+          you're running and you'll get a real reply, from a person.
+        </p>
+        <ul class="ticks">
+          <li><strong>No sales call.</strong> A reply by email, and a straight answer about whether it fits.</li>
+          <li><strong>No obligation and no card.</strong> There isn't a price yet.</li>
+          <li><strong>We'll say no if it doesn't fit.</strong> Residential, hundreds of units, or a portal for your tenants — that's not this product, and we'll tell you so.</li>
+        </ul>
+      </div>
+
+      <div id="slot">
+        <form class="access" id="access-form" novalidate>
+          <div id="err" hidden class="form-msg err"></div>
+
+          <div class="field">
+            <label for="name">Your name</label>
+            <input id="name" name="name" type="text" autocomplete="name" required />
+          </div>
+
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" autocomplete="email" required />
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="properties">Properties</label>
+              <select id="properties" name="properties">
+                <option>1</option>
+                <option>2–5</option>
+                <option>6–15</option>
+                <option>16–50</option>
+                <option>More than 50</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="kind">Mostly</label>
+              <select id="kind" name="kind">
+                <option>Retail / strip centre</option>
+                <option>Office</option>
+                <option>Industrial</option>
+                <option>Mixed use</option>
+                <option>Something else</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="message">Anything else <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label>
+            <textarea id="message" name="message" placeholder="What you're using today, and what about it isn't working."></textarea>
+          </div>
+
+          <!-- Honeypot: a real person never sees this, and never fills it in. -->
+          <div class="hp" aria-hidden="true">
+            <label for="company_website">Company website</label>
+            <input id="company_website" name="company_website" type="text" tabindex="-1" autocomplete="off" />
+          </div>
+
+          <button class="btn btn-primary" type="submit" id="send" style="width:100%">Request access</button>
+          <p class="form-note">
+            Goes to one inbox and is answered by one person. No list, no newsletter, no tracker
+            on this page.
+          </p>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-in">
+      <div>
+        <a class="foot-brand" href="/"><span class="nav-mark"><img src="/favicon.svg" alt="" /></span>Amlak</a>
+        <p>Commercial leases, expenses and rent. Read, tracked and reconciled — built for
+        landlords running triple-net retail.</p>
+      </div>
+      <div>
+        <h4>Product</h4>
+        <ul>
+          <li><a href="/features">Features</a></li>
+          <li><a href="/compare">Compare</a></li>
+          <li><a href="https://amlak-demo.akkawigeo-5.workers.dev">Live demo</a></li>
+          <li><a href="https://app.amlakre.com">Log in</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Company</h4>
+        <ul>
+          <li><a href="/about">About</a></li>
+          <li><a href="/request-access">Request access</a></li>
+          <li><a href="mailto:hello@amlakre.com">Contact</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Status</h4>
+        <ul>
+          <li><span style="color:var(--muted);font-size:14px">Private beta</span></li>
+          <li><span style="color:var(--faint);font-size:14px">Accounts by request</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-base">
+      <span>© 2026 Amlak</span>
+      <span>أملاك — <em>properties</em></span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var form = document.getElementById('access-form');
+  var slot = document.getElementById('slot');
+  var err  = document.getElementById('err');
+  var send = document.getElementById('send');
+
+  function fail(msg) {
+    err.innerHTML = msg;
+    err.hidden = false;
+    send.disabled = false;
+    send.textContent = 'Request access';
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    err.hidden = true;
+
+    var data = {
+      name: form.name.value.trim(),
+      email: form.email.value.trim(),
+      properties: form.properties.value,
+      kind: form.kind.value,
+      message: form.message.value.trim(),
+      company_website: form.company_website.value
+    };
+
+    if (!data.name) return fail('Add your name so we know who we’re replying to.');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.email)) return fail('That email doesn’t look right — check it and try again.');
+
+    send.disabled = true;
+    send.textContent = 'Sending…';
+
+    fetch('/api/request-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      // Replaced in place, not a toast: a toast dies on the next click and takes the
+      // only confirmation the sender ever gets with it.
+      slot.innerHTML =
+        '<div class="form-done">' +
+          '<h3>Got it.</h3>' +
+          '<p>We’ll reply to <strong>' + data.email.replace(/[<>&]/g, '') + '</strong> — ' +
+          'from a person, usually within a day or two.</p>' +
+          '<p>In the meantime the demo is open and needs nothing from you.</p>' +
+          '<a class="btn btn-primary" href="https://amlak-demo.akkawigeo-5.workers.dev" style="margin-top:8px">Open the live demo <span class="btn-arrow">→</span></a>' +
+        '</div>';
+      slot.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }).catch(function () {
+      fail('That didn’t send — something on our end. Email ' +
+           '<a href="mailto:hello@amlakre.com?subject=Amlak%20access%20request" style="color:inherit;font-weight:700">hello@amlakre.com</a> ' +
+           'directly and it’ll reach the same person.');
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

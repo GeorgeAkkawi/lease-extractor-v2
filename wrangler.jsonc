@@ -11,9 +11,12 @@
   // Custom domains (registered via Cloudflare Registrar 2026-07-11). Deploying
   // with these routes provisions the DNS records + TLS certs automatically.
   // The old amlak.akkawigeo-5.workers.dev URL keeps working alongside them.
+  // ⚠ THE APP LIVES AT app.amlakre.com. The apex and www belong to the `amlak-site`
+  // worker (wrangler.site.jsonc) — a Cloudflare route belongs to exactly one Worker,
+  // so putting either back here takes the public site down. Signing links already in
+  // tenants' inboxes point at the apex and are redirected here by that worker.
   "routes": [
-    { "pattern": "amlakre.com", "custom_domain": true },
-    { "pattern": "www.amlakre.com", "custom_domain": true }
+    { "pattern": "app.amlakre.com", "custom_domain": true }
   ],
   // Keep the original workers.dev URL live alongside the custom domain —
   // wrangler disables it by default once "routes" exist.

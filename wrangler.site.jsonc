@@ -1,0 +1,32 @@
+{
+  // The PUBLIC SITE at amlakre.com — a separate Cloudflare Worker from the app one
+  // (`wrangler.jsonc`, now serving app.amlakre.com). Static pages live in ./site and
+  // need no build step; site-worker.js handles the two things a static asset can't:
+  // redirecting the app paths that used to live on this hostname, and taking the
+  // request-access form.
+  //
+  // Deploy with:
+  //   npx wrangler deploy -c wrangler.site.jsonc
+  //
+  // ⚠ TWO SECRETS ARE REQUIRED before the form works. Both are secrets rather than
+  // "vars" because THIS REPO IS PUBLIC and LEAD_TO is a personal inbox:
+  //   npx wrangler secret put RESEND_API_KEY -c wrangler.site.jsonc
+  //   npx wrangler secret put LEAD_TO        -c wrangler.site.jsonc
+  "name": "amlak-site",
+  "main": "site-worker.js",
+  "compatibility_date": "2025-06-01",
+  // Taking the apex means the app must already be reachable at app.amlakre.com —
+  // a route belongs to exactly one Worker. See docs/deploy-log.md for the order.
+  "routes": [
+    { "pattern": "amlakre.com", "custom_domain": true },
+    { "pattern": "www.amlakre.com", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./site",
+    "binding": "ASSETS",
+    // A static site, so an unknown path is a real 404 — NOT the app's
+    // single-page-application fallback, which would answer every typo with the
+    // home page and tell search engines the site has infinite pages.
+    "not_found_handling": "404-page"
+  }
+}

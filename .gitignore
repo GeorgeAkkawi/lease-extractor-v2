@@ -25,6 +25,8 @@ yarn-error.log*
 
 # local tooling / agent artifacts (not part of the app)
 .playwright-mcp/
+# wrangler dev's local state (created by `npx wrangler dev`)
+.wrangler/
 .claude/settings.local.json
 
 # defensive: a bare .env is never used here — secrets live in .env.local only
