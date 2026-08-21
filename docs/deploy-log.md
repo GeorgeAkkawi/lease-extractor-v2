@@ -1,3 +1,66 @@
+## 2026-08-21 (5) — support@ verified receiving, a third hero button, and the password floor raised
+
+**Cloudflare version:** `amlak-site` **a431dd43-a4a9-4c57-a5b7-afd567de1af0**. No app change;
+2,040 tests / 193 files unaffected.
+
+### `support@amlakre.com` is live, and the sending path is untouched
+
+George enabled Cloudflare Email Routing. Verified in two steps rather than one, because DNS being
+right does not prove delivery:
+
+1. **DNS** — `amlakre.com` now has `route1/route2/route3.mx.cloudflare.net` and
+   `v=spf1 include:_spf.mx.cloudflare.net ~all`. ⚠ **And the Resend *sending* records are
+   unchanged** — `send.amlakre.com` still has its SES MX + SPF and `resend._domainkey` is intact.
+   Receiving and sending are separate pieces of DNS; adding one did not disturb the other.
+2. **A real message** — sent through Resend from `letters@amlakre.com` to `support@amlakre.com`.
+   Resend reports **`delivered`**, meaning Cloudflare's MX *accepted* it. Cloudflare rejects mail
+   for an address with no matching rule, so acceptance is evidence the rule exists.
+
+The address is now genuinely backed on the privacy, terms, security and support pages.
+
+### A third hero button, and the six pixels that made it ugly
+
+`View features` → `/features`, between *See it working* and *Request access*.
+
+⚠ **It orphaned onto a second line, and the cause was worth measuring rather than eyeballing**: the
+three buttons needed **515px** in a **509px** column. Six pixels. Fixed by scoping a tighter gap
+(12→10) and horizontal padding (24→18) to `.hero` only, so buttons elsewhere keep their
+proportions — needed drops to 475px, leaving 34px of headroom and holding down to roughly a
+1080px viewport. Below that it wraps 2+1, which is a choice rather than an accident.
+
+### Password floor raised to 10 — and what could NOT be done
+
+`password_min_length` **6 → 10** on the live project. This closes the gap logged in the previous
+entry, where `Login.js` enforced 10 in the browser while the server accepted 6.
+
+⚠ **It cannot affect an existing account**: the minimum is evaluated on a *new or changed* password
+only. Nobody's current password is re-validated, nobody is locked out, no reset is forced.
+
+⚠ **Leaked-password protection (HIBP) was REFUSED BY SUPABASE, NOT SKIPPED** — `HTTP 402:
+"Configuring leaked password protection via HaveIBeenPwned.org is available on Pro Plans and up."`
+The project is on the free plan. Enabling it is a paid upgrade and therefore George's call, not a
+change to make on his behalf. **And it failed the whole PATCH**: both fields were sent together, the
+402 rejected the request atomically, and a read-back was the only reason this was noticed rather
+than assumed. Send auth-config changes one at a time, or read back every time.
+
+⚠ **Session timebox and inactivity timeout were deliberately NOT set.** They are the two settings in
+that group that genuinely *do* affect current accounts — a 24h timebox terminates sessions older
+than 24h at their next refresh, which would sign George out immediately. Asked rather than applied.
+
+### ⚠ Still mismatched: the client password rule is missing a character class
+
+`password_required_characters` on the live project requires **four** groups — lowercase, uppercase,
+digit **and a symbol**. `passwordProblem()` (`Login.js`) checks only the first three. So a 10-character
+password with no symbol passes the browser check and is rejected by the server with a generic
+message — precisely the failure the client mirror exists to prevent (`SECURITY.md` §1). Raising the
+length made the client's advice *more* confident while still incomplete. Pre-existing, one line to
+fix, **not bundled in** — flagged for George.
+
+### Now redundant (proposed — George picks)
+
+- **Nothing new.** The previous entry's item stands: `SECURITY.md` and the live project still
+  disagree about the session settings, and the doc still calls the front end "Create React App".
+  The password-length row of that table is now closed.
 ## 2026-08-21 (4) — the Arabic line fixed, a summary at the top, and a legal section
 
 **Cloudflare version:** `amlak-site` **3a013cb5-7d40-432b-bea3-f2ede009e5f7** ·

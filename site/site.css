@@ -119,6 +119,12 @@ h3{font-size:24px;line-height:1.2}
   gap:56px;align-items:center;padding-bottom:88px}
 .hero h1 em{font-style:italic;color:var(--accent)}
 .hero .lede{font-size:20px;max-width:52ch}
+/* Three CTAs in a 509px column needed 515px — six pixels, and the third button
+   orphaned onto its own line. Trimmed here rather than globally so the buttons
+   elsewhere on the site keep their proportions. Below ~1080px it wraps anyway,
+   which is fine: at that width it wraps 2+1 by choice, not by six pixels. */
+.hero .btn-row{gap:10px}
+.hero .btn{padding-left:18px;padding-right:18px}
 .hero-note{margin-top:20px;font-size:13px;color:var(--faint);max-width:52ch;line-height:1.55}
 .hero-note b{color:var(--muted);font-weight:600}
 
