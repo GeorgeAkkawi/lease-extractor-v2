@@ -19,6 +19,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfirmProvider } from '../ConfirmDialog';
 import WhatStayedStrip from '../WhatStayedStrip';
+import RecoverabilityTable from '../RecoverabilityTable';
 import CamSection from '../CamSection';
 import { getExpenseRecord, getTenantShares } from '../../lib/api';
 import { currentYear } from '../../lib/format';
@@ -59,14 +60,31 @@ describe('What actually stayed', () => {
     // reimbursement, so NOI has never counted a penny of it.
     expect(within(rowFor('Other income')).getByText('$2,690.00')).toBeTruthy();
 
-    // 100,000 + 2,690 − 2,950 − 24,000 = 75,740
-    expect(within(rowFor('What actually stayed')).getByText('$75,740.00')).toBeTruthy();
+    // ⚠ THE TERM THE STRIP USED TO OMIT (2026-08-21). `v_property_totals.noi` is base rent
+    // less GROSS expenses (migration 0049), so a triple-net property's NOI is struck before
+    // the reimbursement that cancels those expenses — and this strip inherited the
+    // understatement, by exactly what tenants pay back, on every NNN property.
+    expect(within(rowFor('Tenants reimbursed')).getByText('$44,600.00')).toBeTruthy();
+
+    // 100,000 + 44,600 + 2,690 − 2,950 − 24,000 = 120,340
+    expect(within(rowFor('What actually stayed')).getByText('$120,340.00')).toBeTruthy();
+
+    // …and it ties to its own rows whatever the seed says, so a changed fixture cannot
+    // leave the total quietly disagreeing with the lines above it.
+    const signed = [...document.querySelectorAll('.stayed-row')]
+      .filter((r) => !r.classList.contains('stayed-total'))
+      .map((r) => {
+        const amt = Number(r.querySelector('.num').textContent.replace(/[$,]/g, ''));
+        return r.querySelector('.stayed-op')?.textContent === '−' ? -amt : amt;
+      });
+    expect(Math.round(signed.reduce((a, b) => a + b, 0) * 100) / 100).toBe(120340);
 
     // Every sign is load-bearing: money-IN adds and money-OUT subtracts. A sign flip
     // here would be an arithmetically tidy lie.
     const signs = [...document.querySelectorAll('.stayed-row')]
       .map((r) => [r.textContent.replace(/\s+/g, ' ').trim(), r.querySelector('.stayed-op')?.textContent])
       .filter(([, op]) => op);
+    expect(signs.find(([t]) => t.startsWith('+Tenants reimbursed'))?.[1]).toBe('+');
     expect(signs.find(([t]) => t.startsWith('+Other income'))?.[1]).toBe('+');
     expect(signs.find(([t]) => t.startsWith('−Costs you absorbed'))?.[1]).toBe('−');
     expect(signs.find(([t]) => t.startsWith('−Owner distributions'))?.[1]).toBe('−');
@@ -79,6 +97,27 @@ describe('What actually stayed', () => {
     // The absorbed line counts the two real costs and NOT the draw — a "3 expense lines"
     // footnote would be the same conflation one sentence lower down.
     expect(document.body.textContent).toContain('2 expense lines you entered and chose not to bill back');
+  });
+
+  // ⚠ THE ASSERTION THAT KEEPS THE PAGE HONEST. Both panels sit on the property Financials
+  // page and both now print the reimbursement. They read it through ONE loader
+  // (`useRecoverability`) precisely so they cannot part company — including its `escReady`
+  // weighting gate, which is what decides whether a mid-year tenant's recovery is prorated.
+  // Asserting the two rendered figures match is the only check that fails if someone
+  // re-assembles the inputs in one of them (CLAUDE.md §3).
+  it('prints the same reimbursement the “What it cost you” table does', async () => {
+    withProviders(
+      <>
+        <WhatStayedStrip propId="prop-1" year={Y} noi={100000} />
+        <RecoverabilityTable propId="prop-1" year={Y} />
+      </>
+    );
+    await waitFor(() => expect(screen.getByText(`What actually stayed · FY ${Y}`)).toBeTruthy());
+    await waitFor(() => expect(document.querySelector('.recov-row.recov-total')).toBeTruthy());
+
+    const strip = within(rowFor('Tenants reimbursed')).getByText(/^\$/).textContent;
+    const table = document.querySelector('.recov-row.recov-total .recov-back b').textContent;
+    expect(strip).toBe(table);
   });
 
   it('says nothing at all when there is nothing to reconcile', async () => {

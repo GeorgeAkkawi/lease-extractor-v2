@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { listCamLineItems, listOtherIncome, listExpenseBuckets } from '../lib/api';
+import { listOtherIncome } from '../lib/api';
 import { absorbedFromItems, whatStayed } from '../lib/recoverability';
+import useRecoverability from '../lib/useRecoverability';
 import { summarizeOtherIncome } from '../lib/otherIncome';
 import { money } from '../lib/format';
 
@@ -14,23 +15,29 @@ import { money } from '../lib/format';
 // quoted unchanged and everything it doesn't know about is carried BESIDE it, derived
 // client-side from data that already exists.
 //
-// Every query reuses the exact key its own screen uses — `camLineItems` is the same key
-// CamSection and RecoverabilityTable read, `expenseBuckets` the same key CamSection's
-// category chips read — so this is normally three cache hits, it repaints on every
-// existing invalidation, and it cannot disagree with the panels below it.
+// Every query reuses the exact key its own screen uses, so this is normally all cache hits,
+// it repaints on every existing invalidation, and it cannot disagree with the panels below
+// it. Since 2026-08-21 the expense side comes through `useRecoverability` — the SAME loader
+// *What it cost you* uses — because both panels now print the reimbursement and two
+// assemblies of one figure is the §3 drift that puts two of them on one page.
+//
+// ⚠ AND NOI IS STRUCK BEFORE THAT REIMBURSEMENT. `v_property_totals.noi` is
+// `Σ effective_rent − (taxes + cam + roof)` (migration 0049): base rent in, GROSS expenses
+// out. In a triple-net lease those expenses are cancelled by what the tenant pays back, so
+// NOI understates by exactly that — on every NNN property, every year. This strip carried
+// the understatement silently until George named it; the workbook never did, because
+// `noiBridge` has always had a "tenants reimbursed" term.
 //
 // The arithmetic is UNCHANGED by the entity ledger's retirement (2026-08-12). A draw
 // used to arrive as an `entity_ledger` row and now arrives as a non-billable expense
 // line carrying the `distribution` category; `absorbedFromItems` splits it back out by
 // category, so the same dollars are subtracted under the same label as before.
 export default function WhatStayedStrip({ propId, year, noi }) {
-  const { data: camItems = [] } = useQuery({
-    queryKey: ['camLineItems', propId, year],
-    queryFn: () => listCamLineItems(propId, year),
-  });
-  // What resolves a non-billable line's category, and so which side of the strip it
-  // lands on — a cost you ate, or money you took out.
-  const { data: buckets = [] } = useQuery({ queryKey: ['expenseBuckets'], queryFn: listExpenseBuckets });
+  // ⚠ THE SAME LOADER *What it cost you* USES, so "Tenants reimbursed" here and "Recovered
+  // from tenants" there are one figure, including the `escReady` weighting gate. Two
+  // assemblies of the same inputs on one page is the §3 drift that puts two reimbursement
+  // totals in front of an accountant.
+  const { totals, items, buckets } = useRecoverability(propId, year);
 
   // Income the property really received that NOI has never counted, because it never
   // rode an invoice.
@@ -39,10 +46,16 @@ export default function WhatStayedStrip({ propId, year, noi }) {
     queryFn: () => listOtherIncome(propId, year),
   });
 
-  const absorbed = absorbedFromItems(camItems, buckets);
+  // ⚠ ALL THREE KINDS, not CAM alone. This read `absorbedFromItems(camItems, buckets)` until
+  // 2026-08-21, so a not-billed TAX or ROOF line was money that left the account and that this
+  // strip never subtracted — the same class of omission as the missing reimbursement, on the
+  // other side of the ledger. `items` is the tax+cam+roof array the recoverability table
+  // already builds.
+  const absorbed = absorbedFromItems(items, buckets);
   const inc = summarizeOtherIncome(income);
   const { lines, stayed } = whatStayed({
     noi,
+    recovered: totals.recovered,
     absorbed: absorbed.total,
     otherIncome: inc.total,
     distributions: absorbed.ownerTotal,
@@ -71,8 +84,13 @@ export default function WhatStayedStrip({ propId, year, noi }) {
           <div className="num"><b>{money(stayed)}</b></div>
         </div>
         <div className="muted" style={{ fontSize: 11, marginTop: 10 }}>
-          NOI is unchanged — it is what your tenants were billed, less what the building spent.
-          Everything under it is real money that NOI has never known about
+          {/* ⚠ THIS SENTENCE USED TO BE WRONG, and being wrong is what hid the omission: it read
+              "NOI is unchanged — it is what your tenants were billed, less what the building
+              spent." NOI is what tenants were billed FOR RENT, less the gross expense — the
+              reimbursement is in neither half of it. */}
+          NOI is unchanged — it is your tenants’ <strong>rent</strong>, less what the building spent.
+          It is struck before they pay any of that back, which is why the reimbursement is added
+          here rather than hidden inside it. Everything under NOI is real money it has never known about
           {absorbed.count > 0 && <>, including {absorbed.count} expense line{absorbed.count === 1 ? '' : 's'} you entered and chose not to bill back</>}.
           {absorbed.ownerTotal > 0 && ' A distribution is not an expense — it reduces your equity, so it is subtracted here and left out of every expense total.'}
           {inc.count > 0 && ` Other income is real money in, but it never rode a tenant's invoice — so no Collected figure includes it.`}

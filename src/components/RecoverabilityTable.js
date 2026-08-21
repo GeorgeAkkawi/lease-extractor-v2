@@ -5,45 +5,18 @@
 // It supersedes the CAM-only roll-up Slice 2 shipped inside CamSection, which covered
 // one of the three itemized sections and said so in its own footnote. This covers all
 // three, and adds the column that makes it worth reading.
-import { useQuery } from '@tanstack/react-query';
-import { getTenantShares, listCamLineItems, listTaxLineItems, listRoofLineItems, listExpenseBuckets, getExpenseRecord, listEscalationsByLeases } from '../lib/api';
-import { recoverabilityRows } from '../lib/recoverability';
-import { inTermByLease } from '../lib/leaseSchedule';
 import { money } from '../lib/format';
+import useRecoverability from '../lib/useRecoverability';
 import Panel from './Panel';
 
 export default function RecoverabilityTable({ propId, year }) {
-  const { data: shares = [] } = useQuery({ queryKey: ['tenantShares', propId, year], queryFn: () => getTenantShares(propId, year) });
-  const { data: buckets = [] } = useQuery({ queryKey: ['expenseBuckets'], queryFn: listExpenseBuckets });
-  // The three itemized sections' OWN keys, so every existing invalidation on this page
-  // repaints this table too — adding a CAM line moves the table with no new plumbing.
-  const { data: camItems = [] } = useQuery({ queryKey: ['camLineItems', propId, year], queryFn: () => listCamLineItems(propId, year) });
-  const { data: taxItems = [] } = useQuery({ queryKey: ['taxLineItems', propId, year], queryFn: () => listTaxLineItems(propId, year) });
-  const { data: roofItems = [] } = useQuery({ queryKey: ['roofLineItems', propId, year], queryFn: () => listRoofLineItems(propId, year) });
-  // Same query key the page and the three expense sections use, so this is a cache hit
-  // and the table can never read a different total than the sections above it.
-  const { data: expense } = useQuery({ queryKey: ['expenseRecord', propId, year], queryFn: () => getExpenseRecord(propId, year) });
-  // ⚠ The SAME query key TenantShareTable uses on this very page, so this is a cache hit
-  // rather than a second fetch — and, more to the point, so the Recovered column here can
-  // never weigh a mid-year tenant differently from the Estimated/Difference columns in the
-  // breakdown below it. One query for the whole property, never one per lease.
-  const { data: escByLease, isSuccess: escReady } = useQuery({
-    queryKey: ['escalationsByLeases', propId, shares.map((s) => s.lease_id).join(',')],
-    queryFn: () => listEscalationsByLeases(shares.map((s) => s.lease_id)),
-    enabled: shares.length > 0,
-  });
-
-  const items = [...taxItems, ...camItems, ...roofItems];
-  // ⚠ NOT WEIGHED UNTIL THE STEPS ARE IN HAND. Weighing from `lease_start` alone, with the
-  // escalations still in flight, prorates a RENEWED tenant as though the tenancy began at
-  // its catch-up date — a third figure, briefly on screen, that is neither the old
-  // unprorated one nor the right one. Passing null until the query settles means the worst
-  // case is the figure this table showed before 2026-08-16, which is at least coherent —
-  // and it is also what a failed query leaves behind.
-  const { rows, totals, owner, ownerTotal } = recoverabilityRows({
-    items, shares, expense: expense || {}, buckets,
-    inTermByLease: escReady ? inTermByLease({ year, shares, escByLease: escByLease || {} }) : null,
-  });
+  // ⚠ THE QUERIES AND THE `escReady` GATE MOVED TO `useRecoverability` (2026-08-21) — not to
+  // tidy this file, but because *What actually stayed* now prints the SAME reimbursement this
+  // table's Recovered column does. Two assemblies of the same inputs are free to disagree, and
+  // both figures sit on one screen a few hundred pixels apart (CLAUDE.md §3). Every query key
+  // is unchanged, so this is still a cache hit off the sections above and still repaints on
+  // every existing invalidation.
+  const { rows, totals, owner, ownerTotal } = useRecoverability(propId, year);
 
   // Nothing spent yet — the expense sections above already say so; a table of zeroes
   // would just be noise on a page that is otherwise asking you to fill them in. A year

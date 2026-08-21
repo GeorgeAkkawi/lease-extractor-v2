@@ -324,9 +324,26 @@ export function absorbedFromItems(items = [], buckets = []) {
  * NOI to what the PROPERTY's year left in the account, which is the question it was
  * always really answering.
  */
-export function whatStayed({ noi = 0, absorbed = 0, otherIncome = 0, distributions = 0 } = {}) {
+export function whatStayed({ noi = 0, recovered = 0, absorbed = 0, otherIncome = 0, distributions = 0 } = {}) {
   const lines = [
-    { key: 'noi', label: 'Net operating income', sub: 'as billed', amount: round2(noi), sign: 1, always: true },
+    { key: 'noi', label: 'Net operating income', sub: 'rent billed, less what the building spent', amount: round2(noi), sign: 1, always: true },
+    // ⚠ THE TERM THIS STRIP WAS MISSING, and it is the whole NNN structure (George,
+    // 2026-08-21). `v_property_totals.noi` is `Σ effective_rent − (taxes + cam + roof)`
+    // (migration 0049): BASE RENT ONLY on the income side, GROSS expenses on the other. So a
+    // triple-net property's NOI is struck BEFORE the reimbursement that is supposed to cancel
+    // those expenses, and this strip inherited the understatement — by exactly what tenants
+    // pay back, on every NNN property, every year.
+    //
+    // The workbook has always carried it: `noiBridge`'s first term is literally "tenants
+    // reimbursed" (`incomeExpense.js`), which is how `net === earned − spent` reaches the
+    // right answer. But that bridge is workbook-only, so the two surfaces quoted bottom lines
+    // that differed by the reimbursement and nothing on screen said why.
+    //
+    // ⚠ ADDED, NOT NETTED INTO NOI. Redefining `noi` would silently re-value every
+    // `financial_snapshots` row already written and every historical chart point — HistoryPage
+    // derives NOI from the FROZEN snapshot (`total_revenue − expenses`), so a closed year would
+    // stop matching what was closed. NOI is quoted unchanged and the term is carried beside it.
+    { key: 'recovered', label: 'Tenants reimbursed', sub: 'CAM, taxes and roof billed back to them', amount: round2(recovered), sign: 1 },
     { key: 'otherIncome', label: 'Other income', sub: 'not tenant rent', amount: round2(otherIncome), sign: 1 },
     { key: 'absorbed', label: 'Costs you absorbed', sub: 'entered, not billed to tenants', amount: round2(absorbed), sign: -1 },
     { key: 'distributions', label: 'Owner distributions', sub: 'money you took out', amount: round2(distributions), sign: -1 },

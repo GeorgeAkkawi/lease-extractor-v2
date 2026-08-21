@@ -21,9 +21,11 @@ import { describe, it, expect } from 'vitest';
 import { buildIncomeExpense, billedRowsFromRoll, consolidateCategories, consolidateDistributions, flags, shapeProperty, noiBridge } from '../incomeExpense';
 import { getPropertyMonthlyRoll, createEscalation, deleteEscalation } from '../api';
 import { allocatePayments, overpayKey } from '../ledger';
+import { whatStayed, absorbedFromItems } from '../recoverability';
 import { currentYear } from '../format';
 
 const Y = currentYear();
+const round = (n) => Math.round(n * 100) / 100;
 const sum12 = (a) => Math.round(a.reduce((s, n) => s + n, 0) * 100) / 100;
 
 // ── Against the demo mock ─────────────────────────────────────────────────────
@@ -324,6 +326,72 @@ describe('distributions, named rather than lumped', () => {
     const clean = shapeWith('No draws', [{ kind: 'cam', label: 'Absorbed repair', amount: 500, billable: false, paid_date: `${Y}-03-02` }]);
     expect(consolidateDistributions([clean])).toEqual([]);
     expect(consolidateDistributions()).toEqual([]);
+  });
+});
+
+// ── The page and the workbook, tied together (George, 2026-08-21) ────────────────────
+//
+// George: *"in a NNN lease … the reimbursement income and the expense outflow effectively
+// cancel each other out … NOI ends up equal to the base rent alone."* The WORKBOOK has always
+// worked that way — `net === earned − spent`, with the reimbursement inside `earned`. The
+// FINANCIALS PAGE did not: `v_property_totals.noi` is base rent less GROSS expenses, and the
+// "What actually stayed" strip built on it had no reimbursement line at all. So the two
+// surfaces quoted bottom lines that differed by exactly what tenants paid back.
+//
+// ⚠ THIS IS THE TEST THAT STOPS THEM PARTING AGAIN. It rebuilds the page's strip from the
+// page's own inputs and the workbook's `net` from `shapeProperty`, and asserts the identity
+// between them. Derivation, with charges and carried at zero:
+//
+//   earned = rent + recovered + otherIncome        (camTax/roof billed cancel against trueUp)
+//   net    = earned − spent,  spent = billable + absorbed
+//   noi    = rent − billable
+//   ⇒ net  = noi + recovered + otherIncome − absorbed  ===  stayed + distributions
+//
+// The distributions sit on the right because the workbook reports them BESIDE `net`, under
+// "Your own money — not part of the figures above", while the strip subtracts them.
+describe('the page’s strip against the workbook’s net', () => {
+  // ⚠ ASSERTED AGAINST A REAL PACKAGE, not a hand-built one. The workbook's rent comes off
+  // the monthly ROLL, not off `total_revenue`, so a fixture with an empty roll has no rent in
+  // it at all and the identity below is vacuously wrong (net came out at −$10,000 the first
+  // time this was written that way).
+  it('differs from the workbook by the two terms it does not carry, and by nothing else', async () => {
+    for (const corp of ['corp-1', 'corp-2']) {
+      for (const p of (await buildIncomeExpense(corp, Y)).properties) {
+        // The page's side, assembled exactly as WhatStayedStrip assembles it — including
+        // `absorbed` over ALL THREE kinds, which is what `shapeProperty` uses too (line 478).
+        const { stayed } = whatStayed({
+          noi: p.noi,
+          recovered: p.recovered,
+          otherIncome: p.otherIncome,
+          absorbed: p.absorbed,
+          distributions: p.distributionsTotal,
+        });
+        // Distributions move to the workbook's side because it reports them BESIDE `net`,
+        // under "Your own money — not part of the figures above", while the strip subtracts them.
+        const gap = round(p.net - (stayed + p.distributionsTotal));
+        // Whatever is left is the two bridge terms the strip still does not carry, named
+        // rather than tolerated: tenants' charges and credits, and the difference between
+        // rent counted month by month and rent counted at a full annual rate.
+        const term = (k) => round(p.noiBridge.terms.find((t) => t.key === k)?.amount || 0);
+        expect(gap).toBe(round(term('charges') + term('rentBasis')));
+        // And no unexplained residual — if the bridge itself does not close, the identity
+        // above is meaningless.
+        expect(p.noiBridge.terms.some((t) => t.unexplained)).toBe(false);
+      }
+    }
+  });
+
+  // The half George actually asked about: on a fully-reimbursed NNN property the strip's
+  // reimbursement line is what brings NOI back up to the rent the lease charges.
+  it('is short by exactly the reimbursement when the line is removed', async () => {
+    const props = (await buildIncomeExpense('corp-1', Y)).properties.filter((p) => p.recovered > 0);
+    expect(props.length).toBeGreaterThan(0);
+    for (const p of props) {
+      const args = { noi: p.noi, otherIncome: p.otherIncome, absorbed: p.absorbed, distributions: p.distributionsTotal };
+      const withIt = whatStayed({ ...args, recovered: p.recovered }).stayed;
+      const without = whatStayed(args).stayed;
+      expect(round(withIt - without)).toBe(round(p.recovered));
+    }
   });
 });
 

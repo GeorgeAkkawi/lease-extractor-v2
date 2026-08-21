@@ -25,6 +25,7 @@ import RecoverabilityTable from '../components/RecoverabilityTable';
 import OtherIncomeSection from '../components/OtherIncomeSection';
 import WhatStayedStrip from '../components/WhatStayedStrip';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
+import useRecoverability from '../lib/useRecoverability';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
 import ExportReconciliationModal from '../components/ExportReconciliationModal';
@@ -84,6 +85,15 @@ export default function PropertyFinancialsPage() {
   const totalExp = taxes + cam + roof;
   const noi = totals?.noi ?? revenue - totalExp;
   const margin = revenue > 0 ? Math.round((noi / revenue) * 100) : null;
+  // ⚠ WHAT NOI DOES NOT KNOW. `v_property_totals.noi` is `Σ effective_rent − (taxes + cam +
+  // roof)` (migration 0049) — base rent on one side, GROSS expenses on the other — so on a
+  // triple-net property it is struck BEFORE the reimbursement that is meant to cancel those
+  // expenses. The card said none of that, which is how a landlord reads a NNN building's NOI
+  // as lower than the rent it charges and has no way to tell why (George, 2026-08-21).
+  // Same loader the two panels below use, so this is a cache hit and the figure quoted here
+  // is the one they print.
+  const { totals: recovTotals } = useRecoverability(propId, year);
+  const reimbursed = Number(recovTotals?.recovered || 0);
   const roofRecovered = totals?.roof_recovered ?? 0;
   const roofUnrecovered = totals?.roof_unrecovered ?? roof;
 
@@ -214,7 +224,18 @@ export default function PropertyFinancialsPage() {
             ) : null}
           />
           <StatCard label="Total expenses" main={money(totalExp)} footValue={totalSf ? psf(totalExp / totalSf) : '—'} footCap="per leased sq ft" />
-          <StatCard label="Net operating income" main={money(noi)} footValue={margin != null ? `${margin}%` : '—'} footCap="operating margin" />
+          <StatCard
+            label="Net operating income"
+            main={money(noi)}
+            footValue={margin != null ? `${margin}%` : '—'}
+            footCap="operating margin"
+            note={reimbursed > 0.005 ? (
+              <span>
+                Struck <strong>before</strong> reimbursement — tenants pay back{' '}
+                <strong>{money(reimbursed)}</strong> of the expenses above. What actually stayed adds it back.
+              </span>
+            ) : null}
+          />
         </div>
       </div>
 

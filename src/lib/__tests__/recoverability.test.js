@@ -16,7 +16,7 @@
 // including THE refusal: uncategorized money is its own visible figure and is never
 // folded into the "Other" category.
 import { describe, it, expect } from 'vitest';
-import { recoverabilityRows, recoveryFractions } from '../recoverability';
+import { recoverabilityRows, recoveryFractions, whatStayed } from '../recoverability';
 import { getTenantShares, getExpenseRecord, getPropertyTotals, listCamLineItems, listTaxLineItems, listRoofLineItems } from '../api';
 import { currentYear } from '../format';
 
@@ -337,5 +337,41 @@ describe('the roof row against the SQL that has computed it since 0005', () => {
     const { totals } = recoverabilityRows({ items: [...tax, ...cam, ...roof], shares, expense });
     const charged = shares.reduce((s, r) => s + Number(r.tax_amount || 0) + Number(r.cam_amount || 0) + Number(r.roof_amt || 0), 0);
     expect(totals.recovered).toBeCloseTo(charged, 2);
+  });
+});
+
+// ── What actually stayed (the strip under NOI) ───────────────────────────────────────
+//
+// ⚠ THE REIMBURSEMENT IS A TERM, NOT A DEFINITION CHANGE. `v_property_totals.noi` is
+// `Σ effective_rent − (taxes + cam + roof)` (migration 0049): base rent on one side, GROSS
+// expenses on the other. In a triple-net structure those expenses are supposed to be cancelled
+// by what the tenant pays back, so NOI is struck BEFORE the reimbursement and understates by
+// exactly that amount. Redefining `noi` would re-value every `financial_snapshots` row already
+// written, so it is added here instead (George, 2026-08-21).
+describe('what actually stayed', () => {
+  it('adds the reimbursement directly under NOI, and ties to its own rows', () => {
+    const { lines, stayed } = whatStayed({
+      noi: 100000, recovered: 44600, otherIncome: 2690, absorbed: 2950, distributions: 24000,
+    });
+    expect(lines.map((l) => l.key)).toEqual(['noi', 'recovered', 'otherIncome', 'absorbed', 'distributions']);
+    // Money in adds, money out subtracts — a sign flip here is an arithmetically tidy lie.
+    expect(lines.find((l) => l.key === 'recovered').sign).toBe(1);
+    expect(stayed).toBe(100000 + 44600 + 2690 - 2950 - 24000);
+    // Summed from the rows SHOWN, so the total can never disagree with the strip above it.
+    expect(stayed).toBe(lines.reduce((n, l) => n + l.sign * l.amount, 0));
+  });
+
+  it('omits the line on a gross-lease property, where nothing is reimbursed', () => {
+    const { lines, stayed } = whatStayed({ noi: 50000, recovered: 0, absorbed: 1000 });
+    expect(lines.map((l) => l.key)).toEqual(['noi', 'absorbed']);
+    expect(stayed).toBe(49000);
+  });
+
+  // A fully-reimbursed NNN tenant with nothing absorbed: NOI + reimbursement is the base
+  // rent the lease actually charges, which is George's whole point about the structure.
+  it('brings a fully-reimbursed NNN property back to its base rent', () => {
+    const rent = 364629.12, expenses = 2689.26;
+    const { stayed } = whatStayed({ noi: rent - expenses, recovered: expenses });
+    expect(stayed).toBeCloseTo(rent, 2);
   });
 });

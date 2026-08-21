@@ -88,8 +88,13 @@ describe('What actually stayed, with income in it', () => {
     expect(within(rowFor('Costs you absorbed')).getByText('$2,950.00')).toBeTruthy(); // 1,200 + 1,750
     expect(within(rowFor('Owner distributions')).getByText('$24,000.00')).toBeTruthy();
 
-    // 100,000 + 2,690 − 2,950 − 24,000 = 75,740
-    expect(within(rowFor('What actually stayed')).getByText('$75,740.00')).toBeTruthy();
+    // The reimbursement joined the strip on 2026-08-21 — `v_property_totals.noi` is struck
+    // before it (migration 0049), so a NNN property's NOI understates by exactly what tenants
+    // pay back. It is added, never netted into NOI, which stays quoted as the app computes it.
+    expect(within(rowFor('Tenants reimbursed')).getByText('$44,600.00')).toBeTruthy();
+
+    // 100,000 + 44,600 + 2,690 − 2,950 − 24,000 = 120,340
+    expect(within(rowFor('What actually stayed')).getByText('$120,340.00')).toBeTruthy();
   });
 });
 

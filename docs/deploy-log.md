@@ -1,3 +1,90 @@
+## 2026-08-21 (1) — NOI is struck before the reimbursement, and the page now says so
+
+**Cloudflare version:** `157ec5e4-41b6-4e01-8daf-7c4c55e40d55` · 2,039 tests / 193 files green.
+
+George wrote out the NNN cash-flow waterfall — revenue including reimbursements, expenses
+cancelling against them, NOI landing at base rent, then debt service and capex/reserves before
+anything is distributable — and asked whether Amlak works that way.
+
+**It did, in the workbook only.** `incomeExpense.js:471` already states his identity in a comment:
+`(rent + camTax + roof + charges + other) + (recovered − camTax − roof) − spent === (rent + charges
++ other) − (spent − recovered)`. The reimbursement is inside `earned`, so `net` is right.
+
+**The Financials page was not.** `v_property_totals` (migration `0049`) is
+`total_revenue = Σ effective_rent` — **base rent only** — minus **gross** `taxes + cam + roof`. So a
+triple-net property's NOI is struck **before** the reimbursement that is meant to cancel those
+expenses, and understates by exactly what tenants pay back. On 401 S Main that is $2,689.26 (Busey
+Bank, 100% share); on the demo's Maple Plaza, **$44,600**.
+
+⚠ **And `WhatStayedStrip` inherited it.** `whatStayed()` was `NOI + otherIncome − absorbed −
+distributions` — no reimbursement term at all — so the page's bottom line and the workbook's `net`
+differed by the recovered amount with nothing on screen to explain it. The workbook has always
+carried the term: `noiBridge`'s FIRST entry is literally `'tenants reimbursed'`. But that bridge is
+workbook-only (`incomeExpense.js:577`, `live ? null : noiBridge({…})`), so the page never showed it.
+
+- **`whatStayed()` gains a `recovered` line**, directly under NOI, `sign: +1` — *"Tenants
+  reimbursed · CAM, taxes and roof billed back to them"*. Maple Plaza now reads
+  `97,000 + 44,600 + 2,690 − 2,950 − 24,000 = **$117,340**`.
+- ⚠ **ADDED, NEVER NETTED INTO NOI.** Redefining `v_property_totals.noi` was offered and refused:
+  `HistoryPage.js:127` derives NOI from the **frozen `financial_snapshots` row**
+  (`total_revenue − expenses`), so every closed year would silently re-value and stop matching what
+  was snapshotted — the risk `WhatStayedStrip.js` has warned about in its own header since it
+  shipped. The view, History, the portfolio charts, the Overview and `CorporationsPage` are all
+  untouched.
+- **NEW `src/lib/useRecoverability.js`** — the six queries and the `recoverabilityRows` call lifted
+  out of `RecoverabilityTable` **verbatim**, keys unchanged, so both callers stay cache hits and
+  repaint on every existing invalidation. Two panels on one page now print the same reimbursement;
+  two assemblies of it would be the §3 drift that puts two totals in front of an accountant.
+  ⚠ **The `escReady` gate moved whole** — `inTermByLease` is null until the escalations settle,
+  because weighing from `lease_start` with the steps in flight prorates a RENEWED tenant from its
+  catch-up date. Gate differently in the two panels and they disagree mid-load.
+- **The strip's `absorbed` was CAM-only** — `absorbedFromItems(camItems, buckets)` — so **a
+  not-billed TAX or ROOF line was money that left the account and never got subtracted**. It now
+  takes the tax+cam+roof array, which is what `shapeProperty:478` has always passed.
+- **The strip's closing sentence was WRONG, and being wrong is what hid all of this.** It read *"NOI
+  is unchanged — it is what your tenants were billed, less what the building spent."* NOI is what
+  tenants were billed **for rent**. Corrected, and the NOI card itself now carries a note when
+  anything is reimbursed: *"Struck **before** reimbursement — tenants pay back $X of the expenses
+  above."*
+- ⚠ **The strip appears on many more properties now.** It renders only when it has ≥2 lines; a clean
+  NNN property with nothing absorbed now has a second one. That is the point, but it is a visible
+  change everywhere, not just where George was looking.
+
+**The test that stops them parting again** (`incomeExpense.test.js`): for **every property in both
+demo corporations**, the page's strip rebuilt from the page's own inputs must differ from the
+workbook's `net` by exactly `charges + rentBasis` — the two bridge terms the strip still does not
+carry — and the bridge must close with no unexplained residual. Written first against a hand-built
+fixture with `roll: []`, which has no rent in it at all and made `net` come out at −$10,000; the
+workbook's rent comes off the monthly ROLL, not off `total_revenue`.
+
+- **Files:** `src/lib/useRecoverability.js` (new) · `src/lib/recoverability.js` ·
+  `src/components/WhatStayedStrip.js` · `src/components/RecoverabilityTable.js` ·
+  `src/pages/PropertyFinancialsPage.js` · `recoverability.test.js` · `incomeExpense.test.js` ·
+  `whatStayedUi.test.js` · `otherIncomeUi.test.js`.
+
+**What George's waterfall still does NOT have** (his call, asked and answered — not built):
+- **Debt service: nothing at all.** `statementMatch.js:216` classifies a mortgage line as `ignore`,
+  reason *"a mortgage payment is not a recoverable CAM expense — Amlak has no home for debt yet"*.
+  There is no NOI → debt service → distributable-cash step anywhere in the app.
+- **Reserves: nothing.** **Capex partly exists** — `fixed_assets` + `0080` capitalize a cost out of
+  the expense total and can amortize it back into CAM or roof, correctly outside NOI.
+- **`charges`** — the last bridge term the strip omits (fees, credits, write-offs on tenants'
+  bills). Its only proven source is `roll[].adjustmentRows` via `getPropertyMonthlyRoll`, which fans
+  out one `listPayments` per invoice — too heavy for this strip. The lighter
+  `['adjustments', propertyId, year]` key `TenantShareTable` uses is probably equivalent but
+  unverified, and guessing would create a second charges implementation. The tie-out test names the
+  gap rather than tolerating it.
+
+**Now redundant** (proposed — George picks):
+- **`absorbedFromItems`'s `ownerTotal` / `ownerCount`.** The strip now also holds `owner` /
+  `ownerTotal` from `recoverabilityRows` through the hook — two ways to split owner money from
+  absorbed cost, a few lines apart. One should call the other.
+- **The strip's closing paragraph and the NOI card's note** now say the same thing twice, one
+  scroll apart. The card's version is attached to the figure it describes; the paragraph is the
+  older way of saying it.
+- **`WhatStayedStrip`'s `useQuery` import** is down to one call (`otherIncome`); if that moves into
+  the hook too, the component stops loading anything itself.
+
 ## 2026-08-20 (2) — Three from George: the menu opened at the bottom, the cards overflowed, the draws had no names
 
 **Cloudflare version:** `99fded7f-5deb-4560-b00e-fa38082f6f96` · 2,033 tests / 193 files green.
