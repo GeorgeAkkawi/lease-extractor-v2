@@ -86,9 +86,21 @@
           <div class="mock-row"><span class="grow"><span class="nm"><b>What actually stayed</b></span></span><span class="num">$242,662</span></div>
         </div>
       </div>
+      <!-- Four cards, one per thing the app does without being asked. Each is a
+           real behaviour, not a mood: the lease extractor fills the terms, the
+           statement importer names the tenant, an applied rent step rebuilds the
+           invoices behind it, and the reconciliation settles the year. -->
       <div class="float tl">
         <span class="glyph">§</span>
         <span><b>Lease read</b><span>38 terms filled from the PDF</span></span>
+      </div>
+      <div class="float tr">
+        <span class="glyph forest">⇄</span>
+        <span><b>Deposit matched</b><span>$4,318 → Vista Nails · March</span></span>
+      </div>
+      <div class="float bl">
+        <span class="glyph gold">↻</span>
+        <span><b>Rent step applied</b><span>+3% Jun 1 · 6 invoices rebuilt</span></span>
       </div>
       <div class="float br">
         <span class="glyph">⚖</span>
@@ -137,6 +149,111 @@
         total that depended on it is rebuilt — except in a year you've already closed, which
         is left exactly as billed.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ the flow diagram ═══════════════════════════════════════════════════
+     A sticky panel inside a tall track: how far you have scrolled through the
+     track is `--p`, and every stroke below derives its own progress from it.
+     All of it is in site.css and site.js — read the headers there before
+     changing the markup, because the two files are one mechanism.
+
+     ⚠ `data-stage` STARTS AT 3, THE FINISHED STATE, on purpose. With no
+     working JS the diagram renders complete and the caption that goes with it
+     is the last one; site.js takes it back to 0 only once it has decided it
+     can drive the thing. Start this at 0 and a browser with JS off gets a
+     blank rectangle and a missing caption.
+
+     ⚠ Each path carries pathLength="1" so `stroke-dashoffset:1 - t` draws
+     exactly t of it whatever its real length is. Move a curve and nothing
+     needs remeasuring. -->
+<section class="section flow" data-stage="3">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow plain">The shape of it</span>
+      <h2>Four things in. Everything else derived.</h2>
+      <p class="lede">
+        Most of what you look at in Amlak is not stored anywhere — it is worked out from
+        these four every time you open the page. That is the reason nothing goes stale,
+        and the reason there is no spreadsheet to remember to update.
+      </p>
+    </div>
+  </div>
+
+  <div class="flow-track">
+    <div class="flow-pin">
+      <div class="flow-figure">
+        <svg class="flow-svg" viewBox="0 0 1000 480" role="img"
+             aria-label="Four inputs — a lease PDF, a bank statement, a tax bill and a service contract — feed into Amlak, which derives the tenant invoice, the rent ledger, the CAM reconciliation and the accountant's workbook.">
+
+          <!-- inputs -->
+          <g class="lbl lead" style="--s:.000"><text x="250" y="60" text-anchor="end">Lease PDF</text><text class="sub" x="250" y="80" text-anchor="end">term, rent, steps, share</text></g>
+          <g class="lbl lead" style="--s:.012"><text x="250" y="176" text-anchor="end">Bank statement</text><text class="sub" x="250" y="196" text-anchor="end">deposits, dated</text></g>
+          <!-- Two sub-lines in one slot: the tax bill swaps to a gold "reassessed in
+               August" at the last stage, so the diagram states which figure moved
+               instead of leaving the reader to infer it from the caption. -->
+          <g class="lbl lead" style="--s:.024"><text x="250" y="292" text-anchor="end">Tax bill</text><text class="sub calm" x="250" y="312" text-anchor="end">the year's actual</text><text class="sub swap" x="250" y="312" text-anchor="end">reassessed in August</text></g>
+          <g class="lbl lead" style="--s:.036"><text x="250" y="408" text-anchor="end">Service contract</text><text class="sub" x="250" y="428" text-anchor="end">landscaping, snow, HVAC</text></g>
+
+          <circle class="node-dot lead" style="--s:.000" cx="266" cy="66"  r="4" />
+          <circle class="node-dot lead" style="--s:.012" cx="266" cy="182" r="4" />
+          <circle class="node-dot lit lead" style="--s:.024" cx="266" cy="298" r="4" />
+          <circle class="node-dot lead" style="--s:.036" cx="266" cy="414" r="4" />
+
+          <path class="wire" style="--s:.02" pathLength="1" d="M266 66  C368 66  372 240 450 240" />
+          <path class="wire" style="--s:.07" pathLength="1" d="M266 182 C368 182 380 240 450 240" />
+          <path class="wire lit" style="--s:.12" pathLength="1" d="M266 298 C368 298 380 240 450 240" />
+          <path class="wire" style="--s:.17" pathLength="1" d="M266 414 C368 414 372 240 450 240" />
+
+          <!-- Amlak -->
+          <g class="hub">
+            <circle cx="500" cy="240" r="48" />
+            <image href="/favicon.svg" x="482" y="222" width="36" height="36" />
+          </g>
+
+          <!-- outputs -->
+          <path class="wire lit" style="--s:.46" pathLength="1" d="M550 240 C628 240 632 66  734 66" />
+          <path class="wire lit" style="--s:.51" pathLength="1" d="M550 240 C628 240 620 182 734 182" />
+          <path class="wire lit" style="--s:.56" pathLength="1" d="M550 240 C628 240 620 298 734 298" />
+          <path class="wire lit" style="--s:.61" pathLength="1" d="M550 240 C628 240 632 414 734 414" />
+
+          <circle class="node-dot lit" style="--s:.56" cx="734" cy="66"  r="4" />
+          <circle class="node-dot lit" style="--s:.61" cx="734" cy="182" r="4" />
+          <circle class="node-dot lit" style="--s:.66" cx="734" cy="298" r="4" />
+          <circle class="node-dot lit" style="--s:.71" cx="734" cy="414" r="4" />
+
+          <g class="lbl" style="--s:.56"><text x="750" y="60">Tenant invoice</text><text class="sub" x="750" y="80">issued, then frozen</text></g>
+          <g class="lbl" style="--s:.61"><text x="750" y="176">Rent ledger</text><text class="sub" x="750" y="196">twelve months, one row each</text></g>
+          <g class="lbl" style="--s:.66"><text x="750" y="292">CAM reconciliation</text><text class="sub" x="750" y="312">who owes, who's owed</text></g>
+          <g class="lbl" style="--s:.71"><text x="750" y="408">Income &amp; expenses</text><text class="sub" x="750" y="428">the sheet your accountant wants</text></g>
+        </svg>
+      </div>
+
+      <div class="flow-caps">
+        <div class="flow-cap" data-cap="0">
+          <b>You enter four things.</b>
+          <span>A lease, a bank statement, a tax bill, a service contract. Each one goes in
+          once, on the screen where it belongs.</span>
+        </div>
+        <div class="flow-cap" data-cap="1">
+          <b>They all arrive in the same place.</b>
+          <span>Amlak holds one version of each figure — the tenant's share, the year's
+          actual cost, what has actually been paid.</span>
+        </div>
+        <div class="flow-cap" data-cap="2">
+          <b>Everything else is worked out from them.</b>
+          <span>The invoice, the ledger, the reconciliation and the accountant's sheet are
+          not four more things to keep up to date. They are four views of those four.</span>
+        </div>
+        <div class="flow-cap" data-cap="3">
+          <b>So the tax bill lands in August, and all four move.</b>
+          <span>Not one of them is re-typed — except in a year you have already closed,
+          which stays exactly as it was billed.</span>
+        </div>
+      </div>
+
+      <div class="flow-scroll"><i></i> Keep scrolling</div>
     </div>
   </div>
 </section>
@@ -357,5 +474,6 @@
   </div>
 </footer>
 
+<script src="/site.js" defer></script>
 </body>
 </html>

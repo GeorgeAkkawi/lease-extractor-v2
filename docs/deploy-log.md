@@ -1,3 +1,89 @@
+## 2026-08-21 (7) — the site moves now: two more hero cards, and a scroll-scrubbed flow diagram
+
+**Deployed:** `amlak-site` version **b0c83da4-4647-47f8-ac22-7f9dda8e0aa8** (amlakre.com +
+www.amlakre.com). No app deploy, no Supabase change — nothing outside `site/` was touched, and
+2,045 tests / 194 files stayed green.
+
+George asked for a couple more of the hero's floating cards, and for petralabs.com to be looked
+at to see whether Amlak's site could have moving parts too.
+
+**What Petra Labs actually is.** A Framer site — no canvas, no video, no three.js, no GSAP. Its
+whole attribution set-piece is **one `position:sticky` panel inside a tall track**, with scroll
+distance driving transforms on ~29 elements. That is reproducible in about 40 lines of plain DOM,
+so it was, rather than pulling in a runtime. `site/site.js` is the only script on the site: 6.9KB,
+no dependencies, nothing fetched.
+
+**The hero has four cards now, not two.** `Deposit matched` (bank-statement import) and
+`Rent step applied · 6 invoices rebuilt` (the carry-through) join `Lease read` and `CAM reconciled`.
+The second one earns its place: it is the only thing in the hero that *shows* the carry-through
+rather than asserting it. ⚠ `.float.br` moved from `bottom:-20px` to `-32px` — at -20 its top edge
+landed six pixels under **$242,662**, the figure the whole mock is built to arrive at, and covered
+it outright once the layout went single-column and the mock got wider. Anything added along that
+edge is checked against the last *row*, not the mock's border.
+
+**The flow diagram (`.flow`, index.html + site.css + site.js)** — four inputs (lease, bank
+statement, tax bill, service contract) converging on Amlak and fanning out to four derived
+surfaces (invoice, ledger, reconciliation, income & expenses), scrubbed by the scrollbar so it
+runs backwards on the way up. It states §1's money spine as a picture. Each path carries
+`pathLength="1"`, so `stroke-dashoffset: 1 - t` draws exactly *t* of it whatever its real length
+is — move a curve and nothing needs remeasuring.
+
+⚠ **EVERY DEFAULT IN THIS FEATURE IS THE FINISHED STATE, and that is the whole design.** The usual
+way to build scroll-reveal is to hide everything in CSS and un-hide from JS, which means one
+blocked file and the page is blank. Here:
+- `.rv` (the hidden state) is added *by* `site.js`, moments before the observer that removes it —
+  so a page with no working script has no `.rv` on it at all.
+- `--p` rests at **1** (fully drawn) in the stylesheet; JS pulls it back to 0 only once it has
+  committed to driving it.
+- `data-stage` starts at **3**, the last caption, so the no-JS diagram and the words under it agree.
+- ⚠ **The pin is opt-in** — `.pinned` is added by JS. Left on by default, a visitor whose script
+  never ran (or who asked for reduced motion) would scroll three screen-heights past one motionless
+  picture. Verified: script blocked → complete diagram, nothing hidden, and 2,040px of dead scroll
+  collapses away.
+- `prefers-reduced-motion` is checked in **both** halves: CSS cannot stop a scroll listener, JS
+  cannot stop a keyframe the stylesheet started.
+
+⚠ **THE GOLD CHAIN MUST BE CONTINUOUS, and it shipped to the preview broken.** The payoff stage
+lights ONE input and FOUR outputs — that asymmetry *is* the argument and must not be evened up —
+but the hub stayed accent green in between, so the gold arrived from the left, stopped, and
+started again on the right. George caught it immediately: *"why is there only one gold strand."*
+The eye could not join the two halves, and the three unlit inputs read as three strands that had
+**failed** rather than three the example is not about. Fixed by carrying the colour through the
+junction (`.hub circle` goes gold at stage 3), dimming the three quiet wires to .4 so they read as
+context rather than error, and swapping the tax bill's sub-line to a gold **"reassessed in
+August"** — so the diagram states which figure moved instead of making the caption do it.
+
+**Also:** scroll-reveal on the major blocks of every page (selected by CSS selector in JS, not by
+hand-placed attributes on nine pages that drift the moment someone adds a section); the nav lifts
+once it is over content; the rent-ledger mock draws its twelve months in one at a time.
+⚠ `.legal-wrap` is excluded — a privacy policy whose paragraphs fade in as you read down it is
+harder to read, which is the opposite of why it exists.
+
+⚠ **`overflow` is now load-bearing in two places and they pull opposite ways.** Sticky resolves
+against the nearest scrolling ancestor, so nothing in `.flow`'s ancestry may take `overflow:hidden`
+or the panel silently unpins into three screens of blank paper — the same trap that killed the
+sticky header on the comparison table. But below 680px, where there is no pin, `.flow-figure` is
+*given* `overflow-x:auto` with a 560px floor on the SVG: shrunk to fit a 390px screen the labels
+land at ~5px. The diagram scrolls in its own box; the page never scrolls sideways (verified).
+
+**Files:** `site/site.js` (new) · `site/site.css` · `site/index.html` · plus a one-line
+`<script src="/site.js" defer>` on the other nine pages.
+
+**Verified:** all 10 pages 200 live; no console errors; no horizontal overflow at 390 / 820 /
+1024 / 1280 / 1440 / 1600; the pin's content fits its own height at every one of those; four
+modes exercised (normal · script blocked · reduced motion · phone).
+
+**Now redundant** (proposed — George picks):
+- **`⇄` and `↻` each appear twice on the home page** — once as a hero card, once as a benefit-card
+  glyph. If the hero is doing that job the cards could lose their icons.
+- **The hero's grid backdrop and `.flow`'s are the same 12 lines of CSS**, duplicated. One shared
+  class would do.
+- **`.hero-note` ("No form, no call") now competes with the flow section's "Keep scrolling"** as
+  the thing pulling the eye downward. Only one of them should.
+- **The phone diagram hides its own payoff** behind a sideways drag — the outputs are off-screen at
+  390px. The caption carries the meaning, so nothing is lost, but a stacked phone layout would fix
+  it properly and would be a second layout to keep in sync.
+
 ## 2026-08-21 (6) — the password mirror was broken on both halves, and the fix was on the server
 
 **No deploy.** The app bundle hash is unchanged (`index-eUVKcx5n.js` before and after) — the only

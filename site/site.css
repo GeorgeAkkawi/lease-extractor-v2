@@ -238,9 +238,28 @@ h3{font-size:24px;line-height:1.2}
 .float .glyph{
   width:26px;height:26px;border-radius:var(--radius);flex:none;display:grid;
   place-items:center;font-size:13px;background:var(--accent-soft);
+  /* ⚠ STATE THE COLOUR. Without it the glyph falls back to --ink while the
+     tinted variants below set their own, so two of the four cards would be
+     grey and two coloured for no reason a reader could work out. */
+  color:var(--accent);
 }
+/* Four corners, deliberately not symmetrical — a card at each corner at the
+   same inset reads as a frame around the mock rather than notifications landing
+   on top of it. The left pair is held clear of the copy column: at 1440 that
+   column ends at x=677 and `.bl` starts at 687, so the ten pixels between them
+   are the whole margin. Widen `.bl` or push it further left and it lands on the
+   lede. */
 .float.tl{top:-56px;left:-24px}
-.float.br{bottom:-20px;right:-18px}
+.float.tr{top:-34px;right:-26px}
+.float.bl{bottom:-38px;left:-46px}
+/* ⚠ FAR ENOUGH DOWN TO CLEAR THE LAST ROW'S FIGURE. At -20px this card's top
+   edge landed six pixels under "$242,662" — the one number the whole mock is
+   built to arrive at — and covered it outright once the layout went single
+   column and the mock got wider. Anything added along this edge has to be
+   checked against that row, not against the mock's border. */
+.float.br{bottom:-32px;right:-18px}
+.float .glyph.gold{background:var(--gold-soft);color:var(--gold)}
+.float .glyph.forest{background:var(--forest-soft);color:var(--forest)}
 
 /* ── benefit cards ──────────────────────────────────────────────── */
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,248px),1fr));gap:1px;
@@ -375,6 +394,199 @@ form.access{background:var(--panel);border:1px solid var(--border);
   display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;
   font-size:12.5px;color:var(--faint)}
 
+/* ══ motion ═══════════════════════════════════════════════════════════════
+   Added 2026-08-21 after George asked whether Amlak's site could move the way
+   petralabs.com does. It can, and this is all of it: no library, one 4KB
+   script, every effect built out of `transform` and `opacity` so it composites
+   on the GPU and never reflows the page mid-scroll.
+
+   ⚠ NOTHING HERE HIDES ANYTHING BY ITSELF. `.rv` is added by `site.js`
+   immediately before the observer that removes it, so a page with no working
+   JS has no `.rv` on it and renders complete. Read the header of site.js
+   before changing this — the two files are one mechanism. */
+
+/* ── the nav, once it is floating over content ─────────────────────────── */
+.nav{transition:box-shadow .22s ease,border-color .22s ease}
+.nav.stuck{box-shadow:0 14px 34px -28px rgba(40,30,20,.55);border-bottom-color:var(--border)}
+
+/* ── scroll reveal ─────────────────────────────────────────────────────── */
+.rv{opacity:0;transform:translateY(16px);
+  transition:opacity .62s cubic-bezier(.22,.61,.36,1),transform .62s cubic-bezier(.22,.61,.36,1)}
+.rv.in{opacity:1;transform:none}
+/* Cards arrive left-to-right rather than all at once — they are a row, and a
+   row that lands as one block reads as a single image rather than four things. */
+.cards .card:nth-child(2){transition-delay:.07s}
+.cards .card:nth-child(3){transition-delay:.14s}
+.cards .card:nth-child(4){transition-delay:.21s}
+
+/* A revealed mock draws its own contents once it has arrived: the bars grow
+   from the left and the twelve months land one at a time. This is the rent
+   ledger — the screen the product is really about — so it is the one place on
+   the site worth animating in detail. */
+.rv .mock-bar>i{transform-origin:left;transform:scaleX(0);
+  transition:transform .85s cubic-bezier(.22,.61,.36,1) .22s}
+.rv.in .mock-bar>i{transform:scaleX(1)}
+.rv .mock-months i{opacity:0;transform:scale(.62);
+  transition:opacity .3s ease,transform .38s cubic-bezier(.2,.8,.3,1)}
+.rv.in .mock-months i{opacity:1;transform:none}
+.rv.in .mock-months i:nth-child(1){transition-delay:.20s}
+.rv.in .mock-months i:nth-child(2){transition-delay:.24s}
+.rv.in .mock-months i:nth-child(3){transition-delay:.28s}
+.rv.in .mock-months i:nth-child(4){transition-delay:.32s}
+.rv.in .mock-months i:nth-child(5){transition-delay:.36s}
+.rv.in .mock-months i:nth-child(6){transition-delay:.40s}
+.rv.in .mock-months i:nth-child(7){transition-delay:.44s}
+.rv.in .mock-months i:nth-child(8){transition-delay:.48s}
+.rv.in .mock-months i:nth-child(9){transition-delay:.52s}
+.rv.in .mock-months i:nth-child(10){transition-delay:.56s}
+.rv.in .mock-months i:nth-child(11){transition-delay:.60s}
+.rv.in .mock-months i:nth-child(12){transition-delay:.64s}
+
+/* ── the hero cards ────────────────────────────────────────────────────────
+   ⚠ TWO ANIMATIONS ON ONE ELEMENT, AND THEY MUST NOT BOTH BE `transform`.
+   The entrance uses the standalone `translate` property and the idle drift uses
+   `transform`; the two compose instead of the second silently winning. If you
+   ever fold the entrance back into `transform`, the drift stops happening and
+   nothing errors to tell you. */
+.float{animation:floatIn .66s cubic-bezier(.2,.72,.3,1) both,
+                 drift var(--dur,8s) ease-in-out var(--ph,0s) infinite .7s}
+.float.tl{--dur:8.5s;--ph:0s;animation-delay:.15s,0s}
+.float.tr{--dur:9.5s;--ph:-2.4s;animation-delay:.3s,0s}
+.float.bl{--dur:10s;--ph:-4.8s;animation-delay:.45s,0s}
+.float.br{--dur:9s;--ph:-1.2s;animation-delay:.6s,0s}
+@keyframes floatIn{from{opacity:0;translate:0 14px}to{opacity:1;translate:0 0}}
+/* Six pixels over nine seconds. If you can see it happening it is too much. */
+@keyframes drift{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+
+/* ══ the flow diagram ══════════════════════════════════════════════════════
+   A `position:sticky` panel held inside a tall track; how far the track has
+   travelled is `--p`, 0 → 1, set by site.js, and every line below derives its
+   own progress from it with calc(). No keyframes: the drawing is scrubbed by
+   the scrollbar, so it runs backwards when you scroll back up.
+
+   ⚠ `--p` DEFAULTS TO 1 HERE — fully drawn — and site.js pulls it to 0 only
+   once it has decided to drive it. A stylesheet that started this at 0 would
+   render an empty diagram on every browser with JS off.
+
+   ⚠ AND NOTHING IN THIS SECTION'S ANCESTRY MAY GET `overflow:hidden`. Sticky
+   resolves against the nearest scrolling ancestor, so one `overflow` on a
+   wrapper silently unpins the panel and the section becomes three screens of
+   blank paper. That is the same trap that killed the sticky header on the
+   comparison table. */
+.flow{--p:1;position:relative;padding:96px 0 0;overflow:visible}
+.flow::before{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(var(--hair) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--hair) 1px,transparent 1px);
+  background-size:64px 64px;
+  mask-image:radial-gradient(90% 60% at 50% 46%,#000 0%,transparent 74%);
+  -webkit-mask-image:radial-gradient(90% 60% at 50% 46%,#000 0%,transparent 74%);
+}
+.flow>*{position:relative}
+
+/* ⚠ THE PIN IS OPT-IN, AND `site.js` IS WHAT OPTS IN. Left on by default, a
+   page whose script never ran — blocked, failed, JS off, or the visitor asked
+   for reduced motion — would still make you scroll three screen-heights past
+   one motionless picture. So the resting state is an ordinary diagram in the
+   ordinary flow, and the tall track only exists once something is going to
+   animate inside it. Same reason `--p` rests at 1: every default here is the
+   finished state. */
+.flow-track{height:auto}
+.flow-pin{display:grid;align-content:center;gap:6px}
+.flow.pinned .flow-track{height:300vh}
+.flow.pinned .flow-pin{position:sticky;top:var(--navh);height:calc(100vh - var(--navh))}
+/* Same measure and padding as `.wrap`, so the leftmost label lines up with the
+   section heading above it rather than sitting 50px inboard of it. */
+.flow-figure{max-width:var(--wrap);margin:0 auto;padding:0 28px;width:100%}
+/* ⚠ THE HEIGHT CAP IS WHAT KEEPS THE PANEL INSIDE THE PIN. The pin is exactly
+   one screen tall; a diagram sized purely from its own aspect ratio grows with
+   the window's WIDTH, so on a wide short laptop it runs off the bottom of the
+   panel it is pinned inside and the caption goes with it. Capped here, the
+   viewBox just scales down and centres itself. */
+.flow-svg{width:100%;height:auto;max-height:min(54vh,540px);display:block;overflow:visible}
+
+/* Every stroke below carries its own `--s` (the point in the scroll where it
+   starts) and derives `--t`, its own 0 → 1, from the shared `--p`. `pathLength`
+   is set to 1 on each path in the markup so a dash offset of `1 - t` draws
+   exactly t of it, whatever that particular curve's real length happens to
+   be — no per-path lengths to measure and get wrong. */
+.flow-svg .wire{
+  --t:clamp(0,calc((var(--p) - var(--s,0)) / .20),1);
+  fill:none;stroke:var(--border);stroke-width:1.5;
+  stroke-dasharray:1;stroke-dashoffset:calc(1 - var(--t));
+}
+.flow-svg .node-dot{--t:clamp(0,calc((var(--p) - var(--s,0)) / .20),1);
+  opacity:var(--t);fill:var(--accent)}
+.flow-svg .lbl{--t:clamp(0,calc((var(--p) - var(--s,0)) / .16),1);opacity:var(--t)}
+/* ⚠ THE FOUR INPUTS ARE THE PREMISE, NOT A REVEAL. Faded up on the same slow
+   ramp as everything else, the pinned panel opened on an all-but-empty screen
+   — a section that looks broken for the first 200px of scrolling, which is
+   exactly the moment it has to earn the next 200. These land within a few
+   pixels of the pin latching, so the section opens saying "you enter four
+   things" and the scrolling shows where they go. */
+.flow-svg .lead{--t:clamp(0,calc((var(--p) - var(--s,0)) / .035),1)}
+.flow-svg .lbl text{font-family:var(--ui);fill:var(--ink);
+  font-size:15px;font-weight:600;letter-spacing:.01em}
+.flow-svg .lbl text.sub{font-size:12px;font-weight:500;fill:var(--faint)}
+.flow-svg .hub{--t:clamp(0,calc((var(--p) - .30) / .12),1);opacity:var(--t)}
+.flow-svg .hub circle{fill:var(--panel);stroke:var(--accent);stroke-width:1.5}
+
+/* The payoff. ONE input turns gold and the FOUR things it reaches light up with
+   it. The asymmetry is the argument — change one figure, four surfaces move —
+   so it must not be evened up.
+   ⚠ BUT THE CHAIN HAS TO BE CONTINUOUS TO READ AS ONE. Shipped with the hub
+   still in accent green, the gold arrived from the left, stopped, and started
+   again on the right: the eye could not join them, and the three unlit inputs
+   read as three strands that had failed rather than three the example is not
+   about. The junction has to carry the colour, or the causality is a claim the
+   caption makes and the picture contradicts. */
+.flow-svg .wire,.flow-svg .node-dot{transition:stroke .45s ease,fill .45s ease}
+.flow-svg .hub circle{transition:stroke .45s ease,stroke-width .45s ease}
+.flow[data-stage="3"] .flow-svg .wire.lit{stroke:var(--gold);stroke-width:2}
+.flow[data-stage="3"] .flow-svg .node-dot.lit{fill:var(--gold)}
+.flow[data-stage="3"] .flow-svg .hub circle{stroke:var(--gold);stroke-width:2}
+
+/* And the three quiet inputs step back rather than looking broken — still
+   drawn, still labelled, just not the one this example is following. */
+.flow-svg .wire{transition:stroke .45s ease,opacity .45s ease}
+.flow[data-stage="3"] .flow-svg .wire:not(.lit){opacity:.4}
+
+/* The tax bill says WHY it is the gold one. Without this the diagram singles
+   out an input for no stated reason and the reader has to get it from the
+   caption underneath — which is the paragraph-explaining-the-panel problem. */
+.flow-svg .calm,.flow-svg .swap{transition:opacity .4s ease}
+.flow-svg .swap{opacity:0;fill:var(--gold);font-weight:700}
+.flow[data-stage="3"] .flow-svg .calm{opacity:0}
+.flow[data-stage="3"] .flow-svg .swap{opacity:1}
+
+/* ⚠ THE MEASURE IS CAPPED ON THE CAPTION, NOT ON THE BOX AROUND IT. Every
+   child here is absolutely positioned, so the box has no content of its own to
+   be sized by — and `margin:0 auto` on a stretched grid item cancels the
+   stretch, which collapsed this to its own 56px of padding and wrapped the
+   caption one word per line. Full width here; centred measure inside. */
+.flow-caps{position:relative;min-height:112px;margin-top:26px;text-align:center}
+.flow-cap{position:absolute;inset:0;max-width:62ch;margin:0 auto;padding:0 28px;
+  opacity:0;transform:translateY(8px);
+  transition:opacity .4s ease,transform .4s ease}
+.flow-cap b{display:block;font-family:var(--display);font-size:26px;font-weight:500;
+  letter-spacing:-.01em;margin-bottom:8px}
+.flow-cap span{color:var(--muted);font-size:15.5px;line-height:1.6}
+/* ⚠ THE DEFAULT IN THE MARKUP IS `data-stage="3"`, not 0 — with no JS the
+   diagram renders finished, so the caption that belongs to it is the last one. */
+.flow[data-stage="0"] .flow-cap[data-cap="0"],
+.flow[data-stage="1"] .flow-cap[data-cap="1"],
+.flow[data-stage="2"] .flow-cap[data-cap="2"],
+.flow[data-stage="3"] .flow-cap[data-cap="3"]{opacity:1;transform:none}
+
+.flow-scroll{display:flex;align-items:center;justify-content:center;gap:10px;
+  font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);margin-top:4px;
+  opacity:clamp(0,calc(1 - var(--p) * 6),1)}
+.flow-scroll i{display:block;width:1px;height:20px;background:var(--border);
+  animation:cue 2.2s ease-in-out infinite}
+@keyframes cue{0%,100%{transform:scaleY(.4);transform-origin:top}
+               50%{transform:scaleY(1);transform-origin:top}}
+
 /* ── responsive ─────────────────────────────────────────────────── */
 @media (max-width:900px){
   .section{padding:64px 0}
@@ -384,8 +596,15 @@ form.access{background:var(--panel);border:1px solid var(--border);
   /* the mock goes BELOW the prose, never squashed beside it */
   .feature.flip .feature-copy{order:1}
   .feature.flip .feature-art{order:2}
+  /* Single column here, so the mock is full width and the four cards pull in
+     towards it — the copy is above, not beside, so there is nothing to clear. */
   .float.tl{top:-46px;left:-6px}
-  .float.br{bottom:-14px;right:-8px}
+  .float.tr{top:-30px;right:-6px}
+  .float.bl{bottom:-30px;left:-6px}
+  .float.br{bottom:-30px;right:-6px}
+  /* The pin is shorter on a laptop-height window; the track shrinks with it so
+     the diagram still finishes in about the same amount of scrolling. */
+  .flow.pinned .flow-track{height:220vh}
   .foot-in{grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}
   .cta{padding:48px 26px}
   .tl-item{grid-template-columns:minmax(0,1fr);gap:10px}
@@ -406,11 +625,35 @@ form.access{background:var(--panel);border:1px solid var(--border);
   .foot-in{grid-template-columns:minmax(0,1fr)}
   .float{display:none}
   .btn{flex:1 1 auto}
+  /* ⚠ NO PIN ON A PHONE. Three screen-heights of scrolling that hold one
+     picture still is indistinguishable from a page that has stopped
+     responding. `site.js` already declines to add `.pinned` at this width;
+     these two rules are the backstop for the case where it does anyway. */
+  .flow.pinned .flow-track{height:auto}
+  .flow.pinned .flow-pin{position:static;height:auto}
+  /* ⚠ THE DIAGRAM SCROLLS INSIDE ITS OWN BOX, never the page. Shrunk to fit a
+     390px screen the labels land at about 5px and the whole thing is a
+     decoration nobody can read; given a floor it stays legible and takes a
+     sideways drag. `overflow` here would break the sticky pin — which is
+     exactly why it is confined to the width where there is no pin. */
+  .flow-figure{overflow-x:auto;padding-bottom:10px}
+  .flow-svg{min-width:560px;max-height:none}
+  .flow-scroll{display:none}
 }
+/* ⚠ THIS BLOCK IS THE SECOND HALF OF A PAIR — `site.js` checks the same query
+   and wires up nothing when it matches. Both halves are needed: CSS alone
+   cannot stop a scroll listener, and JS alone cannot stop a keyframe that the
+   stylesheet started. Anything animated below must land in its FINISHED state
+   here, never its starting one, or asking for less motion hides content. */
 @media (prefers-reduced-motion:reduce){
   html{scroll-behavior:auto}
-  *{transition:none!important}
+  *{transition:none!important;animation:none!important}
+  .float{opacity:1;translate:none}
+  .rv{opacity:1;transform:none}
+  .flow{--p:1}
+  .flow-scroll{display:none}
 }
+
 
 /* ── legal pages ────────────────────────────────────────────────────────
    The first long-form prose on this site. Measure is capped well below the
