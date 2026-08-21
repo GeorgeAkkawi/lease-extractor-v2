@@ -281,10 +281,17 @@ h3{font-size:24px;line-height:1.2}
 .feature h3{font-size:clamp(26px,3vw,34px);font-family:var(--display);margin-bottom:14px}
 .feature p{color:var(--muted);font-size:16px;margin:0}
 .ticks{list-style:none;margin:22px 0 0;padding:0;display:grid;gap:10px}
-.ticks li{display:flex;gap:11px;font-size:14.5px;line-height:1.5}
+/* ⚠ NOT `display:flex` ON THE ITEM. It was, and it made the tick, the <strong>
+   lead and the sentence after it into three separate flex items — so a bold
+   lead and its own explanation stacked into two columns instead of running on
+   as one line of prose. Fourteen of these across the site read fine only
+   because every bold lead was short enough to fit its column; the first long
+   one (on /consultation) exposed it. The marker is positioned out of flow now,
+   so the text is a single paragraph at any length. */
+.ticks li{position:relative;padding-left:24px;font-size:14.5px;line-height:1.5}
 .ticks li::before{
-  content:'✓';color:var(--accent);font-weight:700;flex:none;font-size:13px;
-  line-height:1.55;
+  content:'✓';position:absolute;left:0;top:0;
+  color:var(--accent);font-weight:700;font-size:13px;line-height:1.55;
 }
 .only-here{
   display:inline-flex;align-items:center;gap:7px;margin-top:20px;font-size:11px;

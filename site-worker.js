@@ -15,7 +15,13 @@ const APP = 'https://app.amlakre.com';
 // Paths that belonged to the app when it lived here. Prefix match, so /leases/abc/def
 // travels too. Keep this list DISJOINT from the site's own pages — a name added here
 // shadows a page of the same name, silently.
-const APP_PATHS = ['/sign', '/leases', '/financials', '/history', '/settings', '/ask', '/display', '/security'];
+// ⚠ `/security` IS NOT IN THIS LIST, and must not be put back. This site has its
+// own /security page, linked from the footer of all ten. It survived being listed
+// here only because a matching static asset used to win before the Worker ever
+// ran — an accident, not a rule, and one that reversed the moment the Worker was
+// moved in front of the assets (see run_worker_first in wrangler.site.jsonc).
+// amlakre.com/security is the public page; the app's own is at app.amlakre.com.
+const APP_PATHS = ['/sign', '/leases', '/financials', '/history', '/settings', '/ask', '/display'];
 
 const FROM = 'Amlak <letters@amlakre.com>';
 const MAX = 4000; // per-field ceiling; a lead is a paragraph, not a payload
@@ -73,10 +79,14 @@ async function handleLead(req, env) {
     `Email       ${email}`,
     `Properties  ${str(body.properties) || '—'}`,
     `Type        ${str(body.kind) || '—'}`,
+    // ⚠ SURFACE THIS FIRST-CLASS. The page promises "email or a short call, your
+    // choice"; if the answer is buried where it can be skimmed past, the promise
+    // is broken by the one person who has to keep it.
+    `Prefers     ${str(body.how) || 'Email is fine'}`,
     '',
     str(body.message) || '(no message)',
     '',
-    `— from amlakre.com/request-access${ip ? ` · ${ip}` : ''}`,
+    `— from amlakre.com/consultation${ip ? ` · ${ip}` : ''}`,
   ];
 
   const res = await fetch('https://api.resend.com/emails', {
@@ -87,7 +97,7 @@ async function handleLead(req, env) {
       to,
       // So hitting reply goes to the person who asked, not into the void.
       reply_to: email,
-      subject: `Amlak access request — ${name}`,
+      subject: `Amlak consultation request — ${name}`,
       text: lines.join('\n'),
     }),
   });
@@ -105,9 +115,19 @@ export default {
       return Response.redirect(APP + path + url.search, 302);
     }
 
-    if (path === '/api/request-access') {
+    // ⚠ BOTH PATHS, AND THE OLD ONE IS NOT DEAD WEIGHT. The page renamed to
+    // /consultation on 2026-08-21, but a browser holding the previous HTML posts
+    // to the old endpoint — and a lead that 404s is a lead nobody ever hears
+    // about. Costs one line; remove it only once nothing can still be cached.
+    if (path === '/api/consultation' || path === '/api/request-access') {
       if (req.method !== 'POST') return json({ error: 'Method not allowed.' }, 405);
       return handleLead(req, env);
+    }
+
+    // The page moved. 301 rather than 302: this is permanent, and the old URL is
+    // in the sitemap Google has already read.
+    if (path === '/request-access') {
+      return Response.redirect(url.origin + '/consultation', 301);
     }
 
     return env.ASSETS.fetch(req);

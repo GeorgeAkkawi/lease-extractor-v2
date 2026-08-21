@@ -1,3 +1,99 @@
+## 2026-08-21 (9) — "request access" became "see if we fit", and that uncovered a dead /sign redirect
+
+**Deployed:** `amlak-site` version **75829137-23be-47d2-bf60-17c755fe5f27** (amlakre.com +
+www.amlakre.com). No app deploy, no Supabase change; nothing in `src/`.
+
+George: *"instead of ask for an account the vibe should be like request a consultation to see if
+we fit."* The old framing made the visitor a supplicant at a gate — **ask** for an **account**,
+we'll decide. The new one is a mutual assessment, which is both friendlier and more honest: the
+product is narrow on purpose and genuinely does not suit some portfolios.
+
+**`/request-access` → `/consultation`**, with a **301** in `site-worker.js` and the old
+`/api/request-access` endpoint kept as an alias — ⚠ a browser holding the previous HTML posts to
+the old path, and a lead that 404s is a lead nobody ever hears about.
+
+| | before | after |
+|---|---|---|
+| nav button | Get started | **See if we fit** |
+| hero / page CTAs | Request access | **See if we fit** |
+| footer link | Request access | **Request a consultation** |
+| footer status | Private beta · accounts by request | Private beta · **new accounts by consultation** |
+| form heading | Ask for an account | **Let's work out whether it fits** |
+| submit | Request access | **Request a consultation** |
+
+⚠ **"No sales call" had to go, and not because it was awkward — because it became FALSE.** The
+page's first tick promised no call; the page now offers one. Replaced with *"Email or a short
+call — your choice"*, plus a **new `how` field on the form with "Email is fine" FIRST so it is the
+default**. Offering a choice and then not asking makes the choice a decoration, and a page that
+quietly opts everyone into a phone call is exactly what this framing exists to avoid. The answer
+is surfaced on its own line in the lead email and echoed in the on-screen confirmation ("with a
+couple of times that suit for a call") so the promise reaches the one person who has to keep it.
+
+⚠ **`Disallow: /request-access` was dropped from robots.txt and /consultation added to the
+sitemap — a deliberate reversal of an earlier deliberate decision.** Hiding a thin form page was
+right; this page argues who Amlak suits and who it does not, which is a reasonable place to
+arrive from a search. One line to put back if that judgement is wrong — but the two files must
+agree, or the site tells crawlers to index a page it also tells them not to read.
+
+### ⚠ THE LIVE BUG THIS TURNED UP: every redirect in site-worker.js was dead in a real browser
+
+Adding the `/request-access` → `/consultation` redirect and testing it in a **browser** rather
+than with curl showed a 404. That was not the new redirect. **Every** path in `APP_PATHS` —
+including **`/sign/*`**, which every already-emailed signing envelope points at forever — had
+been answering **404 to real browsers since the apex split**, live, in production.
+
+**The mechanism.** Cloudflare's asset router runs BEFORE the Worker. For a path with no matching
+file it applies `not_found_handling` **itself** and the Worker is never invoked — but only for
+requests it considers navigations, which it decides from **`Sec-Fetch-Mode: navigate`**. `curl`
+does not send that header, so `curl` fell through to the Worker and got its 302. Verified both
+ways, live:
+
+```
+/sign/abc123   curl = 302 → app.amlakre.com     browser-nav = 404
+```
+
+**The verification was the bug.** These redirects were tested with curl on the day they shipped,
+they passed, and they have never once worked for a person. ⚠ **Any future test of a Worker route
+in front of assets must send `Sec-Fetch-Mode: navigate` or it is testing a path real traffic never
+takes.**
+
+**Fix:** `"run_worker_first": true` in `wrangler.site.jsonc`. `true` rather than a list of path
+globs on purpose — a glob list would be a second copy of `APP_PATHS` in another file, free to
+drift from it (§3). `env.ASSETS.fetch(req)` remains the fallback, so `not_found_handling` is
+unchanged for genuinely unknown paths (`/nope` still 404s live).
+
+⚠ **AND THAT FIX WOULD HAVE SILENTLY BROKEN `/security`.** `APP_PATHS` contained `/security`,
+while this site has its own **/security page linked from the footer of all ten pages**. It worked
+only because a matching asset used to win before the Worker ever ran — an accident that reverses
+the instant the Worker is moved in front. `/security` is out of `APP_PATHS` now, with a note
+saying why it must not go back.
+
+### Also fixed
+
+⚠ **`.ticks li` was `display:flex`**, which made the tick, the `<strong>` lead and the sentence
+after it three separate flex items — so a bold lead and its own explanation stacked into **two
+columns** instead of running on as prose. Fourteen of these across the site read fine only
+because every bold lead happened to be short enough to fit its column; the first long one, on
+/consultation, exposed it. The marker is positioned out of flow now, so the text is one paragraph
+at any length.
+
+**Files:** `site/consultation.html` (renamed from `request-access.html`) · the other nine pages ·
+`site/site.css` · `site/robots.txt` · `site/sitemap.xml` · `site-worker.js` · `wrangler.site.jsonc`.
+
+**Verified live:** all 8 redirects fire under real navigation headers; 9 pages + robots + sitemap
+200; `/nope` still 404; every internal link on every page resolves (12 unique, anchors included);
+form endpoint answers on both the new and legacy paths; `LEAD_TO` and `RESEND_API_KEY` still
+bound; "See if we fit" fits the nav at 390px with 20px to spare and the hero's three buttons now
+need 450px in 509px (they needed 515 before).
+
+**Now redundant** (proposed — George picks):
+- **`/api/request-access` as an endpoint alias** — delete it once nothing can still be serving the
+  old HTML from cache. Marked in the file.
+- **`not_found_handling: "404-page"` is now doing less than it looks.** With the Worker in front,
+  it only applies to what falls through to `env.ASSETS.fetch`. Still correct, still needed — but
+  it is no longer the thing deciding what happens to an unknown path.
+- **The `.hero::before` / `.flow::before` grid duplication** is still outstanding from entry (7).
+
 ## 2026-08-21 (8) — the diagram's labels became HTML, which is what let the phone stack them
 
 **Deployed:** `amlak-site` version **e44af8bb-e0f9-4d4f-ba54-3b77701f4def** (amlakre.com +

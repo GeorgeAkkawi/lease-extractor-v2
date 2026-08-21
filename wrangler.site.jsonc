@@ -27,6 +27,25 @@
     // A static site, so an unknown path is a real 404 — NOT the app's
     // single-page-application fallback, which would answer every typo with the
     // home page and tell search engines the site has infinite pages.
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+
+    // ⚠ WITHOUT THIS, EVERY REDIRECT IN site-worker.js IS DEAD IN A REAL BROWSER.
+    // The asset router runs BEFORE the Worker by default, and for a path with no
+    // matching file it applies `not_found_handling` itself — so a top-level
+    // navigation to /sign/<token> was answered with 404.html and the Worker was
+    // never invoked. It only ever looked fine because it was verified with curl:
+    // a request WITHOUT `Sec-Fetch-Mode: navigate` is not treated as a navigation
+    // and does fall through, so `curl` got its 302 and a browser got a 404. Any
+    // test of these redirects must send that header or it is testing nothing.
+    //
+    // ⚠ The cost is that the Worker now sees EVERY request, including the ones
+    // for real files — so anything it matches, it owns. That is what made
+    // `/security` in APP_PATHS suddenly load-bearing; read the note there.
+    // `env.ASSETS.fetch(req)` is still the fallback, so 404-page handling above
+    // is unchanged for genuinely unknown paths.
+    //
+    // `true` rather than a list of path globs on purpose: a glob list would be a
+    // second copy of APP_PATHS, in another file, free to drift from it.
+    "run_worker_first": true
   }
 }

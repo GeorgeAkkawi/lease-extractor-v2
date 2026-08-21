@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Request access — Amlak</title>
-<meta name="description" content="Amlak is in private beta and accounts are issued by request. Tell us about your portfolio, or skip the form entirely and open the live demo." />
-<link rel="canonical" href="https://amlakre.com/request-access" />
+<title>Request a consultation — Amlak</title>
+<meta name="description" content="A short conversation about your portfolio and whether Amlak actually suits it — including the cases where it does not. Or skip it entirely and open the live demo." />
+<link rel="canonical" href="https://amlakre.com/consultation" />
 <meta name="robots" content="noindex" />
 <meta name="theme-color" content="#5C6B3C" />
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
 <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <meta property="og:type" content="website" />
-<meta property="og:url" content="https://amlakre.com/request-access" />
-<meta property="og:title" content="Request access — Amlak" />
-<meta property="og:description" content="Private beta. Accounts by request — or skip the form and open the live demo." />
+<meta property="og:url" content="https://amlakre.com/consultation" />
+<meta property="og:title" content="Request a consultation — Amlak" />
+<meta property="og:description" content="A conversation about whether Amlak suits your portfolio — or skip it and open the live demo." />
 <meta property="og:image" content="https://amlakre.com/og.png" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:image" content="https://amlakre.com/og.png" />
@@ -44,12 +44,12 @@
 <section class="section" style="padding-top:72px">
   <div class="wrap">
     <div class="section-head">
-      <span class="eyebrow">Private beta</span>
-      <h2>Try it first. The form can wait.</h2>
+      <span class="eyebrow">No obligation, no card, no price yet</span>
+      <h2>Try it first. The talking can wait.</h2>
       <p class="lede">
-        You don't need an account, a form or a call to see whether Amlak is any good — the
-        demo is the real application running on a sample portfolio. Open that first. If you
-        want an account after, this is where you ask for one.
+        You don&rsquo;t need to speak to anybody to find out whether Amlak is any good — the
+        demo is the real application, running on a sample portfolio. Open that first. If it
+        looks like it might suit what you run, the conversation below is the next step.
       </p>
       <div class="btn-row">
         <a class="btn btn-primary" href="https://demo.amlakre.com">Open the live demo <span class="btn-arrow">→</span></a>
@@ -60,16 +60,18 @@
 
     <div class="form-grid">
       <div>
-        <h3 style="font-size:30px;margin-bottom:14px">Ask for an account</h3>
+        <h3 style="font-size:30px;margin-bottom:14px">Let&rsquo;s work out whether it fits</h3>
         <p style="color:var(--muted);margin:0 0 26px">
-          Amlak is deliberately small right now — accounts are issued by hand rather than by
-          signup, so that the people using it can still shape it. Tell us a little about what
-          you're running and you'll get a real reply, from a person.
+          Amlak is built narrowly and on purpose, which means it suits some portfolios very
+          well and others not at all. So this is a conversation rather than a signup: tell us
+          what you&rsquo;re running, and we&rsquo;ll tell you honestly whether this is the right tool for
+          it. That answer is useful to you either way, and it costs nothing.
         </p>
         <ul class="ticks">
-          <li><strong>No sales call.</strong> A reply by email, and a straight answer about whether it fits.</li>
-          <li><strong>No obligation and no card.</strong> There isn't a price yet.</li>
-          <li><strong>We'll say no if it doesn't fit.</strong> Residential, hundreds of units, or a portal for your tenants — that's not this product, and we'll tell you so.</li>
+          <li><strong>Email or a short call &mdash; your choice.</strong> Nobody is going to ring you because you filled in a form.</li>
+          <li><strong>Nothing to buy.</strong> No card, no contract, no price yet. This is not a sales call wearing a different name.</li>
+          <li><strong>We will tell you if it doesn&rsquo;t fit.</strong> Residential, hundreds of units, or a portal for your tenants &mdash; that is not this product, and you&rsquo;ll hear that from us rather than find it out in month three.</li>
+          <li><strong>You are talking to the person who built it.</strong> Not a rep working from a script about a product they have never used.</li>
         </ul>
       </div>
 
@@ -110,9 +112,22 @@
             </div>
           </div>
 
+          <!-- ⚠ ASK THIS, because the page now offers a conversation. Promising "email
+               or a short call, your choice" and then not asking which makes the choice
+               a decoration. Email is FIRST so it is the default: a page that quietly
+               opts everyone into a phone call is the thing this framing exists to
+               avoid, and it commits George to calls nobody asked for. -->
           <div class="field">
-            <label for="message">Anything else <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label>
-            <textarea id="message" name="message" placeholder="What you're using today, and what about it isn't working."></textarea>
+            <label for="how">How to reach you</label>
+            <select id="how" name="how">
+              <option>Email is fine</option>
+              <option>A short call would be better</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="message">What you're running <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label>
+            <textarea id="message" name="message" placeholder="What you use today, and the part of it that isn't working. The more concrete, the more useful the answer."></textarea>
           </div>
 
           <!-- Honeypot: a real person never sees this, and never fills it in. -->
@@ -121,7 +136,7 @@
             <input id="company_website" name="company_website" type="text" tabindex="-1" autocomplete="off" />
           </div>
 
-          <button class="btn btn-primary" type="submit" id="send" style="width:100%">Request access</button>
+          <button class="btn btn-primary" type="submit" id="send" style="width:100%">Request a consultation</button>
           <p class="form-note">
             Goes to one inbox and is answered by one person. No list, no newsletter, no tracker
             on this page.
@@ -154,7 +169,7 @@
         <h4>Company</h4>
         <ul>
           <li><a href="/about">About</a></li>
-          <li><a href="/request-access">Request access</a></li>
+          <li><a href="/consultation">Request a consultation</a></li>
           <li><a href="/support">Support &amp; contact</a></li>
         </ul>
       </div>
@@ -164,7 +179,7 @@
           <li><a href="/privacy">Privacy policy</a></li>
           <li><a href="/terms">Terms of service</a></li>
           <li><a href="/security">Security</a></li>
-          <li><span style="color:var(--faint);font-size:13.5px">Private beta &middot; accounts by request</span></li>
+          <li><span style="color:var(--faint);font-size:13.5px">Private beta &middot; new accounts by consultation</span></li>
         </ul>
       </div>
     </div>
@@ -186,7 +201,7 @@
     err.innerHTML = msg;
     err.hidden = false;
     send.disabled = false;
-    send.textContent = 'Request access';
+    send.textContent = 'Request a consultation';
   }
 
   form.addEventListener('submit', function (e) {
@@ -198,6 +213,7 @@
       email: form.email.value.trim(),
       properties: form.properties.value,
       kind: form.kind.value,
+      how: form.how.value,
       message: form.message.value.trim(),
       company_website: form.company_website.value
     };
@@ -208,7 +224,7 @@
     send.disabled = true;
     send.textContent = 'Sending…';
 
-    fetch('/api/request-access', {
+    fetch('/api/consultation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
@@ -220,7 +236,10 @@
         '<div class="form-done">' +
           '<h3>Got it.</h3>' +
           '<p>We’ll reply to <strong>' + data.email.replace(/[<>&]/g, '') + '</strong> — ' +
-          'from a person, usually within a day or two.</p>' +
+          'from a person, usually within a day or two' +
+          (data.how && data.how.indexOf('call') !== -1
+            ? ', with a couple of times that suit for a call.'
+            : '.') + '</p>' +
           '<p>In the meantime the demo is open and needs nothing from you.</p>' +
           '<a class="btn btn-primary" href="https://demo.amlakre.com" style="margin-top:8px">Open the live demo <span class="btn-arrow">→</span></a>' +
         '</div>';
