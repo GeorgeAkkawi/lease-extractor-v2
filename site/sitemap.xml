@@ -1,12 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- ⚠ <lastmod> IS A PROMISE, AND A STALE ONE IS WORSE THAN NONE. Google uses it to
+     decide whether re-reading a page is worth a crawl, and it learns to ignore the
+     whole file from a site whose dates never move. It exists here because the apex
+     changed hands on 2026-08-21 — it stopped being the React app and became this
+     site — and Google was still serving the old page's title and description.
+     UPDATE THE DATE ON A PAGE WHEN YOU CHANGE THAT PAGE'S VISIBLE CONTENT, and leave
+     it alone for a typo or a style tweak. If it ever becomes a thing nobody touches,
+     delete it rather than let it lie. -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://amlakre.com/</loc><priority>1.0</priority></url>
-  <url><loc>https://amlakre.com/features</loc><priority>0.8</priority></url>
-  <url><loc>https://amlakre.com/compare</loc><priority>0.8</priority></url>
-  <url><loc>https://amlakre.com/about</loc><priority>0.5</priority></url>
-  <url><loc>https://amlakre.com/consultation</loc><priority>0.7</priority></url>
-  <url><loc>https://amlakre.com/support</loc><priority>0.4</priority></url>
-  <url><loc>https://amlakre.com/privacy</loc><priority>0.3</priority></url>
-  <url><loc>https://amlakre.com/terms</loc><priority>0.3</priority></url>
-  <url><loc>https://amlakre.com/security</loc><priority>0.3</priority></url>
+  <url><loc>https://amlakre.com/</loc><lastmod>2026-08-22</lastmod><priority>1.0</priority></url>
+  <url><loc>https://amlakre.com/features</loc><lastmod>2026-08-22</lastmod><priority>0.8</priority></url>
+  <url><loc>https://amlakre.com/compare</loc><lastmod>2026-08-22</lastmod><priority>0.8</priority></url>
+  <url><loc>https://amlakre.com/about</loc><lastmod>2026-08-22</lastmod><priority>0.5</priority></url>
+  <url><loc>https://amlakre.com/consultation</loc><lastmod>2026-08-22</lastmod><priority>0.7</priority></url>
+  <url><loc>https://amlakre.com/support</loc><lastmod>2026-08-21</lastmod><priority>0.4</priority></url>
+  <url><loc>https://amlakre.com/privacy</loc><lastmod>2026-08-21</lastmod><priority>0.3</priority></url>
+  <url><loc>https://amlakre.com/terms</loc><lastmod>2026-08-21</lastmod><priority>0.3</priority></url>
+  <url><loc>https://amlakre.com/security</loc><lastmod>2026-08-21</lastmod><priority>0.3</priority></url>
 </urlset>

@@ -1,3 +1,97 @@
+## 2026-08-22 — The Google result: a snippet cut mid-sentence and a mark upscaled from 48px
+
+**Cloudflare versions:** `8764fde1-5654-4085-b291-522d2ce59058` (the `amlak-site` worker /
+amlakre.com) · `50aa7c6e-295c-4c0a-a9dc-cc358d98fc69` (the `amlak` app worker, carrying only the
+mirrored `favicon.ico`) · 2,085 tests / 197 files green.
+
+George: *"When searching amlakre.com on google the description underneath the link is really bad
+and the [icon] on the left is grainy."*
+
+### What was actually wrong — three separate things, only two of them ours
+
+**1. The index is one day old, and that is the whole reason the description reads badly.**
+The apex stopped being the React app and became this site on **2026-08-21** (`5fe60f5`). Google's
+result for amlakre.com is still derived from what it crawled *before* that — the SPA shell, whose
+only crawlable prose is `<noscript>You need to enable JavaScript to run this app.</noscript>`.
+Verified the live apex is correct: `curl` as Googlebot returns `200` with the right `<title>` and
+`<meta name="description">`. **Nothing in the repo can fix a stale index** — only a recrawl does,
+and only George can ask for one (Search Console → URL Inspection → Request indexing). Recorded
+here so the next person doesn't go hunting for a bug that isn't in the code.
+
+**2. The description was over-length on the five pages that matter.** Google's desktop snippet is
+~920px, roughly **155 characters**; mobile is shorter. The home page's was **198**, features 201,
+compare 200, about 179, consultation 162. Every one was being cut mid-clause, so the last thing a
+searcher read was half a sentence — *"…matches bank deposits to"*. Rewritten to land the whole
+thought inside the budget (150 / 145 / 140 / 140 / 144), front-loaded, same voice. The four short
+pages (support 96, terms 111, privacy 115, security 150) were already inside it and were not
+touched.
+
+**3. The mark was grainy because 48px was the ceiling.** Google's own guidance asks for a favicon
+*"larger than 48x48px so that it looks good on various surfaces"*; `favicon.ico` topped out at
+exactly 48 (16/32/48), so every surface bigger than that — the results page itself, a high-DPI
+screen — was an upscale. Added a **192×192 PNG** declared as `rel="icon"`, and appended **64** and
+**128** to the `.ico` for the crawler that just grabs `/favicon.ico` by convention.
+
+⚠ **THE 16/32/48 ENTRIES WERE CARRIED THROUGH BYTE-FOR-BYTE, NOT RE-RASTERISED.** The obvious move
+— re-render every size from `favicon.svg` — was tried first and rejected on the evidence: a fresh
+LANCZOS downsample is visibly *softer* at 16px than the shipped hand-tuned entry (compared
+side-by-side at 10× zoom). Fixing the grainy large icon by making the small one mushier is the
+trade nobody asked for. The build asserts the carried blobs are identical before writing.
+The two new entries carry the SVG's real transparent corners; the three old ones keep their baked
+white ones. On Google's white results page these are indistinguishable; on a dark surface the new
+ones are correct and the old ones are the legacy artefact.
+
+**Geometry check:** the new rasters are drawn from `favicon.svg`'s own path data (the two cubics
+flattened in Python, drawn 32× supersampled). Diffed against the shipped 48px entry — max channel
+delta 45/255, all of it edge anti-aliasing, no misalignment.
+
+### `<lastmod>` in the sitemap
+
+Added, dated **2026-08-22** for the five pages whose copy changed and **2026-08-21** for the four
+that didn't. It is the standing version of the recrawl request: Search Console's is a one-off,
+this one keeps telling Google the page moved. ⚠ It is also a promise — Google learns to ignore the
+file from a site whose dates never move — so the comment above it says to update the date when a
+page's visible content changes, and to delete the field rather than let it lie.
+
+### Files
+
+`site/index.html` · `site/features.html` · `site/compare.html` · `site/about.html` ·
+`site/consultation.html` (descriptions + icon links) · `site/support.html` · `site/privacy.html` ·
+`site/terms.html` · `site/security.html` · `site/404.html` (icon links only) ·
+`site/sitemap.xml` · **`site/icon-192.png` (new)** · `site/favicon.ico` ·
+`public/favicon.ico` (kept byte-identical to the site's copy — the two have been mirrors since the
+split, and a favicon regenerated on one side only is exactly the drift that goes unnoticed; this
+is the only reason the app was redeployed).
+
+### Verified live
+
+`amlakre.com` serves the new description and all three `rel="icon"` links · `/icon-192.png` 200
+`image/png` 5,951B · `/favicon.ico` 200 7,237B (5 sizes) · `/sitemap.xml` 200, parses, 9 `lastmod`
+entries · `app.amlakre.com/favicon.ico` 200 7,237B, matching.
+
+Checked and found already correct, so left alone: canonical tags on all nine indexable pages,
+`site/robots.txt` (permissive, sitemap declared), and the `Disallow: /` on both
+`app.amlakre.com` and `demo.amlakre.com` — neither competes with the site for Amlak's own name.
+
+### George's move — the part no deploy can do
+
+Search Console for `amlakre.com`: **URL Inspection → paste `https://amlakre.com/` → Request
+indexing**, then **Sitemaps → resubmit `https://amlakre.com/sitemap.xml`**. That is what replaces
+the old snippet; the favicon follows on its own schedule and is the slower of the two (days to
+weeks). If the property isn't verified yet, verification is a DNS TXT record on the domain.
+
+### Now redundant
+
+- **The 48px ceiling as the site's largest artwork.** `apple-touch-icon.png` (180) and the app's
+  `logo192.png` both already existed at usable sizes, and neither was reachable as a `rel="icon"`
+  for the public site. `icon-192.png` is now the one large icon the site declares.
+- **`public/logo192.png` and `site/icon-192.png` are two 192px renders of one mark with different
+  corner radii** — `logo192` uses a visibly rounder corner than `favicon.svg`'s `rx="2.5"`. Only
+  the manifest reads `logo192`, so nothing is broken today, but they are two answers to "what does
+  the mark look like at 192". Proposed: re-render `logo192.png`/`logo512.png`/`maskable-512.png`
+  from `favicon.svg` so there is one artwork. **Not done — George's call.**
+- Nothing else. The site's canonical tags, robots and titles were checked and are doing their job.
+
 ## 2026-08-22 — The whole audit, fixed: 19 confirmed findings, 17 secondary, and 25 silent writes
 
 **Cloudflare version:** `4e4b8f85-3ce8-4754-bf6a-724e54ed66dc` (the `amlak` app worker /
