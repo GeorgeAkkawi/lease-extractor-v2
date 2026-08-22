@@ -55,6 +55,26 @@ async function overpay(month, surplus) {
   return owed;
 }
 
+/** Pay one month of Northwind Books (lease-3) SHORT by a known figure. */
+async function underpay(month, short) {
+  const inv = await ensureInvoice('lease-3', 'prop-2', Y);
+  const row = (await getPropertyMonthlyRoll('prop-2', Y)).find((r) => r.lease_id === 'lease-3');
+  const owed = round2(Number(row.schedule[month].owed) || 0);
+  expect(owed, 'the month must bill more than the shortfall, or this is not a short month').toBeGreaterThan(short);
+  await recordPayment({
+    invoice_id: inv.id, lease_id: 'lease-3', amount: round2(owed - short),
+    paid_date: `${Y}-${String(month).padStart(2, '0')}-04`, method: 'check',
+    period_month: month, source: 'manual',
+  });
+  return owed;
+}
+
+/** The Northwind Books row — the grid has other tenants with the same month labels, and the
+ *  open month pop-up prints the tenant name too, so `getByText` is ambiguous here. */
+const nwRow = () => [...document.querySelectorAll('tr')].find((tr) => /Northwind Books/.test(tr.textContent || ''));
+const nwCell = (label) => [...nwRow().querySelectorAll('.rr-cell')]
+  .find((el) => new RegExp(`^${label} `).test(el.getAttribute('aria-label') || ''));
+
 describe('an over-paid month asks what the surplus is', () => {
   it('rings the box, and the pop-up offers the three answers instead of a paragraph', async () => {
     await overpay(4, 1750);
@@ -116,6 +136,20 @@ describe('an over-paid month asks what the surplus is', () => {
     // ⚠ AND IT SAYS THE MONEY IS IN THE LIVE FIGURES NOW — George asked that outright.
     await waitFor(() => {
       expect(within(screen.getByRole('dialog')).getByText(/is in your live income/)).toBeTruthy();
+    });
+
+    // ⚠ AND THE BOX STOPS LOOKING LIKE A PROBLEM (George, 2026-08-21: *"so i clicked always
+    // count as revenue for the extra 100 that sam nails is paying but the box is still
+    // yellow"*). The gold FILL only ever said "cash ≠ bill"; the answer cleared a 3px ring
+    // on top of it, so answering changed almost nothing on screen and read as the click not
+    // registering. Both go now — the month is settled at a figure the landlord endorsed
+    // himself and the money is in the live income figures, so there is nothing left to look at.
+    await waitFor(() => {
+      const box = nwCell('Jul');
+      expect(box).toBeTruthy();
+      expect(box.className).not.toMatch(/\bawaiting\b/);
+      expect(box.className).not.toMatch(/\boff\b/);
+      expect(box.getAttribute('aria-label')).toMatch(/\$900\.00 extra counted as revenue/);
     });
     cleanup();
   });
@@ -235,6 +269,42 @@ describe('a short month can be billed on another one', () => {
     // …and every other month is offered as a destination, this one excluded.
     expect(within(panel).getByRole('option', { name: 'Jan' })).toBeTruthy();
     expect(within(panel).queryByRole('option', { name: 'Sep' })).toBeNull();
+    cleanup();
+  });
+});
+
+// ⚠ THE FIX MUST NOT LAUNDER A SHORTFALL. `off` now clears when the landlord has answered for a
+// SURPLUS; a month that came in SHORT has no such answer, because there is none that makes one
+// fine — `monthExcess` returns 0 for it, so `answered` can never be true there. This runs LAST,
+// with the standing "anything extra from this tenant is revenue" switched on by the test above:
+// the strongest answer the app has, and the short month must still be gold underneath it.
+describe('an answered surplus goes green — a shortfall never does', () => {
+  it('drops the gold on every over-paid month and keeps it on the short one', async () => {
+    await underpay(9, 250);
+    renderLedger();
+    await screen.findByText('Northwind Books');
+
+    // The three months the standing answer settled: paid over, and plain green.
+    await waitFor(() => {
+      for (const ml of ['Jan', 'Feb', 'Mar']) {
+        const box = nwCell(ml);
+        expect(box, `${ml} should be a settled box`).toBeTruthy();
+        expect(box.className, `${ml} should not ask`).not.toMatch(/\bawaiting\b/);
+        expect(box.className, `${ml} should not be gold`).not.toMatch(/\boff\b/);
+        expect(box.getAttribute('aria-label')).toMatch(/\$300\.00 extra counted as revenue/);
+      }
+    });
+
+    // …and the month that came in $250 short is still gold, and says under, not over.
+    const short = nwCell('Sep');
+    expect(short).toBeTruthy();
+    expect(short.className).toMatch(/\boff\b/);
+    expect(short.getAttribute('aria-label')).not.toMatch(/counted as revenue/);
+
+    // The hover card agrees with the box on both — over is counted, under is not.
+    fireEvent.mouseEnter(nwCell('Jan'));
+    await waitFor(() => expect(screen.getByText(/over the bill — counted as revenue/)).toBeTruthy());
+    expect(screen.getByText(/is in your live income and expenses/)).toBeTruthy();
     cleanup();
   });
 });

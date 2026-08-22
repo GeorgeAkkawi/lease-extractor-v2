@@ -146,7 +146,7 @@ function RaiseChip({ step, follow, owed, prevOwed }) {
 // One month of one tenant, as a card: what the bill is made of, every charge or credit
 // posted on it (with the note that was typed with it — which until now could be read
 // NOWHERE but inside the pop-up), what came in, and what a click will do.
-function MonthTip({ ml, tenant, comp, adjRows, owed, received, isStep, settled, lump, outside, abated, action }) {
+function MonthTip({ ml, tenant, comp, adjRows, owed, received, isStep, settled, lump, outside, abated, action, answered = 0 }) {
   const c = comp || { base: 0, camTax: 0, roof: 0 };
   const diff = round2(received - owed);
   return (
@@ -174,19 +174,31 @@ function MonthTip({ ml, tenant, comp, adjRows, owed, received, isStep, settled, 
           ) : abated ? (
             <TipNote>Base rent abated — nothing is due for {ml}.</TipNote>
           ) : null}
+          {/* ⚠ A SURPLUS THE LANDLORD HAS ALREADY ANSWERED FOR IS NOT A WARNING (2026-08-21).
+              `answered` is the dollars of a surplus released into the live income figures by an
+              `alert_states` key — the standing "anything extra from this tenant" answer or this
+              month's own. Until now the card warned about it anyway, in the same gold as a
+              shortfall, on money George had personally said was revenue. The figure still shows;
+              only the alarm goes. A SHORTFALL is never `answered` (there is no answer that makes
+              one fine), so it keeps its warn tone unconditionally. */}
           <TipRow
             label="Received"
             value={money(received)}
             strong
-            tone={settled && Math.abs(diff) > 0.5 ? 'warn' : undefined}
+            tone={settled && Math.abs(diff) > 0.5 && !answered ? 'warn' : undefined}
           />
           {settled && Math.abs(diff) > 0.5 && (
             <TipRow
               label=""
-              value={`${money(Math.abs(diff))} ${diff < 0 ? 'under' : 'over'} the bill`}
+              value={answered
+                ? `${money(answered)} over the bill — counted as revenue`
+                : `${money(Math.abs(diff))} ${diff < 0 ? 'under' : 'over'} the bill`}
               sub
-              tone="warn"
+              tone={answered ? 'ok' : 'warn'}
             />
+          )}
+          {answered > 0 && (
+            <TipNote>It is in your live income and expenses. Double-click the month to change your mind.</TipNote>
           )}
           {lump && <TipNote>Covered by an untagged lump payment, which fills the months still owing from January onward.</TipNote>}
         </>
@@ -1200,24 +1212,36 @@ export default function LedgerPage() {
                           // when you hover over it it explains what has happened."* The ✓
                           // stays, so "paid = paid" still reads; gold is the same
                           // "look at this" gold the other states already use.
-                          const off = Math.abs(diff) > 0.5;
                           // ⚠ A SURPLUS NOBODY HAS ANSWERED FOR IS BEING WITHHELD FROM THE LIVE
                           // INCOME FIGURES (2026-08-17), so the box must say so or the money is
                           // held back invisibly — the one failure this whole change could cause.
-                          // `off` already tints the box gold either way; this adds the ASK.
                           const surplus = round2(excess?.[i] || 0);
                           // The standing answer ("anything extra from this tenant is revenue")
-                          // settles every month at once — that is what it is for.
-                          const awaiting = surplus > 0.05
-                            && !confirmedOverpay.has(overpayAllKey(r.lease_id, year))
-                            && !confirmedOverpay.has(overpayKey(r.lease_id, year, m, surplus));
+                          // settles every month at once — that is what it is for; the per-month
+                          // answer settles just this one. Either releases the money.
+                          const answered = surplus > 0.05
+                            && (confirmedOverpay.has(overpayAllKey(r.lease_id, year))
+                             || confirmedOverpay.has(overpayKey(r.lease_id, year, m, surplus)));
+                          const awaiting = surplus > 0.05 && !answered;
+                          // ⚠ GOLD MEANS "LOOK AT THIS", AND ONCE THE LANDLORD HAS ANSWERED THERE
+                          // IS NOTHING LEFT TO LOOK AT (George, 2026-08-21: *"so i clicked always
+                          // count as revenue … but the box is still yellow"*). Until now the fill
+                          // said only "cash ≠ bill" and the ANSWER cleared a 3px ring on top of it
+                          // — so answering changed almost nothing on screen, which reads as the
+                          // click not registering. The month is settled at a figure he endorsed
+                          // himself and the money is in the live income figures, so it goes back
+                          // to a plain green ✓. A SHORTFALL keeps its gold unconditionally:
+                          // `surplus` is 0 when `diff < 0`, so `answered` can never be true on a
+                          // short month, and no answer makes one fine.
+                          const off = Math.abs(diff) > 0.5 && !answered;
                           return (
                             <td key={m}>
                               <Tip as="button" type="button" className={`rr-cell paid${off ? ' off' : ''}${awaiting ? ' awaiting' : ''}${s?.abated ? ' abated' : ''}${stepCls}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
                                 onClick={cellClick(takeBack)} onDoubleClick={open}
-                                aria-label={`${ml} paid — ${money(receivedM)} received of ${money(owedM)} billed${awaiting ? `, ${money(surplus)} not yet applied` : ''}`}
+                                aria-label={`${ml} paid — ${money(receivedM)} received of ${money(owedM)} billed${awaiting ? `, ${money(surplus)} not yet applied` : ''}${answered ? `, ${money(surplus)} extra counted as revenue` : ''}`}
                                 content={card({
                                   settled: true,
+                                  answered: answered ? surplus : 0,
                                   action: awaiting
                                     ? `${money(surplus)} more than this month billed is in none of your income figures — double-click to say what it is`
                                     : 'Click to take this month back · double-click to open it',

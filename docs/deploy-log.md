@@ -1,3 +1,105 @@
+## 2026-08-21 (10) — An answered surplus stops looking like a problem
+
+**Cloudflare version:** `fd4667a4-7c19-4bde-b97b-ff9719bc053d` (the `amlak` app worker /
+app.amlakre.com) · 2,046 tests / 194 files green.
+
+George: *"so i clicked always count as revenue for the extra 100 that sam nails is paying but the
+box is still yellow. What are the rules we have in place because once i recognize that overcharge
+as revenue it should update on the live income and expenses and also update on the live projected
+revenue."*
+
+### What was actually wrong — and what wasn't
+
+**The click worked, and the money moved.** Production carries
+`overpay_all:1b9e1ae6-e468-45b9-afa9-c59e64554756:2026`, `dismissed = true`. Sam Nails bills
+**$4,418.00**/mo from June (Jan–May were $4,363.88 — the mid-year step; the annual invoice of
+$52,745.38 ties to both) and **July and August each came in at $4,518.00**, so **$200** was being
+held out and the standing answer released it. `billedRowsFromRoll` (`incomeExpense.js:193-208`)
+reads the key and sets `held = 0`, so the full $4,518 lands in each month's Rent row on the LIVE
+basis; the Dashboard band refetches because the confirmed set is folded into its query key
+(`DashboardPage.js:81-88`). **Projected did not move, and George confirmed that is right** —
+*"didnt mean projected only live should move good catch"*. Projected is what the leases BILL.
+
+**So the defect was entirely that the screen never said so.** The gold box carried two meanings:
+
+| signal | class | means | cleared by the answer? |
+|---|---|---|---|
+| gold **fill** | `.off` | `|received − billed| > $0.50` | **no** |
+| gold **ring** | `.awaiting` | nobody has said what the extra is | yes |
+
+The ring is `box-shadow: 0 0 0 2px var(--gold-soft), 0 0 0 3px var(--gold)` — a faint halo on an
+already-gold box — and `MonthTip` painted `warn` on the Received row and an *"$100.00 over the
+bill"* sub-row regardless. **The app's whole answer to "did my click do anything?" was a 3px
+border change**, on money George had personally said was revenue.
+
+### What shipped
+
+- **`answered`** (`LedgerPage.js`, the `settledM` branch) — one boolean off the two keys already
+  read there (the standing `overpayAllKey` or this month's `overpayKey`). `awaiting` is now
+  `surplus > 0.05 && !answered`, and **`off` is `Math.abs(diff) > 0.5 && !answered`**: an answered
+  surplus goes back to a plain green ✓ with its real figure. ⚠ **A SHORTFALL KEEPS ITS GOLD
+  UNCONDITIONALLY** — `monthExcess` returns 0 when `diff < 0`, so `answered` can never be true on
+  a short month, and there is no answer that makes one fine.
+- **The aria-label** gains `, $100.00 extra counted as revenue`, mirroring the existing
+  `, $X not yet applied`.
+- **`MonthTip`** gains an `answered` prop: the Received row drops its `warn` tone, the sub-row
+  reads **`$100.00 over the bill — counted as revenue`** at `tone="ok"`, and a `TipNote` says
+  *"It is in your live income and expenses. Double-click the month to change your mind."* — §6 of
+  *Following the change through the user's hands*, on the card the landlord is already hovering.
+
+**No CSS, no schema, no money logic.** `.off` is a className with no other reader, and nothing
+here touches `allocatePayments`, `monthExcess`, `billedRowsFromRoll` or any §2 choke point.
+
+### Deliberately not touched
+
+- **The row-level `over N mo · check the rent` chip** (`recurringSurplus`, 3+ months) stays gold.
+  George's own rule: a recurring surplus is a **rent** question, the standing key is an
+  **accounting** one. Answering "count it as revenue" does not answer "should this be the rent".
+  Sam Nails has two surplus months, so no chip fires either way.
+- **`MonthDetailPanel`'s `Paid over` heading** — a fact, and the paragraph under it already states
+  the money is counted.
+
+### Files
+
+`src/pages/LedgerPage.js` · `src/components/__tests__/overpayPanel.test.js`.
+
+### Verified
+
+`npm test` — **2,046 passing, 194 files** (1 new test, plus new assertions on the existing
+per-month-answer test). The per-month answer leaves the July box with **neither** `.awaiting`
+**nor** `.off` and an aria-label naming the $900 as counted revenue; under the STANDING answer all
+three over-paid months read plain green while a month paid **$250 short** on the same row keeps
+its `.off` and never says "counted as revenue"; the hover card agrees with the box on both.
+
+**Non-vacuity proved on both claims** — `&& !answered` was removed from `off`, then the card's
+`answered` label was removed, in turn. Each went red (`expected 'rr-cell paid off' not to match
+/\boff\b/`), then green on restore.
+
+⚠ **A TEST-HARNESS TRAP:** `screen.getByText('Northwind Books')` is **ambiguous** once the month
+pop-up is open — the dialog prints the tenant name too, so `.closest('tr')` throws and the
+`waitFor` around it times out with a wall of table HTML rather than a useful message. The row is
+found by scanning `document.querySelectorAll('tr')` instead.
+
+⚠ **`addendumReview.test.js:74` is flaky under full-suite load** — its own comment calls it *"a
+latent race"*. It failed once on a full run and has passed on every run since, including alone.
+Unrelated to this change, but worth a pin.
+
+### Now redundant
+
+- ⚠ **The `.awaiting` ring** (`App.css:152`) is now *almost* exactly redundant: with `off`
+  clearing on an answer, the gold **fill** already distinguishes answered from unanswered for any
+  surplus over $0.50. It survives only for surpluses between **5¢ and 50¢**, where `awaiting` is
+  true but `off` never was. **Proposed, not done** — dropping it means lowering `off`'s surplus
+  threshold to `0.05` to keep that band visible. George's call.
+- **Nothing else.** The per-month answer, roll-forward and refund all keep their jobs.
+
+### Not bundled in (George's call)
+
+- **A link from the Ledger to the figure that moved.** The panel says *"It is in your live income
+  and expenses now"* with no amount and no link, and the only on-screen place the $200 appears is
+  the Dashboard's FY2026 band. Worth a `→ See it on the Overview`.
+- **A "make $4,518 the rent from July" action.** Explicitly declined — projected is the bill.
+
 ## 2026-08-21 (9) — "request access" became "see if we fit", and that uncovered a dead /sign redirect
 
 **Deployed:** `amlak-site` version **75829137-23be-47d2-bf60-17c755fe5f27** (amlakre.com +
