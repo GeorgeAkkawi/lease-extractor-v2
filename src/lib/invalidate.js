@@ -20,6 +20,10 @@ export function settleBillingChange(qc, { propertyId, leaseId, year } = {}) {
     // What the figure re-splits into.
     propertyId ? ['tenantShares', propertyId] : ['tenantShares'],
     propertyId ? ['propertyTotals', propertyId] : ['propertyTotals'],
+    // The per-corp batch of the same figures (prefetch.js seeds it, the property cards read
+    // it). Its two sibling batch keys have been here since the sidebarLeases round; this one
+    // was missed, so a moved figure repainted the property page and not the grid above it.
+    ['propertyTotalsByCorp'],
     // The Ledger grid + the lease's own monthly boxes.
     propertyId ? ['propertyRentRoll', propertyId] : ['propertyRentRoll'],
     ['monthlyRent'],
@@ -77,6 +81,19 @@ export function settlePaymentChange(qc, { propertyId } = {}) {
     // whole file exists to prevent, sitting in the file itself: `settleBillingChange`
     // carries this key, and the fast path split off from it without it.
     ['portfolioBasis'],
+    // ⚠ THE TWO STATEMENT-LINE PANELS, and they are here because DELETING a payment is a
+    // payment change too. `deletePayment` calls `releaseStatementLine`, which hands an
+    // imported deposit back to the Ledger's "Money not yet placed" list — which is exactly
+    // what the un-tick confirm promises out loud. Without these two the promise failed for
+    // the rest of the session: the deposit was released server-side, the panel it was sent
+    // to showed nothing, and the "Decided" panel still filed it as recorded rent.
+    ['unplacedLines'],
+    ['decidedLines'],
+    // The importer's match context carries each tenant's per-month coverage, so a month that
+    // has just been ticked (or un-ticked) must reach it — otherwise the next import prices
+    // every line against the ledger as it stood BEFORE, and the row-level "already covered"
+    // warning never fires. Its sibling above has carried this key all along.
+    ['statementContext'],
   ];
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });
 }
@@ -102,7 +119,11 @@ export function settleLeaseScheduleChange(qc, leaseId) {
   //   leaseStatedEstimate   — same source, read by the Financials "stated on the lease" chip
   // The last two matter specifically for a REPLACED document: the row is updated in place, so
   // the key is unchanged while the content behind it is now a different lease's read.
-  for (const name of ['escalationsByProperty', 'extractionRaw', 'leaseStatedEstimate']) {
+  // `escalationsByLeases` is the BATCH read the Financials breakdown and `useRecoverability`
+  // share — keyed by a joined id string the caller doesn't hold, so it goes by prefix like the
+  // three below. Without it, rewriting a lease's steps left the per-tenant proration weighing
+  // the OLD schedule until a hard reload.
+  for (const name of ['escalationsByProperty', 'escalationsByLeases', 'extractionRaw', 'leaseStatedEstimate']) {
     qc.invalidateQueries({ queryKey: [name] });
   }
 }
@@ -123,10 +144,21 @@ export function settleLeaseScheduleChange(qc, leaseId) {
 //
 // Both batch keys are invalidated by PREFIX: their full key carries a joined id string the
 // caller doesn't hold.
+// ⚠ AND A FOURTH, WHICH IS THE WHOLE OVERVIEW. ['searchIndex'] is the portfolio list the
+// dashboard is built out of — the "N properties · N active tenants" subtitle, the occupancy
+// figures, the basis rows, every chart. It was invalidated by nothing, so under the same
+// never-refetches defaults a client who created their first corporation, property and tenants
+// and then clicked Overview read "0 properties · 0 active tenants" with no band and no charts;
+// a removed tenant likewise stayed in the active count and inside the projected revenue. That
+// window is exactly the onboarding window. ['portfolioBasis'] and ['portfolioTotals'] ride
+// with it because a lease appearing or disappearing moves both.
 export function settleLeaseListChange(qc, { propertyId } = {}) {
   qc.invalidateQueries({ queryKey: propertyId ? ['leases', propertyId] : ['leases'] });
   qc.invalidateQueries({ queryKey: ['sidebarLeases'] });
   qc.invalidateQueries({ queryKey: ['leasesByProperties'] });
+  qc.invalidateQueries({ queryKey: ['searchIndex'] });
+  qc.invalidateQueries({ queryKey: ['portfolioBasis'] });
+  qc.invalidateQueries({ queryKey: ['portfolioTotals'] });
 }
 
 // One place that knows what goes stale when a SERVICE CONTRACT changes — added, edited,
@@ -159,6 +191,13 @@ export function settleContractChange(qc, propertyId) {
     // signed contract stamps the envelope's applied_at, which is the only thing that clears
     // the "read the signed contract" prompt and the dashboard's signature_apply alert.
     ['envelopes'],
+    // …and the two child reads of an envelope, which move with it: the audit trail and the
+    // signer rows the countersign button is drawn from. Both keyed by envelope id, so prefix.
+    ['envelopeEvents'],
+    ['envelopeSigners'],
+    // The "N tenants billed" figure beside a contract's CAM line — derived from the shares a
+    // contract change re-splits, so it goes stale with them.
+    ['billedTenants'],
   ];
   for (const queryKey of keys) qc.invalidateQueries({ queryKey });
 }

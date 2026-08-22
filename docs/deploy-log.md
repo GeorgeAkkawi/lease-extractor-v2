@@ -1,3 +1,206 @@
+## 2026-08-22 — The whole audit, fixed: 19 confirmed findings, 17 secondary, and 25 silent writes
+
+**Cloudflare version:** `4e4b8f85-3ce8-4754-bf6a-724e54ed66dc` (the `amlak` app worker /
+app.amlakre.com) · demo `8d565291-a1a4-4150-803e-20d6a7e7044a` · migration **0102** applied ·
+2,085 tests / 197 files green.
+
+George: *"lets do all at the same time go ahead dont stop until you are done."* — every finding in
+`docs/audit-2026-08-22.md`, confirmed and secondary, in one round.
+
+⚠ **`npx supabase db push` also applied `0101_payment_split_from.sql`**, which was committed but
+had never been pushed. It is not this round's file; it went live with 0102 because `db push`
+applies everything pending.
+
+### The money one, first
+
+**`CamSection.js` — ↩ Undo after "Save flat CAM" wrote $0.** `saveFlat.mutate()` was called with
+**no argument**, so the `prevCam` react-query hands to `onSuccess(_data, prevCam)` was `undefined`
+and the undo wrote `Number(undefined) || 0`. Then `carryThrough()` → `resyncPropertyBilling`
+rebuilt every stored invoice for the year **at no CAM**. `TaxSection.js:182` and
+`RoofSection.js:190` pass it correctly; only the flat-CAM path did not, and only a property with
+no itemized lines could reach it. One argument. Pinned by a new
+`camSectionUndo.test.js` case — proved breakable (restore the bug → `expected +0 to be 40000`).
+
+### The read that wrote, and never ran
+
+**`useCamSync` (new, `src/lib/useCamSync.js`).** Carrying a year's service contracts and
+management fee into CAM lived inside the `['camLineItems', propId, year]` **queryFn** — the
+mechanism behind *"opening any fiscal year keeps its contract costs current"*. It never ran on the
+Financials page: `useRecoverability` observes the same key with a plain `listCamLineItems`, it
+belongs to the page fiber (so its options are re-stamped after every commit), and React Query is
+last-writer-wins across observers. Measured: `CamSection` alone → both syncs fire; the real page →
+neither.
+
+Visible cost: a management fee whose stored dollars stopped matching its own *"5% of $X base rent"*
+label, and a multi-year contract that never got its CAM line when a new year was opened.
+
+⚠ **THE FIX IS NOT A CLEVERER `queryFn`, IT IS NOT BEING ONE.** A read that writes can always be
+pre-empted by a co-observer of its key. It is an effect now — and it is called from
+**`PropertyFinancialsPage`, not `CamSection`**, because that section sits inside a foldable panel
+and a year must still self-heal when the landlord has folded it.
+
+### "Remove invoice" — the dialog was wrong twice
+
+Offered on ANY non-void invoice with no `kind` test, so it is offered on the year's **annual**
+invoice, the one the app raises by itself on the first Ledger tick. Every ledger read filters void
+invoices, so confirming it takes every payment for that tenant-year off the Rent Ledger, the
+monthly tracker, the Tenant statement and the Overview's collected figure.
+
+- *"Recorded payments stay attached"* — true and useless: attached to a row no money screen reads
+  again. The dialog now names them: **"The 1 payment recorded against it ($3,000.00) stops showing
+  on the Rent Ledger, the monthly tracker and the tenant statement."**
+- *"this is reversible"* — **false**; nothing in the app could un-void an invoice. There is a
+  **Restore** button now, refused with a reason when the year already holds a live invoice
+  (0055's index allows exactly one).
+- The click called `refresh()` only. It calls **`settlePaymentChange`** now, so the screens that
+  just lost the money repaint at the moment of the click.
+
+New `invoiceRemoveRestore.test.js` drives the whole round trip and asserts both keys were invalidated.
+
+### The two documents a tenant actually reads
+
+**The reconciliation workbook did not add up.** A kind entered as a year total (taxes by default,
+CAM optionally) has no line items, so its scaling fraction is 0 and the itemized loop emitted
+nothing — while the bold TOTAL under it is struck from the **share** and carried the money in full.
+Demo's Bright Coffee: four lines summing $8,800 under a printed $18,800. Residual rows now name it
+(*"Property tax (entered as a year total — not itemized)"*), plus a final catch-all so the section
+ties to its own footer **by construction**.
+
+**The base was the one figure on that sheet not prorated.** `effective_rent` is an annual RATE;
+CAM & tax, the itemized lines and the variance are all struck over the months the tenant was here.
+Sunrise Yoga (1 July): a Base rent row reading $36,000 beside twelve cells summing $18,000, and two
+TOTAL OWED rows quoting a year the tenant never had. `base.annual` is the prorated figure now and
+`base.rate` keeps the lease's own; the row says *"(prorated — 6 of 12 months in term)"*. **The
+settlement is unchanged** — `variance` cancels base on both sides — only the two intermediate
+totals a tenant reads as dollars.
+
+**The ✉ statement contradicted itself.** `reconcileFigures` folds a year's CAM & tax corrections
+into the estimate side; `reconcileCamTax` stored `est_cam`/`est_tax` **pre**-correction beside
+`diff` **post**-correction. The letter computes each line's difference locally and prints the
+stored `diff` on TOTAL:
+
+```
+• CAM & tax — billed $12,000.00 · actual $12,300.00 · difference +$300.00
+  TOTAL     — billed $12,000.00 · actual $12,300.00 · difference −$100.00
+  REFUND DUE TO TENANT: $100.00
+```
+
+Identical figures, opposite differences, a refund matching neither, and prose saying "below the
+estimates" under a line saying over. **Migration 0102** adds `cam_reconciliations.cam_tax_adjust`
+(numeric, default 0 — so every stored row reproduces today's arithmetic exactly and there is no
+back-fill, the figure being unknowable for the past). The letter reads it into the billed figure
+and prints the same memo row the workbook has had since 2026-08-16.
+
+### The empty box above the heading
+
+Six alert focuses reached the lease page and were named in neither the callout nor the scroll
+registry — `insurance_chase`, `insurance_missing`, `abatement`, and the three signature ones — so
+the landlord got a bordered, accent-coloured, **empty** callout and no scroll. The callout is one
+`WHY` map now: its keys gate the render, so an unnamed focus can only render **nothing**, and the
+half-named state (title but no body) is unrepresentable. Abatement and Addendums & riders became
+controlled panels with refs, because a remembered fold is exactly what an alert has to overcome.
+
+### The gold that would not clear, one cell over
+
+The bug that started the audit, unfixed in the neighbouring branch. A month the lease bills nothing
+for counts as **entirely** unapplied, so the whole deposit is held out of every live income figure
+— and the `unbilled` branch computed no `surplus`, read no `confirmedOverpay` and passed no
+`answered`. The pop-up took the answer and moved the money; the box stayed gold and its card went
+on warning *"$X over the bill"*. Both fixed, plus the wording (**"on a month this lease bills
+nothing for"** — "over the bill" is wrong when there is no bill).
+
+### Every write that could fail in silence
+
+**25 real ones**, now zero. Including the first two buttons a new client presses
+(`CorporationsPage` / `PropertiesPage`, which contained no `MutationError`, `onError` or `isError`
+at all) and the seven lease-terms field saves.
+
+⚠ **`MutationError` was throwing the reason away.** Several writes refuse for a reason the app
+computed and can explain — a closed year, a split that would swallow the cheque — and every one was
+replaced by *"Couldn't save that change — please try again"*, when retrying can never work. It now
+prints the thrown sentence **when it reads like a sentence**, with the friendly line kept for
+crashes that say nothing useful (`readable()` rejects PGRST codes, JSON and RLS slugs).
+
+⚠ **AND THE HALF-FAILED EDIT.** `saveField` does `updateLease` then `resyncLeaseBilling`. If the
+second threw, the mutation rejected, `onSuccess` never ran, nothing was invalidated — so the
+corrected rent **was** saved and the field snapped back to the old figure with no message. The
+resync is caught separately now: the screen always matches the database, and a `saveNote` states
+*"Saved — but this year's invoice was not rebuilt … use Rebuild on this tenant's row."*
+
+### Query keys, in both directions
+
+- **`['searchIndex']`** — the whole Overview is built out of it and **nothing** invalidated it. A
+  client who set up a corporation, a property and two tenants and clicked Overview read
+  *"0 properties · 0 active tenants"* with no band and no charts. Now in `settleLeaseListChange`
+  with `portfolioBasis` / `portfolioTotals`, plus the two create paths.
+- **`['unplacedLines']` / `['decidedLines']`** into `settlePaymentChange` — deleting a payment
+  releases an imported deposit back to *"Money not yet placed"*, which is what the un-tick confirm
+  promises out loud and what neither panel showed.
+- **`['statementContext']`** into the same set, so ticking months reaches the importer's coverage.
+- **Two dead invalidations were typos** for a real neighbour and repainted nothing:
+  `propertyEscalations` → `escalationsByProperty` (`Layout.js`, `EscalationScheduleEditor.js`) and
+  `history` → `historyEvents` (`PropertyAnnouncementsModal.js`).
+- Five backlog keys wired into their named sets: `propertyTotalsByCorp`, `escalationsByLeases`,
+  `corpProperties`, `billedTenants`, `envelopeEvents` + `envelopeSigners`.
+- `InvoicesPanel` and `saveEstCamTax` stopped hand-rolling their lists (CLAUDE.md §6).
+
+### The rest, in one line each
+
+- **A closed year says so on Financials.** Every editor there moves figures that build up live
+  while `resyncPropertyBilling` returns `{ skipped: 'closed' }` — right, and it printed nothing.
+- **The import results strip moved OUTSIDE the fold**, with its ↩ Undo — same reason the drop zone
+  is outside it.
+- **`invoices.notes`** — the est-vs-actual breakdown and *"prorated — N of 12 months"*, written at
+  creation and rendered by nothing. Now on the expanded invoice row.
+- **The delete-payment confirm branches on `p.source`** — an imported deposit goes back to "Money
+  not yet placed", so *"This can't be undone"* was wrong. The Ledger's door said both all along.
+- **Statement review's pre-save footer** counts other income, deposits and **owner draws**; the
+  results strip and the History line name owner draws too (`summary.ownerCount` had no reader).
+- **`resetPasswordForEmail`'s error was discarded** — supabase-js *returns* it, so the `catch` was
+  unreachable and a throttled or failed send read *"a password-reset link is on its way"*. And the
+  button no longer disappears after one attempt, which made a typo'd address a dead end.
+- **A brand-new property no longer reports "Leased 100%"** — `buildingSf > 0 ? … : 1` made unknown
+  mean full. It reads `—`.
+- **The Overview's first-run state** says what to do instead of "All clear" eight times.
+- **Display & features** says why a toggle snapped back.
+- **The dashboard's ✉ / dismiss / snooze** report failures instead of flickering.
+- **The deposit cross-check's `tone`** was computed and dropped — the one alarming case looked
+  identical to the default helper text. `EditField` takes `hintTone` now.
+- **Four stored AI confidences** (tenant name, contact, email, premises) rendered nowhere, and the
+  banner explaining the badges was gated on `extraction_status === 'pending'`, a value **nothing
+  writes**. The banner is gated on the low-confidence fields themselves now and names them.
+- **"Save start date"** stops promising to fill the end date and date the rent steps on a lease
+  with no AI read on file, because it cannot.
+- **A year-straddling statement** says where its other-year unplaced lines went.
+- **The invoice status badge reads "issued", not "sent"** — nothing in the app sends an invoice.
+
+### `wiring.test.js` — every backlog emptied but two deliberate ones
+
+The alert-focus `KNOWN` (6), the mutation `KNOWN` (35) and `DEAD_OK` (2) are all `[]`. `STALE_OK`
+is down to six entries, every one deliberate.
+
+⚠ **THE MUTATION SWEEP WAS OVER-COUNTING BY TEN.** It looked for `onError` or a `MutationError`
+naming the mutation, and missed the third form several panels use — rendering `<name>.isError`
+themselves. TaxCategorySelect, LeaseNewPage's two creates, HistoryPage's close and clearHistory,
+AnnualReportModal, InvoiceButton, LeaseReviewStrip, RemoveTenantModal and RenewalOptionModal all
+state their failure and were reported as silent. **The real figure was 25 of 101, not 35.** A sweep
+that cries wolf gets ignored, which is the same end as not having one.
+
+New: **`no exemption outlives the problem it names`** — an entry in `STALE_OK` for a key that IS
+now invalidated is dead weight that quietly widens the sweep, so the list can no longer rot.
+
+### Now redundant
+
+- **`src/components/YearSelector.js` has NO importers** — dead since the year selector moved into
+  the page chrome. Found while adding the closed-year notice. **Propose deleting it.**
+- **`.rr-cell.recv`'s gold is now conditional**, not retired — an answered month uses
+  `.rr-cell.recv.answered`. Nothing to remove.
+- **`extraction_status`** is now written by two paths and read by none: the only reader was the
+  dead `=== 'pending'` banner. The column and both writes could go, but the CHECK constraint is in
+  `0001` and dropping it buys nothing. **Leave it; noting it so it isn't re-adopted as live state.**
+- **The `awaiting` variable in the settled branch** is still doing real work (the aria-label and
+  the card's action line). Not redundant.
+
 ## 2026-08-21 (11) — The ring retires into the fill, and the pop-up finally points at the figure
 
 **Cloudflare version:** `2b8aab86-68fd-4e9e-b151-f400589e84dc` (the `amlak` app worker /

@@ -5,6 +5,7 @@ import { usePageChrome } from '../context/ChromeContext';
 import { useAuth } from '../context/AuthContext';
 import { getAutoLogoutMinutes, setAutoLogoutMinutes } from '../lib/api';
 import { AUTO_LOGOUT_OPTIONS, resolveMinutes } from '../lib/idleLogout';
+import MutationError from '../components/MutationError';
 
 // Change password: sends a reset link to the account's own email address. Following
 // it brings the user back into the app with a recovery session (caught by the
@@ -73,6 +74,9 @@ function AutoSignOutCard() {
   return (
     <div className="panel" style={{ maxWidth: 560, marginTop: 18 }}>
       <div className="panel-head"><strong>Security · Auto sign-out</strong></div>
+      {/* A security setting that silently fails to save is the worst kind to leave silent:
+          the button looks chosen and the browser keeps the old timeout. */}
+      <MutationError of={[save]} />
       <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
         Signs you out after a stretch of inactivity on this browser — a 60-second warning lets you
         stay signed in first. Handy on a shared or public computer.

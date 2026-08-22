@@ -38,7 +38,7 @@ export default function Layout({ children }) {
         qc.invalidateQueries({ queryKey: ['notifications'] });
         const changed = results.some((r) => r.status === 'fulfilled' && r.value && r.value.length);
         if (changed) {
-          ['alerts', 'leases', 'lease', 'escalations', 'propertyTotals', 'tenantShares', 'expiredLeases', 'snapshots', 'renewals', 'propertyEscalations', 'searchIndex']
+          ['alerts', 'leases', 'lease', 'escalations', 'propertyTotals', 'tenantShares', 'expiredLeases', 'snapshots', 'renewals', 'escalationsByProperty', 'searchIndex']
             .forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
         }
       })

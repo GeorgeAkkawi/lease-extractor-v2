@@ -4,6 +4,7 @@ import { reviewLease, setLeaseReviewDismissedKeys, MIN_USABLE_TEXT } from '../li
 import { computeLeaseRisks, transcriptGaps } from '../lib/leaseRisks';
 import { fmtDate } from '../lib/format';
 import { useConfirm } from './ConfirmDialog';
+import MutationError from './MutationError';
 
 // "Lease review" — the one place both halves of the red-flag read are shown.
 //
@@ -181,6 +182,9 @@ export default function LeaseReviewStrip({ lease, escalations, renewals, insuran
         </div>
       )}
       {run.isError && <div className="note-msg danger">{run.error?.message || 'The review couldn’t be completed — please try again.'}</div>}
+      {/* Dismissing a finding writes a row too, and said nothing when it failed — the
+          finding simply stayed on screen, which reads as the button not working. */}
+      <MutationError of={[dismiss]} />
       {stale && (
         <p className="muted review-note">
           This lease has changed since the AI last read it{review?.reviewed_at ? ` on ${fmtDate(String(review.reviewed_at).slice(0, 10))}` : ''}.

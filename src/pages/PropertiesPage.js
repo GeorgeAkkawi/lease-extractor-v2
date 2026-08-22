@@ -12,6 +12,7 @@ import PropertyInsuranceModal from '../components/PropertyInsuranceModal';
 import PropertyAnnouncementsModal from '../components/PropertyAnnouncementsModal';
 import PropLeaseFlyout from '../components/PropLeaseFlyout';
 import PropertyMixDonut from '../components/PropertyMixDonut';
+import MutationError from '../components/MutationError';
 
 // Leases-mode property list. Financials/History have their own (FinancialsPropertiesPage).
 export default function PropertiesPage() {
@@ -45,6 +46,15 @@ export default function PropertiesPage() {
       setBuildingSf('');
       qc.invalidateQueries({ queryKey: ['properties', corpId] });
       qc.invalidateQueries({ queryKey: ['corpCounts'] });
+      // The Overview is built out of this one index — its "N properties · N active tenants"
+      // subtitle, its occupancy figures, its basis rows and every chart. Nothing invalidated
+      // it, so a client who set up their portfolio and then clicked Overview read zeros.
+      qc.invalidateQueries({ queryKey: ['searchIndex'] });
+      // The Sidebar's own property list. It never unmounts, and with staleTime 5min /
+      // refetchOnWindowFocus false a query whose observer never unmounts NEVER refetches —
+      // so without this the new property was missing from the fly-out until a hard reload.
+      // Exactly the `sidebarLeases` shape from 2026-08-04.
+      qc.invalidateQueries({ queryKey: ['corpProperties'] });
     },
   });
 
@@ -66,6 +76,11 @@ export default function PropertiesPage() {
           </form>
         </div>
       </div>
+
+      {/* ⚠ A NEW CLIENT'S SECOND CLICK, and until now a failed one said nothing at all: the
+          button un-disabled, the typed text stayed in the boxes, no card appeared, and the
+          screen was indistinguishable from a click that hadn't registered. */}
+      <MutationError of={[add]} />
 
       {showSkeleton ? (
         <CardGridSkeleton className="prop-grid" count={3} height={150} />
@@ -100,7 +115,10 @@ function PropCard({ corpId, property, onInsurance, onAnnounce, pf }) {
   const totalSf = leases.reduce((s, l) => s + (Number(l.square_footage) || 0), 0);
   const revenue = leases.reduce((s, l) => s + (Number(l.base_rent) || 0), 0);
   const buildingSf = Number(property.building_sf) || totalSf;
-  const occupancy = buildingSf > 0 ? totalSf / buildingSf : 1;
+  // ⚠ NULL IS NOT 100%. A brand-new property has no building size and no tenants, so both
+  // sides of this are 0 — and the fallback reported the client's first empty building as
+  // "Leased 100%" before they had entered a single thing. Unknown is its own answer.
+  const occupancy = buildingSf > 0 ? totalSf / buildingSf : null;
   const go = () => navigate(`/leases/${corpId}/${property.id}`);
   const keyGo = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
   const warm = () => pf.propertyLeases(property.id);
@@ -136,7 +154,12 @@ function PropCard({ corpId, property, onInsurance, onAnnounce, pf }) {
         <div className="prop-card-stats">
           <div><span className="muted">Tenants</span><b>{leases.length}</b></div>
           <div><span className="muted">Sq ft</span><b>{Number(totalSf).toLocaleString()} / {Number(buildingSf).toLocaleString()}</b></div>
-          <div><span className="muted">Leased</span><b>{Math.round(occupancy * 100)}%</b></div>
+          <div>
+            <span className="muted">Leased</span>
+            <b title={occupancy == null ? 'Enter the building size to see occupancy' : undefined}>
+              {occupancy == null ? '—' : `${Math.round(occupancy * 100)}%`}
+            </b>
+          </div>
           <div><span className="muted">Revenue</span><b>{money(revenue)}</b></div>
         </div>
       </div>

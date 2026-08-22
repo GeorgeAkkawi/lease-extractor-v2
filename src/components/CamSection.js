@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, syncContractCamItems, syncRentPctCamItems, getPropertyTotals, resyncPropertyBilling, listExpenseBuckets, saveExpenseBucket } from '../lib/api';
+import { listCamLineItems, addCamLineItem, deleteCamLineItem, getExpenseRecord, upsertExpenseRecord, getPropertyTotals, resyncPropertyBilling, listExpenseBuckets, saveExpenseBucket } from '../lib/api';
 import { settleBillingChange } from '../lib/invalidate';
 import { CAM_KEYWORD_LABELS } from '../lib/statementMatch';
 import { categoryFor, categoryLabel, bucketKey } from '../lib/expenseCategories';
@@ -27,21 +27,14 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // there are no items.
 export default function CamSection({ propId, year, expense }) {
   const qc = useQueryClient();
+  // ⚠ A PLAIN READ, DELIBERATELY. Carrying this year's service contracts and rent-percentage
+  // fees into CAM used to happen inside this queryFn; it never ran on the Financials page,
+  // because `useRecoverability` observes the same key and last writer wins. It lives in
+  // `useCamSync` now, called by the PAGE — this section sits inside a foldable panel, and a
+  // year must still self-heal when the landlord has folded it. See that file for the story.
   const { data: items = [] } = useQuery({
     queryKey: ['camLineItems', propId, year],
-    // Carry this year's service contracts into CAM first (create/refresh at the escalated
-    // amount) and true up any rent-percentage line, then list — so opening any fiscal
-    // year keeps its contract costs and management fee current.
-    queryFn: async () => {
-      const contracts = await syncContractCamItems(propId, year);
-      const rentPct = await syncRentPctCamItems(propId, year);
-      // Only when a sync actually WROTE (a contract's escalated cost moved, the rent
-      // basis changed) does the CAM total differ — carry that through to the year's
-      // invoices. Both syncs are idempotent, so a plain revisit reports no change and
-      // this never fires; opening a page must not rewrite bills for nothing.
-      if (contracts?.changed || rentPct) await resyncPropertyBilling(propId, year);
-      return listCamLineItems(propId, year);
-    },
+    queryFn: () => listCamLineItems(propId, year),
   });
   // The property's annual base rent — what a management fee is struck against. Same
   // query key the Financials page already warms, so this is a cache hit.
@@ -315,7 +308,7 @@ export default function CamSection({ propId, year, expense }) {
         groupRows(billableItems)
       )}
 
-      <MutationError of={[add, remove, saveFlat, undoMut, editLine]} />
+      <MutationError of={[add, remove, saveFlat, undoMut, editLine, saveCat]} />
       {saved && (
         <div style={{ marginTop: 8 }}>
           <UndoStrip
@@ -409,7 +402,9 @@ export default function CamSection({ propId, year, expense }) {
       </form>
 
       {items.length === 0 && (
-        <form className="row" onSubmit={(e) => { e.preventDefault(); saveFlat.mutate(); }} style={{ marginTop: 10 }}>
+        // The pre-save total rides along as the mutation's variable so ↩ Undo can put it
+        // back. Omit it and undo writes 0 — and rebuilds every tenant's bill at no CAM.
+        <form className="row" onSubmit={(e) => { e.preventDefault(); saveFlat.mutate(Number(expense?.cam_total) || 0); }} style={{ marginTop: 10 }}>
           <label className="form-field" style={{ marginBottom: 0, maxWidth: 200 }}>
             <span>Flat CAM total ($)</span>
             <input className="text-input num" type="number" step="any" placeholder={expense?.cam_total ?? '0'} value={flat} onChange={(e) => setFlat(e.target.value)} />

@@ -266,7 +266,7 @@ export default function RenewalOptionsEditor({ leaseId, lease, escalations = [],
 
   return (
     <div>
-      <MutationError of={[remove, confirm, decline, restore, saveNotice]} />
+      <MutationError of={[remove, confirm, decline, restore, saveNotice, historic]} />
       {notice && (
         <p className="note-msg warn" style={{ marginBottom: 12 }}>{notice}</p>
       )}

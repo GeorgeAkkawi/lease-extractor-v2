@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { updateCorporation } from '../lib/api';
 import { useModalA11y } from './modalA11y';
+import MutationError from './MutationError';
 
 // Edits one corporation's identity — its name plus the address/email/phone used
 // as the letterhead + signature on the tenant emails & invoices it sends. Each
@@ -57,6 +58,7 @@ export default function CorporationProfileModal({ corp, onClose }) {
           </label>
         </div>
         <div className="modal-foot">
+          <MutationError of={[save]} />
           <div className="modal-actions">
             <span className="muted">{save.isError ? 'Could not save' : 'Used on this corporation’s tenant emails'}</span>
             <div className="row">

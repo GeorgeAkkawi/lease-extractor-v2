@@ -34,6 +34,7 @@ import { currentPhase } from '../lib/leaseTerm';
 import { reducedMonthlyBase, abatementKindLabel, abatementMonthCount } from '../lib/abatement';
 import { PageSkeleton } from '../components/Skeleton';
 import { sf, pct, psf, money, fmtDate } from '../lib/format';
+import MutationError from '../components/MutationError';
 
 // Lease fields that FEED what the tenant is billed: the rent itself, the two figures
 // that set the tenant's share of taxes/CAM/roof, and the term end (which decides how
@@ -42,6 +43,22 @@ import { sf, pct, psf, money, fmtDate } from '../lib/format';
 // (lease_type is here as defense — it changes whether the share is billed on top of
 // the rent or carved out of it. The toggle below carries through via its own mutation,
 // since it isn't edited through saveField.)
+// The banner names the fields the badges flag, in the words the fields themselves use.
+const LOW_CONF_LABEL = {
+  tenant_name: 'Tenant name',
+  tenant_contact_name: 'Tenant contact',
+  tenant_email: 'Tenant email',
+  premises_address: 'Address',
+  square_footage: 'Square footage',
+  base_rent: 'Base rent',
+  lease_start: 'Lease start',
+  lease_termination_date: 'Lease termination',
+  lease_terms: 'Lease terms / notes',
+  est_cam_annual: 'Est. CAM & tax',
+  est_tax_annual: 'Est. tax',
+  security_deposit: 'Security deposit',
+};
+
 const BILLING_FIELDS = new Set(['base_rent', 'square_footage', 'share_override_pct', 'lease_termination_date', 'lease_type']);
 
 export default function LeaseDetailPage() {
@@ -59,9 +76,18 @@ export default function LeaseDetailPage() {
   const escRef = useRef(null);
   const renRef = useRef(null);
   const insRef = useRef(null);
+  // ⚠ TWO MORE PANELS AN ALERT CAN POINT AT (2026-08-22). Six alert focuses reached this page
+  // with a lease_id and were named in neither the callout nor the scroll registry, so the
+  // landlord got an empty accent-bordered box above the heading and no scroll to the thing
+  // the alert was about. Abatement is where a free-rent window ends; Addendums & riders is
+  // where the e-signature envelopes and the countersign button live.
+  const abateRef = useRef(null);
+  const addRef = useRef(null);
   const insReqOpened = useRef(false);
   const [flash, setFlash] = useState(null);
   const [showRemove, setShowRemove] = useState(false);
+  // A half-landed edit's own line: the lease saved, the invoice didn't follow.
+  const [saveNote, setSaveNote] = useState(null);
   const [showInsReq, setShowInsReq] = useState(false);
   const [renewalPolicy, setRenewalPolicy] = useState(null); // { policy, reason? } → cert-request email (renewal or additional-insured fix)
   const [startInput, setStartInput] = useState(''); // banner date entry for a start-less lease
@@ -72,6 +98,10 @@ export default function LeaseDetailPage() {
   const [escOpen, setEscOpen] = usePanelOpen('lease.escalations', true);
   const [renOpen, setRenOpen] = usePanelOpen('lease.renewals', true);
   const [insOpen, setInsOpen] = usePanelOpen('lease.insurance', true);
+  // Controlled, for the same reason the three above are: a remembered fold is exactly the
+  // state an alert has to overcome before it can scroll and flash (Panel.js:31-33).
+  const [abateOpen, setAbateOpen] = usePanelOpen('lease.abatement', true);
+  const [addOpen, setAddOpen] = usePanelOpen('lease.addendums', true);
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
@@ -142,17 +172,31 @@ export default function LeaseDetailPage() {
   // invoice has to follow it — the breakdown and the Ledger rebuild themselves from
   // live data, the invoice is a frozen copy that otherwise goes stale. A tenant-name
   // or contact edit must NOT rewrite an invoice, hence the set rather than "always".
+  // ⚠ THE TWO WRITES ARE NOT ONE WRITE, and treating them as one is how the database moved
+  // while the screen kept the old figure. `updateLease` lands first; if `resyncLeaseBilling`
+  // then throws, the mutation rejects, `onSuccess` never runs, nothing is invalidated — so
+  // the corrected rent IS saved and the field snaps back to what it was, with no message.
+  // The rebuild failing is a real and separate fact: the lease moved, the stored invoice did
+  // not. Say that, and point at the one control that fixes it.
   const saveField = useMutation({
     mutationFn: async ({ field, value }) => {
       const conf = lease.ai_confidence ? { ...lease.ai_confidence, [field]: 1 } : lease.ai_confidence;
       const out = await updateLease(leaseId, { [field]: value, ai_confidence: conf, extraction_status: 'reviewed' });
-      if (BILLING_FIELDS.has(field)) await resyncLeaseBilling(leaseId, propId, new Date().getFullYear());
-      return out;
+      let carryError = null;
+      if (BILLING_FIELDS.has(field)) {
+        try { await resyncLeaseBilling(leaseId, propId, new Date().getFullYear()); }
+        catch (e) { carryError = e?.message || 'the invoice rebuild failed'; }
+      }
+      return { out, carryError };
     },
-    onSuccess: (_d, { field }) => {
+    onSuccess: (res, { field }) => {
       invalidate();
       if (BILLING_FIELDS.has(field)) settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
+      setSaveNote(res?.carryError
+        ? `Saved — but this year's invoice was not rebuilt (${res.carryError}). Open the Rent Ledger and use Rebuild on this tenant's row to bring the bill in line.`
+        : null);
     },
+    onError: () => setSaveNote(null),
   });
   // Set/correct the lease start date and DATE the whole schedule from the cached
   // extraction (fills the end date + all rent steps). Used by the "no start date"
@@ -231,12 +275,12 @@ export default function LeaseDetailPage() {
       // so the Ledger boxes match this figure.
       await resyncYearBillingToEstimate(leaseId, propId, year);
     },
+    // The NAMED set, not a hand-rolled list. The one it replaces omitted ['portfolioBasis'],
+    // so setting a first tenant's CAM & tax estimate moved the Ledger and the Financials and
+    // left the Overview's projected band on the pre-estimate figure (CLAUDE.md §6).
     onSuccess: () => {
       invalidate();
-      qc.invalidateQueries({ queryKey: ['propertyRentRoll', propId] });
-      qc.invalidateQueries({ queryKey: ['monthlyRent'] });
-      qc.invalidateQueries({ queryKey: ['invoices'] });
-      qc.invalidateQueries({ queryKey: ['payments'] });
+      settleBillingChange(qc, { propertyId: propId, leaseId, year: new Date().getFullYear() });
     },
   });
   // Manually confirm a lease has no renewal option (e.g. AI found none). This
@@ -247,10 +291,81 @@ export default function LeaseDetailPage() {
   });
 
   // When opened from an alert, scroll the relevant section into view and flash it.
-  const refByFocus = { termination: termsRef, escalation: escRef, renewal: renRef, insurance: insRef };
+  const refByFocus = {
+    termination: termsRef,
+    escalation: escRef,
+    renewal: renRef,
+    insurance: insRef,
+    // The three insurance alerts all mean "look at the certificate", so all three land on
+    // the Insurance panel; the wording below is what tells them apart.
+    insurance_chase: insRef,
+    insurance_missing: insRef,
+    abatement: abateRef,
+    // Every signature focus is about an envelope, and the envelope rows — with the
+    // countersign button on them — live in Addendums & riders.
+    signature_countersign: addRef,
+    signature_apply: addRef,
+    signature_declined: addRef,
+  };
   // …and the fold each one has to open first. `termination` is Lease terms, which never
   // folds (George: "no need to have one for the lease terms"), so it has no entry.
-  const openByFocus = { escalation: setEscOpen, renewal: setRenOpen, insurance: setInsOpen };
+  const openByFocus = {
+    escalation: setEscOpen,
+    renewal: setRenOpen,
+    insurance: setInsOpen,
+    insurance_chase: setInsOpen,
+    insurance_missing: setInsOpen,
+    abatement: setAbateOpen,
+    signature_countersign: setAddOpen,
+    signature_apply: setAddOpen,
+    signature_declined: setAddOpen,
+  };
+  // What each alert MEANS, in the landlord's own terms. Its keys are also the gate on the
+  // banner rendering at all — see the note at the JSX below.
+  const WHY = {
+    termination: {
+      title: 'a Lease ending alert',
+      body: `This lease’s term ends ${fmtDate(lease?.lease_termination_date)}. If it’s being renewed, update the “Lease termination” date in Lease terms below.`,
+    },
+    renewal: {
+      title: 'a Renewal notice alert',
+      body: 'A renewal-option notice deadline is approaching. The notice-by date is the cut-off for giving the tenant (or receiving) written notice about renewing — see Renewal options below.',
+    },
+    escalation: {
+      title: 'a Rent escalation alert',
+      body: 'A scheduled rent increase is coming up. It applies automatically on its effective date and updates the base rent — no action needed; this is just your heads-up.',
+    },
+    insurance: {
+      title: 'a Tenant insurance expiring alert',
+      body: 'This tenant’s certificate of insurance is expiring soon. Use “Request from tenant” in the Insurance panel below to ask for an updated copy.',
+    },
+    insurance_chase: {
+      title: 'a second insurance request',
+      body: 'You asked this tenant for an updated certificate and it hasn’t arrived. The Insurance panel below has the request letter again, and shows the date the last one went out.',
+    },
+    insurance_missing: {
+      title: 'a No certificate on file alert',
+      body: 'This tenant has no certificate of insurance recorded at all. Upload one in the Insurance panel below, or use “Request from tenant” to ask for it.',
+    },
+    abatement: {
+      title: 'a Free rent ending alert',
+      body: 'This tenant’s free or reduced-rent period is coming to an end, so the full base rent starts billing again. Check the window in Rent abatement below — the invoices follow it automatically.',
+    },
+    signature_countersign: {
+      title: 'a Signed — countersign alert',
+      body: 'The tenant has signed and it is now waiting on you. Open the envelope in Addendums & riders below and countersign it — nothing about the lease moves until you do.',
+    },
+    signature_apply: {
+      title: 'a signed document waiting to be read',
+      body: 'This document is fully signed and its terms have not been applied yet, so this tenant is still being billed the old figures. Open it in Addendums & riders below to read it in.',
+    },
+    signature_declined: {
+      title: 'a Declined alert',
+      body: 'The tenant declined this document, so nothing was applied and the lease stands as it was. The envelope in Addendums & riders below carries the reason they gave, if any.',
+    },
+  };
+  const why = focus ? WHY[focus] : null;
+
   // The same scroll-and-flash, driven by a click instead of a URL — the lease review's
   // findings use it to put the landlord in front of the panel that fixes each one.
   // 'terms'/'renewals'/'escalations' are the review's own names for those sections.
@@ -290,6 +405,11 @@ export default function LeaseDetailPage() {
   if (isLoading || !lease) return <PageSkeleton />;
 
   const conf = (f) => lease.ai_confidence?.[f];
+  // Which fields the model read at low confidence — the same 0.8 line `EditField`'s badge uses,
+  // so the banner and the badges can never name different fields.
+  const lowConf = Object.entries(lease.ai_confidence || {})
+    .filter(([, c]) => c != null && Number(c) < 0.8)
+    .map(([f]) => f);
   const commit = (field) => (raw) => {
     let value = raw;
     if (field === 'square_footage' || field === 'base_rent') value = raw == null ? null : Number(raw);
@@ -457,30 +577,35 @@ export default function LeaseDetailPage() {
         </div>
       </div>
 
-      {focus && (
+      {/* ⚠ GATED ON A KNOWN FOCUS, NOT ON `focus` BEING TRUTHY. This box used to render for any
+          focus at all while every branch inside tested four values, so the ten other focuses
+          that can reach this page produced a bordered, accent-coloured, EMPTY callout above
+          the heading — visibly broken rather than merely unhelpful. One map now decides both
+          that it renders and what it says, so an unnamed focus can only ever render nothing. */}
+      {why && (
         <div className="callout" style={{ marginBottom: 16, borderLeftColor: 'var(--accent)' }}>
           <div className="alert-main">
-            <div className="alert-title"><strong>
-              {focus === 'termination' && 'Why you’re here: a Lease ending alert'}
-              {focus === 'renewal' && 'Why you’re here: a Renewal notice alert'}
-              {focus === 'escalation' && 'Why you’re here: a Rent escalation alert'}
-              {focus === 'insurance' && 'Why you’re here: a Tenant insurance expiring alert'}
-            </strong></div>
-            <div className="muted">
-              {focus === 'termination' && `This lease’s term ends ${fmtDate(lease.lease_termination_date)}. If it’s being renewed, update the “Lease termination” date in Lease terms below.`}
-              {focus === 'renewal' && 'A renewal-option notice deadline is approaching. The notice-by date is the cut-off for giving the tenant (or receiving) written notice about renewing — see Renewal options below.'}
-              {focus === 'escalation' && 'A scheduled rent increase is coming up. It applies automatically on its effective date and updates the base rent — no action needed; this is just your heads-up.'}
-              {focus === 'insurance' && 'This tenant’s certificate of insurance is expiring soon. Use “Request from tenant” in the Insurance panel below to ask for an updated copy.'}
-            </div>
+            <div className="alert-title"><strong>Why you’re here: {why.title}</strong></div>
+            <div className="muted">{why.body}</div>
           </div>
         </div>
       )}
 
-      {lease.extraction_status === 'pending' && (
+      {/* ⚠ GATED ON A FACT THAT CAN BE TRUE. This used to test `extraction_status === 'pending'`
+          — a value nothing in the app ever writes (the column defaults to 'reviewed' and both
+          writers stamp 'reviewed'), so the banner was dead code and the "review AI" badges it
+          explains appeared with nothing introducing them. What it should have asked all along
+          is whether any field on THIS lease is still carrying a low AI confidence, which is
+          exactly what the badges are drawn from, and which editing a field clears. */}
+      {lowConf.length > 0 && (
         <div className="callout warn" style={{ marginBottom: 16 }}>
           <div className="alert-main">
-            <div className="alert-title"><strong>AI-extracted — review before confirming</strong></div>
-            <div className="muted">Click any flagged field to fix it; editing clears the review badge.</div>
+            <div className="alert-title"><strong>AI-extracted — {lowConf.length} field{lowConf.length === 1 ? '' : 's'} worth checking</strong></div>
+            <div className="muted">
+              {lowConf.map((f) => LOW_CONF_LABEL[f] || f).join(' · ')} — the model was unsure of{' '}
+              {lowConf.length === 1 ? 'this one' : 'these'} against the document. Click a field to fix it;
+              editing clears its badge, and confirming the value as-is clears it too.
+            </div>
           </div>
         </div>
       )}
@@ -497,6 +622,18 @@ export default function LeaseDetailPage() {
         />
       )}
 
+      {/* ⚠ EVERY EDIT ON THIS PAGE HAD NO FAILURE PATH TO THE SCREEN. A client correcting a
+          rent the AI read wrong watched the field snap back to the wrong figure with no
+          message, no spinner and no red line — the shape a new client reads as "this app
+          doesn't save". All six writes report here. */}
+      <MutationError of={[saveField, anchorStart, setRoof, setLeaseType, saveEstCamTax, saveDeposit, setNoRenewal]} />
+      {saveNote && (
+        <div className="callout warn" role="status" style={{ marginBottom: 16 }}>
+          {saveNote}{' '}
+          <button type="button" className="ghost btn-sm" onClick={() => setSaveNote(null)}>Dismiss</button>
+        </div>
+      )}
+
       <div className={`panel${flash === 'termination' ? ' panel-flash' : ''}`} ref={termsRef}>
         <div className="panel-head">
           <strong>Lease terms</strong>
@@ -507,10 +644,26 @@ export default function LeaseDetailPage() {
           <div className="callout warn" style={{ margin: '0 0 16px' }}>
             <div className="alert-main">
               <div className="alert-title"><strong>📅 No start date on file — the schedule is waiting for it</strong></div>
+              {/* ⚠ THE PROMISE IS CONDITIONAL, and it used to be made unconditionally. Everything
+                  the anchor fills in — the term-derived end date, the dated rent steps — is read
+                  out of `lease_files.extraction_raw`. A lease typed in by hand, or created from
+                  the "Paste text" tab, has no such row, so the button saved the date and did
+                  none of the rest while the paragraph above it said otherwise. */}
               <div className="muted" style={{ marginBottom: 10 }}>
-                This lease didn’t print a fixed start date (its commencement is a formula — e.g. “120 days after delivery of
-                possession”), so its rent steps aren’t dated yet. Enter the date the lease <strong>actually started</strong> and
-                the app will fill in the end date and date every rent step automatically.
+                {extractionRaw ? (
+                  <>
+                    This lease didn’t print a fixed start date (its commencement is a formula — e.g. “120 days after delivery of
+                    possession”), so its rent steps aren’t dated yet. Enter the date the lease <strong>actually started</strong> and
+                    the app will fill in the end date and date every rent step automatically.
+                  </>
+                ) : (
+                  <>
+                    Without a start date the app can’t tell which months this tenant is in term for, so the rent schedule and
+                    the year’s proration are both waiting on it. Enter the date the lease <strong>actually started</strong>.
+                    There’s no AI read on file for this lease, so the end date and any rent steps stay as you enter them —
+                    add them yourself in <strong>Lease terms</strong> and <strong>Rent escalations</strong> below.
+                  </>
+                )}
               </div>
               <div className="row" style={{ gap: 10, alignItems: 'center' }}>
                 <input
@@ -593,10 +746,10 @@ export default function LeaseDetailPage() {
         )}
 
         <div className="field-grid">
-          <EditField label="Tenant name" value={lease.tenant_name} onCommit={commit('tenant_name')} hint="the business / company" />
-          <EditField label="Tenant contact" value={lease.tenant_contact_name || ''} onCommit={commit('tenant_contact_name')} hint="person(s) who run it" />
-          <EditField label="Tenant email" value={lease.tenant_email || ''} onCommit={commit('tenant_email')} hint="where emails are sent" />
-          <EditField label="Address" value={lease.premises_address || ''} onCommit={commit('premises_address')} hint="the leased unit's street address — used for sorting" />
+          <EditField label="Tenant name" value={lease.tenant_name} onCommit={commit('tenant_name')} conf={conf('tenant_name')} hint="the business / company" />
+          <EditField label="Tenant contact" value={lease.tenant_contact_name || ''} onCommit={commit('tenant_contact_name')} conf={conf('tenant_contact_name')} hint="person(s) who run it" />
+          <EditField label="Tenant email" value={lease.tenant_email || ''} onCommit={commit('tenant_email')} conf={conf('tenant_email')} hint="where emails are sent" />
+          <EditField label="Address" value={lease.premises_address || ''} onCommit={commit('premises_address')} conf={conf('premises_address')} hint="the leased unit's street address — used for sorting" />
           <EditField label="Square footage" type="number" value={lease.square_footage} onCommit={commit('square_footage')} conf={conf('square_footage')} hint="SF" />
           <EditField label="Base rent (annual)" type="number" prefix="$" value={lease.base_rent} onCommit={commit('base_rent')} conf={conf('base_rent')} hint={brPsf ? `${brPsf} base rent` : undefined} />
           <EditField label="Lease start" type="date" value={lease.lease_start || ''} onCommit={(raw) => anchorStart.mutate(raw)} conf={conf('lease_start')} hint="dates the rent schedule" />
@@ -635,6 +788,9 @@ export default function LeaseDetailPage() {
             onCommit={(raw) => saveDeposit.mutate(raw)}
             conf={conf('security_deposit')}
             hint={depositRecon.sentence || 'what the lease says you hold — the tenant’s money, never income'}
+            // The verdict's own tone, which was computed and then dropped. `null` means
+            // "say it plainly, don't flag it" — exactly what the default hint wants too.
+            hintTone={depositRecon.sentence ? depositRecon.tone || undefined : undefined}
           />
           {/* No roof-estimate field here (George: "take out estimated roof box on lease
               terms"). Roof is billed off the actual expense by default; the estimate,
@@ -702,10 +858,13 @@ export default function LeaseDetailPage() {
       </Panel>
 
       <Panel
-        id="lease.abatement"
+        panelRef={abateRef}
+        className={flash === 'abatement' ? 'panel-flash' : ''}
         title="Rent abatement (free / reduced rent)"
         hint="Free or reduced base rent for a stretch of the term"
         summary={abateSummary}
+        open={abateOpen}
+        onOpenChange={setAbateOpen}
       >
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           A rent abatement is a period of <strong>free or reduced base rent</strong> (e.g. "first 8 months free"). The base
@@ -746,10 +905,13 @@ export default function LeaseDetailPage() {
       </Panel>
 
       <Panel
-        id="lease.addendums"
+        panelRef={addRef}
+        className={flash === 'signature_countersign' || flash === 'signature_apply' || flash === 'signature_declined' ? 'panel-flash' : ''}
         title="Addendums & riders"
         hint="Amendments that extend the term or change the rent/options"
         summary={addSummary}
+        open={addOpen}
+        onOpenChange={setAddOpen}
       >
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
           Add each amendment on top of the original lease — the app works out the rent and term you're in <strong>today</strong>.

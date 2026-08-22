@@ -5225,6 +5225,10 @@ export async function reconcileCamTax(leaseId, propertyId, year) {
         actual_cam: fig.actual.cam,
         actual_tax: fig.actual.tax,
         actual_roof: fig.actual.roof,
+        // ⚠ ALREADY INSIDE `diff`, via the estimate side — stored so the row can be
+        // reconciled against itself and the statement letter can name the figure instead of
+        // printing a per-line difference that contradicts its own TOTAL (0102).
+        cam_tax_adjust: round2(Number(fig.camTaxAdjust) || 0),
         diff: fig.diff,
         direction: fig.direction,
         // 'status' is the REFUND lifecycle: only a landlord_owes stays open here.
@@ -5328,10 +5332,15 @@ export async function draftCamReconciliationEmail(recon) {
   const corp = prop?.corporation_id ? await getCorporation(prop.corporation_id) : null;
   // CAM and property tax reconcile together as one combined "CAM & tax" line; roof
   // stays its own separate line (older records may store the two split — sum them).
+  // ⚠ THE BILLED FIGURE IS THE ESTIMATE PLUS THE YEAR'S CORRECTIONS, because that is what the
+  // tenant was actually billed and what `diff` was struck against. Reading est_cam + est_tax
+  // alone gave the CAM & tax line a difference that disagreed with the TOTAL row beneath it.
+  // Older rows (pre-0102) carry 0, which is exactly what they assumed.
+  const camTaxAdjust = Math.round((Number(recon.cam_tax_adjust) || 0) * 100) / 100;
   const lines = [
     {
       label: 'CAM & tax',
-      est: (Number(recon.est_cam) || 0) + (Number(recon.est_tax) || 0),
+      est: (Number(recon.est_cam) || 0) + (Number(recon.est_tax) || 0) + camTaxAdjust,
       actual: (Number(recon.actual_cam) || 0) + (Number(recon.actual_tax) || 0),
     },
   ];
@@ -5346,6 +5355,7 @@ export async function draftCamReconciliationEmail(recon) {
     propertyName: prop?.name,
     year: recon.year,
     lines,
+    camTaxAdjust,
     diff: Number(recon.diff) || 0,
     direction: recon.direction,
   });
@@ -7555,10 +7565,23 @@ export async function applyStatementImport({ propertyId, year, fileName, account
   const updated = await one(
     supabase.from('statement_imports').update({ applied }).eq('id', imp.id).select().single()
   );
+  // ⚠ THE DURABLE RECORD HAS TO NAME EVERY KIND THE IMPORT WROTE. The green strip states
+  // income, deposits and owner draws and then dies on navigation; this line is what survives,
+  // and it counted only rent and expenses — so a statement carrying a $10,000 deposit and
+  // $1,800 of parking income was logged forever as "0 payments ($0.00 in) · 0 expenses
+  // ($0.00 out)", which reads as an import that did nothing.
+  const amt = (n) => `$${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+  const parts = [
+    `${paymentsCount} payment${paymentsCount === 1 ? '' : 's'} (${amt(paymentsTotal)} in)`,
+    `${expensesCount} expense${expensesCount === 1 ? '' : 's'} (${amt(expensesTotal)} out)`,
+  ];
+  if (incomeCount > 0) parts.push(`${incomeCount} other income (${amt(incomeTotal)} in)`);
+  if (depositCount > 0) parts.push(`${depositCount} security deposit${depositCount === 1 ? '' : 's'} (${amt(depositTotal)} held)`);
+  if (ownerCount > 0) parts.push(`${ownerCount} owner distribution${ownerCount === 1 ? '' : 's'} (${amt(ownerTotal)} out)`);
   await logHistoryEvent({
     property_id: propertyId,
     type: 'statement_imported',
-    description: `Imported ${fileName || 'a bank statement'} — ${paymentsCount} payment${paymentsCount === 1 ? '' : 's'} ($${paymentsTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })} in) · ${expensesCount} expense${expensesCount === 1 ? '' : 's'} ($${expensesTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })} out)`,
+    description: `Imported ${fileName || 'a bank statement'} — ${parts.join(' · ')}`,
   });
   return {
     import: updated,

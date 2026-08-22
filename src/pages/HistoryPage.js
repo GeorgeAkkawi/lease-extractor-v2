@@ -493,7 +493,7 @@ export default function HistoryPage() {
             {/* ⚠ REQUIRED by useOptimisticRemove: the card leaves on click and comes BACK if
                 the delete fails, and a card that silently reappears reads as the app undoing
                 a decision on its own. */}
-            <MutationError of={[removeExpired]} />
+            <MutationError of={[removeExpired, reopen]} />
           </div>
         )}
       </div>

@@ -149,6 +149,15 @@ button.rr-cell.abated{cursor:pointer}
    deposits, or an abated month. It settles no charge, so it can't be a ✓; it says so
    instead of quietly drifting onto the next month the lease does bill. */
 .rr-cell.recv{background:var(--gold-soft);border-color:var(--gold);color:var(--gold);border-style:dashed}
+/* …and once the landlord has SAID what that money is, the gold has nothing left to ask.
+   Same rule the ✓ box follows (2026-08-21): gold means "look at this", and an answered
+   month has been looked at. The dashed border and the ↓ stay — the month still bills
+   nothing, which is a permanent fact about it — but the alarm colour goes. */
+.rr-cell.recv.answered{background:var(--panel);border-color:var(--border);color:var(--ink)}
+/* A field hint that is a VERDICT, not helper text — the deposit cross-check's warn/good
+   sentence. Same two colours the badges use, so it reads as the app's own vocabulary. */
+.field-hint-warn{color:var(--gold)}
+.field-hint-good{color:var(--forest)}
 /* A per-month charge or credit posted on this box (0082) — a corner mark, not a line.
    It printed its amount under the figure until 2026-08-17, which grew the box and moved
    the grid; the amount, the kind and the note typed with it are on the hover card, which

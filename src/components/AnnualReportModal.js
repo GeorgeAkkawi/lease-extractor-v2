@@ -7,6 +7,7 @@ import {
 import { fmtDate } from '../lib/format';
 import { useModalA11y } from './modalA11y';
 import FileDrop from './FileDrop';
+import MutationError from './MutationError';
 
 // Per-corporation annual state filing. The landlord uploads (or pastes) the report;
 // the AI reads only the date it must be filed each year; the app then reminds him a
@@ -159,6 +160,9 @@ export default function AnnualReportModal({ corp, onClose }) {
           )}
         </div>
         <div className="modal-foot">
+          {/* `save` states its own failure on the row above ("Could not save"); this is the
+              other write in the modal, which had nothing. */}
+          <MutationError of={[filed]} />
           <div className="modal-actions">
             {rec?.due_date
               ? <button className="secondary" onClick={() => filed.mutate()} disabled={filed.isPending}>{filed.isPending ? 'Saving…' : '✓ Mark filed'}</button>

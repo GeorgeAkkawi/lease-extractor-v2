@@ -74,6 +74,16 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
     const comp = componentizeSchedule({ schedule: roll.schedule, factor: roll.factor, camTaxAnnual: roll.camTaxAnnual, roofAnnual: roll.roofAnnual, camTaxByMonth: roll.camTaxByMonth, roofByMonth: roll.roofByMonth, adjustments: roll.adjustments });
     monthlyBase = Array.from({ length: 12 }, (_, i) => round2(Number(comp[i + 1]?.base) || 0));
   }
+  // ⚠ THE BASE MUST BE PRORATED TOO, and it was the one figure on this sheet that wasn't.
+  // `est.base` is `effective_rent` — an annual RATE, which prorates neither end of a term —
+  // while CAM & tax, the itemized lines and the variance are all struck over the months the
+  // tenant was actually here. A tenant commencing 1 July therefore read a Base rent row whose
+  // Annual said $36,000 beside twelve monthly cells summing to $18,000, and two TOTAL OWED
+  // rows quoting a year they never had. Take it from the schedule already in hand; fall back
+  // to the rate scaled by in-term months when there is no roll to read.
+  const baseBilled = roll?.schedule
+    ? round2(monthlyBase.reduce((t, m) => t + m, 0))
+    : round2(baseAnnual * (inTerm / 12));
 
   // Itemized ACTUALS as the tenant's share. Scale each item by the tenant's effective
   // fraction (actual share ÷ property total) so the lines sum to the tenant's actual
@@ -94,6 +104,19 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
   if (share.roof_responsible && actual.roof > 0.005) {
     itemsActual.push({ label: 'Roof', kind: 'roof', annual: round2(actual.roof), psf: sqft > 0 ? actual.roof / sqft : null });
   }
+  // ⚠ A KIND ENTERED AS A YEAR TOTAL STILL HAS TO SHOW UP HERE. Itemizing is optional —
+  // taxes are commonly a single flat figure and CAM can be — and when a kind has no line
+  // items its scaling fraction is 0, so the loops above emit nothing while the bold TOTAL
+  // printed underneath them (built from the share, not from these lines) includes the money
+  // in full. The section then does not add up to its own stated total, with nothing saying
+  // why: on the demo seed that is a $10,000 tax share on no line at all. A residual row keeps
+  // the section additive to its footer by construction, and names the reason.
+  if (taxTotal <= 0 && actual.tax > 0.005) {
+    itemsActual.push({ label: 'Property tax (entered as a year total — not itemized)', kind: 'tax', annual: round2(actual.tax), psf: sqft > 0 ? actual.tax / sqft : null });
+  }
+  if (camTotal <= 0 && actual.cam > 0.005) {
+    itemsActual.push({ label: 'CAM (entered as a year total — not itemized)', kind: 'cam', annual: round2(actual.cam), psf: sqft > 0 ? actual.cam / sqft : null });
+  }
 
   // The estimate side carries the year's CAM & tax CORRECTIONS (0082) — the same figure
   // reconcileFigures uses, so this sheet can never disagree with the on-screen Difference.
@@ -101,8 +124,17 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
   const actualCamTax = round2(actual.cam + actual.tax);
   const estRoof = fig.est.roof;
   const actualRoof = round2(actual.roof);
-  const totalOwedEst = round2(baseAnnual + estCamTax + estRoof);
-  const totalOwedActual = round2(baseAnnual + actualCamTax + actualRoof);
+  // The last guard: whatever the two residuals above did not catch. The itemized section is
+  // printed above a bold total struck from the SHARE rather than from these lines, so any gap
+  // between them is a section that does not add up in front of a tenant. Named rather than
+  // left to be discovered, the way the income workbook's bridge term is.
+  const itemizedSum = round2(itemsActual.reduce((t, it) => t + (Number(it.annual) || 0), 0));
+  const residual = round2(round2(actualCamTax + actualRoof) - itemizedSum);
+  if (Math.abs(residual) > 0.005) {
+    itemsActual.push({ label: 'Not itemized', kind: null, annual: residual, psf: sqft > 0 ? residual / sqft : null });
+  }
+  const totalOwedEst = round2(baseBilled + estCamTax + estRoof);
+  const totalOwedActual = round2(baseBilled + actualCamTax + actualRoof);
   const variance = round2(totalOwedActual - totalOwedEst); // = fig.diff (base cancels)
 
   // Plain-English insights, keyed off the same reconcile direction the app uses.
@@ -164,7 +196,10 @@ export function shapeTenantReport({ share, camItems = [], taxItems = [], roofTot
     sqft,
     buildingSf,
     sharePct,
-    base: { annual: baseAnnual, psf: sqft > 0 ? baseAnnual / sqft : null, monthly: monthlyBase },
+    // `annual` is what the year BILLED (prorated to the term); `rate` is the lease's annual
+    // rate, which the Lease terms reference below still quotes. Keeping both means the row's
+    // Annual agrees with its own twelve monthly cells without losing the figure on the lease.
+    base: { annual: baseBilled, rate: baseAnnual, psf: sqft > 0 ? baseBilled / sqft : null, monthly: monthlyBase, prorated: baseBilled < round2(baseAnnual) - 0.5, inTerm },
     estCamTax, actualCamTax, estRoof, actualRoof,
     // ⚠ CARRIED, NOT ABSORBED (2026-08-16). This figure has always been folded INTO
     // `estCamTax` above — correctly, because a correction the tenant was already billed has

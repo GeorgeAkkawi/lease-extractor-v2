@@ -29,6 +29,10 @@ export default function DashboardPage() {
   const [emailNotif, setEmailNotif] = useState(null);
   const [busyNotif, setBusyNotif] = useState(null);
   const [emailBusyAlert, setEmailBusyAlert] = useState(null); // alertKey while drafting its email
+  // One line above the board for anything that goes wrong on a row's own controls — drafting
+  // a letter, dismissing, snoozing. All three were bare async handlers with no catch and the
+  // page has no error boundary, so a failure was total silence.
+  const [feedNote, setFeedNote] = useState(null);
   const [undoDecline, setUndoDecline] = useState(null); // { id, tenant } after "Not renewing"
   const [rentEntry, setRentEntry] = useState(null); // { leaseId, value } when a renewal has no listed rent
   const askConfirm = useConfirm();
@@ -217,8 +221,21 @@ export default function DashboardPage() {
   async function emailForAlert(a) {
     const k = alertKey(a);
     setEmailBusyAlert(k);
-    try { const n = await draftAlertEmail(a); if (n) setEmailNotif(n); }
-    finally { setEmailBusyAlert(null); }
+    setFeedNote(null);
+    try {
+      const n = await draftAlertEmail(a);
+      if (n) setEmailNotif(n);
+      // ⚠ NULL IS AN ANSWER, NOT A NO-OP. `draftAlertEmail` returns null when the record the
+      // reminder points at is gone — the renewal option applied or the contract deleted in
+      // another tab — which means the reminder itself is stale. Silence here read as the
+      // button not working, so the landlord clicked it again and again.
+      else {
+        setFeedNote('That reminder points at a record that no longer exists, so there is nothing to write. Refreshing the list now.');
+        qc.invalidateQueries({ queryKey: ['alerts'] });
+      }
+    } catch (e) {
+      setFeedNote(`Couldn't write that letter — ${e?.message || 'the request failed'}. Nothing was sent; try again in a moment.`);
+    } finally { setEmailBusyAlert(null); }
   }
   // Make a click-only element keyboard-activatable (Enter/Space) — the role="button"
   // divs/rows below aren't real buttons, so without this they can be focused but not used.
@@ -244,12 +261,23 @@ export default function DashboardPage() {
   // Dismiss / snooze both write one alert_states row. Keyed by alertKey for a computed
   // alert and by notificationKey for a stored one, so the two share this plumbing and can
   // present the identical row of controls.
-  async function clearAlert(a) { await upsertAlertState({ alert_key: alertKey(a), dismissed: true }); qc.invalidateQueries({ queryKey: ['alerts'] }); }
+  async function clearAlert(a) {
+    try {
+      await upsertAlertState({ alert_key: alertKey(a), dismissed: true });
+      qc.invalidateQueries({ queryKey: ['alerts'] });
+    } catch (e) {
+      setFeedNote(`Couldn't dismiss that reminder — ${e?.message || 'the request failed'}. It is still on the list.`);
+    }
+  }
   async function snoozeKey(key, ms) {
-    await upsertAlertState({ alert_key: key, snoozed_until: new Date(Date.now() + ms).toISOString() });
-    setSnoozeFor(null);
-    qc.invalidateQueries({ queryKey: ['alerts'] });
-    qc.invalidateQueries({ queryKey: ['alertStates'] });
+    try {
+      await upsertAlertState({ alert_key: key, snoozed_until: new Date(Date.now() + ms).toISOString() });
+      setSnoozeFor(null);
+      qc.invalidateQueries({ queryKey: ['alerts'] });
+      qc.invalidateQueries({ queryKey: ['alertStates'] });
+    } catch (e) {
+      setFeedNote(`Couldn't snooze that reminder — ${e?.message || 'the request failed'}. It will keep showing.`);
+    }
   }
 
   const leases = (index?.leases || []).filter((l) => l.is_active !== false);
@@ -333,6 +361,26 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* ⚠ THE FIRST SCREEN A NEW ACCOUNT EVER SEES, and it used to be eight columns of "All
+          clear" over a portfolio that has never held a record — a page reporting the absence
+          of problems to someone who has no properties, with nothing on it to click. "All
+          clear" is the right answer for a landlord whose buildings are in order and the wrong
+          one for a client who hasn't started; the difference is whether anything exists yet.
+          Everything below still renders, so this replaces nothing — it just says what to do. */}
+      {properties.length === 0 && (
+        <div className="callout" style={{ marginBottom: 16, borderLeftColor: 'var(--accent)' }}>
+          <div className="alert-main">
+            <div className="alert-title"><strong>Welcome — nothing here yet</strong></div>
+            <div className="muted">
+              This page fills in on its own once your buildings are in. Start in{' '}
+              <Link to="/leases">Portfolio</Link>: add the company that holds the property, then the
+              property itself, then a tenant — the rent, CAM and reminders all follow from those three.
+              You can upload a lease PDF and let Amlak read the terms out of it.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ⚠ ABOVE the chart band, not inside it — George, 2026-08-18: *"that should be way
           more prominent in the overview page graphs."* It is the sentence the four panels
           below elaborate on, and it shares their one Display-settings switch rather than
@@ -369,6 +417,12 @@ export default function DashboardPage() {
           {/* One column per kind of thing. Stored notifications and computed alerts are
               still ONE urgency-ordered feed (buildFeed) — groupFeed only deals them into
               columns, so the order inside each is unchanged. */}
+          {feedNote && (
+            <div className="note-msg" style={{ color: '#b42318', margin: '6px 0 10px', fontSize: 12.5 }} role="status">
+              {feedNote}{' '}
+              <button type="button" className="ghost btn-sm" onClick={() => setFeedNote(null)}>Dismiss</button>
+            </div>
+          )}
           <div className="notif-board">
             {columns.map((col) => (
               <div key={col.key} className="notif-col">

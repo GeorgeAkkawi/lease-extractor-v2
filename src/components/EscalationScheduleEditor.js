@@ -71,7 +71,9 @@ export default function EscalationScheduleEditor({ lease }) {
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['escalations', leaseId] });
-    qc.invalidateQueries({ queryKey: ['propertyEscalations'] });
+    // ⚠ `escalationsByProperty`, not `propertyEscalations` — the second name is a near-miss
+    // for a key nothing reads, so this line repainted nothing for as long as it has existed.
+    qc.invalidateQueries({ queryKey: ['escalationsByProperty'] });
     settleBillingChange(qc, { propertyId: propId, leaseId, year: fy });
   };
 

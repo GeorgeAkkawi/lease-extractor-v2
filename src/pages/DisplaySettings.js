@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getHiddenWidgets, setHiddenWidgets, getEnabledFeatures, setEnabledFeatures } from '../lib/api';
 import { DASHBOARD_WIDGETS, PAGE_PANELS } from '../lib/dashboardWidgets';
@@ -19,6 +20,13 @@ export default function DisplaySettings() {
 
   const hiddenSet = new Set(hidden);
 
+  // ⚠ A REVERT WITH NO SENTENCE IS THE CALIBRATION BUG IN REVERSE. Snapping the toggle back
+  // is right — it must never claim something was saved that wasn't — but on its own it is a
+  // real state change with no legible cause: the checkbox clears, the badge flips to "Off",
+  // and a moment later both flip back with nothing anywhere on the page saying why. The
+  // client's reasonable conclusion is that the setting doesn't work.
+  const [saveError, setSaveError] = useState(null);
+
   async function toggleWidget(key) {
     const next = new Set(hidden);
     if (next.has(key)) next.delete(key);
@@ -27,21 +35,25 @@ export default function DisplaySettings() {
     // Update the shared cache immediately so both this page and the dashboard
     // reflect the change without a round-trip, then persist.
     qc.setQueryData(['dashboardPrefs'], arr);
+    setSaveError(null);
     try {
       await setHiddenWidgets(arr);
-    } catch {
+    } catch (e) {
       // Revert on failure so the toggle never lies about what was saved.
       qc.setQueryData(['dashboardPrefs'], hidden);
+      setSaveError(`That panel setting didn't save — ${e?.message || 'the request failed'}. It has been put back the way it was.`);
     }
   }
 
   async function toggleFeatureKey(key) {
     const next = toggleFeature(enabled, key); // materializes the full set on first change
     qc.setQueryData(['enabledFeatures'], next);
+    setSaveError(null);
     try {
       await setEnabledFeatures(next);
-    } catch {
+    } catch (e) {
       qc.setQueryData(['enabledFeatures'], enabled ?? null);
+      setSaveError(`That module setting didn't save — ${e?.message || 'the request failed'}. It has been put back the way it was.`);
     }
   }
 
@@ -96,6 +108,9 @@ export default function DisplaySettings() {
   return (
     <div className="panel" style={{ maxWidth: 560 }}>
       <div className="panel-head"><strong>Display &amp; features</strong></div>
+      {saveError && (
+        <div className="note-msg" role="status" style={{ color: '#b42318', margin: '8px 0', fontSize: 12.5 }}>{saveError}</div>
+      )}
       <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
         Turn on the tools you want and hide anything you don’t. Your choices are saved to
         your account, so they apply everywhere you sign in. Switching something off only

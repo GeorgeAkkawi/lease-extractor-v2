@@ -6,6 +6,7 @@ import { usePageChrome } from '../context/ChromeContext';
 import { useAuth } from '../context/AuthContext';
 import { DEMO_MODE } from '../lib/supabaseClient';
 import UndoStrip from '../components/UndoStrip';
+import MutationError from '../components/MutationError';
 
 // Settings › Notifications — how far ahead each kind of reminder fires. The landlord
 // types a freeform value ("3 months" / "90 days" / "1 year"); the app interprets it and
@@ -101,6 +102,9 @@ export default function NotificationSettings() {
   return (
     <div className="panel" style={{ maxWidth: 560 }}>
       <div className="panel-head"><strong>Notifications</strong></div>
+      {/* A lead that fails to save snaps back to the old number with no explanation — the
+          same shape as the Display-settings revert, and just as unreadable. */}
+      <MutationError of={[save, undoMut]} />
       <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>
         Choose how far ahead you want each reminder. Type a plain value like
         {' '}<em>3 months</em>, <em>90 days</em>, or <em>1 year</em> — the app reads it and shows the reading below

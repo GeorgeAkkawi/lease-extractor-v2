@@ -232,7 +232,9 @@ export default function PropertyAnnouncementsModal({ property, corp, onClose }) 
           emailsSent,
           failedCount: res?.failed?.length || 0,
         });
-        qc.invalidateQueries({ queryKey: ['history'] });
+        // ⚠ `historyEvents` is the key the History page actually reads; `history` is a
+        // near-miss that repaints nothing.
+        qc.invalidateQueries({ queryKey: ['historyEvents'] });
       }
     },
     onError: (e) => setSendError(e?.message || 'Couldn’t send the announcement — try Copy and send it from your own email.'),

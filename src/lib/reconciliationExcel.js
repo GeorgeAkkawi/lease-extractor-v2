@@ -132,7 +132,12 @@ function addTenantSheet(wb, used, t, now) {
   const psfOf = (annual) => (sqft > 0 ? annual / sqft : null);
   const monthlyFlat = (annual) => Array(12).fill(Math.round((annual / 12) * 100) / 100);
 
-  dataRow('Base rent', psfOf(t.base.annual), t.base.annual, t.base.monthly);
+  // ⚠ THE PRORATED figure, which is what the twelve cells beside it sum to. It used to be the
+  // lease's annual RATE, so a tenant commencing mid-year read $36,000 next to six $0 months.
+  dataRow(
+    t.base?.prorated ? `Base rent (prorated — ${t.base.inTerm} of 12 months in term)` : 'Base rent',
+    psfOf(t.base.annual), t.base.annual, t.base.monthly,
+  );
   r++; // spacer
   dataRow('CAM & tax (estimated)', psfOf(t.estCamTax), t.estCamTax, monthlyFlat(t.estCamTax));
   // ⚠ THE LINE THAT WAS MISSING. A CAM & tax correction posted during the year is part of

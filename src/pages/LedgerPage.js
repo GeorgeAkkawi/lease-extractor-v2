@@ -190,9 +190,15 @@ function MonthTip({ ml, tenant, comp, adjRows, owed, received, isStep, settled, 
           {settled && Math.abs(diff) > 0.5 && (
             <TipRow
               label=""
-              value={answered
-                ? `${money(answered)} over the bill — counted as revenue`
-                : `${money(Math.abs(diff))} ${diff < 0 ? 'under' : 'over'} the bill`}
+              // ⚠ "OVER THE BILL" IS THE WRONG WORDS WHEN THERE IS NO BILL. A month the lease
+              // bills nothing for reaches this card too, and its whole deposit is the surplus.
+              value={owed > 0.005
+                ? (answered
+                  ? `${money(answered)} over the bill — counted as revenue`
+                  : `${money(Math.abs(diff))} ${diff < 0 ? 'under' : 'over'} the bill`)
+                : (answered
+                  ? `${money(answered)} on a month with no bill — counted as revenue`
+                  : `${money(Math.abs(diff))} on a month this lease bills nothing for`)}
               sub
               tone={answered ? 'ok' : 'warn'}
             />
@@ -287,6 +293,18 @@ export default function LedgerPage() {
     enabled: isOn('ledger'),
   });
   const unplacedTotals = lineCompleteness(unplaced);
+  // ⚠ AND THE ONES IN ANOTHER FISCAL YEAR. The scoping above is deliberate (a line belongs to
+  // exactly one year's list), but a bank cycle straddles the year end — so importing a
+  // Dec 20–Jan 19 statement in January reports "5 not placed" in the green strip and then
+  // shows a panel below it that does not contain them, with nothing saying they are one year
+  // away. Same key prefix, so every existing invalidation already covers it.
+  const { data: unplacedAllYears = [] } = useQuery({
+    queryKey: ['unplacedLines', propId, 'all'],
+    queryFn: () => listUnplacedLines(propId, null),
+    enabled: isOn('ledger'),
+  });
+  const unplacedElsewhere = (unplacedAllYears || []).filter((l) => l.year != null && Number(l.year) !== Number(year));
+  const unplacedOtherYears = [...new Set(unplacedElsewhere.map((l) => Number(l.year)))].sort((a, b) => a - b);
   // The other half of the same list: what HAS been decided. Until 2026-08-13 a decided line
   // simply left the screen — 0076 stored the decision and its reason and nothing read them
   // back (George: "it disappeared … i dont know where that money went").
@@ -400,6 +418,12 @@ export default function LedgerPage() {
       qc.invalidateQueries({ queryKey: ['historyEvents'] });
       setNote(res.wrote ? `${res.description}.` : `${res.standing?.label || 'That tenant'} — left open.`);
     },
+    // ⚠ THE ONE ACTION ON THIS PAGE THAT WRITES MONEY INTO TWO FISCAL YEARS AT ONCE, and it
+    // was the only mutation here with no path to the screen at all. A throw on the inserts —
+    // after the year-lock read has already passed — snapped the dropdown back to "Settle up…"
+    // and said nothing, which invites a second click at the very moment a first one may have
+    // half-landed. A refusal is legible already (`res.refused` above); this is the crash.
+    onError: (e) => setNote(`Couldn't settle that balance — ${e?.message || 'the write failed'}. Nothing was changed; check the tenant's row before trying again.`, true),
   });
 
   // ⚠ WHAT HAPPENS TO THE MONEY, not "are you sure". The one fact a landlord cannot work out
@@ -471,6 +495,7 @@ export default function LedgerPage() {
       qc.invalidateQueries({ queryKey: ['historyEvents'] });
       setNote(`${res.description}. ${res.removed} entr${res.removed === 1 ? 'y' : 'ies'} removed across FY ${(res.years || []).join(' and FY ')}.`);
     },
+    onError: (e) => setNote(`Couldn't undo that settlement — ${e?.message || 'the write failed'}. Check the tenant's row before trying again.`, true),
   });
 
   async function askUndoSettlement(r) {
@@ -1138,12 +1163,31 @@ export default function LedgerPage() {
                       const openTap = () => tap(open, cellKey(r.lease_id, m));
 
                       if (state === 'unbilled') {
+                        // ⚠ THE SAME QUESTION AS THE ✓ BOX, IN A STARKER FORM — so it gets the
+                        // same answer. A month the lease bills nothing for counts as ENTIRELY
+                        // unapplied (ledger.js), so the whole deposit is held out of every live
+                        // income figure until the landlord says what it is. This branch used to
+                        // compute none of that: the pop-up took his answer, moved the money and
+                        // then re-read "counted as revenue" beside a grid box still painted gold
+                        // and a hover card still warning "$X over the bill". Two surfaces openly
+                        // contradicting each other, which is the bug that started the audit,
+                        // sitting one cell state over from where it was fixed.
+                        const surplus = round2(excess?.[i] || 0);
+                        const answered = surplus > 0.05
+                          && (confirmedOverpay.has(overpayAllKey(r.lease_id, year))
+                           || confirmedOverpay.has(overpayKey(r.lease_id, year, m, surplus)));
                         return (
                           <td key={m}>
-                            <Tip as="button" type="button" className={`rr-cell recv${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
+                            <Tip as="button" type="button" className={`rr-cell recv${answered ? ' answered' : ''}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
                               onClick={cellClick(takeBack)} onDoubleClick={open}
-                              content={card({ settled: true, action: 'Click to take this month back · double-click to open it' })}
-                              aria-label={`${ml} — ${money(receivedM)} received, nothing billed`}>
+                              content={card({
+                                settled: true,
+                                answered: answered ? surplus : 0,
+                                action: answered || surplus <= 0.05
+                                  ? 'Click to take this month back · double-click to open it'
+                                  : `${money(surplus)} arrived on a month this lease bills nothing for — it is in none of your income figures, double-click to say what it is`,
+                              })}
+                              aria-label={`${ml} — ${money(receivedM)} received, nothing billed${answered ? `, counted as revenue` : surplus > 0.05 ? `, ${money(surplus)} not yet applied` : ''}`}>
                               {adjMark}↓<span className="rr-amt">{money0(receivedM)}</span>
                             </Tip>
                           </td>
@@ -1457,6 +1501,18 @@ export default function LedgerPage() {
             yet. It nags on purpose and it is never silently absorbed: money IN is
             called out separately because an unplaced deposit may be rent that should
             have settled a month, which makes a tenant read short on the grid above. */}
+        {/* The year-straddling case, which the panel below can never show: a line dated in
+            another fiscal year lives on that year's list. Rendered even when THIS year's list
+            is empty, because that is exactly when the money looks lost. */}
+        {unplacedElsewhere.length > 0 && (
+          <div className="note-msg" style={{ marginTop: 14 }}>
+            <strong>{unplacedElsewhere.length} unplaced line{unplacedElsewhere.length === 1 ? '' : 's'} sit{unplacedElsewhere.length === 1 ? 's' : ''} in FY {unplacedOtherYears.join(' and FY ')}</strong>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              A bank statement that straddles the year end puts its earlier lines on the earlier
+              year's list. Switch the year above to place them.
+            </div>
+          </div>
+        )}
         {unplaced.length > 0 && (
           <div className="note-msg warn" style={{ marginTop: 14 }}>
             <strong>Money not yet placed — {unplaced.length} line{unplaced.length === 1 ? '' : 's'}</strong>

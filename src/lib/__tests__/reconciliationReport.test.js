@@ -90,3 +90,85 @@ describe('buildReconciliationReport (demo mock)', () => {
     expect(first.base.monthly).toHaveLength(12);
   });
 });
+
+// ── The three things this sheet used to get wrong in front of a tenant (2026-08-22) ────────
+
+// ⚠ ITEMIZING IS OPTIONAL, AND THE SECTION STILL HAS TO ADD UP. Taxes are commonly entered as
+// one flat figure (the demo seeds them that way on purpose), and CAM can be. With no line items
+// the scaling fraction is 0, so the itemized loop emitted nothing — while the bold TOTAL ACTUAL
+// EXPENSES printed underneath it is struck from the SHARE and therefore carried the money in
+// full. On the demo's own Bright Coffee the four printed lines summed to $8,800 under a stated
+// total of $18,800, with nothing on the sheet saying where the other $10,000 went.
+describe('shapeTenantReport — an un-itemized kind still gets a line', () => {
+  const sum = (t) => Math.round(t.itemsActual.reduce((n, i) => n + i.annual, 0) * 100) / 100;
+  const footer = (t) => Math.round((t.actualCamTax + t.actualRoof) * 100) / 100;
+
+  it('names the flat tax total instead of dropping it', () => {
+    const t = shapeTenantReport({ share, camItems, taxItems: [], roofTotal: 0, buildingSf: 10000, roll: null, renewals, property: {}, year: 2026 });
+    const tax = t.itemsActual.find((i) => i.kind === 'tax');
+    expect(tax).toBeTruthy();
+    expect(tax.label).toMatch(/not itemized/);
+    expect(tax.annual).toBe(8000);
+    expect(sum(t)).toBe(footer(t));
+  });
+
+  it('does the same for a flat CAM total', () => {
+    const t = shapeTenantReport({ share, camItems: [], taxItems, roofTotal: 0, buildingSf: 10000, roll: null, renewals, property: {}, year: 2026 });
+    const cam = t.itemsActual.find((i) => i.kind === 'cam');
+    expect(cam.label).toMatch(/not itemized/);
+    expect(cam.annual).toBe(4300);
+    expect(sum(t)).toBe(footer(t));
+  });
+
+  it('the itemized lines tie to their own printed total even with BOTH entered flat', () => {
+    const t = shapeTenantReport({ share, camItems: [], taxItems: [], roofTotal: 0, buildingSf: 10000, roll: null, renewals, property: {}, year: 2026 });
+    expect(sum(t)).toBe(footer(t));
+    expect(sum(t)).toBe(12300);
+  });
+});
+
+// ⚠ THE BASE IS PRORATED LIKE EVERYTHING ELSE ON THE SHEET. `effective_rent` is an annual RATE
+// that prorates neither end of a term, so a tenant commencing mid-year read a Base rent row
+// whose Annual was the full year beside twelve monthly cells summing to half of it — and both
+// TOTAL OWED rows quoted a year the tenant never had.
+describe('shapeTenantReport — base rent is prorated to the term', () => {
+  // A July commencement: six months out of term, six in, at 36,000/yr.
+  const schedule = {};
+  for (let m = 1; m <= 12; m++) schedule[m] = m < 7 ? { owed: 0, outsideTerm: true } : { owed: 3000 };
+  const midYear = { ...share, base_rent: 36000, est_cam_annual: 0, est_tax_annual: 0, cam_amount: 0, tax_amount: 0 };
+  const roll = { schedule, factor: 1, camTaxAnnual: 0, roofAnnual: 0, camTaxByMonth: null, roofByMonth: null, adjustments: [] };
+
+  const t = shapeTenantReport({ share: midYear, camItems: [], taxItems: [], roofTotal: 0, buildingSf: 10000, roll, renewals: [], property: {}, year: 2026 });
+
+  it('the Annual figure equals the twelve months beside it', () => {
+    const months = Math.round(t.base.monthly.reduce((n, v) => n + v, 0) * 100) / 100;
+    expect(months).toBeGreaterThan(0);
+    expect(t.base.annual).toBe(months);
+    expect(t.base.annual).toBeLessThan(36000);
+  });
+
+  it('says it is prorated, and keeps the lease’s own rate available', () => {
+    expect(t.base.prorated).toBe(true);
+    expect(t.base.inTerm).toBe(6);
+    expect(t.base.rate).toBe(36000);
+  });
+
+  it('TOTAL OWED no longer counts a full year for a half-year tenant', () => {
+    expect(t.totalOwedEst).toBe(t.base.annual);
+    expect(t.totalOwedActual).toBe(t.base.annual);
+    // …and the settlement itself is unchanged, because base cancels on both sides.
+    expect(t.variance).toBe(0);
+  });
+
+  it('a full-year tenant is untouched', () => {
+    const full = {};
+    for (let m = 1; m <= 12; m++) full[m] = { owed: 3450.25 };
+    const ft = shapeTenantReport({
+      share, camItems, taxItems, roofTotal: 0, buildingSf: 10000,
+      roll: { schedule: full, factor: 1, camTaxAnnual: 0, roofAnnual: 0, camTaxByMonth: null, roofByMonth: null, adjustments: [] },
+      renewals, property: {}, year: 2026,
+    });
+    expect(ft.base.prorated).toBe(false);
+    expect(ft.base.inTerm).toBe(12);
+  });
+});

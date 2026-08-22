@@ -406,7 +406,7 @@ export function buildEscalationEmail({ business, tenant_name, contact_name, tena
 // font — Gmail's compose window and received mail don't render space-padded
 // columns, so each charge is ONE line with its billed / actual / difference
 // figures labeled in place. Never two spaces in a row, no padStart/padEnd.
-export function buildCamReconciliationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, lines, diff, direction }) {
+export function buildCamReconciliationEmail({ business, tenant_name, contact_name, tenant_email, propertyName, year, lines, diff, direction, camTaxAdjust = 0 }) {
   const amount = money(Math.abs(Number(diff) || 0));
   const rows = (lines || []).map((l) => {
     const est = Number(l.est) || 0;
@@ -435,6 +435,15 @@ export function buildCamReconciliationEmail({ business, tenant_name, contact_nam
   doc.push('');
   doc.push('CHARGES — BILLED (EST.) VS ACTUAL');
   rows.forEach((r) => doc.push(`• ${row(r.label, r.est, r.actual, r.d)}`));
+  // ⚠ A MEMO, ALREADY COUNTED IN THE LINE ABOVE — it must not be added again. A CAM & tax
+  // correction posted during the year is part of what the tenant was billed, so it belongs
+  // inside the billed figure; what it did not have was a name, and a tenant reading a billed
+  // total they cannot reconcile to their own cheques is a tenant who telephones. The
+  // reconciliation workbook has printed this same row since 2026-08-16.
+  const adj = Math.round((Number(camTaxAdjust) || 0) * 100) / 100;
+  if (Math.abs(adj) > 0.005) {
+    doc.push(`  of which corrections billed during the year: ${signed(adj)}`);
+  }
   doc.push(row('TOTAL', estTotal, actualTotal, Number(diff) || 0));
   doc.push('');
   const dueLabel = direction === 'landlord_owes' ? 'REFUND DUE TO TENANT' : 'BALANCE DUE';

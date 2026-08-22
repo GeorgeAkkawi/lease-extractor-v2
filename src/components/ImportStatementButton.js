@@ -262,6 +262,11 @@ export function ImportResultsStrip({ imported, onUndo, undoPending, onDismiss })
             counted as a payment would report rent collection that never happened. */}
         {s.incomeCount > 0 && <> · {s.incomeCount} other income · {money(s.incomeTotal)}</>}
         {s.depositCount > 0 && <> · {s.depositCount} security deposit{s.depositCount === 1 ? '' : 's'} · {money(s.depositTotal)} held</>}
+        {/* An owner distribution is money leaving the building that is NOT an expense
+            (billable = false keeps it out of every subtotal, CLAUDE.md §1). It has been
+            counted since 0078 and printed by nothing — a $45,000 draw was written on the
+            landlord's say-so and then named on no screen, before or after the save. */}
+        {s.ownerCount > 0 && <> · {s.ownerCount} owner distribution{s.ownerCount === 1 ? '' : 's'} · {money(s.ownerTotal)} out</>}
         {Object.keys(s.crossProperty || {}).length > 0 && (
           <> · {Object.values(s.crossProperty).reduce((n, c) => n + c, 0)} payment(s) posted to other properties' tenants — they show on those ledgers</>
         )}

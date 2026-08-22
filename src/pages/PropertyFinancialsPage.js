@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   getCorporation,
@@ -10,6 +10,7 @@ import {
   discardDocument,
   setRoofSeparate,
   getTenantShares,
+  listSnapshots,
 } from '../lib/api';
 import { listBasisByProperty } from '../lib/portfolioBasis';
 import { showRoof, roofOffered } from '../lib/roofDisplay';
@@ -26,6 +27,7 @@ import OtherIncomeSection from '../components/OtherIncomeSection';
 import WhatStayedStrip from '../components/WhatStayedStrip';
 import BuildingSizeEditor from '../components/BuildingSizeEditor';
 import useRecoverability from '../lib/useRecoverability';
+import useCamSync from '../lib/useCamSync';
 import StatementReview from '../components/StatementReview';
 import ImportStatementButton, { ImportResultsStrip, StatementDropZone, settleStatementImport } from '../components/ImportStatementButton';
 import ExportReconciliationModal from '../components/ExportReconciliationModal';
@@ -41,6 +43,20 @@ export default function PropertyFinancialsPage() {
   const qc = useQueryClient();
 
   const askConfirm = useConfirm();
+
+  // Contracts and the management fee become this year's CAM lines — from the page, not from
+  // a queryFn a co-observer can pre-empt, and not from CamSection, which the landlord can fold.
+  useCamSync(propId, year);
+
+  // ⚠ WHETHER THIS YEAR IS CLOSED IS A FACT THIS PAGE HAS TO STATE. Every editor below moves
+  // figures that build UP from live data — the shares, the Difference column, the totals band,
+  // the expense cards — while `resyncPropertyBilling` returns `{ skipped: 'closed' }` and the
+  // invoices already sent deliberately stay as they were. That refusal is right (CLAUDE.md §1)
+  // and it used to print nothing at all, which left the landlord's own screen disagreeing with
+  // his bills and no way to tell from here. Same `['snapshots', propId]` key the Ledger and the
+  // import review already warm, so this is a cache hit.
+  const { data: snapshots = [] } = useQuery({ queryKey: ['snapshots', propId], queryFn: () => listSnapshots(propId) });
+  const yearClosed = (snapshots || []).some((s) => Number(s.year) === Number(year));
 
   const { data: corp } = useQuery({ queryKey: ['corporation', corpId], queryFn: () => getCorporation(corpId) });
   const { data: prop } = useQuery({ queryKey: ['property', propId], queryFn: () => getProperty(propId) });
@@ -201,6 +217,16 @@ export default function PropertyFinancialsPage() {
 
       <FinancialsTabs corpId={corpId} propId={propId} />
 
+      {yearClosed && (
+        <div className="callout warn" role="status">
+          <strong>FY {year} is closed.</strong>{' '}
+          Edits here still move your records and your reconciliation — but the invoices already
+          sent for {year} stay exactly as they were sent, so this page and those bills will differ.
+          Reopen the year in <Link to={`/history/${corpId}/${propId}`}>History</Link> if the bills
+          should follow.
+        </div>
+      )}
+
       <div className="metric-group">
         <div className="fin-subhead">Performance · FY {year}</div>
         <div className="metrics">
@@ -274,6 +300,17 @@ export default function PropertyFinancialsPage() {
           the panel it belongs to, not just onto the button. The drop zone stays OUTSIDE the
           fold: a statement dragged onto a folded section still lands. */}
       <StatementDropZone className="panel" onReady={setImportDoc}>
+        {/* ⚠ OUTSIDE THE FOLD, for the same reason the drop zone is. What an import wrote —
+            and the ↩ Undo for the whole of it — must not be a child of a panel the landlord
+            may have folded, or a statement saved against the wrong year reports nothing and
+            offers no way back. */}
+        <ImportResultsStrip
+          imported={imported}
+          undoPending={undoImport.isPending}
+          onUndo={() => undoImport.mutate(imported.import)}
+          onDismiss={() => setImported(null)}
+        />
+        <MutationError of={[undoImport]} />
         <Panel
           bare
           id="fin.expenses"
@@ -282,13 +319,6 @@ export default function PropertyFinancialsPage() {
           summary={`Taxes ${money(taxes)} · CAM ${money(cam)}${roofVisible ? ` · Roof ${money(roof)}` : ''}`}
           actions={<ImportStatementButton onReady={setImportDoc} />}
         >
-          <ImportResultsStrip
-            imported={imported}
-            undoPending={undoImport.isPending}
-            onUndo={() => undoImport.mutate(imported.import)}
-            onDismiss={() => setImported(null)}
-          />
-          <MutationError of={[undoImport]} />
           <BuildingSizeEditor propId={propId} buildingSf={prop?.building_sf} year={year} />
           <Panel
             bare

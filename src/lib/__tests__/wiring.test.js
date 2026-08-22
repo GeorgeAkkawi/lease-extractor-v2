@@ -82,35 +82,42 @@ describe('every alert focus that reaches the lease page is explained there', () 
     expect(reachesLease.length).toBeGreaterThan(3);
   });
 
-  // KNOWN, 2026-08-21 — six focuses reach the lease page and are named by neither registry.
-  const KNOWN = [
-    'abatement',             // alerts.js:588
-    'insurance_chase',       // alerts.js:420
-    'insurance_missing',     // alerts.js:458 (the lease_id-bearing variant)
-    'signature_countersign', // alerts.js:528
-    'signature_apply',       // alerts.js:539
-    'signature_declined',    // alerts.js:561
-  ];
+  // ⚠ KNOWN IS EMPTY, AND STAYING THAT WAY IS THE POINT. It held six focuses on 2026-08-21 —
+  // abatement, the two per-lease insurance ones and the three signature ones — every one of
+  // which drew an empty accent-bordered box above the heading. All six were fixed 2026-08-22.
+  const KNOWN = [];
 
-  // ⚠ BOTH HALVES, not the box as a whole. The callout is a bold title line and a muted body
-  // line, each its own list of `focus === '…' &&` branches — so a focus named in one and not the
-  // other still renders half an empty box. Checking the box as a unit let that through; the
-  // non-vacuity run caught it (removing the `termination` TITLE alone kept the test green).
-  it('the callout names every focus in BOTH its title and its body — or it draws an empty box', () => {
-    const box = lease.slice(lease.indexOf('{focus && ('), lease.indexOf('{lease.extraction_status'));
-    const title = box.slice(box.indexOf('alert-title'), box.indexOf('</strong>'));
-    const body = box.slice(box.indexOf('className="muted"'));
-    const namedIn = (part) => new Set([...part.matchAll(/focus === '([a-z_]+)'/g)].map((m) => m[1]));
-    for (const [what, part] of [['title', title], ['body', body]]) {
-      const named = namedIn(part);
-      expect(named.size, `the ${what} regex found nothing`).toBeGreaterThan(2);
-      expect(reachesLease.filter((f) => !named.has(f) && !KNOWN.includes(f)), `unnamed in the ${what}`).toEqual([]);
+  // ⚠ ONE MAP, BOTH HALVES. The callout used to be a bold title line and a muted body line,
+  // each its own list of `focus === '…' &&` branches, so a focus named in one and not the other
+  // still rendered half an empty box — and checking the box as a unit let that through (the
+  // non-vacuity run caught it: removing the `termination` TITLE alone kept the test green).
+  // It is now a single `WHY` object whose entries carry both, which makes the half-named state
+  // unrepresentable; what this asserts is that every focus HAS an entry and that both fields
+  // are non-empty.
+  it('the callout names every focus, with both a title and a body', () => {
+    const map = lease.slice(lease.indexOf('const WHY = {'), lease.indexOf('const why = focus'));
+    expect(map.length, 'the WHY map was not found').toBeGreaterThan(200);
+    const entries = [...map.matchAll(/(\w+):\s*\{\s*title:\s*(['`])(.*?)\2,\s*body:\s*(['`])([\s\S]*?)\4,?\s*\}/g)];
+    const named = new Set(entries.map((m) => m[1]));
+    expect(named.size, 'the WHY regex found nothing').toBeGreaterThan(2);
+    for (const m of entries) {
+      expect(m[3].trim().length, `${m[1]} has an empty title`).toBeGreaterThan(3);
+      expect(m[5].trim().length, `${m[1]} has an empty body`).toBeGreaterThan(20);
     }
+    expect(reachesLease.filter((f) => !named.has(f) && !KNOWN.includes(f)), 'unnamed in WHY').toEqual([]);
+  });
+
+  // …and that the box is GATED on the map rather than on `focus` being truthy, which is the
+  // thing that made an unnamed focus render an empty box rather than nothing.
+  it('the callout renders nothing at all for a focus the map does not name', () => {
+    expect(lease).toContain('const why = focus ? WHY[focus] : null;');
+    expect(lease).toContain('{why && (');
+    expect(lease, 'the old truthy gate is back').not.toContain('{focus && (\n        <div className="callout"');
   });
 
   it('each one also has somewhere to scroll to', () => {
-    const map = lease.match(/const refByFocus = \{([^}]*)\}/)?.[1] || '';
-    const handled = new Set([...map.matchAll(/(\w+)\s*:/g)].map((m) => m[1]));
+    const map = lease.slice(lease.indexOf('const refByFocus = {'), lease.indexOf('const openByFocus'));
+    const handled = new Set([...map.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]));
     expect(handled.size).toBeGreaterThan(2);
     expect(reachesLease.filter((f) => !handled.has(f) && !KNOWN.includes(f))).toEqual([]);
   });
@@ -173,21 +180,17 @@ describe('query keys are wired in both directions', () => {
     expect(readKeys.size).toBeGreaterThan(40);
   });
 
-  // KNOWN, 2026-08-21 — read by a screen, invalidated by nothing.
+  // Read by a screen and invalidated by nothing — every remaining entry is DELIBERATE, not a
+  // backlog. The seven that were a backlog on 2026-08-21 (portfolioTotals, propertyTotalsByCorp,
+  // escalationsByLeases, corpProperties, billedTenants, envelopeEvents, envelopeSigners) were
+  // wired into the named sets on 2026-08-22 and are gone from this list.
   const STALE_OK = {
     dashboardPrefs: 'kept fresh by setQueryData in DisplaySettings.js — deliberate',
     enabledFeatures: 'kept fresh by setQueryData in DisplaySettings.js — deliberate',
     insurance: 'invalidated through a local variable in InsuranceVault.js, so no literal appears',
     senderEmails: 'has no write path in api.js at all — nothing can change it',
-    portfolioTotals: 'BACKLOG: the Overview band. Nothing invalidates it.',
-    propertyTotalsByCorp: 'BACKLOG: its two sibling batch keys are in invalidate.js; this one was missed',
-    escalationsByLeases: 'BACKLOG: settleLeaseScheduleChange covers escalations + escalationsByProperty, not this',
-    corpProperties: 'BACKLOG: the Sidebar never unmounts, so it never refetches — the sidebarLeases shape again',
-    billedTenants: 'BACKLOG: tenant count beside a contract resync',
-    envelopeEvents: 'BACKLOG: the signature audit trail, child of the invalidated `envelopes`',
-    envelopeSigners: 'BACKLOG: same',
-    incomeExpense: 'BACKLOG: built on demand by the export modal',
-    portfolioSnapshot: 'BACKLOG: Ask Amlak\'s cached portfolio facts',
+    incomeExpense: 'built on demand by the export modal, per open — never held across a write',
+    portfolioSnapshot: 'keyed by snapshotFingerprint, which versions itself (portfolio.js) — that IS its invalidation',
   };
 
   it('every key a screen reads is refreshed by something', () => {
@@ -195,11 +198,18 @@ describe('query keys are wired in both directions', () => {
     expect(stale, 'a screen reading these will show stale figures until a hard refresh').toEqual([]);
   });
 
-  // KNOWN, 2026-08-21 — invalidated, but no screen reads it.
-  const DEAD_OK = {
-    propertyEscalations: 'BACKLOG: near-miss for the live `escalationsByProperty` (Layout.js:41, EscalationScheduleEditor.js:74)',
-    history: 'BACKLOG: near-miss for the live `historyEvents` (PropertyAnnouncementsModal.js:235)',
-  };
+  // ⚠ AND THE LIST ITSELF HAS TO STAY HONEST. An exemption for a key that IS now invalidated is
+  // dead weight that quietly widens the sweep — the way an emptied KNOWN list would if nobody
+  // deleted it. Fix the key, delete the line.
+  it('no exemption outlives the problem it names', () => {
+    expect(Object.keys(STALE_OK).filter((k) => freshened.has(k)), 'these are wired now — remove them from STALE_OK').toEqual([]);
+    expect(Object.keys(STALE_OK).filter((k) => !readKeys.has(k)), 'these are not read at all any more').toEqual([]);
+  });
+
+  // Invalidated, but no screen reads it — i.e. a line that repaints nothing. Both entries were
+  // typos for a real neighbour (`propertyEscalations` → `escalationsByProperty`, `history` →
+  // `historyEvents`) and were corrected 2026-08-22, so this is empty and should stay empty.
+  const DEAD_OK = {};
 
   it('every key a write invalidates is read by some screen', () => {
     const dead = [...freshened].filter((k) => !readKeys.has(k) && !(k in DEAD_OK));
@@ -363,9 +373,16 @@ describe('a write that fails says so', () => {
       const rest = src.slice(m.index + m[0].length);
       const end = rest.search(/\n\s{0,2}(const|function|async function|useEffect|return)\s/);
       const block = end === -1 ? rest.slice(0, 2500) : rest.slice(0, end);
-      // Watched either by its own onError or by a MutationError that names it.
+      // Watched by its own onError, by a MutationError that names it, or by the file
+      // rendering `<name>.isError` itself — which several panels do, in their own wording.
+      // ⚠ THE THIRD FORM WAS MISSING ON 2026-08-21 and it over-counted the backlog by ten:
+      // TaxCategorySelect, LeaseNewPage's two creates, HistoryPage's close and clearHistory,
+      // AnnualReportModal's save, InvoiceButton, LeaseReviewStrip's run, RemoveTenantModal and
+      // RenewalOptionModal all state their failure and were reported as silent. A sweep that
+      // cries wolf gets ignored, which is the same end as not having it.
       const watched = block.includes('onError')
-        || new RegExp(`MutationError[^>]{0,400}\\b${name}\\b`, 's').test(src);
+        || new RegExp(`MutationError[^>]{0,400}\\b${name}\\b`, 's').test(src)
+        || new RegExp(`\\b${name}\\.isError\\b`).test(src);
       if (!watched) mutations.push(`${p.replace('src/', '')}:${name}`);
     }
   }
@@ -375,46 +392,13 @@ describe('a write that fails says so', () => {
     expect(total).toBeGreaterThan(80);
   });
 
-  // KNOWN, 2026-08-21 — the backlog, exactly as measured. Ranked in docs/audit-2026-08-22.md;
-  // the onboarding pair (CorporationsPage / PropertiesPage) and the seven LeaseDetailPage field
-  // saves are the ones worth clearing first. Deleting a line here is the fix landing.
-  const KNOWN = [
-    'components/AnnualReportModal.js:save',
-    'components/AnnualReportModal.js:filed',
-    'components/CamSection.js:saveCat',
-    'components/CorporationProfileModal.js:save',
-    'components/DocAssistant.js:saveM',
-    'components/InsuranceVault.js:saveFacts',
-    'components/InsuranceVault.js:removeMut',
-    'components/InsuranceVault.js:dismissAiPopup',
-    'components/InvoiceButton.js:saveAR',
-    'components/LeaseReviewStrip.js:run',
-    'components/LeaseReviewStrip.js:dismiss',
-    'components/MonthDetailPanel.js:stopAlways',
-    'components/RemoveTenantModal.js:remove',
-    'components/RenewalOptionModal.js:add',
-    'components/RenewalOptionsEditor.js:historic',
-    'components/TaxCategorySelect.js:create',
-    'pages/CorporationsPage.js:add',
-    'pages/HistoryPage.js:close',
-    'pages/HistoryPage.js:reopen',
-    'pages/HistoryPage.js:clearHistory',
-    'pages/LeaseDetailPage.js:saveField',
-    'pages/LeaseDetailPage.js:anchorStart',
-    'pages/LeaseDetailPage.js:setRoof',
-    'pages/LeaseDetailPage.js:setLeaseType',
-    'pages/LeaseDetailPage.js:saveDeposit',
-    'pages/LeaseDetailPage.js:saveEstCamTax',
-    'pages/LeaseDetailPage.js:setNoRenewal',
-    'pages/LeaseNewPage.js:createManual',
-    'pages/LeaseNewPage.js:createFromAi',
-    'pages/LedgerPage.js:settleUp',
-    'pages/LedgerPage.js:undoSettle',
-    'pages/NotificationSettings.js:save',
-    'pages/NotificationSettings.js:undoMut',
-    'pages/PropertiesPage.js:add',
-    'pages/SecuritySettings.js:save',
-  ];
+  // ⚠ EMPTY, AND THAT IS THE WHOLE VALUE OF THE LINE. This held 35 entries on 2026-08-21 —
+  // ten of them false positives of a too-narrow detector (see the third form above), the other
+  // 25 real. All 25 were given a failure surface on 2026-08-22, including the two a new client
+  // presses first ("+ New corporation", "+ Add property") and the seven lease-terms field saves.
+  // A name appearing here again means a NEW write shipped that can fail with the screen
+  // unchanged; add it only with a reason on the line.
+  const KNOWN = [];
 
   it('every mutation has an error surface', () => {
     expect(mutations.filter((m) => !KNOWN.includes(m)),

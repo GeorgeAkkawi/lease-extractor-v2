@@ -145,6 +145,10 @@ export default function InsuranceVault({ party, propertyId, leaseId, onRequestRe
 
   return (
     <div>
+      {/* Editing the facts, removing the policy and dismissing the additional-insured
+          warning were all silent on failure — the form simply closed and the old figures
+          came back. */}
+      <MutationError of={[saveFacts, removeMut, dismissAiPopup]} />
       {policy && !replacing && (
         <>
           {/* Persistent in-place signal — stays after the pop-up is dismissed, until a

@@ -59,11 +59,22 @@ export default function Login() {
     if (!EMAIL_RE.test(cleanEmail)) { setMsg('Enter your email above first, then tap “Forgot your password?”.'); return; }
     setBusy(true); setMsg('');
     try {
-      await supabase.auth.resetPasswordForEmail(cleanEmail, { redirectTo: `${window.location.origin}/` });
+      // ⚠ DESTRUCTURE THE ERROR. The catch below is unreachable for every realistic failure:
+      // supabase-js wraps the POST and RETURNS `{ data: null, error }` for anything carrying
+      // the auth-error marker, which includes the 60-second per-email throttle, the project's
+      // hourly email cap, a 5xx and an offline browser. Discarding it meant a locked-out
+      // client read a confident "on its way" for a mail that was never sent, waited, checked
+      // spam, and concluded Amlak's email was broken. The two sign-in calls below have always
+      // checked it; this one didn't.
+      const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, { redirectTo: `${window.location.origin}/` });
+      if (error) throw error;
       setResetSent(true);
       setMsg(`If an account exists for ${cleanEmail}, a password-reset link is on its way. Open it on this device to set a new password.`);
     } catch (err) {
-      setMsg(err.message || 'Could not send the reset email — try again.');
+      // Deliberately NOT anti-enumeration wording: this is a send that failed, which says
+      // nothing about whether the address has an account. `resetSent` stays false so the
+      // button is still there to try again.
+      setMsg(err?.message || 'Could not send the reset email — try again in a moment.');
     } finally {
       setBusy(false);
     }
@@ -120,10 +131,15 @@ export default function Login() {
         )}
         <button type="submit" disabled={busy}>{busy ? '…' : mode === 'signin' ? 'Sign in' : 'Sign up'}</button>
       </form>
-      {mode === 'signin' && !resetSent && (
+      {/* ⚠ THE BUTTON STAYS. Hiding it after one attempt made a typo'd address a dead end: the
+          confirmation names the address back ("…for jane@acmee.com"), so the client can SEE
+          the mistake — and then has no control left to correct it without reloading the page.
+          It reads "Send it again" once one has gone out, which is also the honest label when
+          the first mail is slow. */}
+      {mode === 'signin' && (
         <p style={{ marginTop: 12 }}>
           <button type="button" className="ghost" style={{ fontSize: 13 }} disabled={busy} onClick={sendReset}>
-            Forgot your password?
+            {resetSent ? 'Send the reset link again' : 'Forgot your password?'}
           </button>
         </p>
       )}

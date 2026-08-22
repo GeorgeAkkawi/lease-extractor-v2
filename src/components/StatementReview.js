@@ -611,6 +611,19 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
   const payTotal = willPay.reduce((s, r) => s + r.row.txn.amount, 0);
   const expTotal = willExpense.reduce((s, r) => s + r.row.txn.amount, 0);
   const payTenants = new Set(willPay.map((r) => r.tenant.lease_id)).size;
+  // ⚠ THE THREE KINDS THIS SENTENCE USED TO PRETEND WERE NOT THERE. Other income, a security
+  // deposit and an owner distribution are ticked, writable lines — `willWrite` below counts
+  // them (that was fixed once already, for the Save button's enable test) while the sentence
+  // beside the button did not, so a statement whose only actionable lines were a late fee, a
+  // deposit and a $45,000 draw read "0 payments · $0.00 in — 0 expenses · $0.00 out" over a
+  // Save that would write all three. The owner draw in particular is named on no screen at
+  // all, before or after the save.
+  const willIncome = rows.filter((r) => r.checked && r.kind === 'other_income');
+  const willDeposit = rows.filter((r) => r.checked && r.kind === 'deposit_held');
+  const willOwner = rows.filter((r) => r.checked && r.kind === 'owner_draw');
+  const incomeTotal = willIncome.reduce((s, r) => s + r.row.txn.amount, 0);
+  const depositTotal = willDeposit.reduce((s, r) => s + r.row.txn.amount, 0);
+  const ownerTotal = willOwner.reduce((s, r) => s + r.row.txn.amount, 0);
   const mismatchCount = willPay.filter((r) => r.mismatch && !r.mismatch.escalation).length;
   // "Ignored" used to mean "not ticked", which conflated a decision the landlord made
   // with a line nobody had looked at — the exact ambiguity Slice 4a exists to end.
@@ -874,6 +887,9 @@ export default function StatementReview({ propertyId, year, fileName, accountHin
             <strong>{willPay.length}</strong> payment{willPay.length === 1 ? '' : 's'} to <strong>{payTenants}</strong> tenant{payTenants === 1 ? '' : 's'} · {money(payTotal)} in
             {mismatchCount > 0 && <> · <strong>{mismatchCount}</strong> ≠ projected</>}
             {' — '}<strong>{willExpense.length}</strong> expense{willExpense.length === 1 ? '' : 's'} · {money(expTotal)} out
+            {willIncome.length > 0 && <> — <strong>{willIncome.length}</strong> other income · {money(incomeTotal)} in</>}
+            {willDeposit.length > 0 && <> — <strong>{willDeposit.length}</strong> deposit{willDeposit.length === 1 ? '' : 's'} · {money(depositTotal)} held</>}
+            {willOwner.length > 0 && <> — <strong>{willOwner.length}</strong> owner draw{willOwner.length === 1 ? '' : 's'} · {money(ownerTotal)} out</>}
             {leftOut > 0 && <> — <strong>{leftOut}</strong> left out on purpose</>}
             {completeness.unplaced > 0 && <> — <strong>{completeness.unplaced}</strong> not placed</>}
             {estToApply.length > 0 && <> — <strong>{estToApply.length}</strong> CAM &amp; tax estimate{estToApply.length === 1 ? '' : 's'}</>}

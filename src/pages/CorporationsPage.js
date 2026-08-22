@@ -11,6 +11,7 @@ import CorporationProfileModal from '../components/CorporationProfileModal';
 import AnnualReportModal from '../components/AnnualReportModal';
 import ExportIncomeExpenseModal from '../components/ExportIncomeExpenseModal';
 import { DocIcon } from '../components/icons';
+import MutationError from '../components/MutationError';
 
 const TITLES = { leases: 'Portfolio', financials: 'Financials', history: 'History' };
 const SUBS = {
@@ -69,6 +70,10 @@ export default function CorporationsPage({ mode }) {
       setName('');
       qc.invalidateQueries({ queryKey: ['corporations'] });
       qc.invalidateQueries({ queryKey: ['corpCounts'] });
+      // The Overview is built out of this one index — its "N properties · N active tenants"
+      // subtitle, its occupancy figures, its basis rows and every chart. Nothing invalidated
+      // it, so a client who set up their portfolio and then clicked Overview read zeros.
+      qc.invalidateQueries({ queryKey: ['searchIndex'] });
     },
   });
 
@@ -97,6 +102,10 @@ export default function CorporationsPage({ mode }) {
           </form>
         </div>
       </div>
+
+      {/* ⚠ A NEW CLIENT'S FIRST CLICK IN THE APP. A failed write here left the typed name in
+          the box, no card on the grid and nothing anywhere on the page saying why. */}
+      <MutationError of={[add]} />
 
       {showSkeleton ? (
         <CardGridSkeleton className="corp-grid" count={3} height={fin ? 150 : 92} />

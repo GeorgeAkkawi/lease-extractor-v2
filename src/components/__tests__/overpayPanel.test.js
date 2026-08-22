@@ -377,3 +377,63 @@ describe('an answered surplus goes green — a shortfall never does', () => {
     cleanup();
   });
 });
+
+// ⚠ THE SAME QUESTION, IN THE CELL STATE NEXT DOOR — and it was never wired. A month the lease
+// bills NOTHING for (a cheque before the term starts, after it ends, or on a rent-free month)
+// counts as entirely unapplied, so the whole deposit is held out of every live income figure
+// until the landlord says what it is. The pop-up took his answer and moved the money; the grid
+// box behind it stayed gold and its hover card went on warning "$X over the bill". Two surfaces
+// openly contradicting each other — the exact bug that started the audit, one cell state over.
+//
+// Sunrise Yoga (lease-4) commences 1 July of the current year on prop-2, so March is genuinely
+// out of term. A different lease from the tests above, so the standing answer set for lease-3
+// cannot reach it.
+const syRow = () => [...document.querySelectorAll('tr')].find((tr) => /Sunrise Yoga/.test(tr.textContent || ''));
+const syCell = (label) => [...syRow().querySelectorAll('.rr-cell')]
+  .find((el) => new RegExp(`^${label} `).test(el.getAttribute('aria-label') || ''));
+
+describe('a month the lease bills nothing for can be answered too', () => {
+  it('asks before, states the answer after, and drops the gold', async () => {
+    const inv = await ensureInvoice('lease-4', 'prop-2', Y);
+    await recordPayment({
+      invoice_id: inv.id, lease_id: 'lease-4', amount: 4200,
+      paid_date: `${Y}-03-04`, method: 'check', period_month: 3, source: 'manual',
+    });
+
+    renderLedger();
+    await screen.findByText('Sunrise Yoga Studio');
+
+    // BEFORE: the box says the money is being held, not merely that nothing was billed.
+    let box;
+    await waitFor(() => {
+      box = syCell('Mar');
+      expect(box, 'March should be a received-but-unbilled box').toBeTruthy();
+      expect(box.className).toMatch(/\brecv\b/);
+      expect(box.className, 'still asking, so not answered').not.toMatch(/\banswered\b/);
+      expect(box.getAttribute('aria-label')).toMatch(/\$4,200\.00 not yet applied/);
+    });
+
+    // …and the hover card uses the right words for a month with no bill. Scoped to this
+    // cell's own <td>: the tip stays mounted per cell, so a page-wide query is ambiguous.
+    fireEvent.mouseEnter(box);
+    await waitFor(() => expect(screen.getAllByText(/on a month this lease bills nothing for/).length).toBeGreaterThan(0));
+
+    // Answer it: double-click opens the pop-up, which offers the same three answers, and the
+    // confirm names where the money lands before it moves.
+    fireEvent.doubleClick(box);
+    const panel = await screen.findByRole('dialog');
+    fireEvent.click(within(panel).getByRole('button', { name: /^Revenue for / }));
+    await screen.findByText(/Count \$4,200\.00 as/);
+    fireEvent.click(screen.getByRole('button', { name: /Count it as revenue/ }));
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByText(/is in your live income/)).toBeTruthy());
+
+    // AFTER: the gold goes, and the box states what was decided.
+    await waitFor(() => {
+      const after = syCell('Mar');
+      expect(after.className, 'an answered month is no longer gold').toMatch(/\banswered\b/);
+      expect(after.getAttribute('aria-label')).toMatch(/counted as revenue/);
+      expect(after.getAttribute('aria-label')).not.toMatch(/not yet applied/);
+    });
+    cleanup();
+  });
+});

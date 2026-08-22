@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import AnswerText from './AnswerText';
+import MutationError from './MutationError';
 
 // Reusable "cached document + AI assistant": open the saved copy and ask
 // questions about it. Decoupled from any one document type via callbacks:
@@ -58,6 +59,8 @@ export default function DocAssistant({ docText, suggested = [], canSave = false,
     // action at the same x (George, 2026-07-30: "the open lease button should be in line
     // with the lease open button"). See .doc-actions in App.css.
     <div className="doc-panel">
+      {/* Saving a copy of an answer is a write like any other; it had no failure path. */}
+      <MutationError of={[saveM]} />
       {savedCopies}
 
       {/* This document's own row: what's on file, and the button that opens it. Skipped

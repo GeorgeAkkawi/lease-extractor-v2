@@ -737,7 +737,7 @@ export default function MonthDetailPanel({
           {refused && <p className="note-msg danger mp-foot-msg">{refused}</p>}
           {/* The four new writes throw their own refusal message (a closed year, a split that
               would swallow the whole cheque), so they belong here rather than failing silently. */}
-          <MutationError of={[removeAdj, recordGap, movePay, confirmRevenue, rollForward, refundIt, carryShort, undoRoll]} />
+          <MutationError of={[removeAdj, recordGap, movePay, confirmRevenue, rollForward, refundIt, carryShort, undoRoll, stopAlways]} />
           <div className="modal-actions">
             {Math.abs(preview) > 0 ? (
               <span className="muted mp-preview">
