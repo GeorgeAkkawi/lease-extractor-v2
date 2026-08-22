@@ -38,7 +38,11 @@ import BasisBridge from './BasisBridge';
 // this codebase keeps losing an afternoon to. The bridge says both, with the properties behind
 // them, and this keeps only the sentence that says what the two columns MEAN — which the bridge
 // does not repeat.
-export default function BasisBand({ totals, bridge = null, year, ledgerHref = null, incomeHref = null }) {
+// ⚠ `anchorRef` / `flashing` exist so the Ledger can point AT this band (2026-08-21 (11)):
+// answering a surplus says the money is in the live income figures, and this is the only
+// place on screen those figures are shown. The ref is on the root rather than a wrapper
+// div so the band's own layout is untouched.
+export default function BasisBand({ totals, bridge = null, year, ledgerHref = null, incomeHref = null, anchorRef = null, flashing = false }) {
   if (!totals) return null;
   const { rent, camTax, total, loading } = totals;
 
@@ -57,7 +61,7 @@ export default function BasisBand({ totals, bridge = null, year, ledgerHref = nu
     : null;
 
   return (
-    <div className={`basis-band${loading ? ' is-loading' : ''}`}>
+    <div className={`basis-band${loading ? ' is-loading' : ''}${flashing ? ' panel-flash' : ''}`} ref={anchorRef}>
       <div className="basis-band-head">
         <strong>FY {year} · projected vs live</strong>
         <span className="chart-cap">What your leases bill, against what has come in</span>

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSearchIndex, fetchAlertData, listNotifications, dismissNotification, listAlertStates, upsertAlertState, confirmRenewalForLease, declineRenewalForLease, restoreRenewal, getHiddenWidgets, draftAlertEmail, listPropertyTotalsByYear, logInsuranceRequest, getNotifyLeadTimes } from '../lib/api';
 import { listBasisByProperty } from '../lib/portfolioBasis';
@@ -39,6 +39,33 @@ export default function DashboardPage() {
   // Defaults to showing everything; `show(key)` gates each block below.
   const { data: hidden = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
   const show = (k) => !hidden.includes(k);
+
+  // ⚠ THE ONE PLACE ON SCREEN THAT SHOWS LIVE REVENUE, AND THE LEDGER NOW POINTS AT IT
+  // (2026-08-21 (11)). Answering a surplus says the money "is in your live income and expenses";
+  // until now nothing said WHERE, and the property Financials page cannot help — its revenue card
+  // is `v_property_totals.total_revenue`, the annual RATE, which no payment moves. `?focus=basis`
+  // scrolls the band into view and flashes it, the same scroll-and-flash the lease page's alerts
+  // use. ⚠ The Ledger only OFFERS the link when `portfolio_charts` is shown, so this effect never
+  // has to explain a band the landlord has hidden.
+  //
+  // ⚠ A CALLBACK REF, NOT `useRef`. This page renders a skeleton until the portfolio loads, so
+  // the band does not exist on the render that reads `?focus=`. A `.current` read there is null
+  // and a plain ref never re-triggers the effect — the landlord would arrive at the top of an
+  // un-scrolled page. Holding the element in STATE makes its arrival the thing the effect waits
+  // on, which is also true when the band declines to render at all (nothing billed, nothing in).
+  const [searchParams] = useSearchParams();
+  const focus = searchParams.get('focus');
+  const [basisEl, setBasisEl] = useState(null);
+  const [basisFlash, setBasisFlash] = useState(false);
+  useEffect(() => {
+    if (focus !== 'basis' || !basisEl) return;
+    setBasisFlash(true);
+    // Optional-call: jsdom does not implement scrollIntoView, and the flash is the half that
+    // matters — the same guard `AddendumEnvelopeRows` already uses.
+    basisEl.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    const t = setTimeout(() => setBasisFlash(false), 2600);
+    return () => clearTimeout(t);
+  }, [focus, basisEl]);
   // The enabled feature set, so alerts belonging to a switched-off module silence too
   // (Insurance, Contracts). null/undefined = everything on.
   const { enabled: enabledFeatures } = useFeatures();
@@ -310,7 +337,7 @@ export default function DashboardPage() {
           more prominent in the overview page graphs."* It is the sentence the four panels
           below elaborate on, and it shares their one Display-settings switch rather than
           taking a second, which would let a landlord hide half of one idea. */}
-      {showCharts && <BasisBand totals={bandTotals} bridge={bandBridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} />}
+      {showCharts && <BasisBand totals={bandTotals} bridge={bandBridge} year={year} ledgerHref={ledgerHref} incomeHref={incomeHref} anchorRef={setBasisEl} flashing={basisFlash} />}
 
       {showCharts && <PortfolioCharts properties={properties} totalsByProp={totalsByProp} basisByProp={basisByProp} leases={leases} year={year} />}
 

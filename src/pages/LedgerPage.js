@@ -1222,10 +1222,12 @@ export default function LedgerPage() {
                           const answered = surplus > 0.05
                             && (confirmedOverpay.has(overpayAllKey(r.lease_id, year))
                              || confirmedOverpay.has(overpayKey(r.lease_id, year, m, surplus)));
+                          // Still the ASK — it drives what the box and the card SAY. What it no
+                          // longer drives is a ring of its own; see below.
                           const awaiting = surplus > 0.05 && !answered;
                           // ⚠ GOLD MEANS "LOOK AT THIS", AND ONCE THE LANDLORD HAS ANSWERED THERE
                           // IS NOTHING LEFT TO LOOK AT (George, 2026-08-21: *"so i clicked always
-                          // count as revenue … but the box is still yellow"*). Until now the fill
+                          // count as revenue … but the box is still yellow"*). Until then the fill
                           // said only "cash ≠ bill" and the ANSWER cleared a 3px ring on top of it
                           // — so answering changed almost nothing on screen, which reads as the
                           // click not registering. The month is settled at a figure he endorsed
@@ -1233,10 +1235,17 @@ export default function LedgerPage() {
                           // to a plain green ✓. A SHORTFALL keeps its gold unconditionally:
                           // `surplus` is 0 when `diff < 0`, so `answered` can never be true on a
                           // short month, and no answer makes one fine.
-                          const off = Math.abs(diff) > 0.5 && !answered;
+                          //
+                          // ⚠ THE THRESHOLD IS ASYMMETRIC, AND THAT IS WHAT RETIRED THE RING. Once
+                          // the fill carries the answer, the ring's only remaining job was the 5¢-
+                          // to-50¢ band, where a surplus is real but `Math.abs(diff) > 0.5` is not
+                          // — so the fill takes that band over instead. A shortfall under 50¢ is
+                          // rounding dust; a SURPLUS of any size is money being held OUT of the
+                          // live income figures, and must be visible however small.
+                          const off = !answered && (Math.abs(diff) > 0.5 || surplus > 0.05);
                           return (
                             <td key={m}>
-                              <Tip as="button" type="button" className={`rr-cell paid${off ? ' off' : ''}${awaiting ? ' awaiting' : ''}${s?.abated ? ' abated' : ''}${stepCls}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
+                              <Tip as="button" type="button" className={`rr-cell paid${off ? ' off' : ''}${s?.abated ? ' abated' : ''}${stepCls}${adjCls}${pending ? ' is-pending' : ''}`} aria-disabled={pending}
                                 onClick={cellClick(takeBack)} onDoubleClick={open}
                                 aria-label={`${ml} paid — ${money(receivedM)} received of ${money(owedM)} billed${awaiting ? `, ${money(surplus)} not yet applied` : ''}${answered ? `, ${money(surplus)} extra counted as revenue` : ''}`}
                                 content={card({

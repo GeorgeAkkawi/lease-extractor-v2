@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChromeProvider } from '../../context/ChromeContext';
 import { ConfirmProvider } from '../ConfirmDialog';
 import LedgerPage from '../../pages/LedgerPage';
-import { ensureInvoice, recordPayment, getPropertyMonthlyRoll } from '../../lib/api';
+import { ensureInvoice, recordPayment, getPropertyMonthlyRoll, setHiddenWidgets } from '../../lib/api';
 import { currentYear } from '../../lib/format';
 
 const Y = currentYear();
@@ -69,6 +69,13 @@ async function underpay(month, short) {
   return owed;
 }
 
+/** The boxes still asking what a surplus is. ⚠ THE `.awaiting` RING IS GONE (2026-08-21 (11)) —
+ *  once the gold FILL clears on an answer it carries the ask by itself, so the ask is read off
+ *  what the box SAYS rather than off a class that no longer exists. `.off` alone would also
+ *  match a month paid SHORT, which is not asking anything. */
+const asking = () => [...document.querySelectorAll('.rr-cell.off')]
+  .filter((el) => /not yet applied/.test(el.getAttribute('aria-label') || ''));
+
 /** The Northwind Books row — the grid has other tenants with the same month labels, and the
  *  open month pop-up prints the tenant name too, so `getByText` is ambiguous here. */
 const nwRow = () => [...document.querySelectorAll('tr')].find((tr) => /Northwind Books/.test(tr.textContent || ''));
@@ -84,7 +91,7 @@ describe('an over-paid month asks what the surplus is', () => {
     // ⚠ THE BOX IS THE THING THAT SAYS SO. The money is being withheld from the live income
     // figures; if the grid looked like any other settled month, it would be withheld invisibly.
     const cell = await waitFor(() => {
-      const found = document.querySelector('.rr-cell.awaiting');
+      const [found] = asking();
       expect(found).toBeTruthy();
       return found;
     });
@@ -118,8 +125,7 @@ describe('an over-paid month asks what the surplus is', () => {
     renderLedger();
     await screen.findByText('Northwind Books');
     const cell = await waitFor(() => {
-      const found = [...document.querySelectorAll('.rr-cell.awaiting')]
-        .find((el) => /\$900\.00 not yet applied/.test(el.getAttribute('aria-label') || ''));
+      const found = asking().find((el) => /\$900\.00 not yet applied/.test(el.getAttribute('aria-label') || ''));
       expect(found).toBeTruthy();
       return found;
     });
@@ -138,6 +144,12 @@ describe('an over-paid month asks what the surplus is', () => {
       expect(within(screen.getByRole('dialog')).getByText(/is in your live income/)).toBeTruthy();
     });
 
+    // ⚠ …AND IT SAYS WHERE TO LOOK. "It is in your live income and expenses" is only half an
+    // answer while nothing points at the figure; the Overview band is the one live-revenue
+    // figure on screen, and `?focus=basis` scrolls it into view and flashes it on arrival.
+    const link = within(screen.getByRole('dialog')).getByRole('link', { name: /See it on the Overview/ });
+    expect(link.getAttribute('href')).toBe('/?focus=basis');
+
     // ⚠ AND THE BOX STOPS LOOKING LIKE A PROBLEM (George, 2026-08-21: *"so i clicked always
     // count as revenue for the extra 100 that sam nails is paying but the box is still
     // yellow"*). The gold FILL only ever said "cash ≠ bill"; the answer cleared a 3px ring
@@ -147,7 +159,6 @@ describe('an over-paid month asks what the surplus is', () => {
     await waitFor(() => {
       const box = nwCell('Jul');
       expect(box).toBeTruthy();
-      expect(box.className).not.toMatch(/\bawaiting\b/);
       expect(box.className).not.toMatch(/\boff\b/);
       expect(box.getAttribute('aria-label')).toMatch(/\$900\.00 extra counted as revenue/);
     });
@@ -163,8 +174,7 @@ describe('a roll forward can be taken back', () => {
     renderLedger();
     await screen.findByText('Northwind Books');
     const cell = await waitFor(() => {
-      const found = [...document.querySelectorAll('.rr-cell.awaiting')]
-        .find((el) => /\$1,200\.00 not yet applied/.test(el.getAttribute('aria-label') || ''));
+      const found = asking().find((el) => /\$1,200\.00 not yet applied/.test(el.getAttribute('aria-label') || ''));
       expect(found).toBeTruthy();
       return found;
     });
@@ -196,9 +206,69 @@ describe('a roll forward can be taken back', () => {
     // ⚠ Waited for by its OWN figure: April is still ringing from the first test in this file,
     // so "some cell is awaiting" would have passed before the undo had landed at all.
     await waitFor(() => {
-      expect([...document.querySelectorAll('.rr-cell.awaiting')]
+      expect(asking()
         .some((el) => /\$1,200\.00 not yet applied/.test(el.getAttribute('aria-label') || ''))).toBe(true);
     });
+    cleanup();
+  });
+});
+
+// ⚠ THE RING'S LAST JOB, NOW THE FILL'S (2026-08-21 (11)). `.rr-cell.paid.awaiting` is retired:
+// once the gold FILL clears on an answer it carries the ask by itself. Its one remaining job was
+// the 5¢-to-50¢ band, where `off` never fired because `Math.abs(diff) > 0.5` is false — so the
+// fill took that band over. Money held OUT of the live income figures must be visible however
+// small; a shortfall that size is rounding dust and still gets nothing.
+//
+// ⚠ RUNS BEFORE THE STANDING-ANSWER TEST BELOW, for the reason the roll test does: after it,
+// nothing on this tenant asks anything.
+describe('a surplus too small for the old threshold still turns the box gold', () => {
+  it('golds a 20¢ overpayment and leaves a 20¢ shortfall alone', async () => {
+    await overpay(10, 0.2);
+    await underpay(11, 0.2);
+    renderLedger();
+    await screen.findByText('Northwind Books');
+
+    await waitFor(() => {
+      const over = nwCell('Oct');
+      expect(over).toBeTruthy();
+      expect(over.className, 'a 20¢ surplus is money held out of your income').toMatch(/\boff\b/);
+      expect(over.getAttribute('aria-label')).toMatch(/\$0\.20 not yet applied/);
+    });
+    const under = nwCell('Nov');
+    expect(under).toBeTruthy();
+    expect(under.className, 'a 20¢ shortfall is rounding dust').not.toMatch(/\boff\b/);
+    cleanup();
+  });
+});
+
+// ⚠ RULE 7 — CAN THE USER SEE IT AT ALL? The Overview band sits behind the `portfolio_charts`
+// Display-settings switch. Paying attention to a result the app then refuses to render is the
+// worst version of this, and the DEMO CANNOT CATCH IT by accident: it seeds no `user_preferences`
+// row, so every other test in this file runs the "nothing hidden" path. This one hides it on
+// purpose, and puts it back. ⚠ RUNS BEFORE THE STANDING-ANSWER TEST BELOW — after that, nothing
+// on this tenant asks anything and there is no answered state left to reach.
+describe('the Overview link is not offered when the Overview band is hidden', () => {
+  it('drops the link but keeps saying the money is in the live figures', async () => {
+    await setHiddenWidgets(['portfolio_charts']);
+    await overpay(12, 400);
+    renderLedger();
+    await screen.findByText('Northwind Books');
+
+    const cell = await waitFor(() => {
+      const found = asking().find((el) => /\$400\.00 not yet applied/.test(el.getAttribute('aria-label') || ''));
+      expect(found).toBeTruthy();
+      return found;
+    });
+    fireEvent.doubleClick(cell);
+    const panel = await screen.findByRole('dialog');
+    fireEvent.click(within(panel).getByRole('button', { name: /^Revenue for / }));
+    fireEvent.click(await screen.findByRole('button', { name: /Count it as revenue/ }));
+
+    await waitFor(() => {
+      expect(within(screen.getByRole('dialog')).getByText(/is in your live income/)).toBeTruthy();
+    });
+    expect(within(screen.getByRole('dialog')).queryByRole('link', { name: /See it on the Overview/ })).toBeNull();
+    await setHiddenWidgets([]);
     cleanup();
   });
 });
@@ -226,10 +296,10 @@ describe('the standing answer settles every month at once', () => {
     expect(chip.textContent).toMatch(/over \d+ mo/);
     expect(chip.getAttribute('title')).toMatch(/change it on the lease/);
 
-    const before = document.querySelectorAll('.rr-cell.awaiting').length;
+    const before = asking().length;
     expect(before).toBeGreaterThanOrEqual(3);
 
-    fireEvent.doubleClick(document.querySelector('.rr-cell.awaiting'));
+    fireEvent.doubleClick(asking()[0]);
     const panel = await screen.findByRole('dialog');
     expect(within(panel).getByText(/has paid over on/)).toBeTruthy();
     fireEvent.click(within(panel).getByRole('button', { name: /^Revenue always$/ }));
@@ -240,7 +310,7 @@ describe('the standing answer settles every month at once', () => {
 
     // Every box stops asking, not just the one that was open.
     await waitFor(() => {
-      expect(document.querySelectorAll('.rr-cell.awaiting').length).toBe(0);
+      expect(asking().length).toBe(0);
     });
     // …and it can be undone, or it is a decision a landlord is right to distrust.
     expect(within(screen.getByRole('dialog')).getByRole('button', { name: /Ask me about these again/ })).toBeTruthy();
@@ -289,7 +359,6 @@ describe('an answered surplus goes green — a shortfall never does', () => {
       for (const ml of ['Jan', 'Feb', 'Mar']) {
         const box = nwCell(ml);
         expect(box, `${ml} should be a settled box`).toBeTruthy();
-        expect(box.className, `${ml} should not ask`).not.toMatch(/\bawaiting\b/);
         expect(box.className, `${ml} should not be gold`).not.toMatch(/\boff\b/);
         expect(box.getAttribute('aria-label')).toMatch(/\$300\.00 extra counted as revenue/);
       }

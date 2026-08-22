@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  addAdjustment, carryMonthShortfall, deleteAdjustment, listAlertStates, markMonthPaid,
-  splitPayment, undoSplitPayment, updatePayment, upsertAlertState,
+  addAdjustment, carryMonthShortfall, deleteAdjustment, getHiddenWidgets, listAlertStates,
+  markMonthPaid, splitPayment, undoSplitPayment, updatePayment, upsertAlertState,
 } from '../lib/api';
 import { monthExcess, overpayKey, overpayAllKey, recurringSurplus } from '../lib/ledger';
 import { settleBillingChange, settlePaymentChange } from '../lib/invalidate';
@@ -178,6 +179,12 @@ export default function MonthDetailPanel({
   const oKey = overpayKey(row?.lease_id, year, m, excess);
   const allKey = overpayAllKey(row?.lease_id, year);
   const { data: alertStates } = useQuery({ queryKey: ['alertStates'], queryFn: listAlertStates });
+  // ⚠ RULE 7 — CAN THE USER SEE IT AT ALL? The Overview band is the ONLY place on screen that
+  // shows live revenue, and it sits behind the `portfolio_charts` Display-settings switch. A
+  // landlord who has hidden it must not be sent to look at it, so the link is simply not offered.
+  // Same cached `['dashboardPrefs']` read the Overview itself uses — no extra round-trip.
+  const { data: hiddenWidgets = [] } = useQuery({ queryKey: ['dashboardPrefs'], queryFn: getHiddenWidgets });
+  const overviewShown = !hiddenWidgets.includes('portfolio_charts');
   const on = (key) => !!alertStates?.some((s) => s.alert_key === key && s.dismissed);
   // The standing answer wins: once it is on there is nothing left to decide on any month.
   const alwaysRevenue = on(allKey);
@@ -502,6 +509,17 @@ export default function MonthDetailPanel({
                         : <><strong>{money(excess)}</strong> more arrived than {monthName(m)} billed. It is in <strong>none</strong> of
                           your income figures until you pick one — and it is in them the moment you do.</>}
                   </p>
+                  {/* ⚠ …AND NOW IT SAYS WHERE TO LOOK (George, 2026-08-21). Saying the money is in
+                      the live figures is only half an answer while nothing points at the figure.
+                      The property Financials page cannot be the destination — its revenue card is
+                      `v_property_totals.total_revenue`, the annual RATE, which no payment moves —
+                      so this goes to the Overview band, the one live-revenue figure on screen.
+                      `?focus=basis` scrolls it into view and flashes it on arrival. */}
+                  {confirmedRevenue && overviewShown && (
+                    <p className="mp-decide-lead">
+                      <Link to="/?focus=basis">See it on the Overview →</Link>
+                    </p>
+                  )}
                   {/* ⚠ THE RENT QUESTION, ASKED ONCE IT IS ACTUALLY A PATTERN. Three months of the
                       same surplus is not something to keep deciding — it is a recorded rent that
                       has fallen behind what the tenant actually pays. */}

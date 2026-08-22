@@ -16,10 +16,10 @@ import { ConfirmProvider } from '../../components/ConfirmDialog';
 import { setHiddenWidgets, listPayments } from '../../lib/api';
 import { supabase } from '../../lib/supabaseClient';
 
-function renderDash() {
+function renderDash(entry = '/') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[entry]}>
       <QueryClientProvider client={qc}>
         <ChromeProvider>
           <ConfirmProvider>
@@ -318,5 +318,25 @@ describe('Overview — alert urgency', () => {
     } finally {
       for (const p of before) await supabase.from('payments').insert(p);
     }
+  });
+});
+
+// ⚠ WHERE THE LEDGER'S "IT IS IN YOUR LIVE INCOME AND EXPENSES" ACTUALLY POINTS (2026-08-21 (11)).
+// The month pop-up links here after a surplus is counted as revenue, because the band is the only
+// place on screen that shows live revenue — the property Financials card is the annual RATE, which
+// no payment moves. If the landing does not find the band, the link sends people to the top of an
+// un-scrolled page and the answer is still only half given.
+describe('Overview — ?focus=basis lands on the band', () => {
+  it('flashes the projected-vs-live band, and leaves it alone without the focus', async () => {
+    const { container } = renderDash('/?focus=basis');
+    await waitFor(() => expect(container.querySelector('.basis-band')).toBeTruthy());
+    // ⚠ The band mounts AFTER the page skeleton, so this only passes because the effect waits on
+    // the element arriving rather than reading a ref that was null on the first render.
+    await waitFor(() => expect(container.querySelector('.basis-band.panel-flash')).toBeTruthy());
+    cleanup();
+
+    const plain = renderDash('/');
+    await waitFor(() => expect(plain.container.querySelector('.basis-band')).toBeTruthy());
+    expect(plain.container.querySelector('.basis-band.panel-flash')).toBeNull();
   });
 });

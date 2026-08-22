@@ -1,3 +1,84 @@
+## 2026-08-21 (11) — The ring retires into the fill, and the pop-up finally points at the figure
+
+**Cloudflare version:** `2b8aab86-68fd-4e9e-b151-f400589e84dc` (the `amlak` app worker /
+app.amlakre.com) · 2,049 tests / 194 files green.
+
+George: *"okay do those"* — both items the previous round proposed and did not take.
+
+### 1. `.rr-cell.paid.awaiting` is gone
+
+Once (10) made the gold **fill** clear on an answer, the fill carried the ask by itself and the
+ring's only remaining job was the **5¢-to-50¢** band, where a surplus is real but
+`Math.abs(diff) > 0.5` is not. So the fill took that band over:
+
+```js
+const off = !answered && (Math.abs(diff) > 0.5 || surplus > 0.05);
+```
+
+⚠ **THE THRESHOLD IS ASYMMETRIC, AND THAT IS THE WHOLE POINT.** A shortfall under 50¢ is rounding
+dust and gets nothing. A **surplus** of any size is money being held OUT of the live income
+figures, so it must be visible however small — which is exactly what the ring existed to say.
+
+`awaiting` **survives as a variable**: it still drives the aria-label (`, $X not yet applied`) and
+the hover card's *"…is in none of your income figures — double-click to say what it is"*. Only the
+class and its CSS rule are gone.
+
+⚠ **THE TESTS KEYED OFF THE RETIRED CLASS** — six `document.querySelectorAll('.rr-cell.awaiting')`
+call sites. They now read the ask off what the box **says**, via one `asking()` helper
+(`.rr-cell.off` filtered by the `not yet applied` label), because `.off` alone would also match a
+month paid SHORT, which is not asking anything.
+
+### 2. "See it on the Overview →"
+
+Saying the money *"is in your live income and expenses"* was half an answer while nothing pointed
+at the figure. The pop-up now links to it after either answer.
+
+⚠ **THE DESTINATION CANNOT BE THE PROPERTY FINANCIALS PAGE**, which is the intuitive guess and is
+wrong: its revenue card is `v_property_totals.total_revenue`, the annual **rate**, which no payment
+moves. The Overview's `BasisBand` is the **only** live-revenue figure anywhere on screen.
+
+- **`?focus=basis`** on `DashboardPage` scrolls the band into view and flashes it — the same
+  scroll-and-flash `LeaseDetailPage`'s alerts use, reusing `.panel-flash`.
+- ⚠ **A CALLBACK REF, NOT `useRef`.** The page renders a skeleton until the portfolio loads, so
+  the band does not exist on the render that reads `?focus=`. A `.current` read there is null and
+  a plain ref never re-triggers the effect — the landlord would arrive at the top of an un-scrolled
+  page. Holding the element in **state** makes its arrival the thing the effect waits on. `BasisBand`
+  takes `anchorRef` / `flashing` on its ROOT rather than a wrapper div, so its layout is untouched.
+- ⚠ **RULE 7 — CAN THE USER SEE IT AT ALL?** The band sits behind the `portfolio_charts`
+  Display-settings switch, so **the link is not offered when it is hidden** (same cached
+  `['dashboardPrefs']` read the Overview itself uses). **The demo cannot catch this by accident** —
+  it seeds no `user_preferences` row, so every other test runs the "nothing hidden" path; the new
+  test hides it on purpose and puts it back.
+- `scrollIntoView?.()` is optional-called — jsdom does not implement it, and the flash is the half
+  that can be asserted. Same guard `AddendumEnvelopeRows` already uses.
+
+### Files
+
+`src/pages/LedgerPage.js` · `src/App.css` · `src/components/MonthDetailPanel.js` ·
+`src/components/BasisBand.js` · `src/pages/DashboardPage.js` · tests:
+`overpayPanel.test.js`, `dashboardOverview.test.js`.
+
+### Verified
+
+`npm test` — **2,049 passing, 194 files** (3 new tests). A **20¢** surplus now turns the box gold
+while a **20¢** shortfall does not · the link is present with `href="/?focus=basis"` after an
+answer and **absent** when `portfolio_charts` is hidden · landing on `/?focus=basis` flashes the
+band and a plain `/` does not.
+
+**Non-vacuity proved on all four claims** — the surplus clause was dropped from `off`, the
+Display-settings gate removed, the link removed, and the focus effect short-circuited, each in
+turn. Every one went red, then green on restore.
+
+⚠ **A TEST-ORDERING TRAP, hit twice.** The standing-answer test turns `overpay_all` ON for lease-3
+**for the rest of the file**, so any test needing an *unanswered* surplus on that tenant must run
+BEFORE it — the new threshold test and the hidden-band test both had to move up. The file already
+said this about the roll test; it now says it about all three.
+
+### Now redundant
+
+**Nothing redundant.** `awaiting` keeps both its jobs as a variable; `.off` absorbed the ring's
+only orphaned case rather than leaving it uncovered.
+
 ## 2026-08-21 (10) — An answered surplus stops looking like a problem
 
 **Cloudflare version:** `fd4667a4-7c19-4bde-b97b-ff9719bc053d` (the `amlak` app worker /

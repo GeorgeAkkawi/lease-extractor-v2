@@ -145,11 +145,6 @@ button.rr-cell.abated{cursor:pointer}
    is the SAME gold as ◐ / — / ↓, because it means the same thing on all of them — look at
    this — and the glyph says which kind of look. Still deliberately not a third palette. */
 .rr-cell.paid.off{background:var(--gold-soft);border-color:var(--gold);color:var(--gold)}
-/* A surplus nobody has answered for yet. `.off` already turns the box gold for any month
-   that came in above or below its bill; this says the money is being HELD OUT of the live
-   income figures until the landlord says what it is. A ring rather than another fill —
-   the box is already gold, and a second colour on top would just read as a brighter gold. */
-.rr-cell.paid.awaiting{box-shadow:0 0 0 2px var(--gold-soft),0 0 0 3px var(--gold)}
 /* Money recorded FOR a month this lease bills nothing for — a new tenant's first
    deposits, or an abated month. It settles no charge, so it can't be a ✓; it says so
    instead of quietly drifting onto the next month the lease does bill. */
