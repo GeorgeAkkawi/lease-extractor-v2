@@ -1,3 +1,116 @@
+## 2026-08-22 (2) — Proof the icon is Google's upscale, and the audience stops being "NNN landlords"
+
+**Cloudflare versions:** `a2c0fdee-cb74-4748-bf17-850c07a17f77` (`amlak-site` / amlakre.com) ·
+`400e37fe-ce5c-412f-ac2f-c34b12e51497` (`amlak` app worker, carrying only `favicon.svg`) ·
+2,085 tests / 197 files green.
+
+George: *"its not showing anymore… its back to the stale: commercial property lease & financial
+management. Amlak Sign in to continue. Email Password Sign in Forgot your password?"* — and
+*"the top of the arch on the A is very pixelated"*, and *"instead of NNN landlords i want the
+message to be for small time landlords without actually saying small time."*
+
+### The snippet he quoted is the diagnosis, word for word
+
+*"Sign in to continue. Email Password Sign in Forgot your password?"* is **`src/pages/Login.js`,
+rendered**. Google executed the SPA that used to live at the apex and indexed the login form, with
+the app's own `<meta name="description">` — *"Amlak — commercial property lease & financial
+management"* — above it. That is a crawl from **before 2026-08-21**, when the apex stopped being
+the app. Nothing was lost and nothing regressed: the new description has never been what Google is
+serving, because Google has not re-read the page. Verified again this round — `curl` on the apex
+returns the new title and description.
+
+⚠ **There is no deploy that fixes this, and that needs saying plainly rather than being implied by
+a version id.** The only lever is a recrawl, and only the account holder can pull it.
+
+### The icon: measured, not guessed
+
+Fetched what Google actually holds, at four sizes:
+`https://www.google.com/s2/favicons?domain=amlakre.com&sz=16|32|64|128`.
+
+| requested | unique colours in the returned PNG |
+|---|---|
+| 16 | 31 |
+| 32 | 28 |
+| **64** | **15** |
+| **128** | **15** |
+
+A real 128px render of this mark has hundreds of colours along the arch's anti-aliased curve.
+**Fifteen is a nearest-neighbour blow-up of a small source** — the palette cannot grow past what
+the original held. Zoomed side by side, the 64 and 128 are the 32 with square pixels. The
+staircased arch apex George is looking at is Google enlarging an icon whose largest artwork was
+48px, which is exactly the ceiling the first round raised (192 PNG + 64/128 in the `.ico`) and
+exactly what Google has not yet refetched. **The artwork is not at fault and was not changed.**
+
+### One real defect the measurement turned up: the SVG capped itself at 32px
+
+`favicon.svg` declared `width="32" height="32"` alongside its `viewBox`, giving the file an
+**intrinsic size of 32px**. Any rasteriser that honours intrinsic size draws 32 and upscales,
+however large a bitmap it was asked for — the same staircase, from a vector file that should have
+been resolution-free. This was not theory: while building the round-one icons, headless Chrome was
+handed a 1024×1024 window and drew the mark at 32×32 in the corner, for this reason.
+
+Both attributes removed; `viewBox` kept. Safe everywhere it is used — `.nav-mark img` is
+`width:100%;height:100%` inside a fixed 30px box, and the app references it only as `rel="icon"`,
+where every browser scales it. `src/components/BrandMark.js` is the third copy of this artwork and
+is untouched: it takes a `size` prop, which is the correct way for a component to have one.
+
+### "NNN landlords" → who it is actually for
+
+The phrase was doing audience work in the two places a searcher reads, and the site's own body copy
+already disagreed with it — `compare.html` says *"a landlord with a handful of NNN retail
+properties"* and *"Hundreds of units is somebody else's product."* The search-facing copy was
+selling to a lease type; the page was selling to a size of landlord.
+
+- **`<title>`** — *…for NNN landlords* → ***…for independent landlords*** (65 chars)
+- **home description** — closes *"For independent landlords."* (149)
+- **compare description** — *what NNN landlords actually use* → *what independent landlords
+  actually use* (142)
+- **hero eyebrow** — *Built for triple-net retail* → ***Built for landlords with a handful of
+  buildings***. The lede directly beneath already says *"built exclusively for triple-net
+  commercial property"*, so the eyebrow now carries **who** and the lede carries **what**, instead
+  of both carrying what.
+- **footer line** — *built for landlords running triple-net retail* → *built for **independent**
+  landlords running triple-net retail*, on **all nine** pages that carry it. It is duplicated by
+  hand across the site; editing only `index.html` would have left eight pages quietly disagreeing.
+
+"Independent" is doing the work "small" would have done, without the diminishment — and it is what
+the compare page has been arguing all along. **`Purpose-built for the parts of NNN that go wrong`**
+(the section heading) was deliberately left: there NNN names the lease structure, not the reader.
+
+### Files
+
+`site/index.html` (title · description · hero eyebrow · footer) · `site/compare.html`
+(description · footer) · `site/about.html` · `site/consultation.html` · `site/features.html` ·
+`site/privacy.html` · `site/security.html` · `site/support.html` · `site/terms.html` (footer) ·
+`site/favicon.svg` + `public/favicon.svg` (intrinsic size removed, kept byte-identical).
+
+### Verified live
+
+Apex serves the new title, description and eyebrow · `/compare` serves its new description ·
+`favicon.svg` on **both** hosts is `<svg xmlns="…" viewBox="0 0 32 32">` with no intrinsic size.
+⚠ The first fetch after deploy returned the **old** SVG from a Cloudflare edge HIT; a
+cache-busted request pulled the new one and the plain URL has served it on every request since.
+Worth remembering when verifying a static asset within a minute of `wrangler deploy`.
+
+### George's move — still the only thing that changes the snippet
+
+Search Console → **URL Inspection** → `https://amlakre.com/` → **Request indexing**, then
+**Sitemaps** → resubmit. The favicon is refreshed by a separate crawler on its own schedule, and
+a homepage recrawl is what usually prompts it. If the property is not verified, that is a DNS TXT
+record on the domain and the DNS is already in Cloudflare.
+
+### Now redundant
+
+- **"Built for triple-net retail" as the hero eyebrow.** It repeated what the lede said one line
+  later; the eyebrow now names the audience instead. Retired, not moved.
+- **"NNN landlords" as an audience label.** Gone from the title and the compare description. It
+  survives as a *lease-type* term in the section heading and twice in `compare.html`'s body, which
+  is correct — the term is not the problem, using it to describe a person was.
+- **Not redundant, and left alone deliberately:** the round-one `<lastmod>` block, `apple-touch-icon.png`
+  (180px, Google-eligible but not what Google picked), and `og.png`.
+- Still open from round one: **`public/logo192.png` and `site/icon-192.png` are two 192px renders
+  of one mark with different corner radii.** Unchanged — George's call.
+
 ## 2026-08-22 — The Google result: a snippet cut mid-sentence and a mark upscaled from 48px
 
 **Cloudflare versions:** `8764fde1-5654-4085-b291-522d2ce59058` (the `amlak-site` worker /
