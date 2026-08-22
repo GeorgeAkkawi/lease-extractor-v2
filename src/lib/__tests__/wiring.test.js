@@ -341,7 +341,88 @@ describe('every history event type is in all three registries', () => {
   });
 });
 
-// ── 9. Migration numbering ──────────────────────────────────────────────────────────────────
+// ── 9. A write that can fail with the screen unchanged ─────────────────────────────────────
+//
+// ⚠ THE MOST REPEATED FINDING OF THE 2026-08-21 AUDIT, by a distance: **35 of the app's 101
+// mutations** have neither an `onError` of their own nor a `<MutationError of={[…]}>` watching
+// them, and there is no global net either (`src/index.js` sets `defaultOptions.queries` only —
+// no MutationCache onError, no error boundary). The write throws, React Query swallows it, and
+// the screen sits there exactly as it was.
+//
+// ⚠ IT INCLUDES THE FIRST TWO BUTTONS A NEW CLIENT EVER PRESSES. `CorporationsPage.js` and
+// `PropertiesPage.js` contain ZERO occurrences of `MutationError`, `onError` or `isError`, so
+// "+ New corporation" and "+ Add property" failing (offline, an RLS refusal, the private-beta
+// cap) leaves the form filled in and nothing said. That is question 9 — *is the failure
+// legible?* — answered "no" on the onboarding path.
+describe('a write that fails says so', () => {
+  const mutations = [];
+  for (const { p, src } of APP) {
+    if (!src.includes('useMutation')) continue;
+    for (const m of src.matchAll(/const\s+(\w+)\s*=\s*useMutation\(/g)) {
+      const name = m[1];
+      const rest = src.slice(m.index + m[0].length);
+      const end = rest.search(/\n\s{0,2}(const|function|async function|useEffect|return)\s/);
+      const block = end === -1 ? rest.slice(0, 2500) : rest.slice(0, end);
+      // Watched either by its own onError or by a MutationError that names it.
+      const watched = block.includes('onError')
+        || new RegExp(`MutationError[^>]{0,400}\\b${name}\\b`, 's').test(src);
+      if (!watched) mutations.push(`${p.replace('src/', '')}:${name}`);
+    }
+  }
+
+  it('found the real set (non-vacuity)', () => {
+    const total = APP.reduce((n, { src }) => n + [...src.matchAll(/=\s*useMutation\(/g)].length, 0);
+    expect(total).toBeGreaterThan(80);
+  });
+
+  // KNOWN, 2026-08-21 — the backlog, exactly as measured. Ranked in docs/audit-2026-08-22.md;
+  // the onboarding pair (CorporationsPage / PropertiesPage) and the seven LeaseDetailPage field
+  // saves are the ones worth clearing first. Deleting a line here is the fix landing.
+  const KNOWN = [
+    'components/AnnualReportModal.js:save',
+    'components/AnnualReportModal.js:filed',
+    'components/CamSection.js:saveCat',
+    'components/CorporationProfileModal.js:save',
+    'components/DocAssistant.js:saveM',
+    'components/InsuranceVault.js:saveFacts',
+    'components/InsuranceVault.js:removeMut',
+    'components/InsuranceVault.js:dismissAiPopup',
+    'components/InvoiceButton.js:saveAR',
+    'components/LeaseReviewStrip.js:run',
+    'components/LeaseReviewStrip.js:dismiss',
+    'components/MonthDetailPanel.js:stopAlways',
+    'components/RemoveTenantModal.js:remove',
+    'components/RenewalOptionModal.js:add',
+    'components/RenewalOptionsEditor.js:historic',
+    'components/TaxCategorySelect.js:create',
+    'pages/CorporationsPage.js:add',
+    'pages/HistoryPage.js:close',
+    'pages/HistoryPage.js:reopen',
+    'pages/HistoryPage.js:clearHistory',
+    'pages/LeaseDetailPage.js:saveField',
+    'pages/LeaseDetailPage.js:anchorStart',
+    'pages/LeaseDetailPage.js:setRoof',
+    'pages/LeaseDetailPage.js:setLeaseType',
+    'pages/LeaseDetailPage.js:saveDeposit',
+    'pages/LeaseDetailPage.js:saveEstCamTax',
+    'pages/LeaseDetailPage.js:setNoRenewal',
+    'pages/LeaseNewPage.js:createManual',
+    'pages/LeaseNewPage.js:createFromAi',
+    'pages/LedgerPage.js:settleUp',
+    'pages/LedgerPage.js:undoSettle',
+    'pages/NotificationSettings.js:save',
+    'pages/NotificationSettings.js:undoMut',
+    'pages/PropertiesPage.js:add',
+    'pages/SecuritySettings.js:save',
+  ];
+
+  it('every mutation has an error surface', () => {
+    expect(mutations.filter((m) => !KNOWN.includes(m)),
+      'this write can fail with nothing on screen changing').toEqual([]);
+  });
+});
+
+// ── 10. Migration numbering ─────────────────────────────────────────────────────────────────
 //
 // Two sessions scaffolding at once is the normal way this collides, and a duplicate number means
 // one of the two never runs on a fresh database.
